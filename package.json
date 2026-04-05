@@ -1,0 +1,29 @@
+{
+  "name": "pp-erp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full-stack ERP for PP Woven Sacks Manufacturing",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "db:migrate": "cd prisma && pnpm prisma migrate dev",
+    "db:generate": "prisma generate",
+    "db:seed": "cd prisma && pnpm prisma db seed",
+    "db:studio": "prisma studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.4.5",
+    "prettier": "^3.3.3",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "eslint": "^8.57.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

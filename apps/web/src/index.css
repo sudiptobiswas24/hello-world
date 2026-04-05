@@ -1,0 +1,7 @@
+body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+* { box-sizing: border-box; }
+.ant-table-thead > tr > th { background: #f0f4ff !important; font-weight: 600; }
+.ant-layout { min-height: 100vh; }
+.ant-layout-sider { box-shadow: 2px 0 8px rgba(0,0,0,0.06); }
+.page-content { padding: 24px; background: #f5f7fa; min-height: calc(100vh - 64px); }
+.stat-card { border-radius: 8px; }
