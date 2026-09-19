@@ -2,6 +2,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 
+from decimal import Decimal, InvalidOperation
+
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -107,9 +109,28 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def credit_note(self, request, pk=None):
+        """
+        Credit the whole invoice, or pass
+        {"quantities": {"<invoice_line_id>": "3"}} to credit part of it.
+        """
         invoice = self.get_object()
+        requested = request.data.get("quantities")
+        quantities = None
+        if requested:
+            lines = {str(line.pk): line for line in invoice.lines.all()}
+            try:
+                quantities = {
+                    lines[str(line_id)]: Decimal(str(quantity))
+                    for line_id, quantity in requested.items()
+                }
+            except KeyError as exc:
+                raise DRFValidationError(f"Line {exc} is not on this invoice.")
+            except (InvalidOperation, TypeError):
+                raise DRFValidationError("Quantities must be numbers.")
         try:
-            credit_note = invoice.create_credit_note(memo=request.data.get("memo", ""))
+            credit_note = invoice.create_credit_note(
+                memo=request.data.get("memo", ""), quantities=quantities
+            )
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(credit_note).data)
@@ -150,12 +171,22 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def customer_return(self, request, pk=None):
+        """
+        Take goods back. Credits the invoices that billed them unless
+        {"credit_invoices": false} is passed (a replacement, not a refund).
+        """
         delivery = self.get_object()
+        credit = request.data.get("credit_invoices", True)
         try:
-            returned = delivery.create_return()
+            returned = delivery.create_return(credit_invoices=bool(credit))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
-        return Response(self.get_serializer(returned).data)
+        payload = self.get_serializer(returned).data
+        payload["credit_notes"] = [
+            {"id": note.pk, "number": note.number, "total": note.total()}
+            for note in returned.credit_notes_created
+        ]
+        return Response(payload)
 
 
 class DeliveryLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

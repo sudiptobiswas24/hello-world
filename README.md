@@ -126,9 +126,20 @@ production / SQLite for local dev by default. Every module builds on the
   Receivable / Cr Revenue per line / Cr tax account per tax); Sales
   never writes ledger rows directly. A posted invoice is immutable like
   a `JournalEntry` — the only correction path is
-  `Invoice.create_credit_note()`, which calls the original invoice's
-  `JournalEntry.create_reversal()` rather than reimplementing
-  correction logic.
+  `Invoice.create_credit_note()`. Credits can be **partial** — pass
+  `quantities={line: qty}` to give back three of ten units — and a
+  line tracks `quantity_credited()` / `quantity_creditable()` so the
+  same goods can't be refunded twice. A credit note posts the mirror
+  of the invoice (Cr Receivable / Dr Revenue / Dr tax) at the exchange
+  rate the invoice was billed at, never today's, so crediting an old
+  foreign-currency invoice can't book a spurious FX gain. A credit
+  that happens to cover every line in full is additionally linked as a
+  reversal of the original entry.
+  **Returns refund.** `Delivery.create_return()` reverses the stock and
+  the cost, then credits whatever was invoiced for those goods,
+  allocating the returned quantity oldest-invoice-first and raising one
+  credit note per affected invoice. Pass `credit_invoices=False` for a
+  replacement rather than a refund.
 
 - **`apps/purchasing`** — mirrors Sales for the payables side.
   `PurchaseOrder`/`PurchaseOrderLine`, `Bill`/`BillLine`. Vendors are

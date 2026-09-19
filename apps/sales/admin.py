@@ -40,8 +40,8 @@ class InvoicePaymentInline(admin.TabularInline):
 class InvoiceLineInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = InvoiceLine
     extra = 1
-    fields = ("order_line", "item", "description", "quantity", "unit_price",
-              "discount_percent", "revenue_account", "taxes")
+    fields = ("order_line", "credits_line", "item", "description", "quantity",
+              "unit_price", "discount_percent", "revenue_account", "taxes")
     filter_horizontal = ("taxes",)
 
 

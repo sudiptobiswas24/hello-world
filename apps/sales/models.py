@@ -424,13 +424,14 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             return Decimal("1")
         return self.currency.rate_on(self.invoice_date)
 
-    def _build_journal_entry(self, rate):
+    def _build_journal_entry(self, rate, reverse=False):
         """
-        Build the ledger entry in base currency.
+        Build the ledger entry in base currency. `reverse` swaps the sides,
+        which is what a credit note posts.
 
-        Credits are computed first and the receivable debit is set to their
-        exact sum: rounding each converted line independently can leave the
-        debit a cent off the credits, which would make a legitimate invoice
+        The counterpart lines are computed first and the receivable is set to
+        their exact sum: rounding each converted line independently can leave
+        the two sides a cent apart, which would make a legitimate document
         unpostable.
         """
         lines = list(self.lines.all())
@@ -467,16 +468,31 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             entry=entry,
             account=self.receivable_account,
             party=self.customer,
-            debit=receivable_total,
-            description=f"Invoice {self.number}",
+            credit=receivable_total if reverse else Decimal("0"),
+            debit=Decimal("0") if reverse else receivable_total,
+            description=f"{'Credit note' if reverse else 'Invoice'} {self.number}",
         )
         for account, amount, description in credits:
             if amount:
                 JournalLine.objects.create(
                     entry=entry, account=account, party=self.customer,
-                    credit=amount, description=description,
+                    debit=amount if reverse else Decimal("0"),
+                    credit=Decimal("0") if reverse else amount,
+                    description=description,
                 )
         return entry
+
+    def _is_full_credit_of(self, original):
+        """True when this credit note gives back every line of `original` in full."""
+        credited = defaultdict(Decimal)
+        for line in self.lines.all():
+            if not line.credits_line_id:
+                return False
+            credited[line.credits_line_id] += line.quantity
+        original_lines = list(original.lines.all())
+        if len(credited) != len(original_lines):
+            return False
+        return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
     @transaction.atomic
     def post(self, memo=None):
@@ -514,10 +530,14 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             original = self.credits
             if not original.posted or not original.journal_entry_id:
                 raise ValidationError("Cannot post a credit note against an unposted invoice.")
-            entry = original.journal_entry.create_reversal(
-                entry_date=self.invoice_date,
-                memo=memo or f"Credit note {self.number} for {original.number}",
-            )
+            # Credit at the rate the invoice was billed at, not today's, so a
+            # credit note can't book a spurious FX gain against itself.
+            self.exchange_rate = original.exchange_rate or Decimal("1")
+            entry = self._build_journal_entry(self.exchange_rate, reverse=True)
+            if self._is_full_credit_of(original):
+                entry.reverses = original.journal_entry
+                entry.save(update_fields=["reverses"])
+            entry.post()
         else:
             entry = self._build_journal_entry(self.exchange_rate)
             entry.post()
@@ -533,11 +553,31 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         )
 
     @transaction.atomic
-    def create_credit_note(self, memo=""):
+    def create_credit_note(self, memo="", quantities=None):
+        """
+        Credit this invoice. By default the whole thing; pass
+        `quantities` as {invoice_line: quantity} to credit part of it, which
+        is what a partial goods return needs.
+        """
         if not self.posted:
             raise ValidationError("Only a posted invoice can be credited.")
         if self.is_credit_note():
             raise ValidationError("Cannot issue a credit note against a credit note.")
+
+        if quantities is None:
+            selected = [(line, line.quantity) for line in self.lines.all()]
+        else:
+            selected = [(line, quantity) for line, quantity in quantities.items() if quantity > 0]
+            for line, quantity in selected:
+                if line.invoice_id != self.pk:
+                    raise ValidationError("That line belongs to a different invoice.")
+                if quantity > line.quantity_creditable():
+                    raise ValidationError(
+                        f"Only {line.quantity_creditable()} of '{line}' is left to credit; "
+                        f"cannot credit {quantity}."
+                    )
+        if not selected:
+            raise ValidationError("Nothing to credit.")
 
         credit_note = Invoice.objects.create(
             customer=self.customer,
@@ -550,13 +590,14 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             shipping_address=self.shipping_address,
             credits=self,
         )
-        for line in self.lines.all():
+        for line, quantity in selected:
             credit_line = InvoiceLine.objects.create(
                 invoice=credit_note,
                 order_line=line.order_line,
+                credits_line=line,
                 item=line.item,
                 description=line.description,
-                quantity=line.quantity,
+                quantity=quantity,
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
@@ -573,6 +614,10 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
         related_name="invoice_lines",
         help_text="Set when this line bills a sales order line, so the order can't be billed twice.",
     )
+    credits_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_lines",
+        help_text="On a credit note line, the invoice line being credited.",
+    )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="invoice_lines")
     description = models.CharField(max_length=255, blank=True)
     revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
@@ -580,6 +625,15 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
 
     def __str__(self):
         return f"{self.item or self.description} x{self.quantity}"
+
+    def quantity_credited(self):
+        """How much of this line has already been credited by posted credit notes."""
+        return self.credit_lines.filter(invoice__posted=True).aggregate(
+            total=models.Sum("quantity")
+        )["total"] or Decimal("0")
+
+    def quantity_creditable(self):
+        return self.quantity - self.quantity_credited()
 
     def save(self, *args, **kwargs):
         if self.invoice_id and Invoice.objects.filter(pk=self.invoice_id, posted=True).exists():
@@ -854,8 +908,47 @@ class Delivery(AuditModel):
             update_fields=["number", "delivery_date", "posted", "posted_at", "updated_at"]
         )
 
+    def _credit_returned_goods(self):
+        """
+        Credit the invoices that billed the returned goods. A delivery's
+        quantities may have been spread over several invoices, so the
+        returned quantity is allocated oldest-invoice-first, and one credit
+        note is raised per affected invoice.
+        """
+        allocations = defaultdict(dict)
+        for line in self.lines.all():
+            remaining = line.quantity_shipped
+            invoice_lines = InvoiceLine.objects.filter(
+                order_line=line.order_line,
+                invoice__posted=True,
+                invoice__credits__isnull=True,
+            ).order_by("invoice__invoice_date", "invoice_id")
+            for invoice_line in invoice_lines:
+                if remaining <= 0:
+                    break
+                available = invoice_line.quantity_creditable()
+                if available <= 0:
+                    continue
+                taken = min(available, remaining)
+                per_invoice = allocations[invoice_line.invoice]
+                per_invoice[invoice_line] = per_invoice.get(invoice_line, Decimal("0")) + taken
+                remaining -= taken
+
+        return [
+            invoice.create_credit_note(
+                memo=f"Goods returned on {self.number}", quantities=quantities
+            )
+            for invoice, quantities in allocations.items()
+        ]
+
     @transaction.atomic
-    def create_return(self):
+    def create_return(self, credit_invoices=True):
+        """
+        Take goods back: reverse the stock movement and, unless this is a
+        replacement rather than a refund, credit whatever was invoiced for
+        them. The credit notes raised are attached to the returned delivery
+        as `credit_notes_created`.
+        """
         if not self.posted:
             raise ValidationError("Only a posted delivery can be returned.")
         if self.is_return():
@@ -879,6 +972,9 @@ class Delivery(AuditModel):
                 unit_cost=line.unit_cost,
             )
         customer_return.post()
+        customer_return.credit_notes_created = (
+            self._credit_returned_goods() if credit_invoices else []
+        )
         return customer_return
 
 

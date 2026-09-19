@@ -57,7 +57,8 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
     class Meta:
         model = InvoiceLine
         fields = [
-            "id", "invoice", "order_line", "item", "description", "quantity", "unit_price",
+            "id", "invoice", "order_line", "credits_line", "item", "description",
+            "quantity", "unit_price",
             "discount_percent", "revenue_account", "taxes",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
