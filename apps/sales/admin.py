@@ -23,7 +23,8 @@ class SalesOrderLineInline(admin.TabularInline):
 
 @admin.register(SalesOrder)
 class SalesOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("number", "customer", "order_date", "status", "total")
+    list_display = ("number", "customer", "order_date", "status", "total",
+                    "invoice_status", "delivery_status")
     list_filter = ("status",)
     search_fields = ("number", "reference", "customer__name")
     readonly_fields = ("number",)
@@ -39,8 +40,8 @@ class InvoicePaymentInline(admin.TabularInline):
 class InvoiceLineInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = InvoiceLine
     extra = 1
-    fields = ("item", "description", "quantity", "unit_price", "discount_percent",
-              "revenue_account", "taxes")
+    fields = ("order_line", "item", "description", "quantity", "unit_price",
+              "discount_percent", "revenue_account", "taxes")
     filter_horizontal = ("taxes",)
 
 

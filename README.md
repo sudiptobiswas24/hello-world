@@ -81,8 +81,13 @@ production / SQLite for local dev by default. Every module builds on the
     the exact sum of the converted credits — rounding each line
     independently can leave the entry a cent out of balance and make a
     legitimate invoice unpostable.
-  - **Order → invoice**: `SalesOrder.create_invoice()` carries lines,
-    discounts and taxes across.
+  - **Order → invoice**: `SalesOrder.create_invoice()` bills whatever
+    is still uninvoiced, carrying discounts and taxes across. Invoice
+    lines link back to the order line, so quantities draw down
+    (`quantity_invoiced()` / `quantity_uninvoiced()`) exactly like
+    shipments do, and an order cannot be billed twice. A credit note
+    releases the quantity again. `invoice_status()` and
+    `delivery_status()` report none / partial / full.
   - **Settlement**: `InvoicePayment` applies an `accounting.Payment` to
     an invoice. The ledger entry was already made when the payment
     posted — the allocation records *which* invoices that money

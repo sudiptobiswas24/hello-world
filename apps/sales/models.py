@@ -111,6 +111,12 @@ class SettlementStatus(models.TextChoices):
     PAID = "paid", "Paid"
 
 
+class FulfilmentStatus(models.TextChoices):
+    NONE = "none", "Nothing yet"
+    PARTIAL = "partial", "Partially"
+    FULL = "full", "Fully"
+
+
 class OrderStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     CONFIRMED = "confirmed", "Confirmed"
@@ -166,6 +172,22 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
 
+    def invoice_status(self):
+        lines = list(self.lines.all())
+        if not lines or all(line.quantity_invoiced() <= 0 for line in lines):
+            return FulfilmentStatus.NONE
+        if all(line.is_fully_invoiced() for line in lines):
+            return FulfilmentStatus.FULL
+        return FulfilmentStatus.PARTIAL
+
+    def delivery_status(self):
+        lines = list(self.lines.all())
+        if not lines or all(line.quantity_shipped() <= 0 for line in lines):
+            return FulfilmentStatus.NONE
+        if all(line.is_fully_shipped() for line in lines):
+            return FulfilmentStatus.FULL
+        return FulfilmentStatus.PARTIAL
+
     @transaction.atomic
     def confirm(self):
         if self.status == OrderStatus.CONFIRMED:
@@ -183,9 +205,21 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
 
     @transaction.atomic
     def create_invoice(self, receivable_account, invoice_date=None):
-        """Turn this order into a draft invoice, carrying taxes and discounts across."""
+        """
+        Draft an invoice for whatever is still uninvoiced on this order,
+        carrying taxes and discounts across. Calling it twice bills the
+        remainder, not the whole order again.
+        """
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can be invoiced.")
+
+        outstanding = [
+            (line, line.quantity_uninvoiced())
+            for line in self.lines.all()
+            if line.quantity_uninvoiced() > 0
+        ]
+        if not outstanding:
+            raise ValidationError("This order is already fully invoiced.")
 
         invoice = Invoice.objects.create(
             customer=self.customer,
@@ -198,12 +232,13 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
             billing_address=self.billing_address,
             shipping_address=self.shipping_address,
         )
-        for line in self.lines.all():
+        for line, remaining in outstanding:
             invoice_line = InvoiceLine.objects.create(
                 invoice=invoice,
+                order_line=line,
                 item=line.item,
                 description=str(line.item),
-                quantity=line.quantity,
+                quantity=remaining,
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
@@ -236,6 +271,22 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     def is_fully_shipped(self):
         return self.quantity_shipped() >= self.quantity
+
+    def quantity_invoiced(self):
+        """Net quantity invoiced: posted invoices minus posted credit notes."""
+        invoiced = self.invoice_lines.filter(
+            invoice__posted=True, invoice__credits__isnull=True
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        credited = self.invoice_lines.filter(
+            invoice__posted=True, invoice__credits__isnull=False
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        return invoiced - credited
+
+    def quantity_uninvoiced(self):
+        return self.quantity - self.quantity_invoiced()
+
+    def is_fully_invoiced(self):
+        return self.quantity_invoiced() >= self.quantity
 
 
 class Invoice(TaxedDocumentMixin, AuditModel):
@@ -432,6 +483,16 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             raise ValidationError("This invoice is already posted.")
 
         self.invoice_date = to_date(self.invoice_date)
+        if not self.is_credit_note():
+            for line in self.lines.all():
+                if not line.order_line_id:
+                    continue
+                already = line.order_line.quantity_invoiced()
+                if already + line.quantity > line.order_line.quantity:
+                    raise ValidationError(
+                        f"Invoicing {line.quantity} of {line.order_line.item} would exceed the "
+                        f"ordered quantity ({line.order_line.quantity}; {already} already invoiced)."
+                    )
         if not self.number:
             if self.is_credit_note():
                 self.number = DocumentSequence.next_for(
@@ -491,6 +552,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         for line in self.lines.all():
             credit_line = InvoiceLine.objects.create(
                 invoice=credit_note,
+                order_line=line.order_line,
                 item=line.item,
                 description=line.description,
                 quantity=line.quantity,
@@ -505,6 +567,11 @@ class Invoice(TaxedDocumentMixin, AuditModel):
 
 class InvoiceLine(TaxedLineMixin, AuditModel):
     invoice = models.ForeignKey(Invoice, related_name="lines", on_delete=models.CASCADE)
+    order_line = models.ForeignKey(
+        SalesOrderLine, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="invoice_lines",
+        help_text="Set when this line bills a sales order line, so the order can't be billed twice.",
+    )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="invoice_lines")
     description = models.CharField(max_length=255, blank=True)
     revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")

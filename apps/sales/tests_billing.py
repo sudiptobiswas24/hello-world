@@ -383,3 +383,124 @@ class ConcurrentDraftNumberingTests(SalesBillingTestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 other.save()
+
+
+class InvoiceDrawdownTests(SalesBillingTestCase):
+    """
+    Regression: create_invoice() copied every order line regardless of what
+    had already been billed, so calling it three times on a 1000 order
+    produced 3000 of invoices and nothing objected.
+    """
+
+    def make_order(self, quantity="10", price="100"):
+        order = SalesOrder.objects.create(
+            customer=self.customer, order_date=datetime.date(2026, 3, 1)
+        )
+        SalesOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal(quantity), unit_price=Decimal(price),
+            revenue_account=self.revenue,
+        )
+        order.confirm()
+        return order
+
+    def test_an_order_cannot_be_invoiced_twice_for_its_full_value(self):
+        order = self.make_order("10", "100")
+        first = order.create_invoice(self.ar)
+        first.post()
+
+        self.assertEqual(first.total(), Decimal("1000.00"))
+        with self.assertRaises(ValidationError):
+            order.create_invoice(self.ar)
+
+    def test_invoicing_draws_down_the_remaining_quantity(self):
+        order = self.make_order("10", "100")
+        line = order.lines.get()
+
+        partial = order.create_invoice(self.ar)
+        partial.lines.update(quantity=Decimal("4"))
+        partial.post()
+
+        self.assertEqual(line.quantity_invoiced(), Decimal("4"))
+        self.assertEqual(line.quantity_uninvoiced(), Decimal("6"))
+
+        remainder = order.create_invoice(self.ar)
+        self.assertEqual(remainder.lines.get().quantity, Decimal("6"))
+        remainder.post()
+
+        self.assertTrue(line.is_fully_invoiced())
+        self.assertEqual(
+            partial.total() + remainder.total(), Decimal("1000.00")
+        )
+
+    def test_drafts_do_not_consume_the_order(self):
+        """Only posted invoices draw the order down; a draft can be abandoned."""
+        order = self.make_order("10", "100")
+        draft = order.create_invoice(self.ar)
+        self.assertEqual(order.lines.get().quantity_invoiced(), Decimal("0"))
+        draft.delete()
+        again = order.create_invoice(self.ar)
+        self.assertEqual(again.lines.get().quantity, Decimal("10"))
+
+    def test_posting_refuses_a_hand_built_over_invoice(self):
+        order = self.make_order("10", "100")
+        first = order.create_invoice(self.ar)
+        first.post()
+
+        sneaky = Invoice.objects.create(
+            customer=self.customer, invoice_date=datetime.date(2026, 3, 9),
+            receivable_account=self.ar,
+        )
+        InvoiceLine.objects.create(
+            invoice=sneaky, order_line=order.lines.get(), item=self.item,
+            quantity=Decimal("5"), unit_price=Decimal("100"), revenue_account=self.revenue,
+        )
+        with self.assertRaises(ValidationError):
+            sneaky.post()
+
+    def test_a_credit_note_frees_the_order_to_be_invoiced_again(self):
+        order = self.make_order("10", "100")
+        invoice = order.create_invoice(self.ar)
+        invoice.post()
+        self.assertTrue(order.lines.get().is_fully_invoiced())
+
+        invoice.create_credit_note(memo="Billed in error")
+
+        self.assertEqual(order.lines.get().quantity_invoiced(), Decimal("0"))
+        replacement = order.create_invoice(self.ar)
+        self.assertEqual(replacement.lines.get().quantity, Decimal("10"))
+
+    def test_standalone_invoices_are_unaffected(self):
+        """An invoice with no order behind it has nothing to draw down."""
+        invoice = self.make_invoice(quantity="3", price="10")
+        invoice.post()
+        self.assertIsNone(invoice.lines.get().order_line)
+
+
+class FulfilmentStatusTests(SalesBillingTestCase):
+    def make_order(self, quantity="10"):
+        order = SalesOrder.objects.create(
+            customer=self.customer, order_date=datetime.date(2026, 3, 1)
+        )
+        SalesOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal(quantity), unit_price=Decimal("10"),
+            revenue_account=self.revenue,
+        )
+        order.confirm()
+        return order
+
+    def test_status_starts_at_none(self):
+        order = self.make_order()
+        self.assertEqual(order.invoice_status(), "none")
+        self.assertEqual(order.delivery_status(), "none")
+
+    def test_partial_then_full_invoicing(self):
+        order = self.make_order("10")
+        partial = order.create_invoice(self.ar)
+        partial.lines.update(quantity=Decimal("4"))
+        partial.post()
+        self.assertEqual(order.invoice_status(), "partial")
+
+        order.create_invoice(self.ar).post()
+        self.assertEqual(order.invoice_status(), "full")

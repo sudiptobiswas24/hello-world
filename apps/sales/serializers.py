@@ -21,18 +21,23 @@ class MoneyLineSerializerMixin(serializers.Serializer):
 
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     quantity_shipped = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+    quantity_invoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+    quantity_uninvoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
 
     class Meta:
         model = SalesOrderLine
         fields = [
             "id", "order", "item", "uom", "quantity", "unit_price", "discount_percent",
-            "revenue_account", "taxes", "quantity_shipped",
+            "revenue_account", "taxes", "quantity_shipped", "quantity_invoiced",
+            "quantity_uninvoiced",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
 
 
 class SalesOrderSerializer(serializers.ModelSerializer):
     lines = SalesOrderLineSerializer(many=True, read_only=True)
+    invoice_status = serializers.CharField(read_only=True)
+    delivery_status = serializers.CharField(read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
@@ -43,6 +48,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             "id", "number", "customer", "order_date", "reference", "status", "currency",
             "payment_terms", "billing_address", "shipping_address",
             "lines", "subtotal", "tax_total", "total",
+            "invoice_status", "delivery_status",
         ]
         read_only_fields = ["number", "status"]
 
@@ -51,7 +57,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
     class Meta:
         model = InvoiceLine
         fields = [
-            "id", "invoice", "item", "description", "quantity", "unit_price",
+            "id", "invoice", "order_line", "item", "description", "quantity", "unit_price",
             "discount_percent", "revenue_account", "taxes",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
