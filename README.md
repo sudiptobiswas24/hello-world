@@ -29,11 +29,21 @@ production / SQLite for local dev by default. Every module builds on the
   service that creates journal entries from `StockMovement`, not via
   schema coupling between the two modules.
 
+- **`apps/sales`** — `SalesOrder`/`SalesOrderLine`, `Invoice`/`InvoiceLine`.
+  Customers are `Party` records with the `CUSTOMER` role (no separate
+  Customer model — the whole point of the kernel). Posting an invoice
+  builds a balanced `JournalEntry` via Accounting (Dr Accounts
+  Receivable / Cr Revenue per line); Sales never writes ledger rows
+  directly. A posted invoice is immutable like a `JournalEntry` — the
+  only correction path is `Invoice.create_credit_note()`, which calls
+  the original invoice's `JournalEntry.create_reversal()` rather than
+  reimplementing correction logic.
+
 ## Module roadmap
 
 1. ~~Inventory~~ (done)
 2. ~~Accounting~~ (done) — chart of accounts + double-entry ledger
-3. Sales / CRM
+3. ~~Sales / CRM~~ (done) — orders, invoicing, credit notes
 4. Purchasing
 5. HR
 
@@ -53,6 +63,9 @@ python manage.py runserver
 - Accounting API: `/api/accounting/` (accounts, journal-entries,
   journal-lines). Post an entry with `POST /api/accounting/journal-entries/{id}/post_entry/`,
   reverse a posted one with `POST /api/accounting/journal-entries/{id}/reverse/`.
+- Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines). Post an
+  invoice with `POST /api/sales/invoices/{id}/post_invoice/`, correct a
+  posted one with `POST /api/sales/invoices/{id}/credit_note/`.
 
 ## Tests
 
