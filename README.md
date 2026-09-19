@@ -50,19 +50,35 @@ production / SQLite for local dev by default. Every module builds on the
   yet — that integration is deferred until the receiving workflow
   (three-way match between PO, receipt, and bill) is actually designed.
 
+- **`apps/hr`** — `Department`, `Employee` (backed by a `Party` with the
+  `EMPLOYEE` role, same reuse pattern as customers/vendors),
+  `LeaveRequest` with a pending → approved/rejected/cancelled workflow.
+  **Payroll is explicitly out of scope here** — it would need its own
+  ledger-posting design (like Sales/Purchasing got for AR/AP) rather
+  than being bolted onto employee records.
+
 ## Module roadmap
 
 1. ~~Inventory~~ (done)
 2. ~~Accounting~~ (done) — chart of accounts + double-entry ledger
 3. ~~Sales / CRM~~ (done) — orders, invoicing, credit notes
 4. ~~Purchasing~~ (done) — orders, vendor bills, debit notes
-5. HR
+5. ~~HR~~ (done) — employees, departments, leave requests (no payroll yet)
 
 ## Known gaps (not yet addressed)
 
 - **No permissions/roles.** Any authenticated user can post journal
-  entries, invoices, and bills. No segregation of duties. Deferred by
-  request — revisit before any real money flows through this.
+  entries, invoices, and bills, or approve their own leave requests.
+  No segregation of duties anywhere in the system. Deferred by
+  request, twice now — this is the top priority before anything here
+  touches real money or real employees.
+- **No User↔Employee link.** `LeaveRequest.approve/reject` take an
+  explicit `decided_by` employee id rather than inferring it from the
+  logged-in user, because there's no account-to-employee mapping yet.
+  Same underlying gap as the permissions issue above.
+- **Payroll** is not built. Employee compensation, pay runs, and the
+  resulting ledger postings are a separate design effort.
+- **PO → Inventory receiving** is not wired up (see Purchasing above).
 
 ## Local setup
 
@@ -86,6 +102,9 @@ python manage.py runserver
 - Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines).
   Post a bill with `POST /api/purchasing/bills/{id}/post_bill/`, correct a
   posted one with `POST /api/purchasing/bills/{id}/debit_note/`.
+- HR API: `/api/hr/` (departments, employees, leave-requests). Decide a
+  leave request with `POST /api/hr/leave-requests/{id}/approve/` or
+  `/reject/` (body: `decided_by: <employee id>`), or `/cancel/`.
 
 ## Tests
 
