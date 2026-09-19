@@ -19,6 +19,7 @@ from apps.accounting.models import (
 from apps.core.models import (
     Address,
     AuditModel,
+    Company,
     Currency,
     DocumentSequence,
     Party,
@@ -487,6 +488,10 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text="When this was last emailed to the customer.",
+    )
 
     class Meta:
         ordering = ["-invoice_date", "-id"]
@@ -505,6 +510,48 @@ class Invoice(TaxedDocumentMixin, AuditModel):
 
     def is_credit_note(self):
         return bool(self.credits_id)
+
+    def render_pdf(self):
+        from .documents import render_invoice_pdf
+
+        return render_invoice_pdf(self)
+
+    def recipient_email(self):
+        contact = self.customer.primary_contact()
+        if contact and contact.email:
+            return contact.email
+        return self.customer.email or ""
+
+    def email_to_customer(self, to=None, subject=None, body=None):
+        """Send the invoice as a PDF attachment. Returns the address used."""
+        from django.core.mail import EmailMessage
+
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be sent.")
+        recipient = to or self.recipient_email()
+        if not recipient:
+            raise ValidationError(
+                f"{self.customer} has no email address on the party or its primary contact."
+            )
+
+        company = Company.get()
+        kind = "Credit note" if self.is_credit_note() else "Invoice"
+        message = EmailMessage(
+            subject=subject or f"{kind} {self.number} from {company.name}",
+            body=body or (
+                f"Dear {self.customer.name},\n\n"
+                f"Please find {kind.lower()} {self.number} attached"
+                + (f", due {self.due_date:%d %b %Y}" if self.due_date and not self.is_credit_note() else "")
+                + f".\n\nRegards,\n{company.name}\n"
+            ),
+            to=[recipient],
+        )
+        message.attach(f"{self.number}.pdf", self.render_pdf(), "application/pdf")
+        message.send()
+
+        self.sent_at = timezone.now()
+        super(Invoice, self).save(update_fields=["sent_at", "updated_at"])
+        return recipient
 
     def amount_paid(self):
         return sum(
@@ -1189,3 +1236,348 @@ class DeliveryLine(AuditModel):
                 "Cannot delete a line on a posted delivery. Create a customer return instead."
             )
         super().delete(*args, **kwargs)
+
+
+class DunningLevel(AuditModel):
+    """
+    One step in the chase sequence: how overdue an invoice must be before
+    this reminder applies, and what it says. Levels are ordered by
+    days_overdue, and an invoice only ever advances — the same reminder is
+    never sent twice for the same invoice.
+    """
+
+    name = models.CharField(max_length=64, unique=True)
+    days_overdue = models.PositiveIntegerField(
+        help_text="Send once the invoice is at least this many days past due."
+    )
+    subject = models.CharField(
+        max_length=200, default="Reminder: invoice {number} is overdue",
+        help_text="Supports {number}, {customer}, {days}, {amount}.",
+    )
+    body = models.TextField(
+        default=(
+            "Dear {customer},\n\n"
+            "Invoice {number} for {amount} was due on {due_date} and is now {days} days "
+            "overdue.\n\nPlease arrange payment.\n"
+        ),
+        help_text="Supports {number}, {customer}, {days}, {amount}, {due_date}.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["days_overdue"]
+        constraints = [
+            models.UniqueConstraint(fields=["days_overdue"], name="unique_dunning_threshold")
+        ]
+
+    def __str__(self):
+        return f"{self.name} (day {self.days_overdue})"
+
+    def render(self, invoice, days_overdue):
+        context = {
+            "number": invoice.number,
+            "customer": invoice.customer.name,
+            "days": days_overdue,
+            "amount": f"{invoice.amount_due():,.2f}",
+            "due_date": invoice.due_date.strftime("%d %b %Y") if invoice.due_date else "",
+        }
+        return self.subject.format(**context), self.body.format(**context)
+
+
+class DunningNotice(AuditModel):
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="dunning_notices")
+    level = models.ForeignKey(DunningLevel, on_delete=models.PROTECT, related_name="notices")
+    days_overdue = models.PositiveIntegerField()
+    amount_due = models.DecimalField(max_digits=18, decimal_places=2)
+    sent_to = models.EmailField(blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "level"], name="one_notice_per_invoice_and_level"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.level.name} for {self.invoice}"
+
+
+def run_dunning(as_of=None, send=True):
+    """
+    Walk overdue invoices and raise the reminders that are now due.
+
+    An invoice gets each level at most once, and only the highest level it
+    has reached — jumping from nothing to the 60-day notice shouldn't also
+    send the 7-day one.
+    """
+    as_of = to_date(as_of) or timezone.now().date()
+    levels = list(DunningLevel.objects.filter(is_active=True).order_by("-days_overdue"))
+    if not levels:
+        return []
+
+    notices = []
+    invoices = (
+        Invoice.objects.filter(posted=True, credits__isnull=True)
+        .prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes",
+                          "dunning_notices")
+    )
+    for invoice in invoices:
+        days = invoice.days_overdue(as_of)
+        if days <= 0 or invoice.amount_due() <= 0:
+            continue
+        already_sent = {notice.level_id for notice in invoice.dunning_notices.all()}
+        due_level = next(
+            (level for level in levels if days >= level.days_overdue and level.pk not in already_sent),
+            None,
+        )
+        if due_level is None:
+            continue
+
+        notice = DunningNotice.objects.create(
+            invoice=invoice, level=due_level, days_overdue=days,
+            amount_due=invoice.amount_due(),
+        )
+        if send:
+            recipient = invoice.recipient_email()
+            if recipient:
+                from django.core.mail import EmailMessage
+
+                subject, body = due_level.render(invoice, days)
+                EmailMessage(subject=subject, body=body, to=[recipient]).send()
+                notice.sent_to = recipient
+                notice.sent_at = timezone.now()
+                notice.save(update_fields=["sent_to", "sent_at", "updated_at"])
+        notices.append(notice)
+    return notices
+
+
+def revenue_report(date_from=None, date_to=None, group_by="customer"):
+    """
+    Net revenue over a period, from posted invoices less credit notes.
+
+    Reads the documents rather than the ledger so it can group by customer
+    or item, which the ledger doesn't record per line.
+    """
+    date_from = to_date(date_from)
+    date_to = to_date(date_to)
+
+    invoices = Invoice.objects.filter(posted=True).prefetch_related(
+        "lines__taxes", "lines__item"
+    ).select_related("customer")
+    if date_from:
+        invoices = invoices.filter(invoice_date__gte=date_from)
+    if date_to:
+        invoices = invoices.filter(invoice_date__lte=date_to)
+
+    totals = defaultdict(lambda: {"net": Decimal("0"), "tax": Decimal("0"), "quantity": Decimal("0")})
+    for invoice in invoices:
+        # A credit note reduces revenue, so its lines count negative.
+        sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
+        for line in invoice.lines.all():
+            if group_by == "customer":
+                key = str(invoice.customer)
+            elif group_by == "item":
+                key = str(line.item) if line.item_id else (line.description or "—")
+            elif group_by == "month":
+                key = invoice.invoice_date.strftime("%Y-%m")
+            else:
+                raise ValueError(f"Unsupported grouping: {group_by}")
+            bucket = totals[key]
+            bucket["net"] += sign * line.net_amount()
+            bucket["tax"] += sign * line.tax_total()
+            bucket["quantity"] += sign * line.quantity
+
+    return [
+        {
+            "key": key,
+            "net": amounts["net"],
+            "tax": amounts["tax"],
+            "gross": amounts["net"] + amounts["tax"],
+            "quantity": amounts["quantity"],
+        }
+        for key, amounts in sorted(totals.items(), key=lambda pair: -pair[1]["net"])
+    ]
+
+
+class QuotationStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    SENT = "sent", "Sent"
+    ACCEPTED = "accepted", "Accepted"
+    DECLINED = "declined", "Declined"
+    EXPIRED = "expired", "Expired"
+
+
+class Quotation(TaxedDocumentMixin, AuditModel):
+    """
+    A priced offer that hasn't been committed to. Kept separate from
+    SalesOrder rather than folded in as another status: a quotation can
+    expire and be declined, neither of which an order does, and an order
+    carries fulfilment state a quote has no business having.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="quotations")
+    quotation_date = models.DateField()
+    valid_until = models.DateField(
+        null=True, blank=True, help_text="After this date the quote can no longer be accepted."
+    )
+    reference = models.CharField(max_length=64, blank=True)
+    status = models.CharField(
+        max_length=16, choices=QuotationStatus.choices, default=QuotationStatus.DRAFT
+    )
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    billing_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    shipping_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_order = models.ForeignKey(
+        SalesOrder, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="quotations", editable=False,
+        help_text="The order this quote became, once accepted.",
+    )
+    sent_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    class Meta:
+        ordering = ["-quotation_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_quotation_number"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'QT-draft-{self.pk}'} {self.customer}"
+
+    def clean(self):
+        _require_customer_role(self.customer)
+        if self.valid_until and self.valid_until < to_date(self.quotation_date):
+            raise ValidationError("valid_until cannot be before the quotation date.")
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.customer_id:
+            customer = self.customer
+            self.currency = self.currency or customer.default_currency
+            self.payment_terms = self.payment_terms or customer.payment_terms
+            self.billing_address = self.billing_address or customer.billing_address()
+            self.shipping_address = self.shipping_address or customer.shipping_address()
+        super().save(*args, **kwargs)
+
+    def has_expired(self, as_of=None):
+        if not self.valid_until:
+            return False
+        return (to_date(as_of) or timezone.now().date()) > self.valid_until
+
+    def _assign_number(self):
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "sales.quotation", self.quotation_date, name="Quotations", prefix="QT-"
+            )
+
+    @transaction.atomic
+    def mark_sent(self):
+        if self.status not in (QuotationStatus.DRAFT, QuotationStatus.SENT):
+            raise ValidationError(f"A {self.get_status_display().lower()} quote cannot be sent.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot send a quotation with no lines.")
+        self._assign_number()
+        self.status = QuotationStatus.SENT
+        self.sent_at = timezone.now()
+        self.save(update_fields=["number", "status", "sent_at", "updated_at"])
+
+    @transaction.atomic
+    def decline(self):
+        if self.status in (QuotationStatus.ACCEPTED, QuotationStatus.DECLINED):
+            raise ValidationError(
+                f"This quote is already {self.get_status_display().lower()}."
+            )
+        self.status = QuotationStatus.DECLINED
+        self.save(update_fields=["status", "updated_at"])
+
+    def accept(self, order_date=None, ignore_credit_limit=False):
+        """Turn an accepted quote into a confirmed sales order."""
+        if self.status == QuotationStatus.ACCEPTED:
+            raise ValidationError("This quotation has already been accepted.")
+        if self.status == QuotationStatus.DECLINED:
+            raise ValidationError("A declined quotation cannot be accepted.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot accept a quotation with no lines.")
+        # Recording the expiry has to happen outside the transaction below:
+        # raising inside it would roll the status change straight back.
+        if self.has_expired(order_date):
+            self.status = QuotationStatus.EXPIRED
+            self.save(update_fields=["status", "updated_at"])
+            raise ValidationError(
+                f"This quotation expired on {self.valid_until:%d %b %Y}. Re-quote instead."
+            )
+        return self._convert_to_order(order_date, ignore_credit_limit)
+
+    @transaction.atomic
+    def _convert_to_order(self, order_date, ignore_credit_limit):
+        self._assign_number()
+        order = SalesOrder.objects.create(
+            customer=self.customer,
+            order_date=order_date or timezone.now().date(),
+            reference=self.reference,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+        )
+        for line in self.lines.all():
+            order_line = SalesOrderLine.objects.create(
+                order=order, item=line.item, uom=line.uom,
+                quantity=line.quantity, unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
+                revenue_account=line.revenue_account,
+            )
+            order_line.taxes.set(line.taxes.all())
+        order.confirm(ignore_credit_limit=ignore_credit_limit)
+
+        self.sales_order = order
+        self.status = QuotationStatus.ACCEPTED
+        self.save(update_fields=["number", "sales_order", "status", "updated_at"])
+        return order
+
+
+class QuotationLine(TaxedLineMixin, AuditModel):
+    quotation = models.ForeignKey(Quotation, related_name="lines", on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="quotation_lines")
+    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    revenue_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="quotation_lines")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="quote_line_quantity_positive"),
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="quote_line_price_not_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.item} x{self.quantity}"
+
+    def save(self, *args, **kwargs):
+        if self.unit_price is None:
+            self.unit_price = resolve_price(
+                self.item,
+                customer=self.quotation.customer,
+                quantity=self.quantity,
+                currency=self.quotation.currency,
+                on_date=self.quotation.quotation_date,
+            )
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"No price found for {self.item}: set one on the item, add it to a "
+                    "price list, or give the line an explicit unit price."
+                )
+        super().save(*args, **kwargs)

@@ -11,29 +11,41 @@ from rest_framework.response import Response
 from apps.accounting.models import Account
 from apps.core.audit import AuditableViewSetMixin
 
+from django.http import HttpResponse
+
 from .models import (
     CustomerProfile,
     Delivery,
+    DunningLevel,
+    DunningNotice,
     DeliveryLine,
     Invoice,
     InvoiceLine,
     InvoicePayment,
     PriceList,
     PriceListItem,
+    Quotation,
+    QuotationLine,
     SalesOrder,
     SalesOrderLine,
     ar_aging,
     outstanding_balance,
+    revenue_report,
+    run_dunning,
 )
 from .serializers import (
     CustomerProfileSerializer,
     DeliveryLineSerializer,
+    DunningLevelSerializer,
+    DunningNoticeSerializer,
     DeliverySerializer,
     InvoiceLineSerializer,
     InvoicePaymentSerializer,
     InvoiceSerializer,
     PriceListItemSerializer,
     PriceListSerializer,
+    QuotationLineSerializer,
+    QuotationSerializer,
     SalesOrderLineSerializer,
     SalesOrderSerializer,
 )
@@ -102,6 +114,41 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(invoice).data)
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        invoice = self.get_object()
+        response = HttpResponse(invoice.render_pdf(), content_type="application/pdf")
+        name = invoice.number or f"draft-{invoice.pk}"
+        response["Content-Disposition"] = f'inline; filename="{name}.pdf"'
+        return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email the invoice as a PDF. {"to": "..."} overrides the recipient."""
+        invoice = self.get_object()
+        try:
+            recipient = invoice.email_to_customer(
+                to=request.data.get("to"),
+                subject=request.data.get("subject"),
+                body=request.data.get("body"),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"sent_to": recipient, "sent_at": invoice.sent_at})
+
+    @action(detail=False, methods=["get"])
+    def revenue(self, request):
+        """Net revenue, grouped by ?group_by=customer|item|month."""
+        try:
+            rows = revenue_report(
+                date_from=request.query_params.get("from"),
+                date_to=request.query_params.get("to"),
+                group_by=request.query_params.get("group_by", "customer"),
+            )
+        except ValueError as exc:
+            raise DRFValidationError(str(exc))
+        return Response(rows)
 
     @action(detail=False, methods=["get"])
     def aging(self, request):
@@ -238,3 +285,67 @@ class CustomerProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "credit_limit": profile.credit_limit,
             "available": (profile.credit_limit - owed) if profile.credit_limit is not None else None,
         })
+
+
+class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Quotation.objects.prefetch_related("lines")
+    serializer_class = QuotationSerializer
+    action_permission_map = {"accept": "sales.add_salesorder"}
+
+    @action(detail=True, methods=["post"])
+    def mark_sent(self, request, pk=None):
+        quotation = self.get_object()
+        try:
+            quotation.mark_sent()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(quotation).data)
+
+    @action(detail=True, methods=["post"])
+    def decline(self, request, pk=None):
+        quotation = self.get_object()
+        try:
+            quotation.decline()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(quotation).data)
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        """Convert to a confirmed sales order."""
+        quotation = self.get_object()
+        try:
+            order = quotation.accept(
+                order_date=request.data.get("order_date"),
+                ignore_credit_limit=bool(request.data.get("ignore_credit_limit", False)),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(SalesOrderSerializer(order).data)
+
+
+class QuotationLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = QuotationLine.objects.select_related("quotation", "item")
+    serializer_class = QuotationLineSerializer
+
+
+class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = DunningLevel.objects.all()
+    serializer_class = DunningLevelSerializer
+
+    @action(detail=False, methods=["post"])
+    def run(self, request):
+        """
+        Raise the reminders now due. {"send": false} records them without
+        emailing, which is how you preview a run.
+        """
+        notices = run_dunning(
+            as_of=request.data.get("as_of"),
+            send=bool(request.data.get("send", True)),
+        )
+        return Response(DunningNoticeSerializer(notices, many=True).data)
+
+
+class DunningNoticeViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = DunningNotice.objects.select_related("invoice", "level")
+    serializer_class = DunningNoticeSerializer

@@ -6,12 +6,16 @@ from apps.core.audit import AuditableAdminMixin
 from .models import (
     CustomerProfile,
     Delivery,
+    DunningLevel,
+    DunningNotice,
     DeliveryLine,
     Invoice,
     InvoiceLine,
     InvoicePayment,
     PriceList,
     PriceListItem,
+    Quotation,
+    QuotationLine,
     SalesOrder,
     SalesOrderLine,
 )
@@ -91,3 +95,37 @@ class PriceListAdmin(AuditableAdminMixin, admin.ModelAdmin):
 class CustomerProfileAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("party", "price_list", "credit_limit")
     search_fields = ("party__name", "party__code")
+
+
+class QuotationLineInline(admin.TabularInline):
+    model = QuotationLine
+    extra = 1
+    fields = ("item", "uom", "quantity", "unit_price", "discount_percent",
+              "revenue_account", "taxes")
+    filter_horizontal = ("taxes",)
+
+
+@admin.register(Quotation)
+class QuotationAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("number", "customer", "quotation_date", "valid_until", "status",
+                    "total", "sales_order")
+    list_filter = ("status",)
+    search_fields = ("number", "reference", "customer__name")
+    readonly_fields = ("number", "status", "sales_order", "sent_at")
+    inlines = [QuotationLineInline]
+
+
+@admin.register(DunningLevel)
+class DunningLevelAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("name", "days_overdue", "is_active")
+    list_filter = ("is_active",)
+
+
+@admin.register(DunningNotice)
+class DunningNoticeAdmin(admin.ModelAdmin):
+    list_display = ("invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at")
+    list_filter = ("level",)
+    readonly_fields = ("invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at")
+
+    def has_add_permission(self, request):
+        return False

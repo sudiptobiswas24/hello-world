@@ -3,12 +3,16 @@ from rest_framework import serializers
 from .models import (
     CustomerProfile,
     Delivery,
+    DunningLevel,
+    DunningNotice,
     DeliveryLine,
     Invoice,
     InvoiceLine,
     InvoicePayment,
     PriceList,
     PriceListItem,
+    Quotation,
+    QuotationLine,
     SalesOrder,
     SalesOrderLine,
 )
@@ -85,11 +89,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "payment_terms", "billing_address", "shipping_address",
             "credits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
-            "amount_paid", "amount_credited", "amount_due", "settlement_status",
+            "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
         ]
         read_only_fields = [
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
-            "posted", "posted_at",
+            "posted", "posted_at", "sent_at",
         ]
 
 
@@ -138,3 +142,42 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomerProfile
         fields = ["id", "party", "price_list", "credit_limit"]
+
+
+class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    class Meta:
+        model = QuotationLine
+        fields = [
+            "id", "quotation", "item", "uom", "quantity", "unit_price",
+            "discount_percent", "revenue_account", "taxes",
+            "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+        ]
+
+
+class QuotationSerializer(serializers.ModelSerializer):
+    lines = QuotationLineSerializer(many=True, read_only=True)
+    subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Quotation
+        fields = [
+            "id", "number", "customer", "quotation_date", "valid_until", "reference",
+            "status", "currency", "payment_terms", "billing_address", "shipping_address",
+            "sales_order", "sent_at", "lines", "subtotal", "tax_total", "total",
+        ]
+        read_only_fields = ["number", "status", "sales_order", "sent_at"]
+
+
+class DunningLevelSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DunningLevel
+        fields = ["id", "name", "days_overdue", "subject", "body", "is_active"]
+
+
+class DunningNoticeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DunningNotice
+        fields = ["id", "invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at"]
+        read_only_fields = fields

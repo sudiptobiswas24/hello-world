@@ -131,6 +131,25 @@ production / SQLite for local dev by default. Every module builds on the
     balance), `amount_due()` and `settlement_status()` follow from it.
   - **AR aging**: `ar_aging()` buckets outstanding invoices by days
     overdue (current / 1-30 / 31-60 / 61-90 / 90+).
+  - **Quotations**: `Quotation`/`QuotationLine` are a separate document
+    rather than another `SalesOrder` status — a quote expires and can be
+    declined, neither of which an order does, and an order carries
+    fulfilment state a quote has no business having. `accept()` converts
+    to a confirmed order carrying prices, discounts and taxes across, so
+    the quoted price holds even if the price list has moved since.
+  - **Invoice output**: `render_pdf()` (reportlab — pure Python, where
+    WeasyPrint would need cairo/pango) and `email_to_customer()`, which
+    attaches the PDF and records `sent_at`. The recipient is the
+    customer's primary contact, falling back to the party's own address.
+  - **Dunning**: `DunningLevel` defines the chase sequence by days
+    overdue; `run_dunning()` raises the reminders now due. An invoice
+    gets each level at most once and jumps straight to the level it has
+    reached, so a long-ignored debt doesn't also receive the early
+    reminders.
+  - **Reporting**: `revenue_report()` gives net/tax/gross grouped by
+    customer, item or month, reading documents rather than the ledger
+    because the ledger doesn't record which item a line was for. Credit
+    notes count negative.
   Posting builds a balanced `JournalEntry` via Accounting (Dr Accounts
   Receivable / Cr Revenue per line / Cr tax account per tax); Sales
   never writes ledger rows directly. A posted invoice is immutable like
@@ -214,11 +233,10 @@ that to as few accounts as possible.
 
 ## Sales: still to do
 
-- **Quotations** — no quote stage, expiry, or quote-to-order conversion.
-- **Invoice output** — no PDF and no email, so an invoice cannot
-  actually reach the customer.
-- **Dunning** — aging exists, but nothing chases an overdue account.
-- **Sales reporting** — revenue by customer, item or period.
+- **Backorders** — a partial shipment leaves the remainder implicit
+  rather than tracked as its own document.
+- **Commissions** — no link from an order to the rep who sold it.
+- **Recurring/subscription invoicing**.
 
 ## Core: remaining work toward Odoo/ERPNext parity
 
@@ -284,7 +302,13 @@ python manage.py runserver
   `{"amount": "100.00", "tax_ids": [1], "party_id": 5}` — the party's
   fiscal position and exemption are applied.
 - Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines,
-  deliveries, delivery-lines). Ship with
+  deliveries, delivery-lines, quotations, price-lists, customer-profiles,
+  dunning-levels). Quote flow:
+  `POST /quotations/{id}/mark_sent/` then `/accept/` or `/decline/`.
+  Invoice documents: `GET /invoices/{id}/pdf/` and
+  `POST /invoices/{id}/send/`. Reports:
+  `GET /invoices/revenue/?group_by=customer|item|month`. Chase overdue
+  accounts with `POST /dunning-levels/run/` (`{"send": false}` previews). Ship with
   `POST /api/sales/deliveries/{id}/post_delivery/`, take goods back with
   `POST /api/sales/deliveries/{id}/customer_return/`.
   Confirm an order with `POST /api/sales/sales-orders/{id}/confirm/`,

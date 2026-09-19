@@ -3,12 +3,16 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CustomerProfileViewSet,
     DeliveryLineViewSet,
+    DunningLevelViewSet,
+    DunningNoticeViewSet,
     DeliveryViewSet,
     InvoiceLineViewSet,
     InvoicePaymentViewSet,
     InvoiceViewSet,
     PriceListItemViewSet,
     PriceListViewSet,
+    QuotationLineViewSet,
+    QuotationViewSet,
     SalesOrderLineViewSet,
     SalesOrderViewSet,
 )
@@ -24,5 +28,9 @@ router.register("delivery-lines", DeliveryLineViewSet)
 router.register("price-lists", PriceListViewSet)
 router.register("price-list-items", PriceListItemViewSet)
 router.register("customer-profiles", CustomerProfileViewSet)
+router.register("quotations", QuotationViewSet)
+router.register("quotation-lines", QuotationLineViewSet)
+router.register("dunning-levels", DunningLevelViewSet)
+router.register("dunning-notices", DunningNoticeViewSet)
 
 urlpatterns = router.urls
