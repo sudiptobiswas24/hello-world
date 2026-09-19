@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.db.models import Sum
 
@@ -36,6 +38,14 @@ class Item(AuditModel):
         default=True,
         help_text="Services and non-stocked items should be False so they never affect stock levels.",
     )
+    inventory_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Asset account holding this item's stock value. Falls back to the company default.",
+    )
+    cogs_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Expense account charged when this item is sold. Falls back to the company default.",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -51,6 +61,45 @@ class Item(AuditModel):
         """
         total = self.movements.filter(warehouse=warehouse).aggregate(total=Sum("quantity"))["total"]
         return total or 0
+
+    def _replay_valuation(self, warehouse, before_id=None):
+        """
+        Walk the movement ledger in order, maintaining running quantity and
+        value, and return (quantity, value) at that point.
+
+        Weighted average is derived from the ledger rather than stored as a
+        running field, for the same reason on-hand quantity is: a stored
+        average drifts the moment a movement is corrected. The cost is an
+        O(movements) replay, which is fine at this scale and would want a
+        periodic valuation snapshot at much larger volumes.
+        """
+        movements = self.movements.filter(warehouse=warehouse)
+        if before_id is not None:
+            movements = movements.filter(id__lt=before_id)
+
+        quantity = Decimal("0")
+        value = Decimal("0")
+        for movement in movements.order_by("occurred_at", "id"):
+            if movement.quantity > 0:
+                unit_cost = movement.unit_cost or Decimal("0")
+                value += movement.quantity * unit_cost
+                quantity += movement.quantity
+            else:
+                leaving = -movement.quantity
+                average = (value / quantity) if quantity > 0 else Decimal("0")
+                value -= leaving * average
+                quantity -= leaving
+        return quantity, value
+
+    def average_cost_at(self, warehouse, before_id=None):
+        """Weighted average unit cost, optionally as it stood before a movement."""
+        quantity, value = self._replay_valuation(warehouse, before_id)
+        if quantity <= 0:
+            return Decimal("0")
+        return (value / quantity).quantize(Decimal("0.0001"))
+
+    def stock_value_at(self, warehouse):
+        return self._replay_valuation(warehouse)[1].quantize(Decimal("0.01"))
 
 
 class MovementType(models.TextChoices):
@@ -75,6 +124,11 @@ class StockMovement(AuditModel):
         max_digits=18,
         decimal_places=4,
         help_text="Positive for inbound movements (receipt, transfer_in), negative for outbound.",
+    )
+    unit_cost = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="Cost per unit for this movement; set from the purchase price inbound, "
+                  "from the weighted average outbound.",
     )
     reference = models.CharField(max_length=64, blank=True, help_text="e.g. PO number, SO number")
     occurred_at = models.DateTimeField()

@@ -538,6 +538,19 @@ class Company(AuditModel):
     fiscal_year_start_month = models.PositiveSmallIntegerField(
         default=1, choices=[(m, datetime.date(2000, m, 1).strftime("%B")) for m in range(1, 13)]
     )
+    default_inventory_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Asset account for stock value when an item doesn't name its own.",
+    )
+    default_cogs_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Cost of goods sold account when an item doesn't name its own.",
+    )
+    grni_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Goods received not invoiced: the accrual between receiving stock and "
+                  "being billed for it.",
+    )
 
     class Meta:
         verbose_name_plural = "company"

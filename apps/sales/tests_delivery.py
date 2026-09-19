@@ -7,7 +7,9 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 
+from apps.accounting.models import Account, AccountType
 from apps.core.models import (
+    Company,
     Currency,
     Party,
     PartyRole,
@@ -29,12 +31,29 @@ class DeliveryTestCase(TestCase):
         self.customer = Party.objects.create(code="C-1", name="Acme", default_currency=self.usd)
         PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
 
-    def stock_up(self, quantity="100", item=None, warehouse=None):
+        self.inventory = Account.objects.create(
+            code="1200", name="Inventory", account_type=AccountType.ASSET
+        )
+        self.cogs = Account.objects.create(
+            code="5000", name="Cost of Sales", account_type=AccountType.EXPENSE
+        )
+        self.grni = Account.objects.create(
+            code="2150", name="GRNI", account_type=AccountType.LIABILITY
+        )
+        Company.objects.create(
+            name="Test Co",
+            default_inventory_account=self.inventory,
+            default_cogs_account=self.cogs,
+            grni_account=self.grni,
+        )
+
+    def stock_up(self, quantity="100", item=None, warehouse=None, unit_cost="6"):
         StockMovement.objects.create(
             item=item or self.item,
             warehouse=warehouse or self.warehouse,
             movement_type=MovementType.RECEIPT,
             quantity=Decimal(quantity),
+            unit_cost=Decimal(unit_cost),
             occurred_at=timezone.now(),
         )
 

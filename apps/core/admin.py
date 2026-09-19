@@ -115,7 +115,8 @@ class DocumentSequenceAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 @admin.register(Company)
 class CompanyAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("name", "legal_name", "base_currency", "fiscal_year_start_month")
+    list_display = ("name", "legal_name", "base_currency", "fiscal_year_start_month",
+                    "default_inventory_account", "default_cogs_account", "grni_account")
 
     def has_add_permission(self, request):
         # Singleton: the profile is created on first access, never added twice.

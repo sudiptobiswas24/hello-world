@@ -28,10 +28,20 @@ production / SQLite for local dev by default. Every module builds on the
   - `Company` — singleton profile: identity, base currency, fiscal
     year start (with `fiscal_year_bounds()`).
   - `UnitOfMeasure` — with base-unit conversion factors.
-- **`apps/inventory`** — first business module. `Warehouse`, `Item`,
-  `StockMovement`. On-hand quantity is always derived by summing the
-  movement ledger (`Item.on_hand_at`), never stored as a separate counter,
-  so it can't drift out of sync with reality.
+- **`apps/inventory`** — `Warehouse`, `Item`, `StockMovement`. On-hand
+  quantity is always derived by summing the movement ledger
+  (`Item.on_hand_at`), never stored as a separate counter, so it can't
+  drift out of sync with reality.
+  **Valuation** is weighted average, derived the same way: each movement
+  carries a `unit_cost`, and `average_cost_at()` / `stock_value_at()`
+  replay the ledger rather than maintaining a running average field that
+  would drift when a movement is corrected. FIFO was the alternative;
+  it needs a separate mutable cost-layer table, which is exactly the
+  parallel state this design avoids. The tradeoff to know: weighted
+  average smooths margin when purchase prices swing, and moving to FIFO
+  later is a migration, not a setting.
+  `valuation.post_inventory_entry()` turns stock movements into ledger
+  entries (see the perpetual flow under Accounting).
 - **`apps/accounting`** — also home to **tax configuration**, which
   lives here rather than in Core because a tax is meaningless without
   the GL accounts it posts to (Odoo puts `account.tax` in its
@@ -59,9 +69,23 @@ production / SQLite for local dev by default. Every module builds on the
   once posted, the entry and its lines are immutable — corrections are
   made by posting a reversing entry (`JournalEntry.create_reversal()`),
   never by editing history. `JournalLine` deliberately has no
-  quantity/unit fields — inventory valuation will integrate via a
-  service that creates journal entries from `StockMovement`, not via
-  schema coupling between the two modules.
+  quantity/unit fields — inventory valuation integrates via
+  `inventory.valuation`, a service that creates journal entries from
+  stock movements, not via schema coupling between the two modules.
+
+  **Perpetual inventory.** Stock is an asset on the books, not an
+  expense at purchase time:
+
+      receive goods   Dr Inventory       Cr GRNI
+      vendor bill     Dr GRNI            Cr Accounts Payable
+      ship goods      Dr Cost of Sales   Cr Inventory
+
+  The GRNI (goods received not invoiced) accrual in the middle is what
+  stops a bill expensing goods that will be expensed again when sold.
+  Accounts come from the `Item`, falling back to the `Company`
+  defaults; a stocked item with neither configured refuses to post
+  rather than quietly skipping the cost. Service lines expense directly
+  and never touch stock.
 
 - **`apps/sales`** — `SalesOrder`/`SalesOrderLine`, `Invoice`/`InvoiceLine`.
   Customers are `Party` records with the `CUSTOMER` role (no separate

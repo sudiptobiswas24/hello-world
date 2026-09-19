@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from apps.accounting.models import Account, AccountType
-from apps.core.models import Party, PartyRole, PartyRoleAssignment, UnitOfMeasure
+from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment, UnitOfMeasure
 from apps.inventory.models import Item, Warehouse
 
 from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
@@ -24,6 +24,18 @@ class PurchasingTestCase(TestCase):
         )
         self.expense = Account.objects.create(
             code="5000", name="Cost of Goods Sold", account_type=AccountType.EXPENSE
+        )
+        self.inventory = Account.objects.create(
+            code="1200", name="Inventory", account_type=AccountType.ASSET
+        )
+        self.grni = Account.objects.create(
+            code="2150", name="Goods Received Not Invoiced", account_type=AccountType.LIABILITY
+        )
+        Company.objects.create(
+            name="Test Co",
+            default_inventory_account=self.inventory,
+            default_cogs_account=self.expense,
+            grni_account=self.grni,
         )
 
     def make_po_line(self, quantity=Decimal("10")):
@@ -85,9 +97,11 @@ class BillPostingTests(PurchasingTestCase):
         self.assertEqual(entry.total_credit(), Decimal("80"))
 
         payable_line = entry.lines.get(account=self.payable)
-        expense_line = entry.lines.get(account=self.expense)
+        # A stocked item was already capitalised into Inventory on receipt,
+        # so the bill clears the GRNI accrual rather than expensing again.
+        grni_line = entry.lines.get(account=self.grni)
         self.assertEqual(payable_line.credit, Decimal("80"))
-        self.assertEqual(expense_line.debit, Decimal("80"))
+        self.assertEqual(grni_line.debit, Decimal("80"))
 
     def test_cannot_post_bill_with_no_lines(self):
         bill = Bill.objects.create(
@@ -138,9 +152,9 @@ class DebitNoteTests(PurchasingTestCase):
         self.assertEqual(debit_note.journal_entry.reverses, bill.journal_entry)
 
         dn_payable_line = debit_note.journal_entry.lines.get(account=self.payable)
-        dn_expense_line = debit_note.journal_entry.lines.get(account=self.expense)
+        dn_grni_line = debit_note.journal_entry.lines.get(account=self.grni)
         self.assertEqual(dn_payable_line.debit, Decimal("80"))
-        self.assertEqual(dn_expense_line.credit, Decimal("80"))
+        self.assertEqual(dn_grni_line.credit, Decimal("80"))
 
     def test_original_bill_is_untouched_by_debit_note(self):
         bill = self.make_bill(Decimal("2"), Decimal("40"))
@@ -383,3 +397,30 @@ class NonStockedReceiptTests(PurchasingTestCase):
         )
         receipt.post()
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("4"))
+
+
+class BillPostingAccountTests(PurchasingTestCase):
+    def test_a_service_line_expenses_directly(self):
+        service = Item.objects.create(
+            sku="SVC-1", name="Consulting", uom=self.uom,
+            item_type="service", track_inventory=False,
+        )
+        bill = Bill.objects.create(
+            vendor=self.vendor, bill_date="2026-01-01", payable_account=self.payable
+        )
+        BillLine.objects.create(
+            bill=bill, item=service, description="Consulting",
+            quantity=Decimal("1"), unit_price=Decimal("500"), expense_account=self.expense,
+        )
+        bill.post()
+
+        entry = bill.journal_entry
+        self.assertEqual(entry.lines.get(account=self.expense).debit, Decimal("500"))
+        self.assertFalse(entry.lines.filter(account=self.grni).exists())
+
+    def test_a_stocked_line_clears_the_accrual(self):
+        bill = self.make_bill(Decimal("2"), Decimal("40"))
+        bill.post()
+        entry = bill.journal_entry
+        self.assertEqual(entry.lines.get(account=self.grni).debit, Decimal("80"))
+        self.assertFalse(entry.lines.filter(account=self.expense).exists())

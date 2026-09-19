@@ -28,6 +28,7 @@ from apps.core.models import (
     to_date,
 )
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.valuation import post_inventory_entry
 
 
 def _require_customer_role(party):
@@ -805,17 +806,27 @@ class Delivery(AuditModel):
                 prefix="DO-" if not is_return else "RET-",
             )
 
+        valued = []
         for line in lines:
             # Services and non-stocked items must never touch stock levels.
-            if not line.order_line.item.track_inventory:
+            item = line.order_line.item
+            if not item.track_inventory:
                 continue
             movement_type = MovementType.RECEIPT if is_return else MovementType.ISSUE
             quantity = line.quantity_shipped if is_return else -line.quantity_shipped
+            # A return reverses at the cost the original shipment used, so the
+            # two entries cancel exactly instead of drifting with the average.
+            unit_cost = line.unit_cost
+            if unit_cost is None:
+                unit_cost = item.average_cost_at(line.warehouse)
+                line.unit_cost = unit_cost
+                super(DeliveryLine, line).save(update_fields=["unit_cost", "updated_at"])
             StockMovement.objects.create(
-                item=line.order_line.item,
+                item=item,
                 warehouse=line.warehouse,
                 movement_type=movement_type,
                 quantity=quantity,
+                unit_cost=unit_cost,
                 reference=self.number,
                 occurred_at=timezone.now(),
                 notes=(
@@ -823,6 +834,19 @@ class Delivery(AuditModel):
                     f"{self.sales_order} ({self.number})"
                 ),
             )
+            valued.append((item, line.quantity_shipped * unit_cost))
+
+        post_inventory_entry(
+            valued,
+            date=self.delivery_date,
+            reference=self.number,
+            memo=(
+                f"{'Customer return for' if is_return else 'Cost of goods sold for'} "
+                f"{self.sales_order} ({self.number})"
+            ),
+            direction="out",
+            reverse=is_return,
+        )
 
         self.posted = True
         self.posted_at = timezone.now()
@@ -852,6 +876,7 @@ class Delivery(AuditModel):
                 order_line=line.order_line,
                 warehouse=line.warehouse,
                 quantity_shipped=line.quantity_shipped,
+                unit_cost=line.unit_cost,
             )
         customer_return.post()
         return customer_return
@@ -864,6 +889,10 @@ class DeliveryLine(AuditModel):
     )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
     quantity_shipped = models.DecimalField(max_digits=18, decimal_places=4)
+    unit_cost = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="Weighted average cost at the moment of shipping, frozen so a return reverses exactly.",
+    )
 
     class Meta:
         constraints = [

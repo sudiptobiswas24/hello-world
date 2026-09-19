@@ -7,6 +7,7 @@ from django.utils import timezone
 from apps.accounting.models import Account, JournalEntry, JournalLine
 from apps.core.models import AuditModel, Currency, Party, PartyRole, UnitOfMeasure
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.valuation import post_inventory_entry
 
 
 def _require_vendor_role(party):
@@ -149,7 +150,7 @@ class Bill(AuditModel):
         for line in lines:
             JournalLine.objects.create(
                 entry=entry,
-                account=line.expense_account,
+                account=line.posting_account(),
                 party=self.vendor,
                 debit=line.subtotal(),
                 description=line.description or str(line.item),
@@ -217,6 +218,20 @@ class BillLine(AuditModel):
 
     def subtotal(self):
         return self.quantity * self.unit_price
+
+    def posting_account(self):
+        """
+        Stocked goods were already capitalised into Inventory when they were
+        received, so the bill clears that accrual rather than expensing the
+        cost a second time. Services and non-stocked lines expense directly.
+        """
+        if self.item_id and self.item.track_inventory:
+            from apps.core.models import Company
+
+            grni = Company.get().grni_account
+            if grni is not None:
+                return grni
+        return self.expense_account
 
     def save(self, *args, **kwargs):
         if self.bill_id and Bill.objects.filter(pk=self.bill_id, posted=True).exists():
@@ -303,17 +318,20 @@ class GoodsReceipt(AuditModel):
                         f"{already_received} already received)."
                     )
 
+        valued = []
         for line in lines:
             # Services and non-stocked items must never touch stock levels.
             if not line.order_line.item.track_inventory:
                 continue
             movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
             quantity = -line.quantity_received if is_return else line.quantity_received
+            unit_cost = line.order_line.unit_price
             StockMovement.objects.create(
                 item=line.order_line.item,
                 warehouse=line.warehouse,
                 movement_type=movement_type,
                 quantity=quantity,
+                unit_cost=unit_cost,
                 reference=self.reference or f"GR-{self.pk}",
                 occurred_at=timezone.now(),
                 notes=(
@@ -321,6 +339,16 @@ class GoodsReceipt(AuditModel):
                     f"{self.purchase_order} (GR-{self.pk})"
                 ),
             )
+            valued.append((line.order_line.item, line.quantity_received * unit_cost))
+
+        post_inventory_entry(
+            valued,
+            date=self.receipt_date,
+            reference=self.reference or f"GR-{self.pk}",
+            memo=f"{'Return to vendor for' if is_return else 'Goods received for'} {self.purchase_order}",
+            direction="in",
+            reverse=is_return,
+        )
 
         self.posted = True
         self.posted_at = timezone.now()
