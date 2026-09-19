@@ -14,6 +14,7 @@ from apps.core.audit import AuditableViewSetMixin
 from django.http import HttpResponse
 
 from .models import (
+    CommissionPlan,
     CustomerProfile,
     Delivery,
     DunningLevel,
@@ -26,14 +27,20 @@ from .models import (
     PriceListItem,
     Quotation,
     QuotationLine,
+    RecurringInvoice,
+    RecurringInvoiceLine,
     SalesOrder,
     SalesOrderLine,
+    SalesRep,
     ar_aging,
+    commission_report,
+    generate_due_invoices,
     outstanding_balance,
     revenue_report,
     run_dunning,
 )
 from .serializers import (
+    CommissionPlanSerializer,
     CustomerProfileSerializer,
     DeliveryLineSerializer,
     DunningLevelSerializer,
@@ -46,8 +53,11 @@ from .serializers import (
     PriceListSerializer,
     QuotationLineSerializer,
     QuotationSerializer,
+    RecurringInvoiceLineSerializer,
+    RecurringInvoiceSerializer,
     SalesOrderLineSerializer,
     SalesOrderSerializer,
+    SalesRepSerializer,
 )
 
 
@@ -236,6 +246,18 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(delivery).data)
 
     @action(detail=True, methods=["post"])
+    def backorder(self, request, pk=None):
+        """Raise a draft delivery for whatever this shipment left behind."""
+        delivery = self.get_object()
+        try:
+            created = delivery.create_backorder(
+                delivery_date=request.data.get("delivery_date")
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(created).data)
+
+    @action(detail=True, methods=["post"])
     def customer_return(self, request, pk=None):
         """
         Take goods back. Credits the invoices that billed them unless
@@ -325,6 +347,19 @@ class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(quotation).data)
 
     @action(detail=True, methods=["post"])
+    def revise(self, request, pk=None):
+        """Supersede this quote with an editable revision."""
+        quotation = self.get_object()
+        try:
+            revision = quotation.create_revision(
+                quotation_date=request.data.get("quotation_date"),
+                valid_until=request.data.get("valid_until"),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(revision).data)
+
+    @action(detail=True, methods=["post"])
     def decline(self, request, pk=None):
         quotation = self.get_object()
         try:
@@ -372,3 +407,50 @@ class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class DunningNoticeViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = DunningNotice.objects.select_related("invoice", "level")
     serializer_class = DunningNoticeSerializer
+
+
+class CommissionPlanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = CommissionPlan.objects.all()
+    serializer_class = CommissionPlanSerializer
+
+    @action(detail=False, methods=["get"])
+    def report(self, request):
+        """Commission earned per rep over ?from= / ?to=."""
+        return Response(
+            commission_report(
+                date_from=request.query_params.get("from"),
+                date_to=request.query_params.get("to"),
+            )
+        )
+
+
+class SalesRepViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = SalesRep.objects.select_related("party", "plan")
+    serializer_class = SalesRepSerializer
+
+
+class RecurringInvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = RecurringInvoice.objects.prefetch_related("lines")
+    serializer_class = RecurringInvoiceSerializer
+    action_permission_map = {"run": "sales.add_invoice"}
+
+    @action(detail=True, methods=["post"])
+    def generate(self, request, pk=None):
+        """Issue the next invoice in this series."""
+        schedule = self.get_object()
+        try:
+            invoice = schedule.generate_one(on_date=request.data.get("on_date"))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(InvoiceSerializer(invoice).data)
+
+    @action(detail=False, methods=["post"])
+    def run(self, request):
+        """Issue every invoice now due across all active schedules."""
+        issued = generate_due_invoices(as_of=request.data.get("as_of"))
+        return Response(InvoiceSerializer(issued, many=True).data)
+
+
+class RecurringInvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = RecurringInvoiceLine.objects.select_related("schedule", "item")
+    serializer_class = RecurringInvoiceLineSerializer

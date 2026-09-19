@@ -1,3 +1,5 @@
+import calendar
+import datetime
 from collections import defaultdict
 from decimal import Decimal
 
@@ -243,6 +245,10 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
     shipping_address = models.ForeignKey(
         Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
+        help_text="The employee credited with this sale.",
+    )
 
     class Meta:
         ordering = ["-order_date", "-id"]
@@ -362,6 +368,7 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
             payment_terms=self.payment_terms,
             billing_address=self.billing_address,
             shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
         )
         for line, remaining in outstanding:
             invoice_line = InvoiceLine.objects.create(
@@ -502,6 +509,10 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     )
     shipping_address = models.ForeignKey(
         Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
+        help_text="The employee credited with this sale.",
     )
     credits = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_notes",
@@ -818,6 +829,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             payment_terms=self.payment_terms,
             billing_address=self.billing_address,
             shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
             credits=self,
         )
         for line, quantity in selected:
@@ -1056,6 +1068,10 @@ class Delivery(AuditModel):
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by",
         help_text="Set when this is a customer return of an earlier delivery.",
     )
+    backorder_of = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="backorders",
+        help_text="Set when this delivery carries what an earlier shipment left behind.",
+    )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
 
@@ -1221,6 +1237,49 @@ class Delivery(AuditModel):
             )
             for invoice, quantities in allocations.items()
         ]
+
+    def shortfall(self):
+        """
+        What this delivery's order lines still owe the customer, as
+        {order_line: quantity}. A partial shipment leaves a remainder that
+        should be a document someone can see and plan against, not an
+        implicit gap between two numbers.
+        """
+        outstanding = {}
+        for line in self.lines.all():
+            remaining = line.order_line.quantity - line.order_line.quantity_shipped()
+            if remaining > 0:
+                outstanding[line.order_line] = remaining
+        return outstanding
+
+    @transaction.atomic
+    def create_backorder(self, delivery_date=None):
+        """Raise a draft delivery for whatever this shipment left behind."""
+        if not self.posted:
+            raise ValidationError("Only a posted delivery can leave a backorder.")
+        if self.is_return():
+            raise ValidationError("A return does not leave a backorder.")
+        if self.backorders.exists():
+            raise ValidationError("This delivery already has a backorder.")
+
+        outstanding = self.shortfall()
+        if not outstanding:
+            raise ValidationError("This delivery was complete; there is nothing on backorder.")
+
+        backorder = Delivery.objects.create(
+            sales_order=self.sales_order,
+            delivery_date=delivery_date or timezone.now().date(),
+            reference=self.reference,
+            shipping_address=self.shipping_address,
+            backorder_of=self,
+        )
+        for order_line, remaining in outstanding.items():
+            DeliveryLine.objects.create(
+                delivery=backorder, order_line=order_line,
+                warehouse=self.lines.filter(order_line=order_line).first().warehouse,
+                quantity_shipped=remaining,
+            )
+        return backorder
 
     @transaction.atomic
     def create_return(self, credit_invoices=True):
@@ -1469,6 +1528,7 @@ class QuotationStatus(models.TextChoices):
     ACCEPTED = "accepted", "Accepted"
     DECLINED = "declined", "Declined"
     EXPIRED = "expired", "Expired"
+    SUPERSEDED = "superseded", "Superseded by a revision"
 
 
 class Quotation(TaxedDocumentMixin, AuditModel):
@@ -1506,6 +1566,16 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         related_name="quotations", editable=False,
         help_text="The order this quote became, once accepted.",
     )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
+        help_text="The employee credited with this sale.",
+    )
+    revision = models.PositiveSmallIntegerField(default=1, editable=False)
+    revision_of = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="revisions", editable=False,
+        help_text="The quotation this one revises.",
+    )
     sent_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
@@ -1524,11 +1594,19 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         if self.valid_until and self.valid_until < to_date(self.quotation_date):
             raise ValidationError("valid_until cannot be before the quotation date.")
 
+    # Once a quote has left the building it is a record of what the customer
+    # was told; changing it means issuing a revision, not editing history.
+    SETTLED_STATUSES = (
+        QuotationStatus.SENT,
+        QuotationStatus.ACCEPTED,
+        QuotationStatus.SUPERSEDED,
+    )
+
     def _is_settled_in_db(self):
         if not self.pk:
             return False
         return Quotation.objects.filter(
-            pk=self.pk, status=QuotationStatus.ACCEPTED
+            pk=self.pk, status__in=self.SETTLED_STATUSES
         ).exists()
 
     # The only fields the accept()/send paths themselves write afterwards.
@@ -1539,8 +1617,8 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         internal_only = bool(updating) and updating <= self.INTERNAL_FIELDS
         if self._is_settled_in_db() and not internal_only:
             raise ValidationError(
-                "This quotation has been accepted and now records what was agreed; "
-                "it can no longer be changed."
+                "This quotation has already gone to the customer and records what they "
+                "were told. Use create_revision() to change it."
             )
         if self._state.adding and self.customer_id:
             customer = self.customer
@@ -1597,11 +1675,61 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             return False
         return (to_date(as_of) or timezone.now().date()) > self.valid_until
 
+    def base_number(self):
+        """The number without its revision suffix."""
+        return self.number.split("-R")[0] if self.number else ""
+
     def _assign_number(self):
-        if not self.number:
+        if self.number:
+            return
+        if self.revision_of_id:
+            # A revision keeps the original's number and adds its revision.
+            self.number = f"{self.revision_of.base_number()}-R{self.revision}"
+        else:
             self.number = DocumentSequence.next_for(
                 "sales.quotation", self.quotation_date, name="Quotations", prefix="QT-"
             )
+
+    @transaction.atomic
+    def create_revision(self, quotation_date=None, valid_until=None):
+        """
+        Supersede this quote with a fresh, editable copy. Resending with
+        different terms has to leave a trail: the customer was told one
+        thing and is now being told another, and both need to be on record.
+        """
+        if self.status == QuotationStatus.ACCEPTED:
+            raise ValidationError("An accepted quotation cannot be revised; it became an order.")
+        if self.status == QuotationStatus.SUPERSEDED:
+            raise ValidationError(
+                f"This quotation was already superseded by {self.revisions.first()}."
+            )
+        self._assign_number()
+
+        revision = Quotation.objects.create(
+            customer=self.customer,
+            quotation_date=quotation_date or timezone.now().date(),
+            valid_until=valid_until if valid_until is not None else self.valid_until,
+            reference=self.reference,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+            revision=self.revision + 1,
+            revision_of=self,
+        )
+        for line in self.lines.all():
+            revision_line = QuotationLine.objects.create(
+                quotation=revision, item=line.item, uom=line.uom,
+                quantity=line.quantity, unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
+                revenue_account=line.revenue_account,
+            )
+            revision_line.taxes.set(line.taxes.all())
+
+        self.status = QuotationStatus.SUPERSEDED
+        super(Quotation, self).save(update_fields=["number", "status", "updated_at"])
+        return revision
 
     @transaction.atomic
     def mark_sent(self):
@@ -1630,6 +1758,10 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             raise ValidationError("This quotation has already been accepted.")
         if self.status == QuotationStatus.DECLINED:
             raise ValidationError("A declined quotation cannot be accepted.")
+        if self.status == QuotationStatus.SUPERSEDED:
+            raise ValidationError(
+                "This quotation was superseded by a revision; accept that one instead."
+            )
         if not self.lines.exists():
             raise ValidationError("Cannot accept a quotation with no lines.")
         # Recording the expiry has to happen outside the transaction below:
@@ -1653,6 +1785,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             payment_terms=self.payment_terms,
             billing_address=self.billing_address,
             shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
         )
         for line in self.lines.all():
             order_line = SalesOrderLine.objects.create(
@@ -1691,22 +1824,22 @@ class QuotationLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.item} x{self.quantity}"
 
-    def _quotation_is_accepted(self):
+    def _quotation_is_settled(self):
         return self.quotation_id and Quotation.objects.filter(
-            pk=self.quotation_id, status=QuotationStatus.ACCEPTED
+            pk=self.quotation_id, status__in=Quotation.SETTLED_STATUSES
         ).exists()
 
     def delete(self, *args, **kwargs):
-        if self._quotation_is_accepted():
+        if self._quotation_is_settled():
             raise ValidationError(
-                "This quotation has been accepted; its lines record what was agreed."
+                "This quotation has gone to the customer; revise it instead of editing it."
             )
         super().delete(*args, **kwargs)
 
     def save(self, *args, **kwargs):
-        if self._quotation_is_accepted():
+        if self._quotation_is_settled():
             raise ValidationError(
-                "This quotation has been accepted; its lines record what was agreed."
+                "This quotation has gone to the customer; revise it instead of editing it."
             )
         if self.unit_price is None:
             self.unit_price = resolve_price(
@@ -1722,3 +1855,283 @@ class QuotationLine(TaxedLineMixin, AuditModel):
                     "price list, or give the line an explicit unit price."
                 )
         super().save(*args, **kwargs)
+
+
+def _require_employee_role(party):
+    if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
+        raise ValidationError(f"{party} does not have the Employee role.")
+
+
+class CommissionBasis(models.TextChoices):
+    INVOICED = "invoiced", "What was invoiced"
+    PAID = "paid", "What was collected"
+
+
+class CommissionPlan(AuditModel):
+    """
+    How a rep is paid. Basis matters: paying on invoiced revenue rewards
+    booking a sale, paying on collected cash rewards it actually being
+    paid for — a real difference when customers are slow.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    percent = models.DecimalField(
+        max_digits=5, decimal_places=2, help_text="Commission rate, e.g. 2.50 for 2.5%."
+    )
+    basis = models.CharField(
+        max_length=16, choices=CommissionBasis.choices, default=CommissionBasis.INVOICED
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        constraints = [
+            models.CheckConstraint(check=Q(percent__gte=0), name="commission_percent_not_negative")
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.percent}% of {self.get_basis_display().lower()})"
+
+    def commission_on(self, amount):
+        return round_money(amount * self.percent / Decimal("100"))
+
+
+class SalesRep(AuditModel):
+    """A Party with the EMPLOYEE role who carries a commission plan."""
+
+    party = models.OneToOneField(Party, on_delete=models.CASCADE, related_name="sales_rep_profile")
+    plan = models.ForeignKey(
+        CommissionPlan, null=True, blank=True, on_delete=models.PROTECT, related_name="reps"
+    )
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"Sales rep {self.party}"
+
+    def clean(self):
+        _require_employee_role(self.party)
+
+
+def commission_report(date_from=None, date_to=None):
+    """
+    Commission earned per rep over a period.
+
+    Each rep is measured on their own plan's basis: invoiced reps on the
+    net value of what they billed, collected reps on money actually
+    received against those invoices. Credit notes reduce both.
+    """
+    date_from = to_date(date_from)
+    date_to = to_date(date_to)
+
+    rows = []
+    for rep in SalesRep.objects.filter(is_active=True).select_related("party", "plan"):
+        if rep.plan is None or not rep.plan.is_active:
+            continue
+
+        invoices = Invoice.objects.filter(
+            posted=True, sales_rep=rep.party
+        ).prefetch_related("lines__taxes", "payment_allocations__payment")
+
+        basis_amount = Decimal("0")
+        if rep.plan.basis == CommissionBasis.INVOICED:
+            scoped = invoices
+            if date_from:
+                scoped = scoped.filter(invoice_date__gte=date_from)
+            if date_to:
+                scoped = scoped.filter(invoice_date__lte=date_to)
+            for invoice in scoped:
+                sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
+                basis_amount += sign * invoice.subtotal()
+        else:
+            for invoice in invoices.filter(credits__isnull=True):
+                for allocation in invoice.payment_allocations.all():
+                    paid_on = allocation.payment.payment_date
+                    if date_from and paid_on < date_from:
+                        continue
+                    if date_to and paid_on > date_to:
+                        continue
+                    basis_amount += allocation.amount
+
+        if not basis_amount:
+            continue
+        rows.append({
+            "rep": str(rep.party),
+            "plan": rep.plan.code,
+            "basis": rep.plan.basis,
+            "basis_amount": round_money(basis_amount),
+            "percent": rep.plan.percent,
+            "commission": rep.plan.commission_on(basis_amount),
+        })
+    return sorted(rows, key=lambda row: -row["commission"])
+
+
+class RecurrenceInterval(models.TextChoices):
+    WEEKLY = "weekly", "Weekly"
+    MONTHLY = "monthly", "Monthly"
+    QUARTERLY = "quarterly", "Quarterly"
+    YEARLY = "yearly", "Yearly"
+
+
+def add_interval(start, interval, count=1, anchor_day=None):
+    """
+    Advance a date by `count` intervals.
+
+    `anchor_day` is the day the series is really anchored to. Without it a
+    schedule starting on the 31st clamps to the 28th in February and then
+    stays there — the billing date silently walks backwards. Anchoring
+    means Jan 31 -> Feb 28 -> Mar 31.
+    """
+    if interval == RecurrenceInterval.WEEKLY:
+        return start + datetime.timedelta(weeks=count)
+    months = {
+        RecurrenceInterval.MONTHLY: 1,
+        RecurrenceInterval.QUARTERLY: 3,
+        RecurrenceInterval.YEARLY: 12,
+    }[interval] * count
+    month_index = start.month - 1 + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(anchor_day or start.day, calendar.monthrange(year, month)[1])
+    return datetime.date(year, month, day)
+
+
+class RecurringInvoice(AuditModel):
+    """
+    A template that issues the same invoice on a schedule — a retainer, a
+    subscription, a maintenance contract. Generation is driven by
+    next_run_date rather than by recomputing from the start each time, so
+    a run that is late catches up one invoice at a time instead of
+    silently skipping periods.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="recurring_invoices")
+    receivable_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="recurring_sales"
+    )
+    interval = models.CharField(
+        max_length=16, choices=RecurrenceInterval.choices, default=RecurrenceInterval.MONTHLY
+    )
+    interval_count = models.PositiveSmallIntegerField(
+        default=1, help_text="Every N intervals, e.g. 2 monthly = every other month."
+    )
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True, help_text="Blank runs indefinitely.")
+    next_run_date = models.DateField(null=True, blank=True)
+    auto_post = models.BooleanField(
+        default=False, help_text="Post generated invoices immediately instead of leaving drafts."
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        constraints = [
+            models.CheckConstraint(check=Q(interval_count__gt=0), name="interval_count_positive")
+        ]
+
+    def __str__(self):
+        return f"{self.code} ({self.customer})"
+
+    def clean(self):
+        _require_customer_role(self.customer)
+        if self.end_date and self.end_date < to_date(self.start_date):
+            raise ValidationError("end_date cannot be before start_date.")
+
+    def save(self, *args, **kwargs):
+        if self.next_run_date is None:
+            self.next_run_date = to_date(self.start_date)
+        if self._state.adding and self.customer_id:
+            self.currency = self.currency or self.customer.default_currency
+            self.payment_terms = self.payment_terms or self.customer.payment_terms
+        super().save(*args, **kwargs)
+
+    def has_finished(self):
+        return bool(self.end_date and self.next_run_date and self.next_run_date > self.end_date)
+
+    @transaction.atomic
+    def generate_one(self, on_date=None):
+        """Issue the next invoice in the series and advance the schedule."""
+        if not self.is_active:
+            raise ValidationError("This schedule is not active.")
+        if not self.lines.exists():
+            raise ValidationError("This schedule has no lines to invoice.")
+        if self.has_finished():
+            raise ValidationError("This schedule has reached its end date.")
+
+        invoice_date = to_date(on_date) or self.next_run_date
+        invoice = Invoice.objects.create(
+            customer=self.customer, invoice_date=invoice_date,
+            receivable_account=self.receivable_account, currency=self.currency,
+            payment_terms=self.payment_terms, sales_rep=self.sales_rep,
+            reference=self.code,
+        )
+        for line in self.lines.all():
+            invoice_line = InvoiceLine.objects.create(
+                invoice=invoice, item=line.item, description=line.description,
+                quantity=line.quantity, unit_price=line.unit_price,
+                discount_percent=line.discount_percent, revenue_account=line.revenue_account,
+            )
+            invoice_line.taxes.set(line.taxes.all())
+
+        if self.auto_post:
+            invoice.post()
+
+        self.next_run_date = add_interval(
+            self.next_run_date, self.interval, self.interval_count,
+            anchor_day=to_date(self.start_date).day,
+        )
+        self.save(update_fields=["next_run_date", "updated_at"])
+        return invoice
+
+
+class RecurringInvoiceLine(TaxedLineMixin, AuditModel):
+    schedule = models.ForeignKey(
+        RecurringInvoice, related_name="lines", on_delete=models.CASCADE
+    )
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="recurring_lines"
+    )
+    description = models.CharField(max_length=255, blank=True)
+    revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="recurring_lines")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="recurring_quantity_positive"),
+        ]
+
+    def customer_for_tax(self):
+        return self.schedule.customer
+
+    def __str__(self):
+        return f"{self.item or self.description} x{self.quantity}"
+
+
+def generate_due_invoices(as_of=None):
+    """
+    Issue every invoice now due across all active schedules.
+
+    A schedule that is several periods behind catches up one invoice per
+    period rather than issuing a single lump: each period genuinely
+    happened and should be billed separately.
+    """
+    as_of = to_date(as_of) or timezone.now().date()
+    issued = []
+    for schedule in RecurringInvoice.objects.filter(is_active=True).prefetch_related("lines"):
+        if not schedule.lines.exists():
+            continue
+        while (
+            schedule.next_run_date
+            and schedule.next_run_date <= as_of
+            and not schedule.has_finished()
+        ):
+            issued.append(schedule.generate_one())
+    return issued

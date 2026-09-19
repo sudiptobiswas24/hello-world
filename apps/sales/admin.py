@@ -4,6 +4,7 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    CommissionPlan,
     CustomerProfile,
     Delivery,
     DunningLevel,
@@ -16,8 +17,11 @@ from .models import (
     PriceListItem,
     Quotation,
     QuotationLine,
+    RecurringInvoice,
+    RecurringInvoiceLine,
     SalesOrder,
     SalesOrderLine,
+    SalesRep,
 )
 
 
@@ -71,10 +75,11 @@ class DeliveryLineInline(PostedImmutableInlineMixin, admin.TabularInline):
 
 @admin.register(Delivery)
 class DeliveryAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("number", "sales_order", "delivery_date", "posted", "reverses")
+    list_display = ("number", "sales_order", "delivery_date", "posted", "reverses",
+                    "backorder_of")
     list_filter = ("posted",)
     search_fields = ("number", "reference")
-    readonly_fields = ("number", "posted", "posted_at", "reverses")
+    readonly_fields = ("number", "posted", "posted_at", "reverses", "backorder_of")
     inlines = [DeliveryLineInline]
 
 
@@ -108,10 +113,10 @@ class QuotationLineInline(admin.TabularInline):
 @admin.register(Quotation)
 class QuotationAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "customer", "quotation_date", "valid_until", "status",
-                    "total", "sales_order")
+                    "revision", "total", "sales_order")
     list_filter = ("status",)
     search_fields = ("number", "reference", "customer__name")
-    readonly_fields = ("number", "status", "sales_order", "sent_at")
+    readonly_fields = ("number", "status", "sales_order", "sent_at", "revision", "revision_of")
     inlines = [QuotationLineInline]
 
 
@@ -129,3 +134,33 @@ class DunningNoticeAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(CommissionPlan)
+class CommissionPlanAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "percent", "basis", "is_active")
+    list_filter = ("basis", "is_active")
+
+
+@admin.register(SalesRep)
+class SalesRepAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("party", "plan", "is_active")
+    list_filter = ("is_active", "plan")
+    search_fields = ("party__name", "party__code")
+
+
+class RecurringInvoiceLineInline(admin.TabularInline):
+    model = RecurringInvoiceLine
+    extra = 1
+    fields = ("item", "description", "quantity", "unit_price", "discount_percent",
+              "revenue_account", "taxes")
+    filter_horizontal = ("taxes",)
+
+
+@admin.register(RecurringInvoice)
+class RecurringInvoiceAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "customer", "interval", "interval_count", "start_date",
+                    "end_date", "next_run_date", "auto_post", "is_active")
+    list_filter = ("interval", "is_active", "auto_post")
+    readonly_fields = ("next_run_date",)
+    inlines = [RecurringInvoiceLineInline]

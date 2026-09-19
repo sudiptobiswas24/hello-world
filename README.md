@@ -160,6 +160,27 @@ production / SQLite for local dev by default. Every module builds on the
     gets each level at most once and jumps straight to the level it has
     reached, so a long-ignored debt doesn't also receive the early
     reminders.
+  - **Backorders**: a short shipment leaves a visible remainder.
+    `Delivery.create_backorder()` raises a draft delivery for what the
+    order still owes, linked by `backorder_of`, so the outstanding
+    quantity is a document someone can plan against rather than the gap
+    between two numbers.
+  - **Quotation revisions**: once a quote has gone to the customer it is
+    frozen — it records what they were told. `create_revision()`
+    supersedes it with an editable copy numbered `QT-2026-00001-R2`,
+    leaving both versions on record. A superseded quote can't be
+    accepted or revised again.
+  - **Commissions**: `SalesRep` pairs a `Party` holding the EMPLOYEE
+    role with a `CommissionPlan`. The plan's basis matters — paying on
+    what was *invoiced* rewards booking the sale, paying on what was
+    *collected* rewards it actually being paid for. The rep carries
+    from quote to order to invoice; `commission_report()` nets credit
+    notes off either basis.
+  - **Recurring invoicing**: `RecurringInvoice` issues the same invoice
+    on a schedule. `generate_due_invoices()` catches a late schedule up
+    one invoice per period rather than one lump, because each period
+    genuinely happened. Month-end schedules anchor to their start day,
+    so Jan 31 bills Feb 28 then Mar 31 rather than drifting backwards.
   - **Reporting**: `revenue_report()` gives net/tax/gross grouped by
     customer, item or month, reading documents rather than the ledger
     because the ledger doesn't record which item a line was for. Credit
@@ -247,10 +268,9 @@ that to as few accounts as possible.
 
 ## Sales: still to do
 
-- **Backorders** — a partial shipment leaves the remainder implicit
-  rather than tracked as its own document.
-- **Commissions** — no link from an order to the rep who sold it.
-- **Recurring/subscription invoicing**.
+Nothing substantial. The flow runs quote → revision → order → ship →
+backorder → invoice → collect → chase → report, with correct stock,
+ledger, tax and commission consequences throughout.
 
 ## Core: remaining work toward Odoo/ERPNext parity
 
@@ -321,8 +341,12 @@ python manage.py runserver
   `POST /quotations/{id}/mark_sent/` then `/accept/` or `/decline/`.
   Invoice documents: `GET /invoices/{id}/pdf/` and
   `POST /invoices/{id}/send/`. Reports:
-  `GET /invoices/revenue/?group_by=customer|item|month`. Chase overdue
-  accounts with `POST /dunning-levels/run/` (`{"send": false}` previews). Ship with
+  `GET /invoices/revenue/?group_by=customer|item|month` and
+  `GET /commission-plans/report/`. Chase overdue accounts with
+  `POST /dunning-levels/run/` (`{"send": false}` previews). Revise a
+  quote with `POST /quotations/{id}/revise/`, raise a backorder with
+  `POST /deliveries/{id}/backorder/`, and issue due subscriptions with
+  `POST /recurring-invoices/run/`. Ship with
   `POST /api/sales/deliveries/{id}/post_delivery/`, take goods back with
   `POST /api/sales/deliveries/{id}/customer_return/`.
   Confirm an order with `POST /api/sales/sales-orders/{id}/confirm/`,

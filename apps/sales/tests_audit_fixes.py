@@ -319,13 +319,20 @@ class AcceptedQuotationTests(AuditTestCase):
         with self.assertRaises(ValidationError):
             quotation.lines.get().delete()
 
-    def test_an_unaccepted_quote_is_still_editable(self):
+    def test_a_draft_quote_is_still_editable(self):
         quotation = self.make_quotation()
-        quotation.mark_sent()
         line = quotation.lines.get()
         line.quantity = Decimal("7")
         line.save()
         self.assertEqual(quotation.total(), Decimal("70.00"))
+
+    def test_a_sent_quote_must_be_revised_rather_than_edited(self):
+        quotation = self.make_quotation()
+        quotation.mark_sent()
+        line = quotation.lines.get()
+        line.quantity = Decimal("7")
+        with self.assertRaises(ValidationError):
+            line.save()
 
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")

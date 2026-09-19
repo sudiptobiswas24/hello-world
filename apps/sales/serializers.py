@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import (
+    CommissionPlan,
     CustomerProfile,
     Delivery,
     DunningLevel,
@@ -13,8 +14,11 @@ from .models import (
     PriceListItem,
     Quotation,
     QuotationLine,
+    RecurringInvoice,
+    RecurringInvoiceLine,
     SalesOrder,
     SalesOrderLine,
+    SalesRep,
 )
 
 
@@ -53,7 +57,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
         model = SalesOrder
         fields = [
             "id", "number", "customer", "order_date", "reference", "status", "currency",
-            "payment_terms", "billing_address", "shipping_address",
+            "payment_terms", "billing_address", "shipping_address", "sales_rep",
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status",
         ]
@@ -86,7 +90,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         fields = [
             "id", "number", "customer", "invoice_date", "due_date", "reference",
             "sales_order", "receivable_account", "currency", "exchange_rate",
-            "payment_terms", "billing_address", "shipping_address",
+            "payment_terms", "billing_address", "shipping_address", "sales_rep",
             "credits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
@@ -109,6 +113,10 @@ class DeliveryLineSerializer(serializers.ModelSerializer):
         fields = ["id", "delivery", "order_line", "warehouse", "quantity_shipped"]
 
 
+class BackorderMixin(serializers.Serializer):
+    pass
+
+
 class DeliverySerializer(serializers.ModelSerializer):
     lines = DeliveryLineSerializer(many=True, read_only=True)
 
@@ -116,9 +124,9 @@ class DeliverySerializer(serializers.ModelSerializer):
         model = Delivery
         fields = [
             "id", "number", "sales_order", "delivery_date", "reference",
-            "shipping_address", "reverses", "posted", "posted_at", "lines",
+            "shipping_address", "reverses", "backorder_of", "posted", "posted_at", "lines",
         ]
-        read_only_fields = ["number", "reverses", "posted", "posted_at"]
+        read_only_fields = ["number", "reverses", "backorder_of", "posted", "posted_at"]
 
 
 class PriceListItemSerializer(serializers.ModelSerializer):
@@ -165,9 +173,12 @@ class QuotationSerializer(serializers.ModelSerializer):
         fields = [
             "id", "number", "customer", "quotation_date", "valid_until", "reference",
             "status", "currency", "payment_terms", "billing_address", "shipping_address",
-            "sales_order", "sent_at", "lines", "subtotal", "tax_total", "total",
+            "sales_rep", "sales_order", "sent_at", "revision", "revision_of",
+            "lines", "subtotal", "tax_total", "total",
         ]
-        read_only_fields = ["number", "status", "sales_order", "sent_at"]
+        read_only_fields = [
+            "number", "status", "sales_order", "sent_at", "revision", "revision_of",
+        ]
 
 
 class DunningLevelSerializer(serializers.ModelSerializer):
@@ -181,3 +192,38 @@ class DunningNoticeSerializer(serializers.ModelSerializer):
         model = DunningNotice
         fields = ["id", "invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at"]
         read_only_fields = fields
+
+
+class CommissionPlanSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CommissionPlan
+        fields = ["id", "code", "name", "percent", "basis", "is_active"]
+
+
+class SalesRepSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SalesRep
+        fields = ["id", "party", "plan", "is_active"]
+
+
+class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    class Meta:
+        model = RecurringInvoiceLine
+        fields = [
+            "id", "schedule", "item", "description", "quantity", "unit_price",
+            "discount_percent", "revenue_account", "taxes",
+            "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+        ]
+
+
+class RecurringInvoiceSerializer(serializers.ModelSerializer):
+    lines = RecurringInvoiceLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = RecurringInvoice
+        fields = [
+            "id", "code", "customer", "receivable_account", "currency", "payment_terms",
+            "sales_rep", "interval", "interval_count", "start_date", "end_date",
+            "next_run_date", "auto_post", "is_active", "lines",
+        ]
+        read_only_fields = ["next_run_date"]
