@@ -13,7 +13,7 @@ class PurchaseOrderLineInline(admin.TabularInline):
 
 @admin.register(PurchaseOrder)
 class PurchaseOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "vendor", "order_date", "status")
+    list_display = ("number", "vendor", "order_date", "status", "receipt_status")
     list_filter = ("status",)
     inlines = [PurchaseOrderLineInline]
 
@@ -25,9 +25,9 @@ class BillLineInline(PostedImmutableInlineMixin, admin.TabularInline):
 
 @admin.register(Bill)
 class BillAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "vendor", "bill_date", "posted", "debits")
+    list_display = ("number", "vendor", "bill_date", "due_date", "posted", "debits")
     list_filter = ("posted",)
-    readonly_fields = ("posted", "posted_at", "journal_entry")
+    readonly_fields = ("number", "due_date", "exchange_rate", "posted", "posted_at", "journal_entry")
     inlines = [BillLineInline]
 
 
@@ -38,7 +38,7 @@ class GoodsReceiptLineInline(PostedImmutableInlineMixin, admin.TabularInline):
 
 @admin.register(GoodsReceipt)
 class GoodsReceiptAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("id", "purchase_order", "receipt_date", "posted", "reverses")
+    list_display = ("number", "purchase_order", "receipt_date", "posted", "reverses")
     list_filter = ("posted",)
-    readonly_fields = ("posted", "posted_at")
+    readonly_fields = ("number", "posted", "posted_at")
     inlines = [GoodsReceiptLineInline]

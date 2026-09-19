@@ -40,9 +40,11 @@ class PurchasingTestCase(TestCase):
 
     def make_po_line(self, quantity=Decimal("10")):
         order = PurchaseOrder.objects.create(vendor=self.vendor, order_date="2026-01-01")
-        return PurchaseOrderLine.objects.create(
+        line = PurchaseOrderLine.objects.create(
             order=order, item=self.item, uom=self.uom, quantity=quantity, unit_price=Decimal("5")
         )
+        order.confirm()
+        return line
 
     def make_bill(self, quantity=Decimal("2"), unit_price=Decimal("40")):
         bill = Bill.objects.create(
@@ -374,6 +376,7 @@ class NonStockedReceiptTests(PurchasingTestCase):
             order=order, item=service, uom=self.uom,
             quantity=Decimal("3"), unit_price=Decimal("100"),
         )
+        order.confirm()
         receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date="2026-01-05")
         GoodsReceiptLine.objects.create(
             receipt=receipt, order_line=order_line, warehouse=self.warehouse,

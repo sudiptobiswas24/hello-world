@@ -19,7 +19,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrder
-        fields = ["id", "vendor", "order_date", "reference", "status", "currency", "lines"]
+        fields = [
+            "id", "number", "vendor", "order_date", "reference", "status",
+            "currency", "lines",
+        ]
 
 
 class BillLineSerializer(serializers.ModelSerializer):
@@ -35,8 +38,12 @@ class BillSerializer(serializers.ModelSerializer):
         model = Bill
         fields = [
             "id",
+            "number",
             "vendor",
             "bill_date",
+            "due_date",
+            "currency",
+            "payment_terms",
             "reference",
             "purchase_order",
             "payable_account",
@@ -46,7 +53,9 @@ class BillSerializer(serializers.ModelSerializer):
             "posted_at",
             "lines",
         ]
-        read_only_fields = ["debits", "journal_entry", "posted", "posted_at"]
+        read_only_fields = [
+            "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
+        ]
 
 
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):
@@ -62,6 +71,7 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
         model = GoodsReceipt
         fields = [
             "id",
+            "number",
             "purchase_order",
             "receipt_date",
             "reference",

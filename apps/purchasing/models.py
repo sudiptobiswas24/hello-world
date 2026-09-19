@@ -4,8 +4,20 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.accounting.models import Account, JournalEntry, JournalLine
-from apps.core.models import AuditModel, Currency, Party, PartyRole, UnitOfMeasure
+from django.db.models import Q
+
+from apps.accounting.models import Account, JournalEntry, JournalLine, round_money
+from apps.core.models import (
+    AuditModel,
+    Company,
+    Currency,
+    DocumentSequence,
+    Party,
+    PartyRole,
+    PaymentTerms,
+    UnitOfMeasure,
+    to_date,
+)
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import post_inventory_entry
 
@@ -15,6 +27,12 @@ def _require_vendor_role(party):
         raise ValidationError(f"{party} does not have the Vendor role.")
 
 
+class FulfilmentStatus(models.TextChoices):
+    NONE = "none", "None"
+    PARTIAL = "partial", "Partial"
+    FULL = "full", "Full"
+
+
 class OrderStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     CONFIRMED = "confirmed", "Confirmed"
@@ -22,23 +40,78 @@ class OrderStatus(models.TextChoices):
 
 
 class PurchaseOrder(AuditModel):
+    number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()
-    reference = models.CharField(max_length=64, blank=True)
+    reference = models.CharField(
+        max_length=64, blank=True, help_text="The vendor's own quote or reference, if any."
+    )
     status = models.CharField(max_length=16, choices=OrderStatus.choices, default=OrderStatus.DRAFT)
     currency = models.ForeignKey(Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+")
 
     class Meta:
         ordering = ["-order_date", "-id"]
+        constraints = [
+            # Drafts all carry an empty number until confirmed, so uniqueness
+            # can only apply once one has been assigned.
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_purchase_order_number"
+            )
+        ]
 
     def __str__(self):
-        return f"PO-{self.pk} {self.vendor}"
+        return f"{self.number or f'PO-draft-{self.pk}'} {self.vendor}"
 
     def clean(self):
         _require_vendor_role(self.vendor)
 
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.vendor_id and not self.currency_id:
+            self.currency = self.vendor.default_currency
+        super().save(*args, **kwargs)
+
     def total(self):
         return sum((line.subtotal() for line in self.lines.all()), Decimal("0"))
+
+    @transaction.atomic
+    def confirm(self):
+        """
+        Commit to the order. Until this happens it is a shopping list, and
+        goods arriving against a shopping list are goods nobody agreed to
+        buy — the purchasing mirror of confirming a sales order.
+        """
+        if self.status == OrderStatus.CONFIRMED:
+            raise ValidationError("This order is already confirmed.")
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("A cancelled order cannot be confirmed.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot confirm an order with no lines.")
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "purchasing.order", self.order_date, name="Purchase Orders", prefix="PO-"
+            )
+        self.status = OrderStatus.CONFIRMED
+        self.save(update_fields=["number", "status", "updated_at"])
+
+    def cancel(self):
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("This order is already cancelled.")
+        for line in self.lines.all():
+            if line.quantity_received():
+                raise ValidationError(
+                    "Goods have been received against this order and it cannot be cancelled. "
+                    "Return them instead."
+                )
+        self.status = OrderStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+
+    def receipt_status(self):
+        lines = list(self.lines.all())
+        if not lines or all(line.quantity_received() <= 0 for line in lines):
+            return FulfilmentStatus.NONE
+        if all(line.is_fully_received() for line in lines):
+            return FulfilmentStatus.FULL
+        return FulfilmentStatus.PARTIAL
 
 
 class PurchaseOrderLine(AuditModel):
@@ -52,7 +125,7 @@ class PurchaseOrderLine(AuditModel):
         return f"{self.item} x{self.quantity}"
 
     def subtotal(self):
-        return self.quantity * self.unit_price
+        return round_money(self.quantity * self.unit_price)
 
     def quantity_received(self):
         """Net quantity received so far: posted receipts minus posted returns."""
@@ -79,9 +152,24 @@ class Bill(AuditModel):
     correction mechanism.
     """
 
+    number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="bills")
     bill_date = models.DateField()
-    reference = models.CharField(max_length=64, blank=True)
+    due_date = models.DateField(null=True, blank=True, editable=False)
+    reference = models.CharField(
+        max_length=64, blank=True,
+        help_text="The vendor's own invoice number — what they will quote when chasing payment.",
+    )
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    exchange_rate = models.DecimalField(
+        max_digits=18, decimal_places=8, null=True, blank=True, editable=False,
+        help_text="Rate to the base currency captured at posting time.",
+    )
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     purchase_order = models.ForeignKey(
         PurchaseOrder, null=True, blank=True, on_delete=models.PROTECT, related_name="bills"
     )
@@ -103,10 +191,32 @@ class Bill(AuditModel):
     class Meta:
         ordering = ["-bill_date", "-id"]
         permissions = [("post_bill", "Can post bills and issue debit notes")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_bill_number"
+            )
+        ]
 
     def __str__(self):
+        if self.number:
+            return f"{self.number} {self.vendor}"
         kind = "DN" if self.debits_id else "BILL"
-        return f"{kind}-{self.pk} {self.vendor}"
+        return f"{kind}-draft-{self.pk} {self.vendor}"
+
+    def is_debit_note(self):
+        return bool(self.debits_id)
+
+    def _rate_for_posting(self):
+        """
+        The rate this bill converts at, frozen when it posts.
+
+        A bill in a foreign currency that is revalued later would change
+        what was already reported; freezing it is what makes the ledger
+        reproducible.
+        """
+        if self.currency_id is None or self.currency.is_base:
+            return Decimal("1")
+        return self.currency.rate_on(self.bill_date)
 
     def clean(self):
         _require_vendor_role(self.vendor)
@@ -124,6 +234,9 @@ class Bill(AuditModel):
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
             raise ValidationError("This bill is posted and immutable. Issue a debit note instead.")
+        if self._state.adding and self.vendor_id:
+            self.currency = self.currency or self.vendor.default_currency
+            self.payment_terms = self.payment_terms or self.vendor.payment_terms
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -131,52 +244,96 @@ class Bill(AuditModel):
             raise ValidationError("Posted bills cannot be deleted. Issue a debit note instead.")
         super().delete(*args, **kwargs)
 
-    def _build_journal_entry(self):
+    def _build_journal_entry(self, rate):
+        """
+        Build the ledger entry in base currency.
+
+        The debits are computed first and the payable is set to their exact
+        sum: converting each line independently and rounding can leave the
+        two sides a cent apart, which would make a legitimate bill
+        unpostable.
+        """
         lines = list(self.lines.all())
         if not lines:
             raise ValidationError("Cannot post a bill with no lines.")
         entry = JournalEntry.objects.create(
             date=self.bill_date,
-            reference=self.reference,
-            memo=f"Bill BILL-{self.pk} from {self.vendor}",
+            reference=self.reference or self.number,
+            memo=f"Bill {self.number} from {self.vendor}",
         )
+
+        debits = []
+        for line in lines:
+            debits.append((
+                line.posting_account(),
+                round_money(line.subtotal() * rate),
+                line.description or str(line.item),
+            ))
+
+        payable_total = sum(amount for _, amount, _ in debits)
         JournalLine.objects.create(
             entry=entry,
             account=self.payable_account,
             party=self.vendor,
-            credit=self.total(),
-            description=f"Bill BILL-{self.pk}",
+            credit=payable_total,
+            description=f"Bill {self.number}",
         )
-        for line in lines:
-            JournalLine.objects.create(
-                entry=entry,
-                account=line.posting_account(),
-                party=self.vendor,
-                debit=line.subtotal(),
-                description=line.description or str(line.item),
-            )
+        for account, amount, description in debits:
+            if amount:
+                JournalLine.objects.create(
+                    entry=entry, account=account, party=self.vendor,
+                    debit=amount, description=description,
+                )
         return entry
 
     @transaction.atomic
     def post(self, memo=None):
         if self.posted:
             raise ValidationError("This bill is already posted.")
-        if self.debits_id:
+
+        self.bill_date = to_date(self.bill_date)
+        if not self.is_debit_note() and self.total() <= 0:
+            raise ValidationError(
+                "This bill has no value to post. Give its lines a quantity and price."
+            )
+        if not self.number:
+            if self.is_debit_note():
+                self.number = DocumentSequence.next_for(
+                    "purchasing.debit_note", self.bill_date, name="Debit Notes", prefix="DN-"
+                )
+            else:
+                self.number = DocumentSequence.next_for(
+                    "purchasing.bill", self.bill_date, name="Vendor Bills", prefix="BILL-"
+                )
+
+        self.exchange_rate = self._rate_for_posting()
+        self.due_date = (
+            self.payment_terms.due_date(self.bill_date)
+            if self.payment_terms_id else self.bill_date
+        )
+
+        if self.is_debit_note():
             original = self.debits
             if not original.posted or not original.journal_entry_id:
                 raise ValidationError("Cannot post a debit note against an unposted bill.")
+            # Debit at the rate the bill was booked at, never today's, so
+            # correcting an old foreign-currency bill can't book an FX gain.
+            self.exchange_rate = original.exchange_rate or Decimal("1")
             entry = original.journal_entry.create_reversal(
                 entry_date=self.bill_date,
-                memo=memo or f"Debit note DN-{self.pk} for BILL-{original.pk}",
+                memo=memo or f"Debit note {self.number} for {original.number}",
             )
         else:
-            entry = self._build_journal_entry()
+            entry = self._build_journal_entry(self.exchange_rate)
             entry.post()
 
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
-        super(Bill, self).save(update_fields=["journal_entry", "posted", "posted_at", "updated_at"])
+        super(Bill, self).save(update_fields=[
+            "number", "bill_date", "due_date", "exchange_rate", "journal_entry",
+            "posted", "posted_at", "updated_at",
+        ])
 
     @transaction.atomic
     def create_debit_note(self, memo=""):
@@ -189,6 +346,8 @@ class Bill(AuditModel):
             vendor=self.vendor,
             bill_date=timezone.now().date(),
             reference=self.reference,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
             payable_account=self.payable_account,
             debits=self,
         )
@@ -262,6 +421,7 @@ class GoodsReceipt(AuditModel):
     its own separate partial-correction design.
     """
 
+    number = models.CharField(max_length=32, blank=True, editable=False)
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, related_name="goods_receipts")
     receipt_date = models.DateField()
     reference = models.CharField(max_length=64, blank=True)
@@ -274,10 +434,20 @@ class GoodsReceipt(AuditModel):
     class Meta:
         ordering = ["-receipt_date", "-id"]
         permissions = [("post_goodsreceipt", "Can post goods receipts and returns")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_goods_receipt_number"
+            )
+        ]
 
     def __str__(self):
+        if self.number:
+            return f"{self.number} for {self.purchase_order}"
         kind = "RETURN" if self.reverses_id else "GR"
-        return f"{kind}-{self.pk} for {self.purchase_order}"
+        return f"{kind}-draft-{self.pk} for {self.purchase_order}"
+
+    def is_return(self):
+        return bool(self.reverses_id)
 
     def _was_posted_in_db(self):
         if not self.pk:
@@ -308,6 +478,28 @@ class GoodsReceipt(AuditModel):
         if is_return and not self.reverses.posted:
             raise ValidationError("Cannot return an unposted goods receipt.")
 
+        self.receipt_date = to_date(self.receipt_date)
+        if not is_return and self.purchase_order.status != OrderStatus.CONFIRMED:
+            # Receiving against a draft order books stock and a GRNI
+            # liability for goods nobody agreed to buy; against a cancelled
+            # one, for goods that were called off.
+            raise ValidationError(
+                f"{self.purchase_order} is {self.purchase_order.get_status_display().lower()}; "
+                "confirm it before receiving goods against it."
+            )
+        if not self.number:
+            self.number = (
+                DocumentSequence.next_for(
+                    "purchasing.receipt_return", self.receipt_date,
+                    name="Purchase Returns", prefix="PRTN-",
+                )
+                if is_return
+                else DocumentSequence.next_for(
+                    "purchasing.receipt", self.receipt_date,
+                    name="Goods Receipts", prefix="GRN-",
+                )
+            )
+
         if not is_return:
             for line in lines:
                 already_received = line.order_line.quantity_received()
@@ -332,11 +524,11 @@ class GoodsReceipt(AuditModel):
                 movement_type=movement_type,
                 quantity=quantity,
                 unit_cost=unit_cost,
-                reference=self.reference or f"GR-{self.pk}",
+                reference=self.reference or self.number,
                 occurred_at=timezone.now(),
                 notes=(
                     f"{'Return for' if is_return else 'Receipt for'} "
-                    f"{self.purchase_order} (GR-{self.pk})"
+                    f"{self.purchase_order} ({self.number})"
                 ),
             )
             valued.append((line.order_line.item, line.quantity_received * unit_cost))
@@ -344,7 +536,7 @@ class GoodsReceipt(AuditModel):
         post_inventory_entry(
             valued,
             date=self.receipt_date,
-            reference=self.reference or f"GR-{self.pk}",
+            reference=self.reference or self.number,
             memo=f"{'Return to vendor for' if is_return else 'Goods received for'} {self.purchase_order}",
             direction="in",
             reverse=is_return,
@@ -352,7 +544,9 @@ class GoodsReceipt(AuditModel):
 
         self.posted = True
         self.posted_at = timezone.now()
-        super(GoodsReceipt, self).save(update_fields=["posted", "posted_at", "updated_at"])
+        super(GoodsReceipt, self).save(
+            update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
+        )
 
     @transaction.atomic
     def create_return(self):

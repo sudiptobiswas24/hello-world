@@ -77,6 +77,7 @@ class BuyAndSellTests(TestCase):
             order=order, item=self.item, uom=self.uom,
             quantity=Decimal(quantity), unit_price=Decimal(unit_cost),
         )
+        order.confirm()
         receipt = GoodsReceipt.objects.create(
             purchase_order=order, receipt_date=datetime.date(2026, 2, 5)
         )
