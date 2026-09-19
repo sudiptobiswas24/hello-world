@@ -5,15 +5,16 @@ from django.test import TestCase
 
 from apps.accounting.models import Account, AccountType
 from apps.core.models import Party, PartyRole, PartyRoleAssignment, UnitOfMeasure
-from apps.inventory.models import Item
+from apps.inventory.models import Item, Warehouse
 
-from .models import Bill, BillLine, PurchaseOrder, PurchaseOrderLine
+from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
 
 
 class PurchasingTestCase(TestCase):
     def setUp(self):
         self.uom = UnitOfMeasure.objects.create(code="each", name="Each")
         self.item = Item.objects.create(sku="PART-1", name="Part", uom=self.uom)
+        self.warehouse = Warehouse.objects.create(code="WH1", name="Main Warehouse")
 
         self.vendor = Party.objects.create(code="VEND-1", name="Supplier Co")
         PartyRoleAssignment.objects.create(party=self.vendor, role=PartyRole.VENDOR)
@@ -23,6 +24,12 @@ class PurchasingTestCase(TestCase):
         )
         self.expense = Account.objects.create(
             code="5000", name="Cost of Goods Sold", account_type=AccountType.EXPENSE
+        )
+
+    def make_po_line(self, quantity=Decimal("10")):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date="2026-01-01")
+        return PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom, quantity=quantity, unit_price=Decimal("5")
         )
 
     def make_bill(self, quantity=Decimal("2"), unit_price=Decimal("40")):
@@ -168,3 +175,167 @@ class DebitNoteTests(PurchasingTestCase):
         debit_note = bill.create_debit_note()
         with self.assertRaises(ValidationError):
             debit_note.create_debit_note()
+
+
+class GoodsReceiptPostingTests(PurchasingTestCase):
+    def test_posting_creates_a_stock_movement(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("4")
+        )
+
+        receipt.post()
+        receipt.refresh_from_db()
+
+        self.assertTrue(receipt.posted)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("4"))
+        self.assertEqual(order_line.quantity_received(), Decimal("4"))
+
+    def test_cannot_post_receipt_with_no_lines(self):
+        order_line = self.make_po_line()
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        with self.assertRaises(ValidationError):
+            receipt.post()
+
+    def test_cannot_exceed_ordered_quantity_across_receipts(self):
+        order_line = self.make_po_line(Decimal("10"))
+
+        first = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=first, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("7")
+        )
+        first.post()
+
+        second = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-06")
+        GoodsReceiptLine.objects.create(
+            receipt=second, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("4")
+        )
+        with self.assertRaises(ValidationError):
+            second.post()
+
+    def test_partial_receipts_across_multiple_deliveries_accumulate(self):
+        order_line = self.make_po_line(Decimal("10"))
+
+        first = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=first, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("6")
+        )
+        first.post()
+
+        second = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-06")
+        GoodsReceiptLine.objects.create(
+            receipt=second, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("4")
+        )
+        second.post()
+
+        self.assertEqual(order_line.quantity_received(), Decimal("10"))
+        self.assertTrue(order_line.is_fully_received())
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("10"))
+
+
+class GoodsReceiptImmutabilityTests(PurchasingTestCase):
+    def test_posted_receipt_cannot_be_edited(self):
+        order_line = self.make_po_line()
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("2")
+        )
+        receipt.post()
+        receipt.reference = "changed"
+        with self.assertRaises(ValidationError):
+            receipt.save()
+
+    def test_posted_receipt_cannot_be_deleted(self):
+        order_line = self.make_po_line()
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("2")
+        )
+        receipt.post()
+        with self.assertRaises(ValidationError):
+            receipt.delete()
+
+    def test_line_on_posted_receipt_cannot_be_edited(self):
+        order_line = self.make_po_line()
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        line = GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("2")
+        )
+        receipt.post()
+        line.quantity_received = Decimal("999")
+        with self.assertRaises(ValidationError):
+            line.save()
+
+
+class GoodsReceiptReturnTests(PurchasingTestCase):
+    def make_receipt(self, order_line, quantity=Decimal("6")):
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse, quantity_received=quantity
+        )
+        receipt.post()
+        return receipt
+
+    def test_return_creates_offsetting_stock_movement(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = self.make_receipt(order_line, Decimal("6"))
+
+        return_receipt = receipt.create_return()
+
+        self.assertEqual(return_receipt.reverses, receipt)
+        self.assertTrue(return_receipt.posted)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+
+    def test_original_receipt_is_untouched_by_return(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = self.make_receipt(order_line, Decimal("6"))
+
+        receipt.create_return()
+        receipt.refresh_from_db()
+
+        self.assertTrue(receipt.posted)
+        self.assertEqual(receipt.lines.first().quantity_received, Decimal("6"))
+
+    def test_quantity_received_nets_to_zero_after_full_return(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = self.make_receipt(order_line, Decimal("6"))
+        receipt.create_return()
+
+        self.assertEqual(order_line.quantity_received(), Decimal("0"))
+
+    def test_can_reorder_ordered_quantity_after_a_return(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = self.make_receipt(order_line, Decimal("10"))
+        receipt.create_return()
+
+        second = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-10")
+        GoodsReceiptLine.objects.create(
+            receipt=second, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("10")
+        )
+        second.post()  # should not raise: the returned quantity freed up room
+
+        self.assertEqual(order_line.quantity_received(), Decimal("10"))
+
+    def test_cannot_return_an_unposted_receipt(self):
+        order_line = self.make_po_line()
+        receipt = GoodsReceipt.objects.create(purchase_order=order_line.order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse, quantity_received=Decimal("2")
+        )
+        with self.assertRaises(ValidationError):
+            receipt.create_return()
+
+    def test_cannot_return_a_return(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = self.make_receipt(order_line, Decimal("6"))
+        return_receipt = receipt.create_return()
+        with self.assertRaises(ValidationError):
+            return_receipt.create_return()
+
+    def test_cannot_return_the_same_receipt_twice(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = self.make_receipt(order_line, Decimal("6"))
+        receipt.create_return()
+        with self.assertRaises(ValidationError):
+            receipt.create_return()

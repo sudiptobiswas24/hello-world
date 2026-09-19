@@ -1,12 +1,17 @@
 from rest_framework import serializers
 
-from .models import Bill, BillLine, PurchaseOrder, PurchaseOrderLine
+from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
 
 
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
+    quantity_received = serializers.SerializerMethodField()
+
     class Meta:
         model = PurchaseOrderLine
-        fields = ["id", "order", "item", "uom", "quantity", "unit_price"]
+        fields = ["id", "order", "item", "uom", "quantity", "unit_price", "quantity_received"]
+
+    def get_quantity_received(self, obj):
+        return obj.quantity_received()
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
@@ -42,3 +47,27 @@ class BillSerializer(serializers.ModelSerializer):
             "lines",
         ]
         read_only_fields = ["debits", "journal_entry", "posted", "posted_at"]
+
+
+class GoodsReceiptLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GoodsReceiptLine
+        fields = ["id", "receipt", "order_line", "warehouse", "quantity_received"]
+
+
+class GoodsReceiptSerializer(serializers.ModelSerializer):
+    lines = GoodsReceiptLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = GoodsReceipt
+        fields = [
+            "id",
+            "purchase_order",
+            "receipt_date",
+            "reference",
+            "reverses",
+            "posted",
+            "posted_at",
+            "lines",
+        ]
+        read_only_fields = ["reverses", "posted", "posted_at"]

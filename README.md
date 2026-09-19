@@ -46,9 +46,19 @@ production / SQLite for local dev by default. Every module builds on the
   Corrections go through `Bill.create_debit_note()`, same
   immutable-then-reverse pattern as Sales' credit notes — deliberately
   not a third, different correction mechanism.
-  Receiving inventory against a PO is **not** wired to `StockMovement`
-  yet — that integration is deferred until the receiving workflow
-  (three-way match between PO, receipt, and bill) is actually designed.
+  **Receiving is now wired up**: `GoodsReceipt`/`GoodsReceiptLine` post
+  real `StockMovement` rows against a `PurchaseOrderLine`, enforce that
+  received quantity (net of returns) never exceeds ordered quantity,
+  and track partial receipts across multiple deliveries
+  (`PurchaseOrderLine.quantity_received()`). Same posted/immutable
+  pattern as everything else; a bad receipt is corrected with
+  `GoodsReceipt.create_return()` — a whole-receipt reversal that
+  creates offsetting `StockMovement` rows, not an edit.
+  What's still missing: **Bill doesn't reference `GoodsReceipt`**, so
+  there's no check that a vendor bill matches what was actually
+  received (the "3" in three-way match). That needs `BillLine` to gain
+  a link to `PurchaseOrderLine`/`GoodsReceiptLine`, which is a real
+  schema change to the already-shipped Bill model — flagged, not done.
 
 - **`apps/hr`** — `Department`, `Employee` (backed by a `Party` with the
   `EMPLOYEE` role, same reuse pattern as customers/vendors),
@@ -78,7 +88,9 @@ production / SQLite for local dev by default. Every module builds on the
   Same underlying gap as the permissions issue above.
 - **Payroll** is not built. Employee compensation, pay runs, and the
   resulting ledger postings are a separate design effort.
-- **PO → Inventory receiving** is not wired up (see Purchasing above).
+- **Bill ↔ GoodsReceipt three-way match** is not wired up (see
+  Purchasing above) — a bill can currently be posted for more or less
+  than was actually received.
 
 ## Local setup
 
@@ -99,9 +111,12 @@ python manage.py runserver
 - Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines). Post an
   invoice with `POST /api/sales/invoices/{id}/post_invoice/`, correct a
   posted one with `POST /api/sales/invoices/{id}/credit_note/`.
-- Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines).
-  Post a bill with `POST /api/purchasing/bills/{id}/post_bill/`, correct a
-  posted one with `POST /api/purchasing/bills/{id}/debit_note/`.
+- Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines,
+  goods-receipts, goods-receipt-lines). Post a bill with
+  `POST /api/purchasing/bills/{id}/post_bill/`, correct a posted one with
+  `POST /api/purchasing/bills/{id}/debit_note/`. Post a receipt with
+  `POST /api/purchasing/goods-receipts/{id}/post_receipt/`, correct one
+  with `POST /api/purchasing/goods-receipts/{id}/return_receipt/`.
 - HR API: `/api/hr/` (departments, employees, leave-requests). Decide a
   leave request with `POST /api/hr/leave-requests/{id}/approve/` or
   `/reject/` (body: `decided_by: <employee id>`), or `/cancel/`.

@@ -2,7 +2,7 @@ from django.contrib import admin
 
 from apps.core.audit import AuditableAdminMixin
 
-from .models import Bill, BillLine, PurchaseOrder, PurchaseOrderLine
+from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
 
 
 class PurchaseOrderLineInline(admin.TabularInline):
@@ -38,6 +38,34 @@ class BillAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_filter = ("posted",)
     readonly_fields = ("posted", "posted_at", "journal_entry")
     inlines = [BillLineInline]
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.posted:
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+class GoodsReceiptLineInline(admin.TabularInline):
+    model = GoodsReceiptLine
+    extra = 1
+
+    def has_change_permission(self, request, obj=None):
+        if obj is not None and obj.posted:
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.posted:
+            return False
+        return super().has_delete_permission(request, obj)
+
+
+@admin.register(GoodsReceipt)
+class GoodsReceiptAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("id", "purchase_order", "receipt_date", "posted", "reverses")
+    list_filter = ("posted",)
+    readonly_fields = ("posted", "posted_at")
+    inlines = [GoodsReceiptLineInline]
 
     def has_delete_permission(self, request, obj=None):
         if obj is not None and obj.posted:

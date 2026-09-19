@@ -6,10 +6,12 @@ from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
-from .models import Bill, BillLine, PurchaseOrder, PurchaseOrderLine
+from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
 from .serializers import (
     BillLineSerializer,
     BillSerializer,
+    GoodsReceiptLineSerializer,
+    GoodsReceiptSerializer,
     PurchaseOrderLineSerializer,
     PurchaseOrderSerializer,
 )
@@ -51,3 +53,31 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BillLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BillLine.objects.all()
     serializer_class = BillLineSerializer
+
+
+class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = GoodsReceipt.objects.prefetch_related("lines")
+    serializer_class = GoodsReceiptSerializer
+
+    @action(detail=True, methods=["post"])
+    def post_receipt(self, request, pk=None):
+        receipt = self.get_object()
+        try:
+            receipt.post()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(receipt).data)
+
+    @action(detail=True, methods=["post"])
+    def return_receipt(self, request, pk=None):
+        receipt = self.get_object()
+        try:
+            return_receipt = receipt.create_return()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(return_receipt).data)
+
+
+class GoodsReceiptLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = GoodsReceiptLine.objects.all()
+    serializer_class = GoodsReceiptLineSerializer

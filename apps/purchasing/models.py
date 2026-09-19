@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.accounting.models import Account, JournalEntry, JournalLine
 from apps.core.models import AuditModel, Currency, Party, PartyRole, UnitOfMeasure
-from apps.inventory.models import Item
+from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 
 
 def _require_vendor_role(party):
@@ -52,6 +52,19 @@ class PurchaseOrderLine(AuditModel):
 
     def subtotal(self):
         return self.quantity * self.unit_price
+
+    def quantity_received(self):
+        """Net quantity received so far: posted receipts minus posted returns."""
+        received = self.receipt_lines.filter(
+            receipt__posted=True, receipt__reverses__isnull=True
+        ).aggregate(total=models.Sum("quantity_received"))["total"] or Decimal("0")
+        returned = self.receipt_lines.filter(
+            receipt__posted=True, receipt__reverses__isnull=False
+        ).aggregate(total=models.Sum("quantity_received"))["total"] or Decimal("0")
+        return received - returned
+
+    def is_fully_received(self):
+        return self.quantity_received() >= self.quantity
 
 
 class Bill(AuditModel):
@@ -215,5 +228,150 @@ class BillLine(AuditModel):
         if self.bill.posted:
             raise ValidationError(
                 "Cannot delete a line on a posted bill. Issue a debit note instead."
+            )
+        super().delete(*args, **kwargs)
+
+
+class GoodsReceipt(AuditModel):
+    """
+    Closes the loop between Purchasing and Inventory: posting a receipt
+    creates real StockMovement rows. Same posted/immutable/reversal
+    pattern as JournalEntry/Invoice/Bill — a mistaken receipt is corrected
+    with create_return(), which reverses the whole receipt (same lines,
+    opposite stock effect), never by editing a posted receipt.
+
+    Only whole-receipt reversal is supported, not partial-quantity
+    returns — that mirrors how JournalEntry.create_reversal() and the
+    Sales/Purchasing credit/debit notes work, and keeps this from needing
+    its own separate partial-correction design.
+    """
+
+    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, related_name="goods_receipts")
+    receipt_date = models.DateField()
+    reference = models.CharField(max_length=64, blank=True)
+    reverses = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by"
+    )
+    posted = models.BooleanField(default=False)
+    posted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-receipt_date", "-id"]
+
+    def __str__(self):
+        kind = "RETURN" if self.reverses_id else "GR"
+        return f"{kind}-{self.pk} for {self.purchase_order}"
+
+    def _was_posted_in_db(self):
+        if not self.pk:
+            return False
+        return GoodsReceipt.objects.filter(pk=self.pk, posted=True).exists()
+
+    def save(self, *args, **kwargs):
+        if self._was_posted_in_db():
+            raise ValidationError(
+                "This goods receipt is posted and immutable. Create a return instead."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.posted:
+            raise ValidationError("Posted goods receipts cannot be deleted. Create a return instead.")
+        super().delete(*args, **kwargs)
+
+    @transaction.atomic
+    def post(self):
+        if self.posted:
+            raise ValidationError("This goods receipt is already posted.")
+        lines = list(self.lines.all())
+        if not lines:
+            raise ValidationError("Cannot post a goods receipt with no lines.")
+
+        is_return = bool(self.reverses_id)
+        if is_return and not self.reverses.posted:
+            raise ValidationError("Cannot return an unposted goods receipt.")
+
+        if not is_return:
+            for line in lines:
+                already_received = line.order_line.quantity_received()
+                if already_received + line.quantity_received > line.order_line.quantity:
+                    raise ValidationError(
+                        f"Receiving {line.quantity_received} of {line.order_line.item} would "
+                        f"exceed the ordered quantity ({line.order_line.quantity}; "
+                        f"{already_received} already received)."
+                    )
+
+        for line in lines:
+            movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
+            quantity = -line.quantity_received if is_return else line.quantity_received
+            StockMovement.objects.create(
+                item=line.order_line.item,
+                warehouse=line.warehouse,
+                movement_type=movement_type,
+                quantity=quantity,
+                reference=self.reference or f"GR-{self.pk}",
+                occurred_at=timezone.now(),
+                notes=(
+                    f"{'Return for' if is_return else 'Receipt for'} "
+                    f"{self.purchase_order} (GR-{self.pk})"
+                ),
+            )
+
+        self.posted = True
+        self.posted_at = timezone.now()
+        super(GoodsReceipt, self).save(update_fields=["posted", "posted_at", "updated_at"])
+
+    @transaction.atomic
+    def create_return(self):
+        if not self.posted:
+            raise ValidationError("Only a posted goods receipt can be returned.")
+        if self.reverses_id:
+            raise ValidationError("Cannot return a return.")
+        if self.reversed_by.exists():
+            raise ValidationError("This goods receipt has already been returned.")
+
+        return_receipt = GoodsReceipt.objects.create(
+            purchase_order=self.purchase_order,
+            receipt_date=timezone.now().date(),
+            reference=self.reference,
+            reverses=self,
+        )
+        for line in self.lines.all():
+            GoodsReceiptLine.objects.create(
+                receipt=return_receipt,
+                order_line=line.order_line,
+                warehouse=line.warehouse,
+                quantity_received=line.quantity_received,
+            )
+        return_receipt.post()
+        return return_receipt
+
+
+class GoodsReceiptLine(AuditModel):
+    receipt = models.ForeignKey(GoodsReceipt, related_name="lines", on_delete=models.CASCADE)
+    order_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="receipt_lines")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
+
+    def __str__(self):
+        return f"{self.order_line.item} x{self.quantity_received} @ {self.warehouse}"
+
+    def clean(self):
+        if self.order_line_id and self.receipt_id and self.order_line.order_id != self.receipt.purchase_order_id:
+            raise ValidationError("This line's order_line must belong to the receipt's purchase_order.")
+        if self.quantity_received is not None and self.quantity_received <= 0:
+            raise ValidationError("quantity_received must be positive.")
+
+    def save(self, *args, **kwargs):
+        if self.receipt_id and GoodsReceipt.objects.filter(pk=self.receipt_id, posted=True).exists():
+            raise ValidationError(
+                "Cannot modify a line on a posted goods receipt. Create a return instead."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.receipt.posted:
+            raise ValidationError(
+                "Cannot delete a line on a posted goods receipt. Create a return instead."
             )
         super().delete(*args, **kwargs)
