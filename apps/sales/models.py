@@ -1,5 +1,6 @@
 import calendar
 import datetime
+import logging
 from collections import defaultdict
 from decimal import Decimal
 
@@ -34,6 +35,8 @@ from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import post_inventory_entry
 
 from .pricing import resolve_price
+
+logger = logging.getLogger(__name__)
 
 
 def _require_customer_role(party):
@@ -215,6 +218,11 @@ class CustomerProfile(AuditModel):
         return f"Sales profile for {self.party}"
 
 
+class InvoicePolicy(models.TextChoices):
+    ORDERED = "ordered", "Bill what was ordered"
+    DELIVERED = "delivered", "Bill what was delivered"
+
+
 class FulfilmentStatus(models.TextChoices):
     NONE = "none", "Nothing yet"
     PARTIAL = "partial", "Partially"
@@ -248,6 +256,10 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
     sales_rep = models.ForeignKey(
         Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
         help_text="The employee credited with this sale.",
+    )
+    invoice_policy = models.CharField(
+        max_length=16, choices=InvoicePolicy.choices, default=InvoicePolicy.ORDERED,
+        help_text="Bill the whole order up front, or only what has shipped.",
     )
 
     class Meta:
@@ -351,11 +363,18 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
             raise ValidationError("Only a confirmed order can be invoiced.")
 
         outstanding = [
-            (line, line.quantity_uninvoiced())
+            (line, line.quantity_invoiceable())
             for line in self.lines.all()
-            if line.quantity_uninvoiced() > 0
+            if line.quantity_invoiceable() > 0
         ]
         if not outstanding:
+            if self.invoice_policy == InvoicePolicy.DELIVERED and any(
+                line.quantity_uninvoiced() > 0 for line in self.lines.all()
+            ):
+                raise ValidationError(
+                    "Nothing has shipped that isn't already invoiced. This order bills on "
+                    "delivery, so ship the goods first."
+                )
             raise ValidationError("This order is already fully invoiced.")
 
         invoice = Invoice.objects.create(
@@ -471,6 +490,17 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     def quantity_uninvoiced(self):
         return self.quantity - self.quantity_invoiced()
 
+    def quantity_invoiceable(self):
+        """
+        What may be billed right now. Under a 'delivered' policy that is
+        capped by what has actually shipped — billing goods still sitting
+        in the warehouse is how customers end up paying for nothing.
+        """
+        uninvoiced = self.quantity_uninvoiced()
+        if self.order.invoice_policy != InvoicePolicy.DELIVERED:
+            return uninvoiced
+        return min(uninvoiced, self.quantity_shipped() - self.quantity_invoiced())
+
     def is_fully_invoiced(self):
         return self.quantity_invoiced() >= self.quantity
 
@@ -526,6 +556,14 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     sent_at = models.DateTimeField(
         null=True, blank=True, editable=False,
         help_text="When this was last emailed to the customer.",
+    )
+    settlement_discount_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Early-settlement discount written off against this invoice.",
+    )
+    settlement_discount_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
     )
 
     class Meta:
@@ -588,6 +626,73 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         super(Invoice, self).save(update_fields=["sent_at", "updated_at"])
         return recipient
 
+    def discount_due_date(self):
+        """The last day an early-settlement discount can be taken."""
+        if not self.payment_terms_id or not self.invoice_date:
+            return None
+        return self.payment_terms.discount_due_date(to_date(self.invoice_date))
+
+    def settlement_discount(self):
+        """What the customer saves by paying early, if the terms offer it."""
+        if not self.payment_terms_id:
+            return Decimal("0")
+        return self.payment_terms.discount_amount(self.total())
+
+    def discount_is_available(self, as_of=None):
+        deadline = self.discount_due_date()
+        if not self.posted or self.is_credit_note() or not deadline:
+            return False
+        if self.settlement_discount_amount:
+            return False
+        return (to_date(as_of) or timezone.now().date()) <= deadline
+
+    @transaction.atomic
+    def apply_settlement_discount(self, on_date=None, force=False):
+        """
+        Write off the early-settlement discount.
+
+        Without this the terms are decorative: a customer on 2/10 net 30
+        who pays the discounted amount leaves a small balance outstanding
+        forever, and dunning chases them for it.
+        """
+        on_date = to_date(on_date) or timezone.now().date()
+        if not force and not self.discount_is_available(on_date):
+            raise ValidationError(
+                "No settlement discount is available on this invoice at that date."
+            )
+        amount = self.settlement_discount()
+        if amount <= 0:
+            raise ValidationError("These payment terms offer no settlement discount.")
+
+        account = Company.get().settlement_discount_account
+        if account is None:
+            raise ValidationError(
+                "The company has no settlement discount account configured."
+            )
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        entry = JournalEntry.objects.create(
+            date=on_date, reference=self.number,
+            memo=f"Settlement discount on {self.number}",
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.customer,
+            debit=base_amount, description=f"Settlement discount {self.number}",
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.receivable_account, party=self.customer,
+            credit=base_amount, description=f"Settlement discount {self.number}",
+        )
+        entry.post()
+
+        self.settlement_discount_amount = amount
+        self.settlement_discount_entry = entry
+        super(Invoice, self).save(
+            update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"]
+        )
+        return entry
+
     def amount_paid(self):
         return sum(
             (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
@@ -600,7 +705,10 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         )
 
     def amount_due(self):
-        return self.total() - self.amount_paid() - self.amount_credited()
+        return (
+            self.total() - self.amount_paid() - self.amount_credited()
+            - (self.settlement_discount_amount or Decimal("0"))
+        )
 
     def settlement_status(self):
         if not self.posted:
@@ -1439,6 +1547,7 @@ def run_dunning(as_of=None, send=True):
         return []
 
     notices = []
+    undeliverable = []
     invoices = (
         Invoice.objects.filter(posted=True, credits__isnull=True)
         .prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes",
@@ -1456,21 +1565,32 @@ def run_dunning(as_of=None, send=True):
         if due_level is None:
             continue
 
+        recipient = invoice.recipient_email()
+        if send and not recipient:
+            # Recording a notice we never delivered would mark this level
+            # done and the customer would never be chased at it again.
+            undeliverable.append(invoice)
+            continue
+
         notice = DunningNotice.objects.create(
             invoice=invoice, level=due_level, days_overdue=days,
             amount_due=invoice.amount_due(),
         )
         if send:
-            recipient = invoice.recipient_email()
-            if recipient:
-                from django.core.mail import EmailMessage
+            from django.core.mail import EmailMessage
 
-                subject, body = due_level.render(invoice, days)
-                EmailMessage(subject=subject, body=body, to=[recipient]).send()
-                notice.sent_to = recipient
-                notice.sent_at = timezone.now()
-                notice.save(update_fields=["sent_to", "sent_at", "updated_at"])
+            subject, body = due_level.render(invoice, days)
+            EmailMessage(subject=subject, body=body, to=[recipient]).send()
+            notice.sent_to = recipient
+            notice.sent_at = timezone.now()
+            notice.save(update_fields=["sent_to", "sent_at", "updated_at"])
         notices.append(notice)
+
+    if undeliverable:
+        logger.warning(
+            "Dunning skipped %d overdue invoice(s) with no email address: %s",
+            len(undeliverable), ", ".join(invoice.number for invoice in undeliverable),
+        )
     return notices
 
 
@@ -1697,6 +1817,11 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         different terms has to leave a trail: the customer was told one
         thing and is now being told another, and both need to be on record.
         """
+        if self.status == QuotationStatus.DRAFT:
+            raise ValidationError(
+                "This quotation hasn't gone to the customer yet — edit it directly rather "
+                "than revising it."
+            )
         if self.status == QuotationStatus.ACCEPTED:
             raise ValidationError("An accepted quotation cannot be revised; it became an order.")
         if self.status == QuotationStatus.SUPERSEDED:
@@ -1944,14 +2069,17 @@ def commission_report(date_from=None, date_to=None):
                 sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
                 basis_amount += sign * invoice.subtotal()
         else:
-            for invoice in invoices.filter(credits__isnull=True):
+            # Money in against this rep's invoices, less money handed back
+            # on their credit notes: a refunded sale earns no commission.
+            for invoice in invoices:
+                sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
                 for allocation in invoice.payment_allocations.all():
                     paid_on = allocation.payment.payment_date
                     if date_from and paid_on < date_from:
                         continue
                     if date_to and paid_on > date_to:
                         continue
-                    basis_amount += allocation.amount
+                    basis_amount += sign * allocation.amount
 
         if not basis_amount:
             continue

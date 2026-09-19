@@ -117,7 +117,12 @@ production / SQLite for local dev by default. Every module builds on the
     independently can leave the entry a cent out of balance and make a
     legitimate invoice unpostable.
   - **Order → invoice**: `SalesOrder.create_invoice()` bills whatever
-    is still uninvoiced, carrying discounts and taxes across. Invoice
+    is still *invoiceable*, carrying discounts and taxes across. What
+    that means is the order's `invoice_policy`: `ORDERED` bills the
+    whole order up front, `DELIVERED` bills only what has actually
+    shipped, which is the honest default for physical goods — billing
+    for stock you still owe is the fastest way to lose the argument
+    about whether the customer has to pay. Invoice
     lines link back to the order line, so quantities draw down
     (`quantity_invoiced()` / `quantity_uninvoiced()`) exactly like
     shipments do, and an order cannot be billed twice. A credit note
@@ -155,11 +160,21 @@ production / SQLite for local dev by default. Every module builds on the
     invoice's currency. Cross-currency settlement needs FX gain/loss
     postings that don't exist yet, and treating 100 USD as 100 EUR
     silently writes off the difference, so it is refused instead.
+  - **Early-settlement discount**: terms like 2/10 net 30 are worth
+    nothing until something honours them. `Invoice.settlement_discount()`
+    and `discount_due_date()` read the terms, and
+    `apply_settlement_discount()` writes the difference off to the
+    company's `settlement_discount_account` (Dr discount / Cr
+    receivable) so the invoice settles clean instead of leaving a 2%
+    stub that ages forever. It refuses after the window unless forced,
+    and refuses twice.
   - **Dunning**: `DunningLevel` defines the chase sequence by days
     overdue; `run_dunning()` raises the reminders now due. An invoice
     gets each level at most once and jumps straight to the level it has
     reached, so a long-ignored debt doesn't also receive the early
-    reminders.
+    reminders. A customer with no email address is reported, not
+    recorded — writing the notice anyway would mark the level as used
+    and silently exempt that debtor from every future chase.
   - **Backorders**: a short shipment leaves a visible remainder.
     `Delivery.create_backorder()` raises a draft delivery for what the
     order still owes, linked by `backorder_of`, so the outstanding
@@ -168,8 +183,10 @@ production / SQLite for local dev by default. Every module builds on the
   - **Quotation revisions**: once a quote has gone to the customer it is
     frozen — it records what they were told. `create_revision()`
     supersedes it with an editable copy numbered `QT-2026-00001-R2`,
-    leaving both versions on record. A superseded quote can't be
-    accepted or revised again.
+    leaving both versions on record. A quote still in draft is edited
+    in place instead — revising it would burn a sequence number and put
+    a revision on record that no customer ever saw. A superseded quote
+    can't be accepted or revised again.
   - **Commissions**: `SalesRep` pairs a `Party` holding the EMPLOYEE
     role with a `CommissionPlan`. The plan's basis matters — paying on
     what was *invoiced* rewards booking the sale, paying on what was

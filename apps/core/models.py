@@ -551,6 +551,10 @@ class Company(AuditModel):
         help_text="Goods received not invoiced: the accrual between receiving stock and "
                   "being billed for it.",
     )
+    settlement_discount_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where early-settlement discounts are written off (an expense).",
+    )
 
     class Meta:
         verbose_name_plural = "company"
