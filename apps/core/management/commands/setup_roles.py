@@ -84,6 +84,9 @@ ROLES = {
         *crud("purchasing", "goodsreceipt"),
         *crud("purchasing", "goodsreceiptline"),
         "purchasing.post_goodsreceipt",
+        *crud("sales", "delivery"),
+        *crud("sales", "deliveryline"),
+        "sales.post_delivery",
     ],
     "HR Admin": [
         *crud("hr", "department"),

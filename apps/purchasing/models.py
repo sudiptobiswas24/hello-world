@@ -304,6 +304,9 @@ class GoodsReceipt(AuditModel):
                     )
 
         for line in lines:
+            # Services and non-stocked items must never touch stock levels.
+            if not line.order_line.item.track_inventory:
+                continue
             movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
             quantity = -line.quantity_received if is_return else line.quantity_received
             StockMovement.objects.create(

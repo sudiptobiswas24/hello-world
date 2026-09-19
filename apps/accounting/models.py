@@ -432,7 +432,7 @@ class Payment(AuditModel):
     payment is voided with a reversing entry, never edited.
     """
 
-    number = models.CharField(max_length=32, unique=True, blank=True, editable=False)
+    number = models.CharField(max_length=32, blank=True, editable=False)
     party = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="payments")
     direction = models.CharField(max_length=16, choices=PaymentDirection.choices)
     payment_date = models.DateField()
@@ -465,7 +465,11 @@ class Payment(AuditModel):
         ordering = ["-payment_date", "-id"]
         permissions = [("post_payment", "Can post and void payments")]
         constraints = [
-            models.CheckConstraint(check=Q(amount__gt=0), name="payment_amount_positive")
+            models.CheckConstraint(check=Q(amount__gt=0), name="payment_amount_positive"),
+            # Drafts share an empty number until posted.
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_payment_number"
+            ),
         ]
 
     def __str__(self):

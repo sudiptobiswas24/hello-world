@@ -337,3 +337,49 @@ class OrderToInvoiceTests(SalesBillingTestCase):
         entry = invoice.journal_entry
         self.assertEqual(entry.total_debit(), entry.total_credit())
         self.assertEqual(entry.lines.get(account=self.ar).debit, Decimal("120.00"))
+
+
+class ConcurrentDraftNumberingTests(SalesBillingTestCase):
+    """
+    Regression: `number` was unique with a blank default, so every unposted
+    draft shared "" and creating a second draft blew up on the unique index.
+    Posting one document before creating the next hid this in every earlier
+    test; only a live run with two open drafts surfaced it.
+    """
+
+    def test_several_draft_invoices_can_coexist(self):
+        first = self.make_invoice()
+        second = self.make_invoice()
+        third = self.make_invoice()
+        self.assertEqual(Invoice.objects.filter(number="").count(), 3)
+
+        first.post()
+        second.post()
+        third.post()
+        numbers = {invoice.number for invoice in (first, second, third)}
+        self.assertEqual(len(numbers), 3)
+
+    def test_several_draft_orders_can_coexist(self):
+        orders = [
+            SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1))
+            for _ in range(3)
+        ]
+        self.assertEqual(SalesOrder.objects.filter(number="").count(), 3)
+        for order in orders:
+            SalesOrderLine.objects.create(
+                order=order, item=self.item, uom=self.uom,
+                quantity=Decimal("1"), unit_price=Decimal("5"), revenue_account=self.revenue,
+            )
+            order.confirm()
+        self.assertEqual(len({order.number for order in orders}), 3)
+
+    def test_posted_numbers_are_still_unique(self):
+        from django.db import IntegrityError, transaction
+
+        invoice = self.make_invoice()
+        invoice.post()
+        other = self.make_invoice()
+        other.number = invoice.number
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                other.save()

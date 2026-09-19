@@ -226,7 +226,10 @@ python manage.py runserver
   `POST /api/accounting/taxes/preview/` with
   `{"amount": "100.00", "tax_ids": [1], "party_id": 5}` — the party's
   fiscal position and exemption are applied.
-- Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines).
+- Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines,
+  deliveries, delivery-lines). Ship with
+  `POST /api/sales/deliveries/{id}/post_delivery/`, take goods back with
+  `POST /api/sales/deliveries/{id}/customer_return/`.
   Confirm an order with `POST /api/sales/sales-orders/{id}/confirm/`,
   turn it into an invoice with
   `POST /api/sales/sales-orders/{id}/create_invoice/`

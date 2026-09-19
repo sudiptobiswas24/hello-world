@@ -1,6 +1,14 @@
 from rest_framework import serializers
 
-from .models import Invoice, InvoiceLine, InvoicePayment, SalesOrder, SalesOrderLine
+from .models import (
+    Delivery,
+    DeliveryLine,
+    Invoice,
+    InvoiceLine,
+    InvoicePayment,
+    SalesOrder,
+    SalesOrderLine,
+)
 
 
 class MoneyLineSerializerMixin(serializers.Serializer):
@@ -12,11 +20,13 @@ class MoneyLineSerializerMixin(serializers.Serializer):
 
 
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    quantity_shipped = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+
     class Meta:
         model = SalesOrderLine
         fields = [
             "id", "order", "item", "uom", "quantity", "unit_price", "discount_percent",
-            "revenue_account", "taxes",
+            "revenue_account", "taxes", "quantity_shipped",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
 
@@ -77,3 +87,21 @@ class InvoicePaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoicePayment
         fields = ["id", "invoice", "payment", "amount"]
+
+
+class DeliveryLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeliveryLine
+        fields = ["id", "delivery", "order_line", "warehouse", "quantity_shipped"]
+
+
+class DeliverySerializer(serializers.ModelSerializer):
+    lines = DeliveryLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Delivery
+        fields = [
+            "id", "number", "sales_order", "delivery_date", "reference",
+            "shipping_address", "reverses", "posted", "posted_at", "lines",
+        ]
+        read_only_fields = ["number", "reverses", "posted", "posted_at"]

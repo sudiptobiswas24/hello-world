@@ -27,7 +27,7 @@ from apps.core.models import (
     UnitOfMeasure,
     to_date,
 )
-from apps.inventory.models import Item
+from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 
 
 def _require_customer_role(party):
@@ -118,7 +118,7 @@ class OrderStatus(models.TextChoices):
 
 
 class SalesOrder(TaxedDocumentMixin, AuditModel):
-    number = models.CharField(max_length=32, unique=True, blank=True, editable=False)
+    number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
     order_date = models.DateField()
     reference = models.CharField(
@@ -138,6 +138,13 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
 
     class Meta:
         ordering = ["-order_date", "-id"]
+        constraints = [
+            # Drafts all carry an empty number until confirmed, so uniqueness
+            # can only apply once one has been assigned.
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_sales_order_number"
+            )
+        ]
 
     def __str__(self):
         return f"{self.number or f'SO-draft-{self.pk}'} {self.customer}"
@@ -217,6 +224,19 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.item} x{self.quantity}"
 
+    def quantity_shipped(self):
+        """Net quantity shipped: posted deliveries minus posted customer returns."""
+        shipped = self.delivery_lines.filter(
+            delivery__posted=True, delivery__reverses__isnull=True
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        returned = self.delivery_lines.filter(
+            delivery__posted=True, delivery__reverses__isnull=False
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        return shipped - returned
+
+    def is_fully_shipped(self):
+        return self.quantity_shipped() >= self.quantity
+
 
 class Invoice(TaxedDocumentMixin, AuditModel):
     """
@@ -228,7 +248,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     inventing its own correction logic.
     """
 
-    number = models.CharField(max_length=32, unique=True, blank=True, editable=False)
+    number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="invoices")
     invoice_date = models.DateField()
     due_date = models.DateField(null=True, blank=True, editable=False)
@@ -266,6 +286,11 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     class Meta:
         ordering = ["-invoice_date", "-id"]
         permissions = [("post_invoice", "Can post invoices and issue credit notes")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_invoice_number"
+            )
+        ]
 
     def __str__(self):
         if self.number:
@@ -610,3 +635,193 @@ def ar_aging(as_of=None):
         }
         for key, entries in buckets.items()
     }
+
+
+class Delivery(AuditModel):
+    """
+    Outbound shipment — the mirror of Purchasing's GoodsReceipt. Posting
+    creates negative StockMovement rows so selling stock actually
+    decrements it. Same posted/immutable/reverse pattern as everything
+    else: a wrong shipment is corrected with create_return(), which puts
+    the goods back rather than editing history.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    sales_order = models.ForeignKey(SalesOrder, on_delete=models.PROTECT, related_name="deliveries")
+    delivery_date = models.DateField()
+    reference = models.CharField(max_length=64, blank=True)
+    shipping_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    reverses = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by",
+        help_text="Set when this is a customer return of an earlier delivery.",
+    )
+    posted = models.BooleanField(default=False)
+    posted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name_plural = "deliveries"
+        ordering = ["-delivery_date", "-id"]
+        permissions = [("post_delivery", "Can post deliveries and customer returns")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_delivery_number"
+            )
+        ]
+
+    def __str__(self):
+        kind = "RET" if self.reverses_id else "DO"
+        return f"{self.number or f'{kind}-draft-{self.pk}'} for {self.sales_order}"
+
+    def is_return(self):
+        return bool(self.reverses_id)
+
+    def _was_posted_in_db(self):
+        if not self.pk:
+            return False
+        return Delivery.objects.filter(pk=self.pk, posted=True).exists()
+
+    def save(self, *args, **kwargs):
+        if self._was_posted_in_db():
+            raise ValidationError(
+                "This delivery is posted and immutable. Create a customer return instead."
+            )
+        if self._state.adding and not self.shipping_address_id and self.sales_order_id:
+            self.shipping_address = self.sales_order.shipping_address
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.posted:
+            raise ValidationError(
+                "Posted deliveries cannot be deleted. Create a customer return instead."
+            )
+        super().delete(*args, **kwargs)
+
+    @transaction.atomic
+    def post(self):
+        if self.posted:
+            raise ValidationError("This delivery is already posted.")
+        lines = list(self.lines.all())
+        if not lines:
+            raise ValidationError("Cannot post a delivery with no lines.")
+
+        is_return = self.is_return()
+        if is_return and not self.reverses.posted:
+            raise ValidationError("Cannot return an unposted delivery.")
+
+        if not is_return:
+            for line in lines:
+                already_shipped = line.order_line.quantity_shipped()
+                if already_shipped + line.quantity_shipped > line.order_line.quantity:
+                    raise ValidationError(
+                        f"Shipping {line.quantity_shipped} of {line.order_line.item} would "
+                        f"exceed the ordered quantity ({line.order_line.quantity}; "
+                        f"{already_shipped} already shipped)."
+                    )
+                item = line.order_line.item
+                if item.track_inventory and not line.warehouse.allow_negative_stock:
+                    on_hand = item.on_hand_at(line.warehouse)
+                    if line.quantity_shipped > on_hand:
+                        raise ValidationError(
+                            f"Only {on_hand} of {item} on hand at {line.warehouse}; "
+                            f"cannot ship {line.quantity_shipped}. Allow negative stock on the "
+                            f"warehouse if backorders are expected."
+                        )
+
+        self.delivery_date = to_date(self.delivery_date)
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "sales.delivery" if not is_return else "sales.customer_return",
+                self.delivery_date,
+                name="Deliveries" if not is_return else "Customer Returns",
+                prefix="DO-" if not is_return else "RET-",
+            )
+
+        for line in lines:
+            # Services and non-stocked items must never touch stock levels.
+            if not line.order_line.item.track_inventory:
+                continue
+            movement_type = MovementType.RECEIPT if is_return else MovementType.ISSUE
+            quantity = line.quantity_shipped if is_return else -line.quantity_shipped
+            StockMovement.objects.create(
+                item=line.order_line.item,
+                warehouse=line.warehouse,
+                movement_type=movement_type,
+                quantity=quantity,
+                reference=self.number,
+                occurred_at=timezone.now(),
+                notes=(
+                    f"{'Customer return for' if is_return else 'Delivery for'} "
+                    f"{self.sales_order} ({self.number})"
+                ),
+            )
+
+        self.posted = True
+        self.posted_at = timezone.now()
+        super(Delivery, self).save(
+            update_fields=["number", "delivery_date", "posted", "posted_at", "updated_at"]
+        )
+
+    @transaction.atomic
+    def create_return(self):
+        if not self.posted:
+            raise ValidationError("Only a posted delivery can be returned.")
+        if self.is_return():
+            raise ValidationError("Cannot return a return.")
+        if self.reversed_by.exists():
+            raise ValidationError("This delivery has already been returned.")
+
+        customer_return = Delivery.objects.create(
+            sales_order=self.sales_order,
+            delivery_date=timezone.now().date(),
+            reference=self.reference,
+            shipping_address=self.shipping_address,
+            reverses=self,
+        )
+        for line in self.lines.all():
+            DeliveryLine.objects.create(
+                delivery=customer_return,
+                order_line=line.order_line,
+                warehouse=line.warehouse,
+                quantity_shipped=line.quantity_shipped,
+            )
+        customer_return.post()
+        return customer_return
+
+
+class DeliveryLine(AuditModel):
+    delivery = models.ForeignKey(Delivery, related_name="lines", on_delete=models.CASCADE)
+    order_line = models.ForeignKey(
+        SalesOrderLine, on_delete=models.PROTECT, related_name="delivery_lines"
+    )
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    quantity_shipped = models.DecimalField(max_digits=18, decimal_places=4)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity_shipped__gt=0), name="shipped_quantity_positive")
+        ]
+
+    def __str__(self):
+        return f"{self.order_line.item} x{self.quantity_shipped} from {self.warehouse}"
+
+    def clean(self):
+        if self.order_line_id and self.delivery_id and (
+            self.order_line.order_id != self.delivery.sales_order_id
+        ):
+            raise ValidationError("This line's order_line must belong to the delivery's sales_order.")
+
+    def save(self, *args, **kwargs):
+        if self.delivery_id and Delivery.objects.filter(pk=self.delivery_id, posted=True).exists():
+            raise ValidationError(
+                "Cannot modify a line on a posted delivery. Create a customer return instead."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.delivery.posted:
+            raise ValidationError(
+                "Cannot delete a line on a posted delivery. Create a customer return instead."
+            )
+        super().delete(*args, **kwargs)

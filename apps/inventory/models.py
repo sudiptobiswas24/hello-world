@@ -8,6 +8,10 @@ class Warehouse(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
     address = models.TextField(blank=True)
+    allow_negative_stock = models.BooleanField(
+        default=False,
+        help_text="Permit shipping more than is on hand (backorders, in-transit stock).",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

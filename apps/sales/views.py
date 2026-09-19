@@ -9,8 +9,19 @@ from rest_framework.response import Response
 from apps.accounting.models import Account
 from apps.core.audit import AuditableViewSetMixin
 
-from .models import Invoice, InvoiceLine, InvoicePayment, SalesOrder, SalesOrderLine, ar_aging
+from .models import (
+    Delivery,
+    DeliveryLine,
+    Invoice,
+    InvoiceLine,
+    InvoicePayment,
+    SalesOrder,
+    SalesOrderLine,
+    ar_aging,
+)
 from .serializers import (
+    DeliveryLineSerializer,
+    DeliverySerializer,
     InvoiceLineSerializer,
     InvoicePaymentSerializer,
     InvoiceSerializer,
@@ -118,3 +129,35 @@ class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             super().perform_create(serializer)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
+
+
+class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Delivery.objects.prefetch_related("lines")
+    serializer_class = DeliverySerializer
+    action_permission_map = {
+        "post_delivery": "sales.post_delivery",
+        "customer_return": "sales.post_delivery",
+    }
+
+    @action(detail=True, methods=["post"])
+    def post_delivery(self, request, pk=None):
+        delivery = self.get_object()
+        try:
+            delivery.post()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(delivery).data)
+
+    @action(detail=True, methods=["post"])
+    def customer_return(self, request, pk=None):
+        delivery = self.get_object()
+        try:
+            returned = delivery.create_return()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(returned).data)
+
+
+class DeliveryLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = DeliveryLine.objects.select_related("delivery", "order_line", "warehouse")
+    serializer_class = DeliveryLineSerializer

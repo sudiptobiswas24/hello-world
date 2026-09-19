@@ -339,3 +339,47 @@ class GoodsReceiptReturnTests(PurchasingTestCase):
         receipt.create_return()
         with self.assertRaises(ValidationError):
             receipt.create_return()
+
+
+class NonStockedReceiptTests(PurchasingTestCase):
+    """
+    Regression: GoodsReceipt used to create a StockMovement for every line,
+    including service items whose track_inventory is False — phantom stock
+    for something that isn't stock.
+    """
+
+    def test_receiving_a_service_line_creates_no_stock_movement(self):
+        from apps.inventory.models import StockMovement
+
+        service = Item.objects.create(
+            sku="SVC-INSTALL", name="Installation", uom=self.uom,
+            item_type="service", track_inventory=False,
+        )
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date="2026-01-01")
+        order_line = PurchaseOrderLine.objects.create(
+            order=order, item=service, uom=self.uom,
+            quantity=Decimal("3"), unit_price=Decimal("100"),
+        )
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date="2026-01-05")
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse,
+            quantity_received=Decimal("3"),
+        )
+        before = StockMovement.objects.count()
+
+        receipt.post()
+
+        self.assertEqual(StockMovement.objects.count(), before)
+        self.assertEqual(order_line.quantity_received(), Decimal("3"))
+
+    def test_stocked_lines_still_move_stock(self):
+        order_line = self.make_po_line(Decimal("10"))
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order_line.order, receipt_date="2026-01-05"
+        )
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse,
+            quantity_received=Decimal("4"),
+        )
+        receipt.post()
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("4"))

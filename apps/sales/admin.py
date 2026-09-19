@@ -3,7 +3,15 @@ from django.contrib import admin
 from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
 from apps.core.audit import AuditableAdminMixin
 
-from .models import Invoice, InvoiceLine, InvoicePayment, SalesOrder, SalesOrderLine
+from .models import (
+    Delivery,
+    DeliveryLine,
+    Invoice,
+    InvoiceLine,
+    InvoicePayment,
+    SalesOrder,
+    SalesOrderLine,
+)
 
 
 class SalesOrderLineInline(admin.TabularInline):
@@ -45,3 +53,18 @@ class InvoiceAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAd
     readonly_fields = ("number", "due_date", "exchange_rate", "posted", "posted_at",
                        "journal_entry")
     inlines = [InvoiceLineInline, InvoicePaymentInline]
+
+
+class DeliveryLineInline(PostedImmutableInlineMixin, admin.TabularInline):
+    model = DeliveryLine
+    extra = 1
+    fields = ("order_line", "warehouse", "quantity_shipped")
+
+
+@admin.register(Delivery)
+class DeliveryAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("number", "sales_order", "delivery_date", "posted", "reverses")
+    list_filter = ("posted",)
+    search_fields = ("number", "reference")
+    readonly_fields = ("number", "posted", "posted_at", "reverses")
+    inlines = [DeliveryLineInline]
