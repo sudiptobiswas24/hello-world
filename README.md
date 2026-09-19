@@ -75,17 +75,43 @@ production / SQLite for local dev by default. Every module builds on the
 4. ~~Purchasing~~ (done) — orders, vendor bills, debit notes
 5. ~~HR~~ (done) — employees, departments, leave requests (no payroll yet)
 
+## Permissions
+
+Built on Django's own auth system (users, groups, permissions) rather
+than a bespoke framework. Two layers:
+
+- `DjangoModelPermissions` gates standard CRUD per model
+  (`add_invoice`, `change_bill`, ...). Anonymous requests are rejected
+  outright.
+- `ActionPermission` (`apps/core/permissions.py`) gates the actions
+  that actually commit something — posting to the ledger, posting to
+  stock, approving leave — behind separate custom permissions:
+  `accounting.post_journalentry`, `sales.post_invoice`,
+  `purchasing.post_bill`, `purchasing.post_goodsreceipt`,
+  `hr.decide_leaverequest`.
+
+**The point is segregation of duties**: being able to create a journal
+entry, invoice, or bill does not imply being able to post it. Run
+`python manage.py setup_roles` to create the default role groups
+(Bookkeeper vs Controller, Sales Rep vs AR Manager, Purchasing Clerk
+vs AP Manager, Warehouse Staff, HR Admin, Employee Self Service) —
+the "clerk" roles deliberately lack the matching `post_*` permission.
+The command is idempotent, so rerun it after changing the role map.
+
+Note that Django superusers bypass every check above by design. Keep
+that to as few accounts as possible.
+
 ## Known gaps (not yet addressed)
 
-- **No permissions/roles.** Any authenticated user can post journal
-  entries, invoices, and bills, or approve their own leave requests.
-  No segregation of duties anywhere in the system. Deferred by
-  request, twice now — this is the top priority before anything here
-  touches real money or real employees.
+- **Permissions are model-level, not object-level.** A user with
+  `hr.decide_leaverequest` can approve *anyone's* leave, not just
+  their reports'; a user with `sales.post_invoice` can post *any*
+  invoice. Row-level rules ("only your own manager approves your
+  leave") need the User↔Employee link below.
 - **No User↔Employee link.** `LeaveRequest.approve/reject` take an
   explicit `decided_by` employee id rather than inferring it from the
   logged-in user, because there's no account-to-employee mapping yet.
-  Same underlying gap as the permissions issue above.
+  This is the prerequisite for object-level permissions.
 - **Payroll** is not built. Employee compensation, pay runs, and the
   resulting ledger postings are a separate design effort.
 - **Bill ↔ GoodsReceipt three-way match** is not wired up (see

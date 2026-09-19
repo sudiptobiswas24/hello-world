@@ -30,6 +30,10 @@ class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Bill.objects.prefetch_related("lines")
     serializer_class = BillSerializer
+    action_permission_map = {
+        "post_bill": "purchasing.post_bill",
+        "debit_note": "purchasing.post_bill",
+    }
 
     @action(detail=True, methods=["post"])
     def post_bill(self, request, pk=None):
@@ -58,6 +62,10 @@ class BillLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = GoodsReceipt.objects.prefetch_related("lines")
     serializer_class = GoodsReceiptSerializer
+    action_permission_map = {
+        "post_receipt": "purchasing.post_goodsreceipt",
+        "return_receipt": "purchasing.post_goodsreceipt",
+    }
 
     @action(detail=True, methods=["post"])
     def post_receipt(self, request, pk=None):

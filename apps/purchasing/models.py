@@ -101,6 +101,7 @@ class Bill(AuditModel):
 
     class Meta:
         ordering = ["-bill_date", "-id"]
+        permissions = [("post_bill", "Can post bills and issue debit notes")]
 
     def __str__(self):
         kind = "DN" if self.debits_id else "BILL"
@@ -257,6 +258,7 @@ class GoodsReceipt(AuditModel):
 
     class Meta:
         ordering = ["-receipt_date", "-id"]
+        permissions = [("post_goodsreceipt", "Can post goods receipts and returns")]
 
     def __str__(self):
         kind = "RETURN" if self.reverses_id else "GR"

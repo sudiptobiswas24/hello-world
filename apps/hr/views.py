@@ -24,6 +24,10 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = LeaveRequest.objects.all()
     serializer_class = LeaveRequestSerializer
+    action_permission_map = {
+        "approve": "hr.decide_leaverequest",
+        "reject": "hr.decide_leaverequest",
+    }
 
     def _decider(self, request):
         # No User<->Employee link exists yet, so the decider is passed

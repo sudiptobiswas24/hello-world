@@ -67,6 +67,7 @@ class JournalEntry(AuditModel):
     class Meta:
         verbose_name_plural = "journal entries"
         ordering = ["-date", "-id"]
+        permissions = [("post_journalentry", "Can post and reverse journal entries")]
 
     def __str__(self):
         return f"JE-{self.pk} {self.date} {self.memo[:40]}"

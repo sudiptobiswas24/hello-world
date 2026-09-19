@@ -96,6 +96,7 @@ class LeaveRequest(AuditModel):
 
     class Meta:
         ordering = ["-start_date"]
+        permissions = [("decide_leaverequest", "Can approve or reject leave requests")]
 
     def __str__(self):
         return f"{self.employee} {self.leave_type} {self.start_date}..{self.end_date} [{self.status}]"

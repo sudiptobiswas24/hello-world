@@ -28,6 +28,10 @@ class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Invoice.objects.prefetch_related("lines")
     serializer_class = InvoiceSerializer
+    action_permission_map = {
+        "post_invoice": "sales.post_invoice",
+        "credit_note": "sales.post_invoice",
+    }
 
     @action(detail=True, methods=["post"])
     def post_invoice(self, request, pk=None):

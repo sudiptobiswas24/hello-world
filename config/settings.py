@@ -134,8 +134,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # No anonymous writes: audit stamping (created_by/updated_by) requires a
 # real authenticated user on every request, not AnonymousUser.
+# DjangoModelPermissions enforces add/change/delete per model; ActionPermission
+# adds segregation of duties on posting actions (see apps/core/permissions.py).
 REST_FRAMEWORK = {
-    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.DjangoModelPermissions",
+        "apps.core.permissions.ActionPermission",
+    ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",

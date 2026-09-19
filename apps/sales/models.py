@@ -87,6 +87,7 @@ class Invoice(AuditModel):
 
     class Meta:
         ordering = ["-invoice_date", "-id"]
+        permissions = [("post_invoice", "Can post invoices and issue credit notes")]
 
     def __str__(self):
         kind = "CN" if self.credits_id else "INV"

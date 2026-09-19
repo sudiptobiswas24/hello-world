@@ -18,6 +18,10 @@ class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = JournalEntry.objects.prefetch_related("lines")
     serializer_class = JournalEntrySerializer
+    action_permission_map = {
+        "post_entry": "accounting.post_journalentry",
+        "reverse": "accounting.post_journalentry",
+    }
 
     @action(detail=True, methods=["post"])
     def post_entry(self, request, pk=None):
