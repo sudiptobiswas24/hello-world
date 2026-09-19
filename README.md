@@ -168,6 +168,20 @@ production / SQLite for local dev by default. Every module builds on the
     receivable) so the invoice settles clean instead of leaving a 2%
     stub that ages forever. It refuses after the window unless forced,
     and refuses twice.
+  - **Charges that aren't stock**: `ChargeType` covers freight,
+    handling, installation, a rush surcharge. A line carries *either* an
+    item or a charge, enforced by a check constraint, which means
+    charges reuse the discount, tax, posting and credit-note machinery
+    unchanged. The alternative — inventing an Item for shipping — routes
+    freight through inventory valuation and folds recharged shipping
+    into product margin, so gross margin quietly improves every time the
+    company posts a parcel; a charge names its own revenue account
+    instead. `order.add_charge()` brings the charge's default taxes
+    across, because billing freight untaxed where the jurisdiction taxes
+    it is the commonest way to get this wrong. A charge is never
+    shipped, so it's excluded from `delivery_status()` (it would
+    otherwise pin the order at PARTIAL forever), refused on a delivery
+    line, and billable immediately even under a delivery policy.
   - **Down payments**: `SalesOrder.create_down_payment_invoice()` bills
     the customer up front by amount or percent. The line credits
     `Company.customer_deposit_account` — a *liability* — not revenue:

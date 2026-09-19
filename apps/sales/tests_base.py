@@ -114,7 +114,7 @@ class SalesTestCase(TestCase):
             sales_order=order, delivery_date=datetime.date(2026, 3, 3)
         )
         DeliveryLine.objects.create(
-            delivery=delivery, order_line=order.lines.get(),
+            delivery=delivery, order_line=order.lines.filter(charge__isnull=True).first(),
             warehouse=self.warehouse, quantity_shipped=Decimal(quantity),
         )
         delivery.post()

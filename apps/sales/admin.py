@@ -4,6 +4,7 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    ChargeType,
     CommissionPlan,
     DepositApplication,
     CustomerProfile,
@@ -136,6 +137,13 @@ class DunningNoticeAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(ChargeType)
+class ChargeTypeAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "revenue_account", "is_active")
+    list_filter = ("is_active",)
+    filter_horizontal = ("taxes",)
 
 
 @admin.register(DepositApplication)

@@ -114,7 +114,7 @@ def _render_document(*, heading, document, party, address, meta, totals,
     for line in document.lines.all():
         tax_names = ", ".join(tax.code for tax, _ in line.tax_amounts()) or "—"
         rows.append([
-            Paragraph(getattr(line, "description", "") or str(line.item), style["body"]),
+            Paragraph(line.label(), style["body"]),
             Paragraph(f"{line.quantity:,.2f}", style["right"]),
             Paragraph(_money(line.unit_price, currency), style["right"]),
             Paragraph(

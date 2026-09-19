@@ -110,6 +110,19 @@ class TaxedLineMixin(models.Model):
     def total(self):
         return self.net_amount() + self.tax_total()
 
+    def is_charge(self):
+        """True for a line billing a service charge rather than an item."""
+        return getattr(self, "charge_id", None) is not None
+
+    def label(self):
+        """What this line is called on a document."""
+        return (
+            getattr(self, "description", "")
+            or (str(self.charge) if self.is_charge() else "")
+            or (str(self.item) if getattr(self, "item_id", None) else "")
+            or "—"
+        )
+
 
 class TaxedDocumentMixin(models.Model):
     """Totals for a document made of TaxedLineMixin lines."""
@@ -141,6 +154,39 @@ class SettlementStatus(models.TextChoices):
     PARTIAL = "partial", "Partially paid"
     PAID = "paid", "Paid"
     WRITTEN_OFF = "written_off", "Written off"
+
+
+class ChargeType(AuditModel):
+    """
+    Something billable that isn't stock: freight, handling, installation,
+    a rush surcharge.
+
+    Modelled as a line on the document rather than a separate charges
+    table, because that is what it is — the customer sees it as a line,
+    and it needs the same discount, tax and credit-note treatment every
+    other line gets. Making it an Item instead would put freight through
+    inventory valuation and fold recharged shipping into product margin,
+    since a charge has revenue but no cost of goods.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    revenue_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="Keep this separate from product revenue: recharged freight with no "
+                  "cost behind it otherwise flatters gross margin.",
+    )
+    taxes = models.ManyToManyField(
+        Tax, blank=True, related_name="charge_types",
+        help_text="Applied by default when this charge is added to a document.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return self.name
 
 
 class PriceList(AuditModel):
@@ -329,8 +375,12 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         return FulfilmentStatus.PARTIAL
 
     def delivery_status(self):
-        lines = list(self.lines.all())
-        if not lines or all(line.quantity_shipped() <= 0 for line in lines):
+        # Charge lines are never shipped, so counting them would pin an
+        # otherwise complete order at PARTIAL forever.
+        lines = [line for line in self.lines.all() if not line.is_charge()]
+        if not lines:
+            return FulfilmentStatus.FULL
+        if all(line.quantity_shipped() <= 0 for line in lines):
             return FulfilmentStatus.NONE
         if all(line.is_fully_shipped() for line in lines):
             return FulfilmentStatus.FULL
@@ -395,7 +445,8 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
                 invoice=invoice,
                 order_line=line,
                 item=line.item,
-                description=str(line.item),
+                charge=line.charge,
+                description=line.description or line.label(),
                 quantity=remaining,
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
@@ -403,6 +454,22 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
             )
             invoice_line.taxes.set(line.taxes.all())
         return invoice
+
+    def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
+        """
+        Put freight, handling or a surcharge on this order.
+
+        The charge's default taxes come across, because the commonest way
+        to get freight wrong is to bill it untaxed when the jurisdiction
+        taxes it at the same rate as the goods.
+        """
+        line = SalesOrderLine.objects.create(
+            order=self, charge=charge, description=description or charge.name,
+            quantity=Decimal(quantity), unit_price=round_money(Decimal(amount)),
+            revenue_account=charge.revenue_account,
+        )
+        line.taxes.set(charge.taxes.all())
+        return line
 
     def deposits(self):
         """Posted down-payment invoices raised against this order."""
@@ -478,8 +545,17 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
 
 class SalesOrderLine(TaxedLineMixin, AuditModel):
     order = models.ForeignKey(SalesOrder, related_name="lines", on_delete=models.CASCADE)
-    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="sales_order_lines")
-    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_order_lines"
+    )
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line bills freight, handling or similar.",
+    )
+    description = models.CharField(max_length=255, blank=True)
+    uom = models.ForeignKey(
+        UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     revenue_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -492,13 +568,26 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         constraints = [
             models.CheckConstraint(check=Q(quantity__gt=0), name="order_line_quantity_positive"),
             models.CheckConstraint(check=Q(unit_price__gte=0), name="order_line_price_not_negative"),
+            models.CheckConstraint(
+                check=Q(item__isnull=False, charge__isnull=True)
+                | Q(item__isnull=True, charge__isnull=False),
+                name="order_line_is_item_or_charge",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.item} x{self.quantity}"
+        return f"{self.label()} x{self.quantity}"
 
     def save(self, *args, **kwargs):
-        if self.unit_price is None:
+        if self.is_charge():
+            if not self.revenue_account_id:
+                self.revenue_account = self.charge.revenue_account
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"Give the {self.charge} charge an explicit amount; a charge has no "
+                    "price list to fall back on."
+                )
+        elif self.unit_price is None:
             self.unit_price = resolve_price(
                 self.item,
                 customer=self.order.customer,
@@ -569,7 +658,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         in the warehouse is how customers end up paying for nothing.
         """
         uninvoiced = self.quantity_uninvoiced()
-        if self.order.invoice_policy != InvoicePolicy.DELIVERED:
+        # A charge has nothing to ship, so waiting for a delivery that will
+        # never come would strand the freight on the order forever.
+        if self.order.invoice_policy != InvoicePolicy.DELIVERED or self.is_charge():
             return uninvoiced
         return min(uninvoiced, self.quantity_shipped() - self.quantity_invoiced())
 
@@ -1227,6 +1318,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
                 order_line=line.order_line,
                 credits_line=line,
                 item=line.item,
+                charge=line.charge,
                 description=line.description,
                 quantity=quantity,
                 unit_price=line.unit_price,
@@ -1250,6 +1342,10 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
         help_text="On a credit note line, the invoice line being credited.",
     )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="invoice_lines")
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line bills freight, handling or similar.",
+    )
     description = models.CharField(max_length=255, blank=True)
     revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
     taxes = models.ManyToManyField(Tax, blank=True, related_name="invoice_lines")
@@ -1258,7 +1354,7 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
         return self.invoice.customer
 
     def __str__(self):
-        return f"{self.item or self.description} x{self.quantity}"
+        return f"{self.label()} x{self.quantity}"
 
     def quantity_credited(self):
         """How much of this line has already been credited by posted credit notes."""
@@ -1828,9 +1924,13 @@ class DeliveryLine(AuditModel):
         ]
 
     def __str__(self):
-        return f"{self.order_line.item} x{self.quantity_shipped} from {self.warehouse}"
+        return f"{self.order_line.label()} x{self.quantity_shipped} from {self.warehouse}"
 
     def clean(self):
+        if self.order_line_id and self.order_line.is_charge():
+            raise ValidationError(
+                f"'{self.order_line.charge}' is a charge, not goods; there is nothing to ship."
+            )
         if self.order_line_id and self.delivery_id and (
             self.order_line.order_id != self.delivery.sales_order_id
         ):
@@ -1840,6 +1940,12 @@ class DeliveryLine(AuditModel):
         if self.delivery_id and Delivery.objects.filter(pk=self.delivery_id, posted=True).exists():
             raise ValidationError(
                 "Cannot modify a line on a posted delivery. Create a customer return instead."
+            )
+        # In save() rather than only clean(): deliveries are built in code,
+        # where nothing calls full_clean() for us.
+        if self.order_line_id and self.order_line.is_charge():
+            raise ValidationError(
+                f"'{self.order_line.charge}' is a charge, not goods; there is nothing to ship."
             )
         super().save(*args, **kwargs)
 
@@ -2007,7 +2113,15 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
             if group_by == "customer":
                 key = str(invoice.customer)
             elif group_by == "item":
-                key = str(line.item) if line.item_id else (line.description or "—")
+                # A charge groups under the charge, not its free-text
+                # description, so "Shipping" and "Shipping (expedited)"
+                # don't land in separate rows.
+                if line.item_id:
+                    key = str(line.item)
+                elif line.is_charge():
+                    key = str(line.charge)
+                else:
+                    key = line.description or "—"
             elif group_by == "month":
                 key = invoice.invoice_date.strftime("%Y-%m")
             else:
@@ -2232,7 +2346,8 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         )
         for line in self.lines.all():
             revision_line = QuotationLine.objects.create(
-                quotation=revision, item=line.item, uom=line.uom,
+                quotation=revision, item=line.item, charge=line.charge,
+                description=line.description, uom=line.uom,
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
@@ -2301,7 +2416,8 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         )
         for line in self.lines.all():
             order_line = SalesOrderLine.objects.create(
-                order=order, item=line.item, uom=line.uom,
+                order=order, item=line.item, charge=line.charge,
+                description=line.description, uom=line.uom,
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
@@ -2317,8 +2433,17 @@ class Quotation(TaxedDocumentMixin, AuditModel):
 
 class QuotationLine(TaxedLineMixin, AuditModel):
     quotation = models.ForeignKey(Quotation, related_name="lines", on_delete=models.CASCADE)
-    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="quotation_lines")
-    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="quotation_lines"
+    )
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line bills freight, handling or similar.",
+    )
+    description = models.CharField(max_length=255, blank=True)
+    uom = models.ForeignKey(
+        UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     revenue_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -2331,10 +2456,15 @@ class QuotationLine(TaxedLineMixin, AuditModel):
         constraints = [
             models.CheckConstraint(check=Q(quantity__gt=0), name="quote_line_quantity_positive"),
             models.CheckConstraint(check=Q(unit_price__gte=0), name="quote_line_price_not_negative"),
+            models.CheckConstraint(
+                check=Q(item__isnull=False, charge__isnull=True)
+                | Q(item__isnull=True, charge__isnull=False),
+                name="quote_line_is_item_or_charge",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.item} x{self.quantity}"
+        return f"{self.label()} x{self.quantity}"
 
     def _quotation_is_settled(self):
         return self.quotation_id and Quotation.objects.filter(
@@ -2353,7 +2483,15 @@ class QuotationLine(TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "This quotation has gone to the customer; revise it instead of editing it."
             )
-        if self.unit_price is None:
+        if self.is_charge():
+            if not self.revenue_account_id:
+                self.revenue_account = self.charge.revenue_account
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"Give the {self.charge} charge an explicit amount; a charge has no "
+                    "price list to fall back on."
+                )
+        elif self.unit_price is None:
             self.unit_price = resolve_price(
                 self.item,
                 customer=self.quotation.customer,
