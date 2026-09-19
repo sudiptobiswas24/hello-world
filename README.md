@@ -46,6 +46,12 @@ production / SQLite for local dev by default. Every module builds on the
   `core.Party` — again from the Accounting side, so Core stays
   independent. Sales consumes all of this; Purchasing bills are still
   untaxed until that module's pass.
+  Also here: `Payment` — money actually moving, posted as Dr Bank / Cr
+  Receivable (or the reverse for a disbursement), numbered from a
+  sequence, immutable once posted and corrected by voiding. It is
+  deliberately free of any link to invoices or bills, because
+  Accounting must not import Sales or Purchasing; each of those owns
+  its own allocation model pointing back here.
   Plus `Account` (chart of accounts, hierarchical,
   type-checked against its parent), `JournalEntry`/`JournalLine`
   (double-entry ledger, references `Party` from the kernel). A
@@ -77,6 +83,16 @@ production / SQLite for local dev by default. Every module builds on the
     legitimate invoice unpostable.
   - **Order → invoice**: `SalesOrder.create_invoice()` carries lines,
     discounts and taxes across.
+  - **Settlement**: `InvoicePayment` applies an `accounting.Payment` to
+    an invoice. The ledger entry was already made when the payment
+    posted — the allocation records *which* invoices that money
+    settles, which is what makes aging possible. Over-allocating either
+    the payment or the invoice is refused, as is settling with another
+    party's payment or a disbursement. `amount_paid()`,
+    `amount_credited()` (posted credit notes count against the
+    balance), `amount_due()` and `settlement_status()` follow from it.
+  - **AR aging**: `ar_aging()` buckets outstanding invoices by days
+    overdue (current / 1-30 / 31-60 / 61-90 / 90+).
   Posting builds a balanced `JournalEntry` via Accounting (Dr Accounts
   Receivable / Cr Revenue per line / Cr tax account per tax); Sales
   never writes ledger rows directly. A posted invoice is immutable like
@@ -216,7 +232,12 @@ python manage.py runserver
   `POST /api/sales/sales-orders/{id}/create_invoice/`
   (`{"receivable_account": 1}`). Post an invoice with
   `POST /api/sales/invoices/{id}/post_invoice/`, correct a posted one
-  with `POST /api/sales/invoices/{id}/credit_note/`.
+  with `POST /api/sales/invoices/{id}/credit_note/`. Apply money via
+  `POST /api/sales/invoice-payments/`
+  (`{"invoice": 1, "payment": 1, "amount": "250.00"}`) and read
+  `GET /api/sales/invoices/aging/?as_of=YYYY-MM-DD`.
+  Payments themselves live at `/api/accounting/payments/`
+  (`post_payment/`, `void/`).
 - Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines,
   goods-receipts, goods-receipt-lines). Post a bill with
   `POST /api/purchasing/bills/{id}/post_bill/`, correct a posted one with

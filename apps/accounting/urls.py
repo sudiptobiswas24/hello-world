@@ -7,6 +7,7 @@ from .views import (
     JournalEntryViewSet,
     JournalLineViewSet,
     PartyTaxProfileViewSet,
+    PaymentViewSet,
     TaxGroupViewSet,
     TaxViewSet,
 )
@@ -20,5 +21,6 @@ router.register("tax-groups", TaxGroupViewSet)
 router.register("fiscal-positions", FiscalPositionViewSet)
 router.register("fiscal-position-tax-mappings", FiscalPositionTaxMappingViewSet)
 router.register("party-tax-profiles", PartyTaxProfileViewSet)
+router.register("payments", PaymentViewSet)
 
 urlpatterns = router.urls

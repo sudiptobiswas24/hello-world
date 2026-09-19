@@ -2,16 +2,17 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 
-from apps.accounting.models import Account
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from apps.accounting.models import Account
 from apps.core.audit import AuditableViewSetMixin
 
-from .models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
+from .models import Invoice, InvoiceLine, InvoicePayment, SalesOrder, SalesOrderLine, ar_aging
 from .serializers import (
     InvoiceLineSerializer,
+    InvoicePaymentSerializer,
     InvoiceSerializer,
     SalesOrderLineSerializer,
     SalesOrderSerializer,
@@ -70,6 +71,29 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(invoice).data)
 
+    @action(detail=False, methods=["get"])
+    def aging(self, request):
+        """AR aging: outstanding invoices bucketed by days overdue."""
+        buckets = ar_aging(as_of=request.query_params.get("as_of"))
+        return Response({
+            key: {
+                "count": bucket["count"],
+                "total": bucket["total"],
+                "invoices": [
+                    {
+                        "id": entry["invoice"].pk,
+                        "number": entry["invoice"].number,
+                        "customer": str(entry["invoice"].customer),
+                        "due_date": entry["invoice"].due_date,
+                        "days_overdue": entry["days_overdue"],
+                        "amount_due": entry["amount_due"],
+                    }
+                    for entry in bucket["invoices"]
+                ],
+            }
+            for key, bucket in buckets.items()
+        })
+
     @action(detail=True, methods=["post"])
     def credit_note(self, request, pk=None):
         invoice = self.get_object()
@@ -83,3 +107,14 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class InvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = InvoiceLine.objects.all()
     serializer_class = InvoiceLineSerializer
+
+
+class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = InvoicePayment.objects.select_related("invoice", "payment")
+    serializer_class = InvoicePaymentSerializer
+
+    def perform_create(self, serializer):
+        try:
+            super().perform_create(serializer)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)

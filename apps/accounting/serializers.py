@@ -6,6 +6,7 @@ from .models import (
     FiscalPositionTaxMapping,
     JournalEntry,
     JournalLine,
+    Payment,
     PartyTaxProfile,
     Tax,
     TaxGroup,
@@ -85,3 +86,14 @@ class PartyTaxProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = PartyTaxProfile
         fields = ["id", "party", "fiscal_position", "tax_exempt", "exemption_reference"]
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Payment
+        fields = [
+            "id", "number", "party", "direction", "payment_date", "amount", "currency",
+            "exchange_rate", "bank_account", "counterpart_account", "reference", "memo",
+            "journal_entry", "posted", "posted_at",
+        ]
+        read_only_fields = ["number", "exchange_rate", "journal_entry", "posted", "posted_at"]

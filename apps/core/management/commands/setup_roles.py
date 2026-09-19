@@ -34,6 +34,8 @@ ROLES = {
         *crud("accounting", "fiscalposition"),
         *crud("accounting", "fiscalpositiontaxmapping"),
         *crud("accounting", "partytaxprofile"),
+        *crud("accounting", "payment"),
+        "accounting.post_payment",
     ],
     "Sales Rep": [
         *crud("sales", "salesorder"),
@@ -51,7 +53,10 @@ ROLES = {
         *crud("sales", "salesorderline"),
         *crud("sales", "invoice"),
         *crud("sales", "invoiceline"),
+        *crud("sales", "invoicepayment"),
+        *crud("accounting", "payment"),
         "sales.post_invoice",
+        "accounting.post_payment",
     ],
     "Purchasing Clerk": [
         *crud("purchasing", "purchaseorder"),

@@ -3,12 +3,15 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import (
     Account,
     JournalEntry,
     JournalLine,
+    Payment,
+    PaymentDirection,
     Tax,
     compute_taxes,
     round_money,
@@ -99,6 +102,13 @@ class TaxedDocumentMixin(models.Model):
             for tax, amount in line.tax_amounts():
                 totals[tax] += amount
         return dict(totals)
+
+
+class SettlementStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    UNPAID = "unpaid", "Unpaid"
+    PARTIAL = "partial", "Partially paid"
+    PAID = "paid", "Paid"
 
 
 class OrderStatus(models.TextChoices):
@@ -265,6 +275,39 @@ class Invoice(TaxedDocumentMixin, AuditModel):
 
     def is_credit_note(self):
         return bool(self.credits_id)
+
+    def amount_paid(self):
+        return sum(
+            (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
+        )
+
+    def amount_credited(self):
+        """Value of posted credit notes issued against this invoice."""
+        return sum(
+            (note.total() for note in self.credit_notes.filter(posted=True)), Decimal("0")
+        )
+
+    def amount_due(self):
+        return self.total() - self.amount_paid() - self.amount_credited()
+
+    def settlement_status(self):
+        if not self.posted:
+            return SettlementStatus.DRAFT
+        if self.amount_due() <= 0:
+            return SettlementStatus.PAID
+        if self.amount_paid() or self.amount_credited():
+            return SettlementStatus.PARTIAL
+        return SettlementStatus.UNPAID
+
+    def is_overdue(self, as_of=None):
+        if not self.posted or not self.due_date or self.amount_due() <= 0:
+            return False
+        return self.due_date < (to_date(as_of) or timezone.now().date())
+
+    def days_overdue(self, as_of=None):
+        if not self.is_overdue(as_of):
+            return 0
+        return ((to_date(as_of) or timezone.now().date()) - self.due_date).days
 
     def clean(self):
         _require_customer_role(self.customer)
@@ -458,3 +501,112 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
                 "Cannot delete a line on a posted invoice. Issue a credit note instead."
             )
         super().delete(*args, **kwargs)
+
+
+class InvoicePayment(AuditModel):
+    """
+    Applies part (or all) of a Payment to an Invoice. The ledger entry was
+    already made when the payment posted — this records *which* invoices
+    that money settles, which is what makes an aging report possible.
+
+    Allocations stay editable after the fact: re-applying a payment to a
+    different invoice is a bookkeeping correction, not a ledger change.
+    """
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payment_allocations")
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="invoice_allocations")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "payment"], name="one_allocation_per_invoice_and_payment"
+            ),
+            models.CheckConstraint(check=Q(amount__gt=0), name="allocation_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.payment} -> {self.invoice} ({self.amount})"
+
+    @staticmethod
+    def allocated_for(payment, excluding=None):
+        allocations = InvoicePayment.objects.filter(payment=payment)
+        if excluding is not None and excluding.pk:
+            allocations = allocations.exclude(pk=excluding.pk)
+        return allocations.aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
+
+    @staticmethod
+    def unallocated_for(payment):
+        return payment.amount - InvoicePayment.allocated_for(payment)
+
+    def clean(self):
+        if not self.payment_id or not self.invoice_id:
+            return
+        if not self.payment.posted:
+            raise ValidationError("Only a posted payment can be allocated.")
+        if not self.invoice.posted:
+            raise ValidationError("Only a posted invoice can be settled.")
+        if self.payment.direction != PaymentDirection.RECEIPT:
+            raise ValidationError("Only a receipt can settle a customer invoice.")
+        if self.payment.party_id != self.invoice.customer_id:
+            raise ValidationError("The payment and the invoice belong to different parties.")
+
+        available = self.payment.amount - InvoicePayment.allocated_for(self.payment, excluding=self)
+        if self.amount > available:
+            raise ValidationError(
+                f"Only {available} of this payment is unallocated; cannot apply {self.amount}."
+            )
+
+        outstanding = self.invoice.amount_due() + (
+            InvoicePayment.objects.filter(pk=self.pk).first().amount if self.pk else Decimal("0")
+        )
+        if self.amount > outstanding:
+            raise ValidationError(
+                f"The invoice only has {outstanding} outstanding; cannot apply {self.amount}."
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
+
+
+def ar_aging(as_of=None):
+    """
+    Outstanding customer invoices bucketed by how overdue they are.
+
+    Note: amount_due is computed per invoice in Python rather than
+    annotated in SQL, so this is fine for reporting over thousands of
+    invoices but would need an annotated query at much larger volumes.
+    """
+    as_of = to_date(as_of) or timezone.now().date()
+    buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
+
+    invoices = (
+        Invoice.objects.filter(posted=True, credits__isnull=True)
+        .prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes")
+    )
+    for invoice in invoices:
+        due = invoice.amount_due()
+        if due <= 0:
+            continue
+        days = invoice.days_overdue(as_of)
+        if days == 0:
+            key = "current"
+        elif days > 90:
+            key = "90+"
+        else:
+            key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
+        buckets[key].append({"invoice": invoice, "days_overdue": days, "amount_due": due})
+
+    return {
+        key: {
+            "count": len(entries),
+            "total": sum((entry["amount_due"] for entry in entries), Decimal("0")),
+            "invoices": entries,
+        }
+        for key, entries in buckets.items()
+    }

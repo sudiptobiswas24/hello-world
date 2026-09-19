@@ -14,6 +14,7 @@ from .models import (
     FiscalPositionTaxMapping,
     JournalEntry,
     JournalLine,
+    Payment,
     PartyTaxProfile,
     Tax,
     TaxGroup,
@@ -26,6 +27,7 @@ from .serializers import (
     JournalEntrySerializer,
     JournalLineSerializer,
     PartyTaxProfileSerializer,
+    PaymentSerializer,
     TaxGroupSerializer,
     TaxSerializer,
 )
@@ -121,3 +123,30 @@ class FiscalPositionTaxMappingViewSet(AuditableViewSetMixin, viewsets.ModelViewS
 class PartyTaxProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyTaxProfile.objects.select_related("party", "fiscal_position")
     serializer_class = PartyTaxProfileSerializer
+
+
+class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Payment.objects.select_related("party", "bank_account", "counterpart_account")
+    serializer_class = PaymentSerializer
+    action_permission_map = {
+        "post_payment": "accounting.post_payment",
+        "void": "accounting.post_payment",
+    }
+
+    @action(detail=True, methods=["post"])
+    def post_payment(self, request, pk=None):
+        payment = self.get_object()
+        try:
+            payment.post()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(payment).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        payment = self.get_object()
+        try:
+            payment.void(memo=request.data.get("memo", ""))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(payment).data)

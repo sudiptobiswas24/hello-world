@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
+from .models import Invoice, InvoiceLine, InvoicePayment, SalesOrder, SalesOrderLine
 
 
 class MoneyLineSerializerMixin(serializers.Serializer):
@@ -52,6 +52,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    amount_paid = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    amount_credited = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    amount_due = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    settlement_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = Invoice
@@ -61,8 +65,15 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "payment_terms", "billing_address", "shipping_address",
             "credits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
+            "amount_paid", "amount_credited", "amount_due", "settlement_status",
         ]
         read_only_fields = [
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
             "posted", "posted_at",
         ]
+
+
+class InvoicePaymentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoicePayment
+        fields = ["id", "invoice", "payment", "amount"]

@@ -10,6 +10,7 @@ from .models import (
     JournalEntry,
     JournalLine,
     PartyTaxProfile,
+    Payment,
     Tax,
     TaxGroup,
 )
@@ -69,3 +70,11 @@ class PartyTaxProfileAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("party", "fiscal_position", "tax_exempt", "exemption_reference")
     list_filter = ("tax_exempt", "fiscal_position")
     search_fields = ("party__name", "party__code", "exemption_reference")
+
+
+@admin.register(Payment)
+class PaymentAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("number", "party", "direction", "payment_date", "amount", "currency", "posted")
+    list_filter = ("direction", "posted", "currency")
+    search_fields = ("number", "reference", "party__name")
+    readonly_fields = ("number", "exchange_rate", "posted", "posted_at", "journal_entry")

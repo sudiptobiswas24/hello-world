@@ -5,7 +5,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Country, Currency, Party
+from apps.core.models import AuditModel, Country, Currency, DocumentSequence, Party, to_date
 
 CENTS = Decimal("0.01")
 
@@ -414,3 +414,141 @@ class PartyTaxProfile(AuditModel):
         if self.fiscal_position_id:
             return self.fiscal_position.map_taxes(taxes)
         return list(taxes)
+
+
+class PaymentDirection(models.TextChoices):
+    RECEIPT = "receipt", "Receipt (money in)"
+    DISBURSEMENT = "disbursement", "Disbursement (money out)"
+
+
+class Payment(AuditModel):
+    """
+    Money actually moving, posted to the ledger. Deliberately generic and
+    free of any link to invoices or bills: Accounting must not import
+    Sales or Purchasing, so each of those owns its own allocation model
+    pointing back here.
+
+    Posting is one-way like everything else in the ledger — a mistaken
+    payment is voided with a reversing entry, never edited.
+    """
+
+    number = models.CharField(max_length=32, unique=True, blank=True, editable=False)
+    party = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="payments")
+    direction = models.CharField(max_length=16, choices=PaymentDirection.choices)
+    payment_date = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    exchange_rate = models.DecimalField(
+        max_digits=18, decimal_places=8, null=True, blank=True, editable=False,
+        help_text="Rate to the base currency captured at posting time.",
+    )
+    bank_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="The cash or bank account the money moves through.",
+    )
+    counterpart_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="Receivable for a receipt, payable for a disbursement.",
+    )
+    reference = models.CharField(max_length=64, blank=True)
+    memo = models.TextField(blank=True)
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    posted = models.BooleanField(default=False)
+    posted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-payment_date", "-id"]
+        permissions = [("post_payment", "Can post and void payments")]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="payment_amount_positive")
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'PAY-draft-{self.pk}'} {self.party} {self.amount}"
+
+    def _was_posted_in_db(self):
+        if not self.pk:
+            return False
+        return Payment.objects.filter(pk=self.pk, posted=True).exists()
+
+    def save(self, *args, **kwargs):
+        if self._was_posted_in_db():
+            raise ValidationError("This payment is posted and immutable. Void it instead.")
+        if self._state.adding and not self.currency_id and self.party_id:
+            self.currency = self.party.default_currency
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.posted:
+            raise ValidationError("Posted payments cannot be deleted. Void the payment instead.")
+        super().delete(*args, **kwargs)
+
+    def is_receipt(self):
+        return self.direction == PaymentDirection.RECEIPT
+
+    def _rate_for_posting(self):
+        if self.currency is None:
+            return Decimal("1")
+        return self.currency.rate_on(self.payment_date)
+
+    @transaction.atomic
+    def post(self):
+        if self.posted:
+            raise ValidationError("This payment is already posted.")
+
+        self.payment_date = to_date(self.payment_date)
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "accounting.payment", self.payment_date, name="Payments", prefix="PAY-"
+            )
+        self.exchange_rate = self._rate_for_posting()
+        base_amount = round_money(self.amount * self.exchange_rate)
+
+        entry = JournalEntry.objects.create(
+            date=self.payment_date,
+            reference=self.number,
+            memo=self.memo or f"Payment {self.number} for {self.party}",
+        )
+        if self.is_receipt():
+            debit_account, credit_account = self.bank_account, self.counterpart_account
+        else:
+            debit_account, credit_account = self.counterpart_account, self.bank_account
+
+        JournalLine.objects.create(
+            entry=entry, account=debit_account, party=self.party,
+            debit=base_amount, description=f"Payment {self.number}",
+        )
+        JournalLine.objects.create(
+            entry=entry, account=credit_account, party=self.party,
+            credit=base_amount, description=f"Payment {self.number}",
+        )
+        entry.post()
+
+        self.journal_entry = entry
+        self.posted = True
+        self.posted_at = timezone.now()
+        super(Payment, self).save(
+            update_fields=[
+                "number", "payment_date", "exchange_rate", "journal_entry",
+                "posted", "posted_at", "updated_at",
+            ]
+        )
+
+    @transaction.atomic
+    def void(self, memo=""):
+        """Reverse a posted payment. Allocations must be released first."""
+        if not self.posted:
+            raise ValidationError("Only a posted payment can be voided.")
+        if self.journal_entry.reversed_by.exists():
+            raise ValidationError("This payment has already been voided.")
+        return self.journal_entry.create_reversal(
+            memo=memo or f"Void of payment {self.number}"
+        )
+
+    def is_voided(self):
+        return bool(self.journal_entry_id) and self.journal_entry.reversed_by.exists()
