@@ -151,6 +151,18 @@ production / SQLite for local dev by default. Every module builds on the
     `Quotation.mark_sent()` only *records* a send that happened by some
     other route. The recipient is the customer's primary contact,
     falling back to the party's own address.
+  - **Tax rounding is a jurisdiction's rule, not a preference**:
+    `Company.tax_rounding` picks line-level (the default, and what the
+    ledger already contains) or document-level. Three lines of 33.33 at
+    20% give 20.01 one way and 20.00 the other — small enough to be
+    invisible, persistent enough to fail a VAT return's reconciliation.
+    Under document rounding the penny is pushed back onto the largest
+    line rather than left floating, so the sum of the lines still equals
+    the document; otherwise the ledger, `revenue_report()` and the
+    statement each disagree with the invoice by a cent. Lines are
+    grouped by their exact effective tax set before rounding, because
+    compound and price-included taxes depend on what else applies to the
+    same line.
   - **Tax follows the customer**: a line's `effective_taxes()` runs the
     configured taxes through the customer's `PartyTaxProfile`, so a
     zero-rated or exempt customer is charged correctly without anyone

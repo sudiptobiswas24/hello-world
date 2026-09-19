@@ -134,8 +134,59 @@ class TaxedDocumentMixin(models.Model):
     def subtotal(self):
         return sum((line.net_amount() for line in self.lines.all()), Decimal("0"))
 
+    def line_tax_amounts(self):
+        """
+        {line: [(tax, amount)]} for every line, under the company's tax
+        rounding rule.
+
+        Rounding per line and rounding per document differ by pennies —
+        three lines of 33.33 at 20% give 20.01 one way and 20.00 the
+        other — and which is correct is a jurisdiction's choice, not a
+        preference. Getting it wrong fails a VAT return's reconciliation
+        by an amount too small to find and too persistent to ignore.
+
+        Under document rounding the difference is pushed back onto the
+        largest line rather than left floating, so the document's tax
+        still equals the sum of its lines' tax. Anything else leaves
+        every downstream report — the ledger, revenue by item, the
+        statement — disagreeing with the invoice by a cent.
+        """
+        lines = list(self.lines.all())
+        if Company.get().tax_rounding != "document":
+            return {line: line.tax_amounts() for line in lines}
+
+        # Group by the exact set of taxes that applies, because compound
+        # and price-included taxes depend on what else is on the line.
+        groups = defaultdict(list)
+        for line in lines:
+            taxes = tuple(sorted(line.effective_taxes(), key=lambda tax: (tax.sequence, tax.code)))
+            groups[taxes].append(line)
+
+        amounts = {line: [] for line in lines}
+        for taxes, group in groups.items():
+            if not taxes:
+                continue
+            net = sum((line.net_amount() for line in group), Decimal("0"))
+            quantity = sum((line.quantity for line in group), Decimal("0"))
+            _, totals, _ = compute_taxes(list(taxes), net, quantity)
+            biggest = max(group, key=lambda line: (line.net_amount(), line.pk or 0))
+            for tax, target in totals:
+                allocated = Decimal("0")
+                for line in group:
+                    if line is biggest:
+                        continue
+                    share = (line.net_amount() / net) if net else Decimal("0")
+                    part = round_money(target * share)
+                    allocated += part
+                    amounts[line].append((tax, part))
+                amounts[biggest].append((tax, target - allocated))
+        return amounts
+
     def tax_total(self):
-        return sum((line.tax_total() for line in self.lines.all()), Decimal("0"))
+        return sum(
+            (amount for amounts in self.line_tax_amounts().values() for _, amount in amounts),
+            Decimal("0"),
+        )
 
     def total(self):
         return self.subtotal() + self.tax_total()
@@ -143,8 +194,8 @@ class TaxedDocumentMixin(models.Model):
     def tax_breakdown(self):
         """{tax: amount} across all lines, for invoice summary lines."""
         totals = defaultdict(Decimal)
-        for line in self.lines.all():
-            for tax, amount in line.tax_amounts():
+        for amounts in self.line_tax_amounts().values():
+            for tax, amount in amounts:
                 totals[tax] += amount
         return dict(totals)
 
@@ -1349,8 +1400,9 @@ class Invoice(TaxedDocumentMixin, AuditModel):
                             line.description or str(line.item)))
 
         tax_totals = defaultdict(Decimal)
+        line_taxes = self.line_tax_amounts()
         for line in lines:
-            for tax, amount in line.tax_amounts():
+            for tax, amount in line_taxes.get(line, ()):
                 if not amount:
                     continue
                 if not tax.applies_to_sales():
@@ -2524,6 +2576,10 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
     for invoice in invoices:
         # A credit note reduces revenue, so its lines count negative.
         sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
+        # Document-level tax rounding puts a line's tax somewhere other
+        # than compute_taxes() would put it, so read the document's own
+        # allocation or this report drifts from the invoice by pennies.
+        line_taxes = invoice.line_tax_amounts()
         for line in invoice.lines.all():
             if group_by == "customer":
                 key = str(invoice.customer)
@@ -2543,7 +2599,9 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
                 raise ValueError(f"Unsupported grouping: {group_by}")
             bucket = totals[key]
             bucket["net"] += sign * line.net_amount()
-            bucket["tax"] += sign * line.tax_total()
+            bucket["tax"] += sign * sum(
+                (amount for _, amount in line_taxes.get(line, ())), Decimal("0")
+            )
             bucket["quantity"] += sign * line.quantity
 
     return [

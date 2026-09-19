@@ -535,6 +535,13 @@ class Company(AuditModel):
     address = models.ForeignKey(
         Address, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
+    tax_rounding = models.CharField(
+        max_length=16, default="line",
+        choices=[("line", "Round tax per line"), ("document", "Round tax per document")],
+        help_text="Some jurisdictions require tax computed on the document total per rate "
+                  "rather than line by line. The two differ by pennies, which is enough to "
+                  "fail a tax return's reconciliation.",
+    )
     fiscal_year_start_month = models.PositiveSmallIntegerField(
         default=1, choices=[(m, datetime.date(2000, m, 1).strftime("%B")) for m in range(1, 13)]
     )
