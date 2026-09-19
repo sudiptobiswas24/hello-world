@@ -1,11 +1,17 @@
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Currency, Party
+from apps.core.models import AuditModel, Country, Currency, Party
+
+CENTS = Decimal("0.01")
+
+
+def _round(amount):
+    return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
 class AccountType(models.TextChoices):
@@ -181,3 +187,230 @@ class JournalLine(AuditModel):
                 "Cannot delete a line on a posted journal entry. Create a reversing entry instead."
             )
         super().delete(*args, **kwargs)
+
+
+class TaxComputation(models.TextChoices):
+    PERCENTAGE = "percentage", "Percentage of base"
+    FIXED = "fixed", "Fixed amount per unit"
+
+
+class TaxScope(models.TextChoices):
+    SALES = "sales", "Sales only"
+    PURCHASE = "purchase", "Purchases only"
+    BOTH = "both", "Sales and purchases"
+
+
+class TaxGroup(AuditModel):
+    """Groups taxes for summary lines and reporting (e.g. 'VAT 20%')."""
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return self.name
+
+
+class Tax(AuditModel):
+    """
+    A single tax rate. Lives in Accounting rather than Core because a tax
+    is meaningless without the GL accounts it posts to, and Core must not
+    depend on Accounting.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    group = models.ForeignKey(
+        TaxGroup, null=True, blank=True, on_delete=models.PROTECT, related_name="taxes"
+    )
+    computation = models.CharField(
+        max_length=16, choices=TaxComputation.choices, default=TaxComputation.PERCENTAGE
+    )
+    rate = models.DecimalField(
+        max_digits=9,
+        decimal_places=4,
+        help_text="Percentage (20.0000 = 20%) or, for fixed taxes, amount per unit.",
+    )
+    price_included = models.BooleanField(
+        default=False, help_text="The unit price already contains this tax (common in EU retail)."
+    )
+    include_base_amount = models.BooleanField(
+        default=False,
+        help_text="Add this tax to the base used by later taxes in sequence (compound tax).",
+    )
+    sequence = models.PositiveSmallIntegerField(
+        default=10, help_text="Application order; matters for compound taxes."
+    )
+    scope = models.CharField(max_length=16, choices=TaxScope.choices, default=TaxScope.BOTH)
+    collected_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Sales: where tax collected is credited (usually a liability).",
+    )
+    paid_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Purchases: where tax paid is debited (usually a recoverable asset).",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        verbose_name_plural = "taxes"
+        ordering = ["sequence", "code"]
+        constraints = [models.CheckConstraint(check=Q(rate__gte=0), name="tax_rate_not_negative")]
+
+    def __str__(self):
+        if self.computation == TaxComputation.FIXED:
+            return f"{self.name} ({self.rate}/unit)"
+        return f"{self.name} ({self.rate}%)"
+
+    def clean(self):
+        if self.scope in (TaxScope.SALES, TaxScope.BOTH) and not self.collected_account_id:
+            raise ValidationError("A sales tax needs a collected_account to post to.")
+        if self.scope in (TaxScope.PURCHASE, TaxScope.BOTH) and not self.paid_account_id:
+            raise ValidationError("A purchase tax needs a paid_account to post to.")
+        if self.price_included and self.computation == TaxComputation.FIXED and self.rate < 0:
+            raise ValidationError("A fixed included tax cannot be negative.")
+
+    def applies_to_sales(self):
+        return self.scope in (TaxScope.SALES, TaxScope.BOTH)
+
+    def applies_to_purchases(self):
+        return self.scope in (TaxScope.PURCHASE, TaxScope.BOTH)
+
+    def account_for(self, is_sale):
+        return self.collected_account if is_sale else self.paid_account
+
+    def compute(self, base_amount, quantity=Decimal("1")):
+        """Tax due on `base_amount`, which must already be tax-exclusive."""
+        if self.computation == TaxComputation.FIXED:
+            return _round(self.rate * quantity)
+        return _round(base_amount * self.rate / Decimal("100"))
+
+
+def compute_taxes(taxes, amount, quantity=Decimal("1")):
+    """
+    Apply `taxes` to `amount` and return (net_base, [(tax, tax_amount)], total).
+
+    `amount` is the line amount as entered. Any price-included taxes are
+    stripped out of it first to find the tax-exclusive base, then every
+    tax is applied in `sequence` order, with compound taxes adding their
+    own amount to the base seen by later taxes.
+    """
+    ordered = sorted(taxes, key=lambda tax: (tax.sequence, tax.code))
+    base = amount
+
+    included_percentage = [
+        tax for tax in ordered
+        if tax.price_included and tax.computation == TaxComputation.PERCENTAGE
+    ]
+    included_fixed = [
+        tax for tax in ordered
+        if tax.price_included and tax.computation == TaxComputation.FIXED
+    ]
+    for tax in included_fixed:
+        base -= tax.rate * quantity
+    if included_percentage:
+        total_rate = sum(tax.rate for tax in included_percentage)
+        base = base * Decimal("100") / (Decimal("100") + total_rate)
+    base = _round(base)
+
+    results = []
+    running_base = base
+    for tax in ordered:
+        tax_amount = tax.compute(running_base, quantity)
+        results.append((tax, tax_amount))
+        if tax.include_base_amount:
+            running_base += tax_amount
+
+    total = base + sum(amount for _, amount in results)
+    return base, results, _round(total)
+
+
+class FiscalPosition(AuditModel):
+    """
+    Substitutes taxes based on who you're dealing with — zero-rating an
+    export, or swapping domestic VAT for a reverse charge. Without this,
+    every customer would be taxed as if they were domestic.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    country = models.ForeignKey(
+        Country, null=True, blank=True, on_delete=models.PROTECT, related_name="fiscal_positions"
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return self.name
+
+    def map_tax(self, tax):
+        """The tax that replaces `tax` here; None means it doesn't apply at all."""
+        mapping = self.tax_mappings.filter(source_tax=tax).first()
+        if mapping is None:
+            return tax
+        return mapping.target_tax
+
+    def map_taxes(self, taxes):
+        mapped = [self.map_tax(tax) for tax in taxes]
+        return [tax for tax in mapped if tax is not None]
+
+
+class FiscalPositionTaxMapping(AuditModel):
+    fiscal_position = models.ForeignKey(
+        FiscalPosition, on_delete=models.CASCADE, related_name="tax_mappings"
+    )
+    source_tax = models.ForeignKey(Tax, on_delete=models.CASCADE, related_name="+")
+    target_tax = models.ForeignKey(
+        Tax, null=True, blank=True, on_delete=models.CASCADE, related_name="+",
+        help_text="Leave empty to drop the source tax entirely (e.g. an exempt export).",
+    )
+
+    class Meta:
+        ordering = ["fiscal_position", "source_tax"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["fiscal_position", "source_tax"], name="unique_tax_mapping_per_position"
+            )
+        ]
+
+    def __str__(self):
+        target = self.target_tax.code if self.target_tax_id else "no tax"
+        return f"{self.source_tax.code} -> {target}"
+
+    def clean(self):
+        if self.target_tax_id and self.target_tax_id == self.source_tax_id:
+            raise ValidationError("Mapping a tax to itself has no effect.")
+
+
+class PartyTaxProfile(AuditModel):
+    """
+    Tax settings for a Party. Held here rather than on core.Party so the
+    kernel stays independent of Accounting.
+    """
+
+    party = models.OneToOneField(Party, on_delete=models.CASCADE, related_name="tax_profile")
+    fiscal_position = models.ForeignKey(
+        FiscalPosition, null=True, blank=True, on_delete=models.PROTECT, related_name="parties"
+    )
+    tax_exempt = models.BooleanField(default=False)
+    exemption_reference = models.CharField(
+        max_length=64, blank=True, help_text="Certificate or registration number for the exemption."
+    )
+
+    def __str__(self):
+        return f"Tax profile for {self.party}"
+
+    def clean(self):
+        if self.tax_exempt and not self.exemption_reference:
+            raise ValidationError("An exempt party needs an exemption reference on file.")
+
+    def applicable_taxes(self, taxes):
+        if self.tax_exempt:
+            return []
+        if self.fiscal_position_id:
+            return self.fiscal_position.map_taxes(taxes)
+        return list(taxes)

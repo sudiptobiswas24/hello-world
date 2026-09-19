@@ -29,6 +29,11 @@ ROLES = {
         *crud("core", "paymentterms"),
         *crud("core", "documentsequence"),
         *crud("core", "company", actions=("change", "view")),
+        *crud("accounting", "tax"),
+        *crud("accounting", "taxgroup"),
+        *crud("accounting", "fiscalposition"),
+        *crud("accounting", "fiscalpositiontaxmapping"),
+        *crud("accounting", "partytaxprofile"),
     ],
     "Sales Rep": [
         *crud("sales", "salesorder"),
