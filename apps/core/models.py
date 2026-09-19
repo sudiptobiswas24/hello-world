@@ -1,8 +1,13 @@
+from decimal import Decimal
+
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 
 
 class TimeStampedModel(models.Model):
-    """Abstract base giving every kernel/module model a consistent audit trail."""
+    """Abstract base giving every model a created/updated timestamp."""
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -11,15 +16,54 @@ class TimeStampedModel(models.Model):
         abstract = True
 
 
-class Currency(TimeStampedModel):
+class AuditModel(TimeStampedModel):
+    """
+    Abstract base for anything that needs a who-changed-it trail, not just a
+    when-changed-it one. created_by/updated_by are set by the view/admin
+    layer (see apps/core/audit.py), never inferred here.
+    """
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        editable=False,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        editable=False,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+
+    class Meta:
+        abstract = True
+
+
+class Currency(AuditModel):
     code = models.CharField(max_length=3, unique=True, help_text="ISO 4217 code, e.g. USD")
     name = models.CharField(max_length=64)
     symbol = models.CharField(max_length=8, blank=True)
     decimal_places = models.PositiveSmallIntegerField(default=2)
+    is_base = models.BooleanField(
+        default=False,
+        help_text="The company's single reporting/functional currency. At most one Currency may set this.",
+    )
 
     class Meta:
         verbose_name_plural = "currencies"
         ordering = ["code"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["is_base"],
+                condition=Q(is_base=True),
+                name="unique_base_currency",
+            )
+        ]
 
     def __str__(self):
         return self.code
@@ -34,11 +78,25 @@ class UnitOfMeasureCategory(models.TextChoices):
     OTHER = "other", "Other"
 
 
-class UnitOfMeasure(TimeStampedModel):
+class UnitOfMeasure(AuditModel):
     code = models.CharField(max_length=16, unique=True, help_text="e.g. pcs, kg, L")
     name = models.CharField(max_length=64)
     category = models.CharField(
         max_length=16, choices=UnitOfMeasureCategory.choices, default=UnitOfMeasureCategory.COUNT
+    )
+    base_unit = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="derived_units",
+        help_text="Leave blank if this unit IS a base unit (e.g. 'each', 'kg').",
+    )
+    conversion_factor = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        default=Decimal("1"),
+        help_text="Quantity in this unit * conversion_factor = equivalent quantity in base_unit.",
     )
 
     class Meta:
@@ -47,8 +105,20 @@ class UnitOfMeasure(TimeStampedModel):
     def __str__(self):
         return self.code
 
+    def clean(self):
+        if self.base_unit_id and self.base_unit_id == self.pk:
+            raise ValidationError("A unit of measure cannot be its own base unit.")
+        if self.base_unit_id and self.base_unit.category != self.category:
+            raise ValidationError("base_unit must be in the same category as this unit.")
 
-class Party(TimeStampedModel):
+    def to_base_quantity(self, quantity):
+        """Convert a quantity expressed in this unit into the base unit's quantity."""
+        if not self.base_unit_id:
+            return quantity
+        return quantity * self.conversion_factor
+
+
+class Party(AuditModel):
     """
     A single legal/physical entity the business deals with. One Party can hold
     multiple roles (customer, vendor, employee) via PartyRoleAssignment instead
@@ -82,7 +152,7 @@ class PartyRole(models.TextChoices):
     OTHER = "other", "Other"
 
 
-class PartyRoleAssignment(TimeStampedModel):
+class PartyRoleAssignment(AuditModel):
     party = models.ForeignKey(Party, related_name="role_assignments", on_delete=models.CASCADE)
     role = models.CharField(max_length=16, choices=PartyRole.choices)
 

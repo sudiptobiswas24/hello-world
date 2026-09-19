@@ -1,10 +1,10 @@
 from django.db import models
 from django.db.models import Sum
 
-from apps.core.models import TimeStampedModel, UnitOfMeasure
+from apps.core.models import AuditModel, UnitOfMeasure
 
 
-class Warehouse(TimeStampedModel):
+class Warehouse(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
     address = models.TextField(blank=True)
@@ -22,7 +22,7 @@ class ItemType(models.TextChoices):
     SERVICE = "service", "Service"
 
 
-class Item(TimeStampedModel):
+class Item(AuditModel):
     sku = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -57,7 +57,7 @@ class MovementType(models.TextChoices):
     ADJUSTMENT = "adjustment", "Adjustment"
 
 
-class StockMovement(TimeStampedModel):
+class StockMovement(AuditModel):
     """
     Append-only ledger of stock changes. On-hand quantity is always a
     derived aggregate of these rows (see Item.on_hand_at) rather than a
