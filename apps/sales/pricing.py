@@ -37,7 +37,11 @@ def applicable_price_lists(customer=None, currency=None, on_date=None):
     if customer is not None:
         profile = getattr(customer, "customer_profile", None)
         if profile is not None and profile.price_list_id:
-            candidates.append(profile.price_list)
+            # A list priced in another currency must not price this document:
+            # 5 EUR is not 5 USD. A list with no currency is currency-agnostic.
+            chosen = profile.price_list
+            if currency is None or chosen.currency_id in (None, currency.pk):
+                candidates.append(chosen)
 
     defaults = PriceList.objects.filter(is_active=True, is_default=True)
     if currency is not None:

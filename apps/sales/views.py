@@ -292,8 +292,31 @@ class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = QuotationSerializer
     action_permission_map = {"accept": "sales.add_salesorder"}
 
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        quotation = self.get_object()
+        response = HttpResponse(quotation.render_pdf(), content_type="application/pdf")
+        name = quotation.number or f"draft-{quotation.pk}"
+        response["Content-Disposition"] = f'inline; filename="{name}.pdf"'
+        return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email the quote as a PDF and mark it sent."""
+        quotation = self.get_object()
+        try:
+            recipient = quotation.email_to_customer(
+                to=request.data.get("to"),
+                subject=request.data.get("subject"),
+                body=request.data.get("body"),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"sent_to": recipient, "number": quotation.number})
+
     @action(detail=True, methods=["post"])
     def mark_sent(self, request, pk=None):
+        """Record that the quote went out by some other route."""
         quotation = self.get_object()
         try:
             quotation.mark_sent()

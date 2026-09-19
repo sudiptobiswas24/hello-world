@@ -72,9 +72,28 @@ class TaxedLineMixin(models.Model):
     def subtotal(self):
         return self.net_amount()
 
+    def customer_for_tax(self):
+        """The party whose fiscal position governs this line. Set by subclasses."""
+        return None
+
+    def effective_taxes(self):
+        """
+        The taxes that actually apply, after the customer's fiscal position
+        substitutes or removes them. Without this the configuration sits
+        there decorative and an export customer still gets charged VAT.
+        """
+        taxes = list(self.taxes.all())
+        customer = self.customer_for_tax()
+        if not taxes or customer is None:
+            return taxes
+        profile = getattr(customer, "tax_profile", None)
+        if profile is None:
+            return taxes
+        return profile.applicable_taxes(taxes)
+
     def tax_amounts(self):
         """[(tax, amount)] for this line, honouring inclusive and compound taxes."""
-        taxes = list(self.taxes.all())
+        taxes = self.effective_taxes()
         if not taxes:
             return []
         _, lines, _ = compute_taxes(taxes, self.net_amount(), self.quantity)
@@ -260,7 +279,9 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         limit = profile.credit_limit if profile else None
         if limit is None:
             return
-        exposure = outstanding_balance(self.customer) + self.total()
+        # committed_balance already counts this order once it is confirmed;
+        # at confirmation time it isn't yet, so add it explicitly.
+        exposure = committed_balance(self.customer) + self.total()
         if exposure > limit:
             raise ValidationError(
                 f"{self.customer} would be {exposure} against a credit limit of {limit}. "
@@ -365,6 +386,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="sales_order_lines")
+
+    def customer_for_tax(self):
+        return self.order.customer
 
     class Meta:
         constraints = [
@@ -654,6 +678,8 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         tax_totals = defaultdict(Decimal)
         for line in lines:
             for tax, amount in line.tax_amounts():
+                if not amount:
+                    continue
                 if not tax.applies_to_sales():
                     raise ValidationError(f"Tax {tax.code} is not configured for sales.")
                 account = tax.account_for(is_sale=True)
@@ -700,6 +726,10 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             raise ValidationError("This invoice is already posted.")
 
         self.invoice_date = to_date(self.invoice_date)
+        if not self.is_credit_note() and self.total() <= 0:
+            raise ValidationError(
+                "This invoice has no value to post. Give its lines a quantity and price."
+            )
         if not self.is_credit_note():
             for line in self.lines.all():
                 if not line.order_line_id:
@@ -823,6 +853,9 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
     revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
     taxes = models.ManyToManyField(Tax, blank=True, related_name="invoice_lines")
 
+    def customer_for_tax(self):
+        return self.invoice.customer
+
     def __str__(self):
         return f"{self.item or self.description} x{self.quantity}"
 
@@ -905,6 +938,15 @@ class InvoicePayment(AuditModel):
             raise ValidationError("Only a receipt can settle a customer invoice.")
         if self.payment.party_id != self.invoice.customer_id:
             raise ValidationError("The payment and the invoice belong to different parties.")
+        # Settling across currencies would need FX gain/loss postings that
+        # don't exist yet; treating 100 USD as 100 EUR silently writes off
+        # the difference, so refuse rather than guess.
+        if self.payment.currency_id != self.invoice.currency_id:
+            raise ValidationError(
+                f"The payment is in {self.payment.currency or 'no currency'} but the invoice "
+                f"is in {self.invoice.currency or 'no currency'}; cross-currency settlement "
+                "is not supported."
+            )
 
         available = self.payment.amount - InvoicePayment.allocated_for(self.payment, excluding=self)
         if self.amount > available:
@@ -931,6 +973,26 @@ def outstanding_balance(customer):
         customer=customer, posted=True, credits__isnull=True
     ).prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes")
     return sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
+
+
+def committed_balance(customer):
+    """
+    Total exposure: what is owed, plus what has been promised but not yet
+    billed. A limit that counted only posted invoices would wave through
+    any number of confirmed orders.
+    """
+    uninvoiced = Decimal("0")
+    orders = SalesOrder.objects.filter(
+        customer=customer, status=OrderStatus.CONFIRMED
+    ).prefetch_related("lines__taxes")
+    for order in orders:
+        for line in order.lines.all():
+            remaining = line.quantity_uninvoiced()
+            if remaining <= 0:
+                continue
+            share = remaining / line.quantity if line.quantity else Decimal("0")
+            uninvoiced += round_money(line.total() * share)
+    return outstanding_balance(customer) + uninvoiced
 
 
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
@@ -1462,7 +1524,24 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         if self.valid_until and self.valid_until < to_date(self.quotation_date):
             raise ValidationError("valid_until cannot be before the quotation date.")
 
+    def _is_settled_in_db(self):
+        if not self.pk:
+            return False
+        return Quotation.objects.filter(
+            pk=self.pk, status=QuotationStatus.ACCEPTED
+        ).exists()
+
+    # The only fields the accept()/send paths themselves write afterwards.
+    INTERNAL_FIELDS = {"number", "status", "sales_order", "sent_at", "updated_at"}
+
     def save(self, *args, **kwargs):
+        updating = set(kwargs.get("update_fields") or [])
+        internal_only = bool(updating) and updating <= self.INTERNAL_FIELDS
+        if self._is_settled_in_db() and not internal_only:
+            raise ValidationError(
+                "This quotation has been accepted and now records what was agreed; "
+                "it can no longer be changed."
+            )
         if self._state.adding and self.customer_id:
             customer = self.customer
             self.currency = self.currency or customer.default_currency
@@ -1470,6 +1549,48 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             self.billing_address = self.billing_address or customer.billing_address()
             self.shipping_address = self.shipping_address or customer.shipping_address()
         super().save(*args, **kwargs)
+
+    def render_pdf(self):
+        from .documents import render_quotation_pdf
+
+        return render_quotation_pdf(self)
+
+    def recipient_email(self):
+        contact = self.customer.primary_contact()
+        if contact and contact.email:
+            return contact.email
+        return self.customer.email or ""
+
+    def email_to_customer(self, to=None, subject=None, body=None):
+        """Send the quote as a PDF and mark it sent."""
+        from django.core.mail import EmailMessage
+
+        if not self.lines.exists():
+            raise ValidationError("Cannot send a quotation with no lines.")
+        recipient = to or self.recipient_email()
+        if not recipient:
+            raise ValidationError(
+                f"{self.customer} has no email address on the party or its primary contact."
+            )
+        self._assign_number()
+        company = Company.get()
+        message = EmailMessage(
+            subject=subject or f"Quotation {self.number} from {company.name}",
+            body=body or (
+                f"Dear {self.customer.name},\n\n"
+                f"Please find quotation {self.number} attached"
+                + (f", valid until {self.valid_until:%d %b %Y}" if self.valid_until else "")
+                + f".\n\nRegards,\n{company.name}\n"
+            ),
+            to=[recipient],
+        )
+        message.attach(f"{self.number}.pdf", self.render_pdf(), "application/pdf")
+        message.send()
+
+        self.status = QuotationStatus.SENT
+        self.sent_at = timezone.now()
+        self.save(update_fields=["number", "status", "sent_at", "updated_at"])
+        return recipient
 
     def has_expired(self, as_of=None):
         if not self.valid_until:
@@ -1484,6 +1605,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
 
     @transaction.atomic
     def mark_sent(self):
+        """Record that the quote went out by some other route (post, in person)."""
         if self.status not in (QuotationStatus.DRAFT, QuotationStatus.SENT):
             raise ValidationError(f"A {self.get_status_display().lower()} quote cannot be sent.")
         if not self.lines.exists():
@@ -1557,6 +1679,9 @@ class QuotationLine(TaxedLineMixin, AuditModel):
     )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="quotation_lines")
 
+    def customer_for_tax(self):
+        return self.quotation.customer
+
     class Meta:
         constraints = [
             models.CheckConstraint(check=Q(quantity__gt=0), name="quote_line_quantity_positive"),
@@ -1566,7 +1691,23 @@ class QuotationLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.item} x{self.quantity}"
 
+    def _quotation_is_accepted(self):
+        return self.quotation_id and Quotation.objects.filter(
+            pk=self.quotation_id, status=QuotationStatus.ACCEPTED
+        ).exists()
+
+    def delete(self, *args, **kwargs):
+        if self._quotation_is_accepted():
+            raise ValidationError(
+                "This quotation has been accepted; its lines record what was agreed."
+            )
+        super().delete(*args, **kwargs)
+
     def save(self, *args, **kwargs):
+        if self._quotation_is_accepted():
+            raise ValidationError(
+                "This quotation has been accepted; its lines record what was agreed."
+            )
         if self.unit_price is None:
             self.unit_price = resolve_price(
                 self.item,

@@ -98,8 +98,10 @@ production / SQLite for local dev by default. Every module builds on the
     breaks (`min_quantity`) picking the highest qualifying tier. An
     item nothing can price fails loudly rather than posting at zero.
   - **Credit limits**: `CustomerProfile.credit_limit` is checked at
-    order confirmation against what the customer already owes
-    (`outstanding_balance()`). Override deliberately with
+    order confirmation against `committed_balance()` — what is owed on
+    posted invoices *plus* what is promised on confirmed but uninvoiced
+    orders. Counting invoices alone would wave through any number of
+    orders. Override deliberately with
     `confirm(ignore_credit_limit=True)`.
   - **Line arithmetic**: gross → discount → net → tax, in that order
     (tax is charged on the discounted amount). Totals are derived from
@@ -137,10 +139,22 @@ production / SQLite for local dev by default. Every module builds on the
     fulfilment state a quote has no business having. `accept()` converts
     to a confirmed order carrying prices, discounts and taxes across, so
     the quoted price holds even if the price list has moved since.
-  - **Invoice output**: `render_pdf()` (reportlab — pure Python, where
-    WeasyPrint would need cairo/pango) and `email_to_customer()`, which
-    attaches the PDF and records `sent_at`. The recipient is the
-    customer's primary contact, falling back to the party's own address.
+  - **Document output**: invoices, credit notes and quotations all
+    render through one layout in `documents.py` (reportlab — pure
+    Python, where WeasyPrint would need cairo/pango).
+    `email_to_customer()` attaches the PDF and records `sent_at`;
+    `Quotation.mark_sent()` only *records* a send that happened by some
+    other route. The recipient is the customer's primary contact,
+    falling back to the party's own address.
+  - **Tax follows the customer**: a line's `effective_taxes()` runs the
+    configured taxes through the customer's `PartyTaxProfile`, so a
+    zero-rated or exempt customer is charged correctly without anyone
+    remembering to swap the tax by hand. Display and posting use the
+    same mapped set.
+  - **Settlement is single-currency**: a payment must be in the
+    invoice's currency. Cross-currency settlement needs FX gain/loss
+    postings that don't exist yet, and treating 100 USD as 100 EUR
+    silently writes off the difference, so it is refused instead.
   - **Dunning**: `DunningLevel` defines the chase sequence by days
     overdue; `run_dunning()` raises the reminders now due. An invoice
     gets each level at most once and jumps straight to the level it has

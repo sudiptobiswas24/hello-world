@@ -1,12 +1,15 @@
 """
-Rendering invoices as PDFs so they can actually reach the customer.
+Rendering sales documents as PDFs so they can actually reach the customer.
 
 Built on reportlab, which is pure Python — WeasyPrint would give nicer
 typography but needs cairo/pango system libraries, which is a deployment
-burden for a document this plain.
+burden for documents this plain.
+
+Invoices and quotations share one layout: the same company header, party
+block, line table and totals, differing only in their heading, the details
+they show and how their totals are summarised.
 """
 
-from decimal import Decimal
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -45,9 +48,7 @@ def _styles():
 
 
 def _address_block(address):
-    if address is None:
-        return ""
-    return address.formatted().replace("\n", "<br/>")
+    return "" if address is None else address.formatted().replace("\n", "<br/>")
 
 
 def _money(amount, currency):
@@ -55,27 +56,27 @@ def _money(amount, currency):
     return f"{symbol}{amount:,.2f}"
 
 
-def render_invoice_pdf(invoice):
-    """Return the invoice as PDF bytes."""
+def _render_document(*, heading, document, party, address, meta, totals,
+                     party_label="BILL TO", note=None):
+    """
+    `meta` is [[label, value]] for the details block; `totals` is
+    [[label, Decimal]] with the last row emphasised as the bottom line.
+    """
     company = Company.get()
-    currency = invoice.currency
+    currency = getattr(document, "currency", None)
     style = _styles()
     buffer = BytesIO()
 
-    document = SimpleDocTemplate(
+    template = SimpleDocTemplate(
         buffer, pagesize=A4,
         leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm,
-        title=f"{'Credit note' if invoice.is_credit_note() else 'Invoice'} {invoice.number}",
-        author=company.name,
+        title=f"{heading} {document.number}".strip(), author=company.name,
     )
 
-    heading = "Credit Note" if invoice.is_credit_note() else "Invoice"
     story = [
         Table(
-            [[
-                Paragraph(f"<b>{company.name}</b>", style["body"]),
-                Paragraph(heading, style["title"]),
-            ]],
+            [[Paragraph(f"<b>{company.name}</b>", style["body"]),
+              Paragraph(heading, style["title"])]],
             colWidths=[95 * mm, 79 * mm],
             style=TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -84,57 +85,36 @@ def render_invoice_pdf(invoice):
             ]),
         ),
         Spacer(1, 2 * mm),
-    ]
-
-    meta = [
-        ["Number", invoice.number or "(draft)"],
-        ["Date", invoice.invoice_date.strftime("%d %b %Y") if invoice.invoice_date else ""],
-        ["Due", invoice.due_date.strftime("%d %b %Y") if invoice.due_date else ""],
-    ]
-    if invoice.payment_terms_id:
-        meta.append(["Terms", invoice.payment_terms.name])
-    if invoice.reference:
-        meta.append(["Reference", invoice.reference])
-    if invoice.is_credit_note() and invoice.credits_id:
-        meta.append(["Credits", invoice.credits.number])
-
-    story.append(
         Table(
-            [[
-                Paragraph("BILL TO", style["h2"]),
-                "",
-                Paragraph("DETAILS", style["h2"]),
-            ], [
-                Paragraph(
-                    f"<b>{invoice.customer.name}</b><br/>{_address_block(invoice.billing_address)}",
-                    style["body"],
-                ),
-                "",
-                Table(
-                    [[Paragraph(label, style["muted"]), Paragraph(str(value), style["body"])]
-                     for label, value in meta],
-                    colWidths=[22 * mm, 52 * mm],
-                    style=TableStyle([
-                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                        ("TOPPADDING", (0, 0), (-1, -1), 1),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
-                    ]),
-                ),
-            ]],
+            [[Paragraph(party_label, style["h2"]), "", Paragraph("DETAILS", style["h2"])],
+             [Paragraph(f"<b>{party.name}</b><br/>{_address_block(address)}", style["body"]),
+              "",
+              Table(
+                  [[Paragraph(label, style["muted"]), Paragraph(str(value), style["body"])]
+                   for label, value in meta],
+                  colWidths=[24 * mm, 50 * mm],
+                  style=TableStyle([
+                      ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                      ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                      ("TOPPADDING", (0, 0), (-1, -1), 1),
+                      ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+                  ]),
+              )]],
             colWidths=[80 * mm, 20 * mm, 74 * mm],
-            style=TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]),
-        )
-    )
-    story.append(Spacer(1, 8 * mm))
+            style=TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ]),
+        ),
+        Spacer(1, 8 * mm),
+    ]
 
     header = ["Description", "Qty", "Unit price", "Disc", "Tax", "Amount"]
-    rows = [[Paragraph(f"<b>{cell}</b>", style["muted"] if index else style["muted"])
-             for index, cell in enumerate(header)]]
-    for line in invoice.lines.all():
+    rows = [[Paragraph(f"<b>{cell}</b>", style["muted"]) for cell in header]]
+    for line in document.lines.all():
         tax_names = ", ".join(tax.code for tax, _ in line.tax_amounts()) or "—"
         rows.append([
-            Paragraph(line.description or str(line.item), style["body"]),
+            Paragraph(getattr(line, "description", "") or str(line.item), style["body"]),
             Paragraph(f"{line.quantity:,.2f}", style["right"]),
             Paragraph(_money(line.unit_price, currency), style["right"]),
             Paragraph(
@@ -162,18 +142,9 @@ def render_invoice_pdf(invoice):
     )
     story.append(Spacer(1, 4 * mm))
 
-    totals = [["Subtotal", _money(invoice.subtotal(), currency)]]
-    for tax, amount in sorted(invoice.tax_breakdown().items(), key=lambda pair: pair[0].code):
-        totals.append([tax.name, _money(amount, currency)])
-    totals.append(["Total", _money(invoice.total(), currency)])
-    if invoice.amount_paid():
-        totals.append(["Paid", f"-{_money(invoice.amount_paid(), currency)}"])
-    if invoice.amount_credited():
-        totals.append(["Credited", f"-{_money(invoice.amount_credited(), currency)}"])
-    totals.append(["Amount due", _money(invoice.amount_due(), currency)])
-
     total_rows = [
-        [Paragraph(label, style["right"]), Paragraph(value, style["right"])]
+        [Paragraph(label, style["right"]),
+         Paragraph(value if isinstance(value, str) else _money(value, currency), style["right"])]
         for label, value in totals
     ]
     story.append(
@@ -190,15 +161,9 @@ def render_invoice_pdf(invoice):
         )
     )
 
-    if currency and not currency.is_base and invoice.exchange_rate:
+    if note:
         story.append(Spacer(1, 6 * mm))
-        story.append(
-            Paragraph(
-                f"Amounts shown in {currency.code}. Booked at {invoice.exchange_rate} "
-                "to the reporting currency.",
-                style["muted"],
-            )
-        )
+        story.append(Paragraph(note, style["muted"]))
 
     footer = [company.legal_name or company.name]
     if company.tax_id:
@@ -208,5 +173,73 @@ def render_invoice_pdf(invoice):
     story.append(Spacer(1, 10 * mm))
     story.append(Paragraph(" · ".join(footer), style["muted"]))
 
-    document.build(story)
+    template.build(story)
     return buffer.getvalue()
+
+
+def render_invoice_pdf(invoice):
+    """Return the invoice as PDF bytes."""
+    currency = invoice.currency
+    meta = [
+        ["Number", invoice.number or "(draft)"],
+        ["Date", invoice.invoice_date.strftime("%d %b %Y") if invoice.invoice_date else ""],
+        ["Due", invoice.due_date.strftime("%d %b %Y") if invoice.due_date else ""],
+    ]
+    if invoice.payment_terms_id:
+        meta.append(["Terms", invoice.payment_terms.name])
+    if invoice.reference:
+        meta.append(["Reference", invoice.reference])
+    if invoice.is_credit_note() and invoice.credits_id:
+        meta.append(["Credits", invoice.credits.number])
+
+    totals = [["Subtotal", invoice.subtotal()]]
+    for tax, amount in sorted(invoice.tax_breakdown().items(), key=lambda pair: pair[0].code):
+        totals.append([tax.name, amount])
+    totals.append(["Total", invoice.total()])
+    if invoice.amount_paid():
+        totals.append(["Paid", f"-{_money(invoice.amount_paid(), currency)}"])
+    if invoice.amount_credited():
+        totals.append(["Credited", f"-{_money(invoice.amount_credited(), currency)}"])
+    totals.append(["Amount due", invoice.amount_due()])
+
+    note = None
+    if currency and not currency.is_base and invoice.exchange_rate:
+        note = (
+            f"Amounts shown in {currency.code}. Booked at {invoice.exchange_rate} "
+            "to the reporting currency."
+        )
+
+    return _render_document(
+        heading="Credit Note" if invoice.is_credit_note() else "Invoice",
+        document=invoice, party=invoice.customer, address=invoice.billing_address,
+        meta=meta, totals=totals, note=note,
+    )
+
+
+def render_quotation_pdf(quotation):
+    """Return the quotation as PDF bytes."""
+    meta = [
+        ["Number", quotation.number or "(draft)"],
+        ["Date", quotation.quotation_date.strftime("%d %b %Y") if quotation.quotation_date else ""],
+    ]
+    if quotation.valid_until:
+        meta.append(["Valid until", quotation.valid_until.strftime("%d %b %Y")])
+    if quotation.payment_terms_id:
+        meta.append(["Terms", quotation.payment_terms.name])
+    if quotation.reference:
+        meta.append(["Reference", quotation.reference])
+
+    totals = [["Subtotal", quotation.subtotal()]]
+    for tax, amount in sorted(quotation.tax_breakdown().items(), key=lambda pair: pair[0].code):
+        totals.append([tax.name, amount])
+    totals.append(["Total", quotation.total()])
+
+    note = None
+    if quotation.valid_until:
+        note = f"This quotation is valid until {quotation.valid_until:%d %b %Y}."
+
+    return _render_document(
+        heading="Quotation", document=quotation, party=quotation.customer,
+        address=quotation.billing_address, meta=meta, totals=totals,
+        party_label="PREPARED FOR", note=note,
+    )
