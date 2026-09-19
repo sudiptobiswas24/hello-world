@@ -9,11 +9,25 @@ Single Django project (modular monolith, not microservices), PostgreSQL in
 production / SQLite for local dev by default. Every module builds on the
 `core` kernel instead of inventing its own version of shared concepts:
 
-- **`apps/core`** — the kernel. `Party` (a single record for any
-  customer/vendor/employee, roles attached via `PartyRoleAssignment` so one
-  entity can hold several roles), `Currency`, `UnitOfMeasure`. Every future
-  module (accounting, sales, purchasing, HR) references these instead of
-  redefining "customer" or "currency" itself.
+- **`apps/core`** — the kernel. Every other module builds on it rather
+  than redefining "customer", "currency" or "address" for itself.
+  - `Party` + `PartyRoleAssignment` — one record per real entity, with
+    roles attached, so a company that both buys and sells is one row.
+    Plus `Contact` (the people at that organisation), `Address`
+    (structured, typed billing/shipping, with `Country`),
+    `PartyBankAccount` and `PartyTag`.
+  - `Currency` + `ExchangeRate` — date-effective rates quoted against
+    the base currency, so a historical transaction keeps converting at
+    the rate that applied on its date. A missing rate raises rather
+    than silently assuming 1:1.
+  - `PaymentTerms` — net days plus early-settlement discounts (2/10
+    net 30), shared by AR and AP since the arithmetic is identical.
+  - `DocumentSequence` — human-facing document numbers
+    (`INV-2026-00001`) handed out under a row lock, with optional
+    yearly reset, instead of leaking primary keys onto paperwork.
+  - `Company` — singleton profile: identity, base currency, fiscal
+    year start (with `fiscal_year_bounds()`).
+  - `UnitOfMeasure` — with base-unit conversion factors.
 - **`apps/inventory`** — first business module. `Warehouse`, `Item`,
   `StockMovement`. On-hand quantity is always derived by summing the
   movement ledger (`Item.on_hand_at`), never stored as a separate counter,
@@ -101,6 +115,25 @@ The command is idempotent, so rerun it after changing the role map.
 Note that Django superusers bypass every check above by design. Keep
 that to as few accounts as possible.
 
+## Core: remaining work toward Odoo/ERPNext parity
+
+Core is being deepened module-first; this is what a mature ERP's kernel
+has that this one still doesn't.
+
+- **UoM categories as a model.** Odoo models categories with a reference
+  unit and rounding precision per unit; here `category` is still a
+  plain choice field. Changing it touches `Item`, so it's its own pass.
+- **Tax configuration** — tax codes, rates, tax groups, and fiscal
+  positions (per-country/customer tax substitution). Currently no tax
+  handling exists anywhere in the system; invoice lines are untaxed.
+- **Chatter / activities / attachments** — the message thread,
+  follower list, scheduled activities and file attachments Odoo puts on
+  every record. `AuditModel` records who and when, but there's no
+  discussion or document trail.
+- **Multi-company** — deliberately single-company; see below.
+- **Number sequence coverage** — `DocumentSequence` exists but no module
+  uses it yet; documents still carry hand-typed references.
+
 ## Known gaps (not yet addressed)
 
 - **Permissions are model-level, not object-level.** A user with
@@ -130,6 +163,10 @@ python manage.py runserver
 ```
 
 - Admin UI: `/admin/`
+- Core API: `/api/core/` (parties, contacts, addresses, bank-accounts,
+  countries, currencies, exchange-rates, units-of-measure, payment-terms,
+  company). Effective rate lookup:
+  `GET /api/core/currencies/{id}/rate/?on=YYYY-MM-DD`.
 - Inventory API: `/api/inventory/` (warehouses, items, stock-movements)
 - Accounting API: `/api/accounting/` (accounts, journal-entries,
   journal-lines). Post an entry with `POST /api/accounting/journal-entries/{id}/post_entry/`,

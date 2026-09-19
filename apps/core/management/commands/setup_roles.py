@@ -24,6 +24,11 @@ ROLES = {
         *crud("accounting", "journalentry"),
         *crud("accounting", "journalline"),
         "accounting.post_journalentry",
+        *crud("core", "currency"),
+        *crud("core", "exchangerate"),
+        *crud("core", "paymentterms"),
+        *crud("core", "documentsequence"),
+        *crud("core", "company", actions=("change", "view")),
     ],
     "Sales Rep": [
         *crud("sales", "salesorder"),
@@ -31,6 +36,9 @@ ROLES = {
         *crud("sales", "invoice"),
         *crud("sales", "invoiceline"),
         *crud("core", "party", actions=("add", "change", "view")),
+        *crud("core", "address", actions=("add", "change", "view")),
+        *crud("core", "contact", actions=("add", "change", "view")),
+        *crud("core", "paymentterms", actions=("view",)),
         # deliberately NOT sales.post_invoice
     ],
     "AR Manager": [
@@ -46,6 +54,10 @@ ROLES = {
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
         *crud("core", "party", actions=("add", "change", "view")),
+        *crud("core", "address", actions=("add", "change", "view")),
+        *crud("core", "contact", actions=("add", "change", "view")),
+        *crud("core", "partybankaccount", actions=("add", "change", "view")),
+        *crud("core", "paymentterms", actions=("view",)),
         # deliberately NOT purchasing.post_bill
     ],
     "AP Manager": [
