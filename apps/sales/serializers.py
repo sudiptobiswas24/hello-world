@@ -1,11 +1,14 @@
 from rest_framework import serializers
 
 from .models import (
+    CustomerProfile,
     Delivery,
     DeliveryLine,
     Invoice,
     InvoiceLine,
     InvoicePayment,
+    PriceList,
+    PriceListItem,
     SalesOrder,
     SalesOrderLine,
 )
@@ -112,3 +115,26 @@ class DeliverySerializer(serializers.ModelSerializer):
             "shipping_address", "reverses", "posted", "posted_at", "lines",
         ]
         read_only_fields = ["number", "reverses", "posted", "posted_at"]
+
+
+class PriceListItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PriceListItem
+        fields = ["id", "price_list", "item", "min_quantity", "unit_price"]
+
+
+class PriceListSerializer(serializers.ModelSerializer):
+    entries = PriceListItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PriceList
+        fields = [
+            "id", "code", "name", "currency", "is_default",
+            "valid_from", "valid_to", "is_active", "entries",
+        ]
+
+
+class CustomerProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomerProfile
+        fields = ["id", "party", "price_list", "credit_limit"]

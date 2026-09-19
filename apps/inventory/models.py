@@ -38,6 +38,10 @@ class Item(AuditModel):
         default=True,
         help_text="Services and non-stocked items should be False so they never affect stock levels.",
     )
+    sale_price = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Default list price, used when no price list covers this item.",
+    )
     inventory_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Asset account holding this item's stock value. Falls back to the company default.",

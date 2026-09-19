@@ -12,21 +12,28 @@ from apps.accounting.models import Account
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import (
+    CustomerProfile,
     Delivery,
     DeliveryLine,
     Invoice,
     InvoiceLine,
     InvoicePayment,
+    PriceList,
+    PriceListItem,
     SalesOrder,
     SalesOrderLine,
     ar_aging,
+    outstanding_balance,
 )
 from .serializers import (
+    CustomerProfileSerializer,
     DeliveryLineSerializer,
     DeliverySerializer,
     InvoiceLineSerializer,
     InvoicePaymentSerializer,
     InvoiceSerializer,
+    PriceListItemSerializer,
+    PriceListSerializer,
     SalesOrderLineSerializer,
     SalesOrderSerializer,
 )
@@ -39,9 +46,21 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
+        """Pass {"ignore_credit_limit": true} to confirm over the limit."""
         order = self.get_object()
         try:
-            order.confirm()
+            order.confirm(
+                ignore_credit_limit=bool(request.data.get("ignore_credit_limit", False))
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        order = self.get_object()
+        try:
+            order.cancel()
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(order).data)
@@ -192,3 +211,30 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class DeliveryLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = DeliveryLine.objects.select_related("delivery", "order_line", "warehouse")
     serializer_class = DeliveryLineSerializer
+
+
+class PriceListViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = PriceList.objects.prefetch_related("entries")
+    serializer_class = PriceListSerializer
+
+
+class PriceListItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = PriceListItem.objects.select_related("price_list", "item")
+    serializer_class = PriceListItemSerializer
+
+
+class CustomerProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = CustomerProfile.objects.select_related("party", "price_list")
+    serializer_class = CustomerProfileSerializer
+
+    @action(detail=True, methods=["get"])
+    def exposure(self, request, pk=None):
+        """What this customer owes right now, against their limit."""
+        profile = self.get_object()
+        owed = outstanding_balance(profile.party)
+        return Response({
+            "customer": str(profile.party),
+            "outstanding": owed,
+            "credit_limit": profile.credit_limit,
+            "available": (profile.credit_limit - owed) if profile.credit_limit is not None else None,
+        })

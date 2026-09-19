@@ -46,6 +46,9 @@ ROLES = {
         *crud("core", "address", actions=("add", "change", "view")),
         *crud("core", "contact", actions=("add", "change", "view")),
         *crud("core", "paymentterms", actions=("view",)),
+        *crud("sales", "pricelist", actions=("view",)),
+        *crud("sales", "pricelistitem", actions=("view",)),
+        *crud("sales", "customerprofile", actions=("view",)),
         # deliberately NOT sales.post_invoice
     ],
     "AR Manager": [
@@ -54,6 +57,9 @@ ROLES = {
         *crud("sales", "invoice"),
         *crud("sales", "invoiceline"),
         *crud("sales", "invoicepayment"),
+        *crud("sales", "pricelist"),
+        *crud("sales", "pricelistitem"),
+        *crud("sales", "customerprofile"),
         *crud("accounting", "payment"),
         "sales.post_invoice",
         "accounting.post_payment",

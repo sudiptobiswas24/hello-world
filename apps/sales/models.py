@@ -30,6 +30,8 @@ from apps.core.models import (
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import post_inventory_entry
 
+from .pricing import resolve_price
+
 
 def _require_customer_role(party):
     if party and not party.role_assignments.filter(role=PartyRole.CUSTOMER).exists():
@@ -43,7 +45,10 @@ class TaxedLineMixin(models.Model):
     """
 
     quantity = models.DecimalField(max_digits=18, decimal_places=4)
-    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    unit_price = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Left blank, it is resolved from the price list or the item's list price.",
+    )
     discount_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("0"),
         help_text="Line discount, e.g. 10.00 for 10% off.",
@@ -112,6 +117,82 @@ class SettlementStatus(models.TextChoices):
     PAID = "paid", "Paid"
 
 
+class PriceList(AuditModel):
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="price_lists"
+    )
+    is_default = models.BooleanField(
+        default=False, help_text="Used for any customer without a list of their own."
+    )
+    valid_from = models.DateField(null=True, blank=True)
+    valid_to = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValidationError("valid_to cannot be before valid_from.")
+
+    def covers(self, on_date):
+        on_date = to_date(on_date)
+        if self.valid_from and on_date < self.valid_from:
+            return False
+        if self.valid_to and on_date > self.valid_to:
+            return False
+        return True
+
+
+class PriceListItem(AuditModel):
+    price_list = models.ForeignKey(PriceList, on_delete=models.CASCADE, related_name="entries")
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="price_entries")
+    min_quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal("1"),
+        help_text="Volume break: this price applies from this quantity upwards.",
+    )
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ["price_list", "item", "-min_quantity"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["price_list", "item", "min_quantity"], name="unique_price_break"
+            ),
+            models.CheckConstraint(check=Q(min_quantity__gt=0), name="price_break_quantity_positive"),
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="price_not_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.item} @ {self.unit_price} (from {self.min_quantity})"
+
+
+class CustomerProfile(AuditModel):
+    """
+    Sales-side settings for a Party. Held here rather than on core.Party for
+    the same reason PartyTaxProfile lives in Accounting: the kernel must not
+    depend on the modules built on top of it.
+    """
+
+    party = models.OneToOneField(Party, on_delete=models.CASCADE, related_name="customer_profile")
+    price_list = models.ForeignKey(
+        PriceList, null=True, blank=True, on_delete=models.SET_NULL, related_name="customers",
+        help_text="Overrides the default price list for this customer.",
+    )
+    credit_limit = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Maximum this customer may owe. Blank means no limit.",
+    )
+
+    def __str__(self):
+        return f"Sales profile for {self.party}"
+
+
 class FulfilmentStatus(models.TextChoices):
     NONE = "none", "Nothing yet"
     PARTIAL = "partial", "Partially"
@@ -173,6 +254,31 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
 
+    def check_credit_limit(self):
+        profile = CustomerProfile.objects.filter(party=self.customer).first()
+        limit = profile.credit_limit if profile else None
+        if limit is None:
+            return
+        exposure = outstanding_balance(self.customer) + self.total()
+        if exposure > limit:
+            raise ValidationError(
+                f"{self.customer} would be {exposure} against a credit limit of {limit}. "
+                "Take payment, raise the limit, or confirm with ignore_credit_limit=True."
+            )
+
+    def cancel(self):
+        """Cancel an order that hasn't been acted on yet."""
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("This order is already cancelled.")
+        for line in self.lines.all():
+            if line.quantity_shipped() or line.quantity_invoiced():
+                raise ValidationError(
+                    "This order has been shipped or invoiced and cannot be cancelled. "
+                    "Return the goods or issue a credit note instead."
+                )
+        self.status = OrderStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+
     def invoice_status(self):
         lines = list(self.lines.all())
         if not lines or all(line.quantity_invoiced() <= 0 for line in lines):
@@ -190,13 +296,15 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         return FulfilmentStatus.PARTIAL
 
     @transaction.atomic
-    def confirm(self):
+    def confirm(self, ignore_credit_limit=False):
         if self.status == OrderStatus.CONFIRMED:
             raise ValidationError("This order is already confirmed.")
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
+        if not ignore_credit_limit:
+            self.check_credit_limit()
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "sales.order", self.order_date, name="Sales Orders", prefix="SO-"
@@ -257,8 +365,53 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="sales_order_lines")
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="order_line_quantity_positive"),
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="order_line_price_not_negative"),
+        ]
+
     def __str__(self):
         return f"{self.item} x{self.quantity}"
+
+    def save(self, *args, **kwargs):
+        if self.unit_price is None:
+            self.unit_price = resolve_price(
+                self.item,
+                customer=self.order.customer,
+                quantity=self.quantity,
+                currency=self.order.currency,
+                on_date=self.order.order_date,
+            )
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"No price found for {self.item}: set one on the item, add it to a "
+                    "price list, or give the line an explicit unit price."
+                )
+        # Defect: a confirmed line could be edited below what had already
+        # shipped or been invoiced, silently breaking the drawdown guards.
+        if self.pk:
+            previous = SalesOrderLine.objects.filter(pk=self.pk).first()
+            if previous is not None:
+                committed = max(self.quantity_shipped(), self.quantity_invoiced())
+                if self.quantity < committed:
+                    raise ValidationError(
+                        f"{committed} of this line has already been shipped or invoiced; "
+                        f"the quantity cannot drop below that."
+                    )
+                if self.unit_price != previous.unit_price and self.quantity_invoiced() > 0:
+                    raise ValidationError(
+                        "This line has been invoiced; its price can no longer change. "
+                        "Issue a credit note instead."
+                    )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.quantity_shipped() or self.quantity_invoiced():
+            raise ValidationError(
+                "This line has been shipped or invoiced and can no longer be removed."
+            )
+        super().delete(*args, **kwargs)
 
     def quantity_shipped(self):
         """Net quantity shipped: posted deliveries minus posted customer returns."""
@@ -694,7 +847,14 @@ class InvoicePayment(AuditModel):
             raise ValidationError("Only a posted payment can be allocated.")
         if not self.invoice.posted:
             raise ValidationError("Only a posted invoice can be settled.")
-        if self.payment.direction != PaymentDirection.RECEIPT:
+        # A credit note is money owed *to* the customer, so it is settled by
+        # paying them (a disbursement), never by receiving more money.
+        if self.invoice.is_credit_note():
+            if self.payment.direction != PaymentDirection.DISBURSEMENT:
+                raise ValidationError(
+                    "A credit note is refunded with a disbursement, not a receipt."
+                )
+        elif self.payment.direction != PaymentDirection.RECEIPT:
             raise ValidationError("Only a receipt can settle a customer invoice.")
         if self.payment.party_id != self.invoice.customer_id:
             raise ValidationError("The payment and the invoice belong to different parties.")
@@ -716,6 +876,14 @@ class InvoicePayment(AuditModel):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+def outstanding_balance(customer):
+    """What this customer currently owes across all posted invoices."""
+    invoices = Invoice.objects.filter(
+        customer=customer, posted=True, credits__isnull=True
+    ).prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes")
+    return sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
 
 
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
@@ -831,6 +999,10 @@ class Delivery(AuditModel):
         is_return = self.is_return()
         if is_return and not self.reverses.posted:
             raise ValidationError("Cannot return an unposted delivery.")
+        if not is_return and self.sales_order.status != OrderStatus.CONFIRMED:
+            raise ValidationError(
+                f"Only a confirmed order can be shipped; this one is {self.sales_order.status}."
+            )
 
         if not is_return:
             for line in lines:

@@ -4,11 +4,14 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    CustomerProfile,
     Delivery,
     DeliveryLine,
     Invoice,
     InvoiceLine,
     InvoicePayment,
+    PriceList,
+    PriceListItem,
     SalesOrder,
     SalesOrderLine,
 )
@@ -69,3 +72,22 @@ class DeliveryAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelA
     search_fields = ("number", "reference")
     readonly_fields = ("number", "posted", "posted_at", "reverses")
     inlines = [DeliveryLineInline]
+
+
+class PriceListItemInline(admin.TabularInline):
+    model = PriceListItem
+    extra = 1
+    fields = ("item", "min_quantity", "unit_price")
+
+
+@admin.register(PriceList)
+class PriceListAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "currency", "is_default", "valid_from", "valid_to", "is_active")
+    list_filter = ("is_default", "is_active", "currency")
+    inlines = [PriceListItemInline]
+
+
+@admin.register(CustomerProfile)
+class CustomerProfileAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("party", "price_list", "credit_limit")
+    search_fields = ("party__name", "party__code")

@@ -92,6 +92,15 @@ production / SQLite for local dev by default. Every module builds on the
   Customer model — the whole point of the kernel). This is the module
   that actually consumes the kernel: taxes, document sequences,
   payment terms, addresses and exchange rates all land here.
+  - **Pricing**: leave a line's `unit_price` blank and it resolves from
+    the customer's own `PriceList`, else the default list for the
+    document's currency, else the item's `sale_price` — with volume
+    breaks (`min_quantity`) picking the highest qualifying tier. An
+    item nothing can price fails loudly rather than posting at zero.
+  - **Credit limits**: `CustomerProfile.credit_limit` is checked at
+    order confirmation against what the customer already owes
+    (`outstanding_balance()`). Override deliberately with
+    `confirm(ignore_credit_limit=True)`.
   - **Line arithmetic**: gross → discount → net → tax, in that order
     (tax is charged on the discounted amount). Totals are derived from
     lines, never stored.
@@ -202,6 +211,14 @@ The command is idempotent, so rerun it after changing the role map.
 
 Note that Django superusers bypass every check above by design. Keep
 that to as few accounts as possible.
+
+## Sales: still to do
+
+- **Quotations** — no quote stage, expiry, or quote-to-order conversion.
+- **Invoice output** — no PDF and no email, so an invoice cannot
+  actually reach the customer.
+- **Dunning** — aging exists, but nothing chases an overdue account.
+- **Sales reporting** — revenue by customer, item or period.
 
 ## Core: remaining work toward Odoo/ERPNext parity
 

@@ -57,14 +57,17 @@ class DeliveryTestCase(TestCase):
             occurred_at=timezone.now(),
         )
 
-    def make_order_line(self, quantity="10", item=None):
+    def make_order_line(self, quantity="10", item=None, confirm=True):
         order = SalesOrder.objects.create(
             customer=self.customer, order_date=datetime.date(2026, 3, 1)
         )
-        return SalesOrderLine.objects.create(
+        line = SalesOrderLine.objects.create(
             order=order, item=item or self.item, uom=self.uom,
             quantity=Decimal(quantity), unit_price=Decimal("5"),
         )
+        if confirm:
+            order.confirm()
+        return line
 
     def make_delivery(self, order_line, quantity="4", warehouse=None, post=True):
         delivery = Delivery.objects.create(
