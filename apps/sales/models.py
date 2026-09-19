@@ -4,6 +4,7 @@ import logging
 from collections import defaultdict
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
@@ -244,6 +245,56 @@ class PriceListItem(AuditModel):
         return f"{self.item} @ {self.unit_price} (from {self.min_quantity})"
 
 
+class ApprovalPolicy(AuditModel):
+    """
+    The thresholds beyond which a sales order needs a second pair of eyes.
+
+    RBAC answers "who may confirm an order"; it says nothing about how
+    much they may give away while doing it. A rep with permission to
+    confirm can discount 90% and sell below cost, and no role check
+    anywhere notices.
+
+    Each threshold is optional — a blank one is not enforced, rather than
+    silently defaulting to something that would block every order the
+    day this is switched on.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    max_discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Any line discounted above this needs approval.",
+    )
+    min_margin_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Gross margin over the order, against weighted average cost. "
+                  "Catches the discount that a percentage limit misses: a cheap "
+                  "item sold at a small discount can still be sold at a loss.",
+    )
+    max_order_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Orders above this value need approval regardless of margin.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        verbose_name_plural = "approval policies"
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def active(cls):
+        return cls.objects.filter(is_active=True).first()
+
+
+class ApprovalStatus(models.TextChoices):
+    NOT_REQUIRED = "not_required", "Not required"
+    PENDING = "pending", "Awaiting approval"
+    APPROVED = "approved", "Approved"
+
+
 class CustomerProfile(AuditModel):
     """
     Sales-side settings for a Party. Held here rather than on core.Party for
@@ -308,9 +359,18 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         max_length=16, choices=InvoicePolicy.choices, default=InvoicePolicy.ORDERED,
         help_text="Bill the whole order up front, or only what has shipped.",
     )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    approved_at = models.DateTimeField(null=True, blank=True, editable=False)
+    approval_note = models.CharField(max_length=255, blank=True, editable=False)
 
     class Meta:
         ordering = ["-order_date", "-id"]
+        permissions = [
+            ("approve_order", "Can approve orders that breach the discount policy"),
+        ]
         constraints = [
             # Drafts all carry an empty number until confirmed, so uniqueness
             # can only apply once one has been assigned.
@@ -339,19 +399,132 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
 
-    def check_credit_limit(self):
+    def credit_limit_breach(self):
+        """
+        How far this order would put the customer over their limit, or None.
+
+        Returned rather than raised: over the limit is now one approval
+        reason among several, not a separate special case with its own
+        ungated bypass flag.
+        """
         profile = CustomerProfile.objects.filter(party=self.customer).first()
         limit = profile.credit_limit if profile else None
         if limit is None:
-            return
+            return None
         # committed_balance already counts this order once it is confirmed;
         # at confirmation time it isn't yet, so add it explicitly.
         exposure = committed_balance(self.customer) + self.total()
-        if exposure > limit:
-            raise ValidationError(
-                f"{self.customer} would be {exposure} against a credit limit of {limit}. "
-                "Take payment, raise the limit, or confirm with ignore_credit_limit=True."
+        return (exposure, limit) if exposure > limit else None
+
+    def cost_total(self):
+        """
+        What this order's goods cost, at weighted average across warehouses.
+
+        Lines with no cost to speak of — charges, and items never received
+        — are left out of both sides, so an order of pure services doesn't
+        read as 100% margin and trip nothing, or as 0% margin and trip
+        everything.
+        """
+        total = Decimal("0")
+        for line in self.lines.all():
+            if line.is_charge() or not line.item_id:
+                continue
+            cost = line.item.average_cost()
+            if not cost:
+                continue
+            total += round_money(cost * line.quantity)
+        return total
+
+    def costed_revenue(self):
+        """Net revenue of the lines that cost_total() could price."""
+        total = Decimal("0")
+        for line in self.lines.all():
+            if line.is_charge() or not line.item_id:
+                continue
+            if not line.item.average_cost():
+                continue
+            total += line.net_amount()
+        return total
+
+    def margin_percent(self):
+        """Gross margin over the costed lines, or None if nothing is costed."""
+        revenue = self.costed_revenue()
+        if revenue <= 0:
+            return None
+        return round_money((revenue - self.cost_total()) / revenue * Decimal("100"))
+
+    def approval_reasons(self):
+        """
+        Every policy threshold this order breaches, in plain words.
+
+        A list rather than a boolean because an approver needs to know
+        what they are approving, and because an order that trips three
+        limits should say so rather than reveal them one at a time as
+        each is fixed.
+        """
+        reasons = []
+        breach = self.credit_limit_breach()
+        if breach:
+            exposure, limit = breach
+            reasons.append(
+                f"{self.customer} would be {exposure} against a credit limit of {limit}."
             )
+
+        policy = ApprovalPolicy.active()
+        if policy is None:
+            return reasons
+
+        if policy.max_discount_percent is not None:
+            for line in self.lines.all():
+                if line.discount_percent > policy.max_discount_percent:
+                    reasons.append(
+                        f"'{line.label()}' is discounted {line.discount_percent}%, above the "
+                        f"{policy.max_discount_percent}% limit."
+                    )
+        if policy.max_order_value is not None and self.total() > policy.max_order_value:
+            reasons.append(
+                f"The order is {self.total()}, above the {policy.max_order_value} limit."
+            )
+        if policy.min_margin_percent is not None:
+            margin = self.margin_percent()
+            if margin is not None and margin < policy.min_margin_percent:
+                reasons.append(
+                    f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor."
+                )
+        return reasons
+
+    def requires_approval(self):
+        return bool(self.approval_reasons())
+
+    def approval_status(self):
+        if self.approved_at:
+            return ApprovalStatus.APPROVED
+        return ApprovalStatus.PENDING if self.requires_approval() else ApprovalStatus.NOT_REQUIRED
+
+    def approve(self, by=None, note=""):
+        """
+        Record that someone accepted the breach. Gated by
+        sales.approve_order at the API and admin layer.
+        """
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("A cancelled order cannot be approved.")
+        if self.approved_at:
+            raise ValidationError("This order has already been approved.")
+        if not self.requires_approval():
+            raise ValidationError("This order breaches no policy; it needs no approval.")
+        self.approved_by = by
+        self.approved_at = timezone.now()
+        self.approval_note = note or "; ".join(self.approval_reasons())[:255]
+        self.save(update_fields=["approved_by", "approved_at", "approval_note", "updated_at"])
+
+    def withdraw_approval(self):
+        """Drop an approval, so a re-priced order has to be looked at again."""
+        if not self.approved_at:
+            return
+        self.approved_by = None
+        self.approved_at = None
+        self.approval_note = ""
+        self.save(update_fields=["approved_by", "approved_at", "approval_note", "updated_at"])
 
     def cancel(self):
         """Cancel an order that hasn't been acted on yet."""
@@ -387,15 +560,22 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         return FulfilmentStatus.PARTIAL
 
     @transaction.atomic
-    def confirm(self, ignore_credit_limit=False):
+    def confirm(self):
         if self.status == OrderStatus.CONFIRMED:
             raise ValidationError("This order is already confirmed.")
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
-        if not ignore_credit_limit:
-            self.check_credit_limit()
+        # No bypass flag. The old ignore_credit_limit= was reachable by
+        # anyone who could confirm an order at all — which is the rep whose
+        # discount the limit exists to check — and left no record that
+        # anyone had decided anything.
+        if self.approval_status() == ApprovalStatus.PENDING:
+            raise ValidationError(
+                "This order needs approval before it can be confirmed: "
+                + " ".join(self.approval_reasons())
+            )
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "sales.order", self.order_date, name="Sales Orders", prefix="SO-"
@@ -616,6 +796,15 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                         "This line has been invoiced; its price can no longer change. "
                         "Issue a credit note instead."
                     )
+                # An approval covers the order someone looked at. Re-price
+                # it afterwards and the approval is for something else.
+                repriced = (
+                    self.unit_price != previous.unit_price
+                    or self.quantity != previous.quantity
+                    or self.discount_percent != previous.discount_percent
+                )
+                if repriced and self.order.approved_at:
+                    self.order.withdraw_approval()
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -2605,7 +2794,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         self.status = QuotationStatus.DECLINED
         self.save(update_fields=["status", "updated_at"])
 
-    def accept(self, order_date=None, ignore_credit_limit=False):
+    def accept(self, order_date=None, approve_as=None):
         """Turn an accepted quote into a confirmed sales order."""
         if self.status == QuotationStatus.ACCEPTED:
             raise ValidationError("This quotation has already been accepted.")
@@ -2625,10 +2814,10 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             raise ValidationError(
                 f"This quotation expired on {self.valid_until:%d %b %Y}. Re-quote instead."
             )
-        return self._convert_to_order(order_date, ignore_credit_limit)
+        return self._convert_to_order(order_date, approve_as)
 
     @transaction.atomic
-    def _convert_to_order(self, order_date, ignore_credit_limit):
+    def _convert_to_order(self, order_date, approve_as=None):
         self._assign_number()
         order = SalesOrder.objects.create(
             customer=self.customer,
@@ -2649,7 +2838,13 @@ class Quotation(TaxedDocumentMixin, AuditModel):
                 revenue_account=line.revenue_account,
             )
             order_line.taxes.set(line.taxes.all())
-        order.confirm(ignore_credit_limit=ignore_credit_limit)
+        # Accepting creates and confirms in one step, so an order that
+        # breaches policy has to be approved as part of it. approve_as is
+        # the approving user, gated by sales.approve_order at the edge —
+        # the same decision the old bypass flag made invisibly.
+        if approve_as is not None and order.requires_approval():
+            order.approve(by=approve_as, note="Approved on quotation acceptance")
+        order.confirm()
 
         self.sales_order = order
         self.status = QuotationStatus.ACCEPTED

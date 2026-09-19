@@ -66,7 +66,7 @@ class Item(AuditModel):
         total = self.movements.filter(warehouse=warehouse).aggregate(total=Sum("quantity"))["total"]
         return total or 0
 
-    def _replay_valuation(self, warehouse, before_id=None):
+    def _replay_valuation(self, warehouse=None, before_id=None):
         """
         Walk the movement ledger in order, maintaining running quantity and
         value, and return (quantity, value) at that point.
@@ -77,7 +77,9 @@ class Item(AuditModel):
         O(movements) replay, which is fine at this scale and would want a
         periodic valuation snapshot at much larger volumes.
         """
-        movements = self.movements.filter(warehouse=warehouse)
+        movements = self.movements.all()
+        if warehouse is not None:
+            movements = movements.filter(warehouse=warehouse)
         if before_id is not None:
             movements = movements.filter(id__lt=before_id)
 
@@ -101,6 +103,17 @@ class Item(AuditModel):
         if quantity <= 0:
             return Decimal("0")
         return (value / quantity).quantize(Decimal("0.0001"))
+
+    def average_cost(self):
+        """
+        Weighted average across every warehouse: what a unit costs the
+        company, whichever shelf it eventually ships from.
+
+        A margin check at quoting time has no warehouse yet, and refusing
+        to answer until one is chosen would make the check useless exactly
+        when it matters — before the price is agreed.
+        """
+        return self.average_cost_at(None)
 
     def stock_value_at(self, warehouse):
         return self._replay_valuation(warehouse)[1].quantize(Decimal("0.01"))

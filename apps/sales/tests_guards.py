@@ -350,11 +350,18 @@ class CreditLimitTests(SalesGuardTestCase):
         second = self.make_order("10", "100", confirm=False)
         second.confirm()  # must not raise
 
-    def test_the_limit_can_be_overridden_deliberately(self):
+    def test_the_limit_is_cleared_by_approval_not_a_flag(self):
+        """The old ignore_credit_limit= bypass was reachable by anyone who
+        could confirm an order, and left no record of who decided."""
         self.set_limit("500")
         order = self.make_order("10", "100", confirm=False)
-        order.confirm(ignore_credit_limit=True)
+
+        order.approve(note="Long-standing customer")
+        order.confirm()
+
         self.assertEqual(order.status, OrderStatus.CONFIRMED)
+        self.assertIsNotNone(order.approved_at)
+        self.assertEqual(order.approval_note, "Long-standing customer")
 
 
 class PricingTests(SalesGuardTestCase):

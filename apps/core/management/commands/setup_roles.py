@@ -56,6 +56,9 @@ ROLES = {
         *crud("sales", "pricelist", actions=("view",)),
         *crud("sales", "pricelistitem", actions=("view",)),
         *crud("sales", "chargetype", actions=("view",)),
+        *crud("sales", "approvalpolicy", actions=("view",)),
+        # deliberately NOT sales.approve_order: a rep cannot sign off
+        # their own discount.
         *crud("sales", "customerprofile", actions=("view",)),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
@@ -70,6 +73,7 @@ ROLES = {
         *crud("sales", "pricelist"),
         *crud("sales", "pricelistitem"),
         *crud("sales", "chargetype"),
+        *crud("sales", "approvalpolicy"),
         *crud("sales", "customerprofile"),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
@@ -83,6 +87,7 @@ ROLES = {
         *crud("sales", "depositapplication", actions=("view",)),
         *crud("accounting", "payment"),
         "sales.post_invoice",
+        "sales.approve_order",
         "accounting.post_payment",
     ],
     "Purchasing Clerk": [

@@ -4,6 +4,7 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    ApprovalPolicy,
     ChargeType,
     CommissionPlan,
     DepositApplication,
@@ -137,6 +138,15 @@ class DunningNoticeAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(ApprovalPolicy)
+class ApprovalPolicyAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "code", "name", "max_discount_percent", "min_margin_percent",
+        "max_order_value", "is_active",
+    )
+    list_filter = ("is_active",)
 
 
 @admin.register(ChargeType)

@@ -168,6 +168,26 @@ production / SQLite for local dev by default. Every module builds on the
     receivable) so the invoice settles clean instead of leaving a 2%
     stub that ages forever. It refuses after the window unless forced,
     and refuses twice.
+  - **Discount approval**: RBAC answers *who may confirm an order*; it
+    said nothing about how much they may give away while doing it, so a
+    rep with permission to confirm could discount 90% and sell below
+    cost with no check anywhere. `ApprovalPolicy` sets a maximum line
+    discount, a gross-margin floor and a maximum order value; every
+    threshold is optional, because a blank one that silently behaved
+    like zero would block every order the day this is switched on.
+    `approval_reasons()` returns all breaches at once — an approver
+    needs to see what they're signing, not discover the next problem
+    each time the last is fixed — and `confirm()` refuses while any are
+    outstanding. The margin floor catches what a discount percentage
+    misses: a thin-margin item at a small discount is still a sale at a
+    loss. Re-pricing an approved order **withdraws** the approval, since
+    an approval covers the order someone actually looked at.
+    The credit limit folded into this and lost its
+    `ignore_credit_limit=True` bypass, which was reachable by anyone who
+    could confirm an order at all — the very rep the limit exists to
+    check — and left no record of who decided. It is now one approval
+    reason among several, cleared by someone holding
+    `sales.approve_order`, which Sales Rep deliberately does not have.
   - **Charges that aren't stock**: `ChargeType` covers freight,
     handling, installation, a rush surcharge. A line carries *either* an
     item or a charge, enforced by a check constraint, which means

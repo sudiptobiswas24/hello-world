@@ -64,16 +64,37 @@ from .serializers import (
 class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = SalesOrder.objects.prefetch_related("lines")
     serializer_class = SalesOrderSerializer
-    action_permission_map = {"create_invoice": "sales.add_invoice"}
+    action_permission_map = {
+        "create_invoice": "sales.add_invoice",
+        "approve": "sales.approve_order",
+    }
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
-        """Pass {"ignore_credit_limit": true} to confirm over the limit."""
         order = self.get_object()
         try:
-            order.confirm(
-                ignore_credit_limit=bool(request.data.get("ignore_credit_limit", False))
-            )
+            order.confirm()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["get"])
+    def approval(self, request, pk=None):
+        """What, if anything, is holding this order up."""
+        order = self.get_object()
+        return Response({
+            "status": order.approval_status(),
+            "reasons": order.approval_reasons(),
+            "margin_percent": order.margin_percent(),
+            "approved_by": str(order.approved_by) if order.approved_by_id else None,
+            "approved_at": order.approved_at,
+        })
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        order = self.get_object()
+        try:
+            order.approve(by=request.user, note=request.data.get("note", ""))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(order).data)
@@ -373,9 +394,13 @@ class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """Convert to a confirmed sales order."""
         quotation = self.get_object()
         try:
+            # Approving as part of acceptance needs the approval
+            # permission, not merely permission to accept a quote.
+            approve_as = None
+            if request.data.get("approve") and request.user.has_perm("sales.approve_order"):
+                approve_as = request.user
             order = quotation.accept(
-                order_date=request.data.get("order_date"),
-                ignore_credit_limit=bool(request.data.get("ignore_credit_limit", False)),
+                order_date=request.data.get("order_date"), approve_as=approve_as
             )
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
