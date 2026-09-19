@@ -1,5 +1,8 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
+
+from apps.accounting.models import Account
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -18,6 +21,31 @@ from .serializers import (
 class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = SalesOrder.objects.prefetch_related("lines")
     serializer_class = SalesOrderSerializer
+    action_permission_map = {"create_invoice": "sales.add_invoice"}
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        order = self.get_object()
+        try:
+            order.confirm()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"])
+    def create_invoice(self, request, pk=None):
+        order = self.get_object()
+        account_id = request.data.get("receivable_account")
+        if not account_id:
+            raise DRFValidationError("receivable_account is required.")
+        try:
+            invoice = order.create_invoice(
+                receivable_account=get_object_or_404(Account, pk=account_id),
+                invoice_date=request.data.get("invoice_date"),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(InvoiceSerializer(invoice).data)
 
 
 class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

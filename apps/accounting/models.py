@@ -10,7 +10,7 @@ from apps.core.models import AuditModel, Country, Currency, Party
 CENTS = Decimal("0.01")
 
 
-def _round(amount):
+def round_money(amount):
     return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
@@ -284,8 +284,8 @@ class Tax(AuditModel):
     def compute(self, base_amount, quantity=Decimal("1")):
         """Tax due on `base_amount`, which must already be tax-exclusive."""
         if self.computation == TaxComputation.FIXED:
-            return _round(self.rate * quantity)
-        return _round(base_amount * self.rate / Decimal("100"))
+            return round_money(self.rate * quantity)
+        return round_money(base_amount * self.rate / Decimal("100"))
 
 
 def compute_taxes(taxes, amount, quantity=Decimal("1")):
@@ -313,7 +313,7 @@ def compute_taxes(taxes, amount, quantity=Decimal("1")):
     if included_percentage:
         total_rate = sum(tax.rate for tax in included_percentage)
         base = base * Decimal("100") / (Decimal("100") + total_rate)
-    base = _round(base)
+    base = round_money(base)
 
     results = []
     running_base = base
@@ -324,7 +324,7 @@ def compute_taxes(taxes, amount, quantity=Decimal("1")):
             running_base += tax_amount
 
     total = base + sum(amount for _, amount in results)
-    return base, results, _round(total)
+    return base, results, round_money(total)
 
 
 class FiscalPosition(AuditModel):

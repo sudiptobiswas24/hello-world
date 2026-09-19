@@ -44,8 +44,8 @@ production / SQLite for local dev by default. Every module builds on the
   per customer (zero-rated exports, reverse charge), and
   `PartyTaxProfile` attaches that plus outright exemption to a
   `core.Party` — again from the Accounting side, so Core stays
-  independent. Nothing consumes taxes yet: invoice and bill lines are
-  still untaxed until the Sales and Purchasing passes.
+  independent. Sales consumes all of this; Purchasing bills are still
+  untaxed until that module's pass.
   Plus `Account` (chart of accounts, hierarchical,
   type-checked against its parent), `JournalEntry`/`JournalLine`
   (double-entry ledger, references `Party` from the kernel). A
@@ -59,13 +59,31 @@ production / SQLite for local dev by default. Every module builds on the
 
 - **`apps/sales`** — `SalesOrder`/`SalesOrderLine`, `Invoice`/`InvoiceLine`.
   Customers are `Party` records with the `CUSTOMER` role (no separate
-  Customer model — the whole point of the kernel). Posting an invoice
-  builds a balanced `JournalEntry` via Accounting (Dr Accounts
-  Receivable / Cr Revenue per line); Sales never writes ledger rows
-  directly. A posted invoice is immutable like a `JournalEntry` — the
-  only correction path is `Invoice.create_credit_note()`, which calls
-  the original invoice's `JournalEntry.create_reversal()` rather than
-  reimplementing correction logic.
+  Customer model — the whole point of the kernel). This is the module
+  that actually consumes the kernel: taxes, document sequences,
+  payment terms, addresses and exchange rates all land here.
+  - **Line arithmetic**: gross → discount → net → tax, in that order
+    (tax is charged on the discounted amount). Totals are derived from
+    lines, never stored.
+  - **Numbering**: `confirm()` assigns `SO-2026-00001`, posting assigns
+    `INV-2026-00001`, credit notes draw from their own `CN-` sequence.
+  - **Payment terms** default from the customer and set `due_date` at
+    posting time.
+  - **Multi-currency**: the document keeps its own currency; posting
+    converts to base at the rate effective on the invoice date and
+    freezes that rate on the invoice. The receivable debit is set to
+    the exact sum of the converted credits — rounding each line
+    independently can leave the entry a cent out of balance and make a
+    legitimate invoice unpostable.
+  - **Order → invoice**: `SalesOrder.create_invoice()` carries lines,
+    discounts and taxes across.
+  Posting builds a balanced `JournalEntry` via Accounting (Dr Accounts
+  Receivable / Cr Revenue per line / Cr tax account per tax); Sales
+  never writes ledger rows directly. A posted invoice is immutable like
+  a `JournalEntry` — the only correction path is
+  `Invoice.create_credit_note()`, which calls the original invoice's
+  `JournalEntry.create_reversal()` rather than reimplementing
+  correction logic.
 
 - **`apps/purchasing`** — mirrors Sales for the payables side.
   `PurchaseOrder`/`PurchaseOrderLine`, `Bill`/`BillLine`. Vendors are
@@ -137,17 +155,17 @@ has that this one still doesn't.
 - **UoM categories as a model.** Odoo models categories with a reference
   unit and rounding precision per unit; here `category` is still a
   plain choice field. Changing it touches `Item`, so it's its own pass.
-- ~~Tax configuration~~ — **done**, but built in `apps/accounting`
-  rather than Core (see above). Still unused by documents: wiring tax
-  onto invoice and bill lines is part of the Sales and Purchasing
-  passes.
+- ~~Tax configuration~~ — **done**, built in `apps/accounting` rather
+  than Core (see above). Sales consumes it; **Purchasing bills are
+  still untaxed** until that module's pass.
 - **Chatter / activities / attachments** — the message thread,
   follower list, scheduled activities and file attachments Odoo puts on
   every record. `AuditModel` records who and when, but there's no
   discussion or document trail.
 - **Multi-company** — deliberately single-company; see below.
-- **Number sequence coverage** — `DocumentSequence` exists but no module
-  uses it yet; documents still carry hand-typed references.
+- ~~Number sequence coverage~~ — Sales now uses `DocumentSequence`
+  (`SO-`/`INV-`/`CN-`). Purchasing and Inventory documents still carry
+  hand-typed references.
 
 ## Known gaps (not yet addressed)
 
@@ -192,9 +210,13 @@ python manage.py runserver
   `POST /api/accounting/taxes/preview/` with
   `{"amount": "100.00", "tax_ids": [1], "party_id": 5}` — the party's
   fiscal position and exemption are applied.
-- Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines). Post an
-  invoice with `POST /api/sales/invoices/{id}/post_invoice/`, correct a
-  posted one with `POST /api/sales/invoices/{id}/credit_note/`.
+- Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines).
+  Confirm an order with `POST /api/sales/sales-orders/{id}/confirm/`,
+  turn it into an invoice with
+  `POST /api/sales/sales-orders/{id}/create_invoice/`
+  (`{"receivable_account": 1}`). Post an invoice with
+  `POST /api/sales/invoices/{id}/post_invoice/`, correct a posted one
+  with `POST /api/sales/invoices/{id}/credit_note/`.
 - Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines,
   goods-receipts, goods-receipt-lines). Post a bill with
   `POST /api/purchasing/bills/{id}/post_bill/`, correct a posted one with

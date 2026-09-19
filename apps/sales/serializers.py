@@ -3,42 +3,66 @@ from rest_framework import serializers
 from .models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
 
 
-class SalesOrderLineSerializer(serializers.ModelSerializer):
+class MoneyLineSerializerMixin(serializers.Serializer):
+    gross_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    net_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+
+
+class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = SalesOrderLine
-        fields = ["id", "order", "item", "uom", "quantity", "unit_price"]
+        fields = [
+            "id", "order", "item", "uom", "quantity", "unit_price", "discount_percent",
+            "revenue_account", "taxes",
+            "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+        ]
 
 
 class SalesOrderSerializer(serializers.ModelSerializer):
     lines = SalesOrderLineSerializer(many=True, read_only=True)
+    subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
 
     class Meta:
         model = SalesOrder
-        fields = ["id", "customer", "order_date", "reference", "status", "currency", "lines"]
+        fields = [
+            "id", "number", "customer", "order_date", "reference", "status", "currency",
+            "payment_terms", "billing_address", "shipping_address",
+            "lines", "subtotal", "tax_total", "total",
+        ]
+        read_only_fields = ["number", "status"]
 
 
-class InvoiceLineSerializer(serializers.ModelSerializer):
+class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = InvoiceLine
-        fields = ["id", "invoice", "item", "description", "quantity", "unit_price", "revenue_account"]
+        fields = [
+            "id", "invoice", "item", "description", "quantity", "unit_price",
+            "discount_percent", "revenue_account", "taxes",
+            "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+        ]
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
     lines = InvoiceLineSerializer(many=True, read_only=True)
+    subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
 
     class Meta:
         model = Invoice
         fields = [
-            "id",
-            "customer",
-            "invoice_date",
-            "reference",
-            "sales_order",
-            "receivable_account",
-            "credits",
-            "journal_entry",
-            "posted",
-            "posted_at",
-            "lines",
+            "id", "number", "customer", "invoice_date", "due_date", "reference",
+            "sales_order", "receivable_account", "currency", "exchange_rate",
+            "payment_terms", "billing_address", "shipping_address",
+            "credits", "journal_entry", "posted", "posted_at",
+            "lines", "subtotal", "tax_total", "total",
         ]
-        read_only_fields = ["credits", "journal_entry", "posted", "posted_at"]
+        read_only_fields = [
+            "number", "due_date", "exchange_rate", "credits", "journal_entry",
+            "posted", "posted_at",
+        ]

@@ -46,6 +46,19 @@ class AuditModel(TimeStampedModel):
         abstract = True
 
 
+def to_date(value):
+    """
+    Normalise a date-ish value. Django allows assigning an ISO string to a
+    DateField, so a model attribute can still be a string before any
+    refresh — which breaks date arithmetic in posting logic.
+    """
+    if value is None or isinstance(value, datetime.datetime):
+        return value.date() if value is not None else None
+    if isinstance(value, datetime.date):
+        return value
+    return datetime.date.fromisoformat(str(value))
+
+
 class Country(TimeStampedModel):
     code = models.CharField(max_length=2, unique=True, help_text="ISO 3166-1 alpha-2, e.g. US")
     name = models.CharField(max_length=128)
@@ -470,14 +483,25 @@ class DocumentSequence(AuditModel):
         middle = f"{year}-" if self.include_year else ""
         return f"{self.prefix}{middle}{str(number).zfill(self.padding)}{self.suffix}"
 
+    @classmethod
+    def next_for(cls, code, on_date=None, **defaults):
+        """
+        Issue the next number for `code`, creating the sequence on first use
+        so posting a document never fails on missing configuration.
+        """
+        sequence, _ = cls.objects.get_or_create(
+            code=code, defaults={"name": defaults.pop("name", code), **defaults}
+        )
+        return sequence.next_value(on_date)
+
     def peek(self, on_date=None):
         """The number that would be issued next, without consuming it."""
-        year = (on_date or timezone.now().date()).year
+        year = (to_date(on_date) or timezone.now().date()).year
         number = 1 if (self.reset_yearly and self.current_year != year) else self.next_number
         return self._format(number, year)
 
     def next_value(self, on_date=None):
-        year = (on_date or timezone.now().date()).year
+        year = (to_date(on_date) or timezone.now().date()).year
         with transaction.atomic():
             sequence = DocumentSequence.objects.select_for_update().get(pk=self.pk)
             if sequence.reset_yearly and sequence.current_year != year:
