@@ -1595,6 +1595,232 @@ def committed_balance(customer):
     return outstanding_balance(customer) + uninvoiced - outstanding_deposits
 
 
+class StatementEntry:
+    """One movement on a customer statement."""
+
+    __slots__ = ("date", "kind", "reference", "description", "debit", "credit", "balance")
+
+    def __init__(self, date, kind, reference, description, debit=None, credit=None):
+        self.date = date
+        self.kind = kind
+        self.reference = reference
+        self.description = description
+        self.debit = debit or Decimal("0")
+        self.credit = credit or Decimal("0")
+        self.balance = Decimal("0")
+
+    def __repr__(self):
+        return f"<{self.kind} {self.reference} {self.debit or -self.credit}>"
+
+
+def _statement_currency(customer, currency):
+    """
+    A statement adds up movements, so they all have to be in one currency.
+
+    Same stance as cross-currency settlement: refuse rather than quietly
+    sum 100 USD and 100 EUR into 200 of nothing.
+    """
+    if currency is not None:
+        return currency
+    used = set(
+        Invoice.objects.filter(customer=customer, posted=True)
+        .values_list("currency_id", flat=True)
+        .distinct()
+    )
+    if len(used) > 1:
+        raise ValidationError(
+            f"{customer} has posted invoices in more than one currency; ask for a "
+            "statement in a specific currency."
+        )
+    return Currency.objects.filter(pk=used.pop()).first() if used else None
+
+
+def customer_statement(customer, as_of=None, since=None, currency=None):
+    """
+    An open-item statement: every movement on the customer's account, with
+    a running balance that foots to what they owe.
+
+    Open-item rather than balance-forward. B2B customers reconcile by
+    matching invoices to remittances, and a balance-forward statement
+    (opening balance, period movements, closing balance) throws away the
+    invoice-level detail that makes that possible. `since` still gives an
+    opening balance, so the period view is available without losing it.
+
+    Deliberately derived rather than a stored document: a statement is a
+    view of the ledger at a date, and storing one would create a second
+    copy of the truth that goes stale the moment anything settles.
+    """
+    as_of = to_date(as_of) or timezone.now().date()
+    since = to_date(since)
+    currency = _statement_currency(customer, currency)
+
+    entries = []
+    invoices = (
+        Invoice.objects.filter(customer=customer, posted=True, currency=currency)
+        .prefetch_related(
+            "lines__taxes", "payment_allocations__payment", "write_offs",
+            "deposit_applications__deposit",
+        )
+    )
+    for invoice in invoices:
+        date = to_date(invoice.invoice_date)
+        if date > as_of:
+            continue
+        if invoice.is_credit_note():
+            entries.append(StatementEntry(
+                date, "Credit note", invoice.number,
+                f"Credit against {invoice.credits.number}", credit=invoice.total(),
+            ))
+            continue
+
+        kind = "Down payment" if invoice.is_down_payment else "Invoice"
+        entries.append(StatementEntry(
+            date, kind, invoice.number, invoice.reference or "", debit=invoice.total()
+        ))
+
+        for allocation in invoice.payment_allocations.all():
+            paid_on = to_date(allocation.payment.payment_date)
+            if paid_on > as_of:
+                continue
+            entries.append(StatementEntry(
+                paid_on, "Payment", allocation.payment.number or "",
+                f"Against {invoice.number}", credit=allocation.amount,
+            ))
+        for application in invoice.deposit_applications.all():
+            if to_date(application.date) > as_of:
+                continue
+            entries.append(StatementEntry(
+                to_date(application.date), "Deposit applied", application.deposit.number,
+                f"Against {invoice.number}", credit=application.amount,
+            ))
+        for write_off in invoice.write_offs.all():
+            if to_date(write_off.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(write_off.date), "Written off", invoice.number,
+                    write_off.reason or "", credit=write_off.amount,
+                ))
+            # A recovery puts the debt back, so it has to appear or the
+            # statement stops footing to what the customer actually owes.
+            if write_off.is_recovered() and to_date(write_off.recovered_entry.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(write_off.recovered_entry.date), "Write-off reversed",
+                    invoice.number, "", debit=write_off.amount,
+                ))
+        if invoice.settlement_discount_amount and invoice.settlement_discount_entry_id:
+            discounted_on = to_date(invoice.settlement_discount_entry.date)
+            if discounted_on <= as_of:
+                entries.append(StatementEntry(
+                    discounted_on, "Settlement discount", invoice.number, "",
+                    credit=invoice.settlement_discount_amount,
+                ))
+
+    entries.sort(key=lambda entry: (entry.date, entry.kind, entry.reference))
+
+    opening = Decimal("0")
+    shown = []
+    running = Decimal("0")
+    for entry in entries:
+        if since and entry.date < since:
+            opening += entry.debit - entry.credit
+            continue
+        shown.append(entry)
+    running = opening
+    for entry in shown:
+        running += entry.debit - entry.credit
+        entry.balance = running
+
+    return {
+        "customer": customer,
+        "currency": currency,
+        "as_of": as_of,
+        "since": since,
+        "opening_balance": opening,
+        "entries": shown,
+        "closing_balance": running,
+        "overdue": sum(
+            (invoice.amount_due() for invoice in invoices if invoice.is_overdue(as_of)),
+            Decimal("0"),
+        ),
+    }
+
+
+def render_statement_pdf(statement):
+    from .documents import render_statement_pdf as _render
+
+    return _render(statement)
+
+
+def email_statement(customer, as_of=None, since=None, currency=None, to=None):
+    """Send a customer their statement as a PDF. Returns the address used."""
+    from django.core.mail import EmailMessage
+
+    statement = customer_statement(customer, as_of=as_of, since=since, currency=currency)
+    recipient = to or _statement_recipient(customer)
+    if not recipient:
+        raise ValidationError(
+            f"{customer} has no email address on the party or its primary contact."
+        )
+
+    company = Company.get()
+    message = EmailMessage(
+        subject=f"Statement of account from {company.name}",
+        body=(
+            f"Dear {customer.name},\n\n"
+            f"Please find your statement as at {statement['as_of']:%d %b %Y} attached. "
+            f"The balance outstanding is {statement['closing_balance']}.\n\n"
+            f"Regards,\n{company.name}\n"
+        ),
+        to=[recipient],
+    )
+    message.attach(
+        f"statement-{customer.code}-{statement['as_of']:%Y%m%d}.pdf",
+        render_statement_pdf(statement),
+        "application/pdf",
+    )
+    message.send()
+    return recipient
+
+
+def _statement_recipient(customer):
+    contact = customer.primary_contact()
+    if contact and contact.email:
+        return contact.email
+    return customer.email or ""
+
+
+def send_statements(as_of=None, since=None, customers=None, send=True):
+    """
+    Statement run: every customer with a balance gets one.
+
+    Returns (sent, skipped). Skipped means no email address — reported
+    rather than swallowed, the same as dunning, because a customer who is
+    silently never sent a statement is a customer who never pays.
+    """
+    as_of = to_date(as_of) or timezone.now().date()
+    if customers is None:
+        customers = Party.objects.filter(
+            role_assignments__role=PartyRole.CUSTOMER
+        ).distinct()
+
+    sent, skipped = [], []
+    for customer in customers:
+        try:
+            statement = customer_statement(customer, as_of=as_of, since=since)
+        except ValidationError:
+            skipped.append(customer)
+            continue
+        if statement["closing_balance"] <= 0:
+            continue
+        if send and not _statement_recipient(customer):
+            skipped.append(customer)
+            continue
+        if send:
+            email_statement(customer, as_of=as_of, since=since,
+                            currency=statement["currency"])
+        sent.append(statement)
+    return sent, skipped
+
+
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
 
 

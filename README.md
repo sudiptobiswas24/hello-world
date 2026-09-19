@@ -213,6 +213,23 @@ production / SQLite for local dev by default. Every module builds on the
     by giving up is not the same fact. Writing off is a Controller
     permission, not an AR Manager one — whoever can both invoice and
     write off can make any receivable disappear.
+  - **Statements**: dunning chases one invoice; a customer with forty
+    open items wants one document that adds up.
+    `customer_statement()` lists every movement on the account with a
+    running balance, and the property the tests hold it to is that the
+    closing balance foots to `outstanding_balance()` under every
+    settlement path — payments, credit notes, write-offs, write-off
+    recoveries, settlement discounts and deposit drawdowns all appear,
+    because any one of them missing makes the statement disagree with
+    the ledger. It's **open-item, not balance-forward**: B2B customers
+    reconcile by matching invoices to remittances, and balance-forward
+    throws away the detail that makes that possible — `since` still
+    gives a period view with an opening balance. Deliberately derived
+    rather than a stored document, since a stored statement is a second
+    copy of the truth that goes stale the moment anything settles.
+    Mixed currencies are refused rather than summed, the same stance as
+    cross-currency settlement. `send_statements()` runs the batch and
+    reports unreachable customers instead of swallowing them.
   - **Dunning**: `DunningLevel` defines the chase sequence by days
     overdue; `run_dunning()` raises the reminders now due. An invoice
     gets each level at most once and jumps straight to the level it has

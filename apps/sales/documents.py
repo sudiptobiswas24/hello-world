@@ -9,7 +9,7 @@ Invoices and quotations share one layout: the same company header, party
 block, line table and totals, differing only in their heading, the details
 they show and how their totals are summarised.
 """
-
+from decimal import Decimal
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -57,20 +57,26 @@ def _money(amount, currency):
 
 
 def _render_document(*, heading, document, party, address, meta, totals,
-                     party_label="BILL TO", note=None):
+                     party_label="BILL TO", note=None, table=None, currency=None,
+                     number=""):
     """
     `meta` is [[label, value]] for the details block; `totals` is
     [[label, Decimal]] with the last row emphasised as the bottom line.
+
+    `table` is (header, rows, col_widths) for documents whose body isn't a
+    list of priced lines — a statement, for instance. Without it the body
+    is built from `document.lines`.
     """
     company = Company.get()
-    currency = getattr(document, "currency", None)
+    currency = currency or getattr(document, "currency", None)
     style = _styles()
     buffer = BytesIO()
 
     template = SimpleDocTemplate(
         buffer, pagesize=A4,
         leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm,
-        title=f"{heading} {document.number}".strip(), author=company.name,
+        title=f"{heading} {number or getattr(document, 'number', '')}".strip(),
+        author=company.name,
     )
 
     story = [
@@ -109,25 +115,36 @@ def _render_document(*, heading, document, party, address, meta, totals,
         Spacer(1, 8 * mm),
     ]
 
-    header = ["Description", "Qty", "Unit price", "Disc", "Tax", "Amount"]
-    rows = [[Paragraph(f"<b>{cell}</b>", style["muted"]) for cell in header]]
-    for line in document.lines.all():
-        tax_names = ", ".join(tax.code for tax, _ in line.tax_amounts()) or "—"
-        rows.append([
-            Paragraph(line.label(), style["body"]),
-            Paragraph(f"{line.quantity:,.2f}", style["right"]),
-            Paragraph(_money(line.unit_price, currency), style["right"]),
-            Paragraph(
-                f"{line.discount_percent:,.0f}%" if line.discount_percent else "—", style["right"]
-            ),
-            Paragraph(tax_names, style["right"]),
-            Paragraph(_money(line.net_amount(), currency), style["right"]),
-        ])
+    if table is not None:
+        header, body, col_widths = table
+        rows = [[Paragraph(f"<b>{cell}</b>", style["muted"]) for cell in header]]
+        for row in body:
+            rows.append([
+                Paragraph(str(cell), style["body" if index == 0 else "right"])
+                for index, cell in enumerate(row)
+            ])
+    else:
+        header = ["Description", "Qty", "Unit price", "Disc", "Tax", "Amount"]
+        col_widths = [68 * mm, 18 * mm, 26 * mm, 14 * mm, 20 * mm, 28 * mm]
+        rows = [[Paragraph(f"<b>{cell}</b>", style["muted"]) for cell in header]]
+        for line in document.lines.all():
+            tax_names = ", ".join(tax.code for tax, _ in line.tax_amounts()) or "—"
+            rows.append([
+                Paragraph(line.label(), style["body"]),
+                Paragraph(f"{line.quantity:,.2f}", style["right"]),
+                Paragraph(_money(line.unit_price, currency), style["right"]),
+                Paragraph(
+                    f"{line.discount_percent:,.0f}%" if line.discount_percent else "—",
+                    style["right"],
+                ),
+                Paragraph(tax_names, style["right"]),
+                Paragraph(_money(line.net_amount(), currency), style["right"]),
+            ])
 
     story.append(
         Table(
             rows,
-            colWidths=[68 * mm, 18 * mm, 26 * mm, 14 * mm, 20 * mm, 28 * mm],
+            colWidths=col_widths,
             repeatRows=1,
             style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), BAND),
@@ -242,4 +259,54 @@ def render_quotation_pdf(quotation):
         heading="Quotation", document=quotation, party=quotation.customer,
         address=quotation.billing_address, meta=meta, totals=totals,
         party_label="PREPARED FOR", note=note,
+    )
+
+
+def render_statement_pdf(statement):
+    """Render a customer statement (from sales.customer_statement) as PDF."""
+    currency = statement["currency"]
+    customer = statement["customer"]
+
+    meta = [["As at", statement["as_of"].strftime("%d %b %Y")]]
+    if statement["since"]:
+        meta.append(["From", statement["since"].strftime("%d %b %Y")])
+    if customer.code:
+        meta.append(["Account", customer.code])
+
+    header = ["Date", "Type", "Reference", "Charges", "Credits", "Balance"]
+    rows = []
+    if statement["since"]:
+        rows.append([
+            statement["since"].strftime("%d %b %Y"), "Opening balance", "", "", "",
+            _money(statement["opening_balance"], currency),
+        ])
+    for entry in statement["entries"]:
+        rows.append([
+            entry.date.strftime("%d %b %Y"),
+            entry.kind,
+            entry.reference or entry.description or "—",
+            _money(entry.debit, currency) if entry.debit else "",
+            _money(entry.credit, currency) if entry.credit else "",
+            _money(entry.balance, currency),
+        ])
+    if not rows:
+        rows.append(["—", "Nothing outstanding", "", "", "", _money(Decimal("0"), currency)])
+
+    totals = [["Balance due", statement["closing_balance"]]]
+    if statement["overdue"] > 0:
+        totals.insert(0, ["Of which overdue", statement["overdue"]])
+
+    note = None
+    if statement["overdue"] > 0:
+        note = (
+            f"{_money(statement['overdue'], currency)} of this balance is past its due date. "
+            "Please arrange payment, or contact us if any item is in dispute."
+        )
+
+    return _render_document(
+        heading="Statement", document=None, party=customer,
+        address=customer.billing_address(), meta=meta, totals=totals,
+        party_label="STATEMENT FOR", note=note, currency=currency,
+        number=statement["as_of"].strftime("%Y-%m-%d"),
+        table=(header, rows, [22 * mm, 30 * mm, 42 * mm, 26 * mm, 26 * mm, 28 * mm]),
     )
