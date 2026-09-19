@@ -41,6 +41,7 @@ ROLES = {
         # sale. An AR Manager who can both invoice and write off can make
         # any receivable disappear.
         *crud("sales", "invoicewriteoff"),
+        *crud("sales", "depositapplication", actions=("view",)),
         "sales.write_off_invoice",
     ],
     "Sales Rep": [
@@ -77,6 +78,7 @@ ROLES = {
         *crud("sales", "recurringinvoiceline"),
         *crud("sales", "dunningnotice", actions=("view",)),
         *crud("sales", "invoicewriteoff", actions=("view",)),
+        *crud("sales", "depositapplication", actions=("view",)),
         *crud("accounting", "payment"),
         "sales.post_invoice",
         "accounting.post_payment",

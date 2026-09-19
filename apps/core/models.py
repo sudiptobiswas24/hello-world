@@ -559,6 +559,11 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Expense account for receivables judged uncollectable.",
     )
+    customer_deposit_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Liability account holding money taken up front, before the goods are "
+                  "delivered and the revenue is earned.",
+    )
 
     class Meta:
         verbose_name_plural = "company"

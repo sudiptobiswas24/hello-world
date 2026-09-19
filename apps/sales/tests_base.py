@@ -70,11 +70,14 @@ class SalesTestCase(TestCase):
         self.bad_debt = Account.objects.create(
             code="5200", name="Bad Debt Expense", account_type=AccountType.EXPENSE
         )
+        self.deposits = Account.objects.create(
+            code="2200", name="Customer Deposits", account_type=AccountType.LIABILITY
+        )
         Company.objects.create(
             name="Test Co", base_currency=self.usd,
             default_inventory_account=self.inventory, default_cogs_account=self.cogs,
             grni_account=self.grni, settlement_discount_account=self.discount_account,
-            bad_debt_account=self.bad_debt,
+            bad_debt_account=self.bad_debt, customer_deposit_account=self.deposits,
         )
 
         self.terms = PaymentTerms.objects.create(

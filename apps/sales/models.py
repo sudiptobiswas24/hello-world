@@ -404,6 +404,77 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
             invoice_line.taxes.set(line.taxes.all())
         return invoice
 
+    def deposits(self):
+        """Posted down-payment invoices raised against this order."""
+        return self.invoices.filter(is_down_payment=True, posted=True)
+
+    def deposit_total(self):
+        return sum((deposit.total() for deposit in self.deposits()), Decimal("0"))
+
+    @transaction.atomic
+    def create_down_payment_invoice(
+        self, receivable_account, amount=None, percent=None, invoice_date=None, description=""
+    ):
+        """
+        Bill the customer up front, before anything ships.
+
+        The line credits the customer-deposit *liability*, not revenue:
+        taking the money does not earn it, and recognising revenue against
+        goods still sitting in the warehouse overstates income and
+        understates what the company owes. The revenue lands later, on the
+        real invoice, and the deposit is drawn down against it.
+
+        This is also the only honest way to bill ahead on an order that
+        invoices on delivery.
+        """
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can take a down payment.")
+        if (amount is None) == (percent is None):
+            raise ValidationError("Give a down payment either an amount or a percent, not both.")
+
+        order_total = self.total()
+        if percent is not None:
+            percent = Decimal(percent)
+            if percent <= 0 or percent > 100:
+                raise ValidationError("A down payment percent must be between 0 and 100.")
+            amount = round_money(order_total * percent / Decimal("100"))
+        amount = round_money(Decimal(amount))
+        if amount <= 0:
+            raise ValidationError("A down payment must be for a positive amount.")
+
+        already = self.deposit_total()
+        if already + amount > order_total:
+            raise ValidationError(
+                f"Down payments of {already} are already on this order; taking {amount} more "
+                f"would exceed the order total of {order_total}."
+            )
+
+        account = Company.get().customer_deposit_account
+        if account is None:
+            raise ValidationError("The company has no customer deposit account configured.")
+
+        invoice = Invoice.objects.create(
+            customer=self.customer,
+            invoice_date=invoice_date or timezone.now().date(),
+            reference=self.reference,
+            sales_order=self,
+            receivable_account=receivable_account,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+            is_down_payment=True,
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice,
+            description=description or f"Down payment on order {self.number or self.pk}",
+            quantity=Decimal("1"),
+            unit_price=amount,
+            revenue_account=account,
+        )
+        return invoice
+
 
 class SalesOrderLine(TaxedLineMixin, AuditModel):
     order = models.ForeignKey(SalesOrder, related_name="lines", on_delete=models.CASCADE)
@@ -565,6 +636,11 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     settlement_discount_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
+    )
+    is_down_payment = models.BooleanField(
+        default=False, editable=False,
+        help_text="Money taken up front against an order, held as a liability "
+                  "until the goods are delivered.",
     )
     written_off_amount = models.DecimalField(
         max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
@@ -787,6 +863,99 @@ class Invoice(TaxedDocumentMixin, AuditModel):
     def amount_written_off(self):
         return self.written_off_amount or Decimal("0")
 
+    def amount_deposited(self):
+        """Down payments drawn down against this invoice."""
+        return sum(
+            (application.amount for application in self.deposit_applications.all()), Decimal("0")
+        )
+
+    def deposit_applied(self):
+        """On a down-payment invoice, how much of it has been drawn down."""
+        return sum(
+            (application.amount for application in self.applications.all()), Decimal("0")
+        )
+
+    def deposit_unapplied(self):
+        if not self.is_down_payment:
+            return Decimal("0")
+        return self.total() - self.deposit_applied()
+
+    @transaction.atomic
+    def apply_deposit(self, deposit, amount=None, on_date=None):
+        """
+        Draw a down payment down against this invoice.
+
+        Dr customer deposits / Cr accounts receivable: the liability is
+        discharged because the goods have now been delivered, and the
+        customer only owes the difference.
+
+        Deliberately independent of whether the deposit invoice was
+        actually *paid*. Unpaid, the two receivables simply stay open side
+        by side and still add up to what the customer owes; requiring
+        payment first would block the final invoice on a slow payer for
+        no accounting reason.
+        """
+        on_date = to_date(on_date) or timezone.now().date()
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can draw down a deposit.")
+        if self.is_down_payment or self.is_credit_note():
+            raise ValidationError("A down payment or credit note cannot draw down a deposit.")
+        if not deposit.is_down_payment or not deposit.posted:
+            raise ValidationError("Only a posted down-payment invoice can be drawn down.")
+        if deposit.customer_id != self.customer_id:
+            raise ValidationError("That deposit belongs to a different customer.")
+        if deposit.currency_id != self.currency_id:
+            raise ValidationError(
+                "The deposit and the invoice are in different currencies; drawing one down "
+                "against the other would silently write off the difference."
+            )
+
+        available = min(deposit.deposit_unapplied(), self.amount_due())
+        amount = round_money(Decimal(amount)) if amount is not None else available
+        if amount <= 0:
+            raise ValidationError("There is nothing left to draw down.")
+        if amount > available:
+            raise ValidationError(
+                f"Only {available} can be drawn down here "
+                f"({deposit.deposit_unapplied()} left on the deposit, "
+                f"{self.amount_due()} due on the invoice)."
+            )
+
+        account = Company.get().customer_deposit_account
+        if account is None:
+            raise ValidationError("The company has no customer deposit account configured.")
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        memo = f"Down payment {deposit.number} applied to {self.number}"
+        entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.customer,
+            debit=base_amount, description=memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.receivable_account, party=self.customer,
+            credit=base_amount, description=memo,
+        )
+        entry.post()
+
+        return DepositApplication.objects.create(
+            invoice=self, deposit=deposit, amount=amount, date=on_date, journal_entry=entry
+        )
+
+    def apply_available_deposits(self, on_date=None):
+        """Draw down every deposit still outstanding on this invoice's order."""
+        if not self.sales_order_id or self.is_down_payment or self.is_credit_note():
+            return []
+        applied = []
+        for deposit in self.sales_order.deposits().order_by("invoice_date", "pk"):
+            if self.amount_due() <= 0:
+                break
+            if deposit.deposit_unapplied() <= 0:
+                continue
+            applied.append(self.apply_deposit(deposit, on_date=on_date))
+        return applied
+
     def amount_paid(self):
         return sum(
             (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
@@ -803,6 +972,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             self.total() - self.amount_paid() - self.amount_credited()
             - (self.settlement_discount_amount or Decimal("0"))
             - self.amount_written_off()
+            - self.amount_deposited()
         )
 
     def settlement_status(self):
@@ -831,6 +1001,10 @@ class Invoice(TaxedDocumentMixin, AuditModel):
 
     def clean(self):
         _require_customer_role(self.customer)
+        if self.is_down_payment and not self.sales_order_id:
+            raise ValidationError("A down payment must be against a sales order.")
+        if self.is_down_payment and self.credits_id:
+            raise ValidationError("A credit note cannot also be a down payment.")
         if self.credits_id and self.credits.customer_id != self.customer_id:
             raise ValidationError("A credit note must be for the same customer as the invoice it credits.")
 
@@ -940,7 +1114,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
     @transaction.atomic
-    def post(self, memo=None):
+    def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
 
@@ -1000,6 +1174,13 @@ class Invoice(TaxedDocumentMixin, AuditModel):
                 "posted", "posted_at", "updated_at",
             ]
         )
+
+        # Draw down the order's deposits automatically. Leaving this to the
+        # caller means the day someone forgets, the customer is billed the
+        # full amount on top of money they have already handed over — and
+        # the deposit sits as a liability nobody ever clears.
+        if apply_deposits:
+            self.apply_available_deposits(on_date=self.invoice_date)
 
     @transaction.atomic
     def create_credit_note(self, memo="", quantities=None):
@@ -1187,6 +1368,39 @@ class InvoicePayment(AuditModel):
         super().save(*args, **kwargs)
 
 
+class DepositApplication(AuditModel):
+    """
+    One drawdown of a down-payment invoice against a real invoice.
+
+    Modelled like InvoicePayment rather than as a negative line on the
+    invoice: the invoice total should say what was sold, not what is left
+    to collect after netting, or every revenue report has to unpick the
+    difference.
+    """
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="deposit_applications"
+    )
+    deposit = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="applications")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField()
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="deposit_application_positive"),
+            models.UniqueConstraint(
+                fields=["invoice", "deposit"], name="one_application_per_invoice_and_deposit"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.deposit} -> {self.invoice} ({self.amount})"
+
+
 class InvoiceWriteOff(AuditModel):
     """
     One occasion on which part of a receivable was judged uncollectable.
@@ -1271,7 +1485,18 @@ def committed_balance(customer):
                 continue
             share = remaining / line.quantity if line.quantity else Decimal("0")
             uninvoiced += round_money(line.total() * share)
-    return outstanding_balance(customer) + uninvoiced
+
+    # A down payment is billed against an order whose lines are still
+    # uninvoiced, so the same money appears in both halves of the sum.
+    # Counting it twice would use up a customer's credit limit for taking
+    # money from them up front, which is backwards.
+    deposits = Invoice.objects.filter(
+        customer=customer, posted=True, is_down_payment=True
+    ).prefetch_related("lines__taxes", "applications")
+    outstanding_deposits = sum(
+        (deposit.deposit_unapplied() for deposit in deposits), Decimal("0")
+    )
+    return outstanding_balance(customer) + uninvoiced - outstanding_deposits
 
 
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
@@ -1763,7 +1988,10 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
     date_from = to_date(date_from)
     date_to = to_date(date_to)
 
-    invoices = Invoice.objects.filter(posted=True).prefetch_related(
+    # A down payment credits a liability, not revenue — counting it here
+    # would book the sale twice, once on the deposit and once on the
+    # invoice that draws it down.
+    invoices = Invoice.objects.filter(posted=True, is_down_payment=False).prefetch_related(
         "lines__taxes", "lines__item"
     ).select_related("customer")
     if date_from:
@@ -2213,8 +2441,10 @@ def commission_report(date_from=None, date_to=None):
         if rep.plan is None or not rep.plan.is_active:
             continue
 
+        # A down payment is not a sale, so it earns no commission on either
+        # basis; the commission falls due on the invoice that draws it down.
         invoices = Invoice.objects.filter(
-            posted=True, sales_rep=rep.party
+            posted=True, sales_rep=rep.party, is_down_payment=False
         ).prefetch_related("lines__taxes", "payment_allocations__payment")
 
         basis_amount = Decimal("0")

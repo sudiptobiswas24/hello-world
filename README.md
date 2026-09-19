@@ -168,6 +168,22 @@ production / SQLite for local dev by default. Every module builds on the
     receivable) so the invoice settles clean instead of leaving a 2%
     stub that ages forever. It refuses after the window unless forced,
     and refuses twice.
+  - **Down payments**: `SalesOrder.create_down_payment_invoice()` bills
+    the customer up front by amount or percent. The line credits
+    `Company.customer_deposit_account` — a *liability* — not revenue:
+    taking money doesn't earn it, and recognising revenue against goods
+    still in the warehouse overstates income and hides what the company
+    owes. It's also the only honest way to bill ahead on an order that
+    invoices on delivery. Posting the real invoice draws the deposit
+    down automatically (Dr deposits / Cr receivable) via
+    `DepositApplication`, because the day someone forgets to do it by
+    hand the customer is billed for money they already paid. The
+    drawdown doesn't require the deposit to have been *paid*: two open
+    receivables side by side still add up to what is owed, and blocking
+    the final invoice on a slow payer has no accounting justification.
+    Deposits are excluded from `revenue_report()` and commission (a
+    deposit is not a sale) and netted out of `committed_balance()`, so
+    taking money up front doesn't consume the customer's credit limit.
   - **Bad debt**: dunning has to escalate to something. `write_off()`
     charges an uncollectable receivable to `Company.bad_debt_account`
     (Dr bad debt expense / Cr receivable) and records an

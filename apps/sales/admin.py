@@ -5,6 +5,7 @@ from apps.core.audit import AuditableAdminMixin
 
 from .models import (
     CommissionPlan,
+    DepositApplication,
     CustomerProfile,
     Delivery,
     DunningLevel,
@@ -134,6 +135,17 @@ class DunningNoticeAdmin(admin.ModelAdmin):
     readonly_fields = ("invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at")
 
     def has_add_permission(self, request):
+        return False
+
+
+@admin.register(DepositApplication)
+class DepositApplicationAdmin(admin.ModelAdmin):
+    list_display = ("deposit", "invoice", "amount", "date")
+    readonly_fields = ("deposit", "invoice", "amount", "date", "journal_entry")
+
+    def has_add_permission(self, request):
+        # Drawing a deposit down posts to the ledger, so it goes through
+        # Invoice.apply_deposit() rather than a form.
         return False
 
 
