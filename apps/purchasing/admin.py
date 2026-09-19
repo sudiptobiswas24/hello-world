@@ -9,6 +9,7 @@ from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrde
 class PurchaseOrderLineInline(admin.TabularInline):
     model = PurchaseOrderLine
     extra = 1
+    filter_horizontal = ("taxes",)
 
 
 @admin.register(PurchaseOrder)
@@ -21,6 +22,7 @@ class PurchaseOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
 class BillLineInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = BillLine
     extra = 1
+    filter_horizontal = ("taxes",)
 
 
 @admin.register(Bill)

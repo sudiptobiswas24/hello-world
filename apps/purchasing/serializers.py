@@ -8,7 +8,10 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PurchaseOrderLine
-        fields = ["id", "order", "item", "uom", "quantity", "unit_price", "quantity_received"]
+        fields = [
+            "id", "order", "item", "uom", "quantity", "unit_price",
+            "discount_percent", "taxes", "expense_account", "quantity_received",
+        ]
 
     def get_quantity_received(self, obj):
         return obj.quantity_received()
@@ -28,7 +31,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 class BillLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = BillLine
-        fields = ["id", "bill", "item", "description", "quantity", "unit_price", "expense_account"]
+        fields = [
+            "id", "bill", "item", "description", "quantity", "unit_price",
+            "discount_percent", "taxes", "expense_account",
+        ]
 
 
 class BillSerializer(serializers.ModelSerializer):

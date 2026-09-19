@@ -1,3 +1,4 @@
+from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -6,7 +7,14 @@ from django.utils import timezone
 
 from django.db.models import Q
 
-from apps.accounting.models import Account, JournalEntry, JournalLine, round_money
+from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
+from apps.accounting.models import (
+    Account,
+    JournalEntry,
+    JournalLine,
+    Tax,
+    round_money,
+)
 from apps.core.models import (
     AuditModel,
     Company,
@@ -39,7 +47,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class PurchaseOrder(AuditModel):
+class PurchaseOrder(TaxedDocumentMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()
@@ -69,9 +77,6 @@ class PurchaseOrder(AuditModel):
         if self._state.adding and self.vendor_id and not self.currency_id:
             self.currency = self.vendor.default_currency
         super().save(*args, **kwargs)
-
-    def total(self):
-        return sum((line.subtotal() for line in self.lines.all()), Decimal("0"))
 
     @transaction.atomic
     def confirm(self):
@@ -114,18 +119,29 @@ class PurchaseOrder(AuditModel):
         return FulfilmentStatus.PARTIAL
 
 
-class PurchaseOrderLine(AuditModel):
+class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     order = models.ForeignKey(PurchaseOrder, related_name="lines", on_delete=models.CASCADE)
     item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="purchase_order_lines")
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
-    quantity = models.DecimalField(max_digits=18, decimal_places=4)
-    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    expense_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where a non-stocked line lands when this order is billed.",
+    )
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="purchase_order_lines")
+
+    def party_for_tax(self):
+        return self.order.vendor
 
     def __str__(self):
         return f"{self.item} x{self.quantity}"
 
-    def subtotal(self):
-        return round_money(self.quantity * self.unit_price)
+    def save(self, *args, **kwargs):
+        if self.unit_price is None:
+            raise ValidationError(
+                f"Give {self.item} a unit price; a purchase order has no price list to "
+                "fall back on — the price is whatever the vendor quoted."
+            )
+        super().save(*args, **kwargs)
 
     def quantity_received(self):
         """Net quantity received so far: posted receipts minus posted returns."""
@@ -141,7 +157,7 @@ class PurchaseOrderLine(AuditModel):
         return self.quantity_received() >= self.quantity
 
 
-class Bill(AuditModel):
+class Bill(TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
     a balanced JournalEntry (Dr Expense per line / Cr Accounts Payable)
@@ -223,9 +239,6 @@ class Bill(AuditModel):
         if self.debits_id and self.debits.vendor_id != self.vendor_id:
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
 
-    def total(self):
-        return sum((line.subtotal() for line in self.lines.all()), Decimal("0"))
-
     def _was_posted_in_db(self):
         if not self.pk:
             return False
@@ -266,9 +279,29 @@ class Bill(AuditModel):
         for line in lines:
             debits.append((
                 line.posting_account(),
-                round_money(line.subtotal() * rate),
+                round_money(line.net_amount() * rate),
                 line.description or str(line.item),
             ))
+
+        # Input tax is an asset, not a cost: VAT paid to a vendor is
+        # reclaimable, so it is debited to the tax's paid_account rather
+        # than buried in the expense. A vendor the fiscal position
+        # zero-rates or reverse-charges contributes nothing here, which is
+        # the whole point of running the taxes through effective_taxes().
+        tax_totals = defaultdict(Decimal)
+        line_taxes = self.line_tax_amounts()
+        for line in lines:
+            for tax, amount in line_taxes.get(line, ()):
+                if not amount:
+                    continue
+                if not tax.applies_to_purchases():
+                    raise ValidationError(f"Tax {tax.code} is not configured for purchases.")
+                account = tax.account_for(is_sale=False)
+                if account is None:
+                    raise ValidationError(f"Tax {tax.code} has no paid account.")
+                tax_totals[account] += amount
+        for account, amount in tax_totals.items():
+            debits.append((account, round_money(amount * rate), "Tax"))
 
         payable_total = sum(amount for _, amount, _ in debits)
         JournalLine.objects.create(
@@ -352,31 +385,32 @@ class Bill(AuditModel):
             debits=self,
         )
         for line in self.lines.all():
-            BillLine.objects.create(
+            note_line = BillLine.objects.create(
                 bill=debit_note,
                 item=line.item,
                 description=line.description,
                 quantity=line.quantity,
                 unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
                 expense_account=line.expense_account,
             )
+            note_line.taxes.set(line.taxes.all())
         debit_note.post(memo=memo)
         return debit_note
 
 
-class BillLine(AuditModel):
+class BillLine(TaxedLineMixin, AuditModel):
     bill = models.ForeignKey(Bill, related_name="lines", on_delete=models.CASCADE)
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="bill_lines")
     description = models.CharField(max_length=255, blank=True)
-    quantity = models.DecimalField(max_digits=18, decimal_places=4)
-    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
     expense_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="bill_lines")
+
+    def party_for_tax(self):
+        return self.bill.vendor
 
     def __str__(self):
         return f"{self.item or self.description} x{self.quantity}"
-
-    def subtotal(self):
-        return self.quantity * self.unit_price
 
     def posting_account(self):
         """
