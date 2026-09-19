@@ -36,6 +36,12 @@ ROLES = {
         *crud("accounting", "partytaxprofile"),
         *crud("accounting", "payment"),
         "accounting.post_payment",
+        # Giving up on a receivable is an expense decision, so it sits with
+        # the Controller and not with the people who booked or chased the
+        # sale. An AR Manager who can both invoice and write off can make
+        # any receivable disappear.
+        *crud("sales", "invoicewriteoff"),
+        "sales.write_off_invoice",
     ],
     "Sales Rep": [
         *crud("sales", "salesorder"),
@@ -70,6 +76,7 @@ ROLES = {
         *crud("sales", "recurringinvoice"),
         *crud("sales", "recurringinvoiceline"),
         *crud("sales", "dunningnotice", actions=("view",)),
+        *crud("sales", "invoicewriteoff", actions=("view",)),
         *crud("accounting", "payment"),
         "sales.post_invoice",
         "accounting.post_payment",

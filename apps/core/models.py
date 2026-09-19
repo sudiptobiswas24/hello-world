@@ -555,6 +555,10 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where early-settlement discounts are written off (an expense).",
     )
+    bad_debt_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Expense account for receivables judged uncollectable.",
+    )
 
     class Meta:
         verbose_name_plural = "company"

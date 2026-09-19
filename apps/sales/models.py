@@ -140,6 +140,7 @@ class SettlementStatus(models.TextChoices):
     UNPAID = "unpaid", "Unpaid"
     PARTIAL = "partial", "Partially paid"
     PAID = "paid", "Paid"
+    WRITTEN_OFF = "written_off", "Written off"
 
 
 class PriceList(AuditModel):
@@ -565,10 +566,17 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
     )
+    written_off_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="Receivable judged uncollectable and charged to bad debt.",
+    )
 
     class Meta:
         ordering = ["-invoice_date", "-id"]
-        permissions = [("post_invoice", "Can post invoices and issue credit notes")]
+        permissions = [
+            ("post_invoice", "Can post invoices and issue credit notes"),
+            ("write_off_invoice", "Can write a receivable off to bad debt"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="unique_invoice_number"
@@ -693,6 +701,92 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         )
         return entry
 
+    @transaction.atomic
+    def write_off(self, amount=None, on_date=None, reason=""):
+        """
+        Charge an uncollectable receivable to bad debt expense.
+
+        Not a credit note. A credit note reverses revenue, which says the
+        sale did not happen; a write-off says it did happen and the money
+        never arrived. Those are different facts and they land in
+        different places on the P&L. Without this, dunning escalates to
+        nothing and a dead invoice ages in AR forever, overstating assets.
+
+        Dr Bad debt expense / Cr Accounts receivable.
+        """
+        on_date = to_date(on_date) or timezone.now().date()
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be written off.")
+        if self.is_credit_note():
+            raise ValidationError("A credit note cannot be written off.")
+
+        due = self.amount_due()
+        if due <= 0:
+            raise ValidationError("This invoice has nothing left to write off.")
+        amount = round_money(Decimal(amount)) if amount is not None else due
+        if amount <= 0:
+            raise ValidationError("A write-off must be for a positive amount.")
+        if amount > due:
+            raise ValidationError(
+                f"Cannot write off {amount} against an invoice with {due} outstanding."
+            )
+
+        account = Company.get().bad_debt_account
+        if account is None:
+            raise ValidationError("The company has no bad debt account configured.")
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        memo = f"Bad debt write-off {self.number}"
+        entry = JournalEntry.objects.create(
+            date=on_date, reference=self.number,
+            memo=f"{memo}: {reason}" if reason else memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.customer,
+            debit=base_amount, description=memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.receivable_account, party=self.customer,
+            credit=base_amount, description=memo,
+        )
+        entry.post()
+
+        InvoiceWriteOff.objects.create(
+            invoice=self, amount=amount, date=on_date, reason=reason, journal_entry=entry
+        )
+        self.written_off_amount = self.written_off_amount + amount
+        super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
+        return entry
+
+    @transaction.atomic
+    def recover_write_off(self, write_off, on_date=None):
+        """
+        Undo a write-off because the customer paid after all.
+
+        Reversing the original entry rather than posting a fresh one keeps
+        the correction path identical to every other posted document: the
+        write-off stays on record, visibly reversed, instead of being
+        quietly netted to nothing by an unrelated entry.
+        """
+        if write_off.invoice_id != self.pk:
+            raise ValidationError("That write-off belongs to a different invoice.")
+        if write_off.recovered_entry_id:
+            raise ValidationError("That write-off has already been recovered.")
+
+        entry = write_off.journal_entry.create_reversal(
+            entry_date=to_date(on_date) or timezone.now().date(),
+            memo=f"Bad debt recovered {self.number}",
+        )
+        write_off.recovered_entry = entry
+        write_off.save(update_fields=["recovered_entry", "updated_at"])
+        self.written_off_amount = self.written_off_amount - write_off.amount
+        super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
+        return entry
+
+    def amount_written_off(self):
+        return self.written_off_amount or Decimal("0")
+
     def amount_paid(self):
         return sum(
             (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
@@ -708,14 +802,20 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         return (
             self.total() - self.amount_paid() - self.amount_credited()
             - (self.settlement_discount_amount or Decimal("0"))
+            - self.amount_written_off()
         )
 
     def settlement_status(self):
         if not self.posted:
             return SettlementStatus.DRAFT
         if self.amount_due() <= 0:
+            # Cleared by giving up on the money is not the same as cleared
+            # by being paid, and a collections report needs to tell them
+            # apart even though the balance reads zero either way.
+            if self.amount_written_off() > 0:
+                return SettlementStatus.WRITTEN_OFF
             return SettlementStatus.PAID
-        if self.amount_paid() or self.amount_credited():
+        if self.amount_paid() or self.amount_credited() or self.amount_written_off():
             return SettlementStatus.PARTIAL
         return SettlementStatus.UNPAID
 
@@ -1085,6 +1185,65 @@ class InvoicePayment(AuditModel):
     def save(self, *args, **kwargs):
         self.full_clean()
         super().save(*args, **kwargs)
+
+
+class InvoiceWriteOff(AuditModel):
+    """
+    One occasion on which part of a receivable was judged uncollectable.
+
+    A row per event rather than a single amount on the invoice: partial
+    write-offs are normal (settle at 40c in the dollar, write off the
+    rest), each one needs its own date, reason and ledger entry, and a
+    recovery has to name which one it undoes.
+    """
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="write_offs")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField()
+    reason = models.CharField(max_length=255, blank=True)
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    recovered_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Set when the debt was recovered and this write-off reversed.",
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="write_off_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"Write-off {self.amount} on {self.invoice}"
+
+    def is_recovered(self):
+        return bool(self.recovered_entry_id)
+
+
+def bad_debt_report(start=None, end=None):
+    """Write-offs in a period, netting recoveries off the total."""
+    write_offs = InvoiceWriteOff.objects.select_related("invoice__customer")
+    if start:
+        write_offs = write_offs.filter(date__gte=to_date(start))
+    if end:
+        write_offs = write_offs.filter(date__lte=to_date(end))
+
+    rows = {}
+    for write_off in write_offs:
+        customer = write_off.invoice.customer
+        row = rows.setdefault(
+            customer.pk,
+            {"customer": customer, "written_off": Decimal("0"),
+             "recovered": Decimal("0"), "net": Decimal("0")},
+        )
+        row["written_off"] += write_off.amount
+        if write_off.is_recovered():
+            row["recovered"] += write_off.amount
+        row["net"] = row["written_off"] - row["recovered"]
+    return sorted(rows.values(), key=lambda row: -row["net"])
 
 
 def outstanding_balance(customer):

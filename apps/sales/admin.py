@@ -13,6 +13,7 @@ from .models import (
     Invoice,
     InvoiceLine,
     InvoicePayment,
+    InvoiceWriteOff,
     PriceList,
     PriceListItem,
     Quotation,
@@ -134,6 +135,22 @@ class DunningNoticeAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(InvoiceWriteOff)
+class InvoiceWriteOffAdmin(admin.ModelAdmin):
+    list_display = ("invoice", "amount", "date", "reason", "is_recovered")
+    list_filter = ("date",)
+    readonly_fields = ("invoice", "amount", "date", "reason", "journal_entry", "recovered_entry")
+
+    def has_add_permission(self, request):
+        # A write-off is a ledger event, so it is raised through
+        # Invoice.write_off() and never typed into a form.
+        return False
+
+    @admin.display(boolean=True, description="Recovered")
+    def is_recovered(self, obj):
+        return obj.is_recovered()
 
 
 @admin.register(CommissionPlan)

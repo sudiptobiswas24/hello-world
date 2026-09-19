@@ -168,6 +168,21 @@ production / SQLite for local dev by default. Every module builds on the
     receivable) so the invoice settles clean instead of leaving a 2%
     stub that ages forever. It refuses after the window unless forced,
     and refuses twice.
+  - **Bad debt**: dunning has to escalate to something. `write_off()`
+    charges an uncollectable receivable to `Company.bad_debt_account`
+    (Dr bad debt expense / Cr receivable) and records an
+    `InvoiceWriteOff` per occasion — partial write-offs are normal, and
+    each needs its own date, reason and entry. It is deliberately *not*
+    a credit note: a credit note reverses revenue, which says the sale
+    never happened, where a write-off says it happened and the money
+    never came. Both clear the receivable; only one is true, and they
+    land in different places on the P&L. `recover_write_off()` reverses
+    one when the customer pays after all, leaving the original visibly
+    reversed rather than quietly netted away. `settlement_status()`
+    reports WRITTEN_OFF rather than PAID, because a zero balance reached
+    by giving up is not the same fact. Writing off is a Controller
+    permission, not an AR Manager one — whoever can both invoice and
+    write off can make any receivable disappear.
   - **Dunning**: `DunningLevel` defines the chase sequence by days
     overdue; `run_dunning()` raises the reminders now due. An invoice
     gets each level at most once and jumps straight to the level it has
