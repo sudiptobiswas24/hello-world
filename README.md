@@ -39,13 +39,30 @@ production / SQLite for local dev by default. Every module builds on the
   the original invoice's `JournalEntry.create_reversal()` rather than
   reimplementing correction logic.
 
+- **`apps/purchasing`** — mirrors Sales for the payables side.
+  `PurchaseOrder`/`PurchaseOrderLine`, `Bill`/`BillLine`. Vendors are
+  `Party` records with the `VENDOR` role. Posting a bill builds a
+  balanced `JournalEntry` (Dr Expense per line / Cr Accounts Payable).
+  Corrections go through `Bill.create_debit_note()`, same
+  immutable-then-reverse pattern as Sales' credit notes — deliberately
+  not a third, different correction mechanism.
+  Receiving inventory against a PO is **not** wired to `StockMovement`
+  yet — that integration is deferred until the receiving workflow
+  (three-way match between PO, receipt, and bill) is actually designed.
+
 ## Module roadmap
 
 1. ~~Inventory~~ (done)
 2. ~~Accounting~~ (done) — chart of accounts + double-entry ledger
 3. ~~Sales / CRM~~ (done) — orders, invoicing, credit notes
-4. Purchasing
+4. ~~Purchasing~~ (done) — orders, vendor bills, debit notes
 5. HR
+
+## Known gaps (not yet addressed)
+
+- **No permissions/roles.** Any authenticated user can post journal
+  entries, invoices, and bills. No segregation of duties. Deferred by
+  request — revisit before any real money flows through this.
 
 ## Local setup
 
@@ -66,6 +83,9 @@ python manage.py runserver
 - Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines). Post an
   invoice with `POST /api/sales/invoices/{id}/post_invoice/`, correct a
   posted one with `POST /api/sales/invoices/{id}/credit_note/`.
+- Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines).
+  Post a bill with `POST /api/purchasing/bills/{id}/post_bill/`, correct a
+  posted one with `POST /api/purchasing/bills/{id}/debit_note/`.
 
 ## Tests
 
