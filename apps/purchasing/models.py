@@ -1344,6 +1344,16 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         if self.pk:
             previous = PurchaseOrderLine.objects.filter(pk=self.pk).first()
             if previous is not None:
+                if self.blanket_line_id:
+                    # quantity_released() already counts this line's stored
+                    # value, so compare against the agreement net of it.
+                    others = self.blanket_line.quantity_released() - previous.quantity
+                    if others + self.quantity > self.blanket_line.quantity:
+                        raise ValidationError(
+                            f"The agreement commits {self.blanket_line.quantity} of "
+                            f"{self.item}; releasing {others + self.quantity} would "
+                            "exceed it."
+                        )
                 committed = max(self.quantity_received(), self.quantity_billed())
                 if self.quantity < committed:
                     raise ValidationError(
@@ -1363,9 +1373,16 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                         "agreed price is what the three-way match checks against, so "
                         "moving it would retrospectively approve whatever was billed."
                     )
+        # A line added to an approved order changes the thing that was
+        # approved just as surely as re-pricing one. Nothing caught this
+        # because a new line has no previous version to compare against.
+        if self._state.adding and self.order_id and self.order.approved_at:
+            self.order.withdraw_approval()
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
+        if self.order_id and self.order.approved_at:
+            self.order.withdraw_approval()
         if self.quantity_received() or self.quantity_billed():
             raise ValidationError(
                 "This line has been received or billed and can no longer be removed."
@@ -2967,8 +2984,8 @@ class GoodsReceipt(AuditModel):
                         f"{already_received} already received)."
                     )
 
-        if self.purchase_order.is_drop_ship() and not is_return:
-            return self._post_drop_ship(lines)
+        if self.purchase_order.is_drop_ship():
+            return self._post_drop_ship(lines, is_return=is_return)
 
         valued = []
         for line in lines:
@@ -2983,8 +3000,14 @@ class GoodsReceipt(AuditModel):
             # vendor's charge alone would report a part built from 100 of
             # components as worth the 5 of labour.
             component_cost = Decimal("0")
-            if line.order_line.is_subcontract() and not is_return:
-                component_cost = self._consume_components(line)
+            if line.order_line.is_subcontract():
+                if is_return:
+                    # Sending the assemblies back sends their inputs back
+                    # too. Reversing only the finished item would destroy
+                    # the components, which the vendor still has.
+                    component_cost = self._restore_components(line)
+                else:
+                    component_cost = self._consume_components(line)
                 unit_cost = unit_cost + component_cost
             StockMovement.objects.create(
                 item=line.order_line.item,
@@ -3023,7 +3046,7 @@ class GoodsReceipt(AuditModel):
         )
 
     @transaction.atomic
-    def _post_drop_ship(self, lines):
+    def _post_drop_ship(self, lines, is_return=False):
         """
         The goods went from the vendor straight to the customer and never
         touched a warehouse.
@@ -3042,7 +3065,10 @@ class GoodsReceipt(AuditModel):
         # skips the inventory account entirely, which is the whole point,
         # so the entry is built here rather than bent out of a helper
         # that assumes stock was held.
-        memo = f"Drop-ship to customer for {self.purchase_order}"
+        memo = (
+            f"Drop-ship {'returned' if is_return else 'to customer'} for "
+            f"{self.purchase_order}"
+        )
         totals = defaultdict(Decimal)
         for line in lines:
             item = line.order_line.item
@@ -3059,16 +3085,30 @@ class GoodsReceipt(AuditModel):
             )
             for account, value in totals.items():
                 JournalLine.objects.create(
-                    entry=entry, account=account, debit=value, description=memo[:255]
+                    entry=entry, account=account,
+                    debit=Decimal("0") if is_return else value,
+                    credit=value if is_return else Decimal("0"),
+                    description=memo[:255],
                 )
             JournalLine.objects.create(
                 entry=entry, account=accrual,
-                credit=sum(totals.values()), description=memo[:255],
+                debit=sum(totals.values()) if is_return else Decimal("0"),
+                credit=Decimal("0") if is_return else sum(totals.values()),
+                description=memo[:255],
             )
             entry.post()
 
         sales_lines = [line for line in lines if line.order_line.sales_order_line_id]
-        if sales_lines:
+        if sales_lines and is_return:
+            # The customer sent it back to the vendor, so the sales
+            # delivery is reversed on the sales side, where returns belong.
+            original = Delivery.objects.filter(
+                sales_order=self.purchase_order.drop_ship_for,
+                is_drop_ship=True, posted=True, reverses__isnull=True,
+            ).order_by("-id").first()
+            if original and not original.reversed_by.exists():
+                original.create_return(credit_invoices=False)
+        elif sales_lines:
             delivery = Delivery.objects.create(
                 sales_order=self.purchase_order.drop_ship_for,
                 delivery_date=self.receipt_date,
@@ -3087,6 +3127,29 @@ class GoodsReceipt(AuditModel):
         super(GoodsReceipt, self).save(
             update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
         )
+
+    def _restore_components(self, line):
+        """Put the components back where they were when a return reverses
+        a subcontract receipt, and return their per-unit cost."""
+        order = self.purchase_order
+        warehouse = order.subcontract_warehouse
+        per_unit = Decimal("0")
+        for component in line.order_line.components.select_related("item"):
+            if not component.item.track_inventory:
+                continue
+            quantity = round_money(component.quantity_per * line.quantity_received)
+            cost = component.item.average_cost_at(warehouse) or (
+                component.item.average_cost()
+            )
+            StockMovement.objects.create(
+                item=component.item, warehouse=warehouse,
+                movement_type=MovementType.RECEIPT, quantity=quantity, unit_cost=cost,
+                reference=self.number,
+                occurred_at=timezone.now(),
+                notes=f"Components returned with {self.number}",
+            )
+            per_unit += round_money(component.quantity_per * cost)
+        return per_unit
 
     def _consume_components(self, line):
         """

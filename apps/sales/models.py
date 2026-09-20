@@ -638,9 +638,16 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                 )
                 if repriced and self.order.approved_at:
                     self.order.withdraw_approval()
+        # A line added to an approved order changes the thing that was
+        # approved just as surely as re-pricing one. Nothing caught this
+        # because a new line has no previous version to compare against.
+        if self._state.adding and self.order_id and self.order.approved_at:
+            self.order.withdraw_approval()
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
+        if self.order_id and self.order.approved_at:
+            self.order.withdraw_approval()
         if self.quantity_shipped() or self.quantity_invoiced():
             raise ValidationError(
                 "This line has been shipped or invoiced and can no longer be removed."
@@ -2241,6 +2248,9 @@ class Delivery(AuditModel):
             delivery_date=timezone.now().date(),
             reference=self.reference,
             shipping_address=self.shipping_address,
+            # Carried across, or the reversal moves stock the original
+            # never moved — inventing quantity on the way back in.
+            is_drop_ship=self.is_drop_ship,
             reverses=self,
         )
         for line in self.lines.all():
