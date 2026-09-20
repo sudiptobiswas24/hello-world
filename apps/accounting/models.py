@@ -634,7 +634,307 @@ class Payment(AuditModel):
         super(Payment, self).save(update_fields=["voided_entry", "updated_at"])
         return entry
 
+    def base_amount(self):
+        """What this payment moved through the bank in base currency."""
+        return round_money(self.amount * (self.exchange_rate or Decimal("1")))
+
+    def signed_base_amount(self):
+        """Positive for money in, negative for money out — as a bank sees it."""
+        amount = self.base_amount()
+        return amount if self.is_receipt() else -amount
+
+    def is_reconciled(self):
+        return self.statement_lines.exists()
+
     def is_voided(self):
         if self.voided_entry_id:
             return True
         return bool(self.journal_entry_id) and self.journal_entry.reversed_by.exists()
+
+
+class BankStatement(AuditModel):
+    """
+    A period of a bank account as the bank reports it.
+
+    Reconciliation is the control that proves the ledger matches reality.
+    Everything else here derives one number from another inside the same
+    system; this is the only place an outside source gets to disagree, and
+    a books-to-bank difference nobody has explained is how both fraud and
+    plain error stay invisible.
+    """
+
+    bank_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="statements",
+        help_text="The cash or bank account this statement covers.",
+    )
+    reference = models.CharField(max_length=64, blank=True)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    opening_balance = models.DecimalField(max_digits=18, decimal_places=2)
+    closing_balance = models.DecimalField(max_digits=18, decimal_places=2)
+    closed = models.BooleanField(default=False)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-end_date", "-id"]
+        permissions = [("close_bankstatement", "Can close a reconciled bank statement")]
+
+    def __str__(self):
+        return f"{self.bank_account.code} to {self.end_date:%d %b %Y}"
+
+    def clean(self):
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError("A statement cannot end before it starts.")
+
+    def save(self, *args, **kwargs):
+        if self.pk and BankStatement.objects.filter(pk=self.pk, closed=True).exists():
+            raise ValidationError("This statement is closed. Reopen it to make changes.")
+        super().save(*args, **kwargs)
+
+    def line_total(self):
+        return sum((line.amount for line in self.lines.all()), Decimal("0"))
+
+    def computed_closing(self):
+        return self.opening_balance + self.line_total()
+
+    def statement_difference(self):
+        """
+        Closing balance the bank states, less what its own lines come to.
+
+        Non-zero means the statement was keyed in wrong — a missing line
+        or a typo — and there is no point reconciling against it until
+        that is fixed.
+        """
+        return self.closing_balance - self.computed_closing()
+
+    def unresolved_lines(self):
+        return [line for line in self.lines.all() if not line.is_resolved()]
+
+    def ledger_balance(self):
+        """What the books say this account holds at the statement's end."""
+        rows = JournalLine.objects.filter(
+            account=self.bank_account, entry__posted=True, entry__date__lte=self.end_date
+        ).aggregate(debit=models.Sum("debit"), credit=models.Sum("credit"))
+        return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
+
+    def unpresented(self):
+        """
+        Posted payments through this account that no statement line
+        matches — cheques written but not yet cashed, mostly.
+
+        These are the legitimate reason the books and the bank differ, and
+        naming them is the difference between a reconciliation and a
+        shrug.
+        """
+        matched = BankStatementLine.objects.filter(
+            payment__isnull=False
+        ).values_list("payment_id", flat=True)
+        payments = Payment.objects.filter(
+            bank_account=self.bank_account, posted=True,
+            payment_date__lte=self.end_date, voided_entry__isnull=True,
+        ).exclude(pk__in=matched)
+        return list(payments)
+
+    def reconciliation(self):
+        """
+        Books to bank, with every reconciling item named.
+
+        Reconciled when the ledger balance plus the payments the bank has
+        not seen yet equals what the bank says it is holding.
+        """
+        unpresented = self.unpresented()
+        adjustment = sum((payment.signed_base_amount() for payment in unpresented), Decimal("0"))
+        ledger = self.ledger_balance()
+        return {
+            "statement": self,
+            "ledger_balance": ledger,
+            "statement_balance": self.closing_balance,
+            "unpresented": unpresented,
+            "unpresented_total": adjustment,
+            "unresolved_lines": self.unresolved_lines(),
+            "statement_difference": self.statement_difference(),
+            # The books, less what the bank has not seen, should be what
+            # the bank says.
+            "difference": (ledger - adjustment) - self.closing_balance,
+        }
+
+    def is_reconciled(self):
+        report = self.reconciliation()
+        return (
+            report["difference"] == 0
+            and report["statement_difference"] == 0
+            and not report["unresolved_lines"]
+        )
+
+    @transaction.atomic
+    def close(self):
+        """
+        Sign the statement off. Refused while anything is unexplained,
+        because a reconciliation that closes over a difference is not a
+        reconciliation.
+        """
+        if self.closed:
+            raise ValidationError("This statement is already closed.")
+        report = self.reconciliation()
+        if report["statement_difference"]:
+            raise ValidationError(
+                f"The statement's own lines come to {self.computed_closing()}, not the "
+                f"{self.closing_balance} it reports. Fix the statement before reconciling."
+            )
+        if report["unresolved_lines"]:
+            raise ValidationError(
+                f"{len(report['unresolved_lines'])} statement line(s) are still "
+                "unexplained. Match them to a payment or post them to an account."
+            )
+        if report["difference"]:
+            raise ValidationError(
+                f"The books and the bank differ by {report['difference']} with nothing "
+                "left to explain it."
+            )
+        self.closed = True
+        self.closed_at = timezone.now()
+        super(BankStatement, self).save(update_fields=["closed", "closed_at", "updated_at"])
+
+    def reopen(self):
+        if not self.closed:
+            raise ValidationError("This statement is not closed.")
+        self.closed = False
+        self.closed_at = None
+        super(BankStatement, self).save(update_fields=["closed", "closed_at", "updated_at"])
+
+    def auto_match(self, tolerance_days=5):
+        """
+        Match the obvious ones: same signed amount, same account, a date
+        close by, and the payment not already matched.
+
+        Deliberately conservative. An automatic match that is wrong is
+        worse than no match, because nobody looks at it again — so two
+        candidates for the same line means neither is taken.
+        """
+        matched = []
+        for line in self.lines.all():
+            if line.is_resolved():
+                continue
+            candidates = [
+                payment for payment in self.unpresented()
+                if payment.signed_base_amount() == line.amount
+                and abs((to_date(payment.payment_date) - to_date(line.date)).days)
+                <= tolerance_days
+            ]
+            if len(candidates) == 1:
+                line.match(candidates[0])
+                matched.append(line)
+        return matched
+
+
+class BankStatementLine(AuditModel):
+    """
+    One movement as the bank reports it, signed the way a bank sees it:
+    positive is money arriving.
+    """
+
+    statement = models.ForeignKey(BankStatement, on_delete=models.CASCADE, related_name="lines")
+    date = models.DateField()
+    description = models.CharField(max_length=255, blank=True)
+    reference = models.CharField(max_length=64, blank=True)
+    amount = models.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text="Positive for money in, negative for money out.",
+    )
+    payment = models.ForeignKey(
+        Payment, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="statement_lines",
+        help_text="The payment this line is, once matched.",
+    )
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Set when this line was posted directly — bank charges, interest.",
+    )
+
+    class Meta:
+        ordering = ["date", "id"]
+        constraints = [
+            models.CheckConstraint(check=~Q(amount=0), name="statement_line_amount_not_zero"),
+            models.UniqueConstraint(fields=["payment"], name="one_statement_line_per_payment"),
+        ]
+
+    def __str__(self):
+        return f"{self.date:%d %b %Y} {self.description} {self.amount}"
+
+    def is_resolved(self):
+        return bool(self.payment_id or self.journal_entry_id)
+
+    def save(self, *args, **kwargs):
+        if self.statement_id and BankStatement.objects.filter(
+            pk=self.statement_id, closed=True
+        ).exists():
+            raise ValidationError("This statement is closed. Reopen it to make changes.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.statement.closed:
+            raise ValidationError("This statement is closed. Reopen it to make changes.")
+        super().delete(*args, **kwargs)
+
+    def match(self, payment):
+        """Say this line is that payment."""
+        if self.is_resolved():
+            raise ValidationError("This line is already explained.")
+        if not payment.posted:
+            raise ValidationError("Only a posted payment can be matched.")
+        if payment.is_voided():
+            raise ValidationError("A voided payment never reached the bank.")
+        if payment.bank_account_id != self.statement.bank_account_id:
+            raise ValidationError("That payment went through a different bank account.")
+        if payment.signed_base_amount() != self.amount:
+            raise ValidationError(
+                f"The bank shows {self.amount} and the payment is "
+                f"{payment.signed_base_amount()}. Matching them would hide the difference."
+            )
+        self.payment = payment
+        self.save(update_fields=["payment", "updated_at"])
+        return self
+
+    def unmatch(self):
+        if self.journal_entry_id:
+            raise ValidationError("This line was posted, not matched. Reverse it instead.")
+        self.payment = None
+        self.save(update_fields=["payment", "updated_at"])
+
+    @transaction.atomic
+    def post_to(self, account, party=None, memo=""):
+        """
+        Explain a line that is not a payment at all — a bank charge,
+        interest, a direct debit nobody recorded — by posting it straight
+        to an account.
+
+        Without this, reconciliation stalls on the handful of lines the
+        bank originates, and those are exactly the ones nobody would
+        otherwise enter.
+        """
+        if self.is_resolved():
+            raise ValidationError("This line is already explained.")
+        bank = self.statement.bank_account
+        memo = memo or self.description or f"Bank statement {self.statement}"
+        entry = JournalEntry.objects.create(
+            date=to_date(self.date), reference=self.reference, memo=memo
+        )
+        size = abs(self.amount)
+        money_in = self.amount > 0
+        JournalLine.objects.create(
+            entry=entry, account=bank, party=party,
+            debit=size if money_in else Decimal("0"),
+            credit=Decimal("0") if money_in else size,
+            description=memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=party,
+            debit=Decimal("0") if money_in else size,
+            credit=size if money_in else Decimal("0"),
+            description=memo,
+        )
+        entry.post()
+        self.journal_entry = entry
+        self.save(update_fields=["journal_entry", "updated_at"])
+        return entry

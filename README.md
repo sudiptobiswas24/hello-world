@@ -86,6 +86,24 @@ production / SQLite for local dev by default. Every module builds on the
   deliberately free of any link to invoices or bills, because
   Accounting must not import Sales or Purchasing; each of those owns
   its own allocation model pointing back here.
+  **Bank reconciliation** lives here too: `BankStatement` and
+  `BankStatementLine` are a period of an account as the *bank* reports
+  it. This is the only place in the system an outside source gets to
+  disagree — everything else derives one number from another inside the
+  same system — and a books-to-bank difference nobody has explained is
+  how both fraud and plain error stay invisible. A line is explained
+  either by matching a `Payment` (sign, amount and account must all
+  agree, or matching would hide the difference) or by posting straight
+  to an account for the entries the bank originates: charges, interest,
+  a direct debit nobody recorded. `auto_match()` is deliberately
+  conservative — two candidates for one line means neither is taken,
+  because an automatic match that is wrong is worse than no match,
+  nobody looks at it again. `reconciliation()` names every reconciling
+  item, chiefly the unpresented payments (cheques written, not yet
+  cashed) that legitimately explain the gap. `close()` refuses while
+  anything is unexplained: a reconciliation that closes over a
+  difference is not a reconciliation. Keying the statement in and
+  signing it off are separate permissions.
   Plus `Account` (chart of accounts, hierarchical,
   type-checked against its parent), `JournalEntry`/`JournalLine`
   (double-entry ledger, references `Party` from the kernel). A

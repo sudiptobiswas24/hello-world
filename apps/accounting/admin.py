@@ -5,6 +5,8 @@ from apps.core.audit import AuditableAdminMixin
 
 from .models import (
     Account,
+    BankStatement,
+    BankStatementLine,
     ChargeType,
     FiscalPosition,
     FiscalPositionTaxMapping,
@@ -15,6 +17,23 @@ from .models import (
     Tax,
     TaxGroup,
 )
+
+
+class BankStatementLineInline(admin.TabularInline):
+    model = BankStatementLine
+    extra = 0
+    readonly_fields = ("journal_entry",)
+
+
+@admin.register(BankStatement)
+class BankStatementAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "bank_account", "start_date", "end_date", "opening_balance",
+        "closing_balance", "closed",
+    )
+    list_filter = ("closed", "bank_account")
+    readonly_fields = ("closed", "closed_at")
+    inlines = [BankStatementLineInline]
 
 
 @admin.register(ChargeType)

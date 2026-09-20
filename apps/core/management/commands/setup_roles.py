@@ -14,6 +14,10 @@ def crud(app_label, model, actions=CRUD):
 # ledger or to stock.
 ROLES = {
     "Bookkeeper": [
+        *crud("accounting", "bankstatement", actions=("add", "change", "view")),
+        *crud("accounting", "bankstatementline", actions=("add", "change", "view")),
+        # deliberately NOT accounting.close_bankstatement: whoever keys the
+        # statement in should not also be the one who signs it off.
         *crud("accounting", "account"),
         *crud("accounting", "journalentry"),
         *crud("accounting", "journalline"),
@@ -38,6 +42,9 @@ ROLES = {
         *crud("accounting", "partytaxprofile"),
         *crud("accounting", "payment"),
         "accounting.post_payment",
+        *crud("accounting", "bankstatement"),
+        *crud("accounting", "bankstatementline"),
+        "accounting.close_bankstatement",
         # Giving up on a receivable is an expense decision, so it sits with
         # the Controller and not with the people who booked or chased the
         # sale. An AR Manager who can both invoice and write off can make
