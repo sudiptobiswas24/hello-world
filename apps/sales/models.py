@@ -2296,6 +2296,7 @@ class Delivery(AuditModel):
                 warehouse=line.warehouse,
                 movement_type=movement_type,
                 lot=line.lot,
+                bin=line.bin,
                 uom=item.uom,
                 quantity=quantity,
                 unit_cost=unit_cost,
@@ -2446,6 +2447,7 @@ class Delivery(AuditModel):
                 order_line=line.order_line,
                 warehouse=line.warehouse,
                 lot=line.lot,
+                bin=line.bin,
                 quantity_shipped=line.quantity_shipped,
                 unit_cost=line.unit_cost,
             )
@@ -2462,6 +2464,12 @@ class DeliveryLine(AuditModel):
         SalesOrderLine, on_delete=models.PROTECT, related_name="delivery_lines"
     )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    bin = models.ForeignKey(
+        "inventory.StorageBin", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Which shelf it was picked from. Required when the warehouse "
+                  "is binned.",
+    )
     lot = models.ForeignKey(
         "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Which batch is being shipped. Required when the item is tracked: "

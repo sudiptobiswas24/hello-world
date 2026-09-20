@@ -358,14 +358,21 @@ class CancellingTests(TransferTestCase):
 
 
 class TransferGuardTests(TransferTestCase):
-    def test_a_warehouse_cannot_transfer_to_itself(self):
-        from django.db.utils import IntegrityError
-
-        with self.assertRaises(IntegrityError):
-            StockTransfer.objects.create(
-                transfer_date=datetime.date(2026, 4, 1),
-                from_warehouse=self.north, to_warehouse=self.north,
-            )
+    def test_a_transfer_that_goes_nowhere_is_refused(self):
+        # Same warehouse is allowed now that shelf-to-shelf is a real
+        # move, so the rule became "somewhere else" — which is a fact
+        # about the lines and is checked when the stock moves.
+        self.stock("100", "5")
+        move = StockTransfer.objects.create(
+            transfer_date=datetime.date(2026, 4, 1),
+            from_warehouse=self.north, to_warehouse=self.north,
+        )
+        StockTransferLine.objects.create(
+            transfer=move, item=self.item, uom=self.each, quantity=Decimal("10")
+        )
+        with self.assertRaises(ValidationError) as caught:
+            move.post()
+        self.assertIn("end up where it started", str(caught.exception))
 
     def test_consignment_stock_is_not_the_companys_to_move(self):
         vendor = Party.objects.create(code="V", name="Supplier", default_currency=self.usd)

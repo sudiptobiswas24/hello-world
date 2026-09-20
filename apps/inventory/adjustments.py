@@ -23,7 +23,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
@@ -31,6 +31,25 @@ from apps.core.models import AuditModel, DocumentSequence, to_date
 
 from .models import Item, MovementType, StockMovement, Warehouse
 from .valuation import inventory_account_for
+
+
+def _system_quantity(item, warehouse, lot=None, storage_bin=None):
+    """
+    What the books say is in the place a count line looked at.
+
+    A sheet may count a whole warehouse, one batch, one shelf, or one
+    batch on one shelf, and the comparison has to be against the same
+    slice it counted — anything wider reads a legitimate elsewhere as a
+    variance.
+    """
+    if storage_bin is not None:
+        movements = item.movements.filter(bin__in=storage_bin.descendants())
+        if lot is not None:
+            movements = movements.filter(lot=lot)
+        return movements.aggregate(total=Sum("quantity"))["total"] or Decimal("0")
+    if lot is not None:
+        return lot.on_hand_at(warehouse)
+    return item.on_hand_at(warehouse)
 
 
 class AdjustmentDirection(models.TextChoices):
@@ -276,6 +295,10 @@ class StockAdjustmentLine(AuditModel):
         help_text="Which batch is being written up or down. Required when the item "
                   "is tracked.",
     )
+    bin = models.ForeignKey(
+        "StorageBin", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which shelf the difference is on.",
+    )
     unit_cost = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
         help_text="What a stocking unit is worth for this adjustment. Left blank "
@@ -354,6 +377,7 @@ class StockAdjustmentLine(AuditModel):
             movement_type=MovementType.ADJUSTMENT,
             uom=item.uom,
             lot=self.lot,
+            bin=self.bin,
             quantity=quantity,
             # Both numbers are per stocking unit: the cost above came from
             # this ledger's own average, so the quantity has to match it.
@@ -410,6 +434,7 @@ class StockAdjustmentLine(AuditModel):
             movement_type=MovementType.ADJUSTMENT,
             uom=self.item.uom,
             lot=self.lot,
+            bin=self.bin,
             quantity=quantity,
             unit_cost=original.unit_cost,
             value_adjustment=residue,
@@ -487,7 +512,7 @@ class StockCount(AuditModel):
         return self.adjustments.first()
 
     @transaction.atomic
-    def add(self, item, counted, uom=None, lot=None):
+    def add(self, item, counted, uom=None, lot=None, storage_bin=None):
         """
         Put an item on the sheet, freezing what the system says right now.
 
@@ -504,12 +529,9 @@ class StockCount(AuditModel):
                 f"{item} is tracked; say which batch was counted."
             )
         return StockCountLine.objects.create(
-            count=self, item=item, uom=uom, lot=lot,
+            count=self, item=item, uom=uom, lot=lot, bin=storage_bin,
             counted_quantity=Decimal(counted),
-            system_quantity=(
-                lot.on_hand_at(self.warehouse) if lot is not None
-                else item.on_hand_at(self.warehouse)
-            ),
+            system_quantity=_system_quantity(item, self.warehouse, lot, storage_bin),
         )
 
     @transaction.atomic
@@ -560,6 +582,7 @@ class StockCount(AuditModel):
                     item=line.item,
                     uom=line.item.uom,
                     lot=line.lot,
+                    bin=line.bin,
                     quantity=line.variance(),
                     notes=(
                         f"Counted {line.counted_quantity} {line.uom}, "
@@ -598,6 +621,11 @@ class StockCountLine(AuditModel):
                   "shortfall that cannot say which batch is missing is not a "
                   "traceable count.",
     )
+    bin = models.ForeignKey(
+        "StorageBin", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which shelf was counted. A sheet that counts a whole warehouse "
+                  "names no bin; one that counts an aisle names each.",
+    )
     counted_quantity = models.DecimalField(
         max_digits=18, decimal_places=4, help_text="What was found, in `uom`."
     )
@@ -615,13 +643,28 @@ class StockCountLine(AuditModel):
             # Two constraints, because a NULL lot is distinct from every
             # other NULL as far as an index is concerned: one line per
             # item for untracked stock, one per batch for tracked.
+            # A NULL is distinct from every other NULL as far as an index
+            # is concerned, so each combination of what may be absent needs
+            # its own partial constraint.
             models.UniqueConstraint(
-                fields=["count", "item"], condition=Q(lot__isnull=True),
+                fields=["count", "item"],
+                condition=Q(lot__isnull=True, bin__isnull=True),
                 name="one_count_line_per_untracked_item",
             ),
             models.UniqueConstraint(
-                fields=["count", "item", "lot"], condition=Q(lot__isnull=False),
+                fields=["count", "item", "lot"],
+                condition=Q(lot__isnull=False, bin__isnull=True),
                 name="one_count_line_per_item_lot",
+            ),
+            models.UniqueConstraint(
+                fields=["count", "item", "bin"],
+                condition=Q(lot__isnull=True, bin__isnull=False),
+                name="one_count_line_per_item_bin",
+            ),
+            models.UniqueConstraint(
+                fields=["count", "item", "lot", "bin"],
+                condition=Q(lot__isnull=False, bin__isnull=False),
+                name="one_count_line_per_item_lot_bin",
             ),
             models.CheckConstraint(
                 check=Q(counted_quantity__gte=0), name="count_line_quantity_not_negative"
@@ -636,9 +679,7 @@ class StockCountLine(AuditModel):
 
     def current_system_quantity(self):
         """What the books say right now, for whatever this line counted."""
-        if self.lot_id is not None:
-            return self.lot.on_hand_at(self.count.warehouse)
-        return self.item.on_hand_at(self.count.warehouse)
+        return _system_quantity(self.item, self.count.warehouse, self.lot, self.bin)
 
     def variance(self):
         """

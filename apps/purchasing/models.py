@@ -2839,7 +2839,7 @@ class BillLine(TaxedLineMixin, AuditModel):
         movement = StockMovement.objects.create(
             item=item, warehouse=receipt_line.warehouse,
             movement_type=MovementType.ADJUSTMENT, uom=item.uom,
-            lot=receipt_line.lot,
+            lot=receipt_line.lot, bin=receipt_line.bin,
             quantity=Decimal("0"),
             value_adjustment=amount, reference=self.bill.number,
             occurred_at=timezone.now(), notes=memo,
@@ -3739,6 +3739,7 @@ class GoodsReceipt(AuditModel):
                 # them together and the total stays the total.
                 uom=line.order_line.uom,
                 lot=line.lot,
+                bin=line.bin,
                 quantity=quantity,
                 unit_cost=unit_cost,
                 reference=self.reference or self.number,
@@ -3897,6 +3898,10 @@ class GoodsReceipt(AuditModel):
                 StockMovement.objects.create(
                     item=item, warehouse=target, movement_type=movement_type,
                     uom=item.uom, lot=line.lot,
+                    # Quarantine and the shelf it clears to are different
+                    # places, so the bin only follows to the bin the caller
+                    # named — not the one it sat in under inspection.
+                    bin=(line.bin if target.pk == line.warehouse_id else None),
                     quantity=signed, unit_cost=cost, reference=self.number,
                     occurred_at=occurred_at,
                     notes=f"Accepted from inspection on {self.number}",
@@ -3956,7 +3961,7 @@ class GoodsReceipt(AuditModel):
         StockMovement.objects.create(
             item=line.order_line.item, warehouse=line.warehouse,
             movement_type=MovementType.ISSUE if is_return else MovementType.RECEIPT,
-            uom=line.order_line.uom, lot=line.lot, quantity=quantity,
+            uom=line.order_line.uom, lot=line.lot, bin=line.bin, quantity=quantity,
             unit_cost=Decimal("0"),
             reference=self.reference or self.number,
             occurred_at=timezone.now(),
@@ -4110,6 +4115,7 @@ class GoodsReceipt(AuditModel):
                 order_line=line.order_line,
                 reverses_line=line,
                 lot=line.lot,
+                bin=line.bin,
                 warehouse=line.warehouse,
                 quantity_received=quantity,
             )
@@ -4128,6 +4134,12 @@ class GoodsReceiptLine(AuditModel):
         help_text="On a return line, the receipt line being sent back.",
     )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    bin = models.ForeignKey(
+        "inventory.StorageBin", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Which shelf the goods were put on. Required when the warehouse "
+                  "is binned.",
+    )
     lot = models.ForeignKey(
         "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Which batch arrived. Required when the item is tracked: the "
@@ -4257,7 +4269,7 @@ class LandedCostApplication(AuditModel):
             warehouse=self.receipt_line.warehouse,
             movement_type=MovementType.ADJUSTMENT,
             uom=self.receipt_line.order_line.item.uom,
-            lot=self.receipt_line.lot,
+            lot=self.receipt_line.lot, bin=self.receipt_line.bin,
             quantity=Decimal("0"),
             value_adjustment=-self.amount,
             reference=self.charge_line.bill.number,

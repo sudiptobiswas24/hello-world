@@ -83,10 +83,7 @@ class StockTransfer(AuditModel):
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="stock_transfer_number_unique"
             ),
-            models.CheckConstraint(
-                check=~Q(from_warehouse=models.F("to_warehouse")),
-                name="transfer_between_two_warehouses",
-            ),
+
         ]
 
     def __str__(self):
@@ -102,9 +99,10 @@ class StockTransfer(AuditModel):
         """Where the stock is while the transfer is open."""
         return self.transit_warehouse if self.is_two_step() else self.from_warehouse
 
-    def clean(self):
-        if self.from_warehouse_id and self.from_warehouse_id == self.to_warehouse_id:
-            raise ValidationError("A transfer must move stock between two warehouses.")
+    # Same building is allowed — shelf to shelf is a real move — so
+    # "two warehouses" became "somewhere else", which is a fact about the
+    # lines and not about this row. It is checked in _check_somewhere_else()
+    # when the stock actually moves, where the lines exist to be read.
 
     # -- the outbound half ------------------------------------------------
 
@@ -136,6 +134,7 @@ class StockTransfer(AuditModel):
             raise ValidationError("Cannot move a transfer with no lines.")
 
         self._check_warehouses()
+        self._check_somewhere_else(lines)
         self.transfer_date = to_date(self.transfer_date)
         occurred_at = occurred_at or timezone.now()
         if not self.number:
@@ -156,6 +155,23 @@ class StockTransfer(AuditModel):
             "number", "transfer_date", "status", "dispatched_at", "received_at", "updated_at",
         ])
         return self
+
+    def _check_somewhere_else(self, lines):
+        """
+        A transfer has to move stock somewhere it is not already.
+
+        Two warehouses is the usual answer; one warehouse and two bins is
+        the other. What it may not be is neither, which would write a
+        matched pair of movements that cancel and call it a journey.
+        """
+        if self.from_warehouse_id != self.to_warehouse_id:
+            return
+        for line in lines:
+            if line.from_bin_id is None or line.from_bin_id == line.to_bin_id:
+                raise ValidationError(
+                    f"{line.item} would end up where it started. A transfer within "
+                    f"{self.from_warehouse} has to name a different bin to move to."
+                )
 
     def _check_warehouses(self):
         for warehouse, role in (
@@ -282,6 +298,15 @@ class StockTransferLine(AuditModel):
         help_text="Which batch is moving. Required when the item is tracked — a "
                   "transfer that cannot say which batch left has broken the trail.",
     )
+    from_bin = models.ForeignKey(
+        "StorageBin", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which shelf it is coming off.",
+    )
+    to_bin = models.ForeignKey(
+        "StorageBin", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which shelf it is going on. On a two-step transfer this is where "
+                  "it lands at the far end, not where it rests in transit.",
+    )
     quantity = models.DecimalField(max_digits=18, decimal_places=4)
     notes = models.CharField(max_length=255, blank=True)
 
@@ -347,9 +372,13 @@ class StockTransferLine(AuditModel):
         if not item.track_inventory:
             raise ValidationError(f"{item} is not stocked, so there is nothing to move.")
 
+        from_bin, to_bin = self._bins_for(transfer, source, destination)
         on_hand = (
-            self.lot.on_hand_at(source) if self.lot_id is not None
-            else item.on_hand_at(source)
+            from_bin.on_hand(item) if from_bin is not None
+            else (
+                self.lot.on_hand_at(source) if self.lot_id is not None
+                else item.on_hand_at(source)
+            )
         )
         if quantity > on_hand and not source.allow_negative_stock:
             raise ValidationError(
@@ -369,12 +398,14 @@ class StockTransferLine(AuditModel):
         )
         out = StockMovement.objects.create(
             item=item, warehouse=source, movement_type=MovementType.TRANSFER_OUT,
-            uom=item.uom, lot=self.lot, quantity=-quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=self.lot, bin=from_bin,
+            quantity=-quantity, unit_cost=unit_cost,
             reference=transfer.number, occurred_at=occurred_at, notes=label,
         )
         into = StockMovement.objects.create(
             item=item, warehouse=destination, movement_type=MovementType.TRANSFER_IN,
-            uom=item.uom, lot=self.lot, quantity=quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=self.lot, bin=to_bin,
+            quantity=quantity, unit_cost=unit_cost,
             value_adjustment=residue,
             reference=transfer.number, occurred_at=occurred_at, notes=label,
         )
@@ -383,6 +414,18 @@ class StockTransferLine(AuditModel):
             source=source, destination=destination,
             out_movement=out, in_movement=into, occurred_at=occurred_at,
         )
+
+    def _bins_for(self, transfer, source, destination):
+        """
+        Which shelf each end of this hop uses.
+
+        A transit warehouse has no bin of its own on this line: the
+        stock is on a lorry, and `to_bin` describes where it lands at the
+        far end, not where it rests on the way.
+        """
+        from_bin = self.from_bin if source.pk == transfer.from_warehouse_id else None
+        to_bin = self.to_bin if destination.pk == transfer.to_warehouse_id else None
+        return from_bin, to_bin
 
     @transaction.atomic
     def unwind(self, transfer, occurred_at, label):
@@ -498,15 +541,20 @@ class StockTransferStep(AuditModel):
             self.quantity * average - moved_value
         ).quantize(Decimal("0.0001")) or None
         residue = (moved_value - self.quantity * unit_cost).quantize(Decimal("0.0001")) or None
+        # Back the way it came, shelf included: the out movement's bin is
+        # where this hop put the stock, and the in movement's is where it
+        # took it from.
         out = StockMovement.objects.create(
             item=item, warehouse=self.destination, movement_type=MovementType.TRANSFER_OUT,
-            uom=item.uom, lot=line.lot, quantity=-self.quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=line.lot, bin=self.in_movement.bin,
+            quantity=-self.quantity, unit_cost=unit_cost,
             value_adjustment=out_residue,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )
         into = StockMovement.objects.create(
             item=item, warehouse=self.source, movement_type=MovementType.TRANSFER_IN,
-            uom=item.uom, lot=line.lot, quantity=self.quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=line.lot, bin=self.out_movement.bin,
+            quantity=self.quantity, unit_cost=unit_cost,
             value_adjustment=residue,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )

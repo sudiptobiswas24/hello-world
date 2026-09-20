@@ -22,6 +22,13 @@ class Warehouse(AuditModel):
         help_text="Holds goods received but not yet accepted. The stock is owned and "
                   "valued; it simply may not be shipped until someone has looked at it.",
     )
+    requires_bins = models.BooleanField(
+        default=False,
+        help_text="Every movement in or out must name a bin. Off by default, so "
+                  "turning it on is a decision rather than something a warehouse "
+                  "acquires by accident — and stock booked in before it was turned "
+                  "on stays readable through unbinned().",
+    )
     is_transit = models.BooleanField(
         default=False,
         help_text="Holds stock that has left one warehouse and not yet arrived at "
@@ -254,6 +261,12 @@ class StockMovement(AuditModel):
                   "carries what is left when a value is divided by a quantity, and "
                   "rounding that to the cent loses a little on every move.",
     )
+    bin = models.ForeignKey(
+        "StorageBin", null=True, blank=True, on_delete=models.PROTECT, related_name="movements",
+        help_text="Where in the building. Required when the warehouse says so. "
+                  "Valuation ignores it: a bin changes where stock is, not what "
+                  "it is worth.",
+    )
     lot = models.ForeignKey(
         "Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="movements",
         help_text="Which batch, or which unit. Required when the item is tracked, "
@@ -295,6 +308,7 @@ class StockMovement(AuditModel):
         factor that does not divide the price evenly.
         """
         if self._state.adding:
+            self._check_bin()
             self._check_tracking()
             if self.uom_id is None:
                 raise ValidationError(
@@ -339,6 +353,27 @@ class StockMovement(AuditModel):
 # discovers models that this one pulls in. The import is last so that
 # Item, Warehouse and StockMovement are fully defined before adjustments
 # imports them back.
+    def _check_bin(self):
+        """
+        A bin must be in this movement's warehouse, and must be somewhere
+        stock can actually sit.
+        """
+        if self.bin_id is not None:
+            if self.bin.warehouse_id != self.warehouse_id:
+                raise ValidationError(
+                    f"{self.bin} is not in {self.warehouse}."
+                )
+            if not self.bin.is_pickable:
+                raise ValidationError(
+                    f"{self.bin} groups other bins rather than holding stock; name "
+                    "one of the places inside it."
+                )
+        elif self.warehouse.requires_bins:
+            raise ValidationError(
+                f"{self.warehouse} is binned; this movement must say where in it "
+                "the stock is."
+            )
+
     def _check_tracking(self):
         """
         A tracked item's movement must name its lot, and an untracked
@@ -399,6 +434,13 @@ class StockMovement(AuditModel):
             )
 
 
+from .bins import (  # noqa: E402,F401
+    StorageBin,
+    bins_holding,
+    suggest_pick,
+    suggest_putaway,
+    unbinned,
+)
 from .tracking import (  # noqa: E402,F401
     Lot,
     TrackingMode,
