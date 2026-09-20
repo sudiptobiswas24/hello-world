@@ -110,6 +110,8 @@ ROLES = {
         *crud("core", "partybankaccount", actions=("add", "change", "view")),
         *crud("core", "paymentterms", actions=("view",)),
         *crud("purchasing", "vendorprice", actions=("view",)),
+        *crud("purchasing", "blanketorder"),
+        *crud("purchasing", "blanketorderline"),
         *crud("purchasing", "purchaseapprovalpolicy", actions=("view",)),
         *crud("purchasing", "billpayment", actions=("view",)),
         # deliberately NOT purchasing.approve_purchaseorder: a buyer
@@ -124,6 +126,8 @@ ROLES = {
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
         *crud("purchasing", "vendorprice"),
+        *crud("purchasing", "blanketorder"),
+        *crud("purchasing", "blanketorderline"),
         *crud("purchasing", "purchaseapprovalpolicy"),
         *crud("purchasing", "billpayment"),
         "purchasing.approve_purchaseorder",

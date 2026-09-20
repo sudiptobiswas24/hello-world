@@ -112,6 +112,171 @@ class VendorPrice(AuditModel):
         return Decimal(quantity) >= self.min_quantity
 
 
+class BlanketStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    CONFIRMED = "confirmed", "Confirmed"
+    CLOSED = "closed", "Closed"
+
+
+class BlanketOrder(AuditModel):
+    """
+    A negotiated commitment — an agreed price and volume over a period,
+    drawn down by releases rather than delivered in one go.
+
+    Standard in distribution and manufacturing procurement, and until now
+    inexpressible: the commitment either lived in somebody's filing
+    cabinet or was faked as a purchase order that never fully received.
+    Faking it is worse than it sounds, because a purchase order that
+    stays open forever silently skews every receipt and billing report
+    that reads open orders.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="blanket_orders")
+    reference = models.CharField(max_length=64, blank=True)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    status = models.CharField(
+        max_length=16, choices=BlanketStatus.choices, default=BlanketStatus.DRAFT
+    )
+
+    class Meta:
+        ordering = ["-start_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_blanket_order_number"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'BPO-draft-{self.pk}'} {self.vendor}"
+
+    def clean(self):
+        _require_vendor_role(self.vendor)
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError("A blanket order cannot end before it starts.")
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.vendor_id and not self.currency_id:
+            self.currency = self.vendor.default_currency
+        super().save(*args, **kwargs)
+
+    def total(self):
+        return sum((line.committed_value() for line in self.lines.all()), Decimal("0"))
+
+    def covers(self, on_date):
+        on_date = to_date(on_date)
+        return self.start_date <= on_date <= self.end_date
+
+    @transaction.atomic
+    def confirm(self):
+        if self.status != BlanketStatus.DRAFT:
+            raise ValidationError(f"This agreement is already {self.get_status_display().lower()}.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot confirm an agreement with no lines.")
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "purchasing.blanket", self.start_date,
+                name="Blanket Orders", prefix="BPO-",
+            )
+        self.status = BlanketStatus.CONFIRMED
+        self.save(update_fields=["number", "status", "updated_at"])
+
+    def close(self):
+        """
+        End the agreement early. Releases already made stand — they are
+        purchase orders in their own right, and the vendor has committed
+        against them.
+        """
+        if self.status == BlanketStatus.CLOSED:
+            raise ValidationError("This agreement is already closed.")
+        self.status = BlanketStatus.CLOSED
+        self.save(update_fields=["status", "updated_at"])
+
+    @transaction.atomic
+    def release(self, quantities, order_date=None, expected_date=None):
+        """
+        Call off part of the commitment as a real purchase order.
+
+        `quantities` is {blanket_line: quantity}. The price comes from the
+        agreement, not from today's vendor price: the whole point of
+        committing to a volume is that the price is fixed for it.
+        """
+        order_date = to_date(order_date) or timezone.now().date()
+        if self.status != BlanketStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed agreement can be released against.")
+        if not self.covers(order_date):
+            raise ValidationError(
+                f"This agreement runs {self.start_date:%d %b %Y} to {self.end_date:%d %b %Y}; "
+                f"{order_date:%d %b %Y} is outside it."
+            )
+
+        selected = [(line, Decimal(quantity)) for line, quantity in quantities.items()
+                    if Decimal(quantity) > 0]
+        if not selected:
+            raise ValidationError("Nothing to release.")
+        for line, quantity in selected:
+            if line.blanket_id != self.pk:
+                raise ValidationError("That line belongs to a different agreement.")
+            if quantity > line.quantity_remaining():
+                raise ValidationError(
+                    f"Only {line.quantity_remaining()} of {line.item} is left on this "
+                    f"agreement; cannot release {quantity}."
+                )
+
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor,
+            order_date=order_date,
+            reference=self.reference,
+            currency=self.currency,
+        )
+        for line, quantity in selected:
+            order_line = PurchaseOrderLine.objects.create(
+                order=order, blanket_line=line, item=line.item, uom=line.uom,
+                quantity=quantity, unit_price=line.unit_price,
+                expected_date=expected_date,
+            )
+            order_line.taxes.set(line.taxes.all())
+        return order
+
+
+class BlanketOrderLine(TaxedLineMixin, AuditModel):
+    blanket = models.ForeignKey(BlanketOrder, related_name="lines", on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="blanket_lines")
+    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="blanket_lines")
+
+    def party_for_tax(self):
+        return self.blanket.vendor
+
+    def __str__(self):
+        return f"{self.item} x{self.quantity}"
+
+    def committed_value(self):
+        return self.net_amount()
+
+    def quantity_released(self):
+        """
+        Committed volume already called off, net of cancelled releases.
+
+        A cancelled release gives its volume back: the agreement is a
+        commitment to buy, and an order that was called off and then
+        called back off again was never bought.
+        """
+        return self.order_lines.exclude(
+            order__status=OrderStatus.CANCELLED
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+
+    def quantity_remaining(self):
+        return self.quantity - self.quantity_released()
+
+    def is_fully_released(self):
+        return self.quantity_released() >= self.quantity
+
+
 class PurchaseApprovalPolicy(AuditModel):
     """
     The thresholds beyond which committing money needs a second pair of
@@ -471,6 +636,15 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     description = models.CharField(max_length=255, blank=True)
     uom = models.ForeignKey(
         UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    blanket_line = models.ForeignKey(
+        "BlanketOrderLine", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="order_lines",
+        help_text="Set when this line calls off part of a blanket agreement.",
+    )
+    expected_date = models.DateField(
+        null=True, blank=True,
+        help_text="When the vendor said it would arrive — what on-time is measured against.",
     )
     expense_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
