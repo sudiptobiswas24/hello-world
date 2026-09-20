@@ -80,9 +80,9 @@ class BillTaxTests(PurchaseTaxTestCase):
 
         self.assertEqual(self.balance(self.input_vat), Decimal("10"))
         self.assertEqual(self.balance(self.payable), Decimal("-60"))
-        # The goods themselves clear GRNI rather than hitting the expense:
-        # they were capitalised into inventory when they were received.
-        self.assertEqual(self.balance(self.grni), Decimal("50"))
+        # Nothing was received against this bill, so the goods expense
+        # rather than clearing an accrual that was never made.
+        self.assertEqual(self.balance(self.expense), Decimal("50"))
 
     def test_the_entry_still_balances(self):
         bill = self.taxed_bill("10", "5", taxes=[self.vat])

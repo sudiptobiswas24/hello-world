@@ -46,6 +46,20 @@ class PurchasingTestCase(TestCase):
         order.confirm()
         return line
 
+    def make_order_line(self, quantity=Decimal("2")):
+        return self.make_po_line(quantity)
+
+    def receive(self, order_line, quantity):
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order_line.order, receipt_date="2026-01-05"
+        )
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=self.warehouse,
+            quantity_received=quantity,
+        )
+        receipt.post()
+        return receipt
+
     def make_bill(self, quantity=Decimal("2"), unit_price=Decimal("40")):
         bill = Bill.objects.create(
             vendor=self.vendor,
@@ -99,11 +113,11 @@ class BillPostingTests(PurchasingTestCase):
         self.assertEqual(entry.total_credit(), Decimal("80"))
 
         payable_line = entry.lines.get(account=self.payable)
-        # A stocked item was already capitalised into Inventory on receipt,
-        # so the bill clears the GRNI accrual rather than expensing again.
-        grni_line = entry.lines.get(account=self.grni)
+        # Nothing was received against this bill, so there is no accrual to
+        # clear and the cost expenses. A bill does not create stock.
+        expense_line = entry.lines.get(account=self.expense)
         self.assertEqual(payable_line.credit, Decimal("80"))
-        self.assertEqual(grni_line.debit, Decimal("80"))
+        self.assertEqual(expense_line.debit, Decimal("80"))
 
     def test_cannot_post_bill_with_no_lines(self):
         bill = Bill.objects.create(
@@ -154,9 +168,9 @@ class DebitNoteTests(PurchasingTestCase):
         self.assertEqual(debit_note.journal_entry.reverses, bill.journal_entry)
 
         dn_payable_line = debit_note.journal_entry.lines.get(account=self.payable)
-        dn_grni_line = debit_note.journal_entry.lines.get(account=self.grni)
+        dn_expense_line = debit_note.journal_entry.lines.get(account=self.expense)
         self.assertEqual(dn_payable_line.debit, Decimal("80"))
-        self.assertEqual(dn_grni_line.credit, Decimal("80"))
+        self.assertEqual(dn_expense_line.credit, Decimal("80"))
 
     def test_original_bill_is_untouched_by_debit_note(self):
         bill = self.make_bill(Decimal("2"), Decimal("40"))
@@ -421,9 +435,22 @@ class BillPostingAccountTests(PurchasingTestCase):
         self.assertEqual(entry.lines.get(account=self.expense).debit, Decimal("500"))
         self.assertFalse(entry.lines.filter(account=self.grni).exists())
 
-    def test_a_stocked_line_clears_the_accrual(self):
+    def test_a_stocked_line_clears_the_accrual_a_receipt_made(self):
+        order_line = self.make_order_line(Decimal("2"))
+        self.receive(order_line, Decimal("2"))
+        bill = self.make_bill(Decimal("2"), Decimal("5"))
+        bill.post()
+
+        entry = bill.journal_entry
+        self.assertEqual(entry.lines.get(account=self.grni).debit, Decimal("10"))
+        self.assertFalse(entry.lines.filter(account=self.expense).exists())
+
+    def test_a_stocked_line_with_no_receipt_behind_it_expenses(self):
+        """Stock is created by receiving it, never by being billed for it.
+        Debiting GRNI here would leave a balance nothing ever offsets."""
         bill = self.make_bill(Decimal("2"), Decimal("40"))
         bill.post()
+
         entry = bill.journal_entry
-        self.assertEqual(entry.lines.get(account=self.grni).debit, Decimal("80"))
-        self.assertFalse(entry.lines.filter(account=self.expense).exists())
+        self.assertEqual(entry.lines.get(account=self.expense).debit, Decimal("80"))
+        self.assertFalse(entry.lines.filter(account=self.grni).exists())

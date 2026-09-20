@@ -22,8 +22,14 @@ from .tests_lifecycle import PurchasingLifecycleTestCase
 class MatchTestCase(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
+        from apps.accounting.models import Account, AccountType
+
+        self.ppv = Account.objects.create(
+            code="5900", name="Purchase Price Variance", account_type=AccountType.EXPENSE
+        )
         company = Company.get()
         company.default_purchase_expense_account = self.expense
+        company.purchase_price_variance_account = self.ppv
         company.save()
 
     def bill_from(self, order, date=datetime.date(2026, 1, 10)):

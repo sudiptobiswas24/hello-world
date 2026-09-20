@@ -232,7 +232,33 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 f"Give {self.item} a unit price; a purchase order has no price list to "
                 "fall back on — the price is whatever the vendor quoted."
             )
+        # A confirmed line could be edited below what had already been
+        # received or billed, silently breaking every drawdown guard that
+        # reads it. Sales has had this since its own audit; the purchase
+        # side went without.
+        if self.pk:
+            previous = PurchaseOrderLine.objects.filter(pk=self.pk).first()
+            if previous is not None:
+                committed = max(self.quantity_received(), self.quantity_billed())
+                if self.quantity < committed:
+                    raise ValidationError(
+                        f"{committed} of this line has already been received or billed; "
+                        "the quantity cannot drop below that."
+                    )
+                if self.unit_price != previous.unit_price and self.quantity_billed() > 0:
+                    raise ValidationError(
+                        "This line has been billed; its price can no longer change. The "
+                        "agreed price is what the three-way match checks against, so "
+                        "moving it would retrospectively approve whatever was billed."
+                    )
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.quantity_received() or self.quantity_billed():
+            raise ValidationError(
+                "This line has been received or billed and can no longer be removed."
+            )
+        super().delete(*args, **kwargs)
 
     def quantity_received(self):
         """Net quantity received so far: posted receipts minus posted returns."""
@@ -333,7 +359,18 @@ class Bill(TaxedDocumentMixin, AuditModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="unique_bill_number"
-            )
+            ),
+            # The vendor's own invoice number, once, per vendor. Paying the
+            # same invoice twice because it arrived by post and by email is
+            # the single commonest way money leaves an AP department by
+            # accident, and nothing else here would have caught it. Debit
+            # notes are excluded: they deliberately carry their bill's
+            # reference.
+            models.UniqueConstraint(
+                fields=["vendor", "reference"],
+                condition=Q(debits__isnull=True) & ~Q(reference=""),
+                name="one_bill_per_vendor_reference",
+            ),
         ]
 
     def __str__(self):
@@ -406,7 +443,28 @@ class Bill(TaxedDocumentMixin, AuditModel):
         if self._state.adding and self.vendor_id:
             self.currency = self.currency or self.vendor.default_currency
             self.payment_terms = self.payment_terms or self.vendor.payment_terms
+        self._check_duplicate_reference()
         super().save(*args, **kwargs)
+
+    def _check_duplicate_reference(self):
+        """
+        A readable error in front of the database constraint.
+
+        The constraint is the real control — it holds whatever route the
+        row arrives by — but an IntegrityError tells an AP clerk nothing,
+        and this is the one they will hit most.
+        """
+        if self.is_debit_note() or not self.reference or not self.vendor_id:
+            return
+        clash = Bill.objects.filter(
+            vendor_id=self.vendor_id, reference=self.reference, debits__isnull=True
+        ).exclude(pk=self.pk).first()
+        if clash is not None:
+            raise ValidationError(
+                f"{self.vendor} invoice '{self.reference}' is already on file as "
+                f"{clash}. Paying the same invoice twice is what this prevents; if it "
+                "really is a second invoice, give it the vendor's own distinct number."
+            )
 
     def delete(self, *args, **kwargs):
         if self.posted:
@@ -432,12 +490,35 @@ class Bill(TaxedDocumentMixin, AuditModel):
         )
 
         debits = []
+        variance_total = Decimal("0")
         for line in lines:
-            debits.append((
-                line.posting_account(),
-                round_money(line.net_amount() * rate),
-                line.description or str(line.item),
-            ))
+            label = line.description or str(line.item)
+            net = line.net_amount()
+            if line.clears_grni():
+                # Clear the accrual at exactly what the receipt booked —
+                # quantity billed at the *order* price. Clearing it at the
+                # billed price instead leaves GRNI holding the difference
+                # forever, which is how a supposedly self-clearing account
+                # silently accumulates a balance nobody can explain.
+                accrued = round_money(line.quantity * line.accrued_unit_cost())
+                accrued -= round_money(accrued * line.discount_percent / Decimal("100"))
+                debits.append((line.posting_account(), round_money(accrued * rate), label))
+                variance_total += net - accrued
+            else:
+                debits.append((line.expense_account, round_money(net * rate), label))
+
+        if variance_total:
+            # Purchase price variance goes to the P&L rather than revaluing
+            # stock: by the time the bill arrives the goods may already have
+            # been sold, and chasing the difference through a weighted
+            # average that has since moved on costs more than it is worth.
+            account = Company.get().purchase_price_variance_account
+            if account is None:
+                raise ValidationError(
+                    f"This bill differs from the agreed price by {variance_total} and the "
+                    "company has no purchase price variance account configured."
+                )
+            debits.append((account, round_money(variance_total * rate), "Price variance"))
 
         # Input tax is an asset, not a cost: VAT paid to a vendor is
         # reclaimable, so it is debited to the tax's paid_account rather
@@ -468,11 +549,17 @@ class Bill(TaxedDocumentMixin, AuditModel):
             description=f"Bill {self.number}",
         )
         for account, amount, description in debits:
-            if amount:
-                JournalLine.objects.create(
-                    entry=entry, account=account, party=self.vendor,
-                    debit=amount, description=description,
-                )
+            if not amount:
+                continue
+            # A favourable variance — the vendor billed less than agreed —
+            # is a negative debit, which a journal line cannot hold. It is
+            # the same fact written on the other side.
+            JournalLine.objects.create(
+                entry=entry, account=account, party=self.vendor,
+                debit=amount if amount > 0 else Decimal("0"),
+                credit=-amount if amount < 0 else Decimal("0"),
+                description=description,
+            )
         return entry
 
     @transaction.atomic
@@ -635,15 +722,64 @@ class BillLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.item or self.description} x{self.quantity}"
 
+    def unbilled_receipt_quantity(self):
+        """
+        How much of this item has been received but not yet billed — the
+        accrual this line could be clearing.
+
+        Tied as precisely as the bill allows: to the order line when it
+        names one, else to the bill's order, else to the item across every
+        order. The loose ends matter because a bill entered by hand
+        against goods that genuinely arrived still has to clear their
+        accrual; only a bill with no receipt behind it anywhere should
+        expense.
+        """
+        if not (self.item_id and self.item.track_inventory):
+            return Decimal("0")
+
+        if self.order_line_id:
+            candidates = [self.order_line]
+        else:
+            lines = PurchaseOrderLine.objects.filter(item_id=self.item_id)
+            if self.bill.purchase_order_id:
+                lines = lines.filter(order_id=self.bill.purchase_order_id)
+            candidates = list(lines)
+
+        return sum(
+            (max(line.quantity_received() - line.quantity_billed(), Decimal("0"))
+             for line in candidates),
+            Decimal("0"),
+        )
+
+    def clears_grni(self):
+        """
+        True when this line clears an accrual a goods receipt actually made.
+
+        A bill for stocked goods that never came through a receipt has
+        nothing to clear, and debiting GRNI anyway leaves a balance that
+        nothing will ever offset — stock is created by receiving it, never
+        by being billed for it.
+        """
+        return self.unbilled_receipt_quantity() > 0
+
+    def accrued_unit_cost(self):
+        """
+        The price the receipt accrued at — the order price, not the bill's.
+
+        Only knowable when the line names an order line. Without that link
+        there is no agreed price to compare against, so the accrual is
+        cleared at the billed amount and no variance is computed; tying
+        bills to orders is what makes the variance visible.
+        """
+        return self.order_line.unit_price if self.order_line_id else self.unit_price
+
     def posting_account(self):
         """
         Stocked goods were already capitalised into Inventory when they were
         received, so the bill clears that accrual rather than expensing the
         cost a second time. Services and non-stocked lines expense directly.
         """
-        if self.item_id and self.item.track_inventory:
-            from apps.core.models import Company
-
+        if self.clears_grni():
             grni = Company.get().grni_account
             if grni is not None:
                 return grni

@@ -570,6 +570,11 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a non-stocked purchase lands when its line names no account.",
     )
+    purchase_price_variance_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where the difference lands when a vendor bills a different price than "
+                  "was agreed on the order (an expense; a credit means they billed less).",
+    )
     purchase_price_tolerance_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("0"),
         help_text="How far above the agreed purchase price a bill may go before it is "
