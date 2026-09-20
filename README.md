@@ -423,6 +423,19 @@ production / SQLite for local dev by default. Every module builds on the
     they're excluded from `receipt_status()`, refused on a receipt line,
     and exempt from the *receipt* leg of the three-way match — the
     quantity and price legs still apply.
+  - **Landed cost**: a charge marked `capitalise_into_inventory` is part
+    of what the goods cost to get here, so it debits inventory rather
+    than an expense. Expensing it leaves gross margin reading better
+    than it is, permanently: the revenue carries the sale but the cost
+    of landing the stock sits elsewhere on the P&L. The allocation
+    splits by value across the bill's stocked lines, then across the
+    warehouses that actually received them — per-warehouse valuation is
+    a real number here, not a rollup. Crucially it is also written into
+    the stock ledger as a value-only `StockMovement`, so `average_cost()`
+    rises with the GL instead of drifting from it; otherwise the next
+    sale posts a COGS that disagrees with the inventory it relieved. A
+    capitalised charge with nothing on the bill to absorb it (a
+    freight-only bill) falls back to expense rather than being refused.
   - **Vendor payments**: `BillPayment` allocates an
     `accounting.Payment` disbursement to a bill, mirroring
     `InvoicePayment`. `amount_due()`, `settlement_status()`,
@@ -514,10 +527,7 @@ has that this one still doesn't.
 - ~~Bill ↔ GoodsReceipt three-way match~~ — **done**, see Purchasing
   above.
 - ~~Vendor prepayments~~ — **done**, see Purchasing.
-- **Landed cost** is not built. Freight from a vendor currently
-  expenses; capitalising it into the inventory value of the goods it
-  brought in needs `StockMovement` to carry a value-only adjustment, so
-  that `average_cost()` and the ledger keep agreeing.
+- ~~Landed cost~~ — **done**, see Purchasing.
 - ~~Settlement discounts are sales-only~~ — **done**, see Purchasing.
 
 ## Local setup

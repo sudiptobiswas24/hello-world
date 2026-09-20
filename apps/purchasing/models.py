@@ -30,7 +30,7 @@ from apps.core.models import (
     to_date,
 )
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
-from apps.inventory.valuation import post_inventory_entry
+from apps.inventory.valuation import inventory_account_for, post_inventory_entry
 
 
 def _require_vendor_role(party):
@@ -852,6 +852,13 @@ class Bill(TaxedDocumentMixin, AuditModel):
                  f"{'for' if reverse else 'from'} {self.vendor}",
         )
 
+        # A capitalised charge debits the inventory the goods landed in,
+        # not an expense: the freight is part of what the stock cost to get
+        # here, and cost of sales is wrong by that amount if it is not.
+        landed = defaultdict(Decimal)
+        for charge_line, item, _warehouse, amount in self.landed_cost_allocations():
+            landed[(charge_line.pk, item.pk)] += amount
+
         debits = []
         variance_total = Decimal("0")
         for line in lines:
@@ -871,6 +878,19 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 accrued -= round_money(accrued * line.discount_percent / Decimal("100"))
                 debits.append((account, round_money(accrued * rate), label))
                 variance_total += net - accrued
+            elif line.is_charge() and line.charge.capitalise_into_inventory:
+                shares = {
+                    item_pk: amount for (charge_pk, item_pk), amount in landed.items()
+                    if charge_pk == line.pk
+                }
+                if not shares:
+                    # Nothing on this bill to absorb it — a freight-only
+                    # bill, say. Expense it rather than refuse.
+                    debits.append((line.expense_account, round_money(net * rate), label))
+                else:
+                    for item_pk, amount in shares.items():
+                        account = inventory_account_for(Item.objects.get(pk=item_pk))
+                        debits.append((account, round_money(amount * rate), f"{label} (landed)"))
             else:
                 debits.append((line.expense_account, round_money(net * rate), label))
 
@@ -987,12 +1007,109 @@ class Bill(TaxedDocumentMixin, AuditModel):
             "posted", "posted_at", "updated_at",
         ])
 
+        if not self.is_debit_note():
+            self._record_landed_cost()
+
         # Draw down the order's prepayments automatically. Leaving it to
         # the caller means the day someone forgets, the vendor is paid the
         # full amount on top of money already sent, and the prepayment sits
         # as an asset nobody ever clears.
         if apply_prepayments:
             self.apply_available_prepayments(on_date=self.bill_date)
+
+    def _record_landed_cost(self):
+        """
+        Write the allocation into the stock ledger as value-only movements.
+
+        Without this the GL says the stock is worth more and
+        average_cost() does not, which is the exact drift this codebase
+        derives valuation to avoid — and the next sale would post a COGS
+        that disagrees with the inventory it relieved.
+        """
+        for charge_line, item, warehouse, amount in self.landed_cost_allocations():
+            StockMovement.objects.create(
+                item=item,
+                warehouse=warehouse,
+                movement_type=MovementType.ADJUSTMENT,
+                quantity=Decimal("0"),
+                value_adjustment=amount,
+                reference=self.number,
+                occurred_at=timezone.now(),
+                notes=f"Landed cost from {self.number}: {charge_line.label()}",
+            )
+
+    def landed_cost_lines(self):
+        """Charge lines on this bill that capitalise into stock value."""
+        return [
+            line for line in self.lines.all()
+            if line.is_charge() and line.charge.capitalise_into_inventory
+        ]
+
+    def landed_cost_allocations(self):
+        """
+        [(bill_line, item, warehouse, amount)] spreading capitalised
+        charges over the goods they brought in.
+
+        Allocated by value across the stocked lines of the same bill, then
+        across the receipts those lines drew on, in proportion to the
+        quantity each warehouse took. Splitting by warehouse matters
+        because per-warehouse valuation is a real number here, not a
+        rollup — dumping the whole charge on one site would skew it.
+
+        A capitalised charge with nothing on the bill to absorb it falls
+        back to being expensed. Refusing would block a legitimate
+        freight-only bill, and inventing an allocation across goods this
+        bill says nothing about would be worse.
+        """
+        charges = self.landed_cost_lines()
+        if not charges:
+            return []
+
+        absorbers = [
+            (line, line.net_amount()) for line in self.lines.all()
+            if not line.is_charge() and line.clears_grni() and line.net_amount() > 0
+        ]
+        absorbable = sum((amount for _, amount in absorbers), Decimal("0"))
+        if absorbable <= 0:
+            return []
+
+        allocations = []
+        for charge_line in charges:
+            remaining = charge_line.net_amount()
+            for index, (line, amount) in enumerate(absorbers):
+                is_last = index == len(absorbers) - 1
+                share = remaining if is_last else round_money(
+                    charge_line.net_amount() * amount / absorbable
+                )
+                remaining -= share
+                if share <= 0:
+                    continue
+                allocations.extend(
+                    self._split_across_warehouses(charge_line, line, share)
+                )
+        return allocations
+
+    def _split_across_warehouses(self, charge_line, goods_line, amount):
+        receipts = []
+        if goods_line.order_line_id:
+            receipts = [
+                (receipt_line.warehouse, receipt_line.quantity_received)
+                for receipt_line in goods_line.order_line.receipt_lines.filter(
+                    receipt__posted=True, receipt__reverses__isnull=True
+                )
+            ]
+        if not receipts:
+            return []
+
+        total = sum((quantity for _, quantity in receipts), Decimal("0"))
+        rows, remaining = [], amount
+        for index, (warehouse, quantity) in enumerate(receipts):
+            is_last = index == len(receipts) - 1
+            share = remaining if is_last else round_money(amount * quantity / total)
+            remaining -= share
+            if share:
+                rows.append((charge_line, goods_line.item, warehouse, share))
+        return rows
 
     def _check_against_order(self):
         """
@@ -1218,6 +1335,13 @@ class BillLine(TaxedLineMixin, AuditModel):
         if self.debits_line_id:
             grni = Company.get().grni_account
             return bool(grni and self.debits_line.posted_account_id == grni.pk)
+        # Once the line has posted, where it went is a fact, not something
+        # to recompute: by then its own bill counts as billed, so the
+        # accrual it cleared looks used up and every later reader — landed
+        # cost, a debit note, a report — would get the opposite answer.
+        if self.posted_account_id:
+            grni = Company.get().grni_account
+            return bool(grni and self.posted_account_id == grni.pk)
         return self.unbilled_receipt_quantity() > 0
 
     def accrued_unit_cost(self):

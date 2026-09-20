@@ -361,6 +361,12 @@ class ChargeType(AuditModel):
         Tax, blank=True, related_name="charge_types",
         help_text="Applied by default when this charge is added to a document.",
     )
+    capitalise_into_inventory = models.BooleanField(
+        default=False,
+        help_text="Inbound only: add this charge to the value of the goods it brought in "
+                  "rather than expensing it, so cost of sales reflects what the stock "
+                  "actually cost to get here.",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

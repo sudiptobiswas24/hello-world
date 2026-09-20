@@ -90,11 +90,17 @@ class Item(AuditModel):
                 unit_cost = movement.unit_cost or Decimal("0")
                 value += movement.quantity * unit_cost
                 quantity += movement.quantity
-            else:
+            elif movement.quantity < 0:
                 leaving = -movement.quantity
                 average = (value / quantity) if quantity > 0 else Decimal("0")
                 value -= leaving * average
                 quantity -= leaving
+            # A value-only movement changes what the stock is worth without
+            # changing how much there is, which is exactly what landed cost
+            # does. Replaying it here rather than storing a corrected
+            # average keeps valuation derived, like everything else.
+            if movement.value_adjustment:
+                value += movement.value_adjustment
         return quantity, value
 
     def average_cost_at(self, warehouse, before_id=None):
@@ -146,6 +152,11 @@ class StockMovement(AuditModel):
         max_digits=18, decimal_places=4, null=True, blank=True,
         help_text="Cost per unit for this movement; set from the purchase price inbound, "
                   "from the weighted average outbound.",
+    )
+    value_adjustment = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Money added to (or taken off) the stock value without moving any "
+                  "quantity — landed cost, mainly. Raises the weighted average.",
     )
     reference = models.CharField(max_length=64, blank=True, help_text="e.g. PO number, SO number")
     occurred_at = models.DateTimeField()
