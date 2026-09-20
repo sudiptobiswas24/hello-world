@@ -7,6 +7,7 @@ from .models import (
     Bill,
     BillLine,
     BillPayment,
+    PrepaymentApplication,
     GoodsReceipt,
     GoodsReceiptLine,
     PurchaseOrder,
@@ -52,6 +53,17 @@ class BillAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin
 class GoodsReceiptLineInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = GoodsReceiptLine
     extra = 1
+
+
+@admin.register(PrepaymentApplication)
+class PrepaymentApplicationAdmin(admin.ModelAdmin):
+    list_display = ("prepayment", "bill", "amount", "date")
+    readonly_fields = ("prepayment", "bill", "amount", "date", "journal_entry")
+
+    def has_add_permission(self, request):
+        # Drawing a prepayment down posts to the ledger, so it goes through
+        # Bill.apply_prepayment() rather than a form.
+        return False
 
 
 @admin.register(GoodsReceipt)

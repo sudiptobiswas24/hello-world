@@ -101,6 +101,7 @@ ROLES = {
         *crud("core", "partybankaccount", actions=("add", "change", "view")),
         *crud("core", "paymentterms", actions=("view",)),
         *crud("purchasing", "billpayment", actions=("view",)),
+        *crud("purchasing", "prepaymentapplication", actions=("view",)),
         # deliberately NOT purchasing.post_bill, and no payment allocation:
         # whoever raises the bill must not also be able to pay it.
     ],
@@ -110,6 +111,7 @@ ROLES = {
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
         *crud("purchasing", "billpayment"),
+        *crud("purchasing", "prepaymentapplication", actions=("view",)),
         *crud("accounting", "payment"),
         "purchasing.post_bill",
         "accounting.post_payment",

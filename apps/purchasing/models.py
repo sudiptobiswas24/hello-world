@@ -194,6 +194,74 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
             bill_line.taxes.set(line.taxes.all())
         return bill
 
+    def prepayments(self):
+        """Posted prepayment bills raised against this order."""
+        return self.bills.filter(is_prepayment=True, posted=True)
+
+    def prepayment_total(self):
+        return sum((bill.total() for bill in self.prepayments()), Decimal("0"))
+
+    @transaction.atomic
+    def create_prepayment_bill(
+        self, payable_account, amount=None, percent=None, bill_date=None, description=""
+    ):
+        """
+        Record a vendor's request for money up front, before anything
+        arrives.
+
+        The line debits the vendor-prepayment *asset*, not an expense:
+        handing money over does not consume it, and expensing goods still
+        sitting on the vendor's dock understates assets and overstates
+        costs for as long as the order stays open. The cost lands later,
+        on the real bill, and the prepayment is drawn down against it.
+
+        It is also the only honest way to pay ahead on an order that bills
+        on receipt — the mirror of the customer deposit on the sales side,
+        and for the same reason.
+        """
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can take a prepayment.")
+        if (amount is None) == (percent is None):
+            raise ValidationError("Give a prepayment either an amount or a percent, not both.")
+
+        order_total = self.total()
+        if percent is not None:
+            percent = Decimal(percent)
+            if percent <= 0 or percent > 100:
+                raise ValidationError("A prepayment percent must be between 0 and 100.")
+            amount = round_money(order_total * percent / Decimal("100"))
+        amount = round_money(Decimal(amount))
+        if amount <= 0:
+            raise ValidationError("A prepayment must be for a positive amount.")
+
+        already = self.prepayment_total()
+        if already + amount > order_total:
+            raise ValidationError(
+                f"Prepayments of {already} are already on this order; taking {amount} more "
+                f"would exceed the order total of {order_total}."
+            )
+
+        account = Company.get().vendor_prepayment_account
+        if account is None:
+            raise ValidationError("The company has no vendor prepayment account configured.")
+
+        bill = Bill.objects.create(
+            vendor=self.vendor,
+            bill_date=bill_date or timezone.now().date(),
+            purchase_order=self,
+            payable_account=payable_account,
+            currency=self.currency,
+            is_prepayment=True,
+        )
+        BillLine.objects.create(
+            bill=bill,
+            description=description or f"Prepayment on order {self.number or self.pk}",
+            quantity=Decimal("1"),
+            unit_price=amount,
+            expense_account=account,
+        )
+        return bill
+
     def vendor_expense_account(self):
         """
         Fallback for a line with no expense account of its own.
@@ -364,6 +432,11 @@ class Bill(TaxedDocumentMixin, AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    is_prepayment = models.BooleanField(
+        default=False, editable=False,
+        help_text="Money paid to the vendor up front, held as an asset until the "
+                  "goods arrive.",
+    )
     settlement_discount_amount = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
         help_text="Early-settlement discount taken against this bill.",
@@ -416,6 +489,10 @@ class Bill(TaxedDocumentMixin, AuditModel):
 
     def clean(self):
         _require_vendor_role(self.vendor)
+        if self.is_prepayment and not self.purchase_order_id:
+            raise ValidationError("A prepayment must be against a purchase order.")
+        if self.is_prepayment and self.debits_id:
+            raise ValidationError("A debit note cannot also be a prepayment.")
         if self.debits_id and self.debits.vendor_id != self.vendor_id:
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
 
@@ -429,6 +506,99 @@ class Bill(TaxedDocumentMixin, AuditModel):
         return sum(
             (note.total() for note in self.debit_notes.filter(posted=True)), Decimal("0")
         )
+
+    def amount_prepaid(self):
+        """Prepayments drawn down against this bill."""
+        return sum(
+            (application.amount for application in self.prepayment_applications.all()),
+            Decimal("0"),
+        )
+
+    def prepayment_applied(self):
+        """On a prepayment bill, how much of it has been drawn down."""
+        return sum(
+            (application.amount for application in self.applications.all()), Decimal("0")
+        )
+
+    def prepayment_unapplied(self):
+        if not self.is_prepayment:
+            return Decimal("0")
+        return self.total() - self.prepayment_applied()
+
+    @transaction.atomic
+    def apply_prepayment(self, prepayment, amount=None, on_date=None):
+        """
+        Draw a prepayment down against this bill.
+
+        Dr accounts payable / Cr vendor prepayments: the asset is consumed
+        because the goods have now arrived, and only the difference is
+        still owed.
+
+        Deliberately independent of whether the prepayment bill was
+        actually *paid*. Unpaid, the two payables simply sit side by side
+        and still add up to what is owed; requiring payment first would
+        block the real bill on the company's own slow payment run.
+        """
+        on_date = to_date(on_date) or timezone.now().date()
+        if not self.posted:
+            raise ValidationError("Only a posted bill can draw down a prepayment.")
+        if self.is_prepayment or self.is_debit_note():
+            raise ValidationError("A prepayment or debit note cannot draw down a prepayment.")
+        if not prepayment.is_prepayment or not prepayment.posted:
+            raise ValidationError("Only a posted prepayment bill can be drawn down.")
+        if prepayment.vendor_id != self.vendor_id:
+            raise ValidationError("That prepayment belongs to a different vendor.")
+        if prepayment.currency_id != self.currency_id:
+            raise ValidationError(
+                "The prepayment and the bill are in different currencies; drawing one "
+                "down against the other would silently write off the difference."
+            )
+
+        available = min(prepayment.prepayment_unapplied(), self.amount_due())
+        amount = round_money(Decimal(amount)) if amount is not None else available
+        if amount <= 0:
+            raise ValidationError("There is nothing left to draw down.")
+        if amount > available:
+            raise ValidationError(
+                f"Only {available} can be drawn down here "
+                f"({prepayment.prepayment_unapplied()} left on the prepayment, "
+                f"{self.amount_due()} due on the bill)."
+            )
+
+        account = Company.get().vendor_prepayment_account
+        if account is None:
+            raise ValidationError("The company has no vendor prepayment account configured.")
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        memo = f"Prepayment {prepayment.number} applied to {self.number}"
+        entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
+        JournalLine.objects.create(
+            entry=entry, account=self.payable_account, party=self.vendor,
+            debit=base_amount, description=memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.vendor,
+            credit=base_amount, description=memo,
+        )
+        entry.post()
+
+        return PrepaymentApplication.objects.create(
+            bill=self, prepayment=prepayment, amount=amount, date=on_date, journal_entry=entry
+        )
+
+    def apply_available_prepayments(self, on_date=None):
+        """Draw down every prepayment still outstanding on this bill's order."""
+        if not self.purchase_order_id or self.is_prepayment or self.is_debit_note():
+            return []
+        applied = []
+        for prepayment in self.purchase_order.prepayments().order_by("bill_date", "pk"):
+            if self.amount_due() <= 0:
+                break
+            if prepayment.prepayment_unapplied() <= 0:
+                continue
+            applied.append(self.apply_prepayment(prepayment, on_date=on_date))
+        return applied
 
     def discount_due_date(self):
         """The last day an early-settlement discount can be taken."""
@@ -552,7 +722,11 @@ class Bill(TaxedDocumentMixin, AuditModel):
         # that the money has already gone out, so what is left is cash owed
         # back, which lives on the note — a bill reading minus fifty says
         # the company owes a negative amount, which is not a thing.
-        paid = self.amount_paid() + (self.settlement_discount_amount or Decimal("0"))
+        paid = (
+            self.amount_paid()
+            + (self.settlement_discount_amount or Decimal("0"))
+            + self.amount_prepaid()
+        )
         offset = min(self.amount_debited(), max(self.total() - paid, Decimal("0")))
         return self.total() - paid - offset
 
@@ -714,7 +888,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
         return entry
 
     @transaction.atomic
-    def post(self, memo=None):
+    def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
 
@@ -767,6 +941,13 @@ class Bill(TaxedDocumentMixin, AuditModel):
             "number", "bill_date", "due_date", "exchange_rate", "journal_entry",
             "posted", "posted_at", "updated_at",
         ])
+
+        # Draw down the order's prepayments automatically. Leaving it to
+        # the caller means the day someone forgets, the vendor is paid the
+        # full amount on top of money already sent, and the prepayment sits
+        # as an asset nobody ever clears.
+        if apply_prepayments:
+            self.apply_available_prepayments(on_date=self.bill_date)
 
     def _check_against_order(self):
         """
@@ -1027,6 +1208,38 @@ class BillLine(TaxedLineMixin, AuditModel):
                 "Cannot delete a line on a posted bill. Issue a debit note instead."
             )
         super().delete(*args, **kwargs)
+
+
+class PrepaymentApplication(AuditModel):
+    """
+    One drawdown of a prepayment bill against a real bill.
+
+    Modelled like BillPayment rather than as a negative line: the bill
+    total should say what was bought, not what is left to pay after
+    netting, or every cost report has to unpick the difference.
+    """
+
+    bill = models.ForeignKey(
+        Bill, on_delete=models.PROTECT, related_name="prepayment_applications"
+    )
+    prepayment = models.ForeignKey(Bill, on_delete=models.PROTECT, related_name="applications")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField()
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="prepayment_application_positive"),
+            models.UniqueConstraint(
+                fields=["bill", "prepayment"], name="one_application_per_bill_and_prepayment"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.prepayment} -> {self.bill} ({self.amount})"
 
 
 class BillPayment(AuditModel):
