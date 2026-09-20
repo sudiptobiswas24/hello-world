@@ -27,6 +27,7 @@ ROLES = {
         *crud("core", "currency"),
         *crud("core", "exchangerate"),
         *crud("core", "paymentterms"),
+        *crud("core", "paymenttermsline"),
         *crud("core", "documentsequence"),
         *crud("core", "company", actions=("change", "view")),
         *crud("accounting", "tax"),

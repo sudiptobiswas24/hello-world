@@ -38,7 +38,12 @@ from apps.inventory.valuation import post_inventory_entry
 
 from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
 
-from apps.accounting.settlement import post_settlement_fx
+from apps.accounting.settlement import (
+    amount_overdue,
+    installment_schedule,
+    oldest_overdue,
+    post_settlement_fx,
+)
 
 from .pricing import resolve_price
 
@@ -1143,15 +1148,45 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             return SettlementStatus.PARTIAL
         return SettlementStatus.UNPAID
 
+    def installments(self):
+        """
+        What falls due when, with money already received applied to the
+        earliest installment first.
+
+        A term with no installment lines gives a single row, so a plain
+        net-30 document behaves exactly as it always did.
+        """
+        return installment_schedule(
+            terms=self.payment_terms if self.payment_terms_id else None,
+            document_date=self.invoice_date,
+            total=self.total(),
+            settled=self.total() - self.amount_due(),
+        )
+
+    def amount_overdue(self, as_of=None):
+        """
+        How much is actually late — not the whole balance.
+
+        On a 50/50 term the deposit can be weeks overdue while the balance
+        is not due for another month. Chasing the full amount would be
+        wrong, and chasing nothing would be worse.
+        """
+        if not self.posted or self.amount_due() <= 0:
+            return Decimal("0")
+        return amount_overdue(self.installments(), to_date(as_of) or timezone.now().date())
+
     def is_overdue(self, as_of=None):
-        if not self.posted or not self.due_date or self.amount_due() <= 0:
+        if not self.posted or self.amount_due() <= 0:
             return False
-        return self.due_date < (to_date(as_of) or timezone.now().date())
+        return self.amount_overdue(as_of) > 0
 
     def days_overdue(self, as_of=None):
+        """Days since the *earliest* installment that is still unpaid."""
+        as_of = to_date(as_of) or timezone.now().date()
         if not self.is_overdue(as_of):
             return 0
-        return ((to_date(as_of) or timezone.now().date()) - self.due_date).days
+        oldest = oldest_overdue(self.installments(), as_of)
+        return (as_of - oldest["due_date"]).days if oldest else 0
 
     def clean(self):
         _require_customer_role(self.customer)
@@ -1945,17 +1980,28 @@ def ar_aging(as_of=None):
         .prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes")
     )
     for invoice in invoices:
-        due = invoice.amount_due()
-        if due <= 0:
+        if invoice.amount_due() <= 0:
             continue
-        days = invoice.days_overdue(as_of)
-        if days == 0:
-            key = "current"
-        elif days > 90:
-            key = "90+"
-        else:
-            key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
-        buckets[key].append({"invoice": invoice, "days_overdue": days, "amount_due": due})
+        # A row per outstanding installment, not per invoice: on a 50/50
+        # term the deposit can be badly overdue while the balance is not
+        # due for another month, and showing one line for the whole
+        # invoice would put all of it in the wrong bucket either way.
+        for row in invoice.installments():
+            if row["outstanding"] <= 0:
+                continue
+            days = (as_of - row["due_date"]).days
+            if days <= 0:
+                key = "current"
+            elif days > 90:
+                key = "90+"
+            else:
+                key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
+            buckets[key].append({
+                "invoice": invoice,
+                "due_date": row["due_date"],
+                "days_overdue": max(days, 0),
+                "amount_due": row["outstanding"],
+            })
 
     return {
         key: {
@@ -2395,7 +2441,11 @@ def run_dunning(as_of=None, send=True):
 
         notice = DunningNotice.objects.create(
             invoice=invoice, level=due_level, days_overdue=days,
-            amount_due=invoice.amount_due(),
+            # What is actually late, not the whole balance. On a 50/50
+            # term, chasing a customer for a balance that is not due for
+            # another month is how you lose the argument about the half
+            # that is.
+            amount_due=invoice.amount_overdue(as_of),
         )
         if send:
             from django.core.mail import EmailMessage

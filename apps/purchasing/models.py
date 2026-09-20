@@ -30,7 +30,12 @@ from apps.core.models import (
     to_date,
 )
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
-from apps.accounting.settlement import post_settlement_fx
+from apps.accounting.settlement import (
+    amount_overdue,
+    installment_schedule,
+    oldest_overdue,
+    post_settlement_fx,
+)
 from apps.inventory.valuation import inventory_account_for, post_inventory_entry
 
 
@@ -791,15 +796,45 @@ class Bill(TaxedDocumentMixin, AuditModel):
             return SettlementStatus.PARTIAL
         return SettlementStatus.UNPAID
 
+    def installments(self):
+        """
+        What falls due when, with money already received applied to the
+        earliest installment first.
+
+        A term with no installment lines gives a single row, so a plain
+        net-30 document behaves exactly as it always did.
+        """
+        return installment_schedule(
+            terms=self.payment_terms if self.payment_terms_id else None,
+            document_date=self.bill_date,
+            total=self.total(),
+            settled=self.total() - self.amount_due(),
+        )
+
+    def amount_overdue(self, as_of=None):
+        """
+        How much is actually late — not the whole balance.
+
+        On a 50/50 term the deposit can be weeks overdue while the balance
+        is not due for another month. Chasing the full amount would be
+        wrong, and chasing nothing would be worse.
+        """
+        if not self.posted or self.amount_due() <= 0:
+            return Decimal("0")
+        return amount_overdue(self.installments(), to_date(as_of) or timezone.now().date())
+
     def is_overdue(self, as_of=None):
-        if not self.posted or not self.due_date or self.amount_due() <= 0:
+        if not self.posted or self.amount_due() <= 0:
             return False
-        return self.due_date < (to_date(as_of) or timezone.now().date())
+        return self.amount_overdue(as_of) > 0
 
     def days_overdue(self, as_of=None):
+        """Days since the *earliest* installment that is still unpaid."""
+        as_of = to_date(as_of) or timezone.now().date()
         if not self.is_overdue(as_of):
             return 0
-        return ((to_date(as_of) or timezone.now().date()) - self.due_date).days
+        oldest = oldest_overdue(self.installments(), as_of)
+        return (as_of - oldest["due_date"]).days if oldest else 0
 
     def _was_posted_in_db(self):
         if not self.pk:
@@ -1621,17 +1656,25 @@ def ap_aging(as_of=None):
         "lines__taxes", "payment_allocations", "debit_notes__lines__taxes"
     )
     for bill in bills:
-        due = bill.amount_due()
-        if due <= 0:
+        if bill.amount_due() <= 0:
             continue
-        days = bill.days_overdue(as_of)
-        if days == 0:
-            key = "current"
-        elif days > 90:
-            key = "90+"
-        else:
-            key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
-        buckets[key].append({"bill": bill, "days_overdue": days, "amount_due": due})
+        # A row per outstanding installment, for the reason ar_aging gives.
+        for row in bill.installments():
+            if row["outstanding"] <= 0:
+                continue
+            days = (as_of - row["due_date"]).days
+            if days <= 0:
+                key = "current"
+            elif days > 90:
+                key = "90+"
+            else:
+                key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
+            buckets[key].append({
+                "bill": bill,
+                "due_date": row["due_date"],
+                "days_overdue": max(days, 0),
+                "amount_due": row["outstanding"],
+            })
 
     return {
         key: {
@@ -1661,8 +1704,17 @@ def payment_run(due_by=None, vendor=None):
 
     rows = {}
     for bill in bills:
-        due = bill.amount_due()
-        if due <= 0 or not bill.due_date or bill.due_date > due_by:
+        if bill.amount_due() <= 0:
+            continue
+        # What falls due by the date, not the whole bill: an installment
+        # term means part of a bill can be payable now and the rest not
+        # for another month, and paying it all early is the company's
+        # cash, given away for nothing.
+        due = sum(
+            (row["outstanding"] for row in bill.installments() if row["due_date"] <= due_by),
+            Decimal("0"),
+        )
+        if due <= 0:
             continue
         # Bills in different currencies cannot be added together, so a
         # vendor billed in two currencies gets a row for each.

@@ -1,3 +1,4 @@
+import calendar
 import datetime
 from decimal import Decimal
 
@@ -439,7 +440,56 @@ class PaymentTerms(AuditModel):
         if self.discount_days and self.discount_days > self.net_days:
             raise ValidationError("The discount window cannot be longer than the net term.")
 
+    def check_percentages(self):
+        """
+        Installment percentages must come to exactly 100.
+
+        Checked when the term is *used*, not as each line is saved: a term
+        is built one line at a time and the first line of a 50/50 would
+        fail a per-line check every time. The moment a wrong answer could
+        do damage is when a schedule is produced from it.
+        """
+        lines = list(self.lines.all())
+        if not lines:
+            return
+        total = sum((line.percent for line in lines), Decimal("0"))
+        if total != Decimal("100"):
+            raise ValidationError(
+                f"The installments on '{self.code}' come to {total}%, not 100%."
+            )
+
+    def schedule(self, from_date, amount):
+        """
+        [(due_date, amount)] for this term — the whole point of modelling
+        terms as lines rather than a single number.
+
+        "50% on order, 50% on delivery" and "30/60/90" are ordinary B2B
+        terms and could not be expressed at all when a term was one
+        net_days. A term with no lines is the one-installment case, which
+        keeps every simple term working unchanged.
+        """
+        amount = Decimal(amount)
+        lines = list(self.lines.all())
+        if not lines:
+            return [(self.due_date(from_date), amount)]
+
+        self.check_percentages()
+        rows, allocated = [], Decimal("0")
+        for index, line in enumerate(lines):
+            is_last = index == len(lines) - 1
+            share = (
+                amount - allocated if is_last
+                else (amount * line.percent / Decimal("100")).quantize(Decimal("0.01"))
+            )
+            allocated += share
+            rows.append((line.due_date(from_date), share))
+        return rows
+
     def due_date(self, from_date):
+        """The last day any of this term falls due."""
+        lines = list(self.lines.all())
+        if lines:
+            return max(line.due_date(from_date) for line in lines)
         return from_date + datetime.timedelta(days=self.net_days)
 
     def discount_due_date(self, from_date):
@@ -451,6 +501,44 @@ class PaymentTerms(AuditModel):
         if not self.discount_percent:
             return Decimal("0")
         return (amount * self.discount_percent / Decimal("100")).quantize(Decimal("0.01"))
+
+
+class PaymentTermsLine(AuditModel):
+    """
+    One installment of a payment term: how much, and how long after the
+    document date.
+    """
+
+    terms = models.ForeignKey(PaymentTerms, on_delete=models.CASCADE, related_name="lines")
+    sequence = models.PositiveSmallIntegerField(default=10)
+    percent = models.DecimalField(
+        max_digits=6, decimal_places=3,
+        help_text="Share of the document falling due here. All lines must total 100.",
+    )
+    days = models.PositiveSmallIntegerField(
+        default=0, help_text="Days from the document date until this installment is due."
+    )
+    day_of_month = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Snap to this day of the resulting month — 31 means end of month, "
+                  "which is how 'net 30 EOM' is actually written.",
+    )
+
+    class Meta:
+        ordering = ["sequence", "id"]
+        constraints = [
+            models.CheckConstraint(check=Q(percent__gt=0), name="installment_percent_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.percent}% after {self.days} days"
+
+    def due_date(self, from_date):
+        due = to_date(from_date) + datetime.timedelta(days=self.days)
+        if self.day_of_month:
+            last = calendar.monthrange(due.year, due.month)[1]
+            due = due.replace(day=min(self.day_of_month, last))
+        return due
 
 
 class DocumentSequence(AuditModel):

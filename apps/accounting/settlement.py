@@ -89,3 +89,57 @@ def post_settlement_fx(
     )
     entry.post()
     return entry
+
+
+def installment_schedule(*, terms, document_date, total, settled):
+    """
+    [{due_date, amount, settled, outstanding}] for a document, with money
+    received applied to the earliest installment first.
+
+    Oldest-first because that is what both sides of a trade assume when
+    nobody says otherwise: a customer paying half of a 50/50 order has
+    paid the deposit, not the balance. Anything else would need the payer
+    to nominate which installment they meant, which they almost never do.
+
+    Shared by Sales and Purchasing — a bill falls due in installments the
+    same way an invoice does, and two implementations would drift.
+    """
+    from apps.core.models import to_date
+
+    total = Decimal(total)
+    if terms is None or not document_date:
+        return [{
+            "due_date": to_date(document_date),
+            "amount": total,
+            "settled": min(settled, total),
+            "outstanding": max(total - settled, Decimal("0")),
+        }]
+
+    remaining = Decimal(settled)
+    rows = []
+    for due_date, amount in terms.schedule(to_date(document_date), total):
+        applied = min(remaining, amount)
+        remaining -= applied
+        rows.append({
+            "due_date": due_date,
+            "amount": amount,
+            "settled": applied,
+            "outstanding": amount - applied,
+        })
+    return rows
+
+
+def amount_overdue(schedule, as_of):
+    """How much of a schedule is past its due date and still unsettled."""
+    return sum(
+        (row["outstanding"] for row in schedule if row["due_date"] < as_of),
+        Decimal("0"),
+    )
+
+
+def oldest_overdue(schedule, as_of):
+    """The earliest unsettled installment that is past due, or None."""
+    for row in schedule:
+        if row["outstanding"] > 0 and row["due_date"] < as_of:
+            return row
+    return None

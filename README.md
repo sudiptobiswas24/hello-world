@@ -20,7 +20,21 @@ production / SQLite for local dev by default. Every module builds on the
     the base currency, so a historical transaction keeps converting at
     the rate that applied on its date. A missing rate raises rather
     than silently assuming 1:1.
-  - `PaymentTerms` — net days plus early-settlement discounts (2/10
+  - `PaymentTerms` — **installments**, plus early-settlement discounts.
+    A term is a list of `PaymentTermsLine` (percent, days, optional
+    day-of-month for "net 30 EOM"), so "50% on order, 50% on delivery"
+    and "30/60/90" are expressible; a term with no lines is the
+    one-installment case, so every simple term behaves as it always did.
+    Percentages are checked when a schedule is *produced*, not as each
+    line is saved — a 50/50 is built one line at a time and a per-line
+    check would fail on the first. The consequence downstream is that
+    "is this overdue" and "how much is late" stop being the same
+    question: `amount_overdue()` counts only installments past their own
+    due date, aging emits a row per installment (so one invoice can
+    legitimately sit in two buckets), dunning chases what is actually
+    late rather than the whole balance, and `payment_run()` pays what is
+    due by the date rather than the whole bill. Original notes: net days
+    plus early-settlement discounts (2/10
     net 30), shared by AR and AP since the arithmetic is identical.
   - `DocumentSequence` — human-facing document numbers
     (`INV-2026-00001`) handed out under a row lock, with optional

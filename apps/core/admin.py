@@ -13,6 +13,7 @@ from .models import (
     PartyRoleAssignment,
     PartyTag,
     PaymentTerms,
+    PaymentTermsLine,
     DocumentSequence,
     UnitOfMeasure,
 )
@@ -100,10 +101,16 @@ class PartyTagAdmin(admin.ModelAdmin):
     list_display = ("name", "description")
 
 
+class PaymentTermsLineInline(admin.TabularInline):
+    model = PaymentTermsLine
+    extra = 0
+
+
 @admin.register(PaymentTerms)
 class PaymentTermsAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("code", "name", "net_days", "discount_percent", "discount_days", "is_active")
     list_filter = ("is_active",)
+    inlines = [PaymentTermsLineInline]
 
 
 @admin.register(DocumentSequence)
