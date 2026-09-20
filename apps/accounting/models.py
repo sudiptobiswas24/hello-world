@@ -327,6 +327,56 @@ def compute_taxes(taxes, amount, quantity=Decimal("1")):
     return base, results, round_money(total)
 
 
+class ChargeType(AuditModel):
+    """
+    Something billable that isn't stock: freight, handling, installation,
+    a rush surcharge.
+
+    Modelled as a line on the document rather than a separate charges
+    table, because that is what it is — the other party sees it as a line,
+    and it needs the same discount, tax and correction treatment every
+    other line gets. Making it an Item instead would put freight through
+    inventory valuation and fold it into product margin, since a charge
+    has revenue but no cost of goods.
+
+    One row serves both directions because it is one concept: a carrier
+    charges the company freight, and the company recharges freight to its
+    customers. Two models would mean two code lists to keep aligned and
+    two places to get the tax treatment wrong.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    revenue_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where this lands when charged to a customer. Keep it separate from "
+                  "product revenue: recharged freight with no cost behind it otherwise "
+                  "flatters gross margin.",
+    )
+    expense_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where this lands when a vendor charges it to the company.",
+    )
+    taxes = models.ManyToManyField(
+        Tax, blank=True, related_name="charge_types",
+        help_text="Applied by default when this charge is added to a document.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return self.name
+
+    def account_for(self, is_sale):
+        account = self.revenue_account if is_sale else self.expense_account
+        if account is None:
+            side = "revenue" if is_sale else "expense"
+            raise ValidationError(f"Charge '{self.code}' has no {side} account configured.")
+        return account
+
+
 class FiscalPosition(AuditModel):
     """
     Substitutes taxes based on who you're dealing with — zero-rating an

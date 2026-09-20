@@ -5,6 +5,7 @@ from apps.core.audit import AuditableAdminMixin
 
 from .models import (
     Account,
+    ChargeType,
     FiscalPosition,
     FiscalPositionTaxMapping,
     JournalEntry,
@@ -14,6 +15,13 @@ from .models import (
     Tax,
     TaxGroup,
 )
+
+
+@admin.register(ChargeType)
+class ChargeTypeAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "revenue_account", "expense_account", "is_active")
+    list_filter = ("is_active",)
+    filter_horizontal = ("taxes",)
 
 
 @admin.register(Account)

@@ -12,10 +12,9 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from apps.accounting.models import Account, AccountType, Tax, TaxGroup
+from apps.accounting.models import Account, AccountType, ChargeType, Tax, TaxGroup
 
 from .models import (
-    ChargeType,
     Delivery,
     DeliveryLine,
     FulfilmentStatus,

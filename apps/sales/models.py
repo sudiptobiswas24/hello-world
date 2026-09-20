@@ -11,6 +11,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import (
+    ChargeType,
     Account,
     JournalEntry,
     JournalLine,
@@ -53,39 +54,6 @@ class SettlementStatus(models.TextChoices):
     PARTIAL = "partial", "Partially paid"
     PAID = "paid", "Paid"
     WRITTEN_OFF = "written_off", "Written off"
-
-
-class ChargeType(AuditModel):
-    """
-    Something billable that isn't stock: freight, handling, installation,
-    a rush surcharge.
-
-    Modelled as a line on the document rather than a separate charges
-    table, because that is what it is — the customer sees it as a line,
-    and it needs the same discount, tax and credit-note treatment every
-    other line gets. Making it an Item instead would put freight through
-    inventory valuation and fold recharged shipping into product margin,
-    since a charge has revenue but no cost of goods.
-    """
-
-    code = models.CharField(max_length=32, unique=True)
-    name = models.CharField(max_length=128)
-    revenue_account = models.ForeignKey(
-        Account, on_delete=models.PROTECT, related_name="+",
-        help_text="Keep this separate from product revenue: recharged freight with no "
-                  "cost behind it otherwise flatters gross margin.",
-    )
-    taxes = models.ManyToManyField(
-        Tax, blank=True, related_name="charge_types",
-        help_text="Applied by default when this charge is added to a document.",
-    )
-    is_active = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ["code"]
-
-    def __str__(self):
-        return self.name
 
 
 class PriceList(AuditModel):
@@ -544,7 +512,7 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         line = SalesOrderLine.objects.create(
             order=self, charge=charge, description=description or charge.name,
             quantity=Decimal(quantity), unit_price=round_money(Decimal(amount)),
-            revenue_account=charge.revenue_account,
+            revenue_account=charge.account_for(is_sale=True),
         )
         line.taxes.set(charge.taxes.all())
         return line
@@ -659,7 +627,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     def save(self, *args, **kwargs):
         if self.is_charge():
             if not self.revenue_account_id:
-                self.revenue_account = self.charge.revenue_account
+                self.revenue_account = self.charge.account_for(is_sale=True)
             if self.unit_price is None:
                 raise ValidationError(
                     f"Give the {self.charge} charge an explicit amount; a charge has no "
@@ -2811,7 +2779,7 @@ class QuotationLine(TaxedLineMixin, AuditModel):
             )
         if self.is_charge():
             if not self.revenue_account_id:
-                self.revenue_account = self.charge.revenue_account
+                self.revenue_account = self.charge.account_for(is_sale=True)
             if self.unit_price is None:
                 raise ValidationError(
                     f"Give the {self.charge} charge an explicit amount; a charge has no "

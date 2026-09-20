@@ -10,6 +10,7 @@ from django.db.models import Q
 from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
 from apps.accounting.models import (
     Account,
+    ChargeType,
     JournalEntry,
     JournalLine,
     Payment,
@@ -129,8 +130,12 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
         self.save(update_fields=["status", "updated_at"])
 
     def receipt_status(self):
-        lines = list(self.lines.all())
-        if not lines or all(line.quantity_received() <= 0 for line in lines):
+        # Charge lines never arrive, so counting them would pin an
+        # otherwise complete order at PARTIAL forever.
+        lines = [line for line in self.lines.all() if not line.is_charge()]
+        if not lines:
+            return FulfilmentStatus.FULL
+        if all(line.quantity_received() <= 0 for line in lines):
             return FulfilmentStatus.NONE
         if all(line.is_fully_received() for line in lines):
             return FulfilmentStatus.FULL
@@ -185,7 +190,8 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
                 bill=bill,
                 order_line=line,
                 item=line.item,
-                description=str(line.item),
+                charge=line.charge,
+                description=line.description or line.label(),
                 quantity=remaining,
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
@@ -193,6 +199,22 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
             )
             bill_line.taxes.set(line.taxes.all())
         return bill
+
+    def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
+        """
+        Put freight, handling or a surcharge from the vendor on this order.
+
+        The charge's default taxes come across, because the commonest way
+        to get freight wrong is to leave it untaxed where the jurisdiction
+        taxes it at the same rate as the goods.
+        """
+        line = PurchaseOrderLine.objects.create(
+            order=self, charge=charge, description=description or charge.name,
+            quantity=Decimal(quantity), unit_price=round_money(Decimal(amount)),
+            expense_account=charge.account_for(is_sale=False),
+        )
+        line.taxes.set(charge.taxes.all())
+        return line
 
     def prepayments(self):
         """Posted prepayment bills raised against this order."""
@@ -280,8 +302,18 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
 
 class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     order = models.ForeignKey(PurchaseOrder, related_name="lines", on_delete=models.CASCADE)
-    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="purchase_order_lines")
-    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="purchase_order_lines",
+    )
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line is freight, handling or similar.",
+    )
+    description = models.CharField(max_length=255, blank=True)
+    uom = models.ForeignKey(
+        UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
     expense_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a non-stocked line lands when this order is billed.",
@@ -291,13 +323,24 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def party_for_tax(self):
         return self.order.vendor
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(item__isnull=False, charge__isnull=True)
+                | Q(item__isnull=True, charge__isnull=False),
+                name="po_line_is_item_or_charge",
+            ),
+        ]
+
     def __str__(self):
-        return f"{self.item} x{self.quantity}"
+        return f"{self.label()} x{self.quantity}"
 
     def save(self, *args, **kwargs):
+        if self.is_charge() and not self.expense_account_id:
+            self.expense_account = self.charge.account_for(is_sale=False)
         if self.unit_price is None:
             raise ValidationError(
-                f"Give {self.item} a unit price; a purchase order has no price list to "
+                f"Give {self.label()} a unit price; a purchase order has no price list to "
                 "fall back on — the price is whatever the vendor quoted."
             )
         # A confirmed line could be edited below what had already been
@@ -366,7 +409,9 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         convenient one.
         """
         unbilled = self.quantity_unbilled()
-        if self.order.bill_policy != BillPolicy.RECEIVED:
+        # A charge never arrives in a warehouse, so waiting for a receipt
+        # that will never come would strand the freight on the order.
+        if self.order.bill_policy != BillPolicy.RECEIVED or self.is_charge():
             return unbilled
         return min(unbilled, self.quantity_received() - self.quantity_billed())
 
@@ -969,7 +1014,9 @@ class Bill(TaxedDocumentMixin, AuditModel):
                     f"Billing {line.quantity} of {order_line.item} would exceed the ordered "
                     f"quantity ({order_line.quantity}; {already} already billed)."
                 )
-            if order_line.order.bill_policy == BillPolicy.RECEIVED:
+            # A charge never arrives, so the receipt leg of the match does
+            # not apply to it — the quantity and price legs still do.
+            if order_line.order.bill_policy == BillPolicy.RECEIVED and not order_line.is_charge():
                 received = order_line.quantity_received()
                 if already + line.quantity > received:
                     raise ValidationError(
@@ -1070,6 +1117,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 order_line=line.order_line,
                 debits_line=line,
                 item=line.item,
+                charge=line.charge,
                 description=line.description,
                 quantity=quantity,
                 unit_price=line.unit_price,
@@ -1094,6 +1142,10 @@ class BillLine(TaxedLineMixin, AuditModel):
                   "cannot be billed twice for the same goods.",
     )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="bill_lines")
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line is freight, handling or similar.",
+    )
     description = models.CharField(max_length=255, blank=True)
     expense_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
     posted_account = models.ForeignKey(
@@ -1108,7 +1160,7 @@ class BillLine(TaxedLineMixin, AuditModel):
         return self.bill.vendor
 
     def __str__(self):
-        return f"{self.item or self.description} x{self.quantity}"
+        return f"{self.label()} x{self.quantity}"
 
     def quantity_debited(self):
         """How much of this line posted debit notes have already given back."""
@@ -1641,6 +1693,12 @@ class GoodsReceiptLine(AuditModel):
         if self.receipt_id and GoodsReceipt.objects.filter(pk=self.receipt_id, posted=True).exists():
             raise ValidationError(
                 "Cannot modify a line on a posted goods receipt. Create a return instead."
+            )
+        # In save() rather than only clean(): receipts are built in code,
+        # where nothing calls full_clean() for us.
+        if self.order_line_id and self.order_line.is_charge():
+            raise ValidationError(
+                f"'{self.order_line.charge}' is a charge, not goods; nothing arrives for it."
             )
         super().save(*args, **kwargs)
 

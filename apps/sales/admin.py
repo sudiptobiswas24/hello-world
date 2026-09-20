@@ -5,7 +5,6 @@ from apps.core.audit import AuditableAdminMixin
 
 from .models import (
     ApprovalPolicy,
-    ChargeType,
     CommissionPlan,
     DepositApplication,
     CustomerProfile,
@@ -147,13 +146,6 @@ class ApprovalPolicyAdmin(AuditableAdminMixin, admin.ModelAdmin):
         "max_order_value", "is_active",
     )
     list_filter = ("is_active",)
-
-
-@admin.register(ChargeType)
-class ChargeTypeAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("code", "name", "revenue_account", "is_active")
-    list_filter = ("is_active",)
-    filter_horizontal = ("taxes",)
 
 
 @admin.register(DepositApplication)

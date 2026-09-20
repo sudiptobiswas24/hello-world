@@ -31,6 +31,7 @@ ROLES = {
         *crud("core", "company", actions=("change", "view")),
         *crud("accounting", "tax"),
         *crud("accounting", "taxgroup"),
+        *crud("accounting", "chargetype"),
         *crud("accounting", "fiscalposition"),
         *crud("accounting", "fiscalpositiontaxmapping"),
         *crud("accounting", "partytaxprofile"),
@@ -55,7 +56,7 @@ ROLES = {
         *crud("core", "paymentterms", actions=("view",)),
         *crud("sales", "pricelist", actions=("view",)),
         *crud("sales", "pricelistitem", actions=("view",)),
-        *crud("sales", "chargetype", actions=("view",)),
+        *crud("accounting", "chargetype", actions=("view",)),
         *crud("sales", "approvalpolicy", actions=("view",)),
         # deliberately NOT sales.approve_order: a rep cannot sign off
         # their own discount.
@@ -72,7 +73,7 @@ ROLES = {
         *crud("sales", "invoicepayment"),
         *crud("sales", "pricelist"),
         *crud("sales", "pricelistitem"),
-        *crud("sales", "chargetype"),
+        *crud("accounting", "chargetype"),
         *crud("sales", "approvalpolicy"),
         *crud("sales", "customerprofile"),
         *crud("sales", "quotation"),

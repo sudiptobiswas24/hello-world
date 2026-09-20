@@ -55,6 +55,12 @@ production / SQLite for local dev by default. Every module builds on the
   `PartyTaxProfile` attaches that plus outright exemption to a
   `core.Party` — again from the Accounting side, so Core stays
   independent. Both Sales and Purchasing consume all of this.
+  `ChargeType` lives here too, for the same reason and because it is
+  genuinely one concept read two ways: a carrier charges the company
+  freight, and the company recharges freight to its customers. One row
+  carries both a revenue and an expense account; two models would be
+  two code lists to keep aligned and two places to get the tax
+  treatment wrong.
   `mixins.py` holds `TaxedLineMixin`/`TaxedDocumentMixin` — the line
   arithmetic both trading modules need. They live here because neither
   may import the other, and a second implementation is how the two
@@ -401,6 +407,22 @@ production / SQLite for local dev by default. Every module builds on the
     silent. The return isn't blocked (the goods physically went);
     `billed_not_held()` reports the gap instead, and each row is a debit
     note waiting to be raised.
+  - **Vendor prepayments**: `create_prepayment_bill()` records a
+    vendor's request for money up front. The line debits
+    `Company.vendor_prepayment_account` — an *asset* — because handing
+    money over doesn't consume it; until the goods arrive the vendor
+    owes either the goods or the money back. It's also the only honest
+    way to pay ahead on an order that bills on receipt. Posting the real
+    bill draws it down automatically (Dr payables / Cr prepayments), and
+    doesn't wait for the prepayment bill to have been paid: two open
+    payables side by side still sum to what's owed. A prepayment carries
+    no order line, so it stays out of the three-way match by
+    construction while remaining a real payable.
+  - **Charges from a vendor**: the same `ChargeType` the sales side
+    uses, read from the expense direction. Charges never arrive, so
+    they're excluded from `receipt_status()`, refused on a receipt line,
+    and exempt from the *receipt* leg of the three-way match — the
+    quantity and price legs still apply.
   - **Vendor payments**: `BillPayment` allocates an
     `accounting.Payment` disbursement to a bill, mirroring
     `InvoicePayment`. `amount_due()`, `settlement_status()`,
@@ -491,9 +513,11 @@ has that this one still doesn't.
   resulting ledger postings are a separate design effort.
 - ~~Bill ↔ GoodsReceipt three-way match~~ — **done**, see Purchasing
   above.
-- **Vendor prepayments and landed cost** are not built. Both have
-  working Sales twins (customer deposits, recharged freight) that
-  should be mirrored rather than redesigned.
+- ~~Vendor prepayments~~ — **done**, see Purchasing.
+- **Landed cost** is not built. Freight from a vendor currently
+  expenses; capitalising it into the inventory value of the goods it
+  brought in needs `StockMovement` to carry a value-only adjustment, so
+  that `average_cost()` and the ledger keep agreeing.
 - ~~Settlement discounts are sales-only~~ — **done**, see Purchasing.
 
 ## Local setup
