@@ -22,6 +22,12 @@ class Warehouse(AuditModel):
         help_text="Holds goods received but not yet accepted. The stock is owned and "
                   "valued; it simply may not be shipped until someone has looked at it.",
     )
+    is_transit = models.BooleanField(
+        default=False,
+        help_text="Holds stock that has left one warehouse and not yet arrived at "
+                  "another. Owned and valued like any other shelf — it is simply on "
+                  "a lorry, so nothing can be picked from it.",
+    )
     allow_negative_stock = models.BooleanField(
         default=False,
         help_text="Permit shipping more than is on hand (backorders, in-transit stock).",
@@ -124,10 +130,11 @@ class Item(AuditModel):
 
     def available_at(self, warehouse):
         """
-        On hand and shippable. Quarantined stock is neither missing nor
-        available: it is owned, valued and not yet cleared.
+        On hand and shippable. Quarantined and in-transit stock is neither
+        missing nor available: it is owned, valued, and not on a shelf
+        anybody can pick from.
         """
-        if warehouse.is_quarantine or warehouse.consignment_vendor_id:
+        if warehouse.is_quarantine or warehouse.is_transit or warehouse.consignment_vendor_id:
             return 0
         return self.on_hand_at(warehouse)
 
@@ -144,6 +151,17 @@ class Item(AuditModel):
 
     def stock_value_at(self, warehouse):
         return self._replay_valuation(warehouse)[1].quantize(Decimal("0.01"))
+
+    def valuation_at(self, warehouse):
+        """
+        (quantity, value) at full precision, unrounded.
+
+        Anything that has to remove exactly what the replay will remove —
+        a transfer's receiving leg, matching its despatching leg — needs
+        the unrounded number. Rounding to a presentable two places first
+        and multiplying back is how the two ends of a move stop agreeing.
+        """
+        return self._replay_valuation(warehouse)
 
     def to_stock_quantity(self, quantity, uom):
         """
@@ -212,9 +230,13 @@ class StockMovement(AuditModel):
                   "from the weighted average outbound.",
     )
     value_adjustment = models.DecimalField(
-        max_digits=18, decimal_places=2, null=True, blank=True,
-        help_text="Money added to (or taken off) the stock value without moving any "
-                  "quantity — landed cost, mainly. Raises the weighted average.",
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="Value added to (or taken off) the stock without moving any "
+                  "quantity — landed cost, and the remainder a conversion or a "
+                  "transfer cannot express in a unit cost. Four places, not two: "
+                  "a posted amount is money and rounds to the cent, but this also "
+                  "carries what is left when a value is divided by a quantity, and "
+                  "rounding that to the cent loses a little on every move.",
     )
     reference = models.CharField(max_length=64, blank=True, help_text="e.g. PO number, SO number")
     occurred_at = models.DateTimeField()
@@ -281,7 +303,7 @@ class StockMovement(AuditModel):
                     # ignores the cost entirely.
                     if self.quantity > 0:
                         residue = (gross - self.quantity * self.unit_cost).quantize(
-                            Decimal("0.01")
+                            Decimal("0.0001")
                         )
                         if residue:
                             self.value_adjustment = (
@@ -302,4 +324,10 @@ from .adjustments import (  # noqa: E402,F401
     StockAdjustmentLine,
     StockCount,
     StockCountLine,
+)
+from .transfers import (  # noqa: E402,F401
+    StockTransfer,
+    StockTransferLine,
+    StockTransferStep,
+    TransferStatus,
 )

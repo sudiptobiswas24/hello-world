@@ -178,6 +178,8 @@ class Command(BaseCommand):
     SIGNED_BY_DESIGN = {
         "inventory.StockMovement.quantity": "negative is an outbound movement",
         "accounting.BankStatementLine.amount": "negative is money leaving",
+        "inventory.StockAdjustmentLine.quantity": "negative writes stock down",
+        "inventory.StockTransferStep.quantity": "negative is a hop sent back",
     }
 
     def unsigned_money(self, labels):

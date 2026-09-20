@@ -396,7 +396,7 @@ class StockAdjustmentLine(AuditModel):
             # off what this line put on, so the residue is the difference.
             residue = (
                 (-quantity) * average - moved_value
-            ).quantize(Decimal("0.01")) or None
+            ).quantize(Decimal("0.0001")) or None
 
         self.reversal_movement = StockMovement.objects.create(
             item=self.item,
