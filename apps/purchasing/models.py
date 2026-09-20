@@ -305,6 +305,18 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def is_fully_billed(self):
         return self.quantity_billed() >= self.quantity
 
+    def quantity_billed_not_held(self):
+        """
+        Quantity billed that the company no longer has — goods sent back
+        after they were billed for.
+
+        Returning billed goods is legitimate: that is what you do with
+        faulty stock. What is not legitimate is leaving it invisible. The
+        return cannot be blocked (the goods physically went), so the gap
+        is reported instead, and clearing it means raising a debit note.
+        """
+        return max(self.quantity_billed() - self.quantity_received(), Decimal("0"))
+
 
 class Bill(TaxedDocumentMixin, AuditModel):
     """
@@ -352,6 +364,14 @@ class Bill(TaxedDocumentMixin, AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    settlement_discount_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Early-settlement discount taken against this bill.",
+    )
+    settlement_discount_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
 
     class Meta:
         ordering = ["-bill_date", "-id"]
@@ -410,8 +430,131 @@ class Bill(TaxedDocumentMixin, AuditModel):
             (note.total() for note in self.debit_notes.filter(posted=True)), Decimal("0")
         )
 
+    def discount_due_date(self):
+        """The last day an early-settlement discount can be taken."""
+        if not self.payment_terms_id or not self.bill_date:
+            return None
+        return self.payment_terms.discount_due_date(to_date(self.bill_date))
+
+    def settlement_discount(self):
+        """What the company saves by paying early, if the terms offer it."""
+        if not self.payment_terms_id:
+            return Decimal("0")
+        return self.payment_terms.discount_amount(self.total())
+
+    def discount_is_available(self, as_of=None):
+        deadline = self.discount_due_date()
+        if not self.posted or self.is_debit_note() or not deadline:
+            return False
+        if self.settlement_discount_amount:
+            return False
+        return (to_date(as_of) or timezone.now().date()) <= deadline
+
+    @transaction.atomic
+    def take_settlement_discount(self, on_date=None, force=False):
+        """
+        Take the early-payment discount the vendor's terms offer.
+
+        The mirror of Invoice.apply_settlement_discount, and inert for
+        exactly as long: PaymentTerms has modelled 2/10 net 30 since the
+        kernel, Sales learned to honour it, and the purchase side never
+        did — so discounts the company was entitled to simply went
+        unclaimed, which is money left on the table every month.
+
+        Dr Accounts payable / Cr settlement discount received.
+        """
+        on_date = to_date(on_date) or timezone.now().date()
+        if not force and not self.discount_is_available(on_date):
+            raise ValidationError(
+                "No settlement discount is available on this bill at that date."
+            )
+        amount = self.settlement_discount()
+        if amount <= 0:
+            raise ValidationError("These payment terms offer no settlement discount.")
+        if amount > self.amount_due():
+            raise ValidationError(
+                f"Only {self.amount_due()} is outstanding; a discount of {amount} would "
+                "take the bill below zero. Pay less, or settle the bill first."
+            )
+
+        account = Company.get().settlement_discount_received_account
+        if account is None:
+            raise ValidationError(
+                "The company has no settlement discount received account configured."
+            )
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        memo = f"Settlement discount on {self.number}"
+        entry = JournalEntry.objects.create(
+            date=on_date, reference=self.number, memo=memo
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.payable_account, party=self.vendor,
+            debit=base_amount, description=memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.vendor,
+            credit=base_amount, description=memo,
+        )
+        entry.post()
+
+        self.settlement_discount_amount = amount
+        self.settlement_discount_entry = entry
+        super(Bill, self).save(update_fields=[
+            "settlement_discount_amount", "settlement_discount_entry", "updated_at",
+        ])
+        return entry
+
+    def amount_absorbed(self):
+        """
+        On a debit note: how much of it went to reducing its bill's balance
+        rather than becoming cash the vendor owes back.
+
+        Notes are absorbed oldest-first, because that is the order they
+        were agreed in and a later note cannot retroactively take the
+        earlier one's place against the bill.
+        """
+        if not self.is_debit_note():
+            return Decimal("0")
+        bill = self.debits
+        capacity = max(bill.total() - bill.amount_paid(), Decimal("0"))
+        used = Decimal("0")
+        for note in bill.debit_notes.filter(posted=True).order_by("bill_date", "pk"):
+            share = min(note.total(), max(capacity - used, Decimal("0")))
+            if note.pk == self.pk:
+                return share
+            used += share
+        return Decimal("0")
+
+    def refund_due(self):
+        """
+        On a debit note: cash the vendor owes back, over and above clearing
+        the bill.
+
+        Debit-noting a bill that has already been paid is normal — you pay,
+        then find the goods were faulty. The money has left, so the vendor
+        owes it back; that is a balance on the note, not a negative one on
+        the bill.
+        """
+        if not self.is_debit_note():
+            return Decimal("0")
+        refunded = sum(
+            (allocation.amount for allocation in self.payment_allocations.all()),
+            Decimal("0"),
+        )
+        return self.total() - self.amount_absorbed() - refunded
+
     def amount_due(self):
-        return self.total() - self.amount_paid() - self.amount_debited()
+        if self.is_debit_note():
+            return self.refund_due()
+        # Debit notes can take a bill to zero but never below it. Beyond
+        # that the money has already gone out, so what is left is cash owed
+        # back, which lives on the note — a bill reading minus fifty says
+        # the company owes a negative amount, which is not a thing.
+        paid = self.amount_paid() + (self.settlement_discount_amount or Decimal("0"))
+        offset = min(self.amount_debited(), max(self.total() - paid, Decimal("0")))
+        return self.total() - paid - offset
 
     def settlement_status(self):
         if not self.posted:
@@ -471,7 +614,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
             raise ValidationError("Posted bills cannot be deleted. Issue a debit note instead.")
         super().delete(*args, **kwargs)
 
-    def _build_journal_entry(self, rate):
+    def _build_journal_entry(self, rate, reverse=False):
         """
         Build the ledger entry in base currency.
 
@@ -486,7 +629,8 @@ class Bill(TaxedDocumentMixin, AuditModel):
         entry = JournalEntry.objects.create(
             date=self.bill_date,
             reference=self.reference or self.number,
-            memo=f"Bill {self.number} from {self.vendor}",
+            memo=f"{'Debit note' if reverse else 'Bill'} {self.number} "
+                 f"{'for' if reverse else 'from'} {self.vendor}",
         )
 
         debits = []
@@ -494,6 +638,10 @@ class Bill(TaxedDocumentMixin, AuditModel):
         for line in lines:
             label = line.description or str(line.item)
             net = line.net_amount()
+            account = line.posting_account()
+            if line.posted_account_id != account.pk:
+                line.posted_account = account
+                super(BillLine, line).save(update_fields=["posted_account", "updated_at"])
             if line.clears_grni():
                 # Clear the accrual at exactly what the receipt booked —
                 # quantity billed at the *order* price. Clearing it at the
@@ -502,7 +650,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 # silently accumulates a balance nobody can explain.
                 accrued = round_money(line.quantity * line.accrued_unit_cost())
                 accrued -= round_money(accrued * line.discount_percent / Decimal("100"))
-                debits.append((line.posting_account(), round_money(accrued * rate), label))
+                debits.append((account, round_money(accrued * rate), label))
                 variance_total += net - accrued
             else:
                 debits.append((line.expense_account, round_money(net * rate), label))
@@ -545,8 +693,9 @@ class Bill(TaxedDocumentMixin, AuditModel):
             entry=entry,
             account=self.payable_account,
             party=self.vendor,
-            credit=payable_total,
-            description=f"Bill {self.number}",
+            debit=payable_total if reverse else Decimal("0"),
+            credit=Decimal("0") if reverse else payable_total,
+            description=f"{'Debit note' if reverse else 'Bill'} {self.number}",
         )
         for account, amount, description in debits:
             if not amount:
@@ -554,10 +703,12 @@ class Bill(TaxedDocumentMixin, AuditModel):
             # A favourable variance — the vendor billed less than agreed —
             # is a negative debit, which a journal line cannot hold. It is
             # the same fact written on the other side.
+            positive = amount if amount > 0 else Decimal("0")
+            negative = -amount if amount < 0 else Decimal("0")
             JournalLine.objects.create(
                 entry=entry, account=account, party=self.vendor,
-                debit=amount if amount > 0 else Decimal("0"),
-                credit=-amount if amount < 0 else Decimal("0"),
+                debit=negative if reverse else positive,
+                credit=positive if reverse else negative,
                 description=description,
             )
         return entry
@@ -597,10 +748,14 @@ class Bill(TaxedDocumentMixin, AuditModel):
             # Debit at the rate the bill was booked at, never today's, so
             # correcting an old foreign-currency bill can't book an FX gain.
             self.exchange_rate = original.exchange_rate or Decimal("1")
-            entry = original.journal_entry.create_reversal(
-                entry_date=self.bill_date,
-                memo=memo or f"Debit note {self.number} for {original.number}",
-            )
+            entry = self._build_journal_entry(self.exchange_rate, reverse=True)
+            # A note that happens to give back every line in full is
+            # additionally linked as a reversal, exactly as Sales does, so
+            # the common case still reads as one entry undoing another.
+            if self._is_full_debit_of(original):
+                entry.reverses = original.journal_entry
+                entry.save(update_fields=["reverses"])
+            entry.post()
         else:
             entry = self._build_journal_entry(self.exchange_rate)
             entry.post()
@@ -668,15 +823,56 @@ class Bill(TaxedDocumentMixin, AuditModel):
                     line.unit_price - order_line.unit_price if order_line else None
                 ),
                 "matched": bool(order_line),
+                "billed_not_held": (
+                    order_line.quantity_billed_not_held() if order_line else None
+                ),
             })
         return rows
 
+    def _is_full_debit_of(self, original):
+        """True when this note gives back every line of `original` in full."""
+        debited = defaultdict(Decimal)
+        for line in self.lines.all():
+            if not line.debits_line_id:
+                return False
+            debited[line.debits_line_id] += line.quantity
+        original_lines = list(original.lines.all())
+        if len(debited) != len(original_lines):
+            return False
+        return all(debited.get(line.pk) == line.quantity for line in original_lines)
+
     @transaction.atomic
-    def create_debit_note(self, memo=""):
+    def create_debit_note(self, memo="", quantities=None):
+        """
+        Debit this bill. By default the whole thing; pass `quantities` as
+        {bill_line: quantity} to give back part of it, which is what a
+        partial goods return needs.
+
+        Sales has had partial credit notes since its first pass. The
+        purchase side could only ever reverse a bill in full, so a vendor
+        who short-shipped one line of ten had to have the entire bill
+        cancelled and re-entered.
+        """
         if not self.posted:
             raise ValidationError("Only a posted bill can be corrected with a debit note.")
         if self.debits_id:
             raise ValidationError("Cannot issue a debit note against a debit note.")
+
+        if quantities is None:
+            selected = [(line, line.quantity_debitable()) for line in self.lines.all()]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
+        else:
+            selected = [(line, quantity) for line, quantity in quantities.items() if quantity > 0]
+            for line, quantity in selected:
+                if line.bill_id != self.pk:
+                    raise ValidationError("That line belongs to a different bill.")
+                if quantity > line.quantity_debitable():
+                    raise ValidationError(
+                        f"Only {line.quantity_debitable()} of '{line}' is left to debit; "
+                        f"cannot debit {quantity}."
+                    )
+        if not selected:
+            raise ValidationError("Nothing to debit.")
 
         debit_note = Bill.objects.create(
             vendor=self.vendor,
@@ -687,13 +883,14 @@ class Bill(TaxedDocumentMixin, AuditModel):
             payable_account=self.payable_account,
             debits=self,
         )
-        for line in self.lines.all():
+        for line, quantity in selected:
             note_line = BillLine.objects.create(
                 bill=debit_note,
                 order_line=line.order_line,
+                debits_line=line,
                 item=line.item,
                 description=line.description,
-                quantity=line.quantity,
+                quantity=quantity,
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 expense_account=line.expense_account,
@@ -705,6 +902,10 @@ class Bill(TaxedDocumentMixin, AuditModel):
 
 class BillLine(TaxedLineMixin, AuditModel):
     bill = models.ForeignKey(Bill, related_name="lines", on_delete=models.CASCADE)
+    debits_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="debit_lines",
+        help_text="On a debit note line, the bill line being given back.",
+    )
     order_line = models.ForeignKey(
         PurchaseOrderLine, null=True, blank=True, on_delete=models.PROTECT,
         related_name="bill_lines",
@@ -714,6 +915,12 @@ class BillLine(TaxedLineMixin, AuditModel):
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="bill_lines")
     description = models.CharField(max_length=255, blank=True)
     expense_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    posted_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Where this line actually landed when the bill posted, frozen so a "
+                  "debit note gives it back to the same place.",
+    )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="bill_lines")
 
     def party_for_tax(self):
@@ -721,6 +928,15 @@ class BillLine(TaxedLineMixin, AuditModel):
 
     def __str__(self):
         return f"{self.item or self.description} x{self.quantity}"
+
+    def quantity_debited(self):
+        """How much of this line posted debit notes have already given back."""
+        return self.debit_lines.filter(bill__posted=True).aggregate(
+            total=models.Sum("quantity")
+        )["total"] or Decimal("0")
+
+    def quantity_debitable(self):
+        return self.quantity - self.quantity_debited()
 
     def unbilled_receipt_quantity(self):
         """
@@ -759,7 +975,16 @@ class BillLine(TaxedLineMixin, AuditModel):
         nothing to clear, and debiting GRNI anyway leaves a balance that
         nothing will ever offset — stock is created by receiving it, never
         by being billed for it.
+
+        A debit note follows whatever its original line did. Recomputing
+        would give the wrong answer: the original bill still counts as
+        billed at the moment the note posts, so the accrual looks used up
+        and the note would hand the money back to a different account than
+        it took it from.
         """
+        if self.debits_line_id:
+            grni = Company.get().grni_account
+            return bool(grni and self.debits_line.posted_account_id == grni.pk)
         return self.unbilled_receipt_quantity() > 0
 
     def accrued_unit_cost(self):
@@ -771,6 +996,8 @@ class BillLine(TaxedLineMixin, AuditModel):
         cleared at the billed amount and no variance is computed; tying
         bills to orders is what makes the variance visible.
         """
+        if self.debits_line_id:
+            return self.debits_line.accrued_unit_cost()
         return self.order_line.unit_price if self.order_line_id else self.unit_price
 
     def posting_account(self):
@@ -779,6 +1006,8 @@ class BillLine(TaxedLineMixin, AuditModel):
         received, so the bill clears that accrual rather than expensing the
         cost a second time. Services and non-stocked lines expense directly.
         """
+        if self.debits_line_id and self.debits_line.posted_account_id:
+            return self.debits_line.posted_account
         if self.clears_grni():
             grni = Company.get().grni_account
             if grni is not None:
@@ -876,6 +1105,8 @@ class BillPayment(AuditModel):
                 f"Only {available} of this payment is unallocated; cannot apply {self.amount}."
             )
 
+        # amount_due() already means "refund still owed" on a debit note,
+        # so one ceiling serves both directions.
         outstanding = self.bill.amount_due() + (
             BillPayment.objects.filter(pk=self.pk).first().amount if self.pk else Decimal("0")
         )
@@ -889,12 +1120,52 @@ class BillPayment(AuditModel):
         super().save(*args, **kwargs)
 
 
+def billed_not_held(vendor=None):
+    """
+    Every order line billed for goods the company no longer holds.
+
+    The AP control question after a return: what have we paid for, or
+    agreed to pay for, that went back to the vendor and was never
+    credited? Each row is a debit note waiting to be raised.
+    """
+    lines = PurchaseOrderLine.objects.select_related("order__vendor", "item")
+    if vendor is not None:
+        lines = lines.filter(order__vendor=vendor)
+
+    rows = []
+    for line in lines:
+        gap = line.quantity_billed_not_held()
+        if gap <= 0:
+            continue
+        rows.append({
+            "order": line.order,
+            "vendor": line.order.vendor,
+            "line": line,
+            "item": line.item,
+            "quantity": gap,
+            "value": round_money(gap * (line.unit_price or Decimal("0"))),
+        })
+    return sorted(rows, key=lambda row: -row["value"])
+
+
 def vendor_balance(vendor):
-    """What the company currently owes this vendor across all posted bills."""
+    """
+    Net position with this vendor: what is owed on bills, less cash they
+    owe back on debit notes.
+
+    Signed, so a vendor who has been overpaid reads negative rather than
+    silently as zero.
+    """
     bills = Bill.objects.filter(
         vendor=vendor, posted=True, debits__isnull=True
     ).prefetch_related("lines__taxes", "payment_allocations", "debit_notes__lines__taxes")
-    return sum((bill.amount_due() for bill in bills), Decimal("0"))
+    owed = sum((bill.amount_due() for bill in bills), Decimal("0"))
+
+    notes = Bill.objects.filter(
+        vendor=vendor, posted=True, debits__isnull=False
+    ).prefetch_related("lines__taxes", "payment_allocations", "debits__lines__taxes")
+    refundable = sum((note.refund_due() for note in notes), Decimal("0"))
+    return owed - refundable
 
 
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))

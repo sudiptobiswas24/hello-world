@@ -364,6 +364,43 @@ production / SQLite for local dev by default. Every module builds on the
     agreed price is always fine — a vendor charging less than they
     quoted is not a control failure. `match_report()` lines all three
     documents up per line.
+  - **Purchase price variance**: GRNI only self-clears if it's cleared
+    at what it *accrued*. A receipt accrues at the order price; clearing
+    at the billed price left any difference inside the tolerance sitting
+    on GRNI forever — which is how an account that should net to zero
+    quietly grows a balance nobody can explain. The bill clears the
+    accrual at the received cost and sends the difference to
+    `Company.purchase_price_variance_account`. Variance goes to the P&L
+    rather than revaluing stock: by the time the bill arrives the goods
+    may already be sold, and chasing the difference through a weighted
+    average that has moved on costs more than it's worth. A bill with no
+    receipt behind it expenses instead of touching GRNI — stock is
+    created by receiving it, never by being billed for it.
+  - **Duplicate vendor invoices**: a partial unique constraint on
+    (vendor, reference), with a readable check in front of it. Paying
+    the same invoice because it arrived by post and again by email is
+    the commonest way money leaves an AP department by accident.
+  - **Partial debit notes**: `create_debit_note(quantities={line: qty})`
+    gives back part of a bill, matching Sales' partial credit notes. A
+    line records the account it actually posted to, so the note returns
+    the money where it came from — recomputing would send it elsewhere,
+    since the original bill still counts as billed when the note posts.
+    A note covering every line in full is still linked as a reversal.
+    Debit notes take a bill to zero but never below: beyond that the
+    money has already gone out, so what's left is a `refund_due()` on
+    the note, and `vendor_balance()` reads negative when a vendor has
+    been overpaid.
+  - **Settlement discounts taken**: `take_settlement_discount()` claims
+    the vendor's early-payment terms (Dr payables / Cr discount
+    received). Inert for exactly as long as its Sales twin was — the
+    terms were modelled in the kernel, Sales learned to honour them, and
+    the purchase side didn't, so discounts the company was entitled to
+    went unclaimed every month.
+  - **Billed but not held**: returning goods you've been billed for is
+    legitimate — that's what you do with faulty stock — but it can't be
+    silent. The return isn't blocked (the goods physically went);
+    `billed_not_held()` reports the gap instead, and each row is a debit
+    note waiting to be raised.
   - **Vendor payments**: `BillPayment` allocates an
     `accounting.Payment` disbursement to a bill, mirroring
     `InvoicePayment`. `amount_due()`, `settlement_status()`,
@@ -457,11 +494,7 @@ has that this one still doesn't.
 - **Vendor prepayments and landed cost** are not built. Both have
   working Sales twins (customer deposits, recharged freight) that
   should be mirrored rather than redesigned.
-- **Settlement discounts are sales-only.** `PaymentTerms` models
-  2/10 net 30 and `Invoice.apply_settlement_discount()` honours it;
-  nothing takes the discount on a *vendor* bill, so early-payment
-  discounts the company is entitled to go unclaimed. Same
-  "built and inert" shape the Sales audits kept turning up.
+- ~~Settlement discounts are sales-only~~ — **done**, see Purchasing.
 
 ## Local setup
 

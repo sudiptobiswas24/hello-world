@@ -570,6 +570,11 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a non-stocked purchase lands when its line names no account.",
     )
+    settlement_discount_received_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where early-settlement discounts taken from vendors are booked "
+                  "(income, or a contra-expense).",
+    )
     purchase_price_variance_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where the difference lands when a vendor bills a different price than "
