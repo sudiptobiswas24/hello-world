@@ -16,6 +16,8 @@ from .models import (
     VendorPrice,
     BlanketOrder,
     BlanketOrderLine,
+    PurchaseRequisition,
+    PurchaseRequisitionLine,
 )
 
 
@@ -23,6 +25,21 @@ class PurchaseOrderLineInline(admin.TabularInline):
     model = PurchaseOrderLine
     extra = 1
     filter_horizontal = ("taxes",)
+
+
+class PurchaseRequisitionLineInline(admin.TabularInline):
+    model = PurchaseRequisitionLine
+    extra = 1
+
+
+@admin.register(PurchaseRequisition)
+class PurchaseRequisitionAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "number", "requested_by", "request_date", "needed_by", "status", "estimated_total",
+    )
+    list_filter = ("status",)
+    readonly_fields = ("decided_by", "decided_at", "decision_note")
+    inlines = [PurchaseRequisitionLineInline]
 
 
 class BlanketOrderLineInline(admin.TabularInline):

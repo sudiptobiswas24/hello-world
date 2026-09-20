@@ -1,6 +1,7 @@
 from collections import defaultdict
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
@@ -40,6 +41,11 @@ from apps.accounting.settlement import (
 from apps.inventory.valuation import inventory_account_for, post_inventory_entry
 
 from .pricing import preferred_vendor, resolve_lead_time, resolve_purchase_price
+
+
+def _require_employee_role(party):
+    if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
+        raise ValidationError(f"{party} does not have the Employee role.")
 
 
 def _require_vendor_role(party):
@@ -110,6 +116,214 @@ class VendorPrice(AuditModel):
         if quantity is None:
             return self.min_quantity <= 0
         return Decimal(quantity) >= self.min_quantity
+
+
+class RequisitionStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    SUBMITTED = "submitted", "Submitted"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+    ORDERED = "ordered", "Ordered"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class PurchaseRequisition(AuditModel):
+    """
+    Someone asking for something, before there is a purchase order.
+
+    The gap this fills is a control one, not a convenience one. Approval
+    on the purchase order asks "may we commit this money" at the moment
+    the buyer is already negotiating with a vendor. The question that
+    actually needs answering first is "does the company want this at
+    all", and it needs answering by the person who owns the budget, not
+    by the person who found the supplier.
+
+    It is deliberately not a purchase order in a different state: a
+    requisition names no vendor, carries no agreed price and no
+    commitment, and the answer to it may be "buy it from someone else"
+    or "no".
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    requested_by = models.ForeignKey(
+        Party, on_delete=models.PROTECT, related_name="requisitions",
+        help_text="The employee asking.",
+    )
+    request_date = models.DateField()
+    needed_by = models.DateField(null=True, blank=True)
+    status = models.CharField(
+        max_length=16, choices=RequisitionStatus.choices, default=RequisitionStatus.DRAFT
+    )
+    justification = models.TextField(blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    decided_at = models.DateTimeField(null=True, blank=True, editable=False)
+    decision_note = models.CharField(max_length=255, blank=True, editable=False)
+
+    class Meta:
+        ordering = ["-request_date", "-id"]
+        permissions = [("decide_purchaserequisition", "Can approve or reject requisitions")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_requisition_number"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'REQ-draft-{self.pk}'} for {self.requested_by}"
+
+    def clean(self):
+        _require_employee_role(self.requested_by)
+
+    def estimated_total(self):
+        return sum((line.estimated_value() for line in self.lines.all()), Decimal("0"))
+
+    @transaction.atomic
+    def submit(self):
+        if self.status != RequisitionStatus.DRAFT:
+            raise ValidationError(
+                f"This requisition is already {self.get_status_display().lower()}."
+            )
+        if not self.lines.exists():
+            raise ValidationError("Cannot submit a requisition with no lines.")
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "purchasing.requisition", self.request_date,
+                name="Purchase Requisitions", prefix="REQ-",
+            )
+        self.status = RequisitionStatus.SUBMITTED
+        self.save(update_fields=["number", "status", "updated_at"])
+
+    def _decide(self, status, by, note):
+        if self.status != RequisitionStatus.SUBMITTED:
+            raise ValidationError("Only a submitted requisition can be decided.")
+        self.status = status
+        self.decided_by = by
+        self.decided_at = timezone.now()
+        self.decision_note = note[:255]
+        self.save(update_fields=[
+            "status", "decided_by", "decided_at", "decision_note", "updated_at",
+        ])
+
+    def approve(self, by=None, note=""):
+        self._decide(RequisitionStatus.APPROVED, by, note)
+
+    def reject(self, by=None, note=""):
+        """
+        Rejecting needs a reason. A requisition that comes back with no
+        explanation gets resubmitted unchanged, which wastes everyone's
+        time twice.
+        """
+        if not note:
+            raise ValidationError("Say why the requisition was rejected.")
+        self._decide(RequisitionStatus.REJECTED, by, note)
+
+    def cancel(self):
+        if self.status == RequisitionStatus.ORDERED:
+            raise ValidationError(
+                "This requisition has been ordered. Cancel the purchase order instead."
+            )
+        if self.status == RequisitionStatus.CANCELLED:
+            raise ValidationError("This requisition is already cancelled.")
+        self.status = RequisitionStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+
+    def suggested_vendors(self):
+        """Who each line could be bought from, from the agreed prices."""
+        return {
+            line: line.suggested_vendor or preferred_vendor(line.item, self.request_date)
+            for line in self.lines.all()
+        }
+
+    @transaction.atomic
+    def create_order(self, vendor, order_date=None, lines=None):
+        """
+        Turn the approved request into an order with a chosen vendor.
+
+        Only approved requisitions convert, and only lines not already
+        ordered: a requisition may legitimately be split across vendors,
+        which is exactly why the vendor is not chosen when the request is
+        made.
+        """
+        if self.status not in (RequisitionStatus.APPROVED, RequisitionStatus.ORDERED):
+            raise ValidationError("Only an approved requisition can be ordered.")
+        _require_vendor_role(vendor)
+
+        selected = [
+            line for line in (lines if lines is not None else self.lines.all())
+            if line.quantity_ordered() < line.quantity
+        ]
+        if not selected:
+            raise ValidationError("Every line on this requisition has already been ordered.")
+
+        order = PurchaseOrder.objects.create(
+            vendor=vendor,
+            order_date=to_date(order_date) or timezone.now().date(),
+            reference=self.number,
+        )
+        for line in selected:
+            remaining = line.quantity - line.quantity_ordered()
+            PurchaseOrderLine.objects.create(
+                order=order, requisition_line=line, item=line.item, uom=line.uom,
+                quantity=remaining,
+                unit_price=resolve_purchase_price(
+                    line.item, vendor, quantity=remaining,
+                    currency=order.currency, on_date=order.order_date,
+                ) or line.estimated_price,
+                expected_date=self.needed_by,
+            )
+
+        if all(
+            line.quantity_ordered() >= line.quantity for line in self.lines.all()
+        ):
+            self.status = RequisitionStatus.ORDERED
+            self.save(update_fields=["status", "updated_at"])
+        return order
+
+
+class PurchaseRequisitionLine(AuditModel):
+    requisition = models.ForeignKey(
+        PurchaseRequisition, related_name="lines", on_delete=models.CASCADE
+    )
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="requisition_lines")
+    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    quantity = models.DecimalField(max_digits=18, decimal_places=4)
+    estimated_price = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="What the requester thinks it costs — an estimate, not an agreed price.",
+    )
+    suggested_vendor = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Who the requester had in mind, if anyone. Not binding.",
+    )
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="requisition_line_quantity_positive"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.item} x{self.quantity}"
+
+    def estimated_value(self):
+        price = self.estimated_price
+        if price is None and self.suggested_vendor_id:
+            price = resolve_purchase_price(
+                self.item, self.suggested_vendor, quantity=self.quantity
+            )
+        return round_money(self.quantity * (price or Decimal("0")))
+
+    def quantity_ordered(self):
+        """How much of this request has become a real order, net of cancellations."""
+        return self.order_lines.exclude(
+            order__status=OrderStatus.CANCELLED
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
 
 
 class BlanketStatus(models.TextChoices):
@@ -636,6 +850,12 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     description = models.CharField(max_length=255, blank=True)
     uom = models.ForeignKey(
         UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    requisition_line = models.ForeignKey(
+        "PurchaseRequisitionLine", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="order_lines",
+        help_text="Set when this line fulfils a requisition, so the request can be "
+                  "traced from ask to receipt.",
     )
     blanket_line = models.ForeignKey(
         "BlanketOrderLine", null=True, blank=True, on_delete=models.PROTECT,

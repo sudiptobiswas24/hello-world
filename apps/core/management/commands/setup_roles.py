@@ -110,6 +110,8 @@ ROLES = {
         *crud("core", "partybankaccount", actions=("add", "change", "view")),
         *crud("core", "paymentterms", actions=("view",)),
         *crud("purchasing", "vendorprice", actions=("view",)),
+        *crud("purchasing", "purchaserequisition", actions=("change", "view")),
+        *crud("purchasing", "purchaserequisitionline", actions=("view",)),
         *crud("purchasing", "blanketorder"),
         *crud("purchasing", "blanketorderline"),
         *crud("purchasing", "purchaseapprovalpolicy", actions=("view",)),
@@ -126,6 +128,9 @@ ROLES = {
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
         *crud("purchasing", "vendorprice"),
+        *crud("purchasing", "purchaserequisition"),
+        *crud("purchasing", "purchaserequisitionline"),
+        "purchasing.decide_purchaserequisition",
         *crud("purchasing", "blanketorder"),
         *crud("purchasing", "blanketorderline"),
         *crud("purchasing", "purchaseapprovalpolicy"),
@@ -154,6 +159,10 @@ ROLES = {
         "hr.decide_leaverequest",
     ],
     "Employee Self Service": [
+        *crud("purchasing", "purchaserequisition", actions=("add", "change", "view")),
+        *crud("purchasing", "purchaserequisitionline", actions=("add", "change", "view")),
+        # deliberately NOT decide_purchaserequisition: nobody approves
+        # their own request.
         *crud("hr", "leaverequest", actions=("add", "view")),
         # deliberately NOT hr.decide_leaverequest
     ],
