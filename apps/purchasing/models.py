@@ -2459,6 +2459,107 @@ class BillPayment(AuditModel):
         super().delete(*args, **kwargs)
 
 
+def _receipt_dates(order_line):
+    """[(receipt_date, quantity)] for real receipts, returns excluded."""
+    return [
+        (to_date(line.receipt.receipt_date), line.quantity_received)
+        for line in order_line.receipt_lines.filter(
+            receipt__posted=True, receipt__reverses__isnull=True
+        ).select_related("receipt")
+    ]
+
+
+def vendor_performance(start=None, end=None, vendor=None):
+    """
+    How each vendor actually behaved: on time, in full, at the agreed
+    price.
+
+    Every input already existed — receipt dates against expected dates,
+    received against ordered, billed price against ordered price. Nobody
+    had put them together, which meant the only way to know a vendor was
+    consistently late was to have noticed.
+
+    On-time is measured per receipt against the line's expected date,
+    weighted by quantity, so one late pallet out of ten does not read the
+    same as ten late pallets. Lines with no expected date are left out of
+    the on-time figure rather than counted as on time — a vendor who was
+    never given a date cannot be late, and scoring them as punctual would
+    flatter them.
+    """
+    start, end = to_date(start), to_date(end)
+    lines = PurchaseOrderLine.objects.select_related("order__vendor", "item").exclude(
+        order__status=OrderStatus.CANCELLED
+    ).filter(charge__isnull=True)
+    if vendor is not None:
+        lines = lines.filter(order__vendor=vendor)
+    if start:
+        lines = lines.filter(order__order_date__gte=start)
+    if end:
+        lines = lines.filter(order__order_date__lte=end)
+
+    rows = {}
+    for line in lines:
+        party = line.order.vendor
+        row = rows.setdefault(party.pk, {
+            "vendor": party,
+            "order_lines": 0,
+            "quantity_ordered": Decimal("0"),
+            "quantity_received": Decimal("0"),
+            "dated_quantity": Decimal("0"),
+            "on_time_quantity": Decimal("0"),
+            "late_days_weighted": Decimal("0"),
+            "price_variance": Decimal("0"),
+            "open_lines": 0,
+        })
+        row["order_lines"] += 1
+        row["quantity_ordered"] += line.quantity
+        received = line.quantity_received()
+        row["quantity_received"] += received
+        if received < line.quantity:
+            row["open_lines"] += 1
+
+        if line.expected_date:
+            for receipt_date, quantity in _receipt_dates(line):
+                row["dated_quantity"] += quantity
+                late = (receipt_date - to_date(line.expected_date)).days
+                if late <= 0:
+                    row["on_time_quantity"] += quantity
+                else:
+                    row["late_days_weighted"] += Decimal(late) * quantity
+
+        for bill_line in line.bill_lines.filter(
+            bill__posted=True, bill__debits__isnull=True
+        ):
+            row["price_variance"] += round_money(
+                (bill_line.unit_price - (line.unit_price or Decimal("0")))
+                * bill_line.quantity
+            )
+
+    results = []
+    for row in rows.values():
+        dated = row.pop("dated_quantity")
+        on_time = row.pop("on_time_quantity")
+        late_weighted = row.pop("late_days_weighted")
+        ordered = row["quantity_ordered"]
+        results.append({
+            **row,
+            # None rather than 100%: a vendor never given a date cannot be
+            # late, and scoring them punctual would flatter them.
+            "on_time_rate": (
+                round_money(on_time / dated * Decimal("100")) if dated else None
+            ),
+            "average_days_late": (
+                round_money(late_weighted / (dated - on_time))
+                if dated - on_time > 0 else Decimal("0")
+            ),
+            "fill_rate": (
+                round_money(row["quantity_received"] / ordered * Decimal("100"))
+                if ordered else None
+            ),
+        })
+    return sorted(results, key=lambda row: -row["quantity_ordered"])
+
+
 def billed_not_held(vendor=None):
     """
     Every order line billed for goods the company no longer holds.
