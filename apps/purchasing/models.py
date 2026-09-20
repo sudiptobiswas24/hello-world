@@ -12,6 +12,8 @@ from apps.accounting.models import (
     Account,
     JournalEntry,
     JournalLine,
+    Payment,
+    PaymentDirection,
     Tax,
     round_money,
 )
@@ -39,6 +41,13 @@ class FulfilmentStatus(models.TextChoices):
     NONE = "none", "None"
     PARTIAL = "partial", "Partial"
     FULL = "full", "Full"
+
+
+class SettlementStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    UNPAID = "unpaid", "Unpaid"
+    PARTIAL = "partial", "Partially paid"
+    PAID = "paid", "Paid"
 
 
 class BillPolicy(models.TextChoices):
@@ -353,6 +362,39 @@ class Bill(TaxedDocumentMixin, AuditModel):
         if self.debits_id and self.debits.vendor_id != self.vendor_id:
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
 
+    def amount_paid(self):
+        return sum(
+            (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
+        )
+
+    def amount_debited(self):
+        """Value of posted debit notes issued against this bill."""
+        return sum(
+            (note.total() for note in self.debit_notes.filter(posted=True)), Decimal("0")
+        )
+
+    def amount_due(self):
+        return self.total() - self.amount_paid() - self.amount_debited()
+
+    def settlement_status(self):
+        if not self.posted:
+            return SettlementStatus.DRAFT
+        if self.amount_due() <= 0:
+            return SettlementStatus.PAID
+        if self.amount_paid() or self.amount_debited():
+            return SettlementStatus.PARTIAL
+        return SettlementStatus.UNPAID
+
+    def is_overdue(self, as_of=None):
+        if not self.posted or not self.due_date or self.amount_due() <= 0:
+            return False
+        return self.due_date < (to_date(as_of) or timezone.now().date())
+
+    def days_overdue(self, as_of=None):
+        if not self.is_overdue(as_of):
+            return 0
+        return ((to_date(as_of) or timezone.now().date()) - self.due_date).days
+
     def _was_posted_in_db(self):
         if not self.pk:
             return False
@@ -620,6 +662,177 @@ class BillLine(TaxedLineMixin, AuditModel):
                 "Cannot delete a line on a posted bill. Issue a debit note instead."
             )
         super().delete(*args, **kwargs)
+
+
+class BillPayment(AuditModel):
+    """
+    Applies part (or all) of a Payment to a Bill — the mirror of Sales'
+    InvoicePayment.
+
+    The ledger entry was already made when the payment posted; this
+    records *which* bills that money settles, which is what makes an AP
+    aging report and a payment run possible. Accounting owns Payment and
+    may not import Purchasing, so the allocation lives on this side
+    pointing back.
+    """
+
+    bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name="payment_allocations")
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="bill_allocations")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["bill", "payment"], name="one_allocation_per_bill_and_payment"
+            ),
+            models.CheckConstraint(
+                check=Q(amount__gt=0), name="bill_allocation_amount_positive"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.payment} -> {self.bill} ({self.amount})"
+
+    @staticmethod
+    def allocated_for(payment, excluding=None):
+        allocations = BillPayment.objects.filter(payment=payment)
+        if excluding is not None and excluding.pk:
+            allocations = allocations.exclude(pk=excluding.pk)
+        return allocations.aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
+
+    @staticmethod
+    def unallocated_for(payment):
+        return payment.amount - BillPayment.allocated_for(payment)
+
+    def clean(self):
+        if not self.payment_id or not self.bill_id:
+            return
+        if not self.payment.posted:
+            raise ValidationError("Only a posted payment can be allocated.")
+        if not self.bill.posted:
+            raise ValidationError("Only a posted bill can be settled.")
+        # A debit note is money owed back *to* the company, so it is
+        # settled by the vendor paying up — a receipt, never another
+        # disbursement.
+        if self.bill.is_debit_note():
+            if self.payment.direction != PaymentDirection.RECEIPT:
+                raise ValidationError(
+                    "A debit note is refunded by the vendor with a receipt, not a payment."
+                )
+        elif self.payment.direction != PaymentDirection.DISBURSEMENT:
+            raise ValidationError("Only a disbursement can settle a vendor bill.")
+        if self.payment.party_id != self.bill.vendor_id:
+            raise ValidationError("The payment and the bill belong to different parties.")
+        # Settling across currencies would need FX gain/loss postings that
+        # don't exist yet; treating 100 USD as 100 EUR silently writes off
+        # the difference, so refuse rather than guess.
+        if self.payment.currency_id != self.bill.currency_id:
+            raise ValidationError(
+                f"The payment is in {self.payment.currency or 'no currency'} but the bill "
+                f"is in {self.bill.currency or 'no currency'}; cross-currency settlement "
+                "is not supported."
+            )
+
+        available = self.payment.amount - BillPayment.allocated_for(self.payment, excluding=self)
+        if self.amount > available:
+            raise ValidationError(
+                f"Only {available} of this payment is unallocated; cannot apply {self.amount}."
+            )
+
+        outstanding = self.bill.amount_due() + (
+            BillPayment.objects.filter(pk=self.pk).first().amount if self.pk else Decimal("0")
+        )
+        if self.amount > outstanding:
+            raise ValidationError(
+                f"The bill only has {outstanding} outstanding; cannot apply {self.amount}."
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+def vendor_balance(vendor):
+    """What the company currently owes this vendor across all posted bills."""
+    bills = Bill.objects.filter(
+        vendor=vendor, posted=True, debits__isnull=True
+    ).prefetch_related("lines__taxes", "payment_allocations", "debit_notes__lines__taxes")
+    return sum((bill.amount_due() for bill in bills), Decimal("0"))
+
+
+AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
+
+
+def ap_aging(as_of=None):
+    """
+    Outstanding vendor bills bucketed by how overdue they are — the mirror
+    of ar_aging(), and the thing a company looks at before deciding what
+    it can afford to pay this week.
+    """
+    as_of = to_date(as_of) or timezone.now().date()
+    buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
+
+    bills = Bill.objects.filter(posted=True, debits__isnull=True).prefetch_related(
+        "lines__taxes", "payment_allocations", "debit_notes__lines__taxes"
+    )
+    for bill in bills:
+        due = bill.amount_due()
+        if due <= 0:
+            continue
+        days = bill.days_overdue(as_of)
+        if days == 0:
+            key = "current"
+        elif days > 90:
+            key = "90+"
+        else:
+            key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
+        buckets[key].append({"bill": bill, "days_overdue": days, "amount_due": due})
+
+    return {
+        key: {
+            "count": len(entries),
+            "total": sum((entry["amount_due"] for entry in entries), Decimal("0")),
+            "bills": entries,
+        }
+        for key, entries in buckets.items()
+    }
+
+
+def payment_run(due_by=None, vendor=None):
+    """
+    What is payable by a date, grouped by vendor.
+
+    The AP counterpart of dunning: rather than chasing money in, it says
+    what has to go out and by when, so a payment batch is a decision
+    someone makes from a list rather than from whichever bill happens to
+    be on top of the pile.
+    """
+    due_by = to_date(due_by) or timezone.now().date()
+    bills = Bill.objects.filter(posted=True, debits__isnull=True).select_related(
+        "vendor", "currency"
+    ).prefetch_related("lines__taxes", "payment_allocations", "debit_notes__lines__taxes")
+    if vendor is not None:
+        bills = bills.filter(vendor=vendor)
+
+    rows = {}
+    for bill in bills:
+        due = bill.amount_due()
+        if due <= 0 or not bill.due_date or bill.due_date > due_by:
+            continue
+        # Bills in different currencies cannot be added together, so a
+        # vendor billed in two currencies gets a row for each.
+        key = (bill.vendor_id, bill.currency_id)
+        row = rows.setdefault(key, {
+            "vendor": bill.vendor, "currency": bill.currency,
+            "total": Decimal("0"), "bills": [],
+        })
+        row["total"] += due
+        row["bills"].append({
+            "bill": bill, "due_date": bill.due_date, "amount_due": due,
+            "days_overdue": bill.days_overdue(due_by),
+        })
+    return sorted(rows.values(), key=lambda row: -row["total"])
 
 
 class GoodsReceipt(AuditModel):

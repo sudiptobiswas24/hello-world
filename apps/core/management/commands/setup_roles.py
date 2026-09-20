@@ -100,14 +100,19 @@ ROLES = {
         *crud("core", "contact", actions=("add", "change", "view")),
         *crud("core", "partybankaccount", actions=("add", "change", "view")),
         *crud("core", "paymentterms", actions=("view",)),
-        # deliberately NOT purchasing.post_bill
+        *crud("purchasing", "billpayment", actions=("view",)),
+        # deliberately NOT purchasing.post_bill, and no payment allocation:
+        # whoever raises the bill must not also be able to pay it.
     ],
     "AP Manager": [
         *crud("purchasing", "purchaseorder"),
         *crud("purchasing", "purchaseorderline"),
         *crud("purchasing", "bill"),
         *crud("purchasing", "billline"),
+        *crud("purchasing", "billpayment"),
+        *crud("accounting", "payment"),
         "purchasing.post_bill",
+        "accounting.post_payment",
     ],
     "Warehouse Staff": [
         *crud("inventory", "warehouse", actions=("view",)),

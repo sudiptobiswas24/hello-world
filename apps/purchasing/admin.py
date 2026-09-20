@@ -3,7 +3,15 @@ from django.contrib import admin
 from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
 from apps.core.audit import AuditableAdminMixin
 
-from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
+from .models import (
+    Bill,
+    BillLine,
+    BillPayment,
+    GoodsReceipt,
+    GoodsReceiptLine,
+    PurchaseOrder,
+    PurchaseOrderLine,
+)
 
 
 class PurchaseOrderLineInline(admin.TabularInline):
@@ -25,12 +33,20 @@ class BillLineInline(PostedImmutableInlineMixin, admin.TabularInline):
     filter_horizontal = ("taxes",)
 
 
+class BillPaymentInline(admin.TabularInline):
+    model = BillPayment
+    extra = 0
+
+
 @admin.register(Bill)
 class BillAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("number", "vendor", "bill_date", "due_date", "posted", "debits")
+    list_display = (
+        "number", "vendor", "bill_date", "due_date", "posted",
+        "settlement_status", "debits",
+    )
     list_filter = ("posted",)
     readonly_fields = ("number", "due_date", "exchange_rate", "posted", "posted_at", "journal_entry")
-    inlines = [BillLineInline]
+    inlines = [BillLineInline, BillPaymentInline]
 
 
 class GoodsReceiptLineInline(PostedImmutableInlineMixin, admin.TabularInline):

@@ -54,8 +54,12 @@ production / SQLite for local dev by default. Every module builds on the
   per customer (zero-rated exports, reverse charge), and
   `PartyTaxProfile` attaches that plus outright exemption to a
   `core.Party` — again from the Accounting side, so Core stays
-  independent. Sales consumes all of this; Purchasing bills are still
-  untaxed until that module's pass.
+  independent. Both Sales and Purchasing consume all of this.
+  `mixins.py` holds `TaxedLineMixin`/`TaxedDocumentMixin` — the line
+  arithmetic both trading modules need. They live here because neither
+  may import the other, and a second implementation is how the two
+  sides drift into taxing differently on the way in and on the way
+  out.
   Also here: `Payment` — money actually moving, posted as Dr Bank / Cr
   Receivable (or the reverse for a disbursement), numbered from a
   sequence, immutable once posted and corrected by voiding. It is
@@ -318,23 +322,56 @@ production / SQLite for local dev by default. Every module builds on the
 - **`apps/purchasing`** — mirrors Sales for the payables side.
   `PurchaseOrder`/`PurchaseOrderLine`, `Bill`/`BillLine`. Vendors are
   `Party` records with the `VENDOR` role. Posting a bill builds a
-  balanced `JournalEntry` (Dr Expense per line / Cr Accounts Payable).
-  Corrections go through `Bill.create_debit_note()`, same
-  immutable-then-reverse pattern as Sales' credit notes — deliberately
-  not a third, different correction mechanism.
-  **Receiving is now wired up**: `GoodsReceipt`/`GoodsReceiptLine` post
-  real `StockMovement` rows against a `PurchaseOrderLine`, enforce that
-  received quantity (net of returns) never exceeds ordered quantity,
-  and track partial receipts across multiple deliveries
-  (`PurchaseOrderLine.quantity_received()`). Same posted/immutable
-  pattern as everything else; a bad receipt is corrected with
-  `GoodsReceipt.create_return()` — a whole-receipt reversal that
-  creates offsetting `StockMovement` rows, not an edit.
-  What's still missing: **Bill doesn't reference `GoodsReceipt`**, so
-  there's no check that a vendor bill matches what was actually
-  received (the "3" in three-way match). That needs `BillLine` to gain
-  a link to `PurchaseOrderLine`/`GoodsReceiptLine`, which is a real
-  schema change to the already-shipped Bill model — flagged, not done.
+  balanced `JournalEntry` (Dr Expense or GRNI per line / Dr input tax /
+  Cr Accounts Payable). Corrections go through
+  `Bill.create_debit_note()`, same immutable-then-reverse pattern as
+  Sales' credit notes — deliberately not a third, different correction
+  mechanism.
+  - **Receiving**: `GoodsReceipt`/`GoodsReceiptLine` post real
+    `StockMovement` rows against a `PurchaseOrderLine`, enforce that
+    received quantity (net of returns) never exceeds ordered quantity,
+    and track partial receipts across deliveries. A bad receipt is
+    corrected with `GoodsReceipt.create_return()` — a whole-receipt
+    reversal, not an edit.
+  - **Order lifecycle**: orders confirm and cancel. Goods cannot be
+    received against an order that isn't confirmed, because receiving
+    books real stock and a GRNI liability for goods nobody agreed to
+    buy. Returns stay allowed against a cancelled order — calling the
+    order off is exactly when the goods go back.
+  - **Numbering**: `PO-`, `BILL-`, `DN-`, `GRN-` and `PRTN-` all draw
+    from `DocumentSequence`, behind the same partial unique constraint
+    Sales uses so drafts (all carrying an empty number) can coexist.
+    Before this every document identified itself by primary key, which
+    is not a document number: not sequential per year, leaks the size
+    of the table, and a vendor can't quote it back at you.
+  - **Tax on the way in**: bill and order lines carry taxes and
+    discounts through `TaxedLineMixin`, which now lives in
+    `apps/accounting` so both trading modules share one implementation.
+    Input tax is debited to the tax's `paid_account` — VAT paid to a
+    vendor is a *recoverable asset*, not a cost, and burying it in the
+    expense both overstates costs and loses the reclaim. Vendor fiscal
+    positions work, so a reverse-charge vendor carries no input tax.
+  - **Three-way match**: `BillLine.order_line` links a bill back to what
+    was ordered, so `quantity_billed()`/`quantity_billable()` draw down
+    exactly as Sales' invoicing does. `PurchaseOrder.bill_policy`
+    defaults to **RECEIVED** where Sales' equivalent defaults to
+    ORDERED — a deliberate asymmetry: billing a customer early is a
+    relationship risk a company may choose to take, but paying a vendor
+    early is its own money leaving for goods it doesn't have. Posting
+    checks quantity against the order, quantity against the receipt,
+    and price against the order within
+    `Company.purchase_price_tolerance_percent`. Billing *below* the
+    agreed price is always fine — a vendor charging less than they
+    quoted is not a control failure. `match_report()` lines all three
+    documents up per line.
+  - **Vendor payments**: `BillPayment` allocates an
+    `accounting.Payment` disbursement to a bill, mirroring
+    `InvoicePayment`. `amount_due()`, `settlement_status()`,
+    `vendor_balance()` and `ap_aging()` follow. `payment_run()` is the
+    AP counterpart of dunning — what must go out and by when, grouped
+    per vendor *and currency*, since bills in different currencies
+    cannot be added together. Whoever raises a bill cannot also settle
+    it: Purchasing Clerk sees allocations, AP Manager makes them.
 
 - **`apps/hr`** — `Department`, `Employee` (backed by a `Party` with the
   `EMPLOYEE` role, same reuse pattern as customers/vendors),
@@ -392,16 +429,15 @@ has that this one still doesn't.
   unit and rounding precision per unit; here `category` is still a
   plain choice field. Changing it touches `Item`, so it's its own pass.
 - ~~Tax configuration~~ — **done**, built in `apps/accounting` rather
-  than Core (see above). Sales consumes it; **Purchasing bills are
-  still untaxed** until that module's pass.
+  than Core (see above). Both Sales and Purchasing consume it.
 - **Chatter / activities / attachments** — the message thread,
   follower list, scheduled activities and file attachments Odoo puts on
   every record. `AuditModel` records who and when, but there's no
   discussion or document trail.
 - **Multi-company** — deliberately single-company; see below.
-- ~~Number sequence coverage~~ — Sales now uses `DocumentSequence`
-  (`SO-`/`INV-`/`CN-`). Purchasing and Inventory documents still carry
-  hand-typed references.
+- ~~Number sequence coverage~~ — Sales and Purchasing both use
+  `DocumentSequence` now. Inventory's own documents (transfers,
+  adjustments) still carry hand-typed references.
 
 ## Known gaps (not yet addressed)
 
@@ -416,9 +452,16 @@ has that this one still doesn't.
   This is the prerequisite for object-level permissions.
 - **Payroll** is not built. Employee compensation, pay runs, and the
   resulting ledger postings are a separate design effort.
-- **Bill ↔ GoodsReceipt three-way match** is not wired up (see
-  Purchasing above) — a bill can currently be posted for more or less
-  than was actually received.
+- ~~Bill ↔ GoodsReceipt three-way match~~ — **done**, see Purchasing
+  above.
+- **Vendor prepayments and landed cost** are not built. Both have
+  working Sales twins (customer deposits, recharged freight) that
+  should be mirrored rather than redesigned.
+- **Settlement discounts are sales-only.** `PaymentTerms` models
+  2/10 net 30 and `Invoice.apply_settlement_discount()` honours it;
+  nothing takes the discount on a *vendor* bill, so early-payment
+  discounts the company is entitled to go unclaimed. Same
+  "built and inert" shape the Sales audits kept turning up.
 
 ## Local setup
 
