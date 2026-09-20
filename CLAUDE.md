@@ -99,4 +99,4 @@ would have been retrofitted. **Sort by what the next thing needs.**
 `.claude/skills/audit/SKILL.md` holds the defect shapes three audits
 found, and `python manage.py audit_invariants` checks the mechanical
 half. Run both before calling a module done. The suite passing means
-nothing — all 26 defects found so far were found with a green suite.
+nothing — all 29 defects found so far were found with a green suite.
