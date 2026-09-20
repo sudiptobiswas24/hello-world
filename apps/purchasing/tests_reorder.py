@@ -43,7 +43,7 @@ class ReorderTestCase(PurchasingLifecycleTestCase):
     def stock(self, quantity, warehouse=None):
         StockMovement.objects.create(
             item=self.item, warehouse=warehouse or self.warehouse,
-            movement_type=MovementType.RECEIPT, quantity=Decimal(quantity),
+            movement_type=MovementType.RECEIPT, uom=self.item.uom, quantity=Decimal(quantity),
             unit_cost=Decimal("4"), occurred_at=timezone.now(),
         )
 

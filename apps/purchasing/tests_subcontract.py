@@ -46,7 +46,7 @@ class SubcontractTestCase(PurchasingLifecycleTestCase):
     def stock(self, item, quantity, cost, warehouse=None):
         StockMovement.objects.create(
             item=item, warehouse=warehouse or self.warehouse,
-            movement_type=MovementType.RECEIPT, quantity=Decimal(quantity),
+            movement_type=MovementType.RECEIPT, uom=item.uom, quantity=Decimal(quantity),
             unit_cost=Decimal(cost), occurred_at=timezone.now(),
         )
 

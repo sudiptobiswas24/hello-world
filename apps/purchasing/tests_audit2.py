@@ -181,7 +181,7 @@ class SubcontractReturnTests(PurchasingLifecycleTestCase):
 
         StockMovement.objects.create(
             item=self.component, warehouse=self.warehouse,
-            movement_type=MovementType.RECEIPT, quantity=Decimal("100"),
+            movement_type=MovementType.RECEIPT, uom=self.component.uom, quantity=Decimal("100"),
             unit_cost=Decimal("10"), occurred_at=timezone.now(),
         )
 

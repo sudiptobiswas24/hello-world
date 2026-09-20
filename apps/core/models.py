@@ -186,6 +186,14 @@ class UnitOfMeasure(AuditModel):
 
     class Meta:
         ordering = ["code"]
+        constraints = [
+            # A zero or negative factor makes every conversion through this
+            # unit either a division by zero or a sign flip, and there is no
+            # sensible reading of "one case is zero eaches".
+            models.CheckConstraint(
+                check=Q(conversion_factor__gt=0), name="uom_conversion_factor_positive"
+            ),
+        ]
 
     def __str__(self):
         return self.code
@@ -201,6 +209,63 @@ class UnitOfMeasure(AuditModel):
         if not self.base_unit_id:
             return quantity
         return quantity * self.conversion_factor
+
+    def root(self):
+        """
+        The unit at the bottom of this one's chain — the one everything in
+        its category is ultimately counted in.
+
+        Two units are comparable exactly when they share a root, which is
+        the only question anyone actually asks. Category alone is not
+        enough: two unrelated weight chains are both weights and still
+        have no factor between them.
+        """
+        unit = self
+        seen = {self.pk}
+        while unit.base_unit_id:
+            if unit.base_unit_id in seen:
+                raise ValidationError(
+                    f"Unit {unit} is defined in terms of itself, so no quantity "
+                    "in it can be converted."
+                )
+            seen.add(unit.base_unit_id)
+            unit = unit.base_unit
+        return unit
+
+    def factor_to_root(self):
+        """How many root units one of this unit is worth."""
+        factor = Decimal("1")
+        unit = self
+        seen = {self.pk}
+        while unit.base_unit_id:
+            if unit.base_unit_id in seen:
+                raise ValidationError(
+                    f"Unit {unit} is defined in terms of itself, so no quantity "
+                    "in it can be converted."
+                )
+            seen.add(unit.base_unit_id)
+            factor *= unit.conversion_factor
+            unit = unit.base_unit
+        return factor
+
+    def convert_to(self, quantity, target):
+        """
+        Restate a quantity in another unit of the same chain.
+
+        Refuses rather than guesses when the two do not share a root. A
+        widget counted in eaches cannot be ordered by the kilogram, and
+        silently treating 10 kg as 10 eaches is how a stock ledger starts
+        disagreeing with the shelf.
+        """
+        if target is None or target.pk == self.pk:
+            return quantity
+        mine, theirs = self.root(), target.root()
+        if mine.pk != theirs.pk:
+            raise ValidationError(
+                f"Cannot convert {self} to {target}: they are not the same kind of "
+                f"measure ({self} is counted in {mine}, {target} in {theirs})."
+            )
+        return quantity * self.factor_to_root() / target.factor_to_root()
 
 
 class PartyTag(TimeStampedModel):

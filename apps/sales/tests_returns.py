@@ -65,6 +65,7 @@ class ReturnsTestCase(TestCase):
 
         StockMovement.objects.create(
             item=self.item, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+            uom=self.item.uom,
             quantity=Decimal(quantity), unit_cost=Decimal(unit_cost),
             occurred_at=timezone.now(),
         )

@@ -81,6 +81,7 @@ class LifecycleTestCase(TestCase):
     def stock_up(self, quantity="100"):
         StockMovement.objects.create(
             item=self.item, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+            uom=self.item.uom,
             quantity=Decimal(quantity), unit_cost=Decimal("4"), occurred_at=timezone.now(),
         )
 

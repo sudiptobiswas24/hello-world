@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Sum
 
@@ -121,10 +122,6 @@ class Item(AuditModel):
             return Decimal("0")
         return (value / quantity).quantize(Decimal("0.0001"))
 
-    def is_consigned_at(self, warehouse):
-        """Physically here, owned by the vendor until drawn."""
-        return warehouse.consignment_vendor_id is not None
-
     def available_at(self, warehouse):
         """
         On hand and shippable. Quarantined stock is neither missing nor
@@ -148,6 +145,31 @@ class Item(AuditModel):
     def stock_value_at(self, warehouse):
         return self._replay_valuation(warehouse)[1].quantize(Decimal("0.01"))
 
+    def to_stock_quantity(self, quantity, uom):
+        """
+        Restate a document quantity in this item's stocking unit.
+
+        The ledger counts in one unit and one only. Ten cases and a
+        hundred and twenty eaches are the same stock, and a ledger that
+        holds both numbers as written can answer neither question.
+        """
+        if uom is None:
+            return quantity
+        return uom.convert_to(quantity, self.uom)
+
+    def check_uom(self, uom):
+        """
+        Refuse a unit this item cannot be counted in, at the point someone
+        types it rather than at the point stock moves.
+
+        By the time a goods receipt posts, the order is confirmed and the
+        goods are on the dock; the answer was knowable when the line was
+        written.
+        """
+        if uom is None or uom.pk == self.uom_id:
+            return
+        uom.convert_to(Decimal("1"), self.uom)
+
 
 class MovementType(models.TextChoices):
     RECEIPT = "receipt", "Receipt"
@@ -167,10 +189,22 @@ class StockMovement(AuditModel):
     item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="movements")
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="movements")
     movement_type = models.CharField(max_length=16, choices=MovementType.choices)
+    uom = models.ForeignKey(
+        UnitOfMeasure, on_delete=models.PROTECT, related_name="+",
+        help_text="The unit the document spoke in. Required on write; the quantity "
+                  "stored alongside it has already been restated in the item's "
+                  "stocking unit, so the ledger only ever counts in one unit.",
+    )
+    document_quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="The quantity as the document wrote it, in `uom`. Kept so a "
+                  "movement can be read back against the paperwork that caused it.",
+    )
     quantity = models.DecimalField(
         max_digits=18,
         decimal_places=4,
-        help_text="Positive for inbound movements (receipt, transfer_in), negative for outbound.",
+        help_text="In the item's stocking unit. Positive for inbound movements "
+                  "(receipt, transfer_in), negative for outbound.",
     )
     unit_cost = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
@@ -191,3 +225,66 @@ class StockMovement(AuditModel):
 
     def __str__(self):
         return f"{self.movement_type} {self.quantity} {self.item.sku} @ {self.warehouse.code}"
+
+    def save(self, *args, **kwargs):
+        """
+        Restate the movement in the item's stocking unit, here and nowhere
+        else.
+
+        `uom` is the unit that BOTH `quantity` and `unit_cost` are given
+        in, and it is required on write. Every caller therefore answers
+        one question — what unit are my numbers in? — and a caller already
+        working in stocking units answers by naming the item's own unit
+        rather than by staying silent and being guessed at. A goods
+        receipt answers with the order line's unit, because its cost is
+        the agreed price per that unit. A delivery answers with the
+        stocking unit, because its cost is the weighted average, which is
+        a fact this ledger holds per stocking unit.
+
+        Eleven places across purchasing and sales write here. Converting
+        at each would be eleven conversions and the twelfth would be
+        written without one — the same argument that puts the period lock
+        inside JournalEntry.post().
+
+        Total value is held fixed rather than the unit cost being divided
+        by the factor. Ten cases at 60 is 600, and 600 over 120 eaches is
+        exactly 5; dividing 60 by 12 agrees here and would not for a
+        factor that does not divide the price evenly.
+        """
+        if self._state.adding:
+            if self.uom_id is None:
+                raise ValidationError(
+                    f"A stock movement for {self.item} must say which unit its "
+                    "quantity is in, even when that is the item's own."
+                )
+            if self.document_quantity is None:
+                self.document_quantity = self.quantity
+            if self.uom_id != self.item.uom_id:
+                gross = self.quantity * (self.unit_cost or Decimal("0"))
+                self.quantity = self.item.to_stock_quantity(
+                    self.quantity, self.uom
+                ).quantize(Decimal("0.0001"))
+                if self.unit_cost is not None:
+                    self.unit_cost = (
+                        (gross / self.quantity).quantize(Decimal("0.0001"))
+                        if self.quantity
+                        else Decimal("0")
+                    )
+                    # A hundred cases at 7 is 700, and 700 over 1200 eaches
+                    # is 0.58333... A unit cost has four decimal places, so
+                    # quantity times cost comes back four cents short and
+                    # the stock ledger drifts from the bill the GL posted.
+                    # The residue is value with no quantity attached, which
+                    # is what value_adjustment already means — and it is
+                    # only inbound that unit_cost sets the value at all:
+                    # going out, the replay uses the running average and
+                    # ignores the cost entirely.
+                    if self.quantity > 0:
+                        residue = (gross - self.quantity * self.unit_cost).quantize(
+                            Decimal("0.01")
+                        )
+                        if residue:
+                            self.value_adjustment = (
+                                self.value_adjustment or Decimal("0")
+                            ) + residue
+        super().save(*args, **kwargs)

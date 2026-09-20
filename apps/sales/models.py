@@ -592,6 +592,12 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return f"{self.label()} x{self.quantity}"
 
     def save(self, *args, **kwargs):
+        if self.item_id and self.uom_id:
+            # Refuse a unit the item cannot be counted in while the line is
+            # still a quote, not when the picker is at the shelf. Purchasing
+            # asks the same question in the same place: one shape, two
+            # sides, so a fix to either is a fix to both.
+            self.item.check_uom(self.uom)
         if self.is_charge():
             if not self.revenue_account_id:
                 self.revenue_account = self.charge.account_for(is_sale=True)
@@ -2105,10 +2111,18 @@ class Delivery(AuditModel):
                     )
                 if item.track_inventory and not line.warehouse.allow_negative_stock:
                     on_hand = item.on_hand_at(line.warehouse)
-                    if line.quantity_shipped > on_hand:
+                    # On hand is counted in the item's stocking unit; the line
+                    # may be written in another. Comparing the two as written
+                    # lets a case of twelve pass a check that only twelve
+                    # eaches should have passed.
+                    wanted = item.to_stock_quantity(
+                        line.quantity_shipped, line.order_line.uom
+                    )
+                    if wanted > on_hand:
                         raise ValidationError(
-                            f"Only {on_hand} of {item} on hand at {line.warehouse}; "
-                            f"cannot ship {line.quantity_shipped}. Allow negative stock on the "
+                            f"Only {on_hand} {item.uom} of {item} on hand at "
+                            f"{line.warehouse}; cannot ship {line.quantity_shipped} "
+                            f"{line.order_line.uom}. Allow negative stock on the "
                             f"warehouse if backorders are expected."
                         )
 
@@ -2134,7 +2148,13 @@ class Delivery(AuditModel):
             if not item.track_inventory:
                 continue
             movement_type = MovementType.RECEIPT if is_return else MovementType.ISSUE
-            quantity = line.quantity_shipped if is_return else -line.quantity_shipped
+            # The line may be written in cases and the ledger counts eaches.
+            # Convert here rather than letting the movement do it, because
+            # the cost below is the weighted average, which this ledger
+            # already holds per stocking unit — quantity and cost have to
+            # end up in the same unit, and that unit is the stocking one.
+            shipped = item.to_stock_quantity(line.quantity_shipped, line.order_line.uom)
+            quantity = shipped if is_return else -shipped
             # A return reverses at the cost the original shipment used, so the
             # two entries cancel exactly instead of drifting with the average.
             unit_cost = line.unit_cost
@@ -2146,6 +2166,7 @@ class Delivery(AuditModel):
                 item=item,
                 warehouse=line.warehouse,
                 movement_type=movement_type,
+                uom=item.uom,
                 quantity=quantity,
                 unit_cost=unit_cost,
                 reference=self.number,
@@ -2155,7 +2176,7 @@ class Delivery(AuditModel):
                     f"{self.sales_order} ({self.number})"
                 ),
             )
-            valued.append((item, line.quantity_shipped * unit_cost))
+            valued.append((item, shipped * unit_cost))
 
         post_inventory_entry(
             valued,

@@ -656,6 +656,24 @@ class SubcontractComponent(AuditModel):
     def __str__(self):
         return f"{self.quantity_per} x {self.item}"
 
+    def save(self, *args, **kwargs):
+        """
+        A component is specified against one of the finished item, which
+        means one of its stocking units. An order line written in another
+        unit would multiply every component by a factor nobody wrote down.
+
+        The question belongs here and not on the order line: a line is
+        created before its components are attached, so at line-save time
+        there is nothing yet to say the line is subcontracted.
+        """
+        line = self.order_line
+        if line.item_id and line.uom_id and line.uom_id != line.item.uom_id:
+            raise ValidationError(
+                f"{line.item} is ordered in {line.uom} on this line but its components "
+                f"are specified per {line.item.uom}. Order it in {line.item.uom}."
+            )
+        super().save(*args, **kwargs)
+
 
 class BlanketStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
@@ -1502,7 +1520,8 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 ):
                     StockMovement.objects.create(
                         item=component.item, warehouse=warehouse,
-                        movement_type=movement_type, quantity=signed,
+                        movement_type=movement_type, uom=component.item.uom,
+                        quantity=signed,
                         unit_cost=cost, reference=self.number,
                         occurred_at=occurred_at,
                         notes=f"Components to subcontractor for {self.number}",
@@ -1661,6 +1680,11 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def save(self, *args, **kwargs):
         if self.is_charge() and not self.expense_account_id:
             self.expense_account = self.charge.account_for(is_sale=False)
+        if self.item_id and self.uom_id:
+            # Refuse a unit the item cannot be counted in now, while the
+            # line is still a draft, rather than when the goods are on the
+            # dock and the order is confirmed.
+            self.item.check_uom(self.uom)
         if self.unit_price is None and not self.is_charge() and self.item_id:
             self.unit_price = resolve_purchase_price(
                 self.item, self.order.vendor, quantity=self.quantity,
@@ -2467,6 +2491,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 item=item,
                 warehouse=warehouse,
                 movement_type=MovementType.ADJUSTMENT,
+                uom=item.uom,
                 quantity=Decimal("0"),
                 value_adjustment=amount,
                 reference=self.number,
@@ -2813,7 +2838,8 @@ class BillLine(TaxedLineMixin, AuditModel):
 
         movement = StockMovement.objects.create(
             item=item, warehouse=receipt_line.warehouse,
-            movement_type=MovementType.ADJUSTMENT, quantity=Decimal("0"),
+            movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+            quantity=Decimal("0"),
             value_adjustment=amount, reference=self.bill.number,
             occurred_at=timezone.now(), notes=memo,
         )
@@ -3226,7 +3252,8 @@ def draw_consignment(item, from_warehouse, to_warehouse, quantity, payable_accou
     # gives them up rather than the vendor shipping them again.
     StockMovement.objects.create(
         item=item, warehouse=from_warehouse, movement_type=MovementType.ISSUE,
-        quantity=-quantity, unit_cost=Decimal("0"), reference=order.number,
+        uom=order_line.uom, quantity=-quantity, unit_cost=Decimal("0"),
+        reference=order.number,
         occurred_at=timezone.now(),
         notes=f"Drawn into ownership on {order.number}",
     )
@@ -3706,6 +3733,10 @@ class GoodsReceipt(AuditModel):
                 item=line.order_line.item,
                 warehouse=line.warehouse,
                 movement_type=movement_type,
+                # Both numbers are per order-line unit — the received
+                # quantity and the agreed price — so the movement restates
+                # them together and the total stays the total.
+                uom=line.order_line.uom,
                 quantity=quantity,
                 unit_cost=unit_cost,
                 reference=self.reference or self.number,
@@ -3853,12 +3884,17 @@ class GoodsReceipt(AuditModel):
         for line, quantity in selected:
             item = line.order_line.item
             cost = item.average_cost_at(line.warehouse)
+            # The average is held per stocking unit, so the quantity has to
+            # be too: a transfer valued at one unit and counted in another
+            # moves more value out of a warehouse than it moves in.
+            moving = item.to_stock_quantity(quantity, line.order_line.uom)
             for target, movement_type, signed in (
-                (line.warehouse, MovementType.TRANSFER_OUT, -quantity),
-                (warehouse, MovementType.TRANSFER_IN, quantity),
+                (line.warehouse, MovementType.TRANSFER_OUT, -moving),
+                (warehouse, MovementType.TRANSFER_IN, moving),
             ):
                 StockMovement.objects.create(
                     item=item, warehouse=target, movement_type=movement_type,
+                    uom=item.uom,
                     quantity=signed, unit_cost=cost, reference=self.number,
                     occurred_at=occurred_at,
                     notes=f"Accepted from inspection on {self.number}",
@@ -3918,7 +3954,7 @@ class GoodsReceipt(AuditModel):
         StockMovement.objects.create(
             item=line.order_line.item, warehouse=line.warehouse,
             movement_type=MovementType.ISSUE if is_return else MovementType.RECEIPT,
-            quantity=quantity, unit_cost=Decimal("0"),
+            uom=line.order_line.uom, quantity=quantity, unit_cost=Decimal("0"),
             reference=self.reference or self.number,
             occurred_at=timezone.now(),
             notes=(
@@ -3942,7 +3978,8 @@ class GoodsReceipt(AuditModel):
             )
             StockMovement.objects.create(
                 item=component.item, warehouse=warehouse,
-                movement_type=MovementType.RECEIPT, quantity=quantity, unit_cost=cost,
+                movement_type=MovementType.RECEIPT, uom=component.item.uom,
+                quantity=quantity, unit_cost=cost,
                 reference=self.number,
                 occurred_at=timezone.now(),
                 notes=f"Components returned with {self.number}",
@@ -3976,7 +4013,8 @@ class GoodsReceipt(AuditModel):
                 )
             StockMovement.objects.create(
                 item=component.item, warehouse=warehouse,
-                movement_type=MovementType.ISSUE, quantity=-used, unit_cost=cost,
+                movement_type=MovementType.ISSUE, uom=component.item.uom,
+                quantity=-used, unit_cost=cost,
                 reference=self.number,
                 occurred_at=timezone.now(),
                 notes=f"Consumed by subcontractor for {self.number}",
@@ -4208,6 +4246,7 @@ class LandedCostApplication(AuditModel):
             item=self.receipt_line.order_line.item,
             warehouse=self.receipt_line.warehouse,
             movement_type=MovementType.ADJUSTMENT,
+            uom=self.receipt_line.order_line.item.uom,
             quantity=Decimal("0"),
             value_adjustment=-self.amount,
             reference=self.charge_line.bill.number,

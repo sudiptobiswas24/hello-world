@@ -39,7 +39,8 @@ class ValuationTestCase(TestCase):
     def receive(self, quantity, unit_cost, item=None, warehouse=None):
         return StockMovement.objects.create(
             item=item or self.item, warehouse=warehouse or self.warehouse,
-            movement_type=MovementType.RECEIPT, quantity=Decimal(quantity),
+            movement_type=MovementType.RECEIPT, uom=(item or self.item).uom,
+            quantity=Decimal(quantity),
             unit_cost=Decimal(unit_cost), occurred_at=timezone.now(),
         )
 
@@ -48,7 +49,8 @@ class ValuationTestCase(TestCase):
         target_warehouse = warehouse or self.warehouse
         return StockMovement.objects.create(
             item=target_item, warehouse=target_warehouse,
-            movement_type=MovementType.ISSUE, quantity=-Decimal(quantity),
+            movement_type=MovementType.ISSUE, uom=target_item.uom,
+            quantity=-Decimal(quantity),
             unit_cost=target_item.average_cost_at(target_warehouse),
             occurred_at=timezone.now(),
         )

@@ -75,6 +75,7 @@ class SalesGuardTestCase(TestCase):
 
         StockMovement.objects.create(
             item=self.item, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+            uom=self.item.uom,
             quantity=Decimal("500"), unit_cost=Decimal("4"), occurred_at=timezone.now(),
         )
 

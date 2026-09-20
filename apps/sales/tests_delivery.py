@@ -52,6 +52,7 @@ class DeliveryTestCase(TestCase):
             item=item or self.item,
             warehouse=warehouse or self.warehouse,
             movement_type=MovementType.RECEIPT,
+            uom=(item or self.item).uom,
             quantity=Decimal(quantity),
             unit_cost=Decimal(unit_cost),
             occurred_at=timezone.now(),

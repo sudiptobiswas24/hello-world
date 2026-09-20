@@ -18,6 +18,7 @@ class StockLevelTests(TestCase):
             item=self.item,
             warehouse=self.warehouse,
             movement_type=movement_type,
+            uom=self.item.uom,
             quantity=Decimal(quantity),
             occurred_at=timezone.now(),
         )
