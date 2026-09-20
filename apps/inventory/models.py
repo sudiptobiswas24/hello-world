@@ -1,10 +1,11 @@
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from django.db import models
 from django.db.models import Sum
 
-from apps.core.models import AuditModel, UnitOfMeasure
+from apps.core.models import AuditModel, UnitOfMeasure, to_date
 
 
 class Warehouse(AuditModel):
@@ -63,6 +64,25 @@ class Item(AuditModel):
         default=True,
         help_text="Services and non-stocked items should be False so they never affect stock levels.",
     )
+    costing_method = models.CharField(
+        max_length=16, default="average",
+        choices=[
+            ("average", "Weighted average"),
+            ("fifo", "First in, first out"),
+            ("standard", "Standard cost"),
+        ],
+        help_text="How this item's stock is valued. Average needs no layer "
+                  "bookkeeping and cannot be gamed by choosing which physical unit "
+                  "to ship, which is why it is the default — but a company "
+                  "reporting FIFO or running to a standard cannot bolt either on "
+                  "later without restating every period.",
+    )
+    standard_cost = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="What a unit is deemed to cost under standard costing. Changing "
+                  "it revalues the stock on hand, which is a posting, so change it "
+                  "through set_standard_cost() rather than by assignment.",
+    )
     tracking = models.CharField(
         max_length=8, default="none",
         choices=[("none", "Not tracked"), ("lot", "By lot or batch"), ("serial", "By serial number")],
@@ -100,40 +120,39 @@ class Item(AuditModel):
 
     def _replay_valuation(self, warehouse=None, before_id=None):
         """
-        Walk the movement ledger in order, maintaining running quantity and
-        value, and return (quantity, value) at that point.
+        Walk the movement ledger in order and return (quantity, value) at
+        that point, by whichever method this item is costed under.
 
-        Weighted average is derived from the ledger rather than stored as a
-        running field, for the same reason on-hand quantity is: a stored
-        average drifts the moment a movement is corrected. The cost is an
-        O(movements) replay, which is fine at this scale and would want a
-        periodic valuation snapshot at much larger volumes.
+        Value is derived from the ledger rather than stored as a running
+        field, for the same reason on-hand quantity is: a stored figure —
+        an average, or a layer table — drifts the moment a movement is
+        corrected, and nothing says so. The cost is an O(movements)
+        replay, fine at this scale, and would want a periodic valuation
+        snapshot at much larger volumes.
         """
-        movements = self.movements.all()
-        if warehouse is not None:
-            movements = movements.filter(warehouse=warehouse)
-        if before_id is not None:
-            movements = movements.filter(id__lt=before_id)
+        from .costing import replay
 
-        quantity = Decimal("0")
-        value = Decimal("0")
-        for movement in movements.order_by("occurred_at", "id"):
-            if movement.quantity > 0:
-                unit_cost = movement.unit_cost or Decimal("0")
-                value += movement.quantity * unit_cost
-                quantity += movement.quantity
-            elif movement.quantity < 0:
-                leaving = -movement.quantity
-                average = (value / quantity) if quantity > 0 else Decimal("0")
-                value -= leaving * average
-                quantity -= leaving
-            # A value-only movement changes what the stock is worth without
-            # changing how much there is, which is exactly what landed cost
-            # does. Replaying it here rather than storing a corrected
-            # average keeps valuation derived, like everything else.
-            if movement.value_adjustment:
-                value += movement.value_adjustment
-        return quantity, value
+        return replay(self, warehouse, before_id)
+
+    def cost_of_removing(self, warehouse, quantity):
+        """
+        What taking `quantity` off this shelf will take off its value.
+
+        Every outbound path asks this rather than multiplying a rate of
+        its own, because under FIFO the units leaving may span layers
+        bought at different prices and no single rate multiplies back to
+        the right answer. A ledger entry that disagrees with the stock
+        ledger by that difference disagrees permanently.
+        """
+        from .costing import cost_of_removing
+
+        return cost_of_removing(self, warehouse, quantity)
+
+    def removal_unit_cost(self, warehouse, quantity):
+        """`cost_of_removing` per unit, for movements that need a rate."""
+        from .costing import unit_cost_for
+
+        return unit_cost_for(self, warehouse, quantity)
 
     def average_cost_at(self, warehouse, before_id=None):
         """Weighted average unit cost, optionally as it stood before a movement."""
@@ -251,6 +270,14 @@ class StockMovement(AuditModel):
         max_digits=18, decimal_places=4, null=True, blank=True,
         help_text="Cost per unit for this movement; set from the purchase price inbound, "
                   "from the weighted average outbound.",
+    )
+    adjusts = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="adjustments",
+        help_text="On a value-only movement, the inbound movement whose goods the "
+                  "value belongs to. Landed cost knows which receipt it was "
+                  "incurred on; under FIFO that decides which layer it raises, and "
+                  "spreading it over the shelf instead would misprice everything "
+                  "that was already there.",
     )
     value_adjustment = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
@@ -434,6 +461,73 @@ class StockMovement(AuditModel):
             )
 
 
+def set_standard_cost(item, new_cost, warehouse=None, on_date=None, reason=None):
+    """
+    Change an item's standard cost and revalue the stock on hand.
+
+    A standard cost is what the books say a unit is worth, so changing
+    it changes what the shelf is worth — by definition, immediately, and
+    for every unit already there. Assigning the field and walking away
+    would leave the inventory account saying one number and the stock
+    ledger another, which is the drift this codebase derives everything
+    to avoid.
+
+    The revaluation is written as an adjustment, so it reverses the same
+    way everything else here does.
+    """
+    from .adjustments import AdjustmentReason, StockAdjustment, StockAdjustmentLine
+    from apps.core.models import Company
+
+    new_cost = Decimal(new_cost)
+    if item.costing_method != "standard":
+        raise ValidationError(
+            f"{item} is not costed at standard, so it has no standard to change."
+        )
+    if new_cost <= 0:
+        raise ValidationError("A standard cost must be positive.")
+
+    on_date = to_date(on_date) or timezone.now().date()
+    old_cost = item.standard_cost or Decimal("0")
+    warehouses = (
+        [warehouse] if warehouse is not None
+        else list(Warehouse.objects.filter(movements__item=item).distinct())
+    )
+
+    raised = []
+    for shelf in warehouses:
+        held = item.on_hand_at(shelf)
+        if held == 0:
+            continue
+        difference = (held * (new_cost - old_cost)).quantize(Decimal("0.0001"))
+        if not difference:
+            continue
+        if reason is None:
+            raise ValidationError(
+                "Revaluing stock posts to the ledger; say which reason account it "
+                "belongs to."
+            )
+        adjustment = StockAdjustment.objects.create(
+            adjustment_date=on_date, warehouse=shelf, reason=reason,
+            memo=f"Standard cost of {item} from {old_cost} to {new_cost}",
+        )
+        # Quantity is unchanged; only the value moves. The adjustment line
+        # carries it as a value-only movement, which is what
+        # value_adjustment already means here.
+        StockAdjustmentLine.objects.create(
+            adjustment=adjustment, item=item, uom=item.uom,
+            quantity=Decimal("0"), revaluation=difference,
+            notes=f"{held} on hand revalued by {new_cost - old_cost} each",
+        )
+        raised.append(adjustment)
+
+    item.standard_cost = new_cost
+    super(Item, item).save(update_fields=["standard_cost", "updated_at"])
+    for adjustment in raised:
+        adjustment.post()
+    return raised
+
+
+from .costing import CostingMethod  # noqa: E402,F401
 from .bins import (  # noqa: E402,F401
     StorageBin,
     bins_holding,

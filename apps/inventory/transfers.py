@@ -387,10 +387,12 @@ class StockTransferLine(AuditModel):
                 f"cannot move {quantity}."
             )
 
-        held, value = item.valuation_at(source)
-        average = (value / held) if held > 0 else Decimal("0")
-        leaving = quantity * average
-        unit_cost = average.quantize(Decimal("0.0001"))
+        # What the source shelf actually gives up. Under FIFO that is
+        # the oldest layers rather than an average of all of them, and
+        # the receiving end has to add back the same figure or the move
+        # revalues the company's stock.
+        leaving = item.cost_of_removing(source, quantity)
+        unit_cost = (leaving / quantity).quantize(Decimal("0.0001"))
         residue = (leaving - quantity * unit_cost).quantize(Decimal("0.0001")) or None
 
         label = (
@@ -527,9 +529,8 @@ class StockTransferStep(AuditModel):
                 f"Only {on_hand} {item.uom} of {item} remains at {self.destination}; "
                 f"cannot send back {self.quantity}."
             )
-        held, value = item.valuation_at(self.destination)
-        average = (value / held) if held > 0 else Decimal("0")
-        unit_cost = average.quantize(Decimal("0.0001"))
+        back_out_value = item.cost_of_removing(self.destination, self.quantity)
+        unit_cost = (back_out_value / self.quantity).quantize(Decimal("0.0001"))
         # Going back out, the replay removes quantity x average. Going back
         # in, it adds quantity x unit_cost. The pair has to net to exactly
         # what the original hop carried.
@@ -537,9 +538,7 @@ class StockTransferStep(AuditModel):
         # current average; it should take off what arrived. Arriving back
         # at the origin, it adds quantity x unit_cost; it should add the
         # same figure. Each leg carries the difference.
-        out_residue = (
-            self.quantity * average - moved_value
-        ).quantize(Decimal("0.0001")) or None
+        out_residue = (back_out_value - moved_value).quantize(Decimal("0.0001")) or None
         residue = (moved_value - self.quantity * unit_cost).quantize(Decimal("0.0001")) or None
         # Back the way it came, shelf included: the out movement's bin is
         # where this hop put the stock, and the in movement's is where it

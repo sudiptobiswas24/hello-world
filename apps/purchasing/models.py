@@ -1513,7 +1513,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 quantity = round_money(component.quantity_per * line.quantity)
                 if quantity <= 0 or not component.item.track_inventory:
                     continue
-                cost = component.item.average_cost_at(from_warehouse)
+                cost = component.item.removal_unit_cost(from_warehouse, quantity)
                 for warehouse, movement_type, signed in (
                     (from_warehouse, MovementType.TRANSFER_OUT, -quantity),
                     (self.subcontract_warehouse, MovementType.TRANSFER_IN, quantity),
@@ -2840,6 +2840,11 @@ class BillLine(TaxedLineMixin, AuditModel):
             item=item, warehouse=receipt_line.warehouse,
             movement_type=MovementType.ADJUSTMENT, uom=item.uom,
             lot=receipt_line.lot, bin=receipt_line.bin,
+            # Landed cost belongs to the goods it was incurred on, and the
+            # receipt says which those were. Under FIFO that decides which
+            # layer it raises; spreading it over the shelf would misprice
+            # everything that was already standing there.
+            adjusts=receipt_line.stock_movement,
             quantity=Decimal("0"),
             value_adjustment=amount, reference=self.bill.number,
             occurred_at=timezone.now(), notes=memo,
@@ -3701,6 +3706,7 @@ class GoodsReceipt(AuditModel):
             return self._post_drop_ship(lines, is_return=is_return)
 
         valued = []
+        received = {}
         for line in lines:
             # Services and non-stocked items must never touch stock levels.
             if not line.order_line.item.track_inventory:
@@ -3730,7 +3736,7 @@ class GoodsReceipt(AuditModel):
                 else:
                     component_cost = self._consume_components(line)
                 unit_cost = unit_cost + component_cost
-            StockMovement.objects.create(
+            movement = StockMovement.objects.create(
                 item=line.order_line.item,
                 warehouse=line.warehouse,
                 movement_type=movement_type,
@@ -3749,6 +3755,10 @@ class GoodsReceipt(AuditModel):
                     f"{self.purchase_order} ({self.number})"
                 ),
             )
+            line.stock_movement = movement
+            super(GoodsReceiptLine, line).save(
+                update_fields=["stock_movement", "updated_at"]
+            )
             # Only the vendor's charge hits the ledger: the component
             # value has merely moved from one item to another inside the
             # same inventory account, so posting it again would double it.
@@ -3756,6 +3766,14 @@ class GoodsReceipt(AuditModel):
                 line.order_line.item,
                 line.quantity_received * (unit_cost - component_cost),
             ))
+            # An item costed at standard books the standard and throws the
+            # difference to variance, which needs the quantity in stocking
+            # units — the value alone cannot say how many arrived.
+            received[line.order_line.item] = received.get(
+                line.order_line.item, Decimal("0")
+            ) + line.order_line.item.to_stock_quantity(
+                line.quantity_received, line.order_line.uom
+            )
 
         post_inventory_entry(
             valued,
@@ -3764,6 +3782,7 @@ class GoodsReceipt(AuditModel):
             memo=f"{'Return to vendor for' if is_return else 'Goods received for'} {self.purchase_order}",
             direction="in",
             reverse=is_return,
+            quantities=received,
         )
 
         self.posted = True
@@ -3886,8 +3905,8 @@ class GoodsReceipt(AuditModel):
         moved = []
         for line, quantity in selected:
             item = line.order_line.item
-            cost = item.average_cost_at(line.warehouse)
-            # The average is held per stocking unit, so the quantity has to
+            cost = item.removal_unit_cost(line.warehouse, quantity)
+            # The cost is per stocking unit, so the quantity has to
             # be too: a transfer valued at one unit and counted in another
             # moves more value out of a warehouse than it moves in.
             moving = item.to_stock_quantity(quantity, line.order_line.uom)
@@ -3983,7 +4002,7 @@ class GoodsReceipt(AuditModel):
             quantity = round_money(component.quantity_per * line.quantity_received)
             cost = component.item.average_cost_at(warehouse) or (
                 component.item.average_cost()
-            )
+            ) or (component.item.standard_cost or Decimal("0"))
             StockMovement.objects.create(
                 item=component.item, warehouse=warehouse,
                 movement_type=MovementType.RECEIPT, uom=component.item.uom,
@@ -4012,7 +4031,7 @@ class GoodsReceipt(AuditModel):
             if not component.item.track_inventory:
                 continue
             used = round_money(component.quantity_per * line.quantity_received)
-            cost = component.item.average_cost_at(warehouse)
+            cost = component.item.removal_unit_cost(warehouse, used)
             on_hand = component.item.on_hand_at(warehouse)
             if used > on_hand:
                 raise ValidationError(
@@ -4147,6 +4166,13 @@ class GoodsReceiptLine(AuditModel):
                   "recorded here there is nothing to trace it from.",
     )
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
+    stock_movement = models.ForeignKey(
+        "inventory.StockMovement", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="What this line wrote into the stock ledger. Kept because under "
+                  "FIFO a landed cost has to raise the layer these goods created, "
+                  "not an average of every layer on the shelf.",
+    )
 
     def quantity_inspected(self):
         """How much of this line has been accepted or rejected."""
@@ -4270,6 +4296,7 @@ class LandedCostApplication(AuditModel):
             movement_type=MovementType.ADJUSTMENT,
             uom=self.receipt_line.order_line.item.uom,
             lot=self.receipt_line.lot, bin=self.receipt_line.bin,
+            adjusts=self.receipt_line.stock_movement,
             quantity=Decimal("0"),
             value_adjustment=-self.amount,
             reference=self.charge_line.bill.number,

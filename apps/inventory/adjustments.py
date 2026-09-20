@@ -170,6 +170,10 @@ class StockAdjustment(AuditModel):
         label = memo or self.memo or f"Stock adjustment {self.number} ({self.reason})"
         total = Decimal("0")
         for line in lines:
+            if line.revaluation is not None:
+                line.post(self, occurred_at, label)
+                total += line.value()
+                continue
             if not self.reason.permits(line.quantity):
                 raise ValidationError(
                     f"{self.reason} may not be used to "
@@ -288,7 +292,14 @@ class StockAdjustmentLine(AuditModel):
     )
     quantity = models.DecimalField(
         max_digits=18, decimal_places=4,
-        help_text="Signed: positive writes stock up, negative writes it down.",
+        help_text="Signed: positive writes stock up, negative writes it down. "
+                  "Zero on a line that only changes what the stock is worth.",
+    )
+    revaluation = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="Value added to (or taken off) stock without moving any of it — "
+                  "a change of standard cost, a write-down to net realisable "
+                  "value. A line carries this or a quantity, not both.",
     )
     lot = models.ForeignKey(
         "Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
@@ -320,8 +331,13 @@ class StockAdjustmentLine(AuditModel):
     class Meta:
         ordering = ["id"]
         constraints = [
+            # A line does something or it is not a line: it moves
+            # quantity, or it moves value, and a line carrying both would
+            # be two adjustments wearing one row.
             models.CheckConstraint(
-                check=~Q(quantity=0), name="adjustment_line_quantity_not_zero"
+                check=(Q(quantity=0) & Q(revaluation__isnull=False) & ~Q(revaluation=0))
+                | (~Q(quantity=0) & Q(revaluation__isnull=True)),
+                name="adjustment_line_moves_quantity_or_value",
             ),
         ]
 
@@ -340,6 +356,8 @@ class StockAdjustmentLine(AuditModel):
         every time the average moved, and the ledger entry it is supposed
         to explain was written once.
         """
+        if self.revaluation is not None:
+            return self.revaluation.quantize(Decimal("0.01"))
         if self.unit_cost is None:
             return Decimal("0")
         return (self.stock_quantity() * self.unit_cost).quantize(Decimal("0.01"))
@@ -352,13 +370,33 @@ class StockAdjustmentLine(AuditModel):
             )
         item.check_uom(self.uom)
 
+        if self.revaluation is not None:
+            # Value with no quantity behind it, which is what
+            # value_adjustment already means in the stock ledger.
+            self.movement = StockMovement.objects.create(
+                item=item, warehouse=adjustment.warehouse,
+                movement_type=MovementType.ADJUSTMENT,
+                uom=item.uom, lot=self.lot, bin=self.bin,
+                quantity=Decimal("0"), value_adjustment=self.revaluation,
+                reference=adjustment.number, occurred_at=occurred_at, notes=label,
+            )
+            super().save(update_fields=["movement", "updated_at"])
+            return self.movement
+
         quantity = self.stock_quantity()
         if self.unit_cost is None:
             # An outbound movement is valued by the replay at the running
             # average, so the ledger entry has to use the same number or
             # the two records of what left the shelf disagree. Freezing it
             # is what makes the entry explainable a year later.
-            self.unit_cost = item.average_cost_at(adjustment.warehouse)
+            # What the replay will actually take off, asked of the one
+            # place that knows: under FIFO the units leaving may span
+            # layers bought at different prices, and an average is then
+            # the wrong number in both directions.
+            self.unit_cost = (
+                item.average_cost_at(adjustment.warehouse) if quantity > 0
+                else item.removal_unit_cost(adjustment.warehouse, -quantity)
+            ).quantize(Decimal("0.0001"))
             if quantity > 0 and not self.unit_cost:
                 raise ValidationError(
                     f"There is no {item} at {adjustment.warehouse} to take a cost from. "
@@ -421,12 +459,11 @@ class StockAdjustmentLine(AuditModel):
                     f"{adjustment.warehouse}; voiding this adjustment would take "
                     f"back {-quantity}."
                 )
-            average = self.item.average_cost_at(adjustment.warehouse)
-            # The replay will take (leaving x average) off. It should take
+            # Not the average: what the replay is actually going to take
+            # off when this reversing movement is written. It should take
             # off what this line put on, so the residue is the difference.
-            residue = (
-                (-quantity) * average - moved_value
-            ).quantize(Decimal("0.0001")) or None
+            going = self.item.cost_of_removing(adjustment.warehouse, -quantity)
+            residue = (going - moved_value).quantize(Decimal("0.0001")) or None
 
         self.reversal_movement = StockMovement.objects.create(
             item=self.item,

@@ -2287,10 +2287,21 @@ class Delivery(AuditModel):
             # A return reverses at the cost the original shipment used, so the
             # two entries cancel exactly instead of drifting with the average.
             unit_cost = line.unit_cost
+            cost = None
             if unit_cost is None:
-                unit_cost = item.average_cost_at(line.warehouse)
+                # What the shelf actually gives up, asked of the one place
+                # that knows. Under FIFO the units leaving may span layers
+                # bought at different prices, and no single rate multiplies
+                # back to the right answer — so the total is the fact and
+                # the rate is derived from it, not the other way round.
+                cost = item.cost_of_removing(line.warehouse, shipped)
+                unit_cost = (cost / shipped).quantize(Decimal("0.0001")) if shipped else Decimal("0")
                 line.unit_cost = unit_cost
                 super(DeliveryLine, line).save(update_fields=["unit_cost", "updated_at"])
+            if cost is None:
+                # A return reverses at the original's rate, so the total
+                # follows from it rather than from today's layers.
+                cost = shipped * unit_cost
             StockMovement.objects.create(
                 item=item,
                 warehouse=line.warehouse,
@@ -2315,7 +2326,7 @@ class Delivery(AuditModel):
                     line.order_line
                 ).open():
                     reservation.consume(shipped)
-            valued.append((item, shipped * unit_cost))
+            valued.append((item, cost))
 
         post_inventory_entry(
             valued,
