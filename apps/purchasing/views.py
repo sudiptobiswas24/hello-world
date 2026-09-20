@@ -20,6 +20,7 @@ from .serializers import (
 class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PurchaseOrder.objects.prefetch_related("lines")
     serializer_class = PurchaseOrderSerializer
+    action_permission_map = {"create_bill": "purchasing.add_bill"}
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
@@ -38,6 +39,19 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["post"])
+    def create_bill(self, request, pk=None):
+        order = self.get_object()
+        try:
+            bill = order.create_bill(
+                request.data["payable_account"],
+                bill_date=request.data.get("bill_date"),
+                reference=request.data.get("reference", ""),
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(BillSerializer(bill).data)
 
 
 class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

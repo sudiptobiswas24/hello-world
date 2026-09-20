@@ -5,16 +5,21 @@ from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrde
 
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     quantity_received = serializers.SerializerMethodField()
+    quantity_billed = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseOrderLine
         fields = [
             "id", "order", "item", "uom", "quantity", "unit_price",
             "discount_percent", "taxes", "expense_account", "quantity_received",
+            "quantity_billed",
         ]
 
     def get_quantity_received(self, obj):
         return obj.quantity_received()
+
+    def get_quantity_billed(self, obj):
+        return obj.quantity_billed()
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
@@ -24,7 +29,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         model = PurchaseOrder
         fields = [
             "id", "number", "vendor", "order_date", "reference", "status",
-            "currency", "lines",
+            "currency", "bill_policy", "lines",
         ]
 
 
@@ -32,7 +37,7 @@ class BillLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = BillLine
         fields = [
-            "id", "bill", "item", "description", "quantity", "unit_price",
+            "id", "bill", "order_line", "item", "description", "quantity", "unit_price",
             "discount_percent", "taxes", "expense_account",
         ]
 

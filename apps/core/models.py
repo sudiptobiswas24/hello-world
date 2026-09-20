@@ -566,6 +566,15 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Expense account for receivables judged uncollectable.",
     )
+    default_purchase_expense_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where a non-stocked purchase lands when its line names no account.",
+    )
+    purchase_price_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="How far above the agreed purchase price a bill may go before it is "
+                  "refused. Zero means the vendor's price must match the order exactly.",
+    )
     customer_deposit_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Liability account holding money taken up front, before the goods are "

@@ -41,6 +41,11 @@ class FulfilmentStatus(models.TextChoices):
     FULL = "full", "Full"
 
 
+class BillPolicy(models.TextChoices):
+    RECEIVED = "received", "Bill what has been received"
+    ORDERED = "ordered", "Bill the whole order"
+
+
 class OrderStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     CONFIRMED = "confirmed", "Confirmed"
@@ -56,6 +61,10 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
     )
     status = models.CharField(max_length=16, choices=OrderStatus.choices, default=OrderStatus.DRAFT)
     currency = models.ForeignKey(Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+")
+    bill_policy = models.CharField(
+        max_length=16, choices=BillPolicy.choices, default=BillPolicy.RECEIVED,
+        help_text="Accept a bill for the whole order, or only for what has actually arrived.",
+    )
 
     class Meta:
         ordering = ["-order_date", "-id"]
@@ -118,6 +127,79 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
             return FulfilmentStatus.FULL
         return FulfilmentStatus.PARTIAL
 
+    def bill_status(self):
+        lines = list(self.lines.all())
+        if not lines or all(line.quantity_billed() <= 0 for line in lines):
+            return FulfilmentStatus.NONE
+        if all(line.is_fully_billed() for line in lines):
+            return FulfilmentStatus.FULL
+        return FulfilmentStatus.PARTIAL
+
+    @transaction.atomic
+    def create_bill(self, payable_account, bill_date=None, reference=""):
+        """
+        Draft a bill for whatever this order still owes the vendor,
+        carrying prices, discounts and taxes across.
+
+        Calling it twice bills the remainder, not the whole order again —
+        the same drawdown Sales needed after an order was billed three
+        times for one delivery.
+        """
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can be billed.")
+
+        outstanding = [
+            (line, line.quantity_billable())
+            for line in self.lines.all()
+            if line.quantity_billable() > 0
+        ]
+        if not outstanding:
+            if self.bill_policy == BillPolicy.RECEIVED and any(
+                line.quantity_unbilled() > 0 for line in self.lines.all()
+            ):
+                raise ValidationError(
+                    "Nothing has been received that isn't already billed. This order is "
+                    "billed on receipt, so book the goods in first."
+                )
+            raise ValidationError("This order is already fully billed.")
+
+        bill = Bill.objects.create(
+            vendor=self.vendor,
+            bill_date=bill_date or timezone.now().date(),
+            reference=reference,
+            purchase_order=self,
+            payable_account=payable_account,
+            currency=self.currency,
+        )
+        for line, remaining in outstanding:
+            bill_line = BillLine.objects.create(
+                bill=bill,
+                order_line=line,
+                item=line.item,
+                description=str(line.item),
+                quantity=remaining,
+                unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
+                expense_account=line.expense_account or self.vendor_expense_account(),
+            )
+            bill_line.taxes.set(line.taxes.all())
+        return bill
+
+    def vendor_expense_account(self):
+        """
+        Fallback for a line with no expense account of its own.
+
+        Only ever reached by a non-stocked line, since stocked goods clear
+        GRNI instead, but the field is non-null so something has to answer.
+        """
+        account = Company.get().default_purchase_expense_account
+        if account is None:
+            raise ValidationError(
+                "This line has no expense account and the company has no default "
+                "purchase expense account configured."
+            )
+        return account
+
 
 class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     order = models.ForeignKey(PurchaseOrder, related_name="lines", on_delete=models.CASCADE)
@@ -155,6 +237,38 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
     def is_fully_received(self):
         return self.quantity_received() >= self.quantity
+
+    def quantity_billed(self):
+        """Net quantity billed: posted bills minus posted debit notes."""
+        billed = self.bill_lines.filter(
+            bill__posted=True, bill__debits__isnull=True
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        debited = self.bill_lines.filter(
+            bill__posted=True, bill__debits__isnull=False
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        return billed - debited
+
+    def quantity_unbilled(self):
+        return self.quantity - self.quantity_billed()
+
+    def quantity_billable(self):
+        """
+        What may be billed right now — the third leg of the three-way
+        match.
+
+        Under a 'received' policy this is capped by what actually arrived.
+        Paying for goods that have not turned up is the company's own
+        money going out for something it does not have, which is why this
+        defaults to the careful side where Sales defaults to the
+        convenient one.
+        """
+        unbilled = self.quantity_unbilled()
+        if self.order.bill_policy != BillPolicy.RECEIVED:
+            return unbilled
+        return min(unbilled, self.quantity_received() - self.quantity_billed())
+
+    def is_fully_billed(self):
+        return self.quantity_billed() >= self.quantity
 
 
 class Bill(TaxedDocumentMixin, AuditModel):
@@ -329,6 +443,8 @@ class Bill(TaxedDocumentMixin, AuditModel):
             raise ValidationError(
                 "This bill has no value to post. Give its lines a quantity and price."
             )
+        if not self.is_debit_note():
+            self._check_against_order()
         if not self.number:
             if self.is_debit_note():
                 self.number = DocumentSequence.next_for(
@@ -368,6 +484,64 @@ class Bill(TaxedDocumentMixin, AuditModel):
             "posted", "posted_at", "updated_at",
         ])
 
+    def _check_against_order(self):
+        """
+        The match itself: quantity against the order and the receipt,
+        price against the order.
+
+        Without the order_line link a vendor could bill the same delivery
+        three times and nothing would notice — the identical defect that
+        turned up in Sales, where one 1,000 order was invoiced for 3,000.
+        """
+        tolerance = Company.get().purchase_price_tolerance_percent or Decimal("0")
+        for line in self.lines.all():
+            if not line.order_line_id:
+                continue
+            order_line = line.order_line
+            already = order_line.quantity_billed()
+            if already + line.quantity > order_line.quantity:
+                raise ValidationError(
+                    f"Billing {line.quantity} of {order_line.item} would exceed the ordered "
+                    f"quantity ({order_line.quantity}; {already} already billed)."
+                )
+            if order_line.order.bill_policy == BillPolicy.RECEIVED:
+                received = order_line.quantity_received()
+                if already + line.quantity > received:
+                    raise ValidationError(
+                        f"Only {received} of {order_line.item} has been received and "
+                        f"{already} is already billed; this order is billed on receipt, "
+                        f"so {line.quantity} cannot be billed yet."
+                    )
+            ordered_price = order_line.unit_price or Decimal("0")
+            if line.unit_price > ordered_price:
+                allowed = round_money(ordered_price * (Decimal("100") + tolerance) / Decimal("100"))
+                if line.unit_price > allowed:
+                    raise ValidationError(
+                        f"{order_line.item} was ordered at {ordered_price} but billed at "
+                        f"{line.unit_price}, beyond the {tolerance}% tolerance. Agree a "
+                        "revised price on the order, or query the bill."
+                    )
+
+    def match_report(self):
+        """Ordered / received / billed per line, for anyone checking a bill."""
+        rows = []
+        for line in self.lines.all():
+            order_line = line.order_line
+            rows.append({
+                "line": line,
+                "item": line.item,
+                "quantity_billed": line.quantity,
+                "quantity_ordered": order_line.quantity if order_line else None,
+                "quantity_received": order_line.quantity_received() if order_line else None,
+                "price_ordered": order_line.unit_price if order_line else None,
+                "price_billed": line.unit_price,
+                "price_variance": (
+                    line.unit_price - order_line.unit_price if order_line else None
+                ),
+                "matched": bool(order_line),
+            })
+        return rows
+
     @transaction.atomic
     def create_debit_note(self, memo=""):
         if not self.posted:
@@ -387,6 +561,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
         for line in self.lines.all():
             note_line = BillLine.objects.create(
                 bill=debit_note,
+                order_line=line.order_line,
                 item=line.item,
                 description=line.description,
                 quantity=line.quantity,
@@ -401,6 +576,12 @@ class Bill(TaxedDocumentMixin, AuditModel):
 
 class BillLine(TaxedLineMixin, AuditModel):
     bill = models.ForeignKey(Bill, related_name="lines", on_delete=models.CASCADE)
+    order_line = models.ForeignKey(
+        PurchaseOrderLine, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="bill_lines",
+        help_text="Set when this line bills a purchase order line, so the order "
+                  "cannot be billed twice for the same goods.",
+    )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="bill_lines")
     description = models.CharField(max_length=255, blank=True)
     expense_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
