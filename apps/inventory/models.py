@@ -56,6 +56,13 @@ class Item(AuditModel):
         default=True,
         help_text="Services and non-stocked items should be False so they never affect stock levels.",
     )
+    tracking = models.CharField(
+        max_length=8, default="none",
+        choices=[("none", "Not tracked"), ("lot", "By lot or batch"), ("serial", "By serial number")],
+        help_text="Whether each movement of this item must name the batch it came "
+                  "from, or the individual unit. Defaults to neither, so nothing "
+                  "already in the ledger is retrospectively incomplete.",
+    )
     sale_price = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True,
         help_text="Default list price, used when no price list covers this item.",
@@ -247,6 +254,11 @@ class StockMovement(AuditModel):
                   "carries what is left when a value is divided by a quantity, and "
                   "rounding that to the cent loses a little on every move.",
     )
+    lot = models.ForeignKey(
+        "Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="movements",
+        help_text="Which batch, or which unit. Required when the item is tracked, "
+                  "refused when it is not.",
+    )
     reference = models.CharField(max_length=64, blank=True, help_text="e.g. PO number, SO number")
     occurred_at = models.DateTimeField()
     notes = models.TextField(blank=True)
@@ -283,6 +295,7 @@ class StockMovement(AuditModel):
         factor that does not divide the price evenly.
         """
         if self._state.adding:
+            self._check_tracking()
             if self.uom_id is None:
                 raise ValidationError(
                     f"A stock movement for {self.item} must say which unit its "
@@ -326,6 +339,74 @@ class StockMovement(AuditModel):
 # discovers models that this one pulls in. The import is last so that
 # Item, Warehouse and StockMovement are fully defined before adjustments
 # imports them back.
+    def _check_tracking(self):
+        """
+        A tracked item's movement must name its lot, and an untracked
+        one's must not.
+
+        Here rather than on each document, for the same reason the unit
+        conversion is here: eleven writers, and the twelfth would forget.
+        A lot that is merely optional is a lot that is absent exactly
+        when somebody needs it.
+        """
+        tracking = self.item.tracking
+        if tracking == "none":
+            if self.lot_id is not None:
+                raise ValidationError(
+                    f"{self.item} is not tracked by lot or serial number, so this "
+                    "movement cannot name one."
+                )
+            return
+        if self.lot_id is None:
+            raise ValidationError(
+                f"{self.item} is tracked by "
+                f"{'serial number' if tracking == 'serial' else 'lot'}; this movement "
+                "must say which."
+            )
+        if self.lot.item_id != self.item_id:
+            raise ValidationError(f"Lot {self.lot.code} does not belong to {self.item}.")
+        if tracking != "serial":
+            # A shelf holding a hundred across three batches holds ten of
+            # this one. Checking the shelf total and not the batch lets a
+            # delivery ship a batch that ran out, and the trail then says
+            # a customer received goods that were never there.
+            if self.quantity < 0 and not self.warehouse.allow_negative_stock:
+                held = self.lot.on_hand_at(self.warehouse)
+                wanted = -self.item.to_stock_quantity(self.quantity, self.uom)
+                if wanted > held:
+                    raise ValidationError(
+                        f"Only {held} of batch {self.lot.code} at {self.warehouse}; "
+                        f"cannot move {wanted}."
+                    )
+            return
+
+        # A serial number identifies one unit. Two of it is not a larger
+        # quantity of the same thing, it is a contradiction, and the only
+        # moment it can be refused is before the movement is written.
+        if abs(self.quantity) != 1:
+            raise ValidationError(
+                f"{self.lot.code} is a serial number, so it moves one unit at a time, "
+                f"not {self.quantity}."
+            )
+        if self.quantity > 0 and self.lot.on_hand_at() > 0:
+            raise ValidationError(
+                f"Serial number {self.lot.code} is already in stock at "
+                f"{self.lot.warehouses()[0][0]}; the same unit cannot arrive twice."
+            )
+        if self.quantity < 0 and self.lot.on_hand_at(self.warehouse) < 1:
+            raise ValidationError(
+                f"Serial number {self.lot.code} is not at {self.warehouse}."
+            )
+
+
+from .tracking import (  # noqa: E402,F401
+    Lot,
+    TrackingMode,
+    allocate,
+    expiring,
+    lots_at,
+    traceability,
+)
 from .adjustments import (  # noqa: E402,F401
     AdjustmentDirection,
     AdjustmentReason,

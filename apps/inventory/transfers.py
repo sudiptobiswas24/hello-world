@@ -277,6 +277,11 @@ class StockTransferLine(AuditModel):
         "core.UnitOfMeasure", on_delete=models.PROTECT, related_name="+",
         help_text="The unit this line is written in.",
     )
+    lot = models.ForeignKey(
+        "Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which batch is moving. Required when the item is tracked — a "
+                  "transfer that cannot say which batch left has broken the trail.",
+    )
     quantity = models.DecimalField(max_digits=18, decimal_places=4)
     notes = models.CharField(max_length=255, blank=True)
 
@@ -287,7 +292,12 @@ class StockTransferLine(AuditModel):
                 check=Q(quantity__gt=0), name="transfer_line_quantity_positive"
             ),
             models.UniqueConstraint(
-                fields=["transfer", "item"], name="one_transfer_line_per_item"
+                fields=["transfer", "item"], condition=Q(lot__isnull=True),
+                name="one_transfer_line_per_untracked_item",
+            ),
+            models.UniqueConstraint(
+                fields=["transfer", "item", "lot"], condition=Q(lot__isnull=False),
+                name="one_transfer_line_per_item_lot",
             ),
         ]
 
@@ -337,10 +347,15 @@ class StockTransferLine(AuditModel):
         if not item.track_inventory:
             raise ValidationError(f"{item} is not stocked, so there is nothing to move.")
 
-        on_hand = item.on_hand_at(source)
+        on_hand = (
+            self.lot.on_hand_at(source) if self.lot_id is not None
+            else item.on_hand_at(source)
+        )
         if quantity > on_hand and not source.allow_negative_stock:
             raise ValidationError(
-                f"Only {on_hand} {item.uom} of {item} at {source}; cannot move {quantity}."
+                f"Only {on_hand} {item.uom} of "
+                f"{self.lot.code if self.lot_id else item} at {source}; "
+                f"cannot move {quantity}."
             )
 
         held, value = item.valuation_at(source)
@@ -354,12 +369,12 @@ class StockTransferLine(AuditModel):
         )
         out = StockMovement.objects.create(
             item=item, warehouse=source, movement_type=MovementType.TRANSFER_OUT,
-            uom=item.uom, quantity=-quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=self.lot, quantity=-quantity, unit_cost=unit_cost,
             reference=transfer.number, occurred_at=occurred_at, notes=label,
         )
         into = StockMovement.objects.create(
             item=item, warehouse=destination, movement_type=MovementType.TRANSFER_IN,
-            uom=item.uom, quantity=quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=self.lot, quantity=quantity, unit_cost=unit_cost,
             value_adjustment=residue,
             reference=transfer.number, occurred_at=occurred_at, notes=label,
         )
@@ -460,7 +475,10 @@ class StockTransferStep(AuditModel):
         moved_value = (self.quantity * (self.out_movement.unit_cost or Decimal("0"))) + (
             self.in_movement.value_adjustment or Decimal("0")
         )
-        on_hand = item.on_hand_at(self.destination)
+        on_hand = (
+            line.lot.on_hand_at(self.destination) if line.lot_id is not None
+            else item.on_hand_at(self.destination)
+        )
         if self.quantity > on_hand and not self.destination.allow_negative_stock:
             raise ValidationError(
                 f"Only {on_hand} {item.uom} of {item} remains at {self.destination}; "
@@ -482,13 +500,13 @@ class StockTransferStep(AuditModel):
         residue = (moved_value - self.quantity * unit_cost).quantize(Decimal("0.0001")) or None
         out = StockMovement.objects.create(
             item=item, warehouse=self.destination, movement_type=MovementType.TRANSFER_OUT,
-            uom=item.uom, quantity=-self.quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=line.lot, quantity=-self.quantity, unit_cost=unit_cost,
             value_adjustment=out_residue,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )
         into = StockMovement.objects.create(
             item=item, warehouse=self.source, movement_type=MovementType.TRANSFER_IN,
-            uom=item.uom, quantity=self.quantity, unit_cost=unit_cost,
+            uom=item.uom, lot=line.lot, quantity=self.quantity, unit_cost=unit_cost,
             value_adjustment=residue,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )

@@ -271,6 +271,11 @@ class StockAdjustmentLine(AuditModel):
         max_digits=18, decimal_places=4,
         help_text="Signed: positive writes stock up, negative writes it down.",
     )
+    lot = models.ForeignKey(
+        "Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which batch is being written up or down. Required when the item "
+                  "is tracked.",
+    )
     unit_cost = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
         help_text="What a stocking unit is worth for this adjustment. Left blank "
@@ -348,6 +353,7 @@ class StockAdjustmentLine(AuditModel):
             warehouse=adjustment.warehouse,
             movement_type=MovementType.ADJUSTMENT,
             uom=item.uom,
+            lot=self.lot,
             quantity=quantity,
             # Both numbers are per stocking unit: the cost above came from
             # this ledger's own average, so the quantity has to match it.
@@ -403,6 +409,7 @@ class StockAdjustmentLine(AuditModel):
             warehouse=adjustment.warehouse,
             movement_type=MovementType.ADJUSTMENT,
             uom=self.item.uom,
+            lot=self.lot,
             quantity=quantity,
             unit_cost=original.unit_cost,
             value_adjustment=residue,
@@ -480,7 +487,7 @@ class StockCount(AuditModel):
         return self.adjustments.first()
 
     @transaction.atomic
-    def add(self, item, counted, uom=None):
+    def add(self, item, counted, uom=None, lot=None):
         """
         Put an item on the sheet, freezing what the system says right now.
 
@@ -492,10 +499,17 @@ class StockCount(AuditModel):
             raise ValidationError("Cannot add to a posted count.")
         uom = uom or item.uom
         item.check_uom(uom)
+        if item.tracking != "none" and lot is None:
+            raise ValidationError(
+                f"{item} is tracked; say which batch was counted."
+            )
         return StockCountLine.objects.create(
-            count=self, item=item, uom=uom,
+            count=self, item=item, uom=uom, lot=lot,
             counted_quantity=Decimal(counted),
-            system_quantity=item.on_hand_at(self.warehouse),
+            system_quantity=(
+                lot.on_hand_at(self.warehouse) if lot is not None
+                else item.on_hand_at(self.warehouse)
+            ),
         )
 
     @transaction.atomic
@@ -521,8 +535,7 @@ class StockCount(AuditModel):
             )
 
         stale = [
-            line for line in lines
-            if line.item.on_hand_at(self.warehouse) != line.system_quantity
+            line for line in lines if line.current_system_quantity() != line.system_quantity
         ]
         if stale:
             names = ", ".join(str(line.item) for line in stale[:3])
@@ -546,6 +559,7 @@ class StockCount(AuditModel):
                     adjustment=adjustment,
                     item=line.item,
                     uom=line.item.uom,
+                    lot=line.lot,
                     quantity=line.variance(),
                     notes=(
                         f"Counted {line.counted_quantity} {line.uom}, "
@@ -578,6 +592,12 @@ class StockCountLine(AuditModel):
         help_text="The unit the counter counted in — cases on the pallet, "
                   "eaches on the shelf.",
     )
+    lot = models.ForeignKey(
+        "Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which batch was counted. Required when the item is tracked: a "
+                  "shortfall that cannot say which batch is missing is not a "
+                  "traceable count.",
+    )
     counted_quantity = models.DecimalField(
         max_digits=18, decimal_places=4, help_text="What was found, in `uom`."
     )
@@ -592,8 +612,16 @@ class StockCountLine(AuditModel):
     class Meta:
         ordering = ["id"]
         constraints = [
+            # Two constraints, because a NULL lot is distinct from every
+            # other NULL as far as an index is concerned: one line per
+            # item for untracked stock, one per batch for tracked.
             models.UniqueConstraint(
-                fields=["count", "item"], name="one_count_line_per_item"
+                fields=["count", "item"], condition=Q(lot__isnull=True),
+                name="one_count_line_per_untracked_item",
+            ),
+            models.UniqueConstraint(
+                fields=["count", "item", "lot"], condition=Q(lot__isnull=False),
+                name="one_count_line_per_item_lot",
             ),
             models.CheckConstraint(
                 check=Q(counted_quantity__gte=0), name="count_line_quantity_not_negative"
@@ -605,6 +633,12 @@ class StockCountLine(AuditModel):
 
     def counted_in_stock_units(self):
         return self.item.to_stock_quantity(self.counted_quantity, self.uom)
+
+    def current_system_quantity(self):
+        """What the books say right now, for whatever this line counted."""
+        if self.lot_id is not None:
+            return self.lot.on_hand_at(self.count.warehouse)
+        return self.item.on_hand_at(self.count.warehouse)
 
     def variance(self):
         """

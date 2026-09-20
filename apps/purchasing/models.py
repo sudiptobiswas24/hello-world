@@ -2839,6 +2839,7 @@ class BillLine(TaxedLineMixin, AuditModel):
         movement = StockMovement.objects.create(
             item=item, warehouse=receipt_line.warehouse,
             movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+            lot=receipt_line.lot,
             quantity=Decimal("0"),
             value_adjustment=amount, reference=self.bill.number,
             occurred_at=timezone.now(), notes=memo,
@@ -3737,6 +3738,7 @@ class GoodsReceipt(AuditModel):
                 # quantity and the agreed price — so the movement restates
                 # them together and the total stays the total.
                 uom=line.order_line.uom,
+                lot=line.lot,
                 quantity=quantity,
                 unit_cost=unit_cost,
                 reference=self.reference or self.number,
@@ -3894,7 +3896,7 @@ class GoodsReceipt(AuditModel):
             ):
                 StockMovement.objects.create(
                     item=item, warehouse=target, movement_type=movement_type,
-                    uom=item.uom,
+                    uom=item.uom, lot=line.lot,
                     quantity=signed, unit_cost=cost, reference=self.number,
                     occurred_at=occurred_at,
                     notes=f"Accepted from inspection on {self.number}",
@@ -3954,7 +3956,8 @@ class GoodsReceipt(AuditModel):
         StockMovement.objects.create(
             item=line.order_line.item, warehouse=line.warehouse,
             movement_type=MovementType.ISSUE if is_return else MovementType.RECEIPT,
-            uom=line.order_line.uom, quantity=quantity, unit_cost=Decimal("0"),
+            uom=line.order_line.uom, lot=line.lot, quantity=quantity,
+            unit_cost=Decimal("0"),
             reference=self.reference or self.number,
             occurred_at=timezone.now(),
             notes=(
@@ -4106,6 +4109,7 @@ class GoodsReceipt(AuditModel):
                 receipt=return_receipt,
                 order_line=line.order_line,
                 reverses_line=line,
+                lot=line.lot,
                 warehouse=line.warehouse,
                 quantity_received=quantity,
             )
@@ -4124,6 +4128,12 @@ class GoodsReceiptLine(AuditModel):
         help_text="On a return line, the receipt line being sent back.",
     )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    lot = models.ForeignKey(
+        "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which batch arrived. Required when the item is tracked: the "
+                  "receipt is where a batch enters the company, and if it is not "
+                  "recorded here there is nothing to trace it from.",
+    )
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
 
     def quantity_inspected(self):
@@ -4247,6 +4257,7 @@ class LandedCostApplication(AuditModel):
             warehouse=self.receipt_line.warehouse,
             movement_type=MovementType.ADJUSTMENT,
             uom=self.receipt_line.order_line.item.uom,
+            lot=self.receipt_line.lot,
             quantity=Decimal("0"),
             value_adjustment=-self.amount,
             reference=self.charge_line.bill.number,

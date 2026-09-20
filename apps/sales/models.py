@@ -2230,6 +2230,15 @@ class Delivery(AuditModel):
                             f"{line.order_line.uom}. Allow negative stock on the "
                             f"warehouse if backorders are expected."
                         )
+                    # Expired goods are the one thing a tracked item exists
+                    # to keep off a lorry. An adjustment may still write them
+                    # off — that is what a write-off is for — but a customer
+                    # must not receive them.
+                    if line.lot_id and line.lot.has_expired(self.delivery_date):
+                        raise ValidationError(
+                            f"Batch {line.lot.code} expired on {line.lot.expires_on} "
+                            "and cannot be shipped. Write it off instead."
+                        )
                     # Stock held for somebody else is on the shelf and not
                     # ours to take. This line's own claim is: the whole point
                     # of reserving was to be able to ship it, so it is added
@@ -2286,6 +2295,7 @@ class Delivery(AuditModel):
                 item=item,
                 warehouse=line.warehouse,
                 movement_type=movement_type,
+                lot=line.lot,
                 uom=item.uom,
                 quantity=quantity,
                 unit_cost=unit_cost,
@@ -2393,9 +2403,14 @@ class Delivery(AuditModel):
             backorder_of=self,
         )
         for order_line, remaining in outstanding.items():
+            source = self.lines.filter(order_line=order_line).first()
             DeliveryLine.objects.create(
                 delivery=backorder, order_line=order_line,
-                warehouse=self.lines.filter(order_line=order_line).first().warehouse,
+                warehouse=source.warehouse,
+                # A backorder is the rest of the same shipment, but not
+                # necessarily the same batch: what is left on the shelf when
+                # the lorry comes back may be a different one entirely, so
+                # it is chosen then rather than assumed now.
                 quantity_shipped=remaining,
             )
         return backorder
@@ -2430,6 +2445,7 @@ class Delivery(AuditModel):
                 delivery=customer_return,
                 order_line=line.order_line,
                 warehouse=line.warehouse,
+                lot=line.lot,
                 quantity_shipped=line.quantity_shipped,
                 unit_cost=line.unit_cost,
             )
@@ -2446,6 +2462,12 @@ class DeliveryLine(AuditModel):
         SalesOrderLine, on_delete=models.PROTECT, related_name="delivery_lines"
     )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    lot = models.ForeignKey(
+        "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which batch is being shipped. Required when the item is tracked: "
+                  "a recall that cannot say which customer got which batch is not a "
+                  "recall.",
+    )
     quantity_shipped = models.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
