@@ -178,10 +178,24 @@ production / SQLite for local dev by default. Every module builds on the
     zero-rated or exempt customer is charged correctly without anyone
     remembering to swap the tax by hand. Display and posting use the
     same mapped set.
-  - **Settlement is single-currency**: a payment must be in the
-    invoice's currency. Cross-currency settlement needs FX gain/loss
-    postings that don't exist yet, and treating 100 USD as 100 EUR
-    silently writes off the difference, so it is refused instead.
+  - **Realised exchange differences**: a foreign invoice is booked at
+    the rate on its own date and settled at the rate on the payment's.
+    In its own currency it's square — 1,000 EUR owed, 1,000 EUR paid —
+    but in base currency the two sides differ, and the control account
+    was left holding that difference forever. It isn't an error to hide:
+    the company genuinely received more or fewer pounds than it expected
+    when it booked the sale, because the rate moved while the money was
+    outstanding. `accounting/settlement.py` clears the residue and books
+    the other side to `fx_gain_account`/`fx_loss_account`. A receivable
+    and a payable are mirrors — the rate move that costs you on an
+    invoice saves you on a bill. Re-sizing or removing an allocation
+    restates the difference, because an allocation can be re-pointed
+    after the fact and the difference it caused has to move with it.
+  - **Settlement is still single-currency**: a payment must be in the
+    invoice's currency. Paying a EUR invoice with a USD receipt is a
+    different problem from the rate moving: how many euros a given
+    dollar payment settles is a judgement nobody has made, and guessing
+    it silently writes off the difference. Refused rather than guessed.
   - **Early-settlement discount**: terms like 2/10 net 30 are worth
     nothing until something honours them. `Invoice.settlement_discount()`
     and `discount_due_date()` read the terms, and

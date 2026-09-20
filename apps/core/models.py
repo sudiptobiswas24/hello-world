@@ -570,6 +570,15 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a non-stocked purchase lands when its line names no account.",
     )
+    fx_gain_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Realised exchange gains — when a foreign balance settles for more base "
+                  "currency than it was booked at.",
+    )
+    fx_loss_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Realised exchange losses — when it settles for less.",
+    )
     vendor_prepayment_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Asset account holding money paid to a vendor before the goods arrive.",
