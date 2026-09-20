@@ -25,6 +25,7 @@ from .models import (
     LandedCostApplication,
     ApprovalTier,
     ReceiptInspection,
+    ReorderRule,
 )
 
 
@@ -112,6 +113,15 @@ class BlanketOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "vendor", "start_date", "end_date", "status")
     list_filter = ("status",)
     inlines = [BlanketOrderLineInline]
+
+
+@admin.register(ReorderRule)
+class ReorderRuleAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "item", "warehouse", "minimum", "target", "multiple_of", "vendor", "is_active",
+    )
+    list_filter = ("is_active", "warehouse")
+    search_fields = ("item__sku",)
 
 
 @admin.register(VendorPrice)

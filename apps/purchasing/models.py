@@ -1,6 +1,6 @@
 import datetime
 from collections import defaultdict
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -869,6 +869,118 @@ class PurchaseApprovalPolicy(AuditModel):
     def authorised_groups(self, amount):
         """The groups whose limit reaches this amount."""
         return [tier.group for tier in self.tiers.all() if tier.covers(amount)]
+
+
+class ReorderRule(AuditModel):
+    """
+    When to buy more of something, and how much.
+
+    This is the loop that connects purchasing to the rest of the system.
+    Without it, `preferred_vendor()` and the agreed `lead_time_days` were
+    each read in exactly one place and did nothing the rest of the time —
+    configuration that looked like a feature.
+    """
+
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="reorder_rules")
+    warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.CASCADE, related_name="reorder_rules"
+    )
+    minimum = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="Order when projected stock falls to or below this.",
+    )
+    target = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="Order enough to bring projected stock back up to this.",
+    )
+    multiple_of = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="Round the order up to a whole case, pallet or minimum order quantity.",
+    )
+    vendor = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="reorder_rules",
+        help_text="Buy from this vendor. Left empty, the preferred or cheapest agreed "
+                  "price decides.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["item", "warehouse"]
+        constraints = [
+            models.CheckConstraint(check=Q(minimum__gte=0), name="reorder_minimum_not_negative"),
+            models.UniqueConstraint(
+                fields=["item", "warehouse"], name="one_reorder_rule_per_item_and_warehouse"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.item} at {self.warehouse}: {self.minimum} / {self.target}"
+
+    def clean(self):
+        if self.target is not None and self.minimum is not None and self.target < self.minimum:
+            raise ValidationError("The target cannot be below the minimum.")
+        if self.vendor_id:
+            _require_vendor_role(self.vendor)
+
+    def on_order(self):
+        """
+        Confirmed purchases not yet received, into this warehouse or
+        without a warehouse yet named.
+
+        Counted because ordering again for stock already on its way is
+        how a reorder rule turns one shortage into two months of excess.
+        """
+        lines = PurchaseOrderLine.objects.filter(
+            item=self.item, order__status=OrderStatus.CONFIRMED, charge__isnull=True
+        )
+        return sum(
+            (max(line.quantity - line.quantity_received(), Decimal("0")) for line in lines),
+            Decimal("0"),
+        )
+
+    def committed(self):
+        """Confirmed sales not yet shipped from this warehouse."""
+        from apps.sales.models import OrderStatus as SalesOrderStatus
+        from apps.sales.models import SalesOrderLine
+
+        lines = SalesOrderLine.objects.filter(
+            item=self.item, order__status=SalesOrderStatus.CONFIRMED, charge__isnull=True
+        )
+        return sum(
+            (max(line.quantity - line.quantity_shipped(), Decimal("0")) for line in lines),
+            Decimal("0"),
+        )
+
+    def projected(self):
+        """
+        What will be on hand once everything already agreed has happened.
+
+        On hand alone would reorder for stock that is spoken for, and
+        ignore stock already inbound.
+        """
+        return (
+            Decimal(self.item.available_at(self.warehouse))
+            + self.on_order()
+            - self.committed()
+        )
+
+    def shortfall(self):
+        projected = self.projected()
+        if projected > self.minimum:
+            return Decimal("0")
+        return self.target - projected
+
+    def suggested_quantity(self):
+        shortfall = self.shortfall()
+        if shortfall <= 0:
+            return Decimal("0")
+        if not self.multiple_of:
+            return shortfall
+        multiples = (shortfall / self.multiple_of).to_integral_value(rounding=ROUND_CEILING)
+        return multiples * self.multiple_of
+
+    def suggested_vendor(self, on_date=None):
+        return self.vendor or preferred_vendor(self.item, on_date)
 
 
 class ApprovalTier(AuditModel):
@@ -2840,6 +2952,73 @@ class BillPayment(AuditModel):
                 memo=f"Releasing exchange difference on {self}"
             )
         super().delete(*args, **kwargs)
+
+
+def reorder_suggestions(warehouse=None, on_date=None):
+    """
+    Everything that has fallen to its reorder point, with what to buy and
+    from whom.
+    """
+    on_date = to_date(on_date) or timezone.now().date()
+    rules = ReorderRule.objects.filter(is_active=True).select_related("item", "warehouse")
+    if warehouse is not None:
+        rules = rules.filter(warehouse=warehouse)
+
+    rows = []
+    for rule in rules:
+        quantity = rule.suggested_quantity()
+        if quantity <= 0:
+            continue
+        vendor = rule.suggested_vendor(on_date)
+        rows.append({
+            "rule": rule,
+            "item": rule.item,
+            "warehouse": rule.warehouse,
+            "on_hand": Decimal(rule.item.available_at(rule.warehouse)),
+            "on_order": rule.on_order(),
+            "committed": rule.committed(),
+            "projected": rule.projected(),
+            "quantity": quantity,
+            "vendor": vendor,
+            "unit_price": (
+                resolve_purchase_price(rule.item, vendor, quantity=quantity, on_date=on_date)
+                if vendor else None
+            ),
+            "lead_time_days": (
+                resolve_lead_time(rule.item, vendor, quantity=quantity, on_date=on_date)
+                if vendor else None
+            ),
+        })
+    return sorted(rows, key=lambda row: row["projected"])
+
+
+@transaction.atomic
+def raise_reorder_requisition(requested_by, warehouse=None, on_date=None, rows=None):
+    """
+    Turn the suggestions into a requisition somebody has to approve.
+
+    A requisition rather than a purchase order on purpose. A rule that
+    fires on stale data, or a min/max nobody has revisited since the
+    product changed, should cost a conversation and not a delivery — and
+    the approval step already exists.
+    """
+    on_date = to_date(on_date) or timezone.now().date()
+    rows = rows if rows is not None else reorder_suggestions(warehouse, on_date)
+    if not rows:
+        raise ValidationError("Nothing has fallen to its reorder point.")
+
+    requisition = PurchaseRequisition.objects.create(
+        requested_by=requested_by, request_date=on_date,
+        justification="Raised automatically from reorder rules.",
+    )
+    for row in rows:
+        PurchaseRequisitionLine.objects.create(
+            requisition=requisition, item=row["item"], uom=row["item"].uom,
+            quantity=row["quantity"], estimated_price=row["unit_price"],
+            suggested_vendor=row["vendor"],
+            notes=f"Projected {row['projected']} against a minimum of {row['rule'].minimum}",
+        )
+    return requisition
 
 
 def _receipt_dates(order_line):
