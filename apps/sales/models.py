@@ -2098,6 +2098,11 @@ class Delivery(AuditModel):
                         f"{line.warehouse} holds goods awaiting inspection; accept them "
                         "before shipping."
                     )
+                if line.warehouse.consignment_vendor_id:
+                    raise ValidationError(
+                        f"{line.warehouse} holds {line.warehouse.consignment_vendor}'s "
+                        "stock; draw it into your own before shipping it."
+                    )
                 if item.track_inventory and not line.warehouse.allow_negative_stock:
                     on_hand = item.on_hand_at(line.warehouse)
                     if line.quantity_shipped > on_hand:

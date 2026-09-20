@@ -3105,6 +3105,97 @@ class BillPayment(AuditModel):
         super().delete(*args, **kwargs)
 
 
+@transaction.atomic
+def draw_consignment(item, from_warehouse, to_warehouse, quantity, payable_account,
+                     unit_price=None, on_date=None):
+    """
+    Take consigned stock into ownership and raise the bill for it.
+
+    Drawing is the moment of purchase. Until then the goods are the
+    vendor's, sitting on the company's floor; afterwards they are stock
+    the company owns and owes for. Both facts have to land together, or
+    the stock appears without a liability or the liability without the
+    stock.
+    """
+    on_date = to_date(on_date) or timezone.now().date()
+    vendor = from_warehouse.consignment_vendor
+    if vendor is None:
+        raise ValidationError(f"{from_warehouse} does not hold consignment stock.")
+    if to_warehouse.consignment_vendor_id:
+        raise ValidationError("Drawing into another consignment warehouse owns nothing.")
+
+    quantity = Decimal(quantity)
+    on_hand = Decimal(item.on_hand_at(from_warehouse))
+    if quantity <= 0:
+        raise ValidationError("Draw a positive quantity.")
+    if quantity > on_hand:
+        raise ValidationError(
+            f"Only {on_hand} of {item} is on consignment at {from_warehouse}."
+        )
+
+    price = unit_price
+    if price is None:
+        price = resolve_purchase_price(item, vendor, quantity=quantity, on_date=on_date)
+    if price is None:
+        raise ValidationError(
+            f"No agreed price for {item} from {vendor}; consignment cannot be drawn at "
+            "a price nobody has stated."
+        )
+    price = Decimal(price)
+
+    order = PurchaseOrder.objects.create(
+        vendor=vendor, order_date=on_date,
+        reference=f"Consignment draw from {from_warehouse.code}",
+    )
+    order_line = PurchaseOrderLine.objects.create(
+        order=order, item=item, uom=item.uom, quantity=quantity, unit_price=price,
+    )
+    order.confirm()
+
+    receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=on_date)
+    GoodsReceiptLine.objects.create(
+        receipt=receipt, order_line=order_line, warehouse=to_warehouse,
+        quantity_received=quantity,
+    )
+    receipt.post()
+
+    # The goods were already standing here, so the consignment warehouse
+    # gives them up rather than the vendor shipping them again.
+    StockMovement.objects.create(
+        item=item, warehouse=from_warehouse, movement_type=MovementType.ISSUE,
+        quantity=-quantity, unit_cost=Decimal("0"), reference=order.number,
+        occurred_at=timezone.now(),
+        notes=f"Drawn into ownership on {order.number}",
+    )
+
+    bill = order.create_bill(payable_account, bill_date=on_date)
+    bill.post()
+    return order, bill
+
+
+def consignment_on_hand(warehouse=None, vendor=None):
+    """What the company is holding that it does not own."""
+    warehouses = Warehouse.objects.exclude(consignment_vendor__isnull=True)
+    if warehouse is not None:
+        warehouses = warehouses.filter(pk=warehouse.pk)
+    if vendor is not None:
+        warehouses = warehouses.filter(consignment_vendor=vendor)
+
+    rows = []
+    for store in warehouses.select_related("consignment_vendor"):
+        for item in Item.objects.filter(movements__warehouse=store).distinct():
+            quantity = Decimal(item.on_hand_at(store))
+            if quantity <= 0:
+                continue
+            rows.append({
+                "warehouse": store,
+                "vendor": store.consignment_vendor,
+                "item": item,
+                "quantity": quantity,
+            })
+    return sorted(rows, key=lambda row: -row["quantity"])
+
+
 def reorder_suggestions(warehouse=None, on_date=None):
     """
     Everything that has fallen to its reorder point, with what to buy and
@@ -3523,6 +3614,14 @@ class GoodsReceipt(AuditModel):
             # Services and non-stocked items must never touch stock levels.
             if not line.order_line.item.track_inventory:
                 continue
+            # Consignment stock is on the premises and not on the books.
+            # It moves, so the quantity is recorded; it is not owned, so
+            # no value and no liability are. Booking it would put the
+            # vendor's inventory on the company's balance sheet and accrue
+            # a bill nobody owes yet.
+            if line.warehouse.consignment_vendor_id:
+                self._move_consignment(line, is_return)
+                continue
             movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
             quantity = -line.quantity_received if is_return else line.quantity_received
             unit_cost = line.order_line.unit_price
@@ -3750,6 +3849,20 @@ class GoodsReceipt(AuditModel):
         if not selected:
             raise ValidationError("There is nothing awaiting inspection on this receipt.")
         return selected
+
+    def _move_consignment(self, line, is_return):
+        quantity = -line.quantity_received if is_return else line.quantity_received
+        StockMovement.objects.create(
+            item=line.order_line.item, warehouse=line.warehouse,
+            movement_type=MovementType.ISSUE if is_return else MovementType.RECEIPT,
+            quantity=quantity, unit_cost=Decimal("0"),
+            reference=self.reference or self.number,
+            occurred_at=timezone.now(),
+            notes=(
+                f"{'Consignment returned' if is_return else 'Consignment delivered'} "
+                f"for {self.purchase_order}"
+            ),
+        )
 
     def _restore_components(self, line):
         """Put the components back where they were when a return reverses

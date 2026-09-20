@@ -10,6 +10,12 @@ class Warehouse(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
     address = models.TextField(blank=True)
+    consignment_vendor = models.ForeignKey(
+        "core.Party", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="consignment_warehouses",
+        help_text="Set when the stock here belongs to a vendor until it is used. "
+                  "It is on the premises and not on the books.",
+    )
     is_quarantine = models.BooleanField(
         default=False,
         help_text="Holds goods received but not yet accepted. The stock is owned and "
@@ -115,12 +121,16 @@ class Item(AuditModel):
             return Decimal("0")
         return (value / quantity).quantize(Decimal("0.0001"))
 
+    def is_consigned_at(self, warehouse):
+        """Physically here, owned by the vendor until drawn."""
+        return warehouse.consignment_vendor_id is not None
+
     def available_at(self, warehouse):
         """
         On hand and shippable. Quarantined stock is neither missing nor
         available: it is owned, valued and not yet cleared.
         """
-        if warehouse.is_quarantine:
+        if warehouse.is_quarantine or warehouse.consignment_vendor_id:
             return 0
         return self.on_hand_at(warehouse)
 
