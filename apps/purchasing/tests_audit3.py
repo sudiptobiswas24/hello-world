@@ -190,3 +190,81 @@ class TierRecheckTests(AuditThreeTestCase):
         self.assertIsNone(order.approved_at)
         with self.assertRaisesMessage(ValidationError, "cannot approve"):
             order.approve(by=manager)
+
+
+class StockOnlyCompanyNeedsNoExpenseAccountTests(PurchasingLifecycleTestCase):
+    """
+    A company that buys nothing but stock has no purchases expense account,
+    and should not be made to invent one.
+
+    `create_bill()` demanded an expense account for every line, stocked
+    ones included, even though a stocked line that a receipt accrued for
+    clears GRNI and never posts there. The docstring on the fallback said
+    it was "only ever reached by a non-stocked line"; nothing made that
+    true. The question belongs at post time, where `clears_grni()` has
+    been asked and the answer is actually known.
+    """
+
+    def setUp(self):
+        super().setUp()
+        company = Company.get()
+        company.default_purchase_expense_account = None
+        company.save()
+
+    def received_order(self, quantity="10", price="5"):
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        line = PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal(quantity), unit_price=Decimal(price),
+        )
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order, receipt_date=datetime.date(2026, 1, 2)
+        )
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=line, warehouse=self.warehouse,
+            quantity_received=Decimal(quantity),
+        )
+        receipt.post()
+        return order, line
+
+    def test_a_stocked_bill_posts_with_no_purchases_account_configured(self):
+        order, _line = self.received_order()
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 3))
+        bill.post()
+
+        cleared = bill.journal_entry.lines.get(account=self.grni)
+        self.assertEqual(cleared.debit, Decimal("50.00"))
+        self.assertIsNone(bill.lines.get().expense_account)
+        self.assertEqual(bill.lines.get().posted_account, self.grni)
+
+    def test_a_line_that_really_expenses_still_says_so(self):
+        # A standalone bill, so nothing accrued and nothing to clear: this
+        # line has to land somewhere, and there is nowhere to put it.
+        bill = Bill.objects.create(
+            vendor=self.vendor, bill_date=datetime.date(2026, 1, 3),
+            payable_account=self.payable, currency=self.usd,
+        )
+        BillLine.objects.create(
+            bill=bill, description="Consultancy",
+            quantity=Decimal("1"), unit_price=Decimal("500"),
+        )
+        with self.assertRaises(ValidationError) as caught:
+            bill.post()
+        self.assertIn("default purchase expense account", str(caught.exception))
+
+    def test_a_named_account_is_still_honoured_over_the_fallback(self):
+        order, line = self.received_order()
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 3))
+        # Even with an account named, an accrued line clears the accrual.
+        bill_line = bill.lines.get()
+        bill_line.expense_account = self.expense
+        bill_line.save()
+        bill.post()
+        bill_line.refresh_from_db()
+        self.assertEqual(bill_line.posted_account, self.grni)
+        self.assertFalse(
+            bill.journal_entry.lines.filter(account=self.expense).exists()
+        )

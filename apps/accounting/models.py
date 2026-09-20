@@ -1,5 +1,6 @@
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Sum
@@ -50,6 +51,91 @@ class Account(AuditModel):
             raise ValidationError("An account cannot be its own parent.")
         if self.parent_id and self.parent.account_type != self.account_type:
             raise ValidationError("A sub-account must have the same account_type as its parent.")
+
+
+class AccountingPeriod(AuditModel):
+    """
+    A span of time the books have been reported for, and may be closed
+    against.
+
+    Financial statements that can change after they are issued are not
+    statements. A close is the only thing standing between a signed-off
+    month and somebody back-dating an invoice into it.
+    """
+
+    name = models.CharField(max_length=64)
+    start_date = models.DateField()
+    end_date = models.DateField()
+    closed = models.BooleanField(default=False)
+    closed_at = models.DateTimeField(null=True, blank=True, editable=False)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    note = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["-start_date"]
+        permissions = [("close_accountingperiod", "Can close and reopen accounting periods")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["start_date", "end_date"], name="one_period_per_span"
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError("A period cannot end before it starts.")
+        overlapping = AccountingPeriod.objects.filter(
+            start_date__lte=self.end_date, end_date__gte=self.start_date
+        ).exclude(pk=self.pk)
+        if overlapping.exists():
+            raise ValidationError(
+                f"This overlaps {overlapping.first()}. Periods that overlap would let one "
+                "close while the other stays open, which locks nothing."
+            )
+
+    def covers(self, on_date):
+        on_date = to_date(on_date)
+        return self.start_date <= on_date <= self.end_date
+
+    @classmethod
+    def blocking(cls, on_date):
+        """The closed period covering this date, if any."""
+        on_date = to_date(on_date)
+        if on_date is None:
+            return None
+        return cls.objects.filter(
+            closed=True, start_date__lte=on_date, end_date__gte=on_date
+        ).first()
+
+    def close(self, by=None, note=""):
+        if self.closed:
+            raise ValidationError("This period is already closed.")
+        self.closed = True
+        self.closed_at = timezone.now()
+        self.closed_by = by
+        self.note = note[:255] or self.note
+        self.save(update_fields=["closed", "closed_at", "closed_by", "note", "updated_at"])
+
+    def reopen(self, by=None, note=""):
+        """
+        Unlock a closed period.
+
+        Deliberately possible and deliberately permissioned: books do get
+        reopened, and a system that makes it impossible gets worked around
+        by back-dating into the next period instead, which is worse.
+        """
+        if not self.closed:
+            raise ValidationError("This period is not closed.")
+        self.closed = False
+        self.closed_at = None
+        self.closed_by = by
+        self.note = note[:255] or self.note
+        self.save(update_fields=["closed", "closed_at", "closed_by", "note", "updated_at"])
 
 
 class JournalEntry(AuditModel):
@@ -111,6 +197,15 @@ class JournalEntry(AuditModel):
     def post(self):
         if self.posted:
             raise ValidationError("This journal entry is already posted.")
+        # The one chokepoint every module posts through, so the period
+        # lock only has to be enforced here. A guard per document type
+        # would be six guards, and the seventh would be forgotten.
+        blocking = AccountingPeriod.blocking(self.date)
+        if blocking is not None:
+            raise ValidationError(
+                f"{blocking} is closed; nothing further can be posted into it. "
+                "Date the entry in an open period, or reopen that one."
+            )
         if not self.is_balanced():
             raise ValidationError(
                 f"Cannot post an unbalanced entry (debit={self.total_debit()}, "

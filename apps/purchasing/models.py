@@ -1416,7 +1416,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 quantity=remaining,
                 unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
-                expense_account=line.expense_account or self.vendor_expense_account(),
+                expense_account=line.expense_account,
             )
             bill_line.taxes.set(line.taxes.all())
         return bill
@@ -1595,22 +1595,6 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             expense_account=account,
         )
         return bill
-
-    def vendor_expense_account(self):
-        """
-        Fallback for a line with no expense account of its own.
-
-        Only ever reached by a non-stocked line, since stocked goods clear
-        GRNI instead, but the field is non-null so something has to answer.
-        """
-        account = Company.get().default_purchase_expense_account
-        if account is None:
-            raise ValidationError(
-                "This line has no expense account and the company has no default "
-                "purchase expense account configured."
-            )
-        return account
-
 
 class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     order = models.ForeignKey(PurchaseOrder, related_name="lines", on_delete=models.CASCADE)
@@ -2338,13 +2322,13 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 if not shares:
                     # Nothing on this bill to absorb it — a freight-only
                     # bill, say. Expense it rather than refuse.
-                    debits.append((line.expense_account, round_money(net * rate), label))
+                    debits.append((account, round_money(net * rate), label))
                 else:
                     for item_pk, amount in shares.items():
                         account = inventory_account_for(Item.objects.get(pk=item_pk))
                         debits.append((account, round_money(amount * rate), f"{label} (landed)"))
             else:
-                debits.append((line.expense_account, round_money(net * rate), label))
+                debits.append((account, round_money(net * rate), label))
 
         if variance_total:
             # Purchase price variance goes to the P&L rather than revaluing
@@ -2716,7 +2700,11 @@ class BillLine(TaxedLineMixin, AuditModel):
         help_text="Set instead of an item when this line is freight, handling or similar.",
     )
     description = models.CharField(max_length=255, blank=True)
-    expense_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    expense_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where a line lands when it expenses. A stocked line that a "
+                  "receipt accrued for clears GRNI instead and needs none.",
+    )
     posted_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         editable=False,
@@ -2985,7 +2973,21 @@ class BillLine(TaxedLineMixin, AuditModel):
             grni = Company.get().grni_account
             if grni is not None:
                 return grni
-        return self.expense_account
+        if self.expense_account_id:
+            return self.expense_account
+        # Only a line that actually expenses needs an expense account, and
+        # this is the first point that is known: until clears_grni() has
+        # been asked, a stocked line looks like it needs one and does not.
+        # Demanding it when the bill is built makes a company that buys
+        # nothing but stock configure an account it never posts to.
+        account = Company.get().default_purchase_expense_account
+        if account is None:
+            raise ValidationError(
+                f"{self.label()} expenses rather than clearing an accrual, but has "
+                "no expense account and the company has no default purchase expense "
+                "account configured."
+            )
+        return account
 
     def save(self, *args, **kwargs):
         if self.bill_id and Bill.objects.filter(pk=self.bill_id, posted=True).exists():
