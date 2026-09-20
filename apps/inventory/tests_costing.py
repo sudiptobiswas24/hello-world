@@ -338,12 +338,58 @@ class ChangingTheStandardTests(CostingTestCase):
         set_standard_cost(widget, Decimal("7"), reason=self.reason)
         self.assertEqual(widget.on_hand_at(self.warehouse), Decimal("100"))
 
-    def test_the_revaluation_can_be_voided_like_anything_else(self):
+    def test_a_revaluation_cannot_be_voided_on_its_own(self):
+        """
+        Found by an audit probe, not by the suite.
+
+        Voiding it reversed the ledger and left standard_cost where it
+        was, so the shelf stayed valued at the new figure with nothing
+        posted behind it — ledger -60 against a shelf of 800. The
+        revaluation is a consequence of the standard rather than an event
+        of its own, and the way to undo it is to set the standard back.
+        """
         widget = self.item(CostingMethod.STANDARD, standard=Decimal("5"))
         self.receive(widget, "100", "5")
-        raised = set_standard_cost(widget, Decimal("7"), reason=self.reason)
-        raised[0].void()
+        raised = set_standard_cost(widget, Decimal("8"), reason=self.reason)
+        with self.assertRaises(ValidationError) as caught:
+            raised[0].void()
+        self.assertIn("Set the standard back", str(caught.exception))
+
+    def test_setting_the_standard_back_unwinds_both_records(self):
+        widget = self.item(CostingMethod.STANDARD, standard=Decimal("5"))
+        self.receive(widget, "100", "5")
+        set_standard_cost(widget, Decimal("8"), reason=self.reason)
+        self.assertEqual(widget.stock_value_at(self.warehouse), Decimal("800.00"))
+        set_standard_cost(widget, Decimal("5"), reason=self.reason)
         self.assertEqual(self.balance(self.inventory), Decimal("0.00"))
+        self.assertEqual(self.balance(self.revaluation), Decimal("0.00"))
+        self.assertEqual(widget.stock_value_at(self.warehouse), Decimal("500.00"))
+
+    def test_an_ordinary_revaluation_can_still_be_voided(self):
+        """
+        The refusal is specific to a standard-cost revaluation, not to
+        revaluations in general — and writing this turned up a second
+        defect the probe had missed.
+
+        reverse() negated the line's quantity, which on a value-only line
+        is zero, and wrote a movement carrying nothing. The ledger
+        reversal landed and the shelf kept the revaluation: 400 against a
+        ledger of 500, permanently.
+        """
+        widget = self.item(CostingMethod.AVERAGE)
+        self.receive(widget, "100", "5")
+        adjustment = StockAdjustment.objects.create(
+            adjustment_date=datetime.date(2026, 4, 1),
+            warehouse=self.warehouse, reason=self.reason,
+        )
+        StockAdjustmentLine.objects.create(
+            adjustment=adjustment, item=widget, uom=self.each,
+            quantity=Decimal("0"), revaluation=Decimal("-100"),
+        )
+        adjustment.post()
+        adjustment.void()
+        self.assertEqual(self.balance(self.inventory), Decimal("0.00"))
+        self.assertEqual(widget.stock_value_at(self.warehouse), Decimal("500.00"))
 
     def test_an_empty_shelf_needs_no_revaluation(self):
         widget = self.item(CostingMethod.STANDARD, standard=Decimal("5"))

@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Sum
 
 from apps.core.models import AuditModel, UnitOfMeasure, to_date
@@ -461,6 +461,7 @@ class StockMovement(AuditModel):
             )
 
 
+@transaction.atomic
 def set_standard_cost(item, new_cost, warehouse=None, on_date=None, reason=None):
     """
     Change an item's standard cost and revalue the stock on hand.
@@ -509,6 +510,7 @@ def set_standard_cost(item, new_cost, warehouse=None, on_date=None, reason=None)
         adjustment = StockAdjustment.objects.create(
             adjustment_date=on_date, warehouse=shelf, reason=reason,
             memo=f"Standard cost of {item} from {old_cost} to {new_cost}",
+            from_standard_change=True,
         )
         # Quantity is unchanged; only the value moves. The adjustment line
         # carries it as a value-only movement, which is what

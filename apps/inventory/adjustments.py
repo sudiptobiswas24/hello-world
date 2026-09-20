@@ -130,6 +130,12 @@ class StockAdjustment(AuditModel):
         related_name="adjustments", editable=False,
         help_text="Set when this adjustment was raised by posting a count sheet.",
     )
+    from_standard_change = models.BooleanField(
+        default=False, editable=False,
+        help_text="Set when a change of standard cost raised this. Such an "
+                  "adjustment is a consequence of the standard rather than an "
+                  "event of its own, so it cannot be voided on its own.",
+    )
 
     class Meta:
         ordering = ["-adjustment_date", "-id"]
@@ -257,6 +263,16 @@ class StockAdjustment(AuditModel):
             raise ValidationError("Only a posted adjustment can be voided.")
         if self.is_voided():
             raise ValidationError("This adjustment has already been voided.")
+        if self.from_standard_change:
+            # Reversing the entry would put the ledger back and leave the
+            # standard where it is, so the shelf would still be valued at
+            # the new figure with no posting behind it. The way to undo a
+            # standard is to set it back, which posts its own revaluation.
+            raise ValidationError(
+                "This adjustment records a change of standard cost, and the shelf is "
+                "valued from the standard rather than from this entry. Set the "
+                "standard back instead; that posts its own revaluation."
+            )
 
         on_date = to_date(on_date) or timezone.now().date()
         occurred_at = timezone.now()
@@ -446,6 +462,27 @@ class StockAdjustmentLine(AuditModel):
         if self.movement_id is None:
             return None
         original = self.movement
+        if original.quantity == 0:
+            # A value-only line has no quantity to send back, so the whole
+            # of it is the value. Falling through to the quantity path
+            # negates a zero and writes a movement carrying nothing: the
+            # ledger reversal lands, the shelf keeps the revaluation, and
+            # the two disagree for good.
+            self.reversal_movement = StockMovement.objects.create(
+                item=self.item,
+                warehouse=adjustment.warehouse,
+                movement_type=MovementType.ADJUSTMENT,
+                uom=self.item.uom, lot=self.lot, bin=self.bin,
+                quantity=Decimal("0"),
+                value_adjustment=-(original.value_adjustment or Decimal("0")),
+                adjusts=original.adjusts,
+                reference=adjustment.number,
+                occurred_at=occurred_at,
+                notes=label,
+            )
+            super().save(update_fields=["reversal_movement", "updated_at"])
+            return self.reversal_movement
+
         moved_value = (original.quantity * (original.unit_cost or Decimal("0"))) + (
             original.value_adjustment or Decimal("0")
         )
