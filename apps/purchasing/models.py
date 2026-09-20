@@ -18,6 +18,7 @@ from apps.accounting.models import (
     Tax,
     round_money,
 )
+from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
     AuditModel,
     Company,
@@ -38,10 +39,120 @@ from apps.accounting.settlement import (
 )
 from apps.inventory.valuation import inventory_account_for, post_inventory_entry
 
+from .pricing import preferred_vendor, resolve_lead_time, resolve_purchase_price
+
 
 def _require_vendor_role(party):
     if party and not party.role_assignments.filter(role=PartyRole.VENDOR).exists():
         raise ValidationError(f"{party} does not have the Vendor role.")
+
+
+class VendorPrice(AuditModel):
+    """
+    A price this vendor has agreed for this item — the purchase-side
+    mirror of a sales price list.
+
+    Quantity breaks and validity dates are the point. Without them
+    "agreed price" means whatever was typed on the last order, which is
+    exactly what the three-way match is supposed to be checking against.
+    """
+
+    vendor = models.ForeignKey(Party, on_delete=models.CASCADE, related_name="vendor_prices")
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="vendor_prices")
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    min_quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal("0"),
+        help_text="Smallest order this price applies to — the quantity break.",
+    )
+    vendor_item_code = models.CharField(
+        max_length=64, blank=True,
+        help_text="The vendor's own part number, which is what their invoice will quote.",
+    )
+    lead_time_days = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Days from order to delivery, as agreed."
+    )
+    valid_from = models.DateField(null=True, blank=True)
+    valid_to = models.DateField(null=True, blank=True)
+    is_preferred = models.BooleanField(
+        default=False, help_text="Buy this item from this vendor by default."
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["item", "vendor", "-min_quantity"]
+        constraints = [
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="vendor_price_not_negative"),
+            models.CheckConstraint(
+                check=Q(min_quantity__gte=0), name="vendor_price_min_quantity_not_negative"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.item} from {self.vendor} @ {self.unit_price}"
+
+    def clean(self):
+        _require_vendor_role(self.vendor)
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValidationError("valid_to cannot be before valid_from.")
+
+    def covers(self, on_date=None):
+        on_date = to_date(on_date) or timezone.now().date()
+        if self.valid_from and on_date < self.valid_from:
+            return False
+        if self.valid_to and on_date > self.valid_to:
+            return False
+        return True
+
+    def covers_quantity(self, quantity):
+        if quantity is None:
+            return self.min_quantity <= 0
+        return Decimal(quantity) >= self.min_quantity
+
+
+class PurchaseApprovalPolicy(AuditModel):
+    """
+    The thresholds beyond which committing money needs a second pair of
+    eyes.
+
+    The mirror of the sales discount policy, and the more important half:
+    a sales order gives away margin, a purchase order spends cash. A
+    clerk who may raise an order may raise it for any amount, and no role
+    check anywhere notices.
+
+    Every threshold is optional, so switching this on does not
+    retroactively block every order in the system.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    max_order_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Orders above this total need approval.",
+    )
+    max_line_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Catches one very large line inside an otherwise ordinary order.",
+    )
+    require_approval_without_vendor_price = models.BooleanField(
+        default=False,
+        help_text="Need approval when a line's price was typed in rather than taken "
+                  "from an agreed vendor price.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        verbose_name_plural = "purchase approval policies"
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def active(cls):
+        return cls.objects.filter(is_active=True).first()
 
 
 class FulfilmentStatus(models.TextChoices):
@@ -68,7 +179,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class PurchaseOrder(TaxedDocumentMixin, AuditModel):
+class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()
@@ -84,6 +195,9 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
 
     class Meta:
         ordering = ["-order_date", "-id"]
+        permissions = [
+            ("approve_purchaseorder", "Can approve orders that breach the spend policy"),
+        ]
         constraints = [
             # Drafts all carry an empty number until confirmed, so uniqueness
             # can only apply once one has been assigned.
@@ -103,6 +217,39 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
             self.currency = self.vendor.default_currency
         super().save(*args, **kwargs)
 
+    def approval_reasons(self):
+        reasons = []
+        policy = PurchaseApprovalPolicy.active()
+        if policy is None:
+            return reasons
+
+        total = self.total()
+        if policy.max_order_value is not None and total > policy.max_order_value:
+            reasons.append(
+                f"The order is {total}, above the {policy.max_order_value} limit."
+            )
+        if policy.max_line_value is not None:
+            for line in self.lines.all():
+                if line.total() > policy.max_line_value:
+                    reasons.append(
+                        f"'{line.label()}' is {line.total()}, above the "
+                        f"{policy.max_line_value} line limit."
+                    )
+        if policy.require_approval_without_vendor_price:
+            for line in self.lines.all():
+                if line.is_charge() or line.has_agreed_price():
+                    continue
+                reasons.append(
+                    f"'{line.label()}' was priced by hand, not from an agreed "
+                    "vendor price."
+                )
+        return reasons
+
+    def can_be_approved(self):
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("A cancelled order cannot be approved.")
+        return True
+
     @transaction.atomic
     def confirm(self):
         """
@@ -116,6 +263,11 @@ class PurchaseOrder(TaxedDocumentMixin, AuditModel):
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
+        if self.approval_status() == ApprovalStatus.PENDING:
+            raise ValidationError(
+                "This order needs approval before it can be confirmed: "
+                + " ".join(self.approval_reasons())
+            )
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "purchasing.order", self.order_date, name="Purchase Orders", prefix="PO-"
@@ -344,10 +496,15 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def save(self, *args, **kwargs):
         if self.is_charge() and not self.expense_account_id:
             self.expense_account = self.charge.account_for(is_sale=False)
+        if self.unit_price is None and not self.is_charge() and self.item_id:
+            self.unit_price = resolve_purchase_price(
+                self.item, self.order.vendor, quantity=self.quantity,
+                currency=self.order.currency, on_date=self.order.order_date,
+            )
         if self.unit_price is None:
             raise ValidationError(
-                f"Give {self.label()} a unit price; a purchase order has no price list to "
-                "fall back on — the price is whatever the vendor quoted."
+                f"No agreed price for {self.label()} from {self.order.vendor}: add a "
+                "vendor price, or give the line an explicit unit price."
             )
         # A confirmed line could be edited below what had already been
         # received or billed, silently breaking every drawdown guard that
@@ -362,6 +519,13 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                         f"{committed} of this line has already been received or billed; "
                         "the quantity cannot drop below that."
                     )
+                repriced = (
+                    self.unit_price != previous.unit_price
+                    or self.quantity != previous.quantity
+                    or self.discount_percent != previous.discount_percent
+                )
+                if repriced and self.order.approved_at:
+                    self.order.withdraw_approval()
                 if self.unit_price != previous.unit_price and self.quantity_billed() > 0:
                     raise ValidationError(
                         "This line has been billed; its price can no longer change. The "
@@ -376,6 +540,31 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 "This line has been received or billed and can no longer be removed."
             )
         super().delete(*args, **kwargs)
+
+    def agreed_price(self):
+        """What the vendor has agreed for this line, if anything."""
+        if self.is_charge() or not self.item_id:
+            return None
+        return resolve_purchase_price(
+            self.item, self.order.vendor, quantity=self.quantity,
+            currency=self.order.currency, on_date=self.order.order_date,
+        )
+
+    def has_agreed_price(self):
+        return self.agreed_price() is not None
+
+    def price_against_agreement(self):
+        """
+        How far this line's price sits above what was agreed.
+
+        Positive means the order is being placed for more than the vendor
+        committed to — usually because nobody checked, occasionally
+        because the agreement has lapsed.
+        """
+        agreed = self.agreed_price()
+        if agreed is None or self.unit_price is None:
+            return None
+        return self.unit_price - agreed
 
     def quantity_received(self):
         """Net quantity received so far: posted receipts minus posted returns."""

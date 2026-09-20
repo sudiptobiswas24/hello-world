@@ -174,11 +174,9 @@ class PurchaseOrderTaxTests(PurchaseTaxTestCase):
         self.assertEqual(order.subtotal(), Decimal("50"))
         self.assertEqual(order.total(), Decimal("60"))
 
-    def test_an_order_line_needs_an_explicit_price(self):
-        """There is no purchase price list; the price is whatever the
-        vendor quoted."""
+    def test_a_line_with_no_agreed_price_and_no_explicit_one_is_refused(self):
         order = self.make_order(confirm=False)
-        with self.assertRaisesMessage(ValidationError, "no price list to fall back on"):
+        with self.assertRaisesMessage(ValidationError, "No agreed price"):
             PurchaseOrderLine.objects.create(
                 order=order, item=self.item, uom=self.uom,
                 quantity=Decimal("1"), unit_price=None,

@@ -21,6 +21,7 @@ from apps.accounting.models import (
     compute_taxes,
     round_money,
 )
+from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
     Address,
     AuditModel,
@@ -162,12 +163,6 @@ class ApprovalPolicy(AuditModel):
         return cls.objects.filter(is_active=True).first()
 
 
-class ApprovalStatus(models.TextChoices):
-    NOT_REQUIRED = "not_required", "Not required"
-    PENDING = "pending", "Awaiting approval"
-    APPROVED = "approved", "Approved"
-
-
 class CustomerProfile(AuditModel):
     """
     Sales-side settings for a Party. Held here rather than on core.Party for
@@ -206,7 +201,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class SalesOrder(TaxedDocumentMixin, AuditModel):
+class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
     order_date = models.DateField()
@@ -232,13 +227,6 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
         max_length=16, choices=InvoicePolicy.choices, default=InvoicePolicy.ORDERED,
         help_text="Bill the whole order up front, or only what has shipped.",
     )
-    approved_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
-        related_name="+", editable=False,
-    )
-    approved_at = models.DateTimeField(null=True, blank=True, editable=False)
-    approval_note = models.CharField(max_length=255, blank=True, editable=False)
-
     class Meta:
         ordering = ["-order_date", "-id"]
         permissions = [
@@ -366,38 +354,10 @@ class SalesOrder(TaxedDocumentMixin, AuditModel):
                 )
         return reasons
 
-    def requires_approval(self):
-        return bool(self.approval_reasons())
-
-    def approval_status(self):
-        if self.approved_at:
-            return ApprovalStatus.APPROVED
-        return ApprovalStatus.PENDING if self.requires_approval() else ApprovalStatus.NOT_REQUIRED
-
-    def approve(self, by=None, note=""):
-        """
-        Record that someone accepted the breach. Gated by
-        sales.approve_order at the API and admin layer.
-        """
+    def can_be_approved(self):
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("A cancelled order cannot be approved.")
-        if self.approved_at:
-            raise ValidationError("This order has already been approved.")
-        if not self.requires_approval():
-            raise ValidationError("This order breaches no policy; it needs no approval.")
-        self.approved_by = by
-        self.approved_at = timezone.now()
-        self.approval_note = note or "; ".join(self.approval_reasons())[:255]
-        self.save(update_fields=["approved_by", "approved_at", "approval_note", "updated_at"])
-
-    def withdraw_approval(self):
-        """Drop an approval, so a re-priced order has to be looked at again."""
-        if not self.approved_at:
-            return
-        self.approved_by = None
-        self.approved_at = None
-        self.approval_note = ""
-        self.save(update_fields=["approved_by", "approved_at", "approval_note", "updated_at"])
+        return True
 
     def cancel(self):
         """Cancel an order that hasn't been acted on yet."""

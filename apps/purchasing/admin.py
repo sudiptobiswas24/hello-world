@@ -12,6 +12,8 @@ from .models import (
     GoodsReceiptLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseApprovalPolicy,
+    VendorPrice,
 )
 
 
@@ -21,9 +23,30 @@ class PurchaseOrderLineInline(admin.TabularInline):
     filter_horizontal = ("taxes",)
 
 
+@admin.register(VendorPrice)
+class VendorPriceAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "item", "vendor", "unit_price", "min_quantity", "currency",
+        "lead_time_days", "is_preferred", "is_active",
+    )
+    list_filter = ("is_active", "is_preferred", "vendor")
+    search_fields = ("item__sku", "vendor__name", "vendor_item_code")
+
+
+@admin.register(PurchaseApprovalPolicy)
+class PurchaseApprovalPolicyAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "code", "name", "max_order_value", "max_line_value",
+        "require_approval_without_vendor_price", "is_active",
+    )
+    list_filter = ("is_active",)
+
+
 @admin.register(PurchaseOrder)
 class PurchaseOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("number", "vendor", "order_date", "status", "receipt_status")
+    list_display = (
+        "number", "vendor", "order_date", "status", "approval_status", "receipt_status",
+    )
     list_filter = ("status",)
     inlines = [PurchaseOrderLineInline]
 
