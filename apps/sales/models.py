@@ -2000,6 +2000,12 @@ class Delivery(AuditModel):
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
 
+    is_drop_ship = models.BooleanField(
+        default=False, editable=False,
+        help_text="Shipped by the vendor straight to the customer. Records what the "
+                  "customer received without moving stock the company never held.",
+    )
+
     class Meta:
         verbose_name_plural = "deliveries"
         ordering = ["-delivery_date", "-id"]
@@ -2064,6 +2070,9 @@ class Delivery(AuditModel):
                         f"{already_shipped} already shipped)."
                     )
                 item = line.order_line.item
+                # Nothing was ever on hand to check: the vendor shipped it.
+                if self.is_drop_ship:
+                    continue
                 if item.track_inventory and not line.warehouse.allow_negative_stock:
                     on_hand = item.on_hand_at(line.warehouse)
                     if line.quantity_shipped > on_hand:
@@ -2084,6 +2093,12 @@ class Delivery(AuditModel):
 
         valued = []
         for line in lines:
+            # A drop-ship never entered the warehouse, so there is no stock
+            # to relieve and no cost to recognise here — the vendor's
+            # receipt already charged it to cost of sales. Moving stock
+            # would invent quantity the company never held.
+            if self.is_drop_ship:
+                continue
             # Services and non-stocked items must never touch stock levels.
             item = line.order_line.item
             if not item.track_inventory:

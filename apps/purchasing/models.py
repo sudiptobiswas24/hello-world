@@ -39,7 +39,12 @@ from apps.accounting.settlement import (
     oldest_overdue,
     post_settlement_fx,
 )
-from apps.inventory.valuation import inventory_account_for, post_inventory_entry
+from apps.inventory.valuation import (
+    cogs_account_for,
+    grni_account,
+    inventory_account_for,
+    post_inventory_entry,
+)
 
 from .pricing import preferred_vendor, resolve_lead_time, resolve_purchase_price
 
@@ -888,6 +893,16 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     )
     status = models.CharField(max_length=16, choices=OrderStatus.choices, default=OrderStatus.DRAFT)
     currency = models.ForeignKey(Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+")
+    shipping_note = models.CharField(
+        max_length=255, blank=True,
+        help_text="Where the vendor should deliver, when it is not to the company.",
+    )
+    drop_ship_for = models.ForeignKey(
+        "sales.SalesOrder", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="drop_ship_orders",
+        help_text="Set when this order exists only to ship a sales order direct from "
+                  "the vendor.",
+    )
     subcontract_warehouse = models.ForeignKey(
         Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where components sit while the subcontractor holds them. Still the "
@@ -1063,6 +1078,55 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             bill_line.taxes.set(line.taxes.all())
         return bill
 
+    def is_drop_ship(self):
+        return self.drop_ship_for_id is not None
+
+    @classmethod
+    @transaction.atomic
+    def create_for_drop_ship(cls, sales_order, vendor, order_date=None, lines=None):
+        """
+        Raise a purchase order that ships straight from the vendor to the
+        customer.
+
+        This is the one place the two trading modules touch, and the
+        direction is deliberate: the purchase order exists *because of*
+        the sales order and would be meaningless without it, so
+        Purchasing holds the pointer. Sales still knows nothing about
+        Purchasing, so the dependency stays acyclic and the rule that
+        neither module reaches sideways into the other's internals
+        survives — this reaches into its documents, by reference, only.
+        """
+        from apps.sales.models import OrderStatus as SalesOrderStatus
+
+        if sales_order.status != SalesOrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed sales order can be drop-shipped.")
+        _require_vendor_role(vendor)
+
+        selected = [
+            line for line in (lines if lines is not None else sales_order.lines.all())
+            if not line.is_charge() and line.quantity_shipped() < line.quantity
+        ]
+        if not selected:
+            raise ValidationError("There is nothing left on this order to drop-ship.")
+
+        order_date = to_date(order_date) or timezone.now().date()
+        order = cls.objects.create(
+            vendor=vendor, order_date=order_date,
+            reference=sales_order.number, drop_ship_for=sales_order,
+            shipping_note=f"Deliver direct to {sales_order.customer}",
+        )
+        for line in selected:
+            remaining = line.quantity - line.quantity_shipped()
+            PurchaseOrderLine.objects.create(
+                order=order, sales_order_line=line, item=line.item, uom=line.uom,
+                quantity=remaining,
+                unit_price=resolve_purchase_price(
+                    line.item, vendor, quantity=remaining,
+                    currency=order.currency, on_date=order_date,
+                ) or line.item.average_cost() or Decimal("0"),
+            )
+        return order
+
     @transaction.atomic
     def issue_components(self, from_warehouse, occurred_at=None):
         """
@@ -1224,6 +1288,11 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         related_name="order_lines",
         help_text="Set when this line fulfils a requisition, so the request can be "
                   "traced from ask to receipt.",
+    )
+    sales_order_line = models.ForeignKey(
+        "sales.SalesOrderLine", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="drop_ship_lines",
+        help_text="The customer line this drop-ship fulfils.",
     )
     blanket_line = models.ForeignKey(
         "BlanketOrderLine", null=True, blank=True, on_delete=models.PROTECT,
@@ -2898,6 +2967,9 @@ class GoodsReceipt(AuditModel):
                         f"{already_received} already received)."
                     )
 
+        if self.purchase_order.is_drop_ship() and not is_return:
+            return self._post_drop_ship(lines)
+
         valued = []
         for line in lines:
             # Services and non-stocked items must never touch stock levels.
@@ -2943,6 +3015,72 @@ class GoodsReceipt(AuditModel):
             direction="in",
             reverse=is_return,
         )
+
+        self.posted = True
+        self.posted_at = timezone.now()
+        super(GoodsReceipt, self).save(
+            update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
+        )
+
+    @transaction.atomic
+    def _post_drop_ship(self, lines):
+        """
+        The goods went from the vendor straight to the customer and never
+        touched a warehouse.
+
+        So there is no stock movement to make — inventing one would
+        create quantity the company never held and then relieve it again
+        — and the cost goes straight to cost of sales rather than being
+        capitalised and immediately released. The matching sales delivery
+        is raised here too, because the customer has been shipped whether
+        or not anyone in this company noticed.
+        """
+        from apps.sales.models import Delivery, DeliveryLine
+
+        # Dr cost of sales / Cr goods received not invoiced. Neither
+        # direction post_inventory_entry offers is this one: a drop-ship
+        # skips the inventory account entirely, which is the whole point,
+        # so the entry is built here rather than bent out of a helper
+        # that assumes stock was held.
+        memo = f"Drop-ship to customer for {self.purchase_order}"
+        totals = defaultdict(Decimal)
+        for line in lines:
+            item = line.order_line.item
+            if not item.track_inventory:
+                continue
+            value = round_money(line.quantity_received * line.order_line.unit_price)
+            if value:
+                totals[cogs_account_for(item)] += value
+
+        if totals:
+            accrual = grni_account()
+            entry = JournalEntry.objects.create(
+                date=self.receipt_date, reference=self.reference or self.number, memo=memo
+            )
+            for account, value in totals.items():
+                JournalLine.objects.create(
+                    entry=entry, account=account, debit=value, description=memo[:255]
+                )
+            JournalLine.objects.create(
+                entry=entry, account=accrual,
+                credit=sum(totals.values()), description=memo[:255],
+            )
+            entry.post()
+
+        sales_lines = [line for line in lines if line.order_line.sales_order_line_id]
+        if sales_lines:
+            delivery = Delivery.objects.create(
+                sales_order=self.purchase_order.drop_ship_for,
+                delivery_date=self.receipt_date,
+                reference=self.number,
+                is_drop_ship=True,
+            )
+            for line in sales_lines:
+                DeliveryLine.objects.create(
+                    delivery=delivery, order_line=line.order_line.sales_order_line,
+                    warehouse=line.warehouse, quantity_shipped=line.quantity_received,
+                )
+            delivery.post()
 
         self.posted = True
         self.posted_at = timezone.now()
