@@ -288,3 +288,18 @@ class StockMovement(AuditModel):
                                 self.value_adjustment or Decimal("0")
                             ) + residue
         super().save(*args, **kwargs)
+
+
+# Stock adjustments and counts live in their own module because they are
+# documents with a posting path, not ledger primitives — but Django only
+# discovers models that this one pulls in. The import is last so that
+# Item, Warehouse and StockMovement are fully defined before adjustments
+# imports them back.
+from .adjustments import (  # noqa: E402,F401
+    AdjustmentDirection,
+    AdjustmentReason,
+    StockAdjustment,
+    StockAdjustmentLine,
+    StockCount,
+    StockCountLine,
+)

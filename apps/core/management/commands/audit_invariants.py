@@ -136,7 +136,8 @@ class Command(BaseCommand):
                 body = self._class_body(code, model.__name__)
                 if body is None:
                     continue
-                if "def save" not in body or "immutable" not in body.lower():
+                guard = self._method_body(body, "save")
+                if guard is None or "posted" not in guard or "raise" not in guard:
                     findings.append((
                         "mutable posted document",
                         f"{label}.{model.__name__} has a posted flag but no save() "
@@ -204,6 +205,32 @@ class Command(BaseCommand):
                             "constraint on its sign.",
                         ))
         return findings
+
+    @staticmethod
+    def _method_body(body, name):
+        """
+        The text of one method inside a class body.
+
+        The first version of this check looked for the word "immutable"
+        anywhere in the class, which a class could pass by saying so in
+        its docstring and doing nothing — the exact failure this codebase
+        keeps making. It asks for the guard now: a save() that reads
+        `posted` and raises.
+        """
+        match = re.search(rf"^([ \t]+)def {name}\(", body, re.M)
+        if not match:
+            return None
+        indent = len(match.group(1))
+        newline = body.find("\n", match.end())
+        if newline == -1:
+            return ""
+        rest = body[newline + 1:]
+        # The method ends at the next line indented no further than its own
+        # `def`. Searching from inside the signature instead would match the
+        # signature itself and hand back an empty body, which every guard
+        # then fails to contain.
+        following = re.search(rf"^[ \t]{{0,{indent}}}[^ \t\n]", rest, re.M)
+        return rest[: following.start()] if following else rest
 
     @staticmethod
     def _class_body(code, name):
