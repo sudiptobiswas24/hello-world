@@ -1103,8 +1103,14 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         return applied
 
     def amount_paid(self):
+        # A voided payment is money that never arrived — a bounced cheque,
+        # a recalled transfer. Its allocation stays on record as history,
+        # but nothing counts it any more.
         return sum(
-            (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
+            (allocation.amount
+             for allocation in self.payment_allocations.all()
+             if not allocation.payment.is_voided()),
+            Decimal("0"),
         )
 
     def amount_credited(self):
@@ -1478,6 +1484,8 @@ class InvoicePayment(AuditModel):
             return
         if not self.payment.posted:
             raise ValidationError("Only a posted payment can be allocated.")
+        if self.payment.is_voided():
+            raise ValidationError("This payment has been voided and cannot be allocated.")
         if not self.invoice.posted:
             raise ValidationError("Only a posted invoice can be settled.")
         # A credit note is money owed *to* the customer, so it is settled by
@@ -1616,7 +1624,7 @@ def outstanding_balance(customer):
     """What this customer currently owes across all posted invoices."""
     invoices = Invoice.objects.filter(
         customer=customer, posted=True, credits__isnull=True
-    ).prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes")
+    ).prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes")
     return sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
 
 
@@ -1893,7 +1901,7 @@ def ar_aging(as_of=None):
 
     invoices = (
         Invoice.objects.filter(posted=True, credits__isnull=True)
-        .prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes")
+        .prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes")
     )
     for invoice in invoices:
         due = invoice.amount_due()
@@ -2322,7 +2330,7 @@ def run_dunning(as_of=None, send=True):
     undeliverable = []
     invoices = (
         Invoice.objects.filter(posted=True, credits__isnull=True)
-        .prefetch_related("lines__taxes", "payment_allocations", "credit_notes__lines__taxes",
+        .prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes",
                           "dunning_notices")
     )
     for invoice in invoices:

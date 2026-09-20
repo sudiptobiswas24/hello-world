@@ -516,6 +516,11 @@ class Payment(AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    voided_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The reversing entry, set when this payment is voided.",
+    )
 
     class Meta:
         ordering = ["-payment_date", "-id"]
@@ -600,15 +605,36 @@ class Payment(AuditModel):
         )
 
     @transaction.atomic
+    @transaction.atomic
     def void(self, memo=""):
-        """Reverse a posted payment. Allocations must be released first."""
+        """
+        Reverse a posted payment — a bounced cheque, a recalled transfer.
+
+        Voiding records the fact on the payment rather than deleting its
+        allocations. The allocations are history: they say what this money
+        was once believed to settle, and that belief is worth keeping.
+        What changes is that every balance stops counting them, which the
+        readers do by ignoring allocations whose payment has been voided.
+
+        This used to only post the reversal. The ledger was right and every
+        document was wrong: a bounced receipt left its invoice reading as
+        paid, so dunning never chased it, aging never showed it and the
+        customer's credit limit was quietly freed — while the ledger
+        insisted the money was still owed.
+        """
         if not self.posted:
             raise ValidationError("Only a posted payment can be voided.")
-        if self.journal_entry.reversed_by.exists():
+        if self.voided_entry_id or self.journal_entry.reversed_by.exists():
             raise ValidationError("This payment has already been voided.")
-        return self.journal_entry.create_reversal(
+
+        entry = self.journal_entry.create_reversal(
             memo=memo or f"Void of payment {self.number}"
         )
+        self.voided_entry = entry
+        super(Payment, self).save(update_fields=["voided_entry", "updated_at"])
+        return entry
 
     def is_voided(self):
+        if self.voided_entry_id:
+            return True
         return bool(self.journal_entry_id) and self.journal_entry.reversed_by.exists()

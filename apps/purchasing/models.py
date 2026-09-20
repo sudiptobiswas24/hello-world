@@ -542,8 +542,14 @@ class Bill(TaxedDocumentMixin, AuditModel):
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
 
     def amount_paid(self):
+        # A voided payment is money that never arrived — a bounced cheque,
+        # a recalled transfer. Its allocation stays on record as history,
+        # but nothing counts it any more.
         return sum(
-            (allocation.amount for allocation in self.payment_allocations.all()), Decimal("0")
+            (allocation.amount
+             for allocation in self.payment_allocations.all()
+             if not allocation.payment.is_voided()),
+            Decimal("0"),
         )
 
     def amount_debited(self):
@@ -1464,6 +1470,8 @@ class BillPayment(AuditModel):
             return
         if not self.payment.posted:
             raise ValidationError("Only a posted payment can be allocated.")
+        if self.payment.is_voided():
+            raise ValidationError("This payment has been voided and cannot be allocated.")
         if not self.bill.posted:
             raise ValidationError("Only a posted bill can be settled.")
         # A debit note is money owed back *to* the company, so it is
@@ -1547,12 +1555,12 @@ def vendor_balance(vendor):
     """
     bills = Bill.objects.filter(
         vendor=vendor, posted=True, debits__isnull=True
-    ).prefetch_related("lines__taxes", "payment_allocations", "debit_notes__lines__taxes")
+    ).prefetch_related("lines__taxes", "payment_allocations__payment", "debit_notes__lines__taxes")
     owed = sum((bill.amount_due() for bill in bills), Decimal("0"))
 
     notes = Bill.objects.filter(
         vendor=vendor, posted=True, debits__isnull=False
-    ).prefetch_related("lines__taxes", "payment_allocations", "debits__lines__taxes")
+    ).prefetch_related("lines__taxes", "payment_allocations__payment", "debits__lines__taxes")
     refundable = sum((note.refund_due() for note in notes), Decimal("0"))
     return owed - refundable
 
@@ -1607,7 +1615,7 @@ def payment_run(due_by=None, vendor=None):
     due_by = to_date(due_by) or timezone.now().date()
     bills = Bill.objects.filter(posted=True, debits__isnull=True).select_related(
         "vendor", "currency"
-    ).prefetch_related("lines__taxes", "payment_allocations", "debit_notes__lines__taxes")
+    ).prefetch_related("lines__taxes", "payment_allocations__payment", "debit_notes__lines__taxes")
     if vendor is not None:
         bills = bills.filter(vendor=vendor)
 
