@@ -1,3 +1,4 @@
+import datetime
 from collections import defaultdict
 from decimal import Decimal
 
@@ -116,6 +117,289 @@ class VendorPrice(AuditModel):
         if quantity is None:
             return self.min_quantity <= 0
         return Decimal(quantity) >= self.min_quantity
+
+
+class RfqStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    SENT = "sent", "Sent"
+    AWARDED = "awarded", "Awarded"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class RequestForQuotation(AuditModel):
+    """
+    The same requirement put to several vendors, so their answers can be
+    compared before anyone commits.
+
+    Not a purchase order in a different state, which is how Odoo models
+    it. An RFQ goes to *many* vendors at once, collects prices that are
+    not agreements, and ends in one of them being awarded while the rest
+    are declined. Folding that into a purchase order would mean either a
+    fake order per vendor — every one of which pollutes the open-order
+    reports — or a single order whose vendor keeps changing, which loses
+    the comparison that was the point.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    requisition = models.ForeignKey(
+        "PurchaseRequisition", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="rfqs",
+    )
+    issue_date = models.DateField()
+    response_due = models.DateField(null=True, blank=True)
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=RfqStatus.choices, default=RfqStatus.DRAFT)
+
+    class Meta:
+        ordering = ["-issue_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_rfq_number"
+            )
+        ]
+
+    def __str__(self):
+        return self.number or f"RFQ-draft-{self.pk}"
+
+    @transaction.atomic
+    def issue(self):
+        if self.status != RfqStatus.DRAFT:
+            raise ValidationError(f"This RFQ is already {self.get_status_display().lower()}.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot issue an RFQ with no lines.")
+        if not self.invited.exists():
+            raise ValidationError("Cannot issue an RFQ with no vendors invited.")
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "purchasing.rfq", self.issue_date,
+                name="Requests for Quotation", prefix="RFQ-",
+            )
+        self.status = RfqStatus.SENT
+        self.save(update_fields=["number", "status", "updated_at"])
+
+    def cancel(self):
+        if self.status == RfqStatus.AWARDED:
+            raise ValidationError("This RFQ has been awarded; cancel the purchase order.")
+        if self.status == RfqStatus.CANCELLED:
+            raise ValidationError("This RFQ is already cancelled.")
+        self.status = RfqStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+
+    def comparison(self):
+        """
+        The quotes side by side, per line, cheapest flagged.
+
+        Cheapest is flagged rather than chosen. Lead time, quality and
+        who answers the phone are not in this table, and a system that
+        picked for you would be pretending otherwise.
+        """
+        invited = list(self.invited.select_related("vendor"))
+        rows = []
+        for line in self.lines.all():
+            quotes = {
+                quote.invitation_id: quote
+                for quote in line.quotes.select_related("invitation__vendor")
+            }
+            priced = [
+                (invitation, quotes[invitation.pk])
+                for invitation in invited if invitation.pk in quotes
+            ]
+            best = min(
+                (quote.unit_price for _, quote in priced), default=None
+            )
+            rows.append({
+                "line": line,
+                "item": line.item,
+                "quantity": line.quantity,
+                "quotes": [
+                    {
+                        "vendor": invitation.vendor,
+                        "invitation": invitation,
+                        "unit_price": quote.unit_price,
+                        "total": round_money(quote.unit_price * line.quantity),
+                        "lead_time_days": quote.lead_time_days,
+                        "is_cheapest": quote.unit_price == best,
+                    }
+                    for invitation, quote in priced
+                ],
+                "missing": [
+                    invitation.vendor for invitation in invited
+                    if invitation.pk not in quotes
+                ],
+            })
+        return rows
+
+    def vendor_totals(self):
+        """
+        What each vendor would cost for the whole requirement.
+
+        Only vendors who quoted *every* line get a total. A part-quote
+        compared against a full one is not a comparison, and showing it
+        as a smaller number is actively misleading.
+        """
+        totals = {}
+        for invitation in self.invited.select_related("vendor"):
+            quotes = {quote.line_id: quote for quote in invitation.quotes.all()}
+            lines = list(self.lines.all())
+            if len(quotes) != len(lines):
+                totals[invitation] = None
+                continue
+            totals[invitation] = sum(
+                (round_money(quotes[line.pk].unit_price * line.quantity) for line in lines),
+                Decimal("0"),
+            )
+        return totals
+
+    @transaction.atomic
+    def award(self, invitation, order_date=None, record_prices=False):
+        """
+        Give the business to one vendor, at the prices they quoted.
+
+        Quoted prices are optionally written back as agreed vendor prices,
+        because a price won in competition is exactly the kind that should
+        be checked against next time — but only on request, since a quote
+        for one order is not always an ongoing agreement.
+        """
+        if self.status != RfqStatus.SENT:
+            raise ValidationError("Only an issued RFQ can be awarded.")
+        if invitation.rfq_id != self.pk:
+            raise ValidationError("That vendor was not invited to this RFQ.")
+        quotes = {quote.line_id: quote for quote in invitation.quotes.all()}
+        lines = list(self.lines.all())
+        missing = [line for line in lines if line.pk not in quotes]
+        if missing:
+            raise ValidationError(
+                f"{invitation.vendor} did not quote for {missing[0].item}; award a vendor "
+                "who quoted the whole requirement, or split the RFQ."
+            )
+
+        order_date = to_date(order_date) or timezone.now().date()
+        order = PurchaseOrder.objects.create(
+            vendor=invitation.vendor, order_date=order_date,
+            reference=self.number, currency=self.currency,
+        )
+        for line in lines:
+            quote = quotes[line.pk]
+            PurchaseOrderLine.objects.create(
+                order=order, item=line.item, uom=line.uom,
+                requisition_line=line.requisition_line,
+                quantity=line.quantity, unit_price=quote.unit_price,
+                expected_date=(
+                    order_date + datetime.timedelta(days=quote.lead_time_days)
+                    if quote.lead_time_days else None
+                ),
+            )
+            if record_prices:
+                VendorPrice.objects.create(
+                    vendor=invitation.vendor, item=line.item, currency=self.currency,
+                    unit_price=quote.unit_price, min_quantity=line.quantity,
+                    lead_time_days=quote.lead_time_days, valid_from=order_date,
+                )
+
+        invitation.awarded = True
+        invitation.save(update_fields=["awarded", "updated_at"])
+        self.status = RfqStatus.AWARDED
+        self.save(update_fields=["status", "updated_at"])
+        return order
+
+
+class RfqLine(AuditModel):
+    rfq = models.ForeignKey(RequestForQuotation, related_name="lines", on_delete=models.CASCADE)
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="rfq_lines")
+    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    quantity = models.DecimalField(max_digits=18, decimal_places=4)
+    requisition_line = models.ForeignKey(
+        "PurchaseRequisitionLine", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="rfq_lines",
+    )
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="rfq_line_quantity_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.item} x{self.quantity}"
+
+
+class RfqInvitation(AuditModel):
+    """One vendor's involvement in an RFQ."""
+
+    rfq = models.ForeignKey(RequestForQuotation, related_name="invited", on_delete=models.CASCADE)
+    vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="rfq_invitations")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+    declined = models.BooleanField(default=False)
+    awarded = models.BooleanField(default=False)
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["vendor__name"]
+        constraints = [
+            models.UniqueConstraint(fields=["rfq", "vendor"], name="one_invitation_per_vendor"),
+        ]
+
+    def __str__(self):
+        return f"{self.vendor} on {self.rfq}"
+
+    def clean(self):
+        _require_vendor_role(self.vendor)
+
+    def decline(self, note=""):
+        """A vendor saying no is an answer, and worth keeping."""
+        if self.quotes.exists():
+            raise ValidationError("This vendor has already quoted.")
+        self.declined = True
+        self.responded_at = timezone.now()
+        self.notes = note[:255] or self.notes
+        self.save(update_fields=["declined", "responded_at", "notes", "updated_at"])
+
+    def quote(self, line, unit_price, lead_time_days=None, notes=""):
+        if self.declined:
+            raise ValidationError("This vendor declined to quote.")
+        if line.rfq_id != self.rfq_id:
+            raise ValidationError("That line belongs to a different RFQ.")
+        quote, _ = RfqQuote.objects.update_or_create(
+            invitation=self, line=line,
+            defaults={
+                "unit_price": Decimal(unit_price),
+                "lead_time_days": lead_time_days,
+                "notes": notes,
+            },
+        )
+        if not self.responded_at:
+            self.responded_at = timezone.now()
+            self.save(update_fields=["responded_at", "updated_at"])
+        return quote
+
+
+class RfqQuote(AuditModel):
+    """What one vendor said one line would cost."""
+
+    invitation = models.ForeignKey(
+        RfqInvitation, related_name="quotes", on_delete=models.CASCADE
+    )
+    line = models.ForeignKey(RfqLine, related_name="quotes", on_delete=models.CASCADE)
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    lead_time_days = models.PositiveSmallIntegerField(null=True, blank=True)
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["line", "unit_price"]
+        constraints = [
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="rfq_quote_not_negative"),
+            models.UniqueConstraint(
+                fields=["invitation", "line"], name="one_quote_per_vendor_and_line"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.invitation.vendor} @ {self.unit_price}"
 
 
 class RequisitionStatus(models.TextChoices):

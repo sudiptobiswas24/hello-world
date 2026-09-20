@@ -18,6 +18,10 @@ from .models import (
     BlanketOrderLine,
     PurchaseRequisition,
     PurchaseRequisitionLine,
+    RequestForQuotation,
+    RfqInvitation,
+    RfqLine,
+    RfqQuote,
 )
 
 
@@ -25,6 +29,28 @@ class PurchaseOrderLineInline(admin.TabularInline):
     model = PurchaseOrderLine
     extra = 1
     filter_horizontal = ("taxes",)
+
+
+class RfqLineInline(admin.TabularInline):
+    model = RfqLine
+    extra = 1
+
+
+class RfqInvitationInline(admin.TabularInline):
+    model = RfqInvitation
+    extra = 1
+
+
+@admin.register(RequestForQuotation)
+class RequestForQuotationAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("number", "issue_date", "response_due", "status")
+    list_filter = ("status",)
+    inlines = [RfqLineInline, RfqInvitationInline]
+
+
+@admin.register(RfqQuote)
+class RfqQuoteAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("invitation", "line", "unit_price", "lead_time_days")
 
 
 class PurchaseRequisitionLineInline(admin.TabularInline):
