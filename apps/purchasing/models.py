@@ -610,6 +610,43 @@ class PurchaseRequisitionLine(AuditModel):
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
 
 
+class SubcontractComponent(AuditModel):
+    """
+    A component the company supplies so the vendor can make the line's
+    item.
+
+    This is a narrow slice of subcontracting on purpose: there is no
+    manufacturing module here, so there are no routings, no operations
+    and no work centres. What it does cover is the part that touches
+    purchasing and the ledger — components leaving, a finished item
+    arriving, and its cost being what the components cost plus what the
+    vendor charged.
+    """
+
+    order_line = models.ForeignKey(
+        "PurchaseOrderLine", related_name="components", on_delete=models.CASCADE
+    )
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="supplied_to")
+    quantity_per = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="How many of this component go into one of the finished item.",
+    )
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity_per__gt=0), name="component_quantity_positive"
+            ),
+            models.UniqueConstraint(
+                fields=["order_line", "item"], name="one_component_row_per_item"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.quantity_per} x {self.item}"
+
+
 class BlanketStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     CONFIRMED = "confirmed", "Confirmed"
@@ -851,6 +888,11 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     )
     status = models.CharField(max_length=16, choices=OrderStatus.choices, default=OrderStatus.DRAFT)
     currency = models.ForeignKey(Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+")
+    subcontract_warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where components sit while the subcontractor holds them. Still the "
+                  "company's stock — it has only moved, not been sold.",
+    )
     bill_policy = models.CharField(
         max_length=16, choices=BillPolicy.choices, default=BillPolicy.RECEIVED,
         help_text="Accept a bill for the whole order, or only for what has actually arrived.",
@@ -1020,6 +1062,48 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             )
             bill_line.taxes.set(line.taxes.all())
         return bill
+
+    @transaction.atomic
+    def issue_components(self, from_warehouse, occurred_at=None):
+        """
+        Send the components out to the subcontractor.
+
+        They move warehouse; they do not leave the company. Stock at a
+        subcontractor is still stock you own and still stock you can lose,
+        and writing it off on despatch would hide both facts. A transfer
+        keeps the value on the books where it belongs.
+        """
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can issue components.")
+        if self.subcontract_warehouse_id is None:
+            raise ValidationError(
+                "Set a subcontract warehouse before issuing components; the stock has to "
+                "sit somewhere it can still be counted."
+            )
+        occurred_at = occurred_at or timezone.now()
+
+        moved = []
+        for line in self.lines.filter(charge__isnull=True):
+            for component in line.components.select_related("item"):
+                quantity = round_money(component.quantity_per * line.quantity)
+                if quantity <= 0 or not component.item.track_inventory:
+                    continue
+                cost = component.item.average_cost_at(from_warehouse)
+                for warehouse, movement_type, signed in (
+                    (from_warehouse, MovementType.TRANSFER_OUT, -quantity),
+                    (self.subcontract_warehouse, MovementType.TRANSFER_IN, quantity),
+                ):
+                    StockMovement.objects.create(
+                        item=component.item, warehouse=warehouse,
+                        movement_type=movement_type, quantity=signed,
+                        unit_cost=cost, reference=self.number,
+                        occurred_at=occurred_at,
+                        notes=f"Components to subcontractor for {self.number}",
+                    )
+                moved.append((component.item, quantity))
+        if not moved:
+            raise ValidationError("This order has no components to issue.")
+        return moved
 
     def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
         """
@@ -1218,6 +1302,18 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 "This line has been received or billed and can no longer be removed."
             )
         super().delete(*args, **kwargs)
+
+    def is_subcontract(self):
+        return self.components.exists()
+
+    def component_cost(self, warehouse):
+        """What one finished unit's components are worth."""
+        return sum(
+            (round_money(component.quantity_per
+                         * component.item.average_cost_at(warehouse))
+             for component in self.components.select_related("item")),
+            Decimal("0"),
+        )
 
     def agreed_price(self):
         """What the vendor has agreed for this line, if anything."""
@@ -2810,6 +2906,14 @@ class GoodsReceipt(AuditModel):
             movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
             quantity = -line.quantity_received if is_return else line.quantity_received
             unit_cost = line.order_line.unit_price
+            # A subcontracted item is worth what the components cost plus
+            # what the vendor charged to assemble them. Valuing it at the
+            # vendor's charge alone would report a part built from 100 of
+            # components as worth the 5 of labour.
+            component_cost = Decimal("0")
+            if line.order_line.is_subcontract() and not is_return:
+                component_cost = self._consume_components(line)
+                unit_cost = unit_cost + component_cost
             StockMovement.objects.create(
                 item=line.order_line.item,
                 warehouse=line.warehouse,
@@ -2823,7 +2927,13 @@ class GoodsReceipt(AuditModel):
                     f"{self.purchase_order} ({self.number})"
                 ),
             )
-            valued.append((line.order_line.item, line.quantity_received * unit_cost))
+            # Only the vendor's charge hits the ledger: the component
+            # value has merely moved from one item to another inside the
+            # same inventory account, so posting it again would double it.
+            valued.append((
+                line.order_line.item,
+                line.quantity_received * (unit_cost - component_cost),
+            ))
 
         post_inventory_entry(
             valued,
@@ -2839,6 +2949,40 @@ class GoodsReceipt(AuditModel):
         super(GoodsReceipt, self).save(
             update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
         )
+
+    def _consume_components(self, line):
+        """
+        Take the components the subcontractor used out of their warehouse,
+        and return what one finished unit's worth of them cost.
+        """
+        order = self.purchase_order
+        if order.subcontract_warehouse_id is None:
+            raise ValidationError(
+                f"{order} has subcontracted lines but no subcontract warehouse; the "
+                "components have nowhere to be consumed from."
+            )
+        warehouse = order.subcontract_warehouse
+        per_unit = Decimal("0")
+        for component in line.order_line.components.select_related("item"):
+            if not component.item.track_inventory:
+                continue
+            used = round_money(component.quantity_per * line.quantity_received)
+            cost = component.item.average_cost_at(warehouse)
+            on_hand = component.item.on_hand_at(warehouse)
+            if used > on_hand:
+                raise ValidationError(
+                    f"The subcontractor is short {used - on_hand} of {component.item}; "
+                    "issue the components before receiving the finished item."
+                )
+            StockMovement.objects.create(
+                item=component.item, warehouse=warehouse,
+                movement_type=MovementType.ISSUE, quantity=-used, unit_cost=cost,
+                reference=self.number,
+                occurred_at=timezone.now(),
+                notes=f"Consumed by subcontractor for {self.number}",
+            )
+            per_unit += round_money(component.quantity_per * cost)
+        return per_unit
 
     @transaction.atomic
     def create_return(self):
