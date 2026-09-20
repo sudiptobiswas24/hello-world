@@ -2090,6 +2090,14 @@ class Delivery(AuditModel):
                 # Nothing was ever on hand to check: the vendor shipped it.
                 if self.is_drop_ship:
                     continue
+                # Quarantined stock is owned and valued but not cleared.
+                # Nothing else stops a picker choosing that warehouse, so
+                # the refusal has to live where the stock actually moves.
+                if line.warehouse.is_quarantine:
+                    raise ValidationError(
+                        f"{line.warehouse} holds goods awaiting inspection; accept them "
+                        "before shipping."
+                    )
                 if item.track_inventory and not line.warehouse.allow_negative_stock:
                     on_hand = item.on_hand_at(line.warehouse)
                     if line.quantity_shipped > on_hand:

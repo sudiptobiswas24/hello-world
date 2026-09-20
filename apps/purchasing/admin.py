@@ -24,6 +24,7 @@ from .models import (
     RfqQuote,
     LandedCostApplication,
     ApprovalTier,
+    ReceiptInspection,
 )
 
 
@@ -48,6 +49,18 @@ class RequestForQuotationAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "issue_date", "response_due", "status")
     list_filter = ("status",)
     inlines = [RfqLineInline, RfqInvitationInline]
+
+
+@admin.register(ReceiptInspection)
+class ReceiptInspectionAdmin(admin.ModelAdmin):
+    list_display = ("receipt_line", "quantity", "accepted", "inspected_on", "warehouse")
+    list_filter = ("accepted",)
+    readonly_fields = ("receipt_line", "quantity", "accepted", "inspected_on", "warehouse")
+
+    def has_add_permission(self, request):
+        # Recorded by GoodsReceipt.accept()/reject(), which also move the
+        # stock — a form here would record a decision nothing acted on.
+        return False
 
 
 @admin.register(LandedCostApplication)

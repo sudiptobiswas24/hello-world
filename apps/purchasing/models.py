@@ -1383,6 +1383,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         null=True, blank=True,
         help_text="When the vendor said it would arrive — what on-time is measured against.",
     )
+    inspect_on_receipt = models.BooleanField(
+        default=False,
+        help_text="Land these goods in quarantine until someone accepts them.",
+    )
     expense_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a non-stocked line lands when this order is billed.",
@@ -1471,6 +1475,17 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 "This line has been received or billed and can no longer be removed."
             )
         super().delete(*args, **kwargs)
+
+    def requires_inspection(self):
+        """
+        Whether goods on this line must be inspected before they are
+        available.
+
+        Set per line so a vendor on probation, or one troublesome part,
+        can be inspected without quarantining everything the company
+        buys.
+        """
+        return self.inspect_on_receipt
 
     def is_subcontract(self):
         return self.components.exists()
@@ -3314,6 +3329,98 @@ class GoodsReceipt(AuditModel):
             update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
         )
 
+    def quarantined_lines(self):
+        return [line for line in self.lines.all() if line.warehouse.is_quarantine]
+
+    def awaiting_inspection(self):
+        """{receipt_line: quantity} still sitting in quarantine."""
+        return {
+            line: line.quantity_uninspected()
+            for line in self.quarantined_lines()
+            if line.quantity_uninspected() > 0
+        }
+
+    @transaction.atomic
+    def accept(self, warehouse, quantities=None, occurred_at=None):
+        """
+        Clear inspected goods into a warehouse they can be shipped from.
+
+        A transfer, not a receipt: the goods were already received, owned
+        and valued when they arrived. Receiving them again would book the
+        purchase twice, which is what happens if quarantine is modelled
+        as "not yet received" rather than "not yet cleared".
+        """
+        if not self.posted:
+            raise ValidationError("Only a posted receipt has goods to accept.")
+        if warehouse.is_quarantine:
+            raise ValidationError("Accepting goods into quarantine clears nothing.")
+        occurred_at = occurred_at or timezone.now()
+
+        selected = self._inspection_selection(quantities)
+        moved = []
+        for line, quantity in selected:
+            item = line.order_line.item
+            cost = item.average_cost_at(line.warehouse)
+            for target, movement_type, signed in (
+                (line.warehouse, MovementType.TRANSFER_OUT, -quantity),
+                (warehouse, MovementType.TRANSFER_IN, quantity),
+            ):
+                StockMovement.objects.create(
+                    item=item, warehouse=target, movement_type=movement_type,
+                    quantity=signed, unit_cost=cost, reference=self.number,
+                    occurred_at=occurred_at,
+                    notes=f"Accepted from inspection on {self.number}",
+                )
+            ReceiptInspection.objects.create(
+                receipt_line=line, quantity=quantity, accepted=True,
+                inspected_on=to_date(occurred_at), warehouse=warehouse,
+            )
+            moved.append((item, quantity))
+        return moved
+
+    @transaction.atomic
+    def reject(self, quantities=None, note="", debit_bills=True):
+        """
+        Send failed goods back to the vendor.
+
+        Recorded as an inspection *and* a return, because those are two
+        facts: that the goods failed, which is vendor performance, and
+        that they left, which is stock and money.
+        """
+        if not self.posted:
+            raise ValidationError("Only a posted receipt has goods to reject.")
+        selected = self._inspection_selection(quantities)
+        for line, quantity in selected:
+            ReceiptInspection.objects.create(
+                receipt_line=line, quantity=quantity, accepted=False,
+                inspected_on=timezone.now().date(), note=note,
+            )
+        return self.create_return(
+            quantities={line: quantity for line, quantity in selected},
+            debit_bills=debit_bills,
+        )
+
+    def _inspection_selection(self, quantities):
+        if quantities is None:
+            selected = [
+                (line, line.quantity_uninspected()) for line in self.quarantined_lines()
+            ]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
+        else:
+            selected = [(line, Decimal(quantity)) for line, quantity in quantities.items()
+                        if Decimal(quantity) > 0]
+            for line, quantity in selected:
+                if line.receipt_id != self.pk:
+                    raise ValidationError("That line belongs to a different receipt.")
+                if quantity > line.quantity_uninspected():
+                    raise ValidationError(
+                        f"Only {line.quantity_uninspected()} of {line.order_line.item} is "
+                        f"awaiting inspection; cannot decide {quantity}."
+                    )
+        if not selected:
+            raise ValidationError("There is nothing awaiting inspection on this receipt.")
+        return selected
+
     def _restore_components(self, line):
         """Put the components back where they were when a return reverses
         a subcontract receipt, and return their per-unit cost."""
@@ -3475,6 +3582,15 @@ class GoodsReceiptLine(AuditModel):
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
 
+    def quantity_inspected(self):
+        """How much of this line has been accepted or rejected."""
+        return self.inspections.aggregate(
+            total=models.Sum("quantity")
+        )["total"] or Decimal("0")
+
+    def quantity_uninspected(self):
+        return self.quantity_received - self.quantity_inspected()
+
     def quantity_returned(self):
         """How much of this line posted returns have already sent back."""
         return self.return_lines.filter(receipt__posted=True).aggregate(
@@ -3595,3 +3711,35 @@ class LandedCostApplication(AuditModel):
         self.released_entry = entry
         self.save(update_fields=["released_entry", "updated_at"])
         return entry
+
+
+class ReceiptInspection(AuditModel):
+    """
+    One decision about goods held for inspection.
+
+    Kept as a record rather than a flag because "these failed" is vendor
+    performance data, and a flag flipped back to accepted after a rework
+    would erase the fact that they ever failed.
+    """
+
+    receipt_line = models.ForeignKey(
+        GoodsReceiptLine, on_delete=models.PROTECT, related_name="inspections"
+    )
+    quantity = models.DecimalField(max_digits=18, decimal_places=4)
+    accepted = models.BooleanField()
+    inspected_on = models.DateField()
+    warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where accepted goods were cleared to.",
+    )
+    note = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["-inspected_on", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="inspection_quantity_positive"),
+        ]
+
+    def __str__(self):
+        verdict = "accepted" if self.accepted else "rejected"
+        return f"{self.quantity} {verdict} on {self.inspected_on}"

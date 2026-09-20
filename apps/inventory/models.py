@@ -10,6 +10,11 @@ class Warehouse(AuditModel):
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=255)
     address = models.TextField(blank=True)
+    is_quarantine = models.BooleanField(
+        default=False,
+        help_text="Holds goods received but not yet accepted. The stock is owned and "
+                  "valued; it simply may not be shipped until someone has looked at it.",
+    )
     allow_negative_stock = models.BooleanField(
         default=False,
         help_text="Permit shipping more than is on hand (backorders, in-transit stock).",
@@ -109,6 +114,15 @@ class Item(AuditModel):
         if quantity <= 0:
             return Decimal("0")
         return (value / quantity).quantize(Decimal("0.0001"))
+
+    def available_at(self, warehouse):
+        """
+        On hand and shippable. Quarantined stock is neither missing nor
+        available: it is owned, valued and not yet cleared.
+        """
+        if warehouse.is_quarantine:
+            return 0
+        return self.on_hand_at(warehouse)
 
     def average_cost(self):
         """

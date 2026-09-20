@@ -157,6 +157,7 @@ ROLES = {
         *crud("inventory", "stockmovement", actions=("add", "view")),
         *crud("purchasing", "goodsreceipt"),
         *crud("purchasing", "goodsreceiptline"),
+        *crud("purchasing", "receiptinspection", actions=("view",)),
         "purchasing.post_goodsreceipt",
         *crud("sales", "delivery"),
         *crud("sales", "deliveryline"),
