@@ -22,6 +22,7 @@ from .models import (
     RfqInvitation,
     RfqLine,
     RfqQuote,
+    LandedCostApplication,
 )
 
 
@@ -46,6 +47,24 @@ class RequestForQuotationAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "issue_date", "response_due", "status")
     list_filter = ("status",)
     inlines = [RfqLineInline, RfqInvitationInline]
+
+
+@admin.register(LandedCostApplication)
+class LandedCostApplicationAdmin(admin.ModelAdmin):
+    list_display = ("charge_line", "receipt_line", "amount", "date", "is_released")
+    readonly_fields = (
+        "charge_line", "receipt_line", "amount", "date",
+        "journal_entry", "stock_movement", "released_entry",
+    )
+
+    def has_add_permission(self, request):
+        # Allocating posts to the ledger and moves stock value, so it goes
+        # through BillLine.allocate_landed_cost() rather than a form.
+        return False
+
+    @admin.display(boolean=True, description="Released")
+    def is_released(self, obj):
+        return obj.is_released()
 
 
 @admin.register(RfqQuote)

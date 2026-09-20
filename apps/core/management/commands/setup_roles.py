@@ -135,6 +135,7 @@ ROLES = {
         *crud("purchasing", "rfqline"),
         *crud("purchasing", "rfqinvitation"),
         *crud("purchasing", "rfqquote"),
+        *crud("purchasing", "landedcostapplication", actions=("view",)),
         *crud("purchasing", "vendorprice"),
         *crud("purchasing", "purchaserequisition"),
         *crud("purchasing", "purchaserequisitionline"),

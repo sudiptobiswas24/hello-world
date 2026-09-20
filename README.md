@@ -469,6 +469,29 @@ production / SQLite for local dev by default. Every module builds on the
     they're excluded from `receipt_status()`, refused on a receipt line,
     and exempt from the *receipt* leg of the three-way match — the
     quantity and price legs still apply.
+  - **Partial returns, and returns that pay for themselves**:
+    `GoodsReceipt.create_return(quantities=...)` sends back part of a
+    receipt, with `quantity_returnable()` so the same goods can't go
+    back twice — the last correction path here that was still
+    all-or-nothing. It also raises the debit notes for what it sent
+    back, oldest-bill-first, mirroring how a customer return credits its
+    invoices. Before that, sending goods back reversed the stock and
+    left the company still owing the vendor for them.
+    `create_return(debit_bills=False)` is the replacement case, where
+    the vendor is sending new goods rather than money, and that is the
+    case `billed_not_held()` now exists for.
+  - **Landed cost billed separately**: freight, duty and the customs
+    broker arrive as three bills, weeks apart, from three parties who
+    never met, so the same-bill path covers the rare case.
+    `BillLine.allocate_landed_cost(receipt_lines)` spreads a capitalised
+    charge from *any* posted bill over goods received on others, by the
+    value of what was received — a defensible default, since weight and
+    volume would be better and the system holds neither. The charge
+    already expensed when its own bill posted, so this moves it: Dr
+    inventory / Cr that expense, plus the value-only `StockMovement`
+    that keeps `average_cost()` with it. `release()` takes it back out,
+    because a costing decision made weeks after the goods arrived is
+    exactly the kind that gets revised.
   - **Landed cost**: a charge marked `capitalise_into_inventory` is part
     of what the goods cost to get here, so it debits inventory rather
     than an expense. Expensing it leaves gross margin reading better

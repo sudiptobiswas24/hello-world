@@ -436,15 +436,20 @@ class VendorSettlementDiscountTests(AuditTestCase):
 
 
 class BilledNotHeldTests(AuditTestCase):
-    """Returning billed goods is legitimate; leaving it invisible is not."""
+    """
+    A return now raises its own debit note, so the gap this report was
+    written for only survives a *replacement* — goods sent back that the
+    vendor is replacing rather than refunding. That is still exposure
+    worth naming, and still invisible without it.
+    """
 
-    def test_returning_billed_goods_is_surfaced(self):
+    def test_returning_billed_goods_for_replacement_is_surfaced(self):
         from .models import billed_not_held
 
         order = self.make_order("10", "5")
         receipt = self.receive(order, "10")
         order.create_bill(self.payable).post()
-        receipt.create_return()
+        receipt.create_return(debit_bills=False)
 
         rows = billed_not_held(vendor=self.vendor)
 
@@ -452,14 +457,26 @@ class BilledNotHeldTests(AuditTestCase):
         self.assertEqual(rows[0]["quantity"], Decimal("10"))
         self.assertEqual(rows[0]["value"], Decimal("50"))
 
-    def test_a_debit_note_clears_it(self):
+    def test_a_refund_return_clears_it_by_itself(self):
+        from .models import billed_not_held
+
+        order = self.make_order("10", "5")
+        receipt = self.receive(order, "10")
+        order.create_bill(self.payable).post()
+
+        returned = receipt.create_return()
+
+        self.assertEqual(len(returned.debit_notes_created), 1)
+        self.assertEqual(billed_not_held(vendor=self.vendor), [])
+
+    def test_a_debit_note_raised_by_hand_also_clears_it(self):
         from .models import billed_not_held
 
         order = self.make_order("10", "5")
         receipt = self.receive(order, "10")
         bill = order.create_bill(self.payable)
         bill.post()
-        receipt.create_return()
+        receipt.create_return(debit_bills=False)
         bill.create_debit_note()
 
         self.assertEqual(billed_not_held(vendor=self.vendor), [])
@@ -476,6 +493,6 @@ class BilledNotHeldTests(AuditTestCase):
         receipt = self.receive(order, "10")
         bill = order.create_bill(self.payable)
         bill.post()
-        receipt.create_return()
+        receipt.create_return(debit_bills=False)
 
         self.assertEqual(bill.match_report()[0]["billed_not_held"], Decimal("10"))

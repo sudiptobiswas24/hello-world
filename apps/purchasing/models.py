@@ -2387,6 +2387,102 @@ class BillLine(TaxedLineMixin, AuditModel):
             ),
         ]
 
+    def landed_cost_allocated(self):
+        return sum(
+            (application.amount
+             for application in self.landed_cost_applications.all()
+             if not application.is_released()),
+            Decimal("0"),
+        )
+
+    def landed_cost_unallocated(self):
+        return self.net_amount() - self.landed_cost_allocated()
+
+    @transaction.atomic
+    def allocate_landed_cost(self, receipt_lines, on_date=None):
+        """
+        Spread this charge over goods received on *other* bills.
+
+        Split by the value of what was received, which is the defensible
+        default: a container's freight follows the value it carried when
+        nothing better is known. Weight or volume would be better and the
+        system does not hold either.
+
+        The charge already expensed when its own bill posted, since there
+        was nothing on that bill to absorb it, so this moves it: Dr
+        inventory / Cr the expense it landed in.
+        """
+        on_date = to_date(on_date) or timezone.now().date()
+        if not self.bill.posted:
+            raise ValidationError("Only a posted bill can be allocated.")
+        if not (self.is_charge() and self.charge.capitalise_into_inventory):
+            raise ValidationError(
+                f"'{self.label()}' is not a charge that capitalises into stock."
+            )
+
+        lines = [line for line in receipt_lines]
+        for line in lines:
+            if not line.receipt.posted or line.receipt.is_return():
+                raise ValidationError(
+                    "Landed cost can only be applied to goods actually received."
+                )
+            if not line.order_line.item.track_inventory:
+                raise ValidationError(
+                    f"{line.order_line.item} is not stocked; there is nothing to add "
+                    "the cost to."
+                )
+        if not lines:
+            raise ValidationError("Name the goods this cost should land on.")
+
+        total = self.landed_cost_unallocated()
+        if total <= 0:
+            raise ValidationError("This charge has already been allocated in full.")
+
+        values = [
+            round_money(line.quantity_received * (line.order_line.unit_price or Decimal("0")))
+            for line in lines
+        ]
+        basis = sum(values, Decimal("0"))
+        if basis <= 0:
+            raise ValidationError("Those receipt lines have no value to spread the cost over.")
+
+        applications, remaining = [], total
+        for index, (line, value) in enumerate(zip(lines, values)):
+            is_last = index == len(lines) - 1
+            share = remaining if is_last else round_money(total * value / basis)
+            remaining -= share
+            if share <= 0:
+                continue
+            applications.append(self._apply_landed_cost(line, share, on_date))
+        return applications
+
+    def _apply_landed_cost(self, receipt_line, amount, on_date):
+        item = receipt_line.order_line.item
+        memo = f"Landed cost from {self.bill.number} onto {item}"
+        entry = JournalEntry.objects.create(
+            date=on_date, reference=self.bill.number, memo=memo
+        )
+        JournalLine.objects.create(
+            entry=entry, account=inventory_account_for(item),
+            debit=amount, description=memo[:255],
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.posted_account or self.expense_account,
+            credit=amount, description=memo[:255],
+        )
+        entry.post()
+
+        movement = StockMovement.objects.create(
+            item=item, warehouse=receipt_line.warehouse,
+            movement_type=MovementType.ADJUSTMENT, quantity=Decimal("0"),
+            value_adjustment=amount, reference=self.bill.number,
+            occurred_at=timezone.now(), notes=memo,
+        )
+        return LandedCostApplication.objects.create(
+            charge_line=self, receipt_line=receipt_line, amount=amount,
+            date=on_date, journal_entry=entry, stock_movement=movement,
+        )
+
     def quantity_debited(self):
         """How much of this line posted debit notes have already given back."""
         return self.debit_lines.filter(bill__posted=True).aggregate(
@@ -3202,14 +3298,78 @@ class GoodsReceipt(AuditModel):
             per_unit += round_money(component.quantity_per * cost)
         return per_unit
 
+    def _debit_returned_goods(self):
+        """
+        Debit the bills that paid for the returned goods.
+
+        A receipt's quantities may have been spread over several bills, so
+        the returned quantity is allocated oldest-bill-first and one debit
+        note is raised per affected bill — the mirror of how a customer
+        return credits its invoices.
+
+        Without this, sending goods back reversed the stock and left the
+        company still owing the vendor for them until somebody separately
+        remembered.
+        """
+        allocations = defaultdict(dict)
+        for line in self.lines.all():
+            remaining = line.quantity_received
+            bill_lines = BillLine.objects.filter(
+                order_line=line.order_line,
+                bill__posted=True,
+                bill__debits__isnull=True,
+            ).order_by("bill__bill_date", "bill_id")
+            for bill_line in bill_lines:
+                if remaining <= 0:
+                    break
+                available = bill_line.quantity_debitable()
+                if available <= 0:
+                    continue
+                taken = min(available, remaining)
+                per_bill = allocations[bill_line.bill]
+                per_bill[bill_line] = per_bill.get(bill_line, Decimal("0")) + taken
+                remaining -= taken
+
+        return [
+            bill.create_debit_note(
+                memo=f"Goods returned on {self.number}", quantities=quantities
+            )
+            for bill, quantities in allocations.items()
+        ]
+
     @transaction.atomic
-    def create_return(self):
+    def create_return(self, quantities=None, debit_bills=True):
+        """
+        Send goods back. By default all of them; pass `quantities` as
+        {receipt_line: quantity} to send back part, which is what a
+        partial fault actually looks like.
+
+        Whole-receipt-only was the last place a correction could not be
+        partial. Returning ten units to send back three, then re-receiving
+        seven, loses the receipt date on the seven and books three stock
+        movements where one belongs.
+        """
         if not self.posted:
             raise ValidationError("Only a posted goods receipt can be returned.")
         if self.reverses_id:
             raise ValidationError("Cannot return a return.")
-        if self.reversed_by.exists():
-            raise ValidationError("This goods receipt has already been returned.")
+
+        if quantities is None:
+            selected = [(line, line.quantity_returnable()) for line in self.lines.all()]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
+        else:
+            selected = [(line, Decimal(quantity)) for line, quantity in quantities.items()
+                        if Decimal(quantity) > 0]
+            for line, quantity in selected:
+                if line.receipt_id != self.pk:
+                    raise ValidationError("That line belongs to a different receipt.")
+                if quantity > line.quantity_returnable():
+                    raise ValidationError(
+                        f"Only {line.quantity_returnable()} of {line.order_line.item} is "
+                        f"left to return; cannot return {quantity}."
+                    )
+        if not selected:
+            raise ValidationError("There is nothing left on this receipt to return.")
 
         return_receipt = GoodsReceipt.objects.create(
             purchase_order=self.purchase_order,
@@ -3217,22 +3377,39 @@ class GoodsReceipt(AuditModel):
             reference=self.reference,
             reverses=self,
         )
-        for line in self.lines.all():
+        for line, quantity in selected:
             GoodsReceiptLine.objects.create(
                 receipt=return_receipt,
                 order_line=line.order_line,
+                reverses_line=line,
                 warehouse=line.warehouse,
-                quantity_received=line.quantity_received,
+                quantity_received=quantity,
             )
         return_receipt.post()
+        return_receipt.debit_notes_created = (
+            return_receipt._debit_returned_goods() if debit_bills else []
+        )
         return return_receipt
 
 
 class GoodsReceiptLine(AuditModel):
     receipt = models.ForeignKey(GoodsReceipt, related_name="lines", on_delete=models.CASCADE)
     order_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="receipt_lines")
+    reverses_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="return_lines",
+        help_text="On a return line, the receipt line being sent back.",
+    )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
+
+    def quantity_returned(self):
+        """How much of this line posted returns have already sent back."""
+        return self.return_lines.filter(receipt__posted=True).aggregate(
+            total=models.Sum("quantity_received")
+        )["total"] or Decimal("0")
+
+    def quantity_returnable(self):
+        return self.quantity_received - self.quantity_returned()
 
     class Meta:
         constraints = [
@@ -3269,3 +3446,79 @@ class GoodsReceiptLine(AuditModel):
                 "Cannot delete a line on a posted goods receipt. Create a return instead."
             )
         super().delete(*args, **kwargs)
+
+
+class LandedCostApplication(AuditModel):
+    """
+    A capitalised charge from one bill applied to goods received on
+    another.
+
+    The same-bill path only works when the carrier invoices on the
+    vendor's bill, which for anything imported is the rare case: freight,
+    duty and the customs broker arrive as three separate bills, weeks
+    apart, from three parties who never met. Without this they expense,
+    and the stock is carried at less than it cost to land.
+    """
+
+    charge_line = models.ForeignKey(
+        BillLine, on_delete=models.PROTECT, related_name="landed_cost_applications"
+    )
+    receipt_line = models.ForeignKey(
+        GoodsReceiptLine, on_delete=models.PROTECT, related_name="landed_costs"
+    )
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField()
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    stock_movement = models.ForeignKey(
+        StockMovement, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    released_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Set when this allocation was released.",
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="landed_cost_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.charge_line} -> {self.receipt_line} ({self.amount})"
+
+    def is_released(self):
+        return bool(self.released_entry_id)
+
+    @transaction.atomic
+    def release(self, on_date=None):
+        """
+        Undo the allocation: take the value back out of stock and return
+        it to the expense it came from.
+
+        Written in the same sitting as the allocation, because a costing
+        decision made weeks after the goods arrived is exactly the kind
+        that gets revised.
+        """
+        if self.is_released():
+            raise ValidationError("This allocation has already been released.")
+        entry = self.journal_entry.create_reversal(
+            entry_date=to_date(on_date) or timezone.now().date(),
+            memo=f"Landed cost released from {self.receipt_line.order_line.item}",
+        )
+        StockMovement.objects.create(
+            item=self.receipt_line.order_line.item,
+            warehouse=self.receipt_line.warehouse,
+            movement_type=MovementType.ADJUSTMENT,
+            quantity=Decimal("0"),
+            value_adjustment=-self.amount,
+            reference=self.charge_line.bill.number,
+            occurred_at=timezone.now(),
+            notes=f"Landed cost released from {self.charge_line.bill.number}",
+        )
+        self.released_entry = entry
+        self.save(update_fields=["released_entry", "updated_at"])
+        return entry
