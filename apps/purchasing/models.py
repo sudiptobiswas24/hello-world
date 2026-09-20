@@ -556,6 +556,7 @@ class PurchaseRequisition(AuditModel):
             remaining = line.quantity - line.quantity_ordered()
             PurchaseOrderLine.objects.create(
                 order=order, requisition_line=line, item=line.item, uom=line.uom,
+                expense_account=line.expense_account,
                 quantity=remaining,
                 unit_price=resolve_purchase_price(
                     line.item, vendor, quantity=remaining,
@@ -582,6 +583,10 @@ class PurchaseRequisitionLine(AuditModel):
     estimated_price = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True,
         help_text="What the requester thinks it costs — an estimate, not an agreed price.",
+    )
+    expense_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which budget this is asking to spend. Carried to the order line.",
     )
     suggested_vendor = models.ForeignKey(
         Party, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
@@ -871,6 +876,139 @@ class PurchaseApprovalPolicy(AuditModel):
         return [tier.group for tier in self.tiers.all() if tier.covers(amount)]
 
 
+class Budget(AuditModel):
+    """
+    What may be spent on an account over a period, and what is already
+    spoken for.
+
+    The point is commitment, not the limit. A ledger tells you what has
+    been spent; by then the money is gone. A budget that only counts
+    posted bills reports a department as healthy right up to the month a
+    year of purchase orders lands on it at once.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="budgets",
+        help_text="The expense account this budget governs.",
+    )
+    start_date = models.DateField()
+    end_date = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["-start_date", "code"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="budget_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.code} {self.name}"
+
+    def clean(self):
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValidationError("A budget cannot end before it starts.")
+
+    def covers(self, on_date):
+        on_date = to_date(on_date)
+        return self.start_date <= on_date <= self.end_date
+
+    @classmethod
+    def for_account(cls, account, on_date):
+        if account is None:
+            return None
+        on_date = to_date(on_date) or timezone.now().date()
+        return cls.objects.filter(
+            account=account, is_active=True,
+            start_date__lte=on_date, end_date__gte=on_date,
+        ).first()
+
+    def spent(self):
+        """
+        Posted bills coded to this budget, less debit notes.
+
+        Read from the bills rather than from the ledger account, because
+        the ledger is the wrong place to ask. Stocked goods post to
+        inventory and GRNI and only reach an expense account when they
+        are sold, so a budget watching the account would report every
+        stock purchase as free — which is precisely the spend a
+        purchasing budget exists to govern. The same reason revenue is
+        reported from invoices rather than from the revenue account.
+        """
+        lines = BillLine.objects.filter(
+            bill__posted=True,
+            bill__bill_date__gte=self.start_date,
+            bill__bill_date__lte=self.end_date,
+        ).select_related("bill", "charge")
+        total = Decimal("0")
+        for line in lines:
+            if self._account_for(line) != self.account:
+                continue
+            # A debit note gives the money back to the budget it came from.
+            sign = Decimal("-1") if line.bill.is_debit_note() else Decimal("1")
+            total += sign * line.net_amount()
+        return total
+
+    def committed(self):
+        """
+        Confirmed orders not yet billed — agreed, and not yet in the
+        ledger.
+
+        Counted from the order rather than the bill because that is the
+        moment the company loses the ability to change its mind for free.
+        """
+        lines = PurchaseOrderLine.objects.filter(
+            order__status=OrderStatus.CONFIRMED,
+            order__order_date__gte=self.start_date,
+            order__order_date__lte=self.end_date,
+        ).select_related("order", "item")
+        total = Decimal("0")
+        for line in lines:
+            if self._account_for(line) != self.account:
+                continue
+            unbilled = max(line.quantity - line.quantity_billed(), Decimal("0"))
+            if unbilled <= 0:
+                continue
+            share = unbilled / line.quantity if line.quantity else Decimal("0")
+            total += round_money(line.net_amount() * share)
+        return total
+
+    def requested(self):
+        """Approved requisitions not yet ordered — asked for, not yet agreed."""
+        lines = PurchaseRequisitionLine.objects.filter(
+            requisition__status=RequisitionStatus.APPROVED,
+            requisition__request_date__gte=self.start_date,
+            requisition__request_date__lte=self.end_date,
+        ).select_related("requisition", "item")
+        total = Decimal("0")
+        for line in lines:
+            if self._requisition_account(line) != self.account:
+                continue
+            outstanding = max(line.quantity - line.quantity_ordered(), Decimal("0"))
+            if outstanding <= 0 or line.estimated_price is None:
+                continue
+            total += round_money(outstanding * line.estimated_price)
+        return total
+
+    def available(self):
+        return self.amount - self.spent() - self.committed() - self.requested()
+
+    def _account_for(self, line):
+        if line.expense_account_id:
+            return line.expense_account
+        if line.is_charge():
+            return line.charge.expense_account
+        return None
+
+    def _requisition_account(self, line):
+        # The requester codes the line to an account, the same way the
+        # order line is coded. Without one it belongs to no budget rather
+        # than silently to all of them.
+        return line.expense_account
+
+
 class ReorderRule(AuditModel):
     """
     When to buy more of something, and how much.
@@ -1121,6 +1259,19 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                         f"'{line.label()}' is {line.total()}, above the "
                         f"{policy.max_line_value} line limit."
                     )
+        for line in self.lines.all():
+            account = line.expense_account or (
+                line.charge.expense_account if line.is_charge() else None
+            )
+            budget = Budget.for_account(account, self.order_date)
+            if budget is None:
+                continue
+            if line.net_amount() > budget.available():
+                reasons.append(
+                    f"'{line.label()}' is {line.net_amount()} against {budget.available()} "
+                    f"left on budget {budget.code}."
+                )
+
         if policy.require_approval_without_vendor_price:
             for line in self.lines.all():
                 if line.is_charge() or line.has_agreed_price():

@@ -26,6 +26,7 @@ from .models import (
     ApprovalTier,
     ReceiptInspection,
     ReorderRule,
+    Budget,
 )
 
 
@@ -113,6 +114,15 @@ class BlanketOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "vendor", "start_date", "end_date", "status")
     list_filter = ("status",)
     inlines = [BlanketOrderLineInline]
+
+
+@admin.register(Budget)
+class BudgetAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = (
+        "code", "name", "account", "start_date", "end_date", "amount",
+        "spent", "committed", "requested", "available", "is_active",
+    )
+    list_filter = ("is_active", "account")
 
 
 @admin.register(ReorderRule)
