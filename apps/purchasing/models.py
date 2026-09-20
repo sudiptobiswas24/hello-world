@@ -866,6 +866,53 @@ class PurchaseApprovalPolicy(AuditModel):
     def active(cls):
         return cls.objects.filter(is_active=True).first()
 
+    def authorised_groups(self, amount):
+        """The groups whose limit reaches this amount."""
+        return [tier.group for tier in self.tiers.all() if tier.covers(amount)]
+
+
+class ApprovalTier(AuditModel):
+    """
+    Who may sign off up to what.
+
+    A policy with thresholds but no tiers asks "does this need approval"
+    and never "from whom", so one approve() served a team leader and the
+    board alike. The amount that triggers a second pair of eyes and the
+    seniority of that pair are different questions, and only the first
+    was being asked.
+    """
+
+    policy = models.ForeignKey(
+        "PurchaseApprovalPolicy", on_delete=models.CASCADE, related_name="tiers"
+    )
+    group = models.ForeignKey(
+        "auth.Group", on_delete=models.PROTECT, related_name="+",
+        help_text="Members of this group may approve up to the limit.",
+    )
+    up_to_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Leave empty for no ceiling — the final tier.",
+    )
+
+    class Meta:
+        ordering = ["up_to_amount", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(up_to_amount__isnull=True) | Q(up_to_amount__gt=0),
+                name="approval_tier_limit_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["policy", "group"], name="one_tier_per_group_and_policy"
+            ),
+        ]
+
+    def __str__(self):
+        ceiling = self.up_to_amount if self.up_to_amount is not None else "unlimited"
+        return f"{self.group} up to {ceiling}"
+
+    def covers(self, amount):
+        return self.up_to_amount is None or amount <= self.up_to_amount
+
 
 class FulfilmentStatus(models.TextChoices):
     NONE = "none", "None"
@@ -976,6 +1023,32 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("A cancelled order cannot be approved.")
         return True
+
+    def check_approver(self, by):
+        """
+        Refuse an approver whose authority does not reach this order.
+
+        A policy with no tiers authorises anyone, so switching tiers on is
+        a deliberate act rather than something that silently locks every
+        buyer out on the day someone saves a policy.
+        """
+        policy = PurchaseApprovalPolicy.active()
+        if policy is None or not policy.tiers.exists():
+            return
+        groups = policy.authorised_groups(self.total())
+        if by is None:
+            raise ValidationError(
+                f"An order of {self.total()} needs a named approver from "
+                + ", ".join(str(group) for group in groups) + "."
+            )
+        if by.is_superuser:
+            return
+        if not by.groups.filter(pk__in=[group.pk for group in groups]).exists():
+            raise ValidationError(
+                f"{by} cannot approve {self.total()}. That needs "
+                + (", ".join(str(group) for group in groups) or "a higher limit than any "
+                   "tier grants") + "."
+            )
 
     @transaction.atomic
     def confirm(self):

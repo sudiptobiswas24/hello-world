@@ -23,6 +23,7 @@ from .models import (
     RfqLine,
     RfqQuote,
     LandedCostApplication,
+    ApprovalTier,
 )
 
 
@@ -110,6 +111,11 @@ class VendorPriceAdmin(AuditableAdminMixin, admin.ModelAdmin):
     search_fields = ("item__sku", "vendor__name", "vendor_item_code")
 
 
+class ApprovalTierInline(admin.TabularInline):
+    model = ApprovalTier
+    extra = 1
+
+
 @admin.register(PurchaseApprovalPolicy)
 class PurchaseApprovalPolicyAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = (
@@ -117,6 +123,7 @@ class PurchaseApprovalPolicyAdmin(AuditableAdminMixin, admin.ModelAdmin):
         "require_approval_without_vendor_price", "is_active",
     )
     list_filter = ("is_active",)
+    inlines = [ApprovalTierInline]
 
 
 @admin.register(PurchaseOrder)

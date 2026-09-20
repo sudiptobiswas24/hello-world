@@ -68,10 +68,22 @@ class ApprovableMixin(models.Model):
         """Hook for states that make approval meaningless, e.g. cancelled."""
         return True
 
+    def check_approver(self, by):
+        """
+        Hook: refuse an approver who lacks the authority for this document.
+
+        Separate from `can_be_approved`, which is about the document's
+        state. This is about the person, and most documents do not care —
+        but where an amount decides who may sign, the check belongs next
+        to the approval rather than in whichever view happens to call it.
+        """
+        return
+
     def approve(self, by=None, note=""):
         """Record that someone accepted the breach."""
         if not self.can_be_approved():
             raise ValidationError("This document cannot be approved in its current state.")
+        self.check_approver(by)
         if self.approved_at:
             raise ValidationError("This document has already been approved.")
         if not self.requires_approval():

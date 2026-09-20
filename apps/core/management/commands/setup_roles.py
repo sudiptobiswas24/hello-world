@@ -143,6 +143,7 @@ ROLES = {
         *crud("purchasing", "blanketorder"),
         *crud("purchasing", "blanketorderline"),
         *crud("purchasing", "purchaseapprovalpolicy"),
+        *crud("purchasing", "approvaltier"),
         *crud("purchasing", "billpayment"),
         "purchasing.approve_purchaseorder",
         *crud("purchasing", "prepaymentapplication", actions=("view",)),
