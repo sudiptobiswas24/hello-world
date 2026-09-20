@@ -14,6 +14,10 @@ def crud(app_label, model, actions=CRUD):
 # ledger or to stock.
 ROLES = {
     "Bookkeeper": [
+        *crud("assets", "fixedasset", actions=("view",)),
+        *crud("assets", "depreciationentry", actions=("view",)),
+        # deliberately NOT assets.dispose_fixedasset: writing an asset off
+        # the books is a Controller decision.
         *crud("accounting", "bankstatement", actions=("add", "change", "view")),
         *crud("accounting", "bankstatementline", actions=("add", "change", "view")),
         # deliberately NOT accounting.close_bankstatement: whoever keys the
@@ -42,6 +46,10 @@ ROLES = {
         *crud("accounting", "partytaxprofile"),
         *crud("accounting", "payment"),
         "accounting.post_payment",
+        *crud("assets", "assetcategory"),
+        *crud("assets", "fixedasset"),
+        *crud("assets", "depreciationentry", actions=("view",)),
+        "assets.dispose_fixedasset",
         *crud("accounting", "bankstatement"),
         *crud("accounting", "bankstatementline"),
         "accounting.close_bankstatement",

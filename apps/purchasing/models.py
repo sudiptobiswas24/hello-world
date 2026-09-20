@@ -2834,6 +2834,67 @@ class BillLine(TaxedLineMixin, AuditModel):
             date=on_date, journal_entry=entry, stock_movement=movement,
         )
 
+    @transaction.atomic
+    def capitalise_as_asset(self, category, name="", in_service_date=None,
+                            life_months=None, salvage_value=Decimal("0")):
+        """
+        Turn this purchase into a fixed asset.
+
+        A machine is neither stock nor an expense: valuing it as stock
+        would relieve it on a sale that never comes, and expensing it puts
+        a decade of value into one month's profit. Capitalising moves the
+        cost off wherever the bill put it and onto the asset account.
+
+        One asset per unit, because assets are tracked, disposed of and
+        depreciated individually — a line for three machines is three
+        assets, not one worth three times as much.
+        """
+        from apps.assets.models import AssetCategory, FixedAsset
+
+        if not self.bill.posted:
+            raise ValidationError("Only a posted bill can be capitalised.")
+        if self.assets.exists():
+            raise ValidationError("This line has already been capitalised.")
+        if self.quantity != self.quantity.to_integral_value():
+            raise ValidationError(
+                "Capitalise whole units; a fraction of an asset cannot be disposed of."
+            )
+
+        unit_cost = round_money(self.net_amount() / self.quantity)
+        memo = f"Capitalised from {self.bill.number}"
+        source = self.posted_account or self.expense_account
+
+        created = []
+        remaining = self.net_amount()
+        count = int(self.quantity)
+        for index in range(count):
+            cost = remaining if index == count - 1 else unit_cost
+            remaining -= cost
+            asset = FixedAsset.objects.create(
+                name=name or self.label(),
+                category=category,
+                vendor=self.bill.vendor,
+                bill_line=self,
+                acquisition_date=self.bill.bill_date,
+                in_service_date=to_date(in_service_date),
+                cost=cost,
+                salvage_value=Decimal(salvage_value),
+                life_months=life_months or category.default_life_months,
+            )
+            entry = JournalEntry.objects.create(
+                date=self.bill.bill_date, reference=self.bill.number, memo=memo
+            )
+            JournalLine.objects.create(
+                entry=entry, account=category.asset_account,
+                debit=cost, description=memo[:255],
+            )
+            JournalLine.objects.create(
+                entry=entry, account=source, credit=cost, description=memo[:255],
+            )
+            entry.post()
+            created.append(asset)
+        return created
+
     def quantity_debited(self):
         """How much of this line posted debit notes have already given back."""
         return self.debit_lines.filter(bill__posted=True).aggregate(

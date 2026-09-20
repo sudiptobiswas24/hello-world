@@ -1,6 +1,6 @@
 # Working on this ERP
 
-Django 5.2 + DRF. `python manage.py test apps` runs everything (~960
+Django 5.2 + DRF. `python manage.py test apps` runs everything (~1100
 tests). Use `.venv/bin/python`.
 
 ## Architecture rules
@@ -11,8 +11,11 @@ tests). Use `.venv/bin/python`.
 - `accounting` may not import `sales` or `purchasing`. Anything both
   trading modules need lives there: `mixins.py` (line arithmetic),
   `settlement.py` (FX, installments), `ChargeType`.
-- `purchasing` → `sales` for drop-ship only, by lazy string FK. Acyclic,
-  and the dependent side holds the pointer.
+- `purchasing` → `sales` for drop-ship, and `purchasing` → `assets` for
+  capitalising a bill line. Acyclic, and the dependent side holds the
+  pointer: the document that would be meaningless without the other one
+  is the one that knows about it.
+- `assets` depends on `accounting` and `core` only.
 - **Derived, not stored.** On-hand quantity, weighted average cost,
   balances due, aging — all replayed from the ledger that produced them.
   A stored copy drifts the moment anything is corrected.
