@@ -34,7 +34,14 @@ from apps.core.models import (
     UnitOfMeasure,
     to_date,
 )
-from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.models import (
+    Item,
+    MovementType,
+    StockMovement,
+    StockReservation,
+    Warehouse,
+    release_for,
+)
 from apps.inventory.valuation import post_inventory_entry
 
 from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
@@ -371,6 +378,11 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 )
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
+        # The stock this order was holding is free the moment it is not
+        # going to ship. Leaving the claim standing is how a warehouse
+        # ends up unable to sell goods nobody is waiting for.
+        for line in self.lines.all():
+            release_for(line, f"Order {self.number or self.pk} cancelled")
 
     def invoice_status(self):
         lines = list(self.lines.all())
@@ -415,6 +427,52 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             )
         self.status = OrderStatus.CONFIRMED
         self.save(update_fields=["number", "status", "updated_at"])
+        self.reserve_stock()
+
+    @transaction.atomic
+    def reserve_stock(self):
+        """
+        Hold the stock this order has promised, and say what it could not
+        hold.
+
+        A shortfall does not stop the order. Orders are taken precisely
+        so the stock can be bought, and refusing one because the shelf is
+        empty would make the system useless at the moment it matters.
+        What it must not do is let two orders promise the same units in
+        silence, so the shortfall is returned and readable.
+        """
+        shortfalls = {}
+        for line in self.lines.select_related("item", "warehouse"):
+            if line.is_charge() or line.warehouse_id is None:
+                continue
+            if not line.item.track_inventory:
+                continue
+            outstanding = line.quantity_in_stock_units() - line.quantity_shipped_in_stock_units()
+            if outstanding <= 0:
+                StockReservation.objects.for_source(line).open().update(
+                    released_at=timezone.now(), released_reason="Fully shipped"
+                )
+                continue
+            _held, short = StockReservation.objects.claim(
+                line, line.item, line.warehouse, outstanding
+            )
+            if short:
+                shortfalls[line] = short
+        return shortfalls
+
+    def reservation_shortfalls(self):
+        """What this order has promised and cannot currently cover."""
+        shortfalls = {}
+        for line in self.lines.select_related("item", "warehouse"):
+            if line.is_charge() or line.warehouse_id is None:
+                continue
+            if not line.item.track_inventory:
+                continue
+            outstanding = line.quantity_in_stock_units() - line.quantity_shipped_in_stock_units()
+            held = line.quantity_reserved()
+            if outstanding - held > 0:
+                shortfalls[line] = outstanding - held
+        return shortfalls
 
     @transaction.atomic
     def create_invoice(self, receivable_account, invoice_date=None):
@@ -569,6 +627,12 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     uom = models.ForeignKey(
         UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where this line is expected to ship from. Naming it lets "
+                  "confirming the order hold the stock; without it the order is a "
+                  "promise against no particular shelf.",
+    )
     revenue_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -650,6 +714,23 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         if self._state.adding and self.order_id and self.order.approved_at:
             self.order.withdraw_approval()
         super().save(*args, **kwargs)
+        # Re-sizing or re-warehousing a line on a confirmed order changes
+        # what it has promised, so the claim has to follow. Leaving the old
+        # one standing holds stock for a quantity nobody is waiting for.
+        if self.order_id and self.order.status == OrderStatus.CONFIRMED:
+            self._reclaim_stock()
+
+    def _reclaim_stock(self):
+        if self.is_charge() or self.item_id is None or not self.item.track_inventory:
+            return
+        if self.warehouse_id is None:
+            release_for(self, "No warehouse on the line")
+            return
+        outstanding = self.quantity_in_stock_units() - self.quantity_shipped_in_stock_units()
+        if outstanding <= 0:
+            release_for(self, "Fully shipped")
+            return
+        StockReservation.objects.claim(self, self.item, self.warehouse, outstanding)
 
     def delete(self, *args, **kwargs):
         if self.order_id and self.order.approved_at:
@@ -658,6 +739,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "This line has been shipped or invoiced and can no longer be removed."
             )
+        # A line that no longer exists cannot be holding anything. The
+        # reservation points at it generically, so nothing cascades — the
+        # claim would simply survive its own document.
+        release_for(self, "Line removed")
         super().delete(*args, **kwargs)
 
     def quantity_shipped(self):
@@ -672,6 +757,26 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     def is_fully_shipped(self):
         return self.quantity_shipped() >= self.quantity
+
+    def quantity_in_stock_units(self):
+        """This line's quantity in the unit the stock ledger counts in."""
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(self.quantity, self.uom or self.item.uom)
+
+    def quantity_shipped_in_stock_units(self):
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(
+            self.quantity_shipped(), self.uom or self.item.uom
+        )
+
+    def quantity_reserved(self):
+        """How much of this line's promise is currently held on a shelf."""
+        return sum(
+            (r.remaining() for r in StockReservation.objects.for_source(self).open()),
+            Decimal("0"),
+        )
 
     def quantity_invoiced(self):
         """Net quantity invoiced: posted invoices minus posted credit notes."""
@@ -2125,6 +2230,21 @@ class Delivery(AuditModel):
                             f"{line.order_line.uom}. Allow negative stock on the "
                             f"warehouse if backorders are expected."
                         )
+                    # Stock held for somebody else is on the shelf and not
+                    # ours to take. This line's own claim is: the whole point
+                    # of reserving was to be able to ship it, so it is added
+                    # back before the comparison rather than counted against
+                    # the shipment it was made for.
+                    free = (
+                        Decimal(item.available_at(line.warehouse))
+                        + line.order_line.quantity_reserved()
+                    )
+                    if not is_return and wanted > free:
+                        raise ValidationError(
+                            f"Only {free} {item.uom} of {item} at {line.warehouse} is "
+                            f"unreserved; {item.reserved_at(line.warehouse)} is promised "
+                            "to other orders. Free a reservation or allow negative stock."
+                        )
 
         self.delivery_date = to_date(self.delivery_date)
         if not self.number:
@@ -2176,6 +2296,14 @@ class Delivery(AuditModel):
                     f"{self.sales_order} ({self.number})"
                 ),
             )
+            # The goods have gone, so the claim on them is spent. Drawing
+            # it down here rather than when the order closes keeps
+            # availability honest between a partial shipment and the next.
+            if not is_return:
+                for reservation in StockReservation.objects.for_source(
+                    line.order_line
+                ).open():
+                    reservation.consume(shipped)
             valued.append((item, shipped * unit_cost))
 
         post_inventory_entry(

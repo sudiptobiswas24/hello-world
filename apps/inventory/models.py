@@ -128,15 +128,24 @@ class Item(AuditModel):
             return Decimal("0")
         return (value / quantity).quantize(Decimal("0.0001"))
 
+    def reserved_at(self, warehouse):
+        """How much here is already promised to a document."""
+        from .reservations import reserved_at
+
+        return reserved_at(self, warehouse)
+
     def available_at(self, warehouse):
         """
-        On hand and shippable. Quarantined and in-transit stock is neither
-        missing nor available: it is owned, valued, and not on a shelf
-        anybody can pick from.
+        On hand, shippable, and not already promised to somebody else.
+
+        Quarantined and in-transit stock is neither missing nor
+        available: it is owned, valued, and not on a shelf anybody can
+        pick from. Reserved stock is on the shelf and spoken for, which
+        for anyone asking "can I promise this?" is the same answer.
         """
         if warehouse.is_quarantine or warehouse.is_transit or warehouse.consignment_vendor_id:
             return 0
-        return self.on_hand_at(warehouse)
+        return self.on_hand_at(warehouse) - self.reserved_at(warehouse)
 
     def average_cost(self):
         """
@@ -324,6 +333,11 @@ from .adjustments import (  # noqa: E402,F401
     StockAdjustmentLine,
     StockCount,
     StockCountLine,
+)
+from .reservations import (  # noqa: E402,F401
+    StockReservation,
+    release_for,
+    reserved_at,
 )
 from .transfers import (  # noqa: E402,F401
     StockTransfer,
