@@ -299,3 +299,68 @@ class DropShipReturnTests(PurchasingLifecycleTestCase):
         receipt.create_return()
 
         self.assertEqual(self.sales_line.quantity_shipped(), Decimal("0"))
+
+
+class MechanicalAuditTests(PurchasingLifecycleTestCase):
+    """The findings `manage.py audit_invariants` turned up."""
+
+    def test_a_purchase_line_cannot_have_a_negative_quantity(self):
+        """Sales order lines had this constraint; the purchase mirror did
+        not, which is the shape the checklist puts first."""
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        with self.assertRaises(Exception):
+            PurchaseOrderLine.objects.create(
+                order=order, item=self.item, uom=self.uom,
+                quantity=Decimal("-5"), unit_price=Decimal("5"),
+            )
+
+    def test_a_receipt_line_cannot_have_a_negative_quantity(self):
+        """clean() checked it and nothing calls clean() on the code paths
+        that build receipts."""
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        line = PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal("10"), unit_price=Decimal("5"),
+        )
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order, receipt_date=datetime.date(2026, 1, 5)
+        )
+        with self.assertRaises(Exception):
+            GoodsReceiptLine.objects.create(
+                receipt=receipt, order_line=line, warehouse=self.warehouse,
+                quantity_received=Decimal("-3"),
+            )
+
+    def test_withdraw_approval_can_be_called_directly(self):
+        approver = get_user_model().objects.create_user(username="w", password="x")
+        PurchaseApprovalPolicy.objects.create(
+            code="P", name="P", max_order_value=Decimal("10")
+        )
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal("10"), unit_price=Decimal("5"),
+        )
+        order.approve(by=approver)
+
+        order.withdraw_approval()
+
+        self.assertIsNone(order.approved_at)
+        self.assertEqual(order.approval_note, "")
+
+    def test_the_company_base_currency_must_agree_with_the_currency_flag(self):
+        """Two sources of truth for one fact is a defect whichever wins."""
+        from apps.core.models import Currency
+
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        company = Company.get()
+        company.base_currency = eur
+        with self.assertRaisesMessage(ValidationError, "not flagged as the base currency"):
+            company.clean()

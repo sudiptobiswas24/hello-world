@@ -698,6 +698,23 @@ class Company(AuditModel):
     def __str__(self):
         return self.name
 
+    def clean(self):
+        """
+        The base currency is stated twice — here and by Currency.is_base —
+        and only one of them was ever read.
+
+        Nothing consulted this field, so setting it to EUR while
+        Currency.is_base said USD left the company quietly reporting in
+        USD with a settings page insisting otherwise. Two sources of truth
+        for one fact is a defect whichever one wins; they now have to
+        agree.
+        """
+        if self.base_currency_id and not self.base_currency.is_base:
+            raise ValidationError(
+                f"{self.base_currency} is not flagged as the base currency. Set "
+                "is_base on it, or point the company at the one that is."
+            )
+
     def save(self, *args, **kwargs):
         existing = Company.objects.first()
         if self._state.adding and existing is not None:
@@ -712,6 +729,12 @@ class Company(AuditModel):
     @classmethod
     def get(cls):
         return cls.objects.first() or cls.objects.create(name="My Company")
+
+    def currency(self):
+        """The currency this company reports in, from whichever field holds it."""
+        if self.base_currency_id:
+            return self.base_currency
+        return Currency.objects.filter(is_base=True).first()
 
     def fiscal_year_bounds(self, on_date):
         """The fiscal year (start, end) containing `on_date`."""

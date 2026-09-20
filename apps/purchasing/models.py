@@ -795,6 +795,13 @@ class BlanketOrderLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.item} x{self.quantity}"
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="blanket_line_quantity_positive"
+            ),
+        ]
+
     def committed_value(self):
         return self.net_amount()
 
@@ -1318,6 +1325,9 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 check=Q(item__isnull=False, charge__isnull=True)
                 | Q(item__isnull=True, charge__isnull=False),
                 name="po_line_is_item_or_charge",
+            ),
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="po_line_quantity_positive"
             ),
         ]
 
@@ -2370,6 +2380,13 @@ class BillLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.label()} x{self.quantity}"
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="bill_line_quantity_positive"
+            ),
+        ]
+
     def quantity_debited(self):
         """How much of this line posted debit notes have already given back."""
         return self.debit_lines.filter(bill__posted=True).aggregate(
@@ -3216,6 +3233,13 @@ class GoodsReceiptLine(AuditModel):
     order_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="receipt_lines")
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity_received__gt=0), name="received_quantity_positive"
+            ),
+        ]
 
     def __str__(self):
         return f"{self.order_line.item} x{self.quantity_received} @ {self.warehouse}"

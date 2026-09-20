@@ -1422,6 +1422,16 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.label()} x{self.quantity}"
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="invoice_line_quantity_positive"
+            ),
+            models.CheckConstraint(
+                check=Q(unit_price__gte=0), name="invoice_line_price_not_negative"
+            ),
+        ]
+
     def quantity_credited(self):
         """How much of this line has already been credited by posted credit notes."""
         return self.credit_lines.filter(invoice__posted=True).aggregate(

@@ -187,6 +187,10 @@ def _render_document(*, heading, document, party, address, meta, totals,
         footer.append(f"Tax ID {company.tax_id}")
     if company.email:
         footer.append(company.email)
+    if company.phone:
+        footer.append(company.phone)
+    if company.website:
+        footer.append(company.website)
     story.append(Spacer(1, 10 * mm))
     story.append(Paragraph(" · ".join(footer), style["muted"]))
 
