@@ -314,15 +314,31 @@ class WorkOrder(AuditModel):
             total += entry.posted_value or Decimal("0")
         return total
 
-    def wip_balance(self):
+    def unaccounted(self):
         """
-        What this run is still holding.
+        What went in and has not come back out as stock or scrap.
 
-        Positive means more went in than has been accounted for — the
-        run is either unfinished or it ate more than the specification
-        said. At close the whole of it becomes a variance.
+        Positive means the run is either unfinished or it ate more than
+        the specification said. This is the figure the close sends to
+        variance, and it goes on reading the same after the close —
+        which is what makes it the right number to explain a finished
+        run by, and the wrong one to report as a balance.
         """
         return self.material_cost() - self.output_value()
+
+    def wip_balance(self):
+        """
+        What this run is actually still holding, which after a close is
+        nothing.
+
+        A closed order's work in progress was cleared to variance, and
+        an order that says otherwise is telling a reader money is in an
+        account it has left. `unaccounted()` is the figure behind the
+        close; this is the one that has to agree with the ledger.
+        """
+        if self.status == WorkOrderStatus.CLOSED:
+            return Decimal("0")
+        return self.unaccounted()
 
     def material_variance(self):
         """
@@ -441,17 +457,20 @@ class WorkOrder(AuditModel):
                 "order can be closed."
             )
         on_date = to_date(on_date) or timezone.now().date()
-        balance = round_money(self.wip_balance())
+        balance = round_money(self.unaccounted())
         if balance:
             label = memo or f"Closing variance on {self.number}"
-            self.close_entry = _post_entry(on_date, self.number, label, [
-                (ManufacturingSettings.account(
-                    "variance", "a run is being closed with material unaccounted for"
-                ), balance),
-                (ManufacturingSettings.account(
-                    "wip", "a run is being closed"
-                ), -balance),
-            ])
+            self.close_entry, _ = _post_entry(
+                on_date, self.number, label,
+                [(
+                    ManufacturingSettings.account("wip", "a run is being closed"),
+                    -balance,
+                )],
+                balance_to=ManufacturingSettings.account(
+                    "variance",
+                    "a run is being closed with material unaccounted for",
+                ),
+            )
         self.status = WorkOrderStatus.CLOSED
         self.closed_at = timezone.now()
         super().save(update_fields=[
@@ -556,6 +575,28 @@ class WorkOrderComponent(AuditModel):
     def __str__(self):
         return f"{self.quantity_required} {self.uom} {self.item.sku}"
 
+    def save(self, *args, **kwargs):
+        # Written at release and frozen there: the whole point of the
+        # copy is that a run goes on reading against what it started on.
+        # Release itself writes these while the order is still a draft.
+        if self.work_order.status != WorkOrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self.work_order} is "
+                f"{self.work_order.get_status_display().lower()}; its "
+                "requirements were frozen when it was released and a run must "
+                "go on reading against what it was started on."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.work_order.status != WorkOrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self.work_order} is "
+                f"{self.work_order.get_status_display().lower()}; its "
+                "requirements cannot be removed after release."
+            )
+        return super().delete(*args, **kwargs)
+
     def quantity_issued(self):
         """Net of returns, in the item's stocking unit."""
         total = Decimal("0")
@@ -565,9 +606,23 @@ class WorkOrderComponent(AuditModel):
         return total
 
 
-def _post_entry(on_date, reference, memo, rows):
+def _post_entry(on_date, reference, memo, rows, balance_to=None):
     """
     Write one journal entry from signed amounts: positive is a debit.
+
+    `balance_to` is the account that takes whatever the other rows come
+    to, and it is not optional in spirit. Rounding a total and rounding
+    its parts are different numbers: a blend of five materials whose
+    values each carry a fraction of a paisa sums to one figure and
+    rounds to another, and an entry built from both is out by a paisa
+    and refused by the ledger — which is how this was found, on the
+    first run with real prices in it. Giving the balancing side the sum
+    of the rounded rows makes the entry balance by construction rather
+    than by luck.
+
+    Returns the entry and what the balancing account actually took, so
+    the caller freezes the figure that is in the journal rather than
+    the one it started with.
 
     Written out rather than put through `post_inventory_entry`, whose
     counterpart is goods received not invoiced going in and cost of
@@ -581,9 +636,14 @@ def _post_entry(on_date, reference, memo, rows):
         if not amount:
             continue
         totals[account] = totals.get(account, Decimal("0")) + amount
+    balancing = Decimal("0")
+    if balance_to is not None:
+        balancing = -sum(totals.values(), Decimal("0"))
+        if balancing:
+            totals[balance_to] = totals.get(balance_to, Decimal("0")) + balancing
     rows = [(account, amount) for account, amount in totals.items() if amount]
     if not rows:
-        return None
+        return None, balancing
     entry = JournalEntry.objects.create(
         date=on_date, reference=reference or "", memo=memo[:255]
     )
@@ -597,7 +657,7 @@ def _post_entry(on_date, reference, memo, rows):
                 entry=entry, account=account, credit=-amount, description=memo[:255]
             )
     entry.post()
-    return entry
+    return entry, balancing
 
 
 def _check_order_is_open_for(order, what):
@@ -724,13 +784,18 @@ class MaterialIssue(AuditModel):
         wip = ManufacturingSettings.account(
             "wip", "material is being issued to a run"
         )
-        rows = [(wip, total * self.sign())]
-        for item, value in by_item.items():
-            rows.append((inventory_account_for(item), -value * self.sign()))
-        self.journal_entry = _post_entry(self.issue_date, self.number, label, rows)
+        rows = [
+            (inventory_account_for(item), -value * self.sign())
+            for item, value in by_item.items()
+        ]
+        self.journal_entry, charged = _post_entry(
+            self.issue_date, self.number, label, rows, balance_to=wip
+        )
         self.posted = True
         self.posted_at = occurred_at
-        self.posted_value = total * self.sign()
+        # What work in progress actually took, to the paisa, rather than
+        # the unrounded sum it was worked out from.
+        self.posted_value = charged
         super().save(update_fields=[
             "number", "issue_date", "posted", "posted_at", "posted_value",
             "journal_entry", "updated_at",
@@ -897,8 +962,26 @@ class MaterialIssueLine(AuditModel):
         )
 
     def save(self, *args, **kwargs):
+        # The document refuses to be edited once posted and its lines
+        # have to refuse with it. Guarding only the header is the shape
+        # this project keeps copying: the quantity moves, the ledger
+        # does not, and the two disagree for ever. `post()` writes
+        # through `super().save()` and so is not caught by this.
+        if self.issue.posted:
+            raise ValidationError(
+                f"Cannot modify a line on {self.issue}, which is posted. Void "
+                "it and raise another."
+            )
         self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.issue.posted:
+            raise ValidationError(
+                f"Cannot delete a line on {self.issue}, which is posted. Void "
+                "it and raise another."
+            )
+        return super().delete(*args, **kwargs)
 
 
 class ProductionEntry(AuditModel):
@@ -1078,11 +1161,14 @@ class ProductionEntry(AuditModel):
         wip = ManufacturingSettings.account(
             "wip", "output is being booked off a run"
         )
-        rows.append((wip, -taken))
-        self.journal_entry = _post_entry(self.entry_date, self.number, label, rows)
+        self.journal_entry, released = _post_entry(
+            self.entry_date, self.number, label, rows, balance_to=wip
+        )
         self.posted = True
         self.posted_at = occurred_at
-        self.posted_value = taken
+        # Work in progress was credited, so what came out of it is the
+        # other sign of what the balancing row took.
+        self.posted_value = -released
         super().save(update_fields=[
             "number", "entry_date", "posted", "posted_at", "posted_value",
             "unit_cost", "stock_movement", "journal_entry", "updated_at",
@@ -1254,5 +1340,18 @@ class ProductionByproduct(AuditModel):
         )
 
     def save(self, *args, **kwargs):
+        if self.entry.posted:
+            raise ValidationError(
+                f"Cannot modify a by-product on {self.entry}, which is posted. "
+                "Void it and raise another."
+            )
         self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.entry.posted:
+            raise ValidationError(
+                f"Cannot delete a by-product on {self.entry}, which is posted. "
+                "Void it and raise another."
+            )
+        return super().delete(*args, **kwargs)

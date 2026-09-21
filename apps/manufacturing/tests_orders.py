@@ -763,3 +763,145 @@ class OutputBookedBeforeMaterialIsAllowedTests(RunTestCase):
         self.assertAlmostEqual(
             self.balance(self.variance), Decimal("-91711.34"), places=2
         )
+
+
+class AnEntryBalancesByConstructionTests(RunTestCase):
+    """
+    Rounding a total and rounding its parts are different numbers. A
+    blend of five materials whose values each carry a fraction of a
+    paisa sums to one figure and rounds to another, and an entry built
+    from both is out by a paisa and refused by the ledger.
+
+    The suite did not catch this. Its prices were round; the first run
+    with real ones in it failed on the first issue.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Prices that do not divide evenly into the cent.
+        self.stock(self.virgin, "20000", "98.5017")
+        self.stock(self.filler, "20000", "31.2033")
+        self.stock(self.colour, "20000", "182.0071")
+        self.stock(self.regrind, "20000", "58.0049")
+
+    def test_an_issue_of_five_awkward_materials_posts(self):
+        order = self.order("4000")
+        order.release(TODAY)
+        document = self.full_issue(order)
+        document.post()
+        self.assertIsNotNone(document.journal_entry)
+        self.assertTrue(document.journal_entry.is_balanced())
+
+    def test_what_is_frozen_is_what_the_ledger_took(self):
+        # posted_value has to be the figure in the journal, not the
+        # unrounded sum it was worked out from, or the work-in-progress
+        # balance and the account drift apart by a paisa a document.
+        order = self.order("4000")
+        order.release(TODAY)
+        document = self.full_issue(order)
+        document.post()
+        self.assertEqual(document.posted_value, self.balance(self.wip))
+
+    def test_and_the_whole_run_still_clears(self):
+        order = self.order("4000")
+        order.release(TODAY)
+        self.full_issue(order).post()
+        self.produce(
+            order, "3960", scrapped="18",
+            byproducts=[(self.regrind, "103.4")],
+        ).post()
+        order.close(TODAY)
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+
+class AClosedRunIsHoldingNothingTests(RunTestCase):
+    """
+    Found by running it. A closed order went on reporting the figure it
+    had sent to variance, so the admin showed 15,942 sitting in work in
+    progress for a run whose work in progress was empty.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.run = self.order()
+        self.run.release(TODAY)
+        self.full_issue(self.run).post()
+
+    def test_the_reported_balance_follows_the_account(self):
+        self.assertAlmostEqual(
+            self.run.wip_balance(), self.balance(self.wip), places=2
+        )
+        self.run.close(TODAY)
+        self.assertEqual(self.run.wip_balance(), Decimal("0"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+    def test_but_what_it_ate_is_still_readable(self):
+        self.run.close(TODAY)
+        self.assertAlmostEqual(
+            self.run.unaccounted(), Decimal("93195.888"), places=2
+        )
+
+    def test_reopening_puts_the_balance_back(self):
+        self.run.close(TODAY)
+        self.run.reopen(TODAY)
+        self.assertAlmostEqual(
+            self.run.wip_balance(), self.balance(self.wip), places=2
+        )
+        self.assertGreater(self.run.wip_balance(), Decimal("0"))
+
+
+class APostedDocumentsLinesAreFrozenTooTests(RunTestCase):
+    """
+    Guarding the header and leaving the lines editable is the shape this
+    project keeps copying. `adjustments.py` and `transfers.py` both
+    refuse a line on a posted document; these did not, so a posted
+    issue's quantity could be retyped and the ledger would stay exactly
+    where it was. Found by looking at the admin page, not by a test.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.run = self.order()
+        self.run.release(TODAY)
+
+    def test_a_line_on_a_posted_issue(self):
+        document = self.issue(self.run, [(self.virgin, "100")])
+        document.post()
+        line = document.lines.get()
+        line.quantity = Decimal("999")
+        with self.assertRaises(ValidationError):
+            line.save()
+        line.refresh_from_db()
+        self.assertEqual(line.quantity, Decimal("100"))
+        self.assertAlmostEqual(self.run.material_cost(), Decimal("10000"), places=2)
+
+    def test_deleting_one(self):
+        document = self.issue(self.run, [(self.virgin, "100")])
+        document.post()
+        with self.assertRaises(ValidationError):
+            document.lines.get().delete()
+
+    def test_but_an_unposted_one_is_still_a_draft(self):
+        document = self.issue(self.run, [(self.virgin, "100")])
+        line = document.lines.get()
+        line.quantity = Decimal("120")
+        line.save()
+        self.assertEqual(document.lines.get().quantity, Decimal("120"))
+
+    def test_a_byproduct_on_a_posted_entry(self):
+        self.full_issue(self.run).post()
+        entry = self.produce(
+            self.run, "1000", byproducts=[(self.regrind, "24.7423")]
+        )
+        entry.post()
+        row = entry.byproducts.get()
+        row.quantity = Decimal("500")
+        with self.assertRaises(ValidationError):
+            row.save()
+
+    def test_a_requirement_frozen_at_release(self):
+        component = self.run.components.first()
+        component.quantity_required = Decimal("1")
+        with self.assertRaises(ValidationError) as caught:
+            component.save()
+        self.assertIn("frozen when it was released", str(caught.exception))
