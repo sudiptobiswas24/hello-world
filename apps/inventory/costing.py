@@ -38,24 +38,29 @@ class CostingMethod(models.TextChoices):
     STANDARD = "standard", "Standard cost"
 
 
-def _movements(item, warehouse=None, before_id=None):
+def _movements(item, warehouse=None, before_id=None, as_of=None):
     movements = item.movements.all()
     if warehouse is not None:
         movements = movements.filter(warehouse=warehouse)
     if before_id is not None:
         movements = movements.filter(id__lt=before_id)
+    if as_of is not None:
+        # Valuation as at a date has to stop at that date. Reports ask
+        # this; the posting paths never do, because they price a movement
+        # against everything that came before it.
+        movements = movements.filter(occurred_at__date__lte=as_of)
     return movements.order_by("occurred_at", "id")
 
 
-def replay(item, warehouse=None, before_id=None):
+def replay(item, warehouse=None, before_id=None, as_of=None):
     """(quantity, value) on the shelf, unrounded, by this item's method."""
     method = item.costing_method
     if method == CostingMethod.FIFO:
-        quantity, _layers, value = _replay_fifo(item, warehouse, before_id)
+        quantity, _layers, value = _replay_fifo(item, warehouse, before_id, as_of)
         return quantity, value
     if method == CostingMethod.STANDARD:
-        return _replay_standard(item, warehouse, before_id)
-    return _replay_average(item, warehouse, before_id)
+        return _replay_standard(item, warehouse, before_id, as_of)
+    return _replay_average(item, warehouse, before_id, as_of)
 
 
 def cost_of_removing(item, warehouse, quantity):
@@ -123,10 +128,10 @@ def _last_cost(layers, item):
     return item.standard_cost or Decimal("0")
 
 
-def _replay_average(item, warehouse=None, before_id=None):
+def _replay_average(item, warehouse=None, before_id=None, as_of=None):
     quantity = Decimal("0")
     value = Decimal("0")
-    for movement in _movements(item, warehouse, before_id):
+    for movement in _movements(item, warehouse, before_id, as_of):
         if movement.quantity > 0:
             value += movement.quantity * (movement.unit_cost or Decimal("0"))
             quantity += movement.quantity
@@ -144,7 +149,7 @@ def _replay_average(item, warehouse=None, before_id=None):
     return quantity, value
 
 
-def _replay_fifo(item, warehouse=None, before_id=None):
+def _replay_fifo(item, warehouse=None, before_id=None, as_of=None):
     """
     Walk the ledger keeping the layers that are still on the shelf.
 
@@ -154,7 +159,7 @@ def _replay_fifo(item, warehouse=None, before_id=None):
     drifts the moment a movement is corrected, and nothing would say so.
     """
     layers = []
-    for movement in _movements(item, warehouse, before_id):
+    for movement in _movements(item, warehouse, before_id, as_of):
         if movement.quantity > 0:
             layers.append([movement.quantity, movement.unit_cost or Decimal("0"), movement.pk])
         elif movement.quantity < 0:
@@ -215,7 +220,7 @@ def _apply_adjustment(layers, movement):
         layer[1] += share / layer[0]
 
 
-def _replay_standard(item, warehouse=None, before_id=None):
+def _replay_standard(item, warehouse=None, before_id=None, as_of=None):
     """
     Quantity times the standard, and nothing else.
 
@@ -225,6 +230,6 @@ def _replay_standard(item, warehouse=None, before_id=None):
     value would be that variance hiding in an asset account.
     """
     quantity = Decimal("0")
-    for movement in _movements(item, warehouse, before_id):
+    for movement in _movements(item, warehouse, before_id, as_of):
         quantity += movement.quantity
     return quantity, quantity * (item.standard_cost or Decimal("0"))

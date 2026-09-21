@@ -118,7 +118,7 @@ class Item(AuditModel):
         total = self.movements.filter(warehouse=warehouse).aggregate(total=Sum("quantity"))["total"]
         return total or 0
 
-    def _replay_valuation(self, warehouse=None, before_id=None):
+    def _replay_valuation(self, warehouse=None, before_id=None, as_of=None):
         """
         Walk the movement ledger in order and return (quantity, value) at
         that point, by whichever method this item is costed under.
@@ -132,7 +132,7 @@ class Item(AuditModel):
         """
         from .costing import replay
 
-        return replay(self, warehouse, before_id)
+        return replay(self, warehouse, before_id, as_of)
 
     def cost_of_removing(self, warehouse, quantity):
         """
@@ -194,7 +194,7 @@ class Item(AuditModel):
     def stock_value_at(self, warehouse):
         return self._replay_valuation(warehouse)[1].quantize(Decimal("0.01"))
 
-    def valuation_at(self, warehouse):
+    def valuation_at(self, warehouse, as_of=None):
         """
         (quantity, value) at full precision, unrounded.
 
@@ -203,7 +203,7 @@ class Item(AuditModel):
         the unrounded number. Rounding to a presentable two places first
         and multiplying back is how the two ends of a move stop agreeing.
         """
-        return self._replay_valuation(warehouse)
+        return self._replay_valuation(warehouse, as_of=as_of)
 
     def to_stock_quantity(self, quantity, uom):
         """
@@ -536,6 +536,15 @@ from .bins import (  # noqa: E402,F401
     suggest_pick,
     suggest_putaway,
     unbinned,
+)
+from .reports import (  # noqa: E402,F401
+    movement_summary,
+    negative_stock,
+    reconcile_to_ledger,
+    slow_moving,
+    stock_aging,
+    stock_ledger,
+    stock_valuation,
 )
 from .picking import (  # noqa: E402,F401
     describe_plan,
