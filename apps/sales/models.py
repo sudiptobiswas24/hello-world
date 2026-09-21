@@ -40,6 +40,8 @@ from apps.inventory.models import (
     StockMovement,
     StockReservation,
     Warehouse,
+    lock_position,
+    lock_positions,
     plan_issue,
     release_for,
 )
@@ -2255,6 +2257,17 @@ class Delivery(AuditModel):
                             f"unreserved; {item.reserved_at(line.warehouse)} is promised "
                             "to other orders. Free a reservation or allow negative stock."
                         )
+
+        # Held before anything reads the shelf, because the race is
+        # between the read and the write and a lock taken after the
+        # decision protects nothing. Every position this delivery touches,
+        # in a fixed order, so two deliveries over the same pair of items
+        # cannot take them in opposite orders and wait for each other.
+        lock_positions(
+            (line.order_line.item, line.warehouse)
+            for line in lines
+            if line.order_line.item_id and line.order_line.item.track_inventory
+        )
 
         self.delivery_date = to_date(self.delivery_date)
         if not self.number:

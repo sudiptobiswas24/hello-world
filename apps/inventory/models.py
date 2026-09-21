@@ -743,6 +743,11 @@ from .variants import (  # noqa: E402,F401
     ItemVariantValue,
     variant_key,
 )
+from .locking import (  # noqa: E402,F401
+    StockPosition,
+    lock_position,
+    lock_positions,
+)
 from .reports import (  # noqa: E402,F401
     movement_summary,
     negative_stock,

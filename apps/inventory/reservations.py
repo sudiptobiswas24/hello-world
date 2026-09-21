@@ -31,6 +31,7 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel
 
+from .locking import lock_position
 from .models import Item, Warehouse
 
 
@@ -69,6 +70,7 @@ class ReservationManager(models.Manager.from_queryset(ReservationQuerySet)):
         if quantity <= 0:
             raise ValidationError("A reservation must claim a positive quantity.")
 
+        lock_position(item, warehouse)
         existing = self.for_source(source).open().first()
         already = existing.remaining() if existing else Decimal("0")
         free = Decimal(item.available_at(warehouse)) + already

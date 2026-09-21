@@ -28,6 +28,7 @@ from django.utils import timezone
 from apps.core.models import AuditModel, DocumentSequence, to_date
 
 from .models import Item, MovementType, StockMovement, Warehouse
+from .locking import lock_position, lock_positions
 
 
 class TransferStatus(models.TextChoices):
@@ -135,6 +136,18 @@ class StockTransfer(AuditModel):
 
         self._check_warehouses()
         self._check_somewhere_else(lines)
+        # Both ends of every line, in a fixed order. A transfer reads the
+        # source shelf and then empties part of it, and two transfers the
+        # other way round would otherwise deadlock.
+        lock_positions(
+            pair
+            for line in lines
+            for pair in (
+                (line.item, self.from_warehouse),
+                (line.item, self.to_warehouse),
+                (line.item, self.transit_warehouse),
+            )
+        )
         self.transfer_date = to_date(self.transfer_date)
         occurred_at = occurred_at or timezone.now()
         if not self.number:
@@ -209,6 +222,14 @@ class StockTransfer(AuditModel):
             raise ValidationError("Only a transfer in transit can be received.")
         occurred_at = occurred_at or timezone.now()
         selected = self._receipt_selection(quantities)
+        lock_positions(
+            pair
+            for line, _quantity in selected
+            for pair in (
+                (line.item, self.transit_warehouse),
+                (line.item, self.to_warehouse),
+            )
+        )
         for line, quantity in selected:
             line.move(
                 self, self.transit_warehouse, self.to_warehouse, quantity, occurred_at,
@@ -268,6 +289,15 @@ class StockTransfer(AuditModel):
 
         occurred_at = occurred_at or timezone.now()
         label = memo or f"Cancellation of transfer {self.number}"
+        lock_positions(
+            pair
+            for line in self.lines.select_related("item")
+            for pair in (
+                (line.item, self.from_warehouse),
+                (line.item, self.to_warehouse),
+                (line.item, self.transit_warehouse),
+            )
+        )
         for line in self.lines.select_related("item", "uom"):
             line.unwind(self, occurred_at, label)
         self.status = TransferStatus.CANCELLED

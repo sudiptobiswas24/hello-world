@@ -37,6 +37,8 @@ from apps.inventory.models import (
     MovementType,
     StockMovement,
     Warehouse,
+    lock_position,
+    lock_positions,
     plan_putaway,
 )
 from apps.accounting.settlement import (
@@ -1514,6 +1516,15 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         occurred_at = occurred_at or timezone.now()
 
         moved = []
+        lock_positions(
+            pair
+            for line in self.lines.filter(charge__isnull=True)
+            for component in line.components.select_related("item")
+            for pair in (
+                (component.item, from_warehouse),
+                (component.item, self.subcontract_warehouse),
+            )
+        )
         for line in self.lines.filter(charge__isnull=True):
             for component in line.components.select_related("item"):
                 quantity = round_money(component.quantity_per * line.quantity)
@@ -3226,6 +3237,7 @@ def draw_consignment(item, from_warehouse, to_warehouse, quantity, payable_accou
         raise ValidationError("Drawing into another consignment warehouse owns nothing.")
 
     quantity = Decimal(quantity)
+    lock_positions(((item, from_warehouse), (item, to_warehouse)))
     on_hand = Decimal(item.on_hand_at(from_warehouse))
     if quantity <= 0:
         raise ValidationError("Draw a positive quantity.")
@@ -3711,6 +3723,22 @@ class GoodsReceipt(AuditModel):
         if self.purchase_order.is_drop_ship():
             return self._post_drop_ship(lines, is_return=is_return)
 
+        # Every shelf this receipt touches. Subcontract lines read the
+        # components before consuming them, and a receipt into a routed
+        # warehouse lands somewhere other than the line names.
+        lock_positions(
+            pair
+            for line in lines
+            for pair in (
+                (line.order_line.item, line.warehouse),
+                (line.order_line.item, line.warehouse.first_receipt_step()),
+                *(
+                    (component.item, self.purchase_order.subcontract_warehouse)
+                    for component in line.order_line.components.all()
+                ),
+            )
+        )
+
         valued = []
         received = {}
         for line in lines:
@@ -3937,6 +3965,14 @@ class GoodsReceipt(AuditModel):
         occurred_at = occurred_at or timezone.now()
 
         selected = self._inspection_selection(quantities)
+        lock_positions(
+            pair
+            for line, _quantity in selected
+            for pair in (
+                (line.order_line.item, line.warehouse),
+                (line.order_line.item, warehouse),
+            )
+        )
         moved = []
         for line, quantity in selected:
             item = line.order_line.item
@@ -4306,6 +4342,10 @@ class GoodsReceiptLine(AuditModel):
 
         if not self.receipt.posted:
             raise ValidationError("Only a posted receipt has goods to move.")
+        lock_positions(
+            (self.order_line.item, step)
+            for step in self.route_steps() if step is not None
+        )
         origin = from_warehouse or self.current_step()
         if origin.is_quarantine:
             raise ValidationError(

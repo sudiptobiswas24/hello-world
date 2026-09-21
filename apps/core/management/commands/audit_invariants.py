@@ -80,6 +80,7 @@ class Command(BaseCommand):
         findings = []
         findings += self.unread_settings(all_code)
         findings += self.uncalled_helpers(labels, sources, all_code)
+        findings += self.unlocked_stock_writers(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
         findings += self.unconstrained_numbers(labels)
@@ -156,6 +157,46 @@ class Command(BaseCommand):
                             f"{key}() is defined in {path.name} and called by nothing "
                             "outside it — built, and not wired to anything.",
                         ))
+        return findings
+
+    # Files that write stock without holding a position, with the reason.
+    WRITES_STOCK_UNLOCKED = {
+        "inventory/locking.py": "defines the lock",
+        "core/audit_invariants.py": "contains the phrase it searches for, not the call",
+    }
+
+    def unlocked_stock_writers(self, labels, sources):
+        """
+        A file that writes the stock ledger and never holds a position.
+
+        Every posting path has the same shape — read what is on the
+        shelf, decide, write — and between the read and the write another
+        transaction can do the same. Two shipments of the last ten units
+        both find ten and both post. No test can find this, because a
+        test suite is single-threaded and the window never opens, so the
+        check has to be mechanical or it is nothing.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                key = f"{label}/{path.name}"
+                if key in self.WRITES_STOCK_UNLOCKED:
+                    continue
+                if "StockMovement.objects.create" not in text:
+                    continue
+                # A call, not a mention: an import line names the helper
+                # too, so matching the name alone passes a file that
+                # imports it and never uses it. The first version of this
+                # check did exactly that.
+                if re.search(r"\block_positions?\(", text):
+                    continue
+                findings.append((
+                    "unlocked stock writer",
+                    f"{key} writes stock movements and never holds a position — "
+                    "two documents can read the same shelf and both post.",
+                ))
         return findings
 
     def unread_settings(self, code):

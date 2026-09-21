@@ -30,6 +30,7 @@ from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import AuditModel, DocumentSequence, to_date
 
 from .models import Item, MovementType, StockMovement, Warehouse
+from .locking import lock_position, lock_positions
 from .valuation import inventory_account_for
 
 
@@ -165,6 +166,10 @@ class StockAdjustment(AuditModel):
         if not lines:
             raise ValidationError("Cannot post an adjustment with no lines.")
 
+        # Before anything reads the shelf: a write-off checks what is
+        # there and then takes it, and two of them can both find enough.
+        lock_positions((line.item, self.warehouse) for line in lines)
+
         self.adjustment_date = to_date(self.adjustment_date)
         occurred_at = timezone.now()
         if not self.number:
@@ -277,6 +282,9 @@ class StockAdjustment(AuditModel):
         on_date = to_date(on_date) or timezone.now().date()
         occurred_at = timezone.now()
         label = memo or f"Void of stock adjustment {self.number}"
+        lock_positions(
+            (line.item, self.warehouse) for line in self.lines.select_related("item")
+        )
         for line in self.lines.select_related("item", "uom"):
             line.reverse(self, occurred_at, label)
         if self.journal_entry_id:
