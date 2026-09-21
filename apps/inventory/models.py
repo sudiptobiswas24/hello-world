@@ -537,6 +537,11 @@ from .bins import (  # noqa: E402,F401
     suggest_putaway,
     unbinned,
 )
+from .picking import (  # noqa: E402,F401
+    describe_plan,
+    plan_issue,
+    plan_putaway,
+)
 from .tracking import (  # noqa: E402,F401
     Lot,
     TrackingMode,

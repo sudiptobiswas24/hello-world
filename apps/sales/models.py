@@ -40,6 +40,7 @@ from apps.inventory.models import (
     StockMovement,
     StockReservation,
     Warehouse,
+    plan_issue,
     release_for,
 )
 from apps.inventory.valuation import post_inventory_entry
@@ -2302,22 +2303,41 @@ class Delivery(AuditModel):
                 # A return reverses at the original's rate, so the total
                 # follows from it rather than from today's layers.
                 cost = shipped * unit_cost
-            StockMovement.objects.create(
-                item=item,
-                warehouse=line.warehouse,
-                movement_type=movement_type,
-                lot=line.lot,
-                bin=line.bin,
-                uom=item.uom,
-                quantity=quantity,
-                unit_cost=unit_cost,
-                reference=self.number,
-                occurred_at=timezone.now(),
-                notes=(
-                    f"{'Customer return for' if is_return else 'Delivery for'} "
-                    f"{self.sales_order} ({self.number})"
-                ),
+            occurred_at = timezone.now()
+            notes = (
+                f"{'Customer return for' if is_return else 'Delivery for'} "
+                f"{self.sales_order} ({self.number})"
             )
+            # Which batches and shelves this actually comes off. A return
+            # goes back where it came from — the line carries the original
+            # lot — so only a shipment has anything to choose.
+            if is_return:
+                plan = [(line.lot, line.bin, shipped)]
+            else:
+                plan = plan_issue(
+                    item, line.warehouse, shipped,
+                    lot=line.lot, storage_bin=line.bin,
+                    on_date=self.delivery_date,
+                )
+            for chosen_lot, chosen_bin, chosen_quantity in plan:
+                movement = StockMovement.objects.create(
+                    item=item,
+                    warehouse=line.warehouse,
+                    movement_type=movement_type,
+                    lot=chosen_lot,
+                    bin=chosen_bin,
+                    uom=item.uom,
+                    quantity=chosen_quantity if is_return else -chosen_quantity,
+                    unit_cost=unit_cost,
+                    reference=self.number,
+                    occurred_at=occurred_at,
+                    notes=notes,
+                )
+                if not is_return:
+                    DeliveryAllocation.objects.create(
+                        line=line, lot=chosen_lot, bin=chosen_bin,
+                        quantity=chosen_quantity, movement=movement,
+                    )
             # The goods have gone, so the claim on them is spent. Drawing
             # it down here rather than when the order closes keeps
             # availability honest between a partial shipment and the next.
@@ -2483,9 +2503,10 @@ class DeliveryLine(AuditModel):
     )
     lot = models.ForeignKey(
         "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
-        help_text="Which batch is being shipped. Required when the item is tracked: "
-                  "a recall that cannot say which customer got which batch is not a "
-                  "recall.",
+        help_text="Which batch to ship, when somebody is choosing it. Left blank the "
+                  "delivery picks first-expired-first-out and records what it took — "
+                  "a recall has to be able to say which customer got which batch "
+                  "either way.",
     )
     quantity_shipped = models.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = models.DecimalField(
@@ -2511,6 +2532,13 @@ class DeliveryLine(AuditModel):
         ):
             raise ValidationError("This line's order_line must belong to the delivery's sales_order.")
 
+    def lots_shipped(self):
+        """What actually left, batch by batch, in walking order."""
+        return [
+            (row.lot, row.bin, row.quantity)
+            for row in self.allocations.select_related("lot", "bin")
+        ]
+
     def save(self, *args, **kwargs):
         if self.delivery_id and Delivery.objects.filter(pk=self.delivery_id, posted=True).exists():
             raise ValidationError(
@@ -2523,6 +2551,48 @@ class DeliveryLine(AuditModel):
                 f"'{self.order_line.charge}' is a charge, not goods; there is nothing to ship."
             )
         super().save(*args, **kwargs)
+
+
+class DeliveryAllocation(AuditModel):
+    """
+    One batch, off one shelf, on one delivery line.
+
+    A line says what the customer ordered; a shipment of forty may come
+    off two batches and three shelves, and which is the answer a recall
+    needs. It holds the movement it produced rather than describing it,
+    the same way a transfer's steps do — a second record that merely
+    describes the first is a record that can disagree with it.
+    """
+
+    line = models.ForeignKey(
+        DeliveryLine, on_delete=models.CASCADE, related_name="allocations"
+    )
+    lot = models.ForeignKey(
+        "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    bin = models.ForeignKey(
+        "inventory.StorageBin", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+    )
+    quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, help_text="In the item's stocking unit."
+    )
+    movement = models.ForeignKey(
+        "inventory.StockMovement", on_delete=models.PROTECT, related_name="+",
+        editable=False,
+    )
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="delivery_allocation_quantity_positive"
+            ),
+        ]
+
+    def __str__(self):
+        where = self.lot.code if self.lot_id else "untracked"
+        return f"{self.quantity} of {where}"
 
     def delete(self, *args, **kwargs):
         if self.delivery.posted:

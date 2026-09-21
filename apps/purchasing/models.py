@@ -32,7 +32,13 @@ from apps.core.models import (
     UnitOfMeasure,
     to_date,
 )
-from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.models import (
+    Item,
+    MovementType,
+    StockMovement,
+    Warehouse,
+    plan_putaway,
+)
 from apps.accounting.settlement import (
     amount_overdue,
     installment_schedule,
@@ -3745,7 +3751,10 @@ class GoodsReceipt(AuditModel):
                 # them together and the total stays the total.
                 uom=line.order_line.uom,
                 lot=line.lot,
-                bin=line.bin,
+                # Where the goods land. suggest_putaway() existed and
+                # nothing called it, so a binned warehouse refused every
+                # receipt that did not name a shelf by hand.
+                bin=plan_putaway(line.order_line.item, line.warehouse, line.bin),
                 quantity=quantity,
                 unit_cost=unit_cost,
                 reference=self.reference or self.number,
@@ -4156,8 +4165,9 @@ class GoodsReceiptLine(AuditModel):
     bin = models.ForeignKey(
         "inventory.StorageBin", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
-        help_text="Which shelf the goods were put on. Required when the warehouse "
-                  "is binned.",
+        help_text="Which shelf to put the goods on. Left blank in a binned "
+                  "warehouse, the receipt puts them next to the same item and "
+                  "records where.",
     )
     lot = models.ForeignKey(
         "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
