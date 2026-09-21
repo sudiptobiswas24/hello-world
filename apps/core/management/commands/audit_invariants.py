@@ -14,7 +14,10 @@ from django.apps import apps as django_apps
 from django.core.management.base import BaseCommand
 from django.db import models
 
-OUR_APPS = ("core", "accounting", "inventory", "sales", "purchasing", "hr")
+OUR_APPS = (
+    "core", "accounting", "inventory", "sales", "purchasing", "hr",
+    "assets", "manufacturing",
+)
 
 # Correction paths. A flow built only forwards is the single most
 # productive defect shape in this codebase's history.

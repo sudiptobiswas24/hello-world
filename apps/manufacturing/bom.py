@@ -400,3 +400,81 @@ def material_balance(bom, quantity, uom=None):
         (item, required, produced, required - produced)
         for item, required, produced in rows.values()
     ]
+
+
+PlannedCost = namedtuple("PlannedCost", "materials byproducts net")
+
+
+def planned_cost(bom, quantity, warehouse, uom=None):
+    """
+    What a run of this BOM is expected to cost, from today's shelf.
+
+    Materials at what taking them off the shelf would take off its
+    value, less what the by-products carry out with them. One level
+    only: a sub-assembly this plant makes is valued at what it is worth
+    in stock, not re-exploded, because that is what will actually be
+    issued to the run.
+
+    Expected, and no more than that. It is frozen onto a work order at
+    release and the run is received at it, because the real cost of a
+    run is not known until it closes and a lorry will not wait. What
+    the run actually consumed lands as a variance when it does close.
+
+    Materials and the by-product credit are returned apart as well as
+    netted, because a by-product taking a share of the run has to take
+    it of something, and the net figure is what it would be a share of.
+    """
+    from apps.inventory.costing import unit_cost_for
+
+    scale = bom.scale_for(quantity, uom)
+    materials = Decimal("0")
+    for component in bom.components.select_related("item", "uom").all():
+        required = component.gross_quantity() * scale
+        in_stock_units = component.item.to_stock_quantity(required, component.uom)
+        rate = unit_cost_for(component.item, warehouse, in_stock_units)
+        if not rate:
+            # Nothing of it on the shelf to take a price from. A standard
+            # answers that; silence prices the material at nothing and
+            # buries its whole cost in the variance at close, which is a
+            # plan that was never a plan.
+            if component.item.standard_cost is None:
+                raise ValidationError(
+                    f"{component.item} has none of itself at {warehouse} to take "
+                    "a cost from and no standard cost, so a run using it would "
+                    "be planned as though it were free. Set a standard cost."
+                )
+            rate = component.item.standard_cost
+        materials += rate * in_stock_units
+    credit = Decimal("0")
+    for byproduct in bom.byproducts.select_related("item", "uom").all():
+        credit += byproduct_value(
+            byproduct, byproduct.quantity * scale, materials
+        )
+    return PlannedCost(materials, credit, materials - credit)
+
+
+def byproduct_value(byproduct, quantity, run_cost=None):
+    """
+    What a by-product carries out of the run with it.
+
+    Reground trim is worth a standard recovery value, well under virgin
+    polymer. Sweepings are worth nothing and say so, rather than
+    silently absorbing a share of the run and making the sack look
+    cheaper than it was.
+    """
+    if byproduct.valuation == ByproductValuation.NONE:
+        return Decimal("0")
+    if byproduct.valuation == ByproductValuation.SHARE:
+        if run_cost is None:
+            return Decimal("0")
+        return run_cost * (byproduct.cost_share_percent or Decimal("0")) / ONE_HUNDRED
+    standard = byproduct.item.standard_cost
+    if standard is None:
+        raise ValidationError(
+            f"{byproduct.item} comes off this run as a by-product valued at its "
+            "standard cost, and it has no standard cost. Set one, or say the "
+            "by-product is worth nothing — leaving it unanswered values the "
+            "whole run against the main product without saying so."
+        )
+    quantity = byproduct.item.to_stock_quantity(quantity, byproduct.uom)
+    return standard * quantity

@@ -16,9 +16,24 @@ from .bom import (  # noqa: F401
     ByproductValuation,
     Requirement,
     default_bom_for,
+    byproduct_value,
     explode,
     material_balance,
+    planned_cost,
     net_requirements,
+    PlannedCost,
+)
+from .orders import (  # noqa: F401
+    IssueDirection,
+    ManufacturingSettings,
+    MaterialIssue,
+    MaterialIssueLine,
+    ProductionByproduct,
+    ProductionEntry,
+    WorkCentre,
+    WorkOrder,
+    WorkOrderComponent,
+    WorkOrderStatus,
 )
 from .woven import (  # noqa: F401
     BagSpecification,
