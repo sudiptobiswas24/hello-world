@@ -29,6 +29,7 @@ class WarehouseSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "address", "consignment_vendor",
             "is_quarantine", "is_transit", "requires_bins",
+            "receipt_route", "input_warehouse", "quality_warehouse",
             "allow_negative_stock", "is_active",
         ]
 

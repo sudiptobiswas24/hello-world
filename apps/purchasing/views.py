@@ -136,17 +136,56 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(return_receipt).data)
 
 
-class GoodsReceiptLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = GoodsReceiptLine.objects.all()
-    serializer_class = GoodsReceiptLineSerializer
-
-
 def _run(callable_, *args, **kwargs):
     """Let a model's refusal reach the caller as the sentence it wrote."""
     try:
         return callable_(*args, **kwargs)
     except DjangoValidationError as exc:
         raise DRFValidationError(exc.messages)
+
+
+class ReceiptRoutingMixin:
+    """
+    Walking a receipt line along its route.
+
+    An action rather than a writable field: moving goods from the bay to
+    the shelf writes stock movements, and a PATCH that moved stock would
+    move it again on every retry.
+    """
+
+    action_permission_map = {"advance": "purchasing.change_goodsreceipt"}
+
+    @action(detail=True, methods=["post"], url_path="advance")
+    def advance(self, request, pk=None):
+        line = self.get_object()
+        move = _run(line.advance, quantity=request.data.get("quantity"))
+        return Response({
+            "from": move.from_warehouse.code,
+            "to": move.to_warehouse.code,
+            "quantity": move.quantity,
+            "transfer": move.transfer.number,
+            "still_here": line.quantity_at(move.from_warehouse),
+        })
+
+    @action(detail=True, methods=["get"], url_path="route")
+    def route(self, request, pk=None):
+        """Where this line's goods are, and where they still have to go."""
+        line = self.get_object()
+        return Response({
+            "destination": line.warehouse.code,
+            "arrived_at": line.arrived_at().code,
+            "current_step": line.current_step().code,
+            "steps": [
+                {"warehouse": step.code, "quantity": line.quantity_at(step)}
+                for step in line.route_steps() if step is not None
+            ],
+        })
+
+
+class GoodsReceiptLineViewSet(ReceiptRoutingMixin, AuditableViewSetMixin,
+                             viewsets.ModelViewSet):
+    queryset = GoodsReceiptLine.objects.all()
+    serializer_class = GoodsReceiptLineSerializer
 
 
 class PurchasingReportViewSet(viewsets.ViewSet):

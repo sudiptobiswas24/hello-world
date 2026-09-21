@@ -23,6 +23,29 @@ class Warehouse(AuditModel):
         help_text="Holds goods received but not yet accepted. The stock is owned and "
                   "valued; it simply may not be shipped until someone has looked at it.",
     )
+    receipt_route = models.CharField(
+        max_length=16, default="direct",
+        choices=[
+            ("direct", "Straight to stock"),
+            ("input", "Receiving bay, then stock"),
+            ("inspect", "Receiving bay, then inspection, then stock"),
+        ],
+        help_text="How many places goods pass through on the way in. Declared here "
+                  "rather than remembered on every order line, because it is a fact "
+                  "about the building.",
+    )
+    input_warehouse = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="receives_for",
+        help_text="The bay goods land in before they are put away. Stock here is "
+                  "owned and valued and has not been put anywhere yet.",
+    )
+    quality_warehouse = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="inspects_for",
+        help_text="Where goods wait to be looked at. Must be a quarantine "
+                  "warehouse, which is what stops them being shipped.",
+    )
     requires_bins = models.BooleanField(
         default=False,
         help_text="Every movement in or out must name a bin. Off by default, so "
@@ -47,6 +70,72 @@ class Warehouse(AuditModel):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def receipt_steps(self):
+        """
+        Every place arriving goods pass through, in order, ending here.
+
+        One entry for a warehouse that receives straight to stock, which
+        is what every warehouse did before this and what most still do.
+        """
+        if self.receipt_route == "input":
+            return [self.input_warehouse, self]
+        if self.receipt_route == "inspect":
+            return [self.input_warehouse, self.quality_warehouse, self]
+        return [self]
+
+    def first_receipt_step(self):
+        """Where arriving goods actually land."""
+        return self.receipt_steps()[0]
+
+    def next_receipt_step(self, after):
+        """
+        The place after `after` on the way in, or None at the end.
+
+        Answered by position rather than by name, so a route that puts
+        the same warehouse in twice still moves forward.
+        """
+        steps = self.receipt_steps()
+        for index, step in enumerate(steps[:-1]):
+            if step is not None and after is not None and step.pk == after.pk:
+                return steps[index + 1]
+        return None
+
+    def clean(self):
+        if self.receipt_route in ("input", "inspect") and self.input_warehouse is None:
+            raise ValidationError(
+                f"{self.code} receives through a bay and has not said which."
+            )
+        if self.receipt_route == "inspect" and self.quality_warehouse is None:
+            raise ValidationError(
+                f"{self.code} inspects on receipt and has not said where."
+            )
+        if self.quality_warehouse is not None and not self.quality_warehouse.is_quarantine:
+            # Quarantine is what stops the goods being shipped. A quality
+            # step that anybody can pick from is not a quality step.
+            raise ValidationError(
+                f"{self.quality_warehouse} is not a quarantine warehouse, so goods "
+                "waiting there could be shipped before anyone looked at them."
+            )
+        for step, label in (
+            (self.input_warehouse, "receiving bay"),
+            (self.quality_warehouse, "inspection area"),
+        ):
+            if step is None:
+                continue
+            if self.pk and step.pk == self.pk:
+                raise ValidationError(f"{self.code} cannot be its own {label}.")
+            if step.receipt_route != "direct":
+                # Otherwise arriving goods route into a bay that routes
+                # them into another bay, and nothing says where they stop.
+                raise ValidationError(
+                    f"{step.code} is a {label} and must itself receive straight to "
+                    "stock, or goods would route into it forever."
+                )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
 
 
 class ItemType(models.TextChoices):

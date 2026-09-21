@@ -3734,7 +3734,11 @@ class GoodsReceipt(AuditModel):
             # the line, because a line that does not record where its
             # goods went cannot send them back from there — which is how
             # auto-put-away silently broke the return to vendor.
-            landed_in = plan_putaway(line.order_line.item, line.warehouse, line.bin)
+            landed_in = plan_putaway(
+                line.order_line.item,
+                line.arrived_at() if is_return else line.warehouse.first_receipt_step(),
+                line.bin,
+            )
             if line.bin_id != getattr(landed_in, "pk", None):
                 line.bin = landed_in
             # A subcontracted item is worth what the components cost plus
@@ -3751,9 +3755,20 @@ class GoodsReceipt(AuditModel):
                 else:
                     component_cost = self._consume_components(line)
                 unit_cost = unit_cost + component_cost
+            # Where the goods actually land: the first step of the
+            # destination's receipt route, which for most warehouses is
+            # the destination itself. A return takes them back off
+            # whichever shelf they are really on, so the answer is frozen
+            # onto the line.
+            landed = (
+                line.arrived_at() if is_return
+                else line.warehouse.first_receipt_step()
+            )
+            if not is_return and line.landed_warehouse_id != landed.pk:
+                line.landed_warehouse = landed
             movement = StockMovement.objects.create(
                 item=line.order_line.item,
-                warehouse=line.warehouse,
+                warehouse=landed,
                 movement_type=movement_type,
                 # Both numbers are per order-line unit — the received
                 # quantity and the agreed price — so the movement restates
@@ -3772,7 +3787,9 @@ class GoodsReceipt(AuditModel):
             )
             line.stock_movement = movement
             super(GoodsReceiptLine, line).save(
-                update_fields=["stock_movement", "bin", "updated_at"]
+                update_fields=[
+                    "stock_movement", "bin", "landed_warehouse", "updated_at",
+                ]
             )
             # Only the vendor's charge hits the ledger: the component
             # value has merely moved from one item to another inside the
@@ -3890,7 +3907,10 @@ class GoodsReceipt(AuditModel):
         )
 
     def quarantined_lines(self):
-        return [line for line in self.lines.all() if line.warehouse.is_quarantine]
+        # Where the goods are, not where they are going: a route that
+        # sends them through inspection puts them in quarantine while the
+        # line still names the shelf they are destined for.
+        return [line for line in self.lines.all() if line.quarantined_quantity() > 0]
 
     def awaiting_inspection(self):
         """{receipt_line: quantity} still sitting in quarantine."""
@@ -4151,6 +4171,12 @@ class GoodsReceipt(AuditModel):
                 lot=line.lot,
                 bin=line.bin,
                 warehouse=line.warehouse,
+                # Off the shelf the goods are actually on. A routed
+                # receipt leaves them in the bay or in inspection while
+                # the line still names the shelf they were destined for,
+                # and taking them from there would send back stock that
+                # never got there.
+                landed_warehouse=line.current_step(),
                 quantity_received=quantity,
             )
         return_receipt.post()
@@ -4189,6 +4215,137 @@ class GoodsReceiptLine(AuditModel):
                   "FIFO a landed cost has to raise the layer these goods created, "
                   "not an average of every layer on the shelf.",
     )
+    landed_warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Where the goods actually arrived, which is the first step of the "
+                  "destination's receipt route and not always the destination. "
+                  "Frozen, because a return has to take them back off the shelf "
+                  "they are really on.",
+    )
+
+    def arrived_at(self):
+        """Where the goods landed — the destination, if nothing says otherwise."""
+        return self.landed_warehouse or self.warehouse
+
+    def route_steps(self):
+        return self.warehouse.receipt_steps()
+
+    def quantity_advanced_from(self, warehouse):
+        total = Decimal("0")
+        for move in self.route_moves.filter(from_warehouse=warehouse):
+            total += move.quantity
+        return total
+
+    def quantity_advanced_to(self, warehouse):
+        total = Decimal("0")
+        for move in self.route_moves.filter(to_warehouse=warehouse):
+            total += move.quantity
+        return total
+
+    def quantity_at(self, warehouse):
+        """
+        How much of this line is sitting at one step of its route.
+
+        Derived from the moves rather than stored, so a half-advanced
+        line cannot claim to be somewhere it is not.
+        """
+        arrived = (
+            self.quantity_received if warehouse.pk == self.arrived_at().pk
+            else Decimal("0")
+        )
+        return (
+            arrived
+            + self.quantity_advanced_to(warehouse)
+            - self.quantity_advanced_from(warehouse)
+        )
+
+    def current_step(self):
+        """
+        Where this line's goods are now, not where they landed.
+
+        The first step on the route still holding any of them. Defaulting
+        to where they landed instead meant the second hop looked at an
+        empty bay and reported nothing to move, which is what happens
+        when a position is assumed rather than asked.
+        """
+        for step in self.route_steps():
+            if step is not None and self.quantity_at(step) > 0:
+                return step
+        return self.arrived_at()
+
+    def quarantined_quantity(self):
+        """How much of this line is sitting somewhere it cannot ship from."""
+        total = Decimal("0")
+        for step in self.route_steps():
+            if step is not None and step.is_quarantine:
+                total += self.quantity_at(step)
+        return total
+
+    def next_step_from(self, warehouse=None):
+        warehouse = warehouse or self.current_step()
+        return self.warehouse.next_receipt_step(warehouse)
+
+    @transaction.atomic
+    def advance(self, quantity=None, from_warehouse=None, occurred_at=None):
+        """
+        Move goods to the next place on their way in.
+
+        A transfer, because that is what it is: the goods were received,
+        owned and valued when they arrived, and moving them between the
+        bay and the shelf changes where they are and not what they are
+        worth. Reusing StockTransfer also means the reverse path, the
+        batch and bin handling and the value arithmetic are the ones
+        already written and tested, rather than a second set that drifts.
+
+        Clearing an inspection is `GoodsReceipt.accept()` and not this:
+        goods leave quarantine when somebody has looked at them, which is
+        a decision with its own record.
+        """
+        from apps.inventory.models import StockTransfer, StockTransferLine
+
+        if not self.receipt.posted:
+            raise ValidationError("Only a posted receipt has goods to move.")
+        origin = from_warehouse or self.current_step()
+        if origin.is_quarantine:
+            raise ValidationError(
+                f"{origin} holds goods awaiting inspection. Accept or reject them on "
+                "the receipt; they do not simply move on."
+            )
+        destination = self.warehouse.next_receipt_step(origin)
+        if destination is None:
+            raise ValidationError(
+                f"{self.order_line.item} is already at {origin}, the end of its route."
+            )
+        here = self.quantity_at(origin)
+        quantity = Decimal(quantity) if quantity is not None else here
+        if quantity <= 0:
+            raise ValidationError("Nothing to move.")
+        if quantity > here:
+            raise ValidationError(
+                f"Only {here} of {self.order_line.item} is at {origin}; cannot move "
+                f"{quantity}."
+            )
+
+        transfer = StockTransfer.objects.create(
+            transfer_date=to_date(occurred_at) or timezone.now().date(),
+            from_warehouse=origin, to_warehouse=destination,
+            reference=self.receipt.number,
+            memo=f"Put away from {origin.code} for {self.receipt.number}",
+        )
+        StockTransferLine.objects.create(
+            transfer=transfer, item=self.order_line.item,
+            uom=self.order_line.item.uom, lot=self.lot,
+            from_bin=self.bin if origin.pk == self.arrived_at().pk else None,
+            quantity=self.order_line.item.to_stock_quantity(
+                quantity, self.order_line.uom
+            ),
+        )
+        transfer.post()
+        return ReceiptRouteMove.objects.create(
+            receipt_line=self, from_warehouse=origin, to_warehouse=destination,
+            quantity=quantity, transfer=transfer,
+        )
 
     def quantity_inspected(self):
         """How much of this line has been accepted or rejected."""
@@ -4197,7 +4354,14 @@ class GoodsReceiptLine(AuditModel):
         )["total"] or Decimal("0")
 
     def quantity_uninspected(self):
-        return self.quantity_received - self.quantity_inspected()
+        """
+        How much is waiting to be looked at.
+
+        Measured from what is actually in quarantine rather than from
+        what was received, because a routed line reaches inspection a
+        pallet at a time and the rest is still in the bay.
+        """
+        return self.quarantined_quantity() - self.quantity_inspected()
 
     def quantity_returned(self):
         """How much of this line posted returns have already sent back."""
@@ -4322,6 +4486,47 @@ class LandedCostApplication(AuditModel):
         self.released_entry = entry
         self.save(update_fields=["released_entry", "updated_at"])
         return entry
+
+
+class ReceiptRouteMove(AuditModel):
+    """
+    One hop a receipt line made on its way in.
+
+    Recorded rather than recomputed, so a line half put away can say how
+    much is still in the bay. It holds the transfer it produced rather
+    than describing it — a second record that merely describes the first
+    is a record that can disagree with it.
+    """
+
+    receipt_line = models.ForeignKey(
+        GoodsReceiptLine, on_delete=models.CASCADE, related_name="route_moves"
+    )
+    from_warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.PROTECT, related_name="+"
+    )
+    to_warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.PROTECT, related_name="+"
+    )
+    quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, help_text="In the order line's unit."
+    )
+    transfer = models.ForeignKey(
+        "inventory.StockTransfer", on_delete=models.PROTECT, related_name="+",
+        editable=False,
+    )
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="receipt_route_move_quantity_positive"
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.quantity} {self.from_warehouse.code}->{self.to_warehouse.code}"
+        )
 
 
 class ReceiptInspection(AuditModel):

@@ -26,9 +26,11 @@ from .models import (
 
 @admin.register(Warehouse)
 class WarehouseAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("code", "name", "is_quarantine", "is_transit", "requires_bins",
-                    "allow_negative_stock", "consignment_vendor", "is_active")
-    list_filter = ("is_quarantine", "is_transit", "requires_bins", "is_active")
+    list_display = ("code", "name", "receipt_route", "is_quarantine", "is_transit",
+                    "requires_bins", "allow_negative_stock", "consignment_vendor",
+                    "is_active")
+    list_filter = ("receipt_route", "is_quarantine", "is_transit", "requires_bins",
+                   "is_active")
     search_fields = ("code", "name")
 
 
