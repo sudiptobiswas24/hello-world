@@ -2287,30 +2287,14 @@ class Delivery(AuditModel):
             quantity = shipped if is_return else -shipped
             # A return reverses at the cost the original shipment used, so the
             # two entries cancel exactly instead of drifting with the average.
-            unit_cost = line.unit_cost
-            cost = None
-            if unit_cost is None:
-                # What the shelf actually gives up, asked of the one place
-                # that knows. Under FIFO the units leaving may span layers
-                # bought at different prices, and no single rate multiplies
-                # back to the right answer — so the total is the fact and
-                # the rate is derived from it, not the other way round.
-                cost = item.cost_of_removing(line.warehouse, shipped)
-                unit_cost = (cost / shipped).quantize(Decimal("0.0001")) if shipped else Decimal("0")
-                line.unit_cost = unit_cost
-                super(DeliveryLine, line).save(update_fields=["unit_cost", "updated_at"])
-            if cost is None:
-                # A return reverses at the original's rate, so the total
-                # follows from it rather than from today's layers.
-                cost = shipped * unit_cost
             occurred_at = timezone.now()
             notes = (
                 f"{'Customer return for' if is_return else 'Delivery for'} "
                 f"{self.sales_order} ({self.number})"
             )
             # Which batches and shelves this actually comes off. A return
-            # goes back where it came from — the line carries the original
-            # lot — so only a shipment has anything to choose.
+            # goes back where it came from, which the original line
+            # recorded, so only a shipment has anything to choose.
             if is_return:
                 plan = line.return_plan(shipped)
             else:
@@ -2319,7 +2303,30 @@ class Delivery(AuditModel):
                     lot=line.lot, storage_bin=line.bin,
                     on_date=self.delivery_date,
                 )
+
+            frozen = line.unit_cost
+            cost = Decimal("0")
             for chosen_lot, chosen_bin, chosen_quantity in plan:
+                if frozen is not None:
+                    # A return reverses at the rate the shipment used, so
+                    # the two entries cancel exactly rather than drifting
+                    # with whatever the shelf costs today.
+                    entry_cost = chosen_quantity * frozen
+                    rate = frozen
+                else:
+                    # Priced against the ledger as it stands and then
+                    # written, so the next entry sees what this one took.
+                    # Pricing the whole plan up front would charge every
+                    # FIFO layer as though it were first, and under
+                    # specific identification there is no single answer to
+                    # compute up front at all — each batch has its own.
+                    entry_cost = item.cost_of_removing(
+                        line.warehouse, chosen_quantity, lot=chosen_lot
+                    )
+                    rate = (
+                        (entry_cost / chosen_quantity).quantize(Decimal("0.0001"))
+                        if chosen_quantity else Decimal("0")
+                    )
                 movement = StockMovement.objects.create(
                     item=item,
                     warehouse=line.warehouse,
@@ -2328,16 +2335,30 @@ class Delivery(AuditModel):
                     bin=chosen_bin,
                     uom=item.uom,
                     quantity=chosen_quantity if is_return else -chosen_quantity,
-                    unit_cost=unit_cost,
+                    unit_cost=rate,
                     reference=self.number,
                     occurred_at=occurred_at,
                     notes=notes,
                 )
+                cost += entry_cost
                 if not is_return:
                     DeliveryAllocation.objects.create(
                         line=line, lot=chosen_lot, bin=chosen_bin,
                         quantity=chosen_quantity, movement=movement,
                     )
+
+            if frozen is None:
+                # One rate on the line for a shipment that may have come
+                # off several batches at several prices: the total is the
+                # fact, and the rate is derived from it so a return can
+                # reverse the same money.
+                line.unit_cost = (
+                    (cost / shipped).quantize(Decimal("0.0001"))
+                    if shipped else Decimal("0")
+                )
+                super(DeliveryLine, line).save(
+                    update_fields=["unit_cost", "updated_at"]
+                )
             # The goods have gone, so the claim on them is spent. Drawing
             # it down here rather than when the order closes keeps
             # availability honest between a partial shipment and the next.

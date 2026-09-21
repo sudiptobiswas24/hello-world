@@ -391,7 +391,7 @@ class StockTransferLine(AuditModel):
         # the oldest layers rather than an average of all of them, and
         # the receiving end has to add back the same figure or the move
         # revalues the company's stock.
-        leaving = item.cost_of_removing(source, quantity)
+        leaving = item.cost_of_removing(source, quantity, lot=self.lot)
         unit_cost = (leaving / quantity).quantize(Decimal("0.0001"))
         residue = (leaving - quantity * unit_cost).quantize(Decimal("0.0001")) or None
 
@@ -529,7 +529,9 @@ class StockTransferStep(AuditModel):
                 f"Only {on_hand} {item.uom} of {item} remains at {self.destination}; "
                 f"cannot send back {self.quantity}."
             )
-        back_out_value = item.cost_of_removing(self.destination, self.quantity)
+        back_out_value = item.cost_of_removing(
+            self.destination, self.quantity, lot=line.lot
+        )
         unit_cost = (back_out_value / self.quantity).quantize(Decimal("0.0001"))
         # Going back out, the replay removes quantity x average. Going back
         # in, it adds quantity x unit_cost. The pair has to net to exactly

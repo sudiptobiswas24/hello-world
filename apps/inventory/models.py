@@ -83,6 +83,7 @@ class Item(AuditModel):
             ("average", "Weighted average"),
             ("fifo", "First in, first out"),
             ("standard", "Standard cost"),
+            ("specific", "Specific identification"),
         ],
         help_text="How this item's stock is valued. Average needs no layer "
                   "bookkeeping and cannot be gamed by choosing which physical unit "
@@ -146,6 +147,22 @@ class Item(AuditModel):
             return Item.objects.none()
         return Item.objects.filter(template=self.template).exclude(pk=self.pk)
 
+    def _check_costing_is_answerable(self):
+        """
+        Specific identification needs to know which goods left.
+
+        Its entire premise is that each batch keeps its own cost, and an
+        untracked item has no batches — so the method would have to guess,
+        and a guess here is weighted average wearing another name and
+        wrong by exactly the amount the method exists to get right.
+        """
+        if self.costing_method == "specific" and self.tracking == "none":
+            raise ValidationError(
+                f"{self.sku} is costed by specific identification, which needs to know "
+                "which batch left. Track it by lot or serial number, or cost it "
+                "another way."
+            )
+
     def _check_matches_template(self):
         """
         A variant has to agree with its product about the things stock
@@ -194,6 +211,7 @@ class Item(AuditModel):
             )
 
     def save(self, *args, **kwargs):
+        self._check_costing_is_answerable()
         self._check_matches_template()
         self._check_variant_key_frozen()
         super().save(*args, **kwargs)
@@ -222,7 +240,7 @@ class Item(AuditModel):
 
         return replay(self, warehouse, before_id, as_of)
 
-    def cost_of_removing(self, warehouse, quantity):
+    def cost_of_removing(self, warehouse, quantity, lot=None):
         """
         What taking `quantity` off this shelf will take off its value.
 
@@ -231,16 +249,20 @@ class Item(AuditModel):
         bought at different prices and no single rate multiplies back to
         the right answer. A ledger entry that disagrees with the stock
         ledger by that difference disagrees permanently.
+
+        `lot` is required under specific identification and ignored by
+        every other method, which is the honest shape: the others have
+        no use for it and that one cannot answer without it.
         """
         from .costing import cost_of_removing
 
-        return cost_of_removing(self, warehouse, quantity)
+        return cost_of_removing(self, warehouse, quantity, lot=lot)
 
-    def removal_unit_cost(self, warehouse, quantity):
+    def removal_unit_cost(self, warehouse, quantity, lot=None):
         """`cost_of_removing` per unit, for movements that need a rate."""
         from .costing import unit_cost_for
 
-        return unit_cost_for(self, warehouse, quantity)
+        return unit_cost_for(self, warehouse, quantity, lot=lot)
 
     def average_cost_at(self, warehouse, before_id=None):
         """Weighted average unit cost, optionally as it stood before a movement."""

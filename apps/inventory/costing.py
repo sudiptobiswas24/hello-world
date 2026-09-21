@@ -19,6 +19,17 @@ Three methods, one replay, chosen per item:
   nothing else. What was actually paid is a separate fact, and the
   difference is a variance for somebody to explain, not a number to
   quietly absorb into inventory.
+- **Specific identification.** Each batch keeps its own cost, and what
+  leaves costs what *that* batch cost. Only available to an item that
+  is tracked by lot or serial number, because the method's entire
+  premise is knowing which physical goods left — an untracked item
+  cannot say, and offering it the method would be offering an answer it
+  has no way to compute.
+
+  Within one batch the cost is still an average, because a batch that
+  arrives twice at two prices has two prices and one identity. For
+  serial tracking that average is over one unit and so is exact, which
+  is the case the method is really for.
 
 The one rule every caller depends on: `cost_of_removing()` must return
 exactly what `replay()` will take off, or the ledger entry and the stock
@@ -29,6 +40,7 @@ module asks this module rather than doing its own arithmetic.
 
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -36,6 +48,7 @@ class CostingMethod(models.TextChoices):
     AVERAGE = "average", "Weighted average"
     FIFO = "fifo", "First in, first out"
     STANDARD = "standard", "Standard cost"
+    SPECIFIC = "specific", "Specific identification"
 
 
 def _movements(item, warehouse=None, before_id=None, as_of=None):
@@ -55,6 +68,9 @@ def _movements(item, warehouse=None, before_id=None, as_of=None):
 def replay(item, warehouse=None, before_id=None, as_of=None):
     """(quantity, value) on the shelf, unrounded, by this item's method."""
     method = item.costing_method
+    if method == CostingMethod.SPECIFIC:
+        quantity, _pools, value = _replay_specific(item, warehouse, before_id, as_of)
+        return quantity, value
     if method == CostingMethod.FIFO:
         quantity, _layers, value = _replay_fifo(item, warehouse, before_id, as_of)
         return quantity, value
@@ -63,7 +79,7 @@ def replay(item, warehouse=None, before_id=None, as_of=None):
     return _replay_average(item, warehouse, before_id, as_of)
 
 
-def cost_of_removing(item, warehouse, quantity):
+def cost_of_removing(item, warehouse, quantity, lot=None):
     """
     What taking `quantity` off this shelf will take off its value.
 
@@ -82,6 +98,22 @@ def cost_of_removing(item, warehouse, quantity):
     if quantity <= 0:
         return Decimal("0")
     method = item.costing_method
+
+    if method == CostingMethod.SPECIFIC:
+        if lot is None:
+            # The method's whole premise is knowing which goods left.
+            # Guessing here would be weighted average wearing another
+            # name, and it would be wrong by exactly the amount the
+            # method exists to get right.
+            raise ValidationError(
+                f"{item} is costed by specific identification, so what a withdrawal "
+                "costs depends on which batch it comes from. Say which."
+            )
+        _held, pools, _value = _replay_specific(item, warehouse)
+        pool_quantity, pool_value = pools.get(lot.pk, (Decimal("0"), Decimal("0")))
+        if pool_quantity <= 0:
+            return quantity * _last_cost_for_lot(item, warehouse, lot)
+        return quantity * (pool_value / pool_quantity)
 
     if method == CostingMethod.STANDARD:
         return quantity * (item.standard_cost or Decimal("0"))
@@ -108,7 +140,7 @@ def cost_of_removing(item, warehouse, quantity):
     return quantity * (value / held)
 
 
-def unit_cost_for(item, warehouse, quantity):
+def unit_cost_for(item, warehouse, quantity, lot=None):
     """
     `cost_of_removing` expressed per unit, for the places that must put
     a rate on a movement rather than a total.
@@ -119,13 +151,67 @@ def unit_cost_for(item, warehouse, quantity):
     quantity = Decimal(quantity)
     if quantity <= 0:
         return Decimal("0")
-    return cost_of_removing(item, warehouse, quantity) / quantity
+    return cost_of_removing(item, warehouse, quantity, lot=lot) / quantity
 
 
 def _last_cost(layers, item):
     if layers:
         return layers[-1][1]
     return item.standard_cost or Decimal("0")
+
+
+def _last_cost_for_lot(item, warehouse, lot):
+    """
+    What a batch cost the last time any of it arrived.
+
+    Only reached when the batch is empty and something is still going
+    out of it — shipping into negative stock. The price it last came in
+    at is the only honest guess, and the receipt that covers the
+    shortfall will correct the total.
+    """
+    latest = item.movements.filter(lot=lot, quantity__gt=0)
+    if warehouse is not None:
+        latest = latest.filter(warehouse=warehouse)
+    latest = latest.order_by("-occurred_at", "-id").first()
+    if latest is not None and latest.unit_cost is not None:
+        return latest.unit_cost
+    return item.standard_cost or Decimal("0")
+
+
+def _replay_specific(item, warehouse=None, before_id=None, as_of=None):
+    """
+    Walk the ledger keeping each batch's own cost.
+
+    Returns (quantity, pools, value), where pools maps a lot to what is
+    left of it and what that is worth. A batch is its own little
+    warehouse: goods entering it raise its value, goods leaving take
+    their share of it, and a landed cost attached to a receipt lands on
+    the batch that receipt brought in.
+
+    Movements with no lot are pooled together under None. An item costed
+    this way must be tracked, so that pool only ever holds history
+    written before the method was chosen — and it is still counted,
+    because it is still on the shelf.
+    """
+    pools = {}
+    for movement in _movements(item, warehouse, before_id, as_of):
+        pool = pools.setdefault(movement.lot_id, [Decimal("0"), Decimal("0")])
+        if movement.quantity > 0:
+            pool[0] += movement.quantity
+            pool[1] += movement.quantity * (movement.unit_cost or Decimal("0"))
+        elif movement.quantity < 0:
+            leaving = -movement.quantity
+            average = (pool[1] / pool[0]) if pool[0] > 0 else Decimal("0")
+            pool[1] -= leaving * average
+            pool[0] -= leaving
+        if movement.value_adjustment:
+            # Landed cost belongs to the goods it was incurred on, and a
+            # value-only movement carries the batch it was incurred for.
+            pool[1] += movement.value_adjustment
+
+    quantity = sum((pool[0] for pool in pools.values()), Decimal("0"))
+    value = sum((pool[1] for pool in pools.values()), Decimal("0"))
+    return quantity, {key: tuple(pool) for key, pool in pools.items()}, value
 
 
 def _replay_average(item, warehouse=None, before_id=None, as_of=None):

@@ -411,7 +411,9 @@ class StockAdjustmentLine(AuditModel):
             # the wrong number in both directions.
             self.unit_cost = (
                 item.average_cost_at(adjustment.warehouse) if quantity > 0
-                else item.removal_unit_cost(adjustment.warehouse, -quantity)
+                else item.removal_unit_cost(
+                    adjustment.warehouse, -quantity, lot=self.lot
+                )
             ).quantize(Decimal("0.0001"))
             if quantity > 0 and not self.unit_cost:
                 raise ValidationError(
@@ -499,7 +501,9 @@ class StockAdjustmentLine(AuditModel):
             # Not the average: what the replay is actually going to take
             # off when this reversing movement is written. It should take
             # off what this line put on, so the residue is the difference.
-            going = self.item.cost_of_removing(adjustment.warehouse, -quantity)
+            going = self.item.cost_of_removing(
+                adjustment.warehouse, -quantity, lot=self.lot
+            )
             residue = (going - moved_value).quantize(Decimal("0.0001")) or None
 
         self.reversal_movement = StockMovement.objects.create(
