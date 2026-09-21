@@ -146,4 +146,8 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
         "rest_framework.authentication.BasicAuthentication",
     ],
+    # Documents enforce their rules in save(), which raises Django's
+    # ValidationError. Without this a caller who broke a rule got a 500
+    # instead of the sentence the model wrote for them.
+    "EXCEPTION_HANDLER": "apps.core.api.exception_handler",
 }
