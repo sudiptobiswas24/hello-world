@@ -615,6 +615,13 @@ def leave_summary(employee, year, as_of=None):
 # than a description of people, but Django only discovers models this
 # one pulls in. Last, so Employee and LeaveRequest are fully defined
 # before payroll imports them back.
+from .timesheets import (  # noqa: E402,F401
+    Timesheet,
+    TimesheetEntry,
+    TimesheetStatus,
+    approved_hours,
+    hours_by_account,
+)
 from .payroll import (  # noqa: E402,F401
     ComponentBasis,
     ComponentKind,

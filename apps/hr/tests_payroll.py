@@ -168,7 +168,7 @@ class CalculationTests(PayrollTestCase):
         run = self.pay_run()
         with self.assertRaises(ValidationError) as caught:
             run.calculate()
-        self.assertIn("no hours were given", str(caught.exception))
+        self.assertIn("no approved hours", str(caught.exception))
 
     def test_hours_times_the_rate(self):
         hourly = PayComponent.objects.create(

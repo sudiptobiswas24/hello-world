@@ -635,17 +635,32 @@ class Payslip(AuditModel):
                 running_taxable += amount
         return list(self.lines.all())
 
+    def worked_hours(self):
+        """
+        Hours signed off for this person within the period.
+
+        Read from approved timesheets rather than handed in from outside.
+        Hours that arrive as an argument came from a spreadsheet, and
+        nothing in this system could then say where a number on a payslip
+        came from.
+        """
+        from .timesheets import approved_hours
+
+        return approved_hours(self.employee, self.run.period_start, self.run.period_end)
+
     def _amount_for(self, row, proportion, running_taxable, hours):
         component = row.component
         if component.basis == ComponentBasis.PERCENT_OF_GROSS:
             return running_taxable * row.amount / Decimal("100")
         if component.basis == ComponentBasis.PER_HOUR:
-            if hours is None:
+            worked = Decimal(hours) if hours is not None else self.worked_hours()
+            if not worked:
                 raise ValidationError(
-                    f"{component.code} is paid by the hour and no hours were given for "
-                    f"{self.employee}."
+                    f"{component.code} is paid by the hour and {self.employee} has no "
+                    "approved hours in this period. Approve their timesheet, or pass "
+                    "the hours in explicitly."
                 )
-            return Decimal(hours) * row.amount
+            return worked * row.amount
         amount = row.amount
         if component.reduces_for_unpaid_leave:
             amount = amount * proportion
