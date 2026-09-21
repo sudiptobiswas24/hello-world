@@ -328,6 +328,14 @@ class PayRun(AuditModel):
         slips = list(self.payslips.prefetch_related("lines"))
         if not slips:
             raise ValidationError("Cannot post a pay run with no payslips.")
+        if not any(slip.lines.exists() for slip in slips):
+            # Otherwise this posts an entry with no lines, which balances
+            # trivially and records nothing, against a run that looks as
+            # though payroll was done.
+            raise ValidationError(
+                "Nobody on this run is owed anything. Check the compensation in force "
+                "before posting a payroll that pays nothing."
+            )
         self._check_not_already_paid()
 
         if not self.number:
@@ -426,7 +434,7 @@ class PayRun(AuditModel):
             raise ValidationError("Only a posted pay run can be voided.")
         if self.is_voided():
             raise ValidationError("This pay run has already been voided.")
-        paid = self.payslips.filter(payment__isnull=False).first()
+        paid = next((slip for slip in self.payslips.all() if slip.is_paid()), None)
         if paid is not None:
             raise ValidationError(
                 f"{paid.employee} has already been paid from this run. Reverse the "
@@ -442,9 +450,15 @@ class PayRun(AuditModel):
         return self.voided_entry
 
     def unpaid_net(self):
-        """What this run still owes its people."""
+        """
+        What this run still owes its people.
+
+        Asked of each slip rather than filtered in the database, because
+        a slip whose payment was voided is owed again and a `payment
+        IS NULL` filter cannot see that.
+        """
         return sum(
-            (slip.net() for slip in self.payslips.filter(payment__isnull=True)),
+            (slip.net() for slip in self.payslips.all() if not slip.is_paid()),
             Decimal("0"),
         )
 
@@ -519,7 +533,16 @@ class Payslip(AuditModel):
         return round_money(self.gross() - self.deductions())
 
     def is_paid(self):
-        return self.payment_id is not None
+        """
+        Settled, and still settled.
+
+        A voided payment credits net pay payable straight back, so the
+        wages are owed again — but the slip went on pointing at it and
+        reading as paid, so unpaid_net() said zero while the control
+        account said four thousand. Whether somebody has been paid is a
+        question about the payment, not about the pointer to it.
+        """
+        return self.payment_id is not None and not self.payment.is_voided()
 
     # -- working out what somebody earned --------------------------------
 
@@ -684,6 +707,8 @@ class Payslip(AuditModel):
             raise ValidationError("A pay run must be posted before it can be paid.")
         if self.is_paid():
             raise ValidationError(f"{self.employee} has already been paid for this run.")
+        if payment.is_voided():
+            raise ValidationError("That payment has been voided; it settles nothing.")
         expected = self.net()
         if round_money(payment.amount) != expected:
             raise ValidationError(

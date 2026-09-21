@@ -155,12 +155,94 @@ class Employee(AuditModel):
             seen.add(node.pk)
             node = node.manager
 
+    def dangling_after(self, on_date):
+        """
+        Approved leave and claimed hours that fall after a date.
+
+        Asked before somebody's leaving date is set, because an approved
+        holiday in March does not survive a December departure and time
+        claimed after the last day was never worked — but both records
+        look entirely reasonable on their own, and nothing would have
+        said so.
+        """
+        on_date = to_date(on_date)
+        if on_date is None or not self.pk:
+            return [], []
+        leave = list(
+            self.leave_requests.filter(
+                status=LeaveStatus.APPROVED, end_date__gt=on_date
+            ).order_by("start_date")
+        )
+        from .timesheets import TimesheetEntry
+
+        hours = list(
+            TimesheetEntry.objects.filter(
+                timesheet__employee=self, date__gt=on_date
+            ).order_by("date")
+        )
+        return leave, hours
+
+    @transaction.atomic
+    def terminate(self, on_date, cancel_future=False):
+        """
+        Set a leaving date, having dealt with what lies beyond it.
+
+        `cancel_future` cancels approved leave that starts after the date
+        and removes time claimed after it, and says what it did. Without
+        it the save below refuses and names the first thing in the way,
+        because cancelling somebody's holiday is a decision rather than a
+        side effect of editing a field.
+        """
+        on_date = to_date(on_date)
+        cancelled, removed = [], []
+        if cancel_future:
+            leave, hours = self.dangling_after(on_date)
+            for request in leave:
+                if request.start_date <= on_date:
+                    # Splitting somebody's holiday across their last day is
+                    # a decision too, and not one to make for them.
+                    raise ValidationError(
+                        f"{request} spans {on_date}. Shorten or cancel it before "
+                        "setting a leaving date inside it."
+                    )
+                request.cancel(on_date=on_date)
+                cancelled.append(request)
+            for entry in hours:
+                entry.timesheet.send_back() if entry.timesheet.status != "draft" else None
+                entry.delete()
+                removed.append(entry)
+        self.termination_date = on_date
+        self.employment_status = EmploymentStatus.TERMINATED
+        self.save()
+        return cancelled, removed
+
+    def _check_nothing_dangling(self):
+        if self.termination_date is None:
+            return
+        previous = Employee.objects.filter(pk=self.pk).first() if self.pk else None
+        if previous is not None and previous.termination_date == self.termination_date:
+            return
+        leave, hours = self.dangling_after(self.termination_date)
+        if leave:
+            raise ValidationError(
+                f"{self} has approved leave to {leave[0].end_date}, after the leaving "
+                f"date of {self.termination_date}. Cancel it first, or use "
+                "terminate(cancel_future=True)."
+            )
+        if hours:
+            raise ValidationError(
+                f"{self} has time claimed on {hours[0].date}, after the leaving date "
+                f"of {self.termination_date}. Remove it first, or use "
+                "terminate(cancel_future=True)."
+            )
+
     def save(self, *args, **kwargs):
         # In save() and not only clean(), because Django never calls
         # full_clean() for you and nothing here is created through a form.
         # Every rule this class claimed to enforce was decorative until a
         # probe created records the way the rest of the codebase does.
         self.clean()
+        self._check_nothing_dangling()
         super().save(*args, **kwargs)
 
 
@@ -376,6 +458,15 @@ class LeaveRequest(AuditModel):
             raise ValidationError("end_date cannot be before start_date.")
         if self.half_day and self.start_date != self.end_date:
             raise ValidationError("A half day is one day; give it the same start and end.")
+        if self.start_date.year != self.end_date.year:
+            # An allowance is annual, so days either side of new year come
+            # out of two different ones. Charging all of them to the year
+            # the holiday started in overspends one and underspends the
+            # other, and a single frozen total cannot be split afterwards.
+            raise ValidationError(
+                "This leave crosses a year end, and an allowance is annual. Book the "
+                "days either side of it as two requests."
+            )
         if self.employee_id:
             self._check_within_employment()
             self._check_no_overlap()
