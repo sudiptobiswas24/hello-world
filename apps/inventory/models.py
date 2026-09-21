@@ -443,6 +443,13 @@ class StockMovement(AuditModel):
     Append-only ledger of stock changes. On-hand quantity is always a
     derived aggregate of these rows (see Item.on_hand_at) rather than a
     separately stored counter, so the two can never disagree.
+
+    Append-only is enforced, not merely described: `save()` refuses an
+    update and `delete()` refuses outright. It was a docstring on its
+    own until the valuation fold started depending on it — a fold is
+    only safe because a movement, once written, never changes, and a
+    silently edited row would make every fold past it wrong with nothing
+    left to notice. Corrections are reversing movements.
     """
 
     item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="movements")
@@ -571,7 +578,35 @@ class StockMovement(AuditModel):
                             self.value_adjustment = (
                                 self.value_adjustment or Decimal("0")
                             ) + residue
+        else:
+            raise ValidationError(
+                f"{self} has already been written. A stock ledger is appended "
+                "to, not edited: correct it with a reversing movement."
+            )
         super().save(*args, **kwargs)
+        self._keep_valuation_foldable()
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError(
+            f"{self} cannot be deleted. A stock ledger is appended to: reverse "
+            "the movement instead, so what happened stays readable."
+        )
+
+    def _keep_valuation_foldable(self):
+        """
+        Throw away a fold this movement would make wrong, and write a new
+        one once enough has happened since the last.
+
+        Here because this is the one place every movement is written, the
+        same reason the unit conversion and the tracking guard are here.
+        Housekeeping on the write path rather than on a read, so a report
+        never pays for it and a rolled-back transaction never leaves a
+        fold behind.
+        """
+        from .snapshots import invalidate, maybe_fold
+
+        invalidate(self.item, self.warehouse, self.occurred_at)
+        maybe_fold(self.item, self.warehouse, self.pk)
 
 
 # Stock adjustments and counts live in their own module because they are
@@ -742,6 +777,10 @@ from .variants import (  # noqa: E402,F401
     ItemTemplate,
     ItemVariantValue,
     variant_key,
+)
+from .snapshots import (  # noqa: E402,F401
+    SNAPSHOT_EVERY,
+    StockValuationSnapshot,
 )
 from .locking import (  # noqa: E402,F401
     StockPosition,

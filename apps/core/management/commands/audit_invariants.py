@@ -302,6 +302,9 @@ class Command(BaseCommand):
         "accounting.BankStatementLine.amount": "negative is money leaving",
         "inventory.StockAdjustmentLine.quantity": "negative writes stock down",
         "inventory.StockTransferStep.quantity": "negative is a hop sent back",
+        "inventory.StockValuationSnapshot.quantity": (
+            "a fold of movements that may have gone below zero"
+        ),
     }
 
     def unsigned_money(self, labels):

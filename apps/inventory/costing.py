@@ -51,7 +51,7 @@ class CostingMethod(models.TextChoices):
     SPECIFIC = "specific", "Specific identification"
 
 
-def _movements(item, warehouse=None, before_id=None, as_of=None):
+def _movements(item, warehouse=None, before_id=None, as_of=None, after=None):
     movements = item.movements.all()
     if warehouse is not None:
         movements = movements.filter(warehouse=warehouse)
@@ -62,21 +62,70 @@ def _movements(item, warehouse=None, before_id=None, as_of=None):
         # this; the posting paths never do, because they price a movement
         # against everything that came before it.
         movements = movements.filter(occurred_at__date__lte=as_of)
+    if after is not None:
+        # Everything since a fold, in the order the replay walks: by when
+        # it happened, then by id where two share a moment.
+        movements = movements.filter(
+            models.Q(occurred_at__gt=after.boundary_at)
+            | models.Q(occurred_at=after.boundary_at, id__gt=after.boundary_id)
+        )
     return movements.order_by("occurred_at", "id")
+
+
+def _fold_to_start_from(item, warehouse, before_id, as_of):
+    """
+    The snapshot this replay may begin at, if any.
+
+    A `before_id` replay is skipped: it cuts the ledger by insertion
+    order while the replay walks it by when things happened, and the two
+    only agree when nothing was ever backdated. It is asked for by tests
+    and by nothing else, so it pays the full walk.
+    """
+    if before_id is not None:
+        return None
+    from .snapshots import usable_snapshot
+
+    return usable_snapshot(item, warehouse, item.costing_method, as_of)
 
 
 def replay(item, warehouse=None, before_id=None, as_of=None):
     """(quantity, value) on the shelf, unrounded, by this item's method."""
+    fold = _fold_to_start_from(item, warehouse, before_id, as_of)
     method = item.costing_method
     if method == CostingMethod.SPECIFIC:
-        quantity, _pools, value = _replay_specific(item, warehouse, before_id, as_of)
+        quantity, _pools, value = _replay_specific(
+            item, warehouse, before_id, as_of, fold
+        )
         return quantity, value
     if method == CostingMethod.FIFO:
-        quantity, _layers, value = _replay_fifo(item, warehouse, before_id, as_of)
+        quantity, _layers, value = _replay_fifo(item, warehouse, before_id, as_of, fold)
         return quantity, value
     if method == CostingMethod.STANDARD:
-        return _replay_standard(item, warehouse, before_id, as_of)
-    return _replay_average(item, warehouse, before_id, as_of)
+        return _replay_standard(item, warehouse, before_id, as_of, fold)
+    return _replay_average(item, warehouse, before_id, as_of, fold)
+
+
+def replay_with_state(item, warehouse=None):
+    """
+    The current position, the method's working state, and the movement
+    the walk ended on — everything a fold needs to be written.
+    """
+    fold = _fold_to_start_from(item, warehouse, None, None)
+    method = item.costing_method
+    if method == CostingMethod.SPECIFIC:
+        quantity, pools, value = _replay_specific(item, warehouse, None, None, fold)
+        state = {"pools": {str(k): [str(p[0]), str(p[1])] for k, p in pools.items()}}
+    elif method == CostingMethod.FIFO:
+        quantity, layers, value = _replay_fifo(item, warehouse, None, None, fold)
+        state = {"layers": [[str(q), str(c), pk] for q, c, pk in layers]}
+    elif method == CostingMethod.STANDARD:
+        quantity, value = _replay_standard(item, warehouse, None, None, fold)
+        state = {}
+    else:
+        quantity, value = _replay_average(item, warehouse, None, None, fold)
+        state = {}
+    last = _movements(item, warehouse).last()
+    return quantity, value, state, last
 
 
 def cost_of_removing(item, warehouse, quantity, lot=None):
@@ -109,7 +158,9 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
                 f"{item} is costed by specific identification, so what a withdrawal "
                 "costs depends on which batch it comes from. Say which."
             )
-        _held, pools, _value = _replay_specific(item, warehouse)
+        _held, pools, _value = _replay_specific(
+            item, warehouse, fold=_fold_to_start_from(item, warehouse, None, None)
+        )
         pool_quantity, pool_value = pools.get(lot.pk, (Decimal("0"), Decimal("0")))
         if pool_quantity <= 0:
             return quantity * _last_cost_for_lot(item, warehouse, lot)
@@ -119,9 +170,11 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
         return quantity * (item.standard_cost or Decimal("0"))
 
     if method == CostingMethod.FIFO:
-        _held, layers, _value = _replay_fifo(item, warehouse)
+        _held, layers, _value = _replay_fifo(
+            item, warehouse, fold=_fold_to_start_from(item, warehouse, None, None)
+        )
         taken, remaining = Decimal("0"), quantity
-        for layer_quantity, layer_cost in layers:
+        for layer_quantity, layer_cost, _source in layers:
             if remaining <= 0:
                 break
             drawn = min(layer_quantity, remaining)
@@ -134,7 +187,9 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
             taken += remaining * _last_cost(layers, item)
         return taken
 
-    held, value = _replay_average(item, warehouse)
+    held, value = _replay_average(
+        item, warehouse, fold=_fold_to_start_from(item, warehouse, None, None)
+    )
     if held <= 0:
         return Decimal("0")
     return quantity * (value / held)
@@ -178,7 +233,7 @@ def _last_cost_for_lot(item, warehouse, lot):
     return item.standard_cost or Decimal("0")
 
 
-def _replay_specific(item, warehouse=None, before_id=None, as_of=None):
+def _replay_specific(item, warehouse=None, before_id=None, as_of=None, fold=None):
     """
     Walk the ledger keeping each batch's own cost.
 
@@ -194,7 +249,12 @@ def _replay_specific(item, warehouse=None, before_id=None, as_of=None):
     because it is still on the shelf.
     """
     pools = {}
-    for movement in _movements(item, warehouse, before_id, as_of):
+    if fold is not None:
+        pools = {
+            (None if key == "None" else int(key)): [Decimal(pair[0]), Decimal(pair[1])]
+            for key, pair in fold.state.get("pools", {}).items()
+        }
+    for movement in _movements(item, warehouse, before_id, as_of, fold):
         pool = pools.setdefault(movement.lot_id, [Decimal("0"), Decimal("0")])
         if movement.quantity > 0:
             pool[0] += movement.quantity
@@ -214,10 +274,10 @@ def _replay_specific(item, warehouse=None, before_id=None, as_of=None):
     return quantity, {key: tuple(pool) for key, pool in pools.items()}, value
 
 
-def _replay_average(item, warehouse=None, before_id=None, as_of=None):
-    quantity = Decimal("0")
-    value = Decimal("0")
-    for movement in _movements(item, warehouse, before_id, as_of):
+def _replay_average(item, warehouse=None, before_id=None, as_of=None, fold=None):
+    quantity = fold.quantity if fold is not None else Decimal("0")
+    value = fold.value if fold is not None else Decimal("0")
+    for movement in _movements(item, warehouse, before_id, as_of, fold):
         if movement.quantity > 0:
             value += movement.quantity * (movement.unit_cost or Decimal("0"))
             quantity += movement.quantity
@@ -235,7 +295,7 @@ def _replay_average(item, warehouse=None, before_id=None, as_of=None):
     return quantity, value
 
 
-def _replay_fifo(item, warehouse=None, before_id=None, as_of=None):
+def _replay_fifo(item, warehouse=None, before_id=None, as_of=None, fold=None):
     """
     Walk the ledger keeping the layers that are still on the shelf.
 
@@ -245,7 +305,18 @@ def _replay_fifo(item, warehouse=None, before_id=None, as_of=None):
     drifts the moment a movement is corrected, and nothing would say so.
     """
     layers = []
-    for movement in _movements(item, warehouse, before_id, as_of):
+    if fold is not None:
+        # The movement each layer came from is kept, not dropped. A
+        # landed cost names the receipt it was incurred on, and that
+        # invoice can arrive months after the receipt has been folded in
+        # — a layer with no id would not match, the cost would be
+        # silently discarded, and the shelf would disagree with the
+        # ledger by the freight.
+        layers = [
+            [Decimal(quantity), Decimal(cost), pk]
+            for quantity, cost, pk in fold.state.get("layers", [])
+        ]
+    for movement in _movements(item, warehouse, before_id, as_of, fold):
         if movement.quantity > 0:
             layers.append([movement.quantity, movement.unit_cost or Decimal("0"), movement.pk])
         elif movement.quantity < 0:
@@ -266,7 +337,7 @@ def _replay_fifo(item, warehouse=None, before_id=None, as_of=None):
 
     quantity = sum((layer[0] for layer in layers), Decimal("0"))
     value = sum((layer[0] * layer[1] for layer in layers), Decimal("0"))
-    return quantity, [(layer[0], layer[1]) for layer in layers], value
+    return quantity, [(layer[0], layer[1], layer[2]) for layer in layers], value
 
 
 def _apply_adjustment(layers, movement):
@@ -306,7 +377,7 @@ def _apply_adjustment(layers, movement):
         layer[1] += share / layer[0]
 
 
-def _replay_standard(item, warehouse=None, before_id=None, as_of=None):
+def _replay_standard(item, warehouse=None, before_id=None, as_of=None, fold=None):
     """
     Quantity times the standard, and nothing else.
 
@@ -315,7 +386,10 @@ def _replay_standard(item, warehouse=None, before_id=None, as_of=None):
     somebody analyses, and a landed cost that quietly raised the shelf's
     value would be that variance hiding in an asset account.
     """
-    quantity = Decimal("0")
-    for movement in _movements(item, warehouse, before_id, as_of):
+    quantity = fold.quantity if fold is not None else Decimal("0")
+    for movement in _movements(item, warehouse, before_id, as_of, fold):
         quantity += movement.quantity
+    # Value from the standard in force now, never from the fold: the
+    # standard changes, and a folded value would be what the shelf was
+    # deemed to be worth under the old one.
     return quantity, quantity * (item.standard_cost or Decimal("0"))
