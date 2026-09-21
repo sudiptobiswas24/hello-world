@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -7,7 +8,7 @@ from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
-from .models import Department, Employee, LeaveRequest
+from .models import Department, Employee, LeaveRequest, leave_summary
 from .serializers import DepartmentSerializer, EmployeeSerializer, LeaveRequestSerializer
 
 
@@ -19,6 +20,23 @@ class DepartmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Employee.objects.all()
     serializer_class = EmployeeSerializer
+
+    @action(detail=True, methods=["get"], url_path="leave")
+    def leave(self, request, pk=None):
+        """Every allowance this person has, and where each stands."""
+        employee = self.get_object()
+        year = int(request.query_params.get("year") or timezone.now().year)
+        return Response([
+            {
+                "policy": row["policy"].code,
+                "name": row["policy"].name,
+                "entitled": row["entitled"],
+                "taken": row["taken"],
+                "booked": row["booked"],
+                "balance": row["balance"],
+            }
+            for row in leave_summary(employee, year)
+        ])
 
 
 class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

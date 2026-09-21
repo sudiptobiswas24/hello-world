@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    FinancialStatementViewSet,
     AccountViewSet,
     FiscalPositionTaxMappingViewSet,
     FiscalPositionViewSet,
@@ -22,5 +23,8 @@ router.register("fiscal-positions", FiscalPositionViewSet)
 router.register("fiscal-position-tax-mappings", FiscalPositionTaxMappingViewSet)
 router.register("party-tax-profiles", PartyTaxProfileViewSet)
 router.register("payments", PaymentViewSet)
+router.register(
+    "financial-statements", FinancialStatementViewSet, basename="financial-statement"
+)
 
 urlpatterns = router.urls

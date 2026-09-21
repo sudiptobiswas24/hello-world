@@ -2,12 +2,14 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
 from decimal import Decimal, InvalidOperation
 
+from .reports import balance_sheet, profit_and_loss, trial_balance
 from .models import (
     Account,
     FiscalPosition,
@@ -150,3 +152,93 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(payment).data)
+
+
+class FinancialStatementViewSet(viewsets.ViewSet):
+    """
+    The statements. They derived from the ledger and nothing could ask
+    for them — a double-entry system that cannot produce a trial balance
+    on request can record a year of trading and answer nothing about it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        return Response({
+            "trial-balance": "trial-balance/",
+            "profit-and-loss": "profit-and-loss/",
+            "balance-sheet": "balance-sheet/",
+        })
+
+    @action(detail=False, methods=["get"], url_path="trial-balance")
+    def trial_balance_report(self, request):
+        report = trial_balance(
+            as_of=request.query_params.get("as_of"),
+            start=request.query_params.get("start"),
+            include_zero=request.query_params.get("include_zero") == "true",
+        )
+        return Response({
+            "balanced": report["balanced"],
+            "total_debit": report["total_debit"],
+            "total_credit": report["total_credit"],
+            "rows": [
+                {
+                    "account": row["account"].code,
+                    "name": row["account"].name,
+                    "opening": row["opening"],
+                    "debit": row["debit"],
+                    "credit": row["credit"],
+                    "balance": row["balance"],
+                    "natural": row["natural"],
+                }
+                for row in report["rows"]
+            ],
+        })
+
+    @action(detail=False, methods=["get"], url_path="profit-and-loss")
+    def profit_and_loss_report(self, request):
+        report = profit_and_loss(
+            start=request.query_params.get("start"),
+            end=request.query_params.get("end"),
+        )
+        return Response({
+            "income_total": report["income_total"],
+            "expense_total": report["expense_total"],
+            "net_profit": report["net_profit"],
+            "income": [
+                {"account": row["account"].code, "name": row["account"].name,
+                 "balance": row["balance"], "natural": row["natural"]}
+                for row in report["income"]
+            ],
+            "expenses": [
+                {"account": row["account"].code, "name": row["account"].name,
+                 "balance": row["balance"], "natural": row["natural"]}
+                for row in report["expenses"]
+            ],
+        })
+
+    @action(detail=False, methods=["get"], url_path="balance-sheet")
+    def balance_sheet_report(self, request):
+        report = balance_sheet(as_of=request.query_params.get("as_of"))
+        return Response({
+            "balanced": report["balanced"],
+            "asset_total": report["asset_total"],
+            "total_liabilities_and_equity": report["total_liabilities_and_equity"],
+            "retained_brought_forward": report["retained_brought_forward"],
+            "profit_for_year": report["profit_for_year"],
+            "assets": [
+                {"account": row["account"].code, "name": row["account"].name,
+                 "balance": row["balance"], "natural": row["natural"]}
+                for row in report["assets"]
+            ],
+            "liabilities": [
+                {"account": row["account"].code, "name": row["account"].name,
+                 "balance": row["balance"], "natural": row["natural"]}
+                for row in report["liabilities"]
+            ],
+            "equity": [
+                {"account": row["account"].code, "name": row["account"].name,
+                 "balance": row["balance"], "natural": row["natural"]}
+                for row in report["equity"]
+            ],
+        })

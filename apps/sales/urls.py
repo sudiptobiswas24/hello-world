@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    SalesReportViewSet,
     CommissionPlanViewSet,
     CustomerProfileViewSet,
     DeliveryLineViewSet,
@@ -38,6 +39,7 @@ router.register("dunning-levels", DunningLevelViewSet)
 router.register("dunning-notices", DunningNoticeViewSet)
 router.register("commission-plans", CommissionPlanViewSet)
 router.register("sales-reps", SalesRepViewSet)
+router.register("sales-reports", SalesReportViewSet, basename="sales-report")
 router.register("recurring-invoices", RecurringInvoiceViewSet)
 router.register("recurring-invoice-lines", RecurringInvoiceLineViewSet)
 

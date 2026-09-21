@@ -34,6 +34,22 @@ def app_sources():
     return {label: source_of(label) for label in OUR_APPS}
 
 
+IMPORT_BLOCK = re.compile(
+    r"^\s*(?:from\s+[\w.]+\s+)?import\s+(?:\([^)]*\)|[^\n]*)", re.M
+)
+
+
+def strip_imports(text):
+    """
+    The same text without its import statements.
+
+    A module that re-exports its neighbours — which models.py does for
+    every one of these — would otherwise make every helper in the app
+    look used by something.
+    """
+    return IMPORT_BLOCK.sub("", text)
+
+
 def non_test_text(sources):
     return "\n".join(
         text for path, text in sources.items() if "test" not in path.name
@@ -63,6 +79,7 @@ class Command(BaseCommand):
 
         findings = []
         findings += self.unread_settings(all_code)
+        findings += self.uncalled_helpers(labels, sources, all_code)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
         findings += self.unconstrained_numbers(labels)
@@ -76,7 +93,71 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write(self.style.WARNING(f"{len(findings)} finding(s)."))
 
+    # A helper nothing calls is not always a defect. These are the ones
+    # that are genuinely for callers this repository does not contain,
+    # with the reason, so the check stays worth reading.
+    CALLED_FROM_OUTSIDE = {
+        "core.to_date": "date coercion, used as an expression everywhere",
+        "core.app_sources": "the auditor's own plumbing",
+        "core.source_of": "the auditor's own plumbing",
+        "core.non_test_text": "the auditor's own plumbing",
+        "core.test_text": "the auditor's own plumbing",
+        "core.exception_handler": "named in settings, never called by name",
+        "inventory.describe_plan": "for a pick list a UI will render",
+        "inventory.hours_by_account": "a report, for whatever asks",
+    }
+
     # -- shape 2: inert feature ------------------------------------------
+    def uncalled_helpers(self, labels, sources, code):
+        """
+        A module-level function nothing outside its own file calls.
+
+        The shape that has now produced six findings here, and the one a
+        probe cannot see: FEFO lot allocation, bin routing and put-away
+        were each built, tested, and called by no document, so a delivery
+        demanded the answers by hand and the algorithms never ran.
+
+        Tests do not count as callers. A feature exercised only by its
+        own tests is a feature the product does not use.
+        """
+        findings = []
+        without_imports = strip_imports(code)
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or path.name == "__init__.py":
+                    continue
+                if "migrations" in path.parts:
+                    continue
+                own_body = strip_imports(text)
+                for match in re.finditer(r"^def ([a-z][a-z0-9_]*)\(", text, re.M):
+                    name = match.group(1)
+                    if name.startswith("_"):
+                        continue
+                    key = f"{label}.{name}"
+                    if key in self.CALLED_FROM_OUTSIDE:
+                        continue
+                    # Every mention in non-test code. One means only
+                    # the definition, and the function is dead.
+                    #
+                    # Mentions rather than calls, because
+                    # `_run(stock_ledger, item)` passes the function by
+                    # reference and never writes its name followed by a
+                    # bracket — the first version of this check reported
+                    # three such helpers as dead. Imports are stripped, or
+                    # the re-export block in models.py would make every
+                    # helper look used. And a caller in the same file
+                    # counts: a helper used by its own neighbours is used,
+                    # which the second version of this check denied and
+                    # so flagged half the codebase.
+                    mentions = len(re.findall(rf"\b{re.escape(name)}\b", without_imports))
+                    if mentions <= 1:
+                        findings.append((
+                            "uncalled helper",
+                            f"{key}() is defined in {path.name} and called by nothing "
+                            "outside it — built, and not wired to anything.",
+                        ))
+        return findings
+
     def unread_settings(self, code):
         """
         A settings field nothing reads is a feature that looks handled.

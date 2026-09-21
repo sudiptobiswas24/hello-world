@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.accounting.models import Account
@@ -14,6 +15,8 @@ from apps.core.audit import AuditableViewSetMixin
 from django.http import HttpResponse
 
 from .models import (
+    bad_debt_report,
+    send_statements,
     CommissionPlan,
     CustomerProfile,
     Delivery,
@@ -479,3 +482,36 @@ class RecurringInvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class RecurringInvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = RecurringInvoiceLine.objects.select_related("schedule", "item")
     serializer_class = RecurringInvoiceLineSerializer
+
+
+class SalesReportViewSet(viewsets.ViewSet):
+    """Bad debt and the statement run, neither of which was reachable."""
+
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        return Response({"bad-debt": "bad-debt/", "statements": "statements/"})
+
+    @action(detail=False, methods=["get"], url_path="bad-debt")
+    def bad_debt(self, request):
+        rows = bad_debt_report(
+            start=request.query_params.get("start"),
+            end=request.query_params.get("end"),
+        )
+        if isinstance(rows, dict):
+            return Response({
+                key: str(value) if not isinstance(value, (list, int, float)) else value
+                for key, value in rows.items()
+            })
+        return Response([
+            {**row, "customer": str(row.get("customer", ""))} for row in rows
+        ])
+
+    @action(detail=False, methods=["post"])
+    def statements(self, request):
+        """
+        Send everybody their statement. A POST, because it sends email —
+        a report you can refresh by reloading should not be one.
+        """
+        sent = send_statements(as_of=request.data.get("as_of"))
+        return Response({"sent": len(sent) if sent is not None else 0})

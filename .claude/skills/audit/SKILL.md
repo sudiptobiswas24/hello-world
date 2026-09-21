@@ -49,7 +49,7 @@ For every guard you can see, name its mirror and prove it too:
   a bill typed in by hand did not.
 
 ### 2. Inert feature — built, configurable, and never invoked
-**Found 4 of 26.**
+**Found 4 of 26, and 7 of 41 by the time the mechanical check landed.**
 
 Something fully modelled, admin-editable, documented — that no code path
 reads. It looks handled, which is worse than missing.
@@ -57,7 +57,17 @@ reads. It looks handled, which is worse than missing.
 - every settings field: is it *read* anywhere? (`audit_invariants`
   checks this mechanically — run it.)
 - every optional model: does a document consult it, or only display it?
+- every module-level helper: does anything outside its own tests
+  mention it? (`audit_invariants` checks this too.)
 - fiscal positions, settlement discounts (twice), `mark_sent()`.
+
+**A probe cannot find this shape, and one did not.** FEFO lot
+allocation, bin routing and put-away were each probed thoroughly and
+each passed, because a probe exercises the thing it was written for and
+this shape is about what *else* does. Twelve reports across four
+modules had the same problem — financial statements included, which
+nothing could ask for. Ask the question the other way round: not "does
+this work" but "who calls it".
 
 ### 3. Control account that never clears
 **Found 4 of 26.**
