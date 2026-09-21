@@ -90,6 +90,13 @@ class BillOfMaterials(AuditModel):
                   "refuses to be edited by hand: a hand edit would survive until "
                   "the next rebuild and no longer, which is worse than refusing.",
     )
+    routing = models.ForeignKey(
+        "Routing", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="boms",
+        help_text="How the thing is made, as against what it is made of. Here "
+                  "rather than on the work order because it is a property of "
+                  "the product: every run of it passes the same machines.",
+    )
     is_default = models.BooleanField(
         default=True,
         help_text="The one an explosion picks when it reaches this item and "

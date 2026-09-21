@@ -550,3 +550,50 @@ class DeletingASpecificationReleasesItsBomTests(WovenTestCase):
         before = bom.components.count()
         tape.delete()
         self.assertEqual(bom.components.count(), before)
+
+
+class TheSpecificationCarriesTheRoutingInTests(WovenTestCase):
+    """
+    A computed bill of materials refuses to be edited, so the routing
+    cannot be typed onto it. It comes in the way the components do:
+    named on the specification and worked out from there.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from .orders import WorkCentre
+        from .routing import Routing, RoutingOperation
+
+        self.line = WorkCentre.objects.create(code="EXT-1", name="Extrusion 1")
+        self.plan = Routing.objects.create(code="R-EXT", name="Extrude")
+        RoutingOperation.objects.create(
+            routing=self.plan, sequence=10, name="Extrude",
+            work_centre=self.line, setup_minutes=Decimal("90"),
+            units_per_hour=Decimal("180"), rate_uom=self.kg,
+        )
+
+    def test_it_lands_on_the_computed_bom(self):
+        tape = self.tape(routing=self.plan)
+        self.assertEqual(tape.bom.routing, self.plan)
+
+    def test_and_moves_when_the_specification_does(self):
+        from .routing import Routing
+
+        tape = self.tape(routing=self.plan)
+        faster = Routing.objects.create(code="R-EXT2", name="Extrude, new line")
+        tape.routing = faster
+        tape.save()
+        self.assertEqual(tape.bom.routing, faster)
+
+    def test_and_can_be_taken_off_again(self):
+        tape = self.tape(routing=self.plan)
+        tape.routing = None
+        tape.save()
+        self.assertIsNone(tape.bom.routing)
+
+    def test_the_bom_still_refuses_a_hand_edit(self):
+        tape = self.tape(routing=self.plan)
+        bom = tape.bom
+        bom.routing = None
+        with self.assertRaises(ValidationError):
+            bom.save()

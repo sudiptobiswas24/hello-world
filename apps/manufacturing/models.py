@@ -23,6 +23,11 @@ from .bom import (  # noqa: F401
     net_requirements,
     PlannedCost,
 )
+from .routing import (  # noqa: F401
+    Routing,
+    RoutingOperation,
+    capacity_report,
+)
 from .orders import (  # noqa: F401
     IssueDirection,
     ManufacturingSettings,
@@ -33,6 +38,7 @@ from .orders import (  # noqa: F401
     WorkCentre,
     WorkOrder,
     WorkOrderComponent,
+    WorkOrderOperation,
     WorkOrderStatus,
 )
 from .woven import (  # noqa: F401

@@ -9,7 +9,9 @@ from .orders import (
     WorkCentre,
     WorkOrder,
     WorkOrderComponent,
+    WorkOrderOperation,
 )
+from .routing import Routing, RoutingOperation
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
 
 
@@ -135,11 +137,40 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_computed"]
 
 
+class RoutingOperationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoutingOperation
+        fields = ["id", "routing", "sequence", "name", "work_centre",
+                  "setup_minutes", "units_per_hour", "rate_uom", "notes"]
+
+
+class RoutingSerializer(serializers.ModelSerializer):
+    operations = RoutingOperationSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Routing
+        fields = ["id", "code", "name", "description", "is_active", "operations"]
+
+
 class WorkCentreSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkCentre
         fields = ["id", "code", "name", "description", "capacity_per_hour",
-                  "capacity_uom", "is_active"]
+                  "capacity_uom", "available_hours_per_day", "days_per_week",
+                  "is_active"]
+
+
+class WorkOrderOperationSerializer(serializers.ModelSerializer):
+    planned_hours = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkOrderOperation
+        fields = ["id", "work_order", "sequence", "name", "work_centre",
+                  "setup_minutes", "units_per_hour", "planned_minutes",
+                  "planned_hours"]
+
+    def get_planned_hours(self, obj):
+        return round(obj.planned_minutes / 60, 2)
 
 
 class WorkOrderComponentSerializer(serializers.ModelSerializer):
@@ -156,6 +187,8 @@ class WorkOrderComponentSerializer(serializers.ModelSerializer):
 
 class WorkOrderSerializer(serializers.ModelSerializer):
     components = WorkOrderComponentSerializer(many=True, read_only=True)
+    operations = WorkOrderOperationSerializer(many=True, read_only=True)
+    planned_minutes = serializers.SerializerMethodField()
     quantity_produced = serializers.SerializerMethodField()
     wip_balance = serializers.SerializerMethodField()
     unaccounted = serializers.SerializerMethodField()
@@ -166,11 +199,15 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                   "warehouse", "work_centre", "scheduled_start", "scheduled_end",
                   "status", "over_production_percent", "planned_unit_cost",
                   "planned_material_cost", "released_at", "closed_at",
-                  "close_entry", "reopened_entry", "notes", "components",
+                  "close_entry", "reopened_entry", "routing", "notes",
+                  "components", "operations", "planned_minutes",
                   "quantity_produced", "wip_balance", "unaccounted"]
         read_only_fields = ["number", "status", "planned_unit_cost",
                             "planned_material_cost", "released_at", "closed_at",
-                            "close_entry", "reopened_entry"]
+                            "close_entry", "reopened_entry", "routing"]
+
+    def get_planned_minutes(self, obj):
+        return round(obj.planned_minutes(), 2)
 
     def get_quantity_produced(self, obj):
         return round(obj.quantity_produced(), 4)

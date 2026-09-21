@@ -134,20 +134,51 @@ class WorkCentre(AuditModel):
     description = models.TextField(blank=True)
     capacity_per_hour = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
-        help_text="Output an hour, in `capacity_uom`. Used for scheduling; "
-                  "nothing costs from it.",
+        help_text="The nominal rate, in `capacity_uom`. A routing operation "
+                  "that does not state its own rate for the product falls back "
+                  "to this; one that runs slower than the line's nominal speed "
+                  "says so on the operation.",
     )
     capacity_uom = models.ForeignKey(
         "core.UnitOfMeasure", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
     )
+    available_hours_per_day = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("24"),
+        help_text="Hours this machine can run on a day it runs at all. "
+                  "Twenty-four for a continuous line; less where a shift "
+                  "pattern or a maintenance window says so.",
+    )
+    days_per_week = models.DecimalField(
+        max_digits=4, decimal_places=2, default=Decimal("7"),
+        help_text="Days a week it runs. Deliberately a number rather than a "
+                  "calendar: a public holiday is a company-wide fact and this "
+                  "module has no business owning one.",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["code"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(available_hours_per_day__gt=0)
+                & Q(available_hours_per_day__lte=24),
+                name="work_centre_hours_in_a_day",
+            ),
+            models.CheckConstraint(
+                check=Q(days_per_week__gt=0) & Q(days_per_week__lte=7),
+                name="work_centre_days_in_a_week",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def capacity(self, start, end):
+        """What this machine is being asked to do in a window, against what it can."""
+        from .routing import capacity_report
+
+        return capacity_report(self, start, end)
 
 
 class WorkOrderStatus(models.TextChoices):
@@ -187,6 +218,14 @@ class WorkOrder(AuditModel):
     work_centre = models.ForeignKey(
         WorkCentre, null=True, blank=True, on_delete=models.PROTECT,
         related_name="work_orders",
+        help_text="The machine a single-operation run sits on. A run with a "
+                  "routing spans several, and each operation names its own.",
+    )
+    routing = models.ForeignKey(
+        "Routing", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="work_orders", editable=False,
+        help_text="Copied off the bill of materials at release and frozen "
+                  "there, like everything else about a released run.",
     )
     scheduled_start = models.DateField(null=True, blank=True)
     scheduled_end = models.DateField(null=True, blank=True)
@@ -269,6 +308,17 @@ class WorkOrder(AuditModel):
             total=models.Sum("quantity_scrapped")
         )["total"]
         return total or Decimal("0")
+
+    def planned_minutes(self):
+        """How long this run was planned to hold machines, setup included."""
+        total = self.operations.aggregate(
+            total=models.Sum("planned_minutes")
+        )["total"]
+        return total or Decimal("0")
+
+    def bottleneck(self):
+        """The operation this run waits on, or None where it has no routing."""
+        return self.operations.order_by("-planned_minutes", "sequence").first()
 
     def maximum_output(self):
         """The most this run may book, in the item's stocking unit."""
@@ -404,6 +454,30 @@ class WorkOrder(AuditModel):
             # then the run is on the floor and the answer has not changed.
             byproduct_value(byproduct, byproduct.quantity * scale, Decimal("0"))
 
+        batch_quantity = self.quantity_ordered
+        if self.uom_id != self.bom.uom_id:
+            batch_quantity = self.uom.convert_to(self.quantity_ordered, self.bom.uom)
+        operations = []
+        if self.bom.routing_id is not None:
+            if not self.bom.routing.is_active:
+                raise ValidationError(
+                    f"{self.bom.routing} has been retired. Releasing against it "
+                    "would plan this run at times the plant no longer keeps."
+                )
+            operations = list(
+                self.bom.routing.operations.select_related("work_centre")
+            )
+        for operation in operations:
+            # Asked here, where a rate that nobody has stated can still be
+            # stated and a machine that has been taken out can still be
+            # swapped. By the first shift the loom has been running a day.
+            if not operation.work_centre.is_active:
+                raise ValidationError(
+                    f"{operation.work_centre} is not in service, and "
+                    f"{operation} would put this run on it."
+                )
+            operation.minutes_for(batch_quantity, self.bom.uom)
+
         self.components.all().delete()
         for index, component in enumerate(
             self.bom.components.select_related("item", "uom"), start=1
@@ -413,6 +487,17 @@ class WorkOrder(AuditModel):
                 quantity_required=component.gross_quantity() * scale,
                 uom=component.uom, waste_percent=component.waste_percent,
                 line_number=index,
+            )
+
+        self.routing = self.bom.routing
+        self.operations.all().delete()
+        for operation in operations:
+            WorkOrderOperation.objects.create(
+                work_order=self, sequence=operation.sequence,
+                name=operation.name, work_centre=operation.work_centre,
+                setup_minutes=operation.setup_minutes,
+                units_per_hour=operation.rate(self.bom.uom),
+                planned_minutes=operation.minutes_for(batch_quantity, self.bom.uom),
             )
 
         on_date = to_date(on_date) or timezone.now().date()
@@ -435,8 +520,8 @@ class WorkOrder(AuditModel):
         self.status = WorkOrderStatus.RELEASED
         self.released_at = timezone.now()
         super().save(update_fields=[
-            "number", "planned_unit_cost", "planned_material_cost", "status",
-            "released_at", "updated_at",
+            "number", "planned_unit_cost", "planned_material_cost", "routing",
+            "status", "released_at", "updated_at",
         ])
         return self
 
@@ -604,6 +689,71 @@ class WorkOrderComponent(AuditModel):
             for line in issue.lines.filter(item=self.item).select_related("item", "uom"):
                 total += line.stock_quantity() * issue.sign()
         return total
+
+
+class WorkOrderOperation(AuditModel):
+    """
+    One machine's share of one run, as at the day it was released.
+
+    A copy, for the reason every copy here is a copy: the routing under
+    it will change — a line is re-rated, an operation is inserted — and
+    a run already on the floor must go on reading against what it was
+    started on, including how long it was supposed to take.
+    """
+
+    work_order = models.ForeignKey(
+        WorkOrder, on_delete=models.CASCADE, related_name="operations"
+    )
+    sequence = models.PositiveIntegerField()
+    name = models.CharField(max_length=255)
+    work_centre = models.ForeignKey(
+        WorkCentre, on_delete=models.PROTECT, related_name="work_order_operations"
+    )
+    setup_minutes = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal("0")
+    )
+    units_per_hour = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="The rate this run was planned at, resolved at release — "
+                  "the operation's own, or the machine's nominal one where the "
+                  "operation did not say. Resolved rather than looked up "
+                  "again, so a machine re-rated next month does not re-time a "
+                  "run that has already happened.",
+    )
+    planned_minutes = models.DecimalField(
+        max_digits=14, decimal_places=2,
+        help_text="Setup plus run time for the whole order, frozen.",
+    )
+
+    class Meta:
+        ordering = ["work_order", "sequence", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["work_order", "sequence"],
+                name="one_work_order_operation_per_sequence",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.work_order} · {self.sequence}. {self.name}"
+
+    def save(self, *args, **kwargs):
+        if self.work_order.status != WorkOrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self.work_order} is "
+                f"{self.work_order.get_status_display().lower()}; its routing "
+                "was frozen when it was released."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.work_order.status != WorkOrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self.work_order} is "
+                f"{self.work_order.get_status_display().lower()}; its routing "
+                "cannot be changed after release."
+            )
+        return super().delete(*args, **kwargs)
 
 
 def _post_entry(on_date, reference, memo, rows, balance_to=None):

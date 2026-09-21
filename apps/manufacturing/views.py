@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -25,6 +26,7 @@ from .orders import (
     WorkCentre,
     WorkOrder,
 )
+from .routing import Routing, RoutingOperation, capacity_report
 from .serializers import (
     BagSpecificationSerializer,
     BillOfMaterialsSerializer,
@@ -35,6 +37,8 @@ from .serializers import (
     MaterialIssueSerializer,
     ProductionByproductSerializer,
     ProductionEntrySerializer,
+    RoutingOperationSerializer,
+    RoutingSerializer,
     TapeSpecificationSerializer,
     WorkCentreSerializer,
     WorkOrderSerializer,
@@ -161,9 +165,45 @@ class BomByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = BomByproductSerializer
 
 
+class RoutingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Routing.objects.prefetch_related("operations")
+    serializer_class = RoutingSerializer
+
+
+class RoutingOperationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = RoutingOperation.objects.select_related("routing", "work_centre")
+    serializer_class = RoutingOperationSerializer
+
+
 class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkCentre.objects.all()
     serializer_class = WorkCentreSerializer
+
+    @action(detail=True, methods=["get"])
+    def capacity(self, request, pk=None):
+        """
+        What this machine is being asked to do in a window against what
+        it can, and what is queued with no date on it at all.
+        """
+        centre = self.get_object()
+        start = parse_date(request.query_params.get("start") or "")
+        end = parse_date(request.query_params.get("end") or "")
+        if start is None or end is None:
+            raise DRFValidationError(
+                ["start and end are required, as YYYY-MM-DD."]
+            )
+        report = _run(capacity_report, centre, start, end)
+        return Response({
+            "work_centre": centre.code,
+            "start": report["start"],
+            "end": report["end"],
+            "load_minutes": report["load_minutes"],
+            "unscheduled_minutes": report["unscheduled_minutes"],
+            "available_minutes": report["available_minutes"],
+            "spare_minutes": report["spare_minutes"],
+            "utilisation_percent": report["utilisation_percent"],
+            "runs": [order.number or f"draft {order.pk}" for order in report["runs"]],
+        })
 
 
 class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

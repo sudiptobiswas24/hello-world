@@ -10,6 +10,8 @@ from .views import (
     MaterialIssueViewSet,
     ProductionByproductViewSet,
     ProductionEntryViewSet,
+    RoutingOperationViewSet,
+    RoutingViewSet,
     TapeSpecificationViewSet,
     WorkCentreViewSet,
     WorkOrderViewSet,
@@ -22,6 +24,8 @@ router.register("bag-specifications", BagSpecificationViewSet)
 router.register("boms", BillOfMaterialsViewSet)
 router.register("bom-components", BomComponentViewSet)
 router.register("bom-byproducts", BomByproductViewSet)
+router.register("routings", RoutingViewSet)
+router.register("routing-operations", RoutingOperationViewSet)
 router.register("work-centres", WorkCentreViewSet)
 router.register("work-orders", WorkOrderViewSet)
 router.register("material-issues", MaterialIssueViewSet)

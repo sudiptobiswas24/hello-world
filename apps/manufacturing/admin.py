@@ -27,8 +27,10 @@ from .orders import (
     WorkCentre,
     WorkOrder,
     WorkOrderComponent,
+    WorkOrderOperation,
     WorkOrderStatus,
 )
+from .routing import Routing, RoutingOperation
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
 
 
@@ -220,10 +222,50 @@ class BillOfMaterialsAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 # -- runs ---------------------------------------------------------------
 
+class RoutingOperationInline(admin.TabularInline):
+    model = RoutingOperation
+    extra = 1
+    autocomplete_fields = ("work_centre",)
+    fields = ("sequence", "name", "work_centre", "setup_minutes",
+              "units_per_hour", "rate_uom", "notes")
+
+
+@admin.register(Routing)
+class RoutingAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "shown_operations", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("code", "name")
+    inlines = [RoutingOperationInline]
+
+    @admin.display(description="Passes through")
+    def shown_operations(self, obj):
+        return " → ".join(
+            f"{row.name} ({row.work_centre.code})" for row in obj.operations.all()
+        ) or "—"
+
+
 @admin.register(WorkCentre)
 class WorkCentreAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("code", "name", "capacity_per_hour", "capacity_uom", "is_active")
+    list_display = ("code", "name", "capacity_per_hour", "capacity_uom",
+                    "available_hours_per_day", "days_per_week", "is_active")
     search_fields = ("code", "name")
+
+
+class WorkOrderOperationInline(admin.TabularInline):
+    model = WorkOrderOperation
+    extra = 0
+    readonly_fields = ("sequence", "name", "work_centre", "setup_minutes",
+                       "units_per_hour", "planned_minutes", "shown_hours")
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    @admin.display(description="That is")
+    def shown_hours(self, obj):
+        if obj.pk is None:
+            return "-"
+        return f"{obj.planned_minutes / 60:.1f} hours"
 
 
 class WorkOrderComponentInline(admin.TabularInline):
@@ -250,11 +292,11 @@ class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
                     "shown_unaccounted")
     list_filter = ("status", "work_centre", "warehouse")
     search_fields = ("number", "item__sku")
-    inlines = [WorkOrderComponentInline]
-    readonly_fields = ("number", "status", "planned_unit_cost",
+    inlines = [WorkOrderComponentInline, WorkOrderOperationInline]
+    readonly_fields = ("number", "status", "routing", "planned_unit_cost",
                        "planned_material_cost", "released_at", "closed_at",
                        "close_entry", "reopened_entry", "shown_wip", "shown_unaccounted",
-                       "shown_variance")
+                       "shown_bottleneck", "shown_variance")
 
     def get_readonly_fields(self, request, obj=None):
         if obj is not None and obj.status in (
@@ -284,6 +326,17 @@ class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
         if obj.pk is None:
             return "-"
         return f"{obj.unaccounted():,.2f}"
+
+    @admin.display(description="Machine time, and what it waits on")
+    def shown_bottleneck(self, obj):
+        if obj.pk is None or not obj.operations.exists():
+            return "No routing"
+        slowest = obj.bottleneck()
+        return (
+            f"{obj.planned_minutes() / 60:.1f} hours planned across "
+            f"{obj.operations.count()} operation(s); waits on {slowest.name} "
+            f"on {slowest.work_centre.code} ({slowest.planned_minutes / 60:.1f} h)"
+        )
 
     @admin.display(description="Material variance, in stocking units")
     def shown_variance(self, obj):

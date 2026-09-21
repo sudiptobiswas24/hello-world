@@ -181,6 +181,10 @@ class SpecificationMixin:
         """[(item, quantity, uom, valuation)] for one batch."""
         return []
 
+    def bom_routing(self):
+        """The machines this passes through, or None."""
+        return self.routing
+
     @transaction.atomic
     def rebuild_bom(self):
         """
@@ -203,6 +207,7 @@ class SpecificationMixin:
             bom.name = str(self)
             bom.quantity_produced = self.bom_batch()
             bom.uom = self.bom_uom()
+        bom.routing = self.bom_routing()
         _save_computed(bom)
         bom.components.all().delete()
         bom.byproducts.all().delete()
@@ -341,6 +346,15 @@ class TapeSpecification(SpecificationMixin, AuditModel):
         max_digits=6, decimal_places=3, default=Decimal("80"),
         help_text="How much of that loss is collected and reground rather than "
                   "burnt off, swept up or lost as dust.",
+    )
+    routing = models.ForeignKey(
+        "Routing", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="%(class)s_specifications",
+        help_text="The machines this passes through. Named here rather than on "
+                  "the bill of materials, because a computed bill refuses to "
+                  "be edited and the routing is part of how the product is "
+                  "made — so the specification carries it in like everything "
+                  "else.",
     )
     bom = models.OneToOneField(
         BillOfMaterials, null=True, blank=True, on_delete=models.SET_NULL,
@@ -550,6 +564,15 @@ class FabricSpecification(SpecificationMixin, AuditModel):
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="What the collected loom waste is booked as — usually the same "
                   "regrind the extruder feeds on, which closes the loop.",
+    )
+    routing = models.ForeignKey(
+        "Routing", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="%(class)s_specifications",
+        help_text="The machines this passes through. Named here rather than on "
+                  "the bill of materials, because a computed bill refuses to "
+                  "be edited and the routing is part of how the product is "
+                  "made — so the specification carries it in like everything "
+                  "else.",
     )
     bom = models.OneToOneField(
         BillOfMaterials, null=True, blank=True, on_delete=models.SET_NULL,
@@ -807,6 +830,15 @@ class BagSpecification(SpecificationMixin, AuditModel):
     )
     cutting_waste_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    routing = models.ForeignKey(
+        "Routing", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="%(class)s_specifications",
+        help_text="The machines this passes through. Named here rather than on "
+                  "the bill of materials, because a computed bill refuses to "
+                  "be edited and the routing is part of how the product is "
+                  "made — so the specification carries it in like everything "
+                  "else.",
     )
     bom = models.OneToOneField(
         BillOfMaterials, null=True, blank=True, on_delete=models.SET_NULL,

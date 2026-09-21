@@ -8,6 +8,7 @@ arriving as an answer rather than as a crash — the domain behaviour has
 its own tests.
 """
 
+import datetime
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -243,3 +244,89 @@ class TheAdminDoesNotOfferWhatTheModelWillRefuseTests(RunTestCase):
         # refusal. This BOM was typed, not computed.
         self.assertFalse(self.bom.is_computed)
         self.assertNotIn("quantity_produced", self.readonly(self.bom))
+
+
+class RoutingApiTests(RunTestCase):
+    def setUp(self):
+        super().setUp()
+        from .routing import Routing, RoutingOperation
+
+        user = get_user_model().objects.create_superuser(
+            username="planner", email="planner@example.com", password="x"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+        self.loom.capacity_per_hour = Decimal("180")
+        self.loom.capacity_uom = self.kg
+        self.loom.save()
+        self.plan = Routing.objects.create(code="R-EXT", name="Extrude")
+        RoutingOperation.objects.create(
+            routing=self.plan, sequence=10, name="Extrude",
+            work_centre=self.loom, setup_minutes=Decimal("90"),
+            units_per_hour=Decimal("180"), rate_uom=self.kg,
+        )
+        self.bom.routing = self.plan
+        self.bom.save()
+
+    def test_the_collections_answer(self):
+        for path in ("routings", "routing-operations", "work-centres"):
+            response = self.client.get(f"/api/manufacturing/{path}/")
+            self.assertEqual(response.status_code, 200, path)
+
+    def test_a_routing_carries_its_operations(self):
+        response = self.client.get(f"/api/manufacturing/routings/{self.plan.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["operations"]), 1)
+        self.assertEqual(response.data["operations"][0]["name"], "Extrude")
+
+    def test_a_released_run_carries_its_frozen_times(self):
+        order = self.order("4000")
+        order.release(TODAY)
+        response = self.client.get(
+            f"/api/manufacturing/work-orders/{order.pk}/"
+        )
+        self.assertEqual(response.status_code, 200)
+        # 90 minutes of setup then 4,000 kg at 180 an hour.
+        self.assertAlmostEqual(
+            Decimal(str(response.data["planned_minutes"])),
+            Decimal("1423.33"), places=2,
+        )
+        self.assertAlmostEqual(
+            Decimal(str(response.data["operations"][0]["planned_hours"])),
+            Decimal("23.72"), places=2,
+        )
+
+    def test_capacity_is_reachable(self):
+        order = self.order("4000")
+        order.scheduled_start = datetime.date(2026, 6, 1)
+        order.scheduled_end = datetime.date(2026, 6, 7)
+        order.save()
+        order.release(TODAY)
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/capacity/"
+            "?start=2026-06-01&end=2026-06-07"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            Decimal(str(response.data["available_minutes"])), Decimal("10080.00")
+        )
+        self.assertAlmostEqual(
+            Decimal(str(response.data["utilisation_percent"])),
+            Decimal("14.12"), places=2,
+        )
+        self.assertEqual(response.data["runs"], [order.number])
+
+    def test_a_window_with_no_dates_is_a_sentence(self):
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/capacity/"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("start and end are required", str(response.data))
+
+    def test_a_backwards_window_is_a_sentence_too(self):
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/capacity/"
+            "?start=2026-06-07&end=2026-06-01"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("runs backwards", str(response.data))
