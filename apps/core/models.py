@@ -751,6 +751,16 @@ class Company(AuditModel):
         help_text="How far above the agreed purchase price a bill may go before it is "
                   "refused. Zero means the vendor's price must match the order exactly.",
     )
+    net_pay_account = models.ForeignKey(
+        "accounting.Account",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="+",
+        help_text="What payroll owes its staff between posting a pay run and paying "
+                  "it. A control account: it is emptied by paying people, and a "
+                  "balance that never clears is wages nobody has chased.",
+    )
     customer_deposit_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Liability account holding money taken up front, before the goods are "

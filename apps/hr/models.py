@@ -23,8 +23,9 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, Party, PartyRole, to_date
 
-from .calendars import (
+from .calendars import (  # noqa: F401
     DEFAULT_WORKING_DAYS,
+    PublicHoliday,
     completed_months,
     parse_working_days,
     working_days,
@@ -608,3 +609,19 @@ def leave_summary(employee, year, as_of=None):
             "balance": (entitled - taken - booked).quantize(Decimal("0.01")),
         })
     return rows
+
+
+# Payroll lives in its own module because it is a posting path rather
+# than a description of people, but Django only discovers models this
+# one pulls in. Last, so Employee and LeaveRequest are fully defined
+# before payroll imports them back.
+from .payroll import (  # noqa: E402,F401
+    ComponentBasis,
+    ComponentKind,
+    EmployeeCompensation,
+    PayComponent,
+    PayRun,
+    PayRunStatus,
+    Payslip,
+    PayslipLine,
+)
