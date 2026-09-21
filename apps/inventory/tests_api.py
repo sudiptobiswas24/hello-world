@@ -435,3 +435,89 @@ class StandardCostApiTests(ApiTestCase):
         priced.refresh_from_db()
         self.assertEqual(priced.standard_cost, Decimal("7.0000"))
         self.assertEqual(priced.stock_value_at(self.north), Decimal("700.00"))
+
+
+class VariantApiTests(ApiTestCase):
+    """Variants get a door on the way in, rather than after somebody asks."""
+
+    def setUp(self):
+        super().setUp()
+        from .models import ItemAttribute, ItemAttributeValue, ItemTemplate
+
+        self.colour = ItemAttribute.objects.create(code="COL", name="Colour")
+        for code, name in (("RED", "Red"), ("BLU", "Blue")):
+            ItemAttributeValue.objects.create(
+                attribute=self.colour, code=code, name=name
+            )
+        self.template = ItemTemplate.objects.create(
+            code="SHIRT", name="Shirt", uom=self.each
+        )
+        self.template.attributes.set([self.colour])
+
+    def test_the_routes_exist(self):
+        for path in (
+            "/api/inventory/item-templates/",
+            "/api/inventory/item-attributes/",
+            "/api/inventory/item-attribute-values/",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.client.get(path).status_code, 200)
+
+    def test_generating_variants_is_an_action(self):
+        response = self.client.post(
+            f"/api/inventory/item-templates/{self.template.pk}/generate-variants/",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total"], 2)
+        self.assertEqual(
+            sorted(row["sku"] for row in response.data["created"]),
+            ["SHIRT-BLU", "SHIRT-RED"],
+        )
+
+    def test_generating_again_creates_nothing(self):
+        path = f"/api/inventory/item-templates/{self.template.pk}/generate-variants/"
+        self.client.post(path, {}, format="json")
+        response = self.client.post(path, {}, format="json")
+        self.assertEqual(response.data["created"], [])
+        self.assertEqual(response.data["total"], 2)
+
+    def test_a_product_can_be_asked_how_many_there_are_altogether(self):
+        self.client.post(
+            f"/api/inventory/item-templates/{self.template.pk}/generate-variants/",
+            {}, format="json",
+        )
+        red = Item.objects.get(sku="SHIRT-RED")
+        self.stock("40", "12", item=red)
+        response = self.client.get(
+            f"/api/inventory/item-templates/{self.template.pk}/stock/"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Decimal(response.data["on_hand"]), Decimal("40"))
+        self.assertEqual(Decimal(response.data["value"]), Decimal("480.00"))
+
+    def test_a_product_that_varies_by_nothing_is_refused_in_words(self):
+        from .models import ItemTemplate
+
+        plain = ItemTemplate.objects.create(code="P", name="Plain", uom=self.each)
+        response = self.client.post(
+            f"/api/inventory/item-templates/{plain.pk}/generate-variants/",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("varies by nothing", str(response.data))
+
+    def test_retiring_a_product_is_an_action(self):
+        self.client.post(
+            f"/api/inventory/item-templates/{self.template.pk}/generate-variants/",
+            {}, format="json",
+        )
+        response = self.client.post(
+            f"/api/inventory/item-templates/{self.template.pk}/deactivate/",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data["is_active"])
+        self.assertEqual(
+            Item.objects.filter(template=self.template, is_active=True).count(), 0
+        )

@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from django.db import models, transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 from apps.core.models import AuditModel, UnitOfMeasure, to_date
 
@@ -55,6 +55,19 @@ class ItemType(models.TextChoices):
 
 
 class Item(AuditModel):
+    template = models.ForeignKey(
+        "ItemTemplate", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="variants",
+        help_text="The product this is a variant of. Blank for a standalone item, "
+                  "which is what everything was before variants existed and what "
+                  "most items still are.",
+    )
+    variant_key = models.CharField(
+        max_length=255, blank=True, editable=False,
+        help_text="Canonical name for this variant's combination of attribute "
+                  "values. Frozen at creation: changing a shirt's colour does not "
+                  "change the shirt, it makes it a different product.",
+    )
     sku = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
@@ -106,9 +119,84 @@ class Item(AuditModel):
 
     class Meta:
         ordering = ["sku"]
+        constraints = [
+            # Two variants of one product with the same combination of
+            # values are the same product twice, and every count, price
+            # and reservation would then be split between them at random.
+            models.UniqueConstraint(
+                fields=["template", "variant_key"],
+                condition=~Q(variant_key=""),
+                name="one_variant_per_combination",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.sku} - {self.name}"
+
+    def is_variant(self):
+        return self.template_id is not None
+
+    def variant_description(self):
+        """"Red, Medium", or empty for a standalone item."""
+        return ", ".join(str(row.value.name) for row in self.variant_values.all())
+
+    def siblings(self):
+        """The other variants of the same product."""
+        if not self.is_variant():
+            return Item.objects.none()
+        return Item.objects.filter(template=self.template).exclude(pk=self.pk)
+
+    def _check_matches_template(self):
+        """
+        A variant has to agree with its product about the things stock
+        arithmetic depends on.
+
+        Counting one variant in litres and another in bottles, or costing
+        one FIFO and another at standard, makes the product-level total
+        a sum of incompatible numbers — and that total is the only reason
+        the template exists.
+        """
+        if not self.template_id:
+            return
+        template = self.template
+        for field, label in (
+            ("uom", "unit of measure"),
+            ("tracking", "tracking"),
+            ("costing_method", "costing method"),
+        ):
+            mine, theirs = getattr(self, field), getattr(template, field)
+            mine = getattr(mine, "pk", mine)
+            theirs = getattr(theirs, "pk", theirs)
+            if mine != theirs:
+                raise ValidationError(
+                    f"{self.sku} is a variant of {template} and must share its "
+                    f"{label}."
+                )
+
+    def _check_variant_key_frozen(self):
+        if not self.pk:
+            return
+        previous = Item.objects.filter(pk=self.pk).values_list(
+            "variant_key", "template_id"
+        ).first()
+        if previous is None:
+            return
+        was_key, was_template = previous
+        if was_key and self.variant_key != was_key:
+            raise ValidationError(
+                f"{self.sku} is already a particular variant. Changing which one it "
+                "is would rewrite the history of a different product."
+            )
+        if was_template and self.template_id != was_template:
+            raise ValidationError(
+                f"{self.sku} already belongs to a product and cannot be moved to "
+                "another."
+            )
+
+    def save(self, *args, **kwargs):
+        self._check_matches_template()
+        self._check_variant_key_frozen()
+        super().save(*args, **kwargs)
 
     def on_hand_at(self, warehouse):
         """
@@ -536,6 +624,13 @@ from .bins import (  # noqa: E402,F401
     suggest_pick,
     suggest_putaway,
     unbinned,
+)
+from .variants import (  # noqa: E402,F401
+    ItemAttribute,
+    ItemAttributeValue,
+    ItemTemplate,
+    ItemVariantValue,
+    variant_key,
 )
 from .reports import (  # noqa: E402,F401
     movement_summary,

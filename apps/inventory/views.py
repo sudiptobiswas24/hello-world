@@ -24,6 +24,9 @@ from apps.core.audit import AuditableViewSetMixin
 from .models import (
     AdjustmentReason,
     Item,
+    ItemAttribute,
+    ItemAttributeValue,
+    ItemTemplate,
     Lot,
     StockAdjustment,
     StockAdjustmentLine,
@@ -45,7 +48,10 @@ from .models import (
 )
 from .serializers import (
     AdjustmentReasonSerializer,
+    ItemAttributeSerializer,
+    ItemAttributeValueSerializer,
     ItemSerializer,
+    ItemTemplateSerializer,
     LotSerializer,
     StockAdjustmentLineSerializer,
     StockAdjustmentSerializer,
@@ -463,3 +469,65 @@ class StockReportViewSet(viewsets.ViewSet):
             raise DRFValidationError("start and end are required, as dates.")
         report = _run(movement_summary, start, end)
         return Response(report)
+
+
+class ItemAttributeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = ItemAttribute.objects.prefetch_related("values")
+    serializer_class = ItemAttributeSerializer
+
+
+class ItemAttributeValueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = ItemAttributeValue.objects.select_related("attribute")
+    serializer_class = ItemAttributeValueSerializer
+
+
+class ItemTemplateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = ItemTemplate.objects.prefetch_related("attributes", "variants")
+    serializer_class = ItemTemplateSerializer
+    action_permission_map = {
+        "generate_variants": "inventory.add_item",
+        "deactivate": "inventory.change_itemtemplate",
+    }
+
+    @action(detail=True, methods=["post"], url_path="generate-variants")
+    def generate_variants(self, request, pk=None):
+        """
+        Create the variants this product implies. Skips any that already
+        exist: one that has been sold is a product with history.
+        """
+        template = self.get_object()
+        created = _run(template.generate_variants)
+        return Response({
+            "created": [ItemSerializer(item).data for item in created],
+            # Counted freshly rather than off template.variants: the
+            # queryset was prefetched before any of these existed, so the
+            # cached one reports the set as it was on the way in.
+            "total": Item.objects.filter(template=template).count(),
+        })
+
+    @action(detail=True, methods=["get"])
+    def stock(self, request, pk=None):
+        """How many of this product there are, across every variant."""
+        template = self.get_object()
+        return Response({
+            "on_hand": template.on_hand_at(),
+            "value": template.stock_value_at(as_of=request.query_params.get("as_of")),
+            "variants": [
+                {
+                    "sku": variant.sku,
+                    "description": variant.variant_description(),
+                    "on_hand": sum(
+                        (variant.on_hand_at(shelf) for shelf in Warehouse.objects.all()),
+                        0,
+                    ),
+                }
+                for variant in template.variants.all()
+            ],
+        })
+
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        """Retiring a product retires everything it comes in."""
+        template = self.get_object()
+        _run(template.deactivate)
+        return Response(self.get_serializer(template).data)

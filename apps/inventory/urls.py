@@ -2,6 +2,9 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AdjustmentReasonViewSet,
+    ItemAttributeValueViewSet,
+    ItemAttributeViewSet,
+    ItemTemplateViewSet,
     ItemViewSet,
     LotViewSet,
     StockAdjustmentLineViewSet,
@@ -20,6 +23,9 @@ from .views import (
 router = DefaultRouter()
 router.register("warehouses", WarehouseViewSet)
 router.register("items", ItemViewSet)
+router.register("item-templates", ItemTemplateViewSet)
+router.register("item-attributes", ItemAttributeViewSet)
+router.register("item-attribute-values", ItemAttributeValueViewSet)
 router.register("stock-movements", StockMovementViewSet)
 router.register("lots", LotViewSet)
 router.register("bins", StorageBinViewSet)

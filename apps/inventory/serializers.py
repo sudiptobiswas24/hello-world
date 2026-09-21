@@ -3,6 +3,9 @@ from rest_framework import serializers
 from .models import (
     AdjustmentReason,
     Item,
+    ItemAttribute,
+    ItemAttributeValue,
+    ItemTemplate,
     Lot,
     StockAdjustment,
     StockAdjustmentLine,
@@ -202,3 +205,33 @@ class StockReservationSerializer(serializers.ModelSerializer):
 
     def get_remaining(self, reservation):
         return reservation.remaining()
+
+
+class ItemAttributeValueSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ItemAttributeValue
+        fields = ["id", "attribute", "code", "name", "sequence", "is_active"]
+
+
+class ItemAttributeSerializer(serializers.ModelSerializer):
+    values = ItemAttributeValueSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ItemAttribute
+        fields = ["id", "code", "name", "sequence", "is_active", "values"]
+
+
+class ItemTemplateSerializer(serializers.ModelSerializer):
+    variant_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ItemTemplate
+        fields = [
+            "id", "code", "name", "description", "uom", "item_type",
+            "track_inventory", "tracking", "costing_method",
+            "inventory_account", "cogs_account", "sale_price", "attributes",
+            "is_active", "variant_count",
+        ]
+
+    def get_variant_count(self, template):
+        return template.variants.count()

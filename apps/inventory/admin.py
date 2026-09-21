@@ -5,6 +5,10 @@ from apps.core.audit import AuditableAdminMixin
 from .models import (
     AdjustmentReason,
     Item,
+    ItemAttribute,
+    ItemAttributeValue,
+    ItemTemplate,
+    ItemVariantValue,
     Lot,
     StockAdjustment,
     StockAdjustmentLine,
@@ -28,6 +32,21 @@ class WarehouseAdmin(AuditableAdminMixin, admin.ModelAdmin):
     search_fields = ("code", "name")
 
 
+class ItemVariantValueInline(admin.TabularInline):
+    model = ItemVariantValue
+    extra = 0
+    # Which variant something is, is frozen at creation: changing a
+    # shirt's colour does not change the shirt, it rewrites the history
+    # of a different product.
+    readonly_fields = ("value",)
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Item)
 class ItemAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("sku", "name", "item_type", "uom", "track_inventory",
@@ -36,6 +55,7 @@ class ItemAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_filter = ("item_type", "track_inventory", "tracking", "costing_method",
                    "is_active")
     search_fields = ("sku", "name")
+    inlines = [ItemVariantValueInline]
     # Changing a standard revalues the stock on hand, which is a posting.
     # set_standard_cost() does that; typing over the field would move the
     # shelf's value with nothing in the ledger behind it.
@@ -198,3 +218,28 @@ class StockReservationAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+class ItemAttributeValueInline(admin.TabularInline):
+    model = ItemAttributeValue
+    extra = 1
+
+
+@admin.register(ItemAttribute)
+class ItemAttributeAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "sequence", "is_active")
+    inlines = [ItemAttributeValueInline]
+
+
+@admin.register(ItemTemplate)
+class ItemTemplateAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "uom", "tracking", "costing_method",
+                    "variant_count", "is_active")
+    list_filter = ("tracking", "costing_method", "is_active")
+    search_fields = ("code", "name")
+    filter_horizontal = ("attributes",)
+
+    @admin.display(description="variants")
+    def variant_count(self, template):
+        return template.variants.count()
+
