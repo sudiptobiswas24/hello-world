@@ -367,3 +367,166 @@ class ReturnsGoBackWhereTheyCameFromTests(PickingTestCase):
         self.stock("50", lot=sooner)
         delivery, line = self.ship(self.batched, "10")
         self.assertEqual(line.lots_shipped()[0][0], sooner)
+
+
+class ReturningWhatWasAutoAllocatedTests(PickingTestCase):
+    """
+    Found by an audit probe, after the fact.
+
+    Auto-allocation made the forward path easier and silently broke the
+    reverse: a return copied the delivery line's lot, which auto-
+    allocation leaves blank, so returning a tracked shipment was refused
+    outright. Purchasing has carried a `reverses_line` pointer since it
+    was written; sales never did, and got away with it only while every
+    shipment named its own batch by hand.
+    """
+
+    def test_an_auto_allocated_shipment_can_be_returned(self):
+        lot = self.lot("L1", "2026-12-01")
+        self.stock("50", lot=lot)
+        delivery, _line = self.ship(self.batched, "10")
+        delivery.create_return()
+        self.assertEqual(lot.on_hand_at(self.warehouse), Decimal("50"))
+
+    def test_the_goods_go_home_to_the_batch_they_left(self):
+        # A return landing in a different batch has broken the trail the
+        # tracking exists for.
+        sooner = self.lot("SOONER", "2026-08-01")
+        later = self.lot("LATER", "2026-12-01")
+        self.stock("20", lot=sooner)
+        self.stock("50", lot=later)
+        delivery, _line = self.ship(self.batched, "10")
+        self.assertEqual(sooner.on_hand_at(self.warehouse), Decimal("10"))
+        delivery.create_return()
+        self.assertEqual(sooner.on_hand_at(self.warehouse), Decimal("20"))
+        self.assertEqual(later.on_hand_at(self.warehouse), Decimal("50"))
+
+    def test_a_shipment_spanning_two_batches_returns_to_both(self):
+        sooner = self.lot("SOONER", "2026-08-01")
+        later = self.lot("LATER", "2026-12-01")
+        self.stock("20", lot=sooner)
+        self.stock("50", lot=later)
+        delivery, _line = self.ship(self.batched, "35")
+        delivery.create_return()
+        self.assertEqual(sooner.on_hand_at(self.warehouse), Decimal("20"))
+        self.assertEqual(later.on_hand_at(self.warehouse), Decimal("50"))
+
+    def test_the_return_line_points_at_what_it_reverses(self):
+        lot = self.lot("L1", "2026-12-01")
+        self.stock("50", lot=lot)
+        delivery, line = self.ship(self.batched, "10")
+        customer_return = delivery.create_return()
+        self.assertEqual(customer_return.lines.get().reverses_line, line)
+
+    def test_an_untracked_return_still_works(self):
+        self.stock("100")
+        delivery, _line = self.ship(self.plain, "10")
+        delivery.create_return()
+        self.assertEqual(self.plain.on_hand_at(self.warehouse), Decimal("100"))
+
+    def test_returning_more_than_went_out_on_the_line_is_refused(self):
+        from apps.sales.models import Delivery, DeliveryLine
+
+        lot = self.lot("L1", "2026-12-01")
+        self.stock("50", lot=lot)
+        delivery, line = self.ship(self.batched, "10")
+        customer_return = Delivery.objects.create(
+            sales_order=delivery.sales_order,
+            delivery_date=datetime.date(2026, 6, 2), reverses=delivery,
+        )
+        DeliveryLine.objects.create(
+            delivery=customer_return, order_line=line.order_line,
+            reverses_line=line, warehouse=self.warehouse,
+            quantity_shipped=Decimal("25"),
+        )
+        with self.assertRaises(ValidationError) as caught:
+            customer_return.post()
+        self.assertIn("went out on that line", str(caught.exception))
+
+
+class PutAwayIsRecordedTests(PickingTestCase):
+    """
+    A line that does not record where its goods went cannot send them
+    back from there, which is how auto-put-away broke the return to
+    vendor in a binned warehouse.
+    """
+
+    def binned(self):
+        warehouse = Warehouse.objects.create(
+            code="BW", name="Binned", requires_bins=True
+        )
+        shelf = StorageBin.objects.create(
+            warehouse=warehouse, code="A-01", sequence=1
+        )
+        return warehouse, shelf
+
+    def receive_into(self, warehouse, quantity="40"):
+        from apps.purchasing.models import (
+            GoodsReceipt,
+            GoodsReceiptLine,
+            PurchaseOrder,
+            PurchaseOrderLine,
+        )
+
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        line = PurchaseOrderLine.objects.create(
+            order=order, item=self.plain, uom=self.each,
+            quantity=Decimal(quantity), unit_price=Decimal("5"),
+        )
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order, receipt_date=datetime.date(2026, 1, 2)
+        )
+        receipt_line = GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=line, warehouse=warehouse,
+            quantity_received=Decimal(quantity),
+        )
+        receipt.post()
+        receipt_line.refresh_from_db()
+        return receipt, receipt_line
+
+    def test_the_receipt_line_records_the_shelf_it_chose(self):
+        warehouse, shelf = self.binned()
+        _receipt, line = self.receive_into(warehouse)
+        self.assertEqual(line.bin, shelf)
+        self.assertEqual(line.stock_movement.bin, shelf)
+
+    def test_a_return_to_vendor_goes_back_off_that_shelf(self):
+        warehouse, shelf = self.binned()
+        receipt, _line = self.receive_into(warehouse)
+        receipt.create_return()
+        self.assertEqual(shelf.on_hand(self.plain), Decimal("0"))
+        self.assertEqual(self.plain.on_hand_at(warehouse), Decimal("0"))
+
+    def test_a_shelf_named_by_hand_is_left_alone(self):
+        warehouse, _shelf = self.binned()
+        chosen = StorageBin.objects.create(
+            warehouse=warehouse, code="A-09", sequence=9
+        )
+        from apps.purchasing.models import (
+            GoodsReceipt,
+            GoodsReceiptLine,
+            PurchaseOrder,
+            PurchaseOrderLine,
+        )
+
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        order_line = PurchaseOrderLine.objects.create(
+            order=order, item=self.plain, uom=self.each,
+            quantity=Decimal("10"), unit_price=Decimal("5"),
+        )
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order, receipt_date=datetime.date(2026, 1, 2)
+        )
+        line = GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order_line, warehouse=warehouse,
+            bin=chosen, quantity_received=Decimal("10"),
+        )
+        receipt.post()
+        line.refresh_from_db()
+        self.assertEqual(line.bin, chosen)

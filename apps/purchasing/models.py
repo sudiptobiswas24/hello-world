@@ -3728,6 +3728,15 @@ class GoodsReceipt(AuditModel):
             movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
             quantity = -line.quantity_received if is_return else line.quantity_received
             unit_cost = line.order_line.unit_price
+            # Where the goods land. suggest_putaway() existed and nothing
+            # called it, so a binned warehouse refused every receipt that
+            # did not name a shelf by hand. The answer is written back to
+            # the line, because a line that does not record where its
+            # goods went cannot send them back from there — which is how
+            # auto-put-away silently broke the return to vendor.
+            landed_in = plan_putaway(line.order_line.item, line.warehouse, line.bin)
+            if line.bin_id != getattr(landed_in, "pk", None):
+                line.bin = landed_in
             # A subcontracted item is worth what the components cost plus
             # what the vendor charged to assemble them. Valuing it at the
             # vendor's charge alone would report a part built from 100 of
@@ -3751,10 +3760,7 @@ class GoodsReceipt(AuditModel):
                 # them together and the total stays the total.
                 uom=line.order_line.uom,
                 lot=line.lot,
-                # Where the goods land. suggest_putaway() existed and
-                # nothing called it, so a binned warehouse refused every
-                # receipt that did not name a shelf by hand.
-                bin=plan_putaway(line.order_line.item, line.warehouse, line.bin),
+                bin=landed_in,
                 quantity=quantity,
                 unit_cost=unit_cost,
                 reference=self.reference or self.number,
@@ -3766,7 +3772,7 @@ class GoodsReceipt(AuditModel):
             )
             line.stock_movement = movement
             super(GoodsReceiptLine, line).save(
-                update_fields=["stock_movement", "updated_at"]
+                update_fields=["stock_movement", "bin", "updated_at"]
             )
             # Only the vendor's charge hits the ledger: the component
             # value has merely moved from one item to another inside the

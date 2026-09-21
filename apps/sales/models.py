@@ -2312,7 +2312,7 @@ class Delivery(AuditModel):
             # goes back where it came from — the line carries the original
             # lot — so only a shipment has anything to choose.
             if is_return:
-                plan = [(line.lot, line.bin, shipped)]
+                plan = line.return_plan(shipped)
             else:
                 plan = plan_issue(
                     item, line.warehouse, shipped,
@@ -2476,6 +2476,12 @@ class Delivery(AuditModel):
             DeliveryLine.objects.create(
                 delivery=customer_return,
                 order_line=line.order_line,
+                # The line being sent back, so the goods can return to the
+                # batches and shelves they actually left from. Purchasing
+                # has carried this since it was written; sales never did,
+                # and got away with it only while every shipment named its
+                # own batch by hand.
+                reverses_line=line,
                 warehouse=line.warehouse,
                 lot=line.lot,
                 bin=line.bin,
@@ -2493,6 +2499,13 @@ class DeliveryLine(AuditModel):
     delivery = models.ForeignKey(Delivery, related_name="lines", on_delete=models.CASCADE)
     order_line = models.ForeignKey(
         SalesOrderLine, on_delete=models.PROTECT, related_name="delivery_lines"
+    )
+    reverses_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="return_lines",
+        help_text="On a return line, the delivery line being sent back. The goods "
+                  "go home to the batches and shelves they left from, which only "
+                  "that line knows.",
     )
     warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
     bin = models.ForeignKey(
@@ -2538,6 +2551,39 @@ class DeliveryLine(AuditModel):
             (row.lot, row.bin, row.quantity)
             for row in self.allocations.select_related("lot", "bin")
         ]
+
+    def return_plan(self, quantity):
+        """
+        Where returned goods go back to.
+
+        Home to the batches and shelves they left from, which the
+        original line recorded. Choosing afresh would put them in
+        whichever batch happens to expire soonest now, and a return that
+        lands in a different batch than it left has broken the trail the
+        tracking exists for.
+
+        A line with nothing behind it — a return typed in by hand — falls
+        back to whatever it names, and is refused downstream if that is
+        nothing and the item is tracked.
+        """
+        original = self.reverses_line
+        if original is None:
+            return [(self.lot, self.bin, quantity)]
+        plan, remaining = [], quantity
+        for allocation in original.allocations.select_related("lot", "bin"):
+            if remaining <= 0:
+                break
+            taken = min(allocation.quantity, remaining)
+            plan.append((allocation.lot, allocation.bin, taken))
+            remaining -= taken
+        if remaining > 0:
+            if not plan:
+                return [(self.lot, self.bin, quantity)]
+            raise ValidationError(
+                f"{quantity} of {original.order_line.label()} is being returned and "
+                f"only {quantity - remaining} went out on that line."
+            )
+        return plan
 
     def save(self, *args, **kwargs):
         if self.delivery_id and Delivery.objects.filter(pk=self.delivery_id, posted=True).exists():
