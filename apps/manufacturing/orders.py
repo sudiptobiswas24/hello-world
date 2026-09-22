@@ -59,6 +59,7 @@ from apps.inventory.valuation import inventory_account_for
 
 from .bom import BillOfMaterials, ByproductValuation, byproduct_value, planned_cost
 from .shifts import Downtime, DowntimeReason, Shift
+from .tooling import Tool, ToolUsage
 
 
 class ManufacturingSettings(AuditModel):
@@ -337,6 +338,12 @@ class WorkOrder(AuditModel):
         default=False,
         help_text="Frozen off the bill of materials at release. Whether output "
                   "draws its own components, or a storeman issues them.",
+    )
+    tools = models.ManyToManyField(
+        "Tool", blank=True, related_name="work_orders",
+        help_text="The cylinders, dies or reeds this run needs. Naming them "
+                  "is what lets the run refuse to start on a worn one, and "
+                  "what puts the wear against the right tool afterwards.",
     )
     rework_of = models.ForeignKey(
         "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT,
@@ -637,6 +644,12 @@ class WorkOrder(AuditModel):
         if not self.bom.is_active:
             raise ValidationError(f"{self.bom} is not active.")
         self._check_rework()
+        for tool in self.tools.select_related("life_uom"):
+            # Asked here, where a worn cylinder can still be swapped
+            # for a fresh one. By the first shift the press is set up
+            # and the changeover costs a run.
+            tool.check_usable(f"go on {self.number or 'this run'}")
+            tool.quantity_for(self.quantity_ordered, self.uom)
         if not self.bom.components.exists():
             raise ValidationError(
                 f"{self.bom} has no components, so nothing would ever be issued "
@@ -1706,6 +1719,20 @@ class ProductionEntry(AuditModel):
         """
         return self.quantity_produced + self.quantity_scrapped
 
+    def _wear_tools(self):
+        """
+        Put this booking's output against every tool the run names.
+
+        Recorded as rows against the booking rather than counted down
+        on the tool, so that voiding the booking takes the wear back
+        with it and nothing has to remember to.
+        """
+        for tool in self.work_order.tools.select_related("life_uom"):
+            quantity = tool.quantity_for(self.consumed_output(), self.uom)
+            if quantity is None or quantity <= 0:
+                continue
+            ToolUsage.objects.create(tool=tool, entry=self, quantity=quantity)
+
     def _backflush(self, label):
         """
         Draw what this output consumed, as its own issue.
@@ -1819,6 +1846,7 @@ class ProductionEntry(AuditModel):
         # out of nothing.
         if order.backflush:
             self.backflush_issue = self._backflush(label)
+        self._wear_tools()
         super().save(update_fields=[
             "number", "entry_date", "posted", "posted_at", "posted_value",
             "unit_cost", "stock_movement", "journal_entry", "backflush_issue",

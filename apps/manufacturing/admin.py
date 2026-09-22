@@ -34,6 +34,7 @@ from .orders import (
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .rolls import FabricRoll
+from .tooling import PrintDesign, Tool, ToolUsage
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
 
 
@@ -204,6 +205,60 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
     model = BomByproduct
     extra = 0
     autocomplete_fields = ("item",)
+
+
+@admin.register(PrintDesign)
+class PrintDesignAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "customer", "colours", "approved_on",
+                    "shown_set", "is_active")
+    list_filter = ("customer", "is_active")
+    search_fields = ("code", "name", "customer__name")
+
+    @admin.display(description="Cylinder set")
+    def shown_set(self, obj):
+        report = obj.cylinder_set()
+        if report["complete"]:
+            return f"complete ({len(report['tools'])})"
+        return f"SHORT BY {report['short_by']}"
+
+
+class ToolUsageInline(admin.TabularInline):
+    model = ToolUsage
+    extra = 0
+    fields = ("entry", "quantity")
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Tool)
+class ToolAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    Tools and the life left in them.
+
+    Wear is shown and never edited: it is summed off the bookings that
+    caused it, so voiding a run takes it back without anybody having
+    to remember.
+    """
+
+    list_display = ("code", "name", "kind", "design", "status", "life_limit",
+                    "shown_used", "shown_left")
+    list_filter = ("kind", "status", "work_centre")
+    search_fields = ("code", "name", "design__code")
+    inlines = [ToolUsageInline]
+
+    @admin.display(description="Used")
+    def shown_used(self, obj):
+        share = obj.used_percent()
+        return f"{obj.used()}" + (f" ({share}%)" if share is not None else "")
+
+    @admin.display(description="Left")
+    def shown_left(self, obj):
+        remaining = obj.remaining()
+        if remaining is None:
+            return "unrated"
+        return f"{remaining}" + ("  WORN" if remaining <= 0 else "")
 
 
 @admin.register(FabricRoll)

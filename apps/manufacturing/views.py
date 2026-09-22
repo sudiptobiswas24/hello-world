@@ -30,10 +30,14 @@ from .orders import (
 from .demand import coverage, genealogy, uncovered
 from .oee import by_operator, by_shift, effectiveness
 from .rolls import FabricRoll
+from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
     FabricRollSerializer,
+    PrintDesignSerializer,
+    ToolSerializer,
+    ToolUsageSerializer,
     BagSpecificationSerializer,
     BillOfMaterialsSerializer,
     BomByproductSerializer,
@@ -208,6 +212,53 @@ class BomComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BomByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BomByproduct.objects.select_related("item", "bom")
     serializer_class = BomByproductSerializer
+
+
+class PrintDesignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = PrintDesign.objects.select_related(
+        "customer", "approved_by"
+    ).prefetch_related("tools")
+    serializer_class = PrintDesignSerializer
+
+    @action(detail=True, methods=["get"])
+    def cylinders(self, request, pk=None):
+        """Whether a full set exists, which decides whether it prints at all."""
+        report = self.get_object().cylinder_set()
+        return Response({
+            "colours": report["colours"],
+            "complete": report["complete"],
+            "short_by": report["short_by"],
+            "tools": ToolSerializer(report["tools"], many=True).data,
+        })
+
+
+class ToolViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Tool.objects.select_related("design", "work_centre", "life_uom")
+    serializer_class = ToolSerializer
+
+    @action(detail=False, methods=["get"])
+    def wearing_out(self, request):
+        """
+        Tools past a share of their life, worst first — the report
+        that stops a changeover happening mid-run.
+        """
+        threshold = request.query_params.get("threshold") or "90"
+        rows = _run(wearing_out, Decimal(str(threshold)))
+        return Response([
+            {
+                "tool": ToolSerializer(tool).data,
+                "used_percent": share,
+                "remaining": remaining,
+            }
+            for tool, share, remaining in rows
+        ])
+
+
+class ToolUsageViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """Read-only: wear is derived from bookings, never typed in."""
+
+    queryset = ToolUsage.objects.select_related("tool", "entry")
+    serializer_class = ToolUsageSerializer
 
 
 class FabricRollViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

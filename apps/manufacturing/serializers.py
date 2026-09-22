@@ -13,6 +13,7 @@ from .orders import (
     WorkOrderOperation,
 )
 from .rolls import FabricRoll
+from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
@@ -138,6 +139,51 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
                   "is_computed", "is_default", "is_active", "is_rework",
                   "backflush", "notes", "components", "byproducts"]
         read_only_fields = ["is_computed"]
+
+
+class PrintDesignSerializer(serializers.ModelSerializer):
+    is_approved = serializers.BooleanField(read_only=True)
+    cylinders_short_by = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PrintDesign
+        fields = ["id", "code", "name", "customer", "colours",
+                  "artwork_reference", "approved_on", "approved_by",
+                  "is_active", "notes", "is_approved", "cylinders_short_by"]
+
+    def get_cylinders_short_by(self, obj):
+        return obj.cylinder_set()["short_by"]
+
+
+class ToolSerializer(serializers.ModelSerializer):
+    used = serializers.SerializerMethodField()
+    remaining = serializers.SerializerMethodField()
+    used_percent = serializers.SerializerMethodField()
+    is_worn = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Tool
+        fields = ["id", "code", "name", "kind", "design", "work_centre",
+                  "life_limit", "life_uom", "status", "acquired_on", "notes",
+                  "used", "remaining", "used_percent", "is_worn"]
+
+    def get_used(self, obj):
+        return obj.used()
+
+    def get_remaining(self, obj):
+        return obj.remaining()
+
+    def get_used_percent(self, obj):
+        return obj.used_percent()
+
+    def get_is_worn(self, obj):
+        return obj.is_worn()
+
+
+class ToolUsageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ToolUsage
+        fields = ["id", "tool", "entry", "quantity"]
 
 
 class FabricRollSerializer(serializers.ModelSerializer):

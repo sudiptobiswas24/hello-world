@@ -55,6 +55,15 @@ from .rolls import (  # noqa: F401
     unrolled_stock,
     weighed_gsm,
 )
+from .tooling import (  # noqa: F401
+    PrintDesign,
+    Tool,
+    ToolKind,
+    ToolStatus,
+    ToolUsage,
+    tools_for,
+    wearing_out,
+)
 from .routing import (  # noqa: F401
     Routing,
     RoutingOperation,
