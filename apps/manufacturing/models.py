@@ -30,6 +30,19 @@ from .demand import (  # noqa: F401
     runs_that_made,
     uncovered,
 )
+from .oee import (  # noqa: F401
+    availability,
+    by_operator,
+    by_shift,
+    effectiveness,
+    performance,
+    quality,
+)
+from .shifts import (  # noqa: F401
+    Downtime,
+    DowntimeReason,
+    Shift,
+)
 from .routing import (  # noqa: F401
     Routing,
     RoutingOperation,

@@ -56,6 +56,7 @@ from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import inventory_account_for
 
 from .bom import BillOfMaterials, ByproductValuation, byproduct_value, planned_cost
+from .shifts import Downtime, DowntimeReason, Shift
 
 
 class ManufacturingSettings(AuditModel):
@@ -982,6 +983,34 @@ class WorkOrderOperation(AuditModel):
                 f"{order.quantity_ordered} {order.uom}, which allows up to "
                 f"{ceiling}."
             )
+        # What the booked minutes could have made at this operation's own
+        # rate. A line does run above its nominal speed — good polymer,
+        # an experienced crew — so the same allowance the order gives to
+        # time is given to speed, both being two sides of one rate being
+        # approximate. Five times the rate is a typed figure, and it had
+        # a line reading 556% performance.
+        #
+        # Setup produces nothing, which this is naturally tolerant of:
+        # the minutes the output should have needed can only be smaller
+        # than the minutes booked, so setup only widens the margin.
+        rate = self.units_per_hour
+        if rate:
+            in_bom_units = order.uom.convert_to(
+                already + made, order.bom.uom
+            ) if order.uom_id != order.bom.uom_id else (already + made)
+            should_have_taken = in_bom_units / rate * Decimal("60")
+            allowed_minutes = (self.minutes_booked() + minutes) * (
+                Decimal("1") + (order.time_allowance_percent or Decimal("0"))
+                / Decimal("100")
+            )
+            if should_have_taken > allowed_minutes:
+                raise ValidationError(
+                    f"{self} runs at {rate} an hour, so "
+                    f"{self.minutes_booked() + minutes} minutes could not have "
+                    f"made {already + made}: that would have needed "
+                    f"{should_have_taken:.1f} minutes. Either the quantity or "
+                    "the time is mistyped, or the rate on the routing is wrong."
+                )
         upstream = self.feeds_from()
         if upstream is not None:
             fed = order.item.to_stock_quantity(
@@ -1792,7 +1821,32 @@ class TimeBooking(AuditModel):
                   "sets the rate, so a booking cannot be made against a "
                   "machine this run never went near.",
     )
-    booking_date = models.DateField()
+    booking_date = models.DateField(
+        help_text="The day the shift is NAMED for, not the day the clock said. "
+                  "A night shift running to six in the morning books all its "
+                  "hours to the day before, or half a crew's work lands on the "
+                  "wrong day and two shifts both look wrong. Derived from "
+                  "`started_at` when that is given."
+    )
+    started_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Wall clock when the machine started. Given, it decides both "
+                  "which shift this was and which day that shift belongs to, so "
+                  "nobody has to work out the night shift's date by hand.",
+    )
+    shift = models.ForeignKey(
+        "Shift", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="time_bookings",
+        help_text="Which crew's slot. A plant that does not run shifts leaves "
+                  "it empty and loses nothing but the by-shift reports.",
+    )
+    operators = models.ManyToManyField(
+        "hr.Employee", blank=True, related_name="time_bookings",
+        help_text="Who was on the machine. For attribution, not for costing: "
+                  "the labour in the cost comes from the work centre's rate, "
+                  "and adding these people's wages on top would charge the run "
+                  "twice for the same crew.",
+    )
     minutes = models.DecimalField(
         max_digits=12, decimal_places=2,
         help_text="Time on the machine, setup included. Always positive: a "
@@ -1852,6 +1906,51 @@ class TimeBooking(AuditModel):
     def hours(self):
         return self.minutes / Decimal("60")
 
+    def resolve_shift(self):
+        """
+        Work out which shift this was, and which day it belongs to.
+
+        The docstring on `booking_date` says a night shift books to the
+        day before; this is the code that makes it true rather than a
+        comment that hopes so.
+        """
+        if self.started_at is None:
+            return
+        if self.shift_id is None:
+            self.shift = Shift.covering(self.started_at)
+            if self.shift is None:
+                raise ValidationError(
+                    f"No active shift covers {timezone.localtime(self.started_at)}. "
+                    "Either the shifts do not cover the whole day or this "
+                    "booking's clock time is wrong."
+                )
+        elif not self.shift.covers(self.started_at):
+            raise ValidationError(
+                f"{self.shift} does not run at "
+                f"{timezone.localtime(self.started_at).time()}."
+            )
+        self.booking_date = self.shift.shift_date_for(self.started_at)
+
+    def check_crew(self):
+        """
+        Everybody named was employed here on the day.
+
+        A shift booked against somebody who left in March is a typed
+        employee number, and the yield-by-crew report it feeds is worse
+        than no report: it is a report somebody will act on.
+        """
+        on_date = to_date(self.booking_date)
+        for operator in self.operators.all():
+            # `is_employed_on` is HR's own answer to this and already
+            # knows about hire dates, terminations and the order of the
+            # two. A second copy here would be one to keep in step.
+            if not operator.is_employed_on(on_date):
+                raise ValidationError(
+                    f"{operator} was not employed here on {on_date}, and a "
+                    "shift booked against somebody who was not there is a "
+                    "typed employee number."
+                )
+
     @transaction.atomic
     def post(self, memo=""):
         if self.posted:
@@ -1868,6 +1967,8 @@ class TimeBooking(AuditModel):
                 "be booked against a released order."
             )
         self.operation.check_booking(self.minutes, self.quantity_completed)
+        self.resolve_shift()
+        self.check_crew()
         self.booking_date = to_date(self.booking_date)
         if not self.number:
             self.number = DocumentSequence.next_for(
@@ -1902,8 +2003,8 @@ class TimeBooking(AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super().save(update_fields=[
-            "number", "booking_date", "hourly_rate", "posted", "posted_at",
-            "posted_value", "journal_entry", "updated_at",
+            "number", "booking_date", "shift", "hourly_rate", "posted",
+            "posted_at", "posted_value", "journal_entry", "updated_at",
         ])
         return self.journal_entry
 

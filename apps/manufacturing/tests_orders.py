@@ -146,11 +146,12 @@ class RunTestCase(TestCase):
             )
         return document
 
-    def produce(self, order, quantity, scrapped="0", byproducts=(), lot=None):
+    def produce(self, order, quantity, scrapped="0", byproducts=(), lot=None,
+                uom=None):
         entry = ProductionEntry.objects.create(
             work_order=order, entry_date=TODAY, warehouse=self.plant,
             quantity_produced=Decimal(quantity),
-            quantity_scrapped=Decimal(scrapped), uom=self.kg,
+            quantity_scrapped=Decimal(scrapped), uom=uom or self.kg,
             work_centre=self.loom, lot=lot,
         )
         for index, (item, amount) in enumerate(byproducts, start=1):

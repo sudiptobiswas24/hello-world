@@ -28,7 +28,9 @@ from .orders import (
     WorkOrder,
 )
 from .demand import coverage, genealogy, uncovered
+from .oee import by_operator, by_shift, effectiveness
 from .routing import Routing, RoutingOperation, capacity_report
+from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
     BagSpecificationSerializer,
     BillOfMaterialsSerializer,
@@ -39,8 +41,11 @@ from .serializers import (
     MaterialIssueSerializer,
     ProductionByproductSerializer,
     ProductionEntrySerializer,
+    DowntimeReasonSerializer,
+    DowntimeSerializer,
     RoutingOperationSerializer,
     RoutingSerializer,
+    ShiftSerializer,
     TapeSpecificationSerializer,
     TimeBookingSerializer,
     WorkCentreSerializer,
@@ -55,6 +60,41 @@ def _run(callable_, *args, **kwargs):
         return callable_(*args, **kwargs)
     except DjangoValidationError as exc:
         raise DRFValidationError(exc.messages)
+
+
+def _window(request):
+    """The start and end a report was asked for, or a sentence."""
+    start = parse_date(request.query_params.get("start") or "")
+    end = parse_date(request.query_params.get("end") or "")
+    if start is None or end is None:
+        raise DRFValidationError(["start and end are required, as YYYY-MM-DD."])
+    return start, end
+
+
+def _effectiveness_payload(report):
+    shift = report["shift"]
+    return {
+        "work_centre": report["work_centre"].code,
+        "shift": getattr(shift, "code", None) if shift else None,
+        "shift_name": str(shift) if shift else None,
+        "start": report["start"],
+        "end": report["end"],
+        "availability": report["availability"]["ratio"],
+        "ran_minutes": report["availability"]["ran_minutes"],
+        "stopped_minutes": report["availability"]["stopped_minutes"],
+        "planned_stop_minutes": report["availability"]["planned_stop_minutes"],
+        "unplanned_stop_minutes": report["availability"]["unplanned_stop_minutes"],
+        "performance": report["performance"]["ratio"],
+        "quality": report["quality"]["ratio"],
+        "quality_note": report["quality"]["note"],
+        "quality_by_item": [
+            {"item": row["item"].sku, "good": row["good"],
+             "scrapped": row["scrapped"], "ratio": row["ratio"]}
+            for row in report["quality"]["by_item"]
+        ],
+        "oee": report["oee"],
+        "unmeasured": report["unmeasured"],
+    }
 
 
 def _quantity(request, default="1"):
@@ -183,18 +223,42 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = WorkCentreSerializer
 
     @action(detail=True, methods=["get"])
+    def effectiveness(self, request, pk=None):
+        """
+        Availability, performance and quality, and their product where
+        all three exist. A ratio nobody measured comes back missing
+        rather than as one.
+        """
+        centre = self.get_object()
+        start, end = _window(request)
+        shift = None
+        code = request.query_params.get("shift")
+        if code:
+            shift = Shift.objects.filter(code=code, is_active=True).first()
+            if shift is None:
+                raise DRFValidationError([f"No active shift with code {code}."])
+        return Response(_effectiveness_payload(
+            _run(effectiveness, centre, start, end, shift=shift)
+        ))
+
+    @action(detail=True, methods=["get"], url_path="by-shift")
+    def by_shift(self, request, pk=None):
+        """A row per crew's slot, plus the hours nobody attributed."""
+        centre = self.get_object()
+        start, end = _window(request)
+        return Response([
+            _effectiveness_payload(row)
+            for row in _run(by_shift, centre, start, end)
+        ])
+
+    @action(detail=True, methods=["get"])
     def capacity(self, request, pk=None):
         """
         What this machine is being asked to do in a window against what
         it can, and what is queued with no date on it at all.
         """
         centre = self.get_object()
-        start = parse_date(request.query_params.get("start") or "")
-        end = parse_date(request.query_params.get("end") or "")
-        if start is None or end is None:
-            raise DRFValidationError(
-                ["start and end are required, as YYYY-MM-DD."]
-            )
+        start, end = _window(request)
         report = _run(capacity_report, centre, start, end)
         return Response({
             "work_centre": centre.code,
@@ -393,3 +457,55 @@ class TimeBookingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             on_date=request.data.get("on_date"), memo=request.data.get("memo", ""),
         )
         return Response(self.get_serializer(booking).data)
+
+
+class ShiftViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Shift.objects.all()
+    serializer_class = ShiftSerializer
+
+
+class DowntimeReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = DowntimeReason.objects.all()
+    serializer_class = DowntimeReasonSerializer
+
+
+class DowntimeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Downtime.objects.select_related(
+        "work_centre", "shift", "reason", "work_order"
+    )
+    serializer_class = DowntimeSerializer
+
+
+class OperatorYieldViewSet(viewsets.ViewSet):
+    """
+    What each person's hours produced.
+
+    Attribution, not appraisal — a crew on the oldest loom in the shed
+    reads worse than one on the newest, so every row names the machine.
+    """
+
+    # Not a list of these rows — they are computed. It is here so the
+    # permission check has a model to ask about, and time bookings are
+    # the right one: reading who produced what is reading their hours.
+    queryset = TimeBooking.objects.none()
+
+    def list(self, request):
+        start, end = _window(request)
+        centre = None
+        code = request.query_params.get("work_centre")
+        if code:
+            centre = WorkCentre.objects.filter(code=code).first()
+            if centre is None:
+                raise DRFValidationError([f"No work centre with code {code}."])
+        return Response([
+            {
+                "operator": row["operator"].employee_number,
+                "name": row["operator"].party.name,
+                "work_centre": row["work_centre"].code,
+                "minutes": row["minutes"],
+                "ideal_minutes": row["ideal_minutes"],
+                "performance": row["performance"],
+                "bookings": row["bookings"],
+            }
+            for row in _run(by_operator, start, end, work_centre=centre)
+        ])

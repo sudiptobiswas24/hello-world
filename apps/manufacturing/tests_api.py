@@ -459,3 +459,126 @@ class DemandApiTests(RunTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("not against a customer line", str(response.data))
+
+
+class ShiftAndOeeApiTests(RunTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.hr.models import Employee
+        from .orders import ManufacturingSettings, TimeBooking
+        from .routing import Routing, RoutingOperation
+        from .shifts import Downtime, DowntimeReason, Shift
+
+        user = get_user_model().objects.create_superuser(
+            username="planner", email="planner@example.com", password="x"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+        settings = ManufacturingSettings.get()
+        settings.conversion_absorbed_account = Account.objects.create(
+            code="5300", name="Conversion absorbed", account_type=AccountType.EXPENSE
+        )
+        settings.save()
+        self.loom.machine_rate_per_hour = Decimal("360")
+        self.loom.capacity_per_hour = Decimal("180")
+        self.loom.capacity_uom = self.kg
+        self.loom.save()
+        plan = Routing.objects.create(code="R-EXT", name="Extrude")
+        RoutingOperation.objects.create(
+            routing=plan, sequence=10, name="Extrude",
+            work_centre=self.loom, setup_minutes=Decimal("90"),
+            units_per_hour=Decimal("180"), rate_uom=self.kg,
+        )
+        self.bom.routing = plan
+        self.bom.save()
+        self.night = Shift.objects.create(
+            code="C", name="Night", starts_at=datetime.time(22, 0),
+            hours=Decimal("8"),
+        )
+        self.reason = DowntimeReason.objects.create(code="WARP", name="Warp break")
+
+        party = Party.objects.create(code="E1", name="Ravi")
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
+        self.ravi = Employee.objects.create(
+            party=party, employee_number="E1", hire_date=datetime.date(2020, 1, 1)
+        )
+
+        order = self.order("1000")
+        order.release(TODAY)
+        booking = TimeBooking.objects.create(
+            work_order=order, operation=order.operations.get(),
+            booking_date=TODAY, shift=self.night, minutes=Decimal("400"),
+            quantity_completed=Decimal("1000"),
+        )
+        booking.operators.set([self.ravi])
+        booking.post()
+        Downtime.objects.create(
+            work_centre=self.loom, shift_date=TODAY, shift=self.night,
+            reason=self.reason, minutes=Decimal("80"),
+        )
+        self.produce(order, "950", scrapped="50").post()
+        self.window = f"?start={TODAY}&end={TODAY}"
+
+    def test_the_collections_answer(self):
+        for path in ("shifts", "downtime-reasons", "downtime"):
+            response = self.client.get(f"/api/manufacturing/{path}/")
+            self.assertEqual(response.status_code, 200, path)
+
+    def test_a_shift_says_when_it_ends_and_whether_that_is_tomorrow(self):
+        response = self.client.get(f"/api/manufacturing/shifts/{self.night.pk}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["crosses_midnight"])
+        self.assertEqual(str(response.data["ends_at"]), "06:00:00")
+
+    def test_the_three_ratios_are_reachable(self):
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/effectiveness/"
+            f"{self.window}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertAlmostEqual(
+            Decimal(str(response.data["availability"])), Decimal("0.8333"), places=4
+        )
+        self.assertAlmostEqual(
+            Decimal(str(response.data["performance"])), Decimal("0.8333"), places=4
+        )
+        self.assertAlmostEqual(
+            Decimal(str(response.data["quality"])), Decimal("0.95"), places=4
+        )
+        self.assertAlmostEqual(
+            Decimal(str(response.data["oee"])), Decimal("0.6597"), places=4
+        )
+
+    def test_by_shift_is_reachable(self):
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/by-shift/{self.window}"
+        )
+        self.assertEqual(response.status_code, 200)
+        night = [row for row in response.data if row["shift"] == "C"][0]
+        self.assertEqual(Decimal(str(night["ran_minutes"])), Decimal("400.00"))
+
+    def test_operator_yield_is_reachable(self):
+        response = self.client.get(
+            f"/api/manufacturing/operator-yield/{self.window}"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["operator"], "E1")
+        self.assertEqual(response.data[0]["work_centre"], "EXT-1")
+        self.assertEqual(Decimal(str(response.data[0]["minutes"])), Decimal("400.00"))
+
+    def test_a_window_nobody_gave_is_a_sentence(self):
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/effectiveness/"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("start and end are required", str(response.data))
+
+    def test_a_backwards_window_is_a_sentence_too(self):
+        response = self.client.get(
+            f"/api/manufacturing/work-centres/{self.loom.pk}/effectiveness/"
+            f"?start={TODAY}&end=2026-01-01"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("runs backwards", str(response.data))

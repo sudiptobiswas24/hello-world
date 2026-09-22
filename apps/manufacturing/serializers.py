@@ -13,6 +13,7 @@ from .orders import (
     WorkOrderOperation,
 )
 from .routing import Routing, RoutingOperation
+from .shifts import Downtime, DowntimeReason, Shift
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
 
 
@@ -301,12 +302,48 @@ class TimeBookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = TimeBooking
         fields = ["id", "number", "work_order", "operation", "booking_date",
-                  "minutes", "hours", "quantity_completed", "memo",
-                  "hourly_rate", "posted", "posted_at", "posted_value",
-                  "journal_entry", "voided_entry", "voided_at"]
+                  "started_at", "shift", "operators", "minutes", "hours",
+                  "quantity_completed", "memo", "hourly_rate", "posted",
+                  "posted_at", "posted_value", "journal_entry", "voided_entry",
+                  "voided_at"]
         read_only_fields = ["number", "hourly_rate", "posted", "posted_at",
                             "posted_value", "journal_entry", "voided_entry",
                             "voided_at"]
+
+    def get_hours(self, obj):
+        return round(obj.hours(), 3)
+
+
+class ShiftSerializer(serializers.ModelSerializer):
+    ends_at = serializers.SerializerMethodField()
+    crosses_midnight = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Shift
+        fields = ["id", "code", "name", "starts_at", "hours", "ends_at",
+                  "crosses_midnight", "is_active"]
+
+    def get_ends_at(self, obj):
+        return obj.ends_at()
+
+    def get_crosses_midnight(self, obj):
+        return obj.crosses_midnight()
+
+
+class DowntimeReasonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DowntimeReason
+        fields = ["id", "code", "name", "is_planned", "is_active"]
+
+
+class DowntimeSerializer(serializers.ModelSerializer):
+    hours = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Downtime
+        fields = ["id", "number", "work_centre", "shift_date", "shift",
+                  "reason", "minutes", "hours", "work_order", "notes"]
+        read_only_fields = ["number"]
 
     def get_hours(self, obj):
         return round(obj.hours(), 3)

@@ -10,8 +10,12 @@ from .views import (
     MaterialIssueViewSet,
     ProductionByproductViewSet,
     ProductionEntryViewSet,
+    DowntimeReasonViewSet,
+    DowntimeViewSet,
+    OperatorYieldViewSet,
     RoutingOperationViewSet,
     RoutingViewSet,
+    ShiftViewSet,
     TapeSpecificationViewSet,
     TimeBookingViewSet,
     WorkCentreViewSet,
@@ -34,5 +38,9 @@ router.register("material-issue-lines", MaterialIssueLineViewSet)
 router.register("production-entries", ProductionEntryViewSet)
 router.register("production-byproducts", ProductionByproductViewSet)
 router.register("time-bookings", TimeBookingViewSet)
+router.register("shifts", ShiftViewSet)
+router.register("downtime-reasons", DowntimeReasonViewSet)
+router.register("downtime", DowntimeViewSet)
+router.register("operator-yield", OperatorYieldViewSet, basename="operator-yield")
 
 urlpatterns = router.urls

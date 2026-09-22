@@ -374,9 +374,10 @@ class ABookingHasToBePhysicallyPossibleTests(ConversionTestCase):
         self.assertEqual(order.minutes_booked(), Decimal("6000.00"))
 
     def test_more_completed_than_the_run_is_for(self):
+        # Booked over enough time that only the quantity is impossible.
         order = self.routed()
         with self.assertRaises(ValidationError) as caught:
-            self.book(order, "600", completed="999999").post()
+            self.book(order, "2000", completed="999999").post()
         self.assertIn("which allows up to", str(caught.exception))
 
     def test_a_sack_cannot_be_stitched_before_it_is_cut(self):
@@ -389,7 +390,7 @@ class ABookingHasToBePhysicallyPossibleTests(ConversionTestCase):
         )
         order = self.routed()
         first, last = list(order.operations.order_by("sequence"))
-        self.book(order, "60", completed="500", operation=first).post()
+        self.book(order, "200", completed="500", operation=first).post()
         with self.assertRaises(ValidationError) as caught:
             self.book(order, "60", completed="3000", operation=last).post()
         self.assertIn("never went into it", str(caught.exception))
@@ -402,8 +403,8 @@ class ABookingHasToBePhysicallyPossibleTests(ConversionTestCase):
         )
         order = self.routed()
         first, last = list(order.operations.order_by("sequence"))
-        self.book(order, "60", completed="3000", operation=first).post()
-        self.book(order, "45", completed="3000", operation=last).post()
+        self.book(order, "1100", completed="3000", operation=first).post()
+        self.book(order, "60", completed="3000", operation=last).post()
         self.assertEqual(last.quantity_completed(), Decimal("3000"))
 
     def test_an_operation_nobody_counted_does_not_block_the_next(self):
@@ -417,12 +418,12 @@ class ABookingHasToBePhysicallyPossibleTests(ConversionTestCase):
         order = self.routed()
         first, last = list(order.operations.order_by("sequence"))
         self.book(order, "60", operation=first).post()
-        self.book(order, "45", completed="3000", operation=last).post()
+        self.book(order, "60", completed="3000", operation=last).post()
         self.assertEqual(last.quantity_completed(), Decimal("3000"))
 
     def test_the_first_operation_has_nothing_upstream_of_it(self):
         order = self.routed()
-        self.book(order, "600", completed="3000").post()
+        self.book(order, "1100", completed="3000").post()
         self.assertIsNone(order.operations.get().feeds_from())
 
 

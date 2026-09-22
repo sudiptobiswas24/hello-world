@@ -32,6 +32,7 @@ from .orders import (
     WorkOrderStatus,
 )
 from .routing import Routing, RoutingOperation
+from .shifts import Downtime, DowntimeReason, Shift
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
 
 
@@ -445,9 +446,11 @@ class ProductionEntryAdmin(AuditableAdminMixin, admin.ModelAdmin):
 @admin.register(TimeBooking)
 class TimeBookingAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "operation", "booking_date",
-                    "minutes", "shown_hours", "quantity_completed",
-                    "hourly_rate", "posted", "posted_value", "voided_at")
-    list_filter = ("posted", "booking_date")
+                    "shift", "shown_crew", "minutes", "shown_hours",
+                    "quantity_completed", "hourly_rate", "posted",
+                    "posted_value", "voided_at")
+    list_filter = ("posted", "shift", "booking_date")
+    filter_horizontal = ("operators",)
     search_fields = ("number", "work_order__number", "operation__name")
     readonly_fields = ("number", "hourly_rate", "posted", "posted_at",
                        "posted_value", "journal_entry", "voided_entry",
@@ -464,6 +467,49 @@ class TimeBookingAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
     @admin.display(description="Hours")
     def shown_hours(self, obj):
+        return f"{obj.hours():.2f}"
+
+    @admin.display(description="Crew")
+    def shown_crew(self, obj):
+        return ", ".join(
+            person.party.name for person in obj.operators.all()
+        ) or "—"
+
+
+@admin.register(Shift)
+class ShiftAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "starts_at", "shown_ends", "hours",
+                    "shown_crosses", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("code", "name")
+
+    @admin.display(description="Ends")
+    def shown_ends(self, obj):
+        return obj.ends_at().strftime("%H:%M")
+
+    @admin.display(description="Next morning", boolean=True)
+    def shown_crosses(self, obj):
+        return obj.crosses_midnight()
+
+
+@admin.register(DowntimeReason)
+class DowntimeReasonAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "is_planned", "is_active")
+    list_filter = ("is_planned", "is_active")
+    search_fields = ("code", "name")
+
+
+@admin.register(Downtime)
+class DowntimeAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("number", "work_centre", "shift_date", "shift", "reason",
+                    "minutes", "shown_stop_hours", "work_order")
+    list_filter = ("work_centre", "shift", "reason__is_planned")
+    search_fields = ("number", "work_centre__code", "reason__code")
+    readonly_fields = ("number",)
+    autocomplete_fields = ("work_centre", "reason")
+
+    @admin.display(description="Hours")
+    def shown_stop_hours(self, obj):
         return f"{obj.hours():.2f}"
 
 
