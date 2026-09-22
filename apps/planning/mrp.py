@@ -392,8 +392,8 @@ def safety_stock(item, warehouse):
 
 def lot_size(quantity, rule):
     """
-    Round up to a whole bag, pallet or minimum order, and to the
-    precision the planned order is actually stored at.
+    Round up to a whole bag, a vendor's minimum, and the precision the
+    planned order is actually stored at.
 
     Stored precision matters more than it looks. A requirement carried
     at twenty decimal places and saved into four is exploded at one
@@ -402,12 +402,65 @@ def lot_size(quantity, rule):
     them. Rounded up rather than to nearest, because a requirement
     shaved by a ten-thousandth is a shortage.
     """
-    if rule is not None and rule.multiple_of:
-        multiples = (quantity / rule.multiple_of).to_integral_value(
-            rounding=ROUND_CEILING
-        )
-        quantity = multiples * rule.multiple_of
+    if rule is not None:
+        # The least anybody will supply first, then rounded up to a
+        # whole unit — in that order, because a one-tonne minimum in
+        # fifty-kilo bags is twenty bags and not a tonne plus a bag.
+        if rule.minimum_order_quantity:
+            quantity = max(quantity, rule.minimum_order_quantity)
+        if rule.multiple_of:
+            multiples = (quantity / rule.multiple_of).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+            quantity = multiples * rule.multiple_of
     return quantity.quantize(QUANTITY, rounding=ROUND_CEILING)
+
+
+def split_for_capacity(quantity, rule):
+    """
+    Break a requirement too big for one order into several.
+
+    A silo holds what it holds and a mixer takes what it takes, so a
+    twelve-tonne requirement against a five-tonne vessel is three
+    orders and not one nobody can take. Split evenly rather than into
+    full loads and a remainder: three lots of four tonnes runs better
+    than two of five and one of two, and the plant would have
+    levelled them itself.
+    """
+    most = rule.maximum_order_quantity if rule is not None else None
+    if not most or quantity <= most:
+        return [quantity]
+    count = int((quantity / most).to_integral_value(rounding=ROUND_CEILING))
+    each = (quantity / count).quantize(QUANTITY, rounding=ROUND_CEILING)
+    parts = [each] * (count - 1)
+    parts.append(quantity - sum(parts, ZERO))
+    return parts
+
+
+def look_ahead(buckets, dates, index, planned_on, period_days):
+    """
+    How much of the next few days' demand to pull into this order.
+
+    Ordering once a week instead of once a shortage is the difference
+    between two purchase orders and twelve, and the cost of it is a
+    few days of stock. The figure is the deepest the balance would go
+    over the window, not the window's total: demand that a receipt
+    inside the window already covers does not need buying twice.
+    """
+    if not period_days:
+        return ZERO
+    until = dates[index] + datetime.timedelta(days=int(period_days))
+    running = ZERO
+    deepest = ZERO
+    for when in dates[index + 1:]:
+        if when > until:
+            break
+        bucket = buckets[when]
+        running += bucket["supply"]
+        for row in bucket["demand"]:
+            running -= row.quantity
+        deepest = min(deepest, running)
+    return -deepest
 
 
 # -- the netting itself --------------------------------------------------
@@ -489,7 +542,8 @@ def net(opening, safety, demands, supplies, planned_on, rule=None):
 
     balance = opening
     shortages = []
-    for when in sorted(buckets):
+    ordered = sorted(buckets)
+    for position, when in enumerate(ordered):
         bucket = buckets[when]
         balance += bucket["supply"]
         for row in bucket["demand"]:
@@ -497,6 +551,10 @@ def net(opening, safety, demands, supplies, planned_on, rule=None):
         if balance >= safety:
             continue
         shortfall = safety - balance
+        shortfall += look_ahead(
+            buckets, ordered, position, planned_on,
+            rule.order_period_days if rule is not None else 0,
+        )
         pegs, floor_share = _apportion(bucket["demand"], shortfall)
         if floor_share > 0:
             # What is left over is the floor asking, not a document.
@@ -509,9 +567,27 @@ def net(opening, safety, demands, supplies, planned_on, rule=None):
         # pegs plus this must come to the order exactly, or a planner
         # reading the reasons is reading a different order.
         rounded = quantity - sum((taken for _row, taken in pegs), ZERO)
-        shortages.append(Shortage(
-            date=when, quantity=quantity, rounded=rounded, pegs=pegs,
-        ))
+        parts = split_for_capacity(quantity, rule)
+        if len(parts) == 1:
+            shortages.append(Shortage(
+                date=when, quantity=quantity, rounded=rounded, pegs=pegs,
+            ))
+        else:
+            # The reasons go with the first part and the rest say what
+            # they were split from, rather than apportioning one
+            # customer's line across three orders — which reads as
+            # three separate promises and is not.
+            shortages.append(Shortage(
+                date=when, quantity=parts[0],
+                rounded=max(parts[0] - sum(
+                    (taken for _row, taken in pegs), ZERO
+                ), ZERO),
+                pegs=pegs,
+            ))
+            for part in parts[1:]:
+                shortages.append(Shortage(
+                    date=when, quantity=part, rounded=part, pegs=[],
+                ))
         balance += quantity
     return shortages
 

@@ -174,7 +174,9 @@ class BudgetAdmin(AuditableAdminMixin, admin.ModelAdmin):
 @admin.register(ReorderRule)
 class ReorderRuleAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = (
-        "item", "warehouse", "minimum", "target", "multiple_of", "vendor", "is_active",
+        "item", "warehouse", "minimum", "target", "multiple_of",
+        "minimum_order_quantity", "maximum_order_quantity",
+        "order_period_days", "vendor", "is_active",
     )
     list_filter = ("is_active", "warehouse")
     search_fields = ("item__sku",)

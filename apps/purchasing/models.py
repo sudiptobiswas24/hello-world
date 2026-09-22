@@ -1088,7 +1088,27 @@ class ReorderRule(AuditModel):
     )
     multiple_of = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
-        help_text="Round the order up to a whole case, pallet or minimum order quantity.",
+        help_text="Round the order up to a whole case, pallet or bag size.",
+    )
+    minimum_order_quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="The least anybody will sell, or the least worth making. "
+                  "Read by the plan: a vendor with a one-tonne minimum does "
+                  "not deliver two hundred kilos because that is what the "
+                  "arithmetic asked for.",
+    )
+    maximum_order_quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="The most that goes into one order — a silo, a mixer or a "
+                  "lorry. A requirement larger than this is split into several "
+                  "orders for the same date rather than one nobody can take.",
+    )
+    order_period_days = models.PositiveIntegerField(
+        default=0,
+        help_text="Order once for this many days of demand instead of once per "
+                  "shortage. Nought is lot for lot, which is exact and raises "
+                  "twelve orders for twelve daily call-offs; a week turns those "
+                  "into two and carries a little stock for the privilege.",
     )
     vendor = models.ForeignKey(
         Party, null=True, blank=True, on_delete=models.PROTECT, related_name="reorder_rules",
@@ -1101,6 +1121,16 @@ class ReorderRule(AuditModel):
         ordering = ["item", "warehouse"]
         constraints = [
             models.CheckConstraint(check=Q(minimum__gte=0), name="reorder_minimum_not_negative"),
+            models.CheckConstraint(
+                check=Q(minimum_order_quantity__isnull=True)
+                | Q(minimum_order_quantity__gt=0),
+                name="reorder_minimum_order_quantity_positive",
+            ),
+            models.CheckConstraint(
+                check=Q(maximum_order_quantity__isnull=True)
+                | Q(maximum_order_quantity__gt=0),
+                name="reorder_maximum_order_quantity_positive",
+            ),
             models.UniqueConstraint(
                 fields=["item", "warehouse"], name="one_reorder_rule_per_item_and_warehouse"
             ),
@@ -1112,6 +1142,18 @@ class ReorderRule(AuditModel):
     def clean(self):
         if self.target is not None and self.minimum is not None and self.target < self.minimum:
             raise ValidationError("The target cannot be below the minimum.")
+        least, most = self.minimum_order_quantity, self.maximum_order_quantity
+        if least is not None and most is not None and most < least:
+            raise ValidationError(
+                f"The most that goes into one order ({most}) is less than the "
+                f"least anybody will supply ({least}), so no order is possible."
+            )
+        if most is not None and self.multiple_of and most < self.multiple_of:
+            raise ValidationError(
+                f"One order holds at most {most} and the smallest whole unit "
+                f"is {self.multiple_of}, so every order would be refused by "
+                "one rule or the other."
+            )
         if self.vendor_id:
             _require_vendor_role(self.vendor)
 
