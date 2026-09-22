@@ -633,12 +633,19 @@ class SubcontractComponent(AuditModel):
     A component the company supplies so the vendor can make the line's
     item.
 
-    This is a narrow slice of subcontracting on purpose: there is no
-    manufacturing module here, so there are no routings, no operations
-    and no work centres. What it does cover is the part that touches
-    purchasing and the ledger — components leaving, a finished item
-    arriving, and its cost being what the components cost plus what the
-    vendor charged.
+    What this covers is the part that touches purchasing and the ledger:
+    components leaving, a finished item arriving, and its cost being
+    what the components cost plus what the vendor charged. The routing —
+    which machine, for how long — stays with the job worker, and is
+    theirs to run; their charge is what it cost.
+
+    These rows used to be typed. That was right while there was no
+    manufacturing module and wrong the day there was one: a bill of
+    materials already says exactly what goes into a printed fabric, and
+    a second hand-written copy of it on a purchase order is a stored
+    derived fact that goes stale the first time the specification moves.
+    A line that names a bill of materials gets these rows computed from
+    it, and they then refuse to be edited by hand.
     """
 
     order_line = models.ForeignKey(
@@ -646,8 +653,17 @@ class SubcontractComponent(AuditModel):
     )
     item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="supplied_to")
     quantity_per = models.DecimalField(
-        max_digits=18, decimal_places=4,
-        help_text="How many of this component go into one of the finished item.",
+        max_digits=18, decimal_places=6,
+        help_text="How many of this component go into one of the finished item, "
+                  "in the component's own stocking unit. Six places, not four: "
+                  "a sack's sewing thread is about 0.0012 kg a bag, and four "
+                  "places lose a fortieth of it on every sack.",
+    )
+    is_computed = models.BooleanField(
+        default=False, editable=False,
+        help_text="Set when a bill of materials works this row out. Such a row "
+                  "refuses to be edited by hand: the edit would survive until "
+                  "the next rebuild and no longer.",
     )
 
     class Meta:
@@ -664,6 +680,14 @@ class SubcontractComponent(AuditModel):
     def __str__(self):
         return f"{self.quantity_per} x {self.item}"
 
+    def delete(self, *args, **kwargs):
+        if self.is_computed and not getattr(self, "_rebuilding", False):
+            raise ValidationError(
+                f"{self} is computed from {self.order_line.bom} and cannot be "
+                "taken off on its own."
+            )
+        return super().delete(*args, **kwargs)
+
     def save(self, *args, **kwargs):
         """
         A component is specified against one of the finished item, which
@@ -674,6 +698,11 @@ class SubcontractComponent(AuditModel):
         created before its components are attached, so at line-save time
         there is nothing yet to say the line is subcontracted.
         """
+        if self.is_computed and not getattr(self, "_rebuilding", False):
+            raise ValidationError(
+                f"{self} is computed from {self.order_line.bom}. Change the "
+                "bill of materials, or take it off the line."
+            )
         line = self.order_line
         if line.item_id and line.uom_id and line.uom_id != line.item.uom_id:
             raise ValidationError(
@@ -1638,6 +1667,16 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         Item, null=True, blank=True, on_delete=models.PROTECT,
         related_name="purchase_order_lines",
     )
+    bom = models.ForeignKey(
+        "manufacturing.BillOfMaterials", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="subcontract_lines",
+        help_text="What goes into the item, when this line is job work. The "
+                  "components are computed from it rather than typed, so a "
+                  "specification that moves does not leave a stale copy of "
+                  "itself on an open order. Rebuilt only while the order is a "
+                  "draft: the job worker was sent what the order said at the "
+                  "time.",
+    )
     charge = models.ForeignKey(
         ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
         help_text="Set instead of an item when this line is freight, handling or similar.",
@@ -1753,7 +1792,102 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         # because a new line has no previous version to compare against.
         if self._state.adding and self.order_id and self.order.approved_at:
             self.order.withdraw_approval()
+        self._check_bom()
         super().save(*args, **kwargs)
+        if self.bom_id is not None:
+            if self.order.status == OrderStatus.DRAFT:
+                self.rebuild_components()
+        else:
+            # A line that no longer names a bill of materials must not
+            # keep the rows it computed from one: they refuse to be
+            # edited or deleted, so they would sit there for ever being
+            # sent to a job worker with nothing behind them.
+            for row in list(self.components.filter(is_computed=True)):
+                row._rebuilding = True
+                row.delete()
+
+    def _check_bom(self):
+        """
+        Everything that could be wrong about the bill of materials on a
+        job-work line, asked while the line is still a draft rather than
+        when the fabric is already on the job worker's floor.
+        """
+        if self.bom_id is not None and self.order.status != OrderStatus.DRAFT:
+            previous = (
+                PurchaseOrderLine.objects.filter(pk=self.pk).first()
+                if self.pk else None
+            )
+            if previous is None or previous.bom_id != self.bom_id:
+                raise ValidationError(
+                    f"{self.order} is "
+                    f"{self.order.get_status_display().lower()}; a bill of "
+                    "materials has to be named while the order is still a "
+                    "draft. The job worker was sent what the order said at the "
+                    "time, and the components here are what the receipt will "
+                    "consume."
+                )
+        if self.bom_id is None:
+            return
+        if self.item_id is None:
+            raise ValidationError(
+                "A line that names a bill of materials must name the item it "
+                "makes."
+            )
+        if self.bom.item_id != self.item_id:
+            raise ValidationError(
+                f"{self.bom} makes {self.bom.item}, and this line is for "
+                f"{self.item}."
+            )
+        if not self.bom.is_active:
+            raise ValidationError(f"{self.bom} is not active.")
+        if not self.bom.components.exists():
+            raise ValidationError(
+                f"{self.bom} has no components, so nothing would be sent to the "
+                "job worker and the finished item would be worth only what they "
+                "charged."
+            )
+
+    @transaction.atomic
+    def rebuild_components(self):
+        """
+        Make the component rows say what the bill of materials says.
+
+        Per ONE stocking unit of the finished item, which is the unit
+        `quantity_per` has always been in — so a bill written per
+        thousand sacks is divided down once here rather than multiplied
+        out at every receipt.
+
+        Replaced rather than diffed: a component the product stopped
+        using has to disappear, and a diff that forgets to delete is how
+        a job worker ends up being sent a masterbatch nobody has used
+        for two years.
+        """
+        batch = self.item.to_stock_quantity(
+            self.bom.quantity_produced, self.bom.uom
+        )
+        if not batch:
+            raise ValidationError(f"{self.bom} says it makes nothing.")
+        for row in list(self.components.all()):
+            row._rebuilding = True
+            row.delete()
+        for component in self.bom.components.select_related("item", "uom"):
+            gross = component.item.to_stock_quantity(
+                component.gross_quantity(), component.uom
+            )
+            per_unit = (gross / batch).quantize(Decimal("0.000001"))
+            if not per_unit:
+                raise ValidationError(
+                    f"{component.item} works out at less than a millionth of "
+                    f"{self.item.uom} per {self.item}, which rounds to nothing. "
+                    "Write the bill of materials for a larger batch, or take "
+                    "the component off it."
+                )
+            row = SubcontractComponent(
+                order_line=self, item=component.item,
+                quantity_per=per_unit, is_computed=True,
+            )
+            row._rebuilding = True
+            row.save()
 
     def delete(self, *args, **kwargs):
         if self.order_id and self.order.approved_at:

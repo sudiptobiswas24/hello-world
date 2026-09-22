@@ -1,11 +1,15 @@
 """
-Subcontracting — a narrow slice.
+Subcontracting.
 
-There is no manufacturing module here, so there are no routings, no
-operations and no work centres. What this covers is the part that
-touches purchasing and the ledger: components leaving, a finished item
-arriving, and its cost being what the components cost plus what the
-vendor charged to assemble them.
+What this covers is the part that touches purchasing and the ledger:
+components leaving, a finished item arriving, and its cost being what
+the components cost plus what the vendor charged to assemble them. The
+routing stays with the job worker and is theirs to run.
+
+The components themselves are the other half, and they live in
+`tests_job_work.py`: a bill of materials already says what goes into
+the thing, and a hand-typed copy of it on a purchase order goes stale
+the first time the specification moves.
 """
 
 import datetime

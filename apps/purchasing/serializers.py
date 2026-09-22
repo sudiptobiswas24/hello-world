@@ -1,18 +1,34 @@
 from rest_framework import serializers
 
-from .models import Bill, BillLine, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
+from .models import (
+    Bill,
+    BillLine,
+    GoodsReceipt,
+    GoodsReceiptLine,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    SubcontractComponent,
+)
+
+
+class SubcontractComponentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubcontractComponent
+        fields = ["id", "order_line", "item", "quantity_per", "is_computed"]
+        read_only_fields = ["is_computed"]
 
 
 class PurchaseOrderLineSerializer(serializers.ModelSerializer):
     quantity_received = serializers.SerializerMethodField()
     quantity_billed = serializers.SerializerMethodField()
+    components = SubcontractComponentSerializer(many=True, read_only=True)
 
     class Meta:
         model = PurchaseOrderLine
         fields = [
             "id", "order", "item", "uom", "quantity", "unit_price",
             "discount_percent", "taxes", "expense_account", "quantity_received",
-            "quantity_billed",
+            "quantity_billed", "bom", "components",
         ]
 
     def get_quantity_received(self, obj):

@@ -27,13 +27,59 @@ from .models import (
     ReceiptInspection,
     ReorderRule,
     Budget,
+    SubcontractComponent,
 )
+
+
+class SubcontractComponentInline(admin.TabularInline):
+    model = SubcontractComponent
+    extra = 0
+    autocomplete_fields = ("item",)
+    fields = ("item", "quantity_per", "is_computed")
+    readonly_fields = ("is_computed",)
+
+    def _computed(self, obj):
+        return obj is not None and obj.components.filter(is_computed=True).exists()
+
+    def has_add_permission(self, request, obj=None):
+        return not self._computed(obj)
+
+    def has_change_permission(self, request, obj=None):
+        return not self._computed(obj)
+
+    def has_delete_permission(self, request, obj=None):
+        return not self._computed(obj)
+
+
+@admin.register(PurchaseOrderLine)
+class PurchaseOrderLineAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    Registered for its own page because a job-work line's components do
+    not fit on an inline row inside the order, and they are the part
+    somebody checks before the fabric goes out of the gate.
+    """
+
+    list_display = ("order", "item", "quantity", "uom", "unit_price", "bom",
+                    "shown_components")
+    list_filter = ("order__status",)
+    search_fields = ("order__number", "item__sku")
+    autocomplete_fields = ("item",)
+    inlines = [SubcontractComponentInline]
+
+    @admin.display(description="Goes out with")
+    def shown_components(self, obj):
+        rows = list(obj.components.select_related("item"))
+        if not rows:
+            return "—"
+        made = "computed" if rows[0].is_computed else "typed"
+        return f"{len(rows)} component(s), {made}"
 
 
 class PurchaseOrderLineInline(admin.TabularInline):
     model = PurchaseOrderLine
     extra = 1
     filter_horizontal = ("taxes",)
+    show_change_link = True
 
 
 class RfqLineInline(admin.TabularInline):
