@@ -13,6 +13,7 @@ from .orders import (
     WorkOrderOperation,
 )
 from .bom import BomSubstitute
+from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
@@ -148,6 +149,36 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
                   "is_computed", "is_default", "is_active", "is_rework",
                   "backflush", "notes", "components", "byproducts"]
         read_only_fields = ["is_computed"]
+
+
+class MaintenanceScheduleSerializer(serializers.ModelSerializer):
+    hours_remaining = serializers.SerializerMethodField()
+    due_on = serializers.SerializerMethodField()
+    is_due = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MaintenanceSchedule
+        fields = ["id", "work_centre", "name", "every_days",
+                  "every_run_hours", "duration_minutes", "last_done_on",
+                  "is_active", "notes", "hours_remaining", "due_on", "is_due"]
+
+    def get_hours_remaining(self, obj):
+        return obj.hours_remaining()
+
+    def get_due_on(self, obj):
+        return obj.due_on()
+
+    def get_is_due(self, obj):
+        return obj.is_due()
+
+
+class MaintenanceJobSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MaintenanceJob
+        fields = ["id", "schedule", "work_centre", "due_on",
+                  "planned_minutes", "done_on", "actual_minutes", "downtime",
+                  "notes"]
+        read_only_fields = ["done_on", "actual_minutes", "downtime"]
 
 
 class PrintDesignSerializer(serializers.ModelSerializer):

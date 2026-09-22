@@ -30,12 +30,15 @@ from .orders import (
 from .demand import coverage, genealogy, uncovered
 from .oee import by_operator, by_shift, effectiveness
 from .bom import BomSubstitute
+from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
     BomSubstituteSerializer,
+    MaintenanceJobSerializer,
+    MaintenanceScheduleSerializer,
     FabricRollSerializer,
     PrintDesignSerializer,
     ToolSerializer,
@@ -221,6 +224,42 @@ class BomSubstituteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "item", "component", "component__item", "component__bom"
     )
     serializer_class = BomSubstituteSerializer
+
+
+class MaintenanceScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = MaintenanceSchedule.objects.select_related("work_centre")
+    serializer_class = MaintenanceScheduleSerializer
+    action_permission_map = {"raise_job": "manufacturing.add_maintenancejob"}
+
+    @action(detail=False, methods=["get"])
+    def due(self, request):
+        """What has run out on either clock and has no job on the board."""
+        return Response(
+            MaintenanceScheduleSerializer(_run(due_now), many=True).data
+        )
+
+    @action(detail=True, methods=["post"])
+    def raise_job(self, request, pk=None):
+        job = _run(self.get_object().raise_job, request.data.get("due_on"))
+        return Response(MaintenanceJobSerializer(job).data)
+
+
+class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = MaintenanceJob.objects.select_related(
+        "schedule", "work_centre", "downtime"
+    )
+    serializer_class = MaintenanceJobSerializer
+    action_permission_map = {"complete": "manufacturing.change_maintenancejob"}
+
+    @action(detail=True, methods=["post"])
+    def complete(self, request, pk=None):
+        job = self.get_object()
+        _run(
+            job.complete,
+            on_date=request.data.get("on_date"),
+            minutes=request.data.get("minutes"),
+        )
+        return Response(self.get_serializer(job).data)
 
 
 class PrintDesignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

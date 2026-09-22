@@ -2,6 +2,8 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     BomSubstituteViewSet,
+    MaintenanceJobViewSet,
+    MaintenanceScheduleViewSet,
     FabricRollViewSet,
     PrintDesignViewSet,
     ToolUsageViewSet,
@@ -42,6 +44,8 @@ router.register("tool-usage", ToolUsageViewSet)
 router.register("routings", RoutingViewSet)
 router.register("routing-operations", RoutingOperationViewSet)
 router.register("work-centres", WorkCentreViewSet)
+router.register("maintenance-schedules", MaintenanceScheduleViewSet)
+router.register("maintenance-jobs", MaintenanceJobViewSet)
 router.register("work-orders", WorkOrderViewSet)
 router.register("material-issues", MaterialIssueViewSet)
 router.register("material-issue-lines", MaterialIssueLineViewSet)

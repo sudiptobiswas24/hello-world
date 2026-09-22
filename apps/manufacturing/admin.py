@@ -35,6 +35,7 @@ from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .bom import BomSubstitute
 from .orders import WorkOrderSubstitute
+from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
@@ -207,6 +208,48 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
     model = BomByproduct
     extra = 0
     autocomplete_fields = ("item",)
+
+
+class MaintenanceJobInline(admin.TabularInline):
+    model = MaintenanceJob
+    extra = 0
+    fields = ("due_on", "planned_minutes", "done_on", "actual_minutes", "notes")
+    readonly_fields = ("done_on", "actual_minutes")
+
+
+@admin.register(MaintenanceSchedule)
+class MaintenanceScheduleAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    How often a machine needs attention, on both clocks.
+
+    The hours column is derived from the time bookings, so a voided
+    booking gives the hours back without anybody adjusting anything.
+    """
+
+    list_display = ("name", "work_centre", "every_days", "every_run_hours",
+                    "duration_minutes", "last_done_on", "shown_hours_left",
+                    "shown_due", "is_active")
+    list_filter = ("work_centre", "is_active")
+    inlines = [MaintenanceJobInline]
+
+    @admin.display(description="Hours left")
+    def shown_hours_left(self, obj):
+        left = obj.hours_remaining()
+        return "—" if left is None else f"{left:,.1f}"
+
+    @admin.display(boolean=True, description="Due")
+    def shown_due(self, obj):
+        return obj.is_due()
+
+
+@admin.register(MaintenanceJob)
+class MaintenanceJobAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """Dated services, which is what takes hours out of the plan."""
+
+    list_display = ("__str__", "work_centre", "due_on", "planned_minutes",
+                    "done_on", "actual_minutes")
+    list_filter = ("work_centre",)
+    readonly_fields = ("done_on", "actual_minutes", "downtime")
 
 
 @admin.register(BomSubstitute)

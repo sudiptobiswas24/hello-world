@@ -66,7 +66,9 @@ class LoadBook:
         self._capacity = {}
         self._booked = defaultdict(lambda: ZERO)
         self.unscheduled = defaultdict(lambda: ZERO)
+        self.maintenance = defaultdict(lambda: ZERO)
         self._load_commitments()
+        self._load_maintenance()
 
     # -- the machine's own days -----------------------------------------
 
@@ -140,6 +142,32 @@ class LoadBook:
             share = minutes / len(days)
             for day in days:
                 self.book(operation.work_centre, day, share)
+
+    def _load_maintenance(self):
+        """
+        Services still on the board, booked on the day they are due.
+
+        A dated job rather than a rule, and on its own day rather than
+        spread, because unlike a run a service does say which day it
+        happens. Only open jobs: one already done is history, and its
+        hours are in the downtime ledger where every other stoppage
+        goes.
+
+        Planned maintenance is capacity nobody may schedule a run
+        into. Leaving it out had the plan run a loom straight through
+        a service the plant fully intended to do, and then blame the
+        lateness on the loom.
+        """
+        from apps.manufacturing.maintenance import MaintenanceJob
+
+        jobs = MaintenanceJob.objects.filter(
+            done_on__isnull=True
+        ).select_related("work_centre")
+        for job in jobs:
+            if job.planned_minutes <= 0:
+                continue
+            self.book(job.work_centre, job.due_on, job.planned_minutes)
+            self.maintenance[job.work_centre_id] += job.planned_minutes
 
     # -- scheduling ------------------------------------------------------
 
@@ -270,6 +298,7 @@ def load_profile(book, centres, start, end):
                     if week["available"] else None
                 ),
                 "unscheduled_minutes": book.unscheduled.get(centre.pk, ZERO),
+                "maintenance_minutes": book.maintenance.get(centre.pk, ZERO),
             })
     return rows
 

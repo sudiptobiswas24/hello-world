@@ -56,6 +56,11 @@ from .rolls import (  # noqa: F401
     unrolled_stock,
     weighed_gsm,
 )
+from .maintenance import (  # noqa: F401
+    MaintenanceJob,
+    MaintenanceSchedule,
+    due_now,
+)
 from .tooling import (  # noqa: F401
     PrintDesign,
     Tool,

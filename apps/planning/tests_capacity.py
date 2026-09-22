@@ -282,6 +282,56 @@ class WhatIsAlreadyOnTheMachinesTests(PlanningTestCase):
         self.assertEqual(fabric.release_on, datetime.date(2026, 6, 4))
 
 
+class MaintenanceTakesTheMachineOutTests(PlanningTestCase):
+    """
+    Leaving planned maintenance out of the load had the plan run a
+    loom straight through a service the plant fully intended to do,
+    and then blame the lateness on the loom.
+    """
+
+    def service(self, when, minutes="1440"):
+        from apps.manufacturing.maintenance import MaintenanceJob
+
+        return MaintenanceJob.objects.create(
+            work_centre=self.loom, due_on=when,
+            planned_minutes=Decimal(minutes),
+        )
+
+    def test_a_booked_service_is_load_on_the_machine(self):
+        from .capacity import LoadBook
+
+        self.service(self.day(10))
+        book = LoadBook(self.plant, TODAY, self.day(60))
+        self.assertEqual(book.booked(self.loom, self.day(10)), Decimal("1440"))
+        self.assertEqual(book.maintenance[self.loom.pk], Decimal("1440"))
+
+    def test_a_service_already_done_is_history(self):
+        from .capacity import LoadBook
+
+        job = self.service(self.day(10))
+        job.complete(on_date=self.day(10))
+        book = LoadBook(self.plant, TODAY, self.day(60))
+        self.assertEqual(book.booked(self.loom, self.day(10)), Decimal("0"))
+
+    def test_a_run_is_not_scheduled_through_a_service(self):
+        self.loom.available_hours_per_day = Decimal("8")
+        self.loom.save()
+        self.sell(self.fabric, "1000", self.day(30))
+        free = self.orders()["FAB-10X10"].release_on
+        # A full day of service on the day the run would otherwise
+        # have used pushes it earlier.
+        self.service(free + datetime.timedelta(days=1), minutes="480")
+        self.assertLess(self.orders()["FAB-10X10"].release_on, free)
+
+    def test_the_load_report_names_the_maintenance_separately(self):
+        from .capacity import LoadBook, load_profile
+
+        self.service(self.day(3))
+        book = LoadBook(self.plant, TODAY, self.day(30))
+        rows = load_profile(book, [self.loom], TODAY, self.day(7))
+        self.assertEqual(rows[0]["maintenance_minutes"], Decimal("1440"))
+
+
 class TheLoadPictureTests(PlanningTestCase):
     def test_a_week_reports_what_is_asked_against_what_there_is(self):
         self.sell(self.fabric, "1000", self.day(30))
