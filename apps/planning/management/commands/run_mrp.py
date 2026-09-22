@@ -44,7 +44,11 @@ class Command(BaseCommand):
         for order in sorted(
             orders, key=lambda o: (-o.days_late(), o.release_on, o.item.sku)
         ):
-            verb = "Make" if order.kind == PlannedOrderKind.MAKE else "Buy"
+            verb = {
+                PlannedOrderKind.MAKE: "Make",
+                PlannedOrderKind.BUY: "Buy",
+                PlannedOrderKind.TRANSFER: f"Move from {order.from_warehouse}",
+            }[order.kind]
             late = f"  LATE by {order.days_late()} days" if order.is_late() else ""
             self.stdout.write(
                 f"  {verb} {order.quantity} {order.item.uom} {order.item.sku}"

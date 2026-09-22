@@ -853,6 +853,43 @@ def _candidates(warehouse, planned_on, horizon_end):
     return items
 
 
+def spare_elsewhere(item, warehouse, quantity, needed_by, planned_on):
+    """
+    Another of the company's own shelves that can cover this, and get
+    it here in time.
+
+    What counts as spare is what that shelf could **promise**, not
+    what is sitting on it. Reading on-hand would rob Peter to pay
+    Paul: the five tonnes in Hyderabad look free right up until the
+    Hyderabad order it was already covering ships short.
+
+    Routes are tried in their stated order and the first that can do
+    the whole quantity wins. Splitting a requirement across two lanes
+    is two lorries for one shortage, which a plant will do when it
+    must and does not want a plan proposing.
+    """
+    from .models import TransferRoute
+    from .promise import when_can_we_promise
+
+    routes = (
+        TransferRoute.objects.filter(to_warehouse=warehouse, is_active=True)
+        .select_related("from_warehouse")
+    )
+    for route in routes:
+        source = route.from_warehouse
+        if source.is_quarantine or source.is_transit or source.consignment_vendor_id:
+            continue
+        ready = when_can_we_promise(
+            item, source, quantity, planned_on=planned_on,
+        )
+        if ready is None:
+            continue
+        arrives = ready + datetime.timedelta(days=route.lead_days)
+        if arrives <= needed_by:
+            return route, arrives
+    return None, None
+
+
 def _make_or_buy(item):
     """
     An item with a default bill of materials is made; everything else
@@ -957,11 +994,18 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
 
         kind, bom = _make_or_buy(item)
         for shortage in shortages:
+            route, _arrives = (
+                spare_elsewhere(
+                    item, warehouse, shortage.quantity, shortage.date,
+                    planned_on,
+                )
+                if kind == PlannedOrderKind.BUY else (None, None)
+            )
             order = _write(
                 run, item, warehouse, kind, bom, shortage, level, settings,
-                rule, calendar, book,
+                rule, calendar, book, route,
             )
-            if kind == PlannedOrderKind.BUY:
+            if kind == PlannedOrderKind.BUY and route is None:
                 _note_stand_ins(order, item, warehouse, planned_on)
             if kind != PlannedOrderKind.MAKE:
                 continue
@@ -1040,9 +1084,18 @@ def _note_stand_ins(order, item, warehouse, planned_on):
 
 
 def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
-           calendar=None, book=None):
+           calendar=None, book=None, route=None):
     bottleneck = None
     overloaded = False
+    source = None
+    if route is not None:
+        # A shortage the company can answer out of its own stock is
+        # not a shortage to buy. Checked only for a buy: moving a
+        # made item between plants is a decision about where to run
+        # it, which is not this plan's to take.
+        kind = PlannedOrderKind.TRANSFER
+        source = route.from_warehouse
+        bom = None
     if kind == PlannedOrderKind.MAKE:
         vendor = None
         # Scheduled against the machines where there are machines to
@@ -1077,6 +1130,10 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
                 default=settings.default_make_lead_days,
             )
             release_on = offset(shortage.date, days, calendar)
+    elif kind == PlannedOrderKind.TRANSFER:
+        vendor = None
+        days = route.lead_days
+        release_on = calendar_offset(shortage.date, days, calendar)
     else:
         from apps.purchasing.pricing import preferred_vendor
 
@@ -1092,8 +1149,8 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         run=run, item=item, warehouse=warehouse, kind=kind,
         quantity=shortage.quantity, needed_by=shortage.date,
         release_on=release_on, lead_days=days, level=level,
-        bom=bom, vendor=vendor, bottleneck=bottleneck,
-        is_overloaded=overloaded,
+        bom=bom, vendor=vendor, from_warehouse=source,
+        bottleneck=bottleneck, is_overloaded=overloaded,
         rounded_up_by=shortage.rounded,
     )
     for number, (row, taken) in enumerate(shortage.pegs, start=1):

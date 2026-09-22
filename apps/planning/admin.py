@@ -19,6 +19,7 @@ from .models import (
     PlanningAction,
     PlanningRun,
     PlanningSettings,
+    TransferRoute,
 )
 
 
@@ -90,6 +91,15 @@ class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
         return obj.defers().count() or ""
 
 
+@admin.register(TransferRoute)
+class TransferRouteAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """Lanes between the company's own shelves."""
+
+    list_display = ("from_warehouse", "to_warehouse", "lead_days", "priority",
+                    "is_active")
+    list_filter = ("to_warehouse", "is_active")
+
+
 @admin.register(Forecast)
 class ForecastAdmin(AuditableAdminMixin, admin.ModelAdmin):
     """
@@ -153,10 +163,10 @@ class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     # and reads as duplicated data — which is what it looked like the
     # first time this page was opened against a real plant.
     list_display = ["run", "item", "kind", "quantity", "needed_by",
-                    "release_on", "late", "bottleneck", "level", "status",
-                    "warehouse"]
-    list_filter = ["run", "kind", "status", "warehouse", "is_overloaded",
-                   "bottleneck", "level"]
+                    "release_on", "late", "from_warehouse", "bottleneck",
+                    "level", "status", "warehouse"]
+    list_filter = ["run", "kind", "status", "warehouse", "from_warehouse",
+                   "is_overloaded", "bottleneck", "level"]
     search_fields = ["item__sku", "item__name"]
     inlines = [PlannedDemandInline]
     readonly_fields = ["work_order", "requisition_line", "firmed_at",

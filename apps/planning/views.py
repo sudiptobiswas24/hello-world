@@ -26,10 +26,12 @@ from .models import (
     PlanningAction,
     PlanningRun,
     PlanningSettings,
+    TransferRoute,
 )
 from .mrp import plan
 from .serializers import (
     ForecastSerializer,
+    TransferRouteSerializer,
     PlannedDemandSerializer,
     PlanningActionSerializer,
     PlannedOrderSerializer,
@@ -44,6 +46,13 @@ def _run(callable_, *args, **kwargs):
         return callable_(*args, **kwargs)
     except DjangoValidationError as exc:
         raise DRFValidationError(exc.messages)
+
+
+class TransferRouteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = TransferRoute.objects.select_related(
+        "from_warehouse", "to_warehouse"
+    )
+    serializer_class = TransferRouteSerializer
 
 
 class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

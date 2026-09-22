@@ -7,7 +7,15 @@ from .models import (
     PlanningAction,
     PlanningRun,
     PlanningSettings,
+    TransferRoute,
 )
+
+
+class TransferRouteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TransferRoute
+        fields = ["id", "from_warehouse", "to_warehouse", "lead_days",
+                  "priority", "is_active", "notes"]
 
 
 class ForecastSerializer(serializers.ModelSerializer):
@@ -56,12 +64,14 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
         model = PlannedOrder
         fields = ["id", "run", "item", "warehouse", "kind", "quantity",
                   "needed_by", "release_on", "lead_days", "level", "bom",
-                  "vendor", "bottleneck", "is_overloaded", "stand_in_note",
+                  "vendor", "from_warehouse", "transfer", "bottleneck",
+                  "is_overloaded", "stand_in_note",
                   "rounded_up_by",
                   "status", "work_order", "requisition_line", "firmed_at",
                   "is_late", "days_late", "why_late", "explanation", "demands"]
         read_only_fields = ["status", "work_order", "requisition_line",
-                            "firmed_at", "bottleneck", "is_overloaded"]
+                            "transfer", "firmed_at", "bottleneck",
+                            "is_overloaded"]
 
 
 class PlanningActionSerializer(serializers.ModelSerializer):

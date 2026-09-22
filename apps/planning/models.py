@@ -112,6 +112,62 @@ class PlanningSettings(AuditModel):
 class PlannedOrderKind(models.TextChoices):
     MAKE = "make", "Make"
     BUY = "buy", "Buy"
+    TRANSFER = "transfer", "Move from another shelf"
+
+
+class TransferRoute(AuditModel):
+    """
+    A lane between two of the company's own shelves, and how long it
+    takes.
+
+    Without one, a shortage in Nagpur with five tonnes sitting in
+    Hyderabad raises a purchase order — the company buying what it
+    already owns and paying to store it twice. With one, the plan
+    looks at the other shelf first.
+
+    A route rather than "any warehouse with spare", because not every
+    pair of sites is a sensible lane. A lorry between two plants forty
+    kilometres apart is a day; one across the country is a week and
+    often costs more than buying locally, which is a judgement the
+    plant makes once and records here rather than one the plan makes
+    afresh every morning.
+    """
+
+    from_warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.CASCADE, related_name="routes_out"
+    )
+    to_warehouse = models.ForeignKey(
+        Warehouse, on_delete=models.CASCADE, related_name="routes_in"
+    )
+    lead_days = models.PositiveIntegerField(
+        help_text="Calendar days on the road, including loading and booking a "
+                  "lorry.",
+    )
+    priority = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Lower is tried first, for a shelf that can be fed from "
+                  "more than one place.",
+    )
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["to_warehouse", "priority", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["from_warehouse", "to_warehouse"], name="one_route_per_pair"
+            ),
+            models.CheckConstraint(
+                check=~models.Q(from_warehouse=models.F("to_warehouse")),
+                name="a_route_goes_somewhere_else",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.from_warehouse.code} to {self.to_warehouse.code}, "
+            f"{self.lead_days} days"
+        )
 
 
 class PlannedOrderStatus(models.TextChoices):
@@ -269,6 +325,15 @@ class PlannedOrder(AuditModel):
         "core.Party", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Who a buy was priced and lead-timed against.",
     )
+    from_warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="planned_transfers_out",
+        help_text="On a transfer, the shelf it comes off.",
+    )
+    transfer = models.ForeignKey(
+        "inventory.StockTransfer", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="planned_from", editable=False,
+    )
     bottleneck = models.ForeignKey(
         "manufacturing.WorkCentre", null=True, blank=True,
         on_delete=models.PROTECT, related_name="+",
@@ -368,6 +433,34 @@ class PlannedOrder(AuditModel):
 
     # -- firming --------------------------------------------------------
 
+    def _check_kind(self):
+        """
+        A transfer says where from; nothing else does.
+
+        Both halves matter. A transfer with no source is a suggestion
+        nobody can act on, and a buy that names one would have a
+        storeman looking for a lorry that was never coming.
+        """
+        if self.kind == PlannedOrderKind.TRANSFER and self.from_warehouse_id is None:
+            raise ValidationError(
+                f"{self} is a transfer and does not say which shelf it comes "
+                "off."
+            )
+        if self.kind != PlannedOrderKind.TRANSFER and self.from_warehouse_id:
+            raise ValidationError(
+                f"{self} is a {self.get_kind_display().lower()} and names "
+                f"{self.from_warehouse} to come from."
+            )
+        if self.from_warehouse_id and self.from_warehouse_id == self.warehouse_id:
+            raise ValidationError(
+                f"{self} would move {self.item} from {self.warehouse} to "
+                "itself."
+            )
+
+    def save(self, *args, **kwargs):
+        self._check_kind()
+        super().save(*args, **kwargs)
+
     def firmed_into(self):
         """
         The document this became, if it still stands.
@@ -380,6 +473,12 @@ class PlannedOrder(AuditModel):
         """
         from apps.manufacturing.orders import WorkOrderStatus
 
+        if self.transfer_id:
+            from apps.inventory.transfers import TransferStatus
+
+            if self.transfer.status != TransferStatus.CANCELLED:
+                return self.transfer
+            return None
         if self.work_order_id and self.work_order.status != WorkOrderStatus.CANCELLED:
             return self.work_order
         if self.requisition_line_id:
@@ -438,14 +537,39 @@ class PlannedOrder(AuditModel):
         self._check_firmable()
         if self.kind == PlannedOrderKind.MAKE:
             made = self._firm_make()
+        elif self.kind == PlannedOrderKind.TRANSFER:
+            made = self._firm_transfer()
         else:
             made = self._firm_buy(requested_by)
         self.status = PlannedOrderStatus.FIRMED
         self.firmed_at = timezone.now()
         self.save(update_fields=[
-            "status", "firmed_at", "work_order", "requisition_line", "updated_at",
+            "status", "firmed_at", "work_order", "requisition_line",
+            "transfer", "updated_at",
         ])
         return made
+
+    def _firm_transfer(self):
+        """
+        A draft transfer, not a dispatched one.
+
+        Same reason a firmed make is a draft run: dispatching moves
+        stock, and moving stock on a planner's behalf at a date
+        nobody has agreed is a fact this system does not invent.
+        """
+        from apps.inventory.transfers import StockTransfer, StockTransferLine
+
+        transfer = StockTransfer.objects.create(
+            from_warehouse=self.from_warehouse, to_warehouse=self.warehouse,
+            transfer_date=self.release_on,
+            reference=f"Planned {self.run.planned_on}"[:64],
+        )
+        StockTransferLine.objects.create(
+            transfer=transfer, item=self.item, uom=self.item.uom,
+            quantity=self.quantity,
+        )
+        self.transfer = transfer
+        return transfer
 
     def _firm_make(self):
         from apps.manufacturing.orders import WorkOrder
