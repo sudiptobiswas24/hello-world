@@ -39,7 +39,8 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
         model = PlannedOrder
         fields = ["id", "run", "item", "warehouse", "kind", "quantity",
                   "needed_by", "release_on", "lead_days", "level", "bom",
-                  "vendor", "bottleneck", "is_overloaded", "rounded_up_by",
+                  "vendor", "bottleneck", "is_overloaded", "stand_in_note",
+                  "rounded_up_by",
                   "status", "work_order", "requisition_line", "firmed_at",
                   "is_late", "days_late", "why_late", "explanation", "demands"]
         read_only_fields = ["status", "work_order", "requisition_line",

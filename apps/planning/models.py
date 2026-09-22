@@ -280,6 +280,13 @@ class PlannedOrder(AuditModel):
                   "then the earliest the schedule reached, and it is a date "
                   "nobody can keep.",
     )
+    stand_in_note = models.CharField(
+        max_length=255, blank=True,
+        help_text="Said when an approved alternative for this item is already "
+                  "on the shelf. A sentence, not a substitution: changing a "
+                  "blend is a judgement somebody makes with the customer's "
+                  "specification in front of them.",
+    )
     rounded_up_by = models.DecimalField(
         max_digits=18, decimal_places=4, default=Decimal("0"),
         help_text="How much of this quantity nothing asked for: what rounding "

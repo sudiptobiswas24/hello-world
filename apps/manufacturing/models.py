@@ -13,6 +13,7 @@ from .bom import (  # noqa: F401
     BillOfMaterials,
     BomByproduct,
     BomComponent,
+    BomSubstitute,
     ByproductValuation,
     Requirement,
     default_bom_for,

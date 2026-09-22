@@ -12,6 +12,7 @@ from .orders import (
     WorkOrderComponent,
     WorkOrderOperation,
 )
+from .bom import BomSubstitute
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
@@ -110,13 +111,21 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
         return round(obj.fabric_metres_per_bag(), 4)
 
 
+class BomSubstituteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BomSubstitute
+        fields = ["id", "component", "item", "quantity_per", "priority",
+                  "is_active", "notes"]
+
+
 class BomComponentSerializer(serializers.ModelSerializer):
     gross_quantity = serializers.SerializerMethodField()
+    substitutes = BomSubstituteSerializer(many=True, read_only=True)
 
     class Meta:
         model = BomComponent
         fields = ["id", "bom", "item", "quantity", "uom", "waste_percent",
-                  "line_number", "notes", "gross_quantity"]
+                  "line_number", "notes", "gross_quantity", "substitutes"]
 
     def get_gross_quantity(self, obj):
         return round(obj.gross_quantity(), 6)

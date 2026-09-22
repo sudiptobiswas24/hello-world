@@ -29,11 +29,13 @@ from .orders import (
 )
 from .demand import coverage, genealogy, uncovered
 from .oee import by_operator, by_shift, effectiveness
+from .bom import BomSubstitute
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
+    BomSubstituteSerializer,
     FabricRollSerializer,
     PrintDesignSerializer,
     ToolSerializer,
@@ -212,6 +214,13 @@ class BomComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BomByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BomByproduct.objects.select_related("item", "bom")
     serializer_class = BomByproductSerializer
+
+
+class BomSubstituteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = BomSubstitute.objects.select_related(
+        "item", "component", "component__item", "component__bom"
+    )
+    serializer_class = BomSubstituteSerializer
 
 
 class PrintDesignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

@@ -57,7 +57,12 @@ from apps.inventory.locking import lock_positions
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import inventory_account_for
 
-from .bom import BillOfMaterials, ByproductValuation, byproduct_value, planned_cost
+from .bom import (
+    BillOfMaterials,
+    ByproductValuation,
+    byproduct_value,
+    planned_cost,
+)
 from .shifts import Downtime, DowntimeReason, Shift
 from .tooling import Tool, ToolUsage
 
@@ -689,12 +694,20 @@ class WorkOrder(AuditModel):
         for index, component in enumerate(
             self.bom.components.select_related("item", "uom"), start=1
         ):
-            WorkOrderComponent.objects.create(
+            frozen = WorkOrderComponent.objects.create(
                 work_order=self, item=component.item,
                 quantity_required=component.gross_quantity() * scale,
                 uom=component.uom, waste_percent=component.waste_percent,
                 line_number=index,
             )
+            for row in component.substitutes.filter(is_active=True):
+                # Frozen with everything else. A substitution approved
+                # after a run started must not retrospectively make
+                # that run read as issued.
+                WorkOrderSubstitute.objects.create(
+                    component=frozen, item=row.item,
+                    quantity_per=row.quantity_per, priority=row.priority,
+                )
 
         self.routing = self.bom.routing
         # Frozen with everything else. A plant that turns backflushing
@@ -986,13 +999,74 @@ class WorkOrderComponent(AuditModel):
             )
         return super().delete(*args, **kwargs)
 
+    def substitute_ratios(self):
+        """
+        What may stand in for this component, and at what rate.
+
+        Frozen off the bill of materials at release along with
+        everything else, so that a substitution approved after a run
+        started cannot retrospectively make that run look issued.
+        """
+        return {
+            row.item_id: row.quantity_per
+            for row in self.substitutes.select_related("item")
+        }
+
     def quantity_issued(self):
-        """Net of returns, in the item's stocking unit."""
+        """
+        Net of returns, in the item's stocking unit, stand-ins
+        included at their stated rate.
+
+        A run given the approved substitute is a run that got its
+        material. Counting only the original would report it as short
+        for ever, and the variance would say the blend ran light when
+        in fact it ran on the other masterbatch.
+        """
+        ratios = self.substitute_ratios()
+        wanted = {self.item_id: Decimal("1")}
+        wanted.update(ratios)
         total = Decimal("0")
         for issue in self.work_order.posted_issues():
-            for line in issue.lines.filter(item=self.item).select_related("item", "uom"):
-                total += line.stock_quantity() * issue.sign()
+            for line in issue.lines.filter(
+                item_id__in=wanted
+            ).select_related("item", "uom"):
+                # Divided, not multiplied: `quantity_per` says how much
+                # of the stand-in replaces one of the original, so two
+                # kilos of a half-strength grade is one kilo of
+                # requirement met.
+                total += (
+                    line.stock_quantity() * issue.sign() / wanted[line.item_id]
+                )
         return total
+
+
+class WorkOrderSubstitute(AuditModel):
+    """What this run was allowed to stand in for a component, as at release."""
+
+    component = models.ForeignKey(
+        WorkOrderComponent, on_delete=models.CASCADE, related_name="substitutes"
+    )
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="+")
+    quantity_per = models.DecimalField(
+        max_digits=18, decimal_places=6, default=Decimal("1")
+    )
+    priority = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        ordering = ["component", "priority", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity_per__gt=0),
+                name="work_order_substitute_ratio_positive",
+            ),
+            models.UniqueConstraint(
+                fields=["component", "item"],
+                name="one_work_order_substitute_per_component_item",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.item.sku} for {self.component.item.sku}"
 
 
 class WorkOrderOperation(AuditModel):

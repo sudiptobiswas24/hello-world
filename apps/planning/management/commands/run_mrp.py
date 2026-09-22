@@ -51,6 +51,8 @@ class Command(BaseCommand):
                 f" — start {order.release_on}, wanted {order.needed_by}{late}"
             )
             self.stdout.write(f"      because {order.explanation()}")
+            if order.stand_in_note:
+                self.stdout.write(f"      but {order.stand_in_note}")
             if order.is_late():
                 self.stdout.write(f"      late because {order.why_late()}")
 

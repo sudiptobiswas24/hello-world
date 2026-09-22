@@ -666,6 +666,44 @@ def _why(demand):
 # -- the run -------------------------------------------------------------
 
 
+def stand_ins_on_hand(item, warehouse, on_date):
+    """
+    Approved stand-ins for this item that are sitting on this shelf.
+
+    Reported, never applied. Substituting one grade of filler for
+    another changes the blend, and whether that is acceptable this
+    week is a judgement a person makes with the customer's
+    specification in front of them — not an arithmetic the plan does
+    quietly on their behalf. What the plan can do, and could not
+    before, is stop a buyer ordering polymer when the answer is
+    already in the next bay.
+    """
+    from apps.manufacturing.bom import BomSubstitute
+
+    rows = (
+        BomSubstitute.objects.filter(
+            component__item=item, is_active=True,
+            component__bom__is_active=True,
+        )
+        .select_related("item", "component", "component__item")
+    )
+    found = {}
+    for row in rows:
+        if row.item_id in found:
+            continue
+        spare = opening_balance(row.item, warehouse, on_date)
+        if spare <= 0:
+            continue
+        found[row.item_id] = {
+            "item": row.item,
+            "on_hand": spare,
+            "quantity_per": row.quantity_per,
+            # What the stand-in is worth in the original's terms.
+            "covers": (spare / row.quantity_per).quantize(QUANTITY),
+        }
+    return sorted(found.values(), key=lambda row: -row["covers"])
+
+
 def _show(quantity):
     """A quantity as the plan states it, not as the arithmetic left it."""
     return quantity.quantize(QUANTITY, rounding=ROUND_CEILING)
@@ -836,6 +874,8 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
                 run, item, warehouse, kind, bom, shortage, level, settings,
                 rule, calendar, book,
             )
+            if kind == PlannedOrderKind.BUY:
+                _note_stand_ins(order, item, warehouse, planned_on)
             if kind != PlannedOrderKind.MAKE:
                 continue
             for child_item, row in _components(bom, order):
@@ -889,6 +929,27 @@ def _write_action(run, item, warehouse, message, planned_on):
         days=message.days, because=message.because[:255],
         **{SUPPLY_FIELD[row.source]: row.document},
     )
+
+
+def _note_stand_ins(order, item, warehouse, planned_on):
+    """
+    Say on the order that a shortage may already have an answer.
+
+    Only on a buy, and only as a sentence. A make is the plant's own
+    business; a purchase raised for something the plant already has an
+    approved alternative to is money going out of the door for no
+    reason.
+    """
+    spare = stand_ins_on_hand(item, warehouse, planned_on)
+    if not spare:
+        return
+    best = spare[0]
+    order.stand_in_note = (
+        f"{best['item'].sku} is approved to stand in and "
+        f"{_show(best['on_hand'])} {best['item'].uom} is on the shelf, "
+        f"worth {best['covers']} {item.uom} of this"
+    )[:255]
+    order.save(update_fields=["stand_in_note", "updated_at"])
 
 
 def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,

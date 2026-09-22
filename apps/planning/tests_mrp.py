@@ -956,6 +956,62 @@ class DatedNettingTests(PlanningTestCase):
         self.assertEqual(self.orders(), {})
 
 
+class SomethingElseWillDoTests(PlanningTestCase):
+    """
+    A buy raised for something the plant already has an approved
+    alternative to is money going out of the door for no reason.
+    """
+
+    def allow(self, ratio="1"):
+        from apps.inventory.models import Item
+        from apps.manufacturing.bom import BomSubstitute
+
+        self.other = Item.objects.create(
+            sku="PP-RAFFIA-B", name="PP, second source", uom=self.kg
+        )
+        return BomSubstitute.objects.create(
+            component=self.tape_bom.components.get(item=self.virgin),
+            item=self.other, quantity_per=Decimal(ratio),
+        )
+
+    def test_a_shortage_with_a_stand_in_on_the_shelf_says_so(self):
+        self.allow()
+        self.stock(self.other, "5000")
+        self.sell(self.fabric, "1000", self.day(30))
+        virgin = self.orders()["PP-RAFFIA"]
+        self.assertIn("PP-RAFFIA-B is approved to stand in", virgin.stand_in_note)
+        self.assertIn("5000.0000 kg is on the shelf", virgin.stand_in_note)
+
+    def test_the_ratio_says_what_it_is_actually_worth(self):
+        self.allow(ratio="2")
+        self.stock(self.other, "5000")
+        self.sell(self.fabric, "1000", self.day(30))
+        # Two kilos of the stand-in per kilo of the original, so five
+        # tonnes of it is worth two and a half.
+        self.assertIn(
+            "worth 2500.0000 kg of this",
+            self.orders()["PP-RAFFIA"].stand_in_note,
+        )
+
+    def test_nothing_on_the_shelf_says_nothing(self):
+        self.allow()
+        self.sell(self.fabric, "1000", self.day(30))
+        self.assertEqual(self.orders()["PP-RAFFIA"].stand_in_note, "")
+
+    def test_it_is_a_sentence_and_not_a_substitution(self):
+        """
+        Changing a blend is a judgement somebody makes with the
+        customer's specification in front of them, not an arithmetic
+        the plan does quietly on their behalf.
+        """
+        self.allow()
+        self.stock(self.other, "50000")
+        self.sell(self.fabric, "1000", self.day(30))
+        virgin = self.orders()["PP-RAFFIA"]
+        self.assertEqual(virgin.quantity, Decimal("788.9755"))
+        self.assertTrue(virgin.stand_in_note)
+
+
 class RefusalTests(PlanningTestCase):
     def test_an_item_with_no_agreed_lead_time_and_no_default_refuses(self):
         self.settings.default_buy_lead_days = None

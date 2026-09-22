@@ -361,6 +361,95 @@ class BomByproduct(AuditModel):
         super().save(*args, **kwargs)
 
 
+class BomSubstitute(AuditModel):
+    """
+    Something else that will do, and how much of it it takes.
+
+    A plant keeps two white masterbatches on the shelf because one
+    vendor is cheaper and the other is reliable, and a run stopped for
+    want of the first when the second was in the next bay is a run
+    stopped for nothing. The specification says which is preferred;
+    this says what else the plant has decided is acceptable.
+
+    **The ratio is not always one.** A twenty-micron filler and a ten-
+    micron one are both calcium carbonate and do not load the same, so
+    a substitution is stated as how much of the stand-in replaces one
+    of the original. Assuming one for one is how a blend quietly moves
+    off specification.
+
+    Nothing here substitutes anything by itself. It records what is
+    allowed, so a storeman can issue the stand-in and the run still
+    reads as fully issued, and so a planner can be told that a
+    shortage has an answer already on the shelf. Choosing to use it is
+    a decision a person makes.
+    """
+
+    component = models.ForeignKey(
+        BomComponent, on_delete=models.CASCADE, related_name="substitutes"
+    )
+    item = models.ForeignKey(
+        Item, on_delete=models.PROTECT, related_name="substitutes_for"
+    )
+    quantity_per = models.DecimalField(
+        max_digits=18, decimal_places=6, default=Decimal("1"),
+        help_text="How much of this stands in for one of the original, in the "
+                  "original's unit. One for one is the common case and the "
+                  "dangerous default: two grades of filler do not load the "
+                  "same.",
+    )
+    priority = models.PositiveSmallIntegerField(
+        default=1, help_text="Lower is preferred. The original always wins.",
+    )
+    is_active = models.BooleanField(default=True)
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["component", "priority", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity_per__gt=0), name="bom_substitute_ratio_positive"
+            ),
+            models.UniqueConstraint(
+                fields=["component", "item"], name="one_substitute_per_component_item"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.item.sku} for {self.component.item.sku}"
+
+    def check_allowed(self):
+        """
+        A stand-in is something else, and it is not already in the
+        recipe.
+
+        Both refusals are about double counting. An item standing in
+        for itself is a row that says nothing. An item that is already
+        a component of the same bill of materials, counted again as a
+        substitute, would have its own issue read as covering two
+        different requirements at once — so the run would look fully
+        issued on half the material.
+        """
+        if self.item_id == self.component.item_id:
+            raise ValidationError(
+                f"{self.item} cannot stand in for itself."
+            )
+        clash = self.component.bom.components.filter(
+            item_id=self.item_id
+        ).exclude(pk=self.component_id).exists()
+        if clash:
+            raise ValidationError(
+                f"{self.item} is already a component of {self.component.bom}. "
+                "Counting it as a stand-in as well would have one issue cover "
+                "two requirements, so the run would read as fully issued on "
+                "half the material."
+            )
+
+    def save(self, *args, **kwargs):
+        self.check_allowed()
+        self.component.item.check_uom(self.component.uom)
+        super().save(*args, **kwargs)
+
+
 Requirement = namedtuple(
     "Requirement", "item quantity uom level bom is_byproduct is_leaf path"
 )

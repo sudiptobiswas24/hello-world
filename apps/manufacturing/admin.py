@@ -33,6 +33,8 @@ from .orders import (
 )
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
+from .bom import BomSubstitute
+from .orders import WorkOrderSubstitute
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
@@ -205,6 +207,16 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
     model = BomByproduct
     extra = 0
     autocomplete_fields = ("item",)
+
+
+@admin.register(BomSubstitute)
+class BomSubstituteAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """What else will do, and at what rate."""
+
+    list_display = ("item", "component", "quantity_per", "priority", "is_active")
+    list_filter = ("is_active",)
+    search_fields = ("item__sku", "component__item__sku")
+    raw_id_fields = ("component",)
 
 
 @admin.register(PrintDesign)
