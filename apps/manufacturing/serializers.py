@@ -12,6 +12,7 @@ from .orders import (
     WorkOrderComponent,
     WorkOrderOperation,
 )
+from .rolls import FabricRoll
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
@@ -137,6 +138,33 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
                   "is_computed", "is_default", "is_active", "is_rework",
                   "backflush", "notes", "components", "byproducts"]
         read_only_fields = ["is_computed"]
+
+
+class FabricRollSerializer(serializers.ModelSerializer):
+    implied_gsm = serializers.SerializerMethodField()
+    metres_per_kg = serializers.SerializerMethodField()
+    gsm_deviation_percent = serializers.SerializerMethodField()
+    within_tolerance = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FabricRoll
+        fields = ["id", "lot", "specification", "entry", "width_mm",
+                  "length_m", "net_weight_kg", "core_weight_kg", "is_tubular",
+                  "notes", "implied_gsm", "metres_per_kg",
+                  "gsm_deviation_percent", "within_tolerance"]
+
+    def get_implied_gsm(self, obj):
+        return obj.implied_gsm()
+
+    def get_metres_per_kg(self, obj):
+        return obj.metres_per_kg()
+
+    def get_gsm_deviation_percent(self, obj):
+        deviation = obj.gsm_deviation_percent()
+        return None if deviation is None else round(deviation, 3)
+
+    def get_within_tolerance(self, obj):
+        return obj.is_within_tolerance()
 
 
 class RoutingOperationSerializer(serializers.ModelSerializer):

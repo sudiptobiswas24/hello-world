@@ -29,9 +29,11 @@ from .orders import (
 )
 from .demand import coverage, genealogy, uncovered
 from .oee import by_operator, by_shift, effectiveness
+from .rolls import FabricRoll
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
+    FabricRollSerializer,
     BagSpecificationSerializer,
     BillOfMaterialsSerializer,
     BomByproductSerializer,
@@ -206,6 +208,50 @@ class BomComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BomByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BomByproduct.objects.select_related("item", "bom")
     serializer_class = BomByproductSerializer
+
+
+class FabricRollViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    Rolls, and the metres on each of them.
+
+    `metres/` is the question the cutting table asks and the one the
+    unit-of-measure graph cannot answer, because every roll converts
+    at its own weight per metre.
+    """
+
+    queryset = FabricRoll.objects.select_related(
+        "lot", "lot__item", "specification", "entry"
+    )
+    serializer_class = FabricRollSerializer
+
+    @action(detail=False, methods=["get"])
+    def metres(self, request):
+        from apps.inventory.models import Item, Warehouse
+
+        from .rolls import metres_on_hand, rolls_at, unrolled_stock
+
+        item = Item.objects.filter(pk=request.query_params.get("item")).first()
+        warehouse = Warehouse.objects.filter(
+            pk=request.query_params.get("warehouse")
+        ).first()
+        if item is None or warehouse is None:
+            raise DRFValidationError(["Name an item and a warehouse."])
+        return Response({
+            "item": item.pk,
+            "warehouse": warehouse.pk,
+            "metres": metres_on_hand(item, warehouse),
+            # Reported rather than ignored: fabric with no roll behind
+            # it converts to no metres, so a cutting table reading the
+            # total alone is being told about less than the plant owns.
+            "kilos_with_no_roll": unrolled_stock(item, warehouse),
+            "rolls": [
+                {
+                    "roll": roll.pk, "lot": roll.lot.code,
+                    "kilos": quantity, "metres": metres,
+                }
+                for roll, quantity, metres in rolls_at(item, warehouse)
+            ],
+        })
 
 
 class RoutingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

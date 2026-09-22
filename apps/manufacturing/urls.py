@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    FabricRollViewSet,
     BagSpecificationViewSet,
     BillOfMaterialsViewSet,
     BomByproductViewSet,
@@ -29,6 +30,7 @@ router.register("bag-specifications", BagSpecificationViewSet)
 router.register("boms", BillOfMaterialsViewSet)
 router.register("bom-components", BomComponentViewSet)
 router.register("bom-byproducts", BomByproductViewSet)
+router.register("fabric-rolls", FabricRollViewSet)
 router.register("routings", RoutingViewSet)
 router.register("routing-operations", RoutingOperationViewSet)
 router.register("work-centres", WorkCentreViewSet)

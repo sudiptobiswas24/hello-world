@@ -48,6 +48,13 @@ from .shifts import (  # noqa: F401
     DowntimeReason,
     Shift,
 )
+from .rolls import (  # noqa: F401
+    FabricRoll,
+    metres_on_hand,
+    rolls_at,
+    unrolled_stock,
+    weighed_gsm,
+)
 from .routing import (  # noqa: F401
     Routing,
     RoutingOperation,

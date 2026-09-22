@@ -33,6 +33,7 @@ from .orders import (
 )
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
+from .rolls import FabricRoll
 from .woven import BagSpecification, FabricSpecification, TapeSpecification
 
 
@@ -203,6 +204,40 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
     model = BomByproduct
     extra = 0
     autocomplete_fields = ("item",)
+
+
+@admin.register(FabricRoll)
+class FabricRollAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    Rolls, with the grammage the scale and the loom counter imply.
+
+    The deviation column is the point: it is a measurement on every
+    roll the plant makes, for nothing, where a laboratory gives one
+    per batch if somebody remembers to ask.
+    """
+
+    list_display = ("lot", "width_mm", "length_m", "net_weight_kg",
+                    "shown_gsm", "shown_deviation", "shown_metres_per_kg",
+                    "specification")
+    list_filter = ("is_tubular", "specification")
+    search_fields = ("lot__code", "lot__item__sku")
+    raw_id_fields = ("lot", "entry")
+
+    @admin.display(description="Implied GSM")
+    def shown_gsm(self, obj):
+        return f"{obj.implied_gsm():.2f}"
+
+    @admin.display(description="Against target")
+    def shown_deviation(self, obj):
+        deviation = obj.gsm_deviation_percent()
+        if deviation is None:
+            return "—"
+        within = obj.is_within_tolerance()
+        return f"{deviation:+.2f}%" + ("" if within else "  OUT")
+
+    @admin.display(description="Metres per kg")
+    def shown_metres_per_kg(self, obj):
+        return f"{obj.metres_per_kg():.4f}"
 
 
 @admin.register(BillOfMaterials)

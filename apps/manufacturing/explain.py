@@ -50,8 +50,21 @@ def measured(work_order, source="gsm"):
     Averaged across every standing inspection of every batch the run
     made: one roll read light and another heavy is one fabric, and the
     roll somebody happened to inspect first is not the answer.
+
+    `source="weighed"` reads the scale and the loom counter instead of
+    an inspection. Every roll is weighed and metered whether or not
+    anybody inspects it, so that source answers on runs where nothing
+    reached a laboratory — which is most of them.
     """
     from apps.quality.release import latest_inspection
+
+    if source == "weighed":
+        from .rolls import weighed_gsm
+
+        reading = weighed_gsm(work_order)
+        if reading is None or reading["target"] is None:
+            return None
+        return reading
 
     readings = []
     target = None
