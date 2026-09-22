@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    ForecastViewSet,
     LowLevelCodeViewSet,
     PlanningActionViewSet,
     PromiseViewSet,
@@ -12,6 +13,7 @@ from .views import (
 
 router = DefaultRouter()
 router.register("settings", PlanningSettingsViewSet)
+router.register("forecasts", ForecastViewSet)
 router.register("runs", PlanningRunViewSet)
 router.register("planned-orders", PlannedOrderViewSet)
 router.register("planned-demands", PlannedDemandViewSet)

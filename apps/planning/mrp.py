@@ -55,6 +55,7 @@ from apps.quality.release import plan_for, release_status
 from apps.quality.models import ReleaseStatus
 
 from .capacity import LoadBook, schedule_make
+from .forecast import Forecast, forecast_demand
 from .leadtime import (
     buy_lead_days,
     calendar_offset,
@@ -82,7 +83,7 @@ ZERO = Decimal("0")
 QUANTITY = Decimal("0.0001")
 
 Demand = namedtuple(
-    "Demand", "date quantity source sales_order_line work_order parent"
+    "Demand", "date quantity source sales_order_line work_order parent forecast"
 )
 Supply = namedtuple("Supply", "date quantity source document movable")
 Pegged = namedtuple("Pegged", "supply wanted_on wanted_by used")
@@ -108,10 +109,12 @@ def _supply(date, quantity, source=None, document=None, movable=False):
     )
 
 
-def _demand(date, quantity, source, sales_order_line=None, work_order=None, parent=None):
+def _demand(date, quantity, source, sales_order_line=None, work_order=None,
+            parent=None, forecast=None):
     return Demand(
         date=date, quantity=quantity, source=source,
-        sales_order_line=sales_order_line, work_order=work_order, parent=parent,
+        sales_order_line=sales_order_line, work_order=work_order,
+        parent=parent, forecast=forecast,
     )
 
 
@@ -734,6 +737,8 @@ def _why(demand):
         return f"{demand.work_order} draws it on {demand.date}"
     if demand.source == DemandSource.PLANNED and demand.parent:
         return f"planned {demand.parent} draws it on {demand.date}"
+    if demand.source == DemandSource.FORECAST and demand.forecast:
+        return f"the forecast for {demand.forecast.starts_on} expects it"
     if demand.source == DemandSource.SAFETY:
         return f"the safety floor wants it held from {demand.date}"
     return f"demand on {demand.date}"
@@ -826,6 +831,11 @@ def _candidates(warehouse, planned_on, horizon_end):
         warehouse=warehouse, is_active=True, minimum__gt=0
     ).select_related("item"):
         items[rule.item_id] = rule.item
+    for forecast in Forecast.objects.filter(
+        warehouse=warehouse, is_active=True,
+        ends_on__gte=planned_on, starts_on__lte=horizon_end,
+    ).select_related("item"):
+        items[forecast.item_id] = forecast.item
     for line in PurchaseOrderLine.objects.filter(
         order__status=PurchaseStatus.CONFIRMED, charge__isnull=True,
         item__isnull=False,
@@ -921,6 +931,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         level = level_of(levels, item)
 
         demands = sales_demand(item, warehouse, planned_on)
+        demands += forecast_demand(item, warehouse, planned_on, horizon_end)
         demands += work_order_demand(item, warehouse, planned_on)
         demands += pending.pop(item.pk, [])
         demands = [row for row in demands if row.date <= horizon_end]
@@ -1089,7 +1100,8 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         PlannedDemand.objects.create(
             planned_order=order, source=row.source, quantity=taken,
             needed_by=row.date, sales_order_line=row.sales_order_line,
-            work_order=row.work_order, parent=row.parent, line_number=number,
+            work_order=row.work_order, parent=row.parent,
+            forecast=row.forecast, line_number=number,
         )
     return order
 

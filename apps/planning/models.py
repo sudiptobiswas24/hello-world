@@ -34,6 +34,8 @@ from django.utils import timezone
 from apps.core.models import AuditModel
 from apps.inventory.models import Item, Warehouse
 
+from .forecast import Forecast, coverage, forecast_demand  # noqa: F401
+
 
 class PlanningSettings(AuditModel):
     """
@@ -134,6 +136,7 @@ class RescheduleAction(models.TextChoices):
 
 class DemandSource(models.TextChoices):
     SALES = "sales", "Sales order"
+    FORECAST = "forecast", "Forecast"
     WORK_ORDER = "work_order", "Open work order"
     PLANNED = "planned", "Another planned order"
     SAFETY = "safety", "Safety stock"
@@ -665,6 +668,12 @@ class PlannedDemand(AuditModel):
         related_name="children",
         help_text="The planned order whose components this demand is part of.",
     )
+    forecast = models.ForeignKey(
+        "Forecast", null=True, blank=True, on_delete=models.CASCADE,
+        related_name="planned_demands",
+        help_text="The period this was expected in, when nobody has ordered "
+                  "it yet.",
+    )
     line_number = models.PositiveIntegerField(default=0)
 
     class Meta:
@@ -690,6 +699,12 @@ class PlannedDemand(AuditModel):
             return f"{self.quantity} for {self.work_order} due {self.needed_by}"
         if self.source == DemandSource.PLANNED and self.parent_id:
             return f"{self.quantity} for planned {self.parent} due {self.needed_by}"
+        if self.source == DemandSource.FORECAST and self.forecast_id:
+            forecast = self.forecast
+            return (
+                f"{self.quantity} forecast for "
+                f"{forecast.starts_on}–{forecast.ends_on}, not yet ordered"
+            )
         if self.source == DemandSource.SAFETY:
             return f"{self.quantity} to hold safety stock"
         return f"{self.quantity} due {self.needed_by}"

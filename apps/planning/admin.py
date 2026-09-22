@@ -12,6 +12,7 @@ from django.core.exceptions import ValidationError
 
 from apps.core.audit import AuditableAdminMixin
 
+from .forecast import Forecast
 from .models import (
     PlannedDemand,
     PlannedOrder,
@@ -87,6 +88,31 @@ class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
     @admin.display(description="Push out")
     def push_out(self, obj):
         return obj.defers().count() or ""
+
+
+@admin.register(Forecast)
+class ForecastAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    What the plant expects to ship, and how much of it has arrived.
+
+    The consumed column is the one worth reading: a forecast
+    consistently double what arrives is stock carried for orders that
+    never come.
+    """
+
+    list_display = ("item", "warehouse", "starts_on", "ends_on", "quantity",
+                    "shown_ordered", "shown_left", "is_active")
+    list_filter = ("warehouse", "is_active")
+    search_fields = ("item__sku", "item__name")
+    raw_id_fields = ("item",)
+
+    @admin.display(description="Ordered")
+    def shown_ordered(self, obj):
+        return obj.consumed()
+
+    @admin.display(description="Not yet ordered")
+    def shown_left(self, obj):
+        return obj.unconsumed()
 
 
 @admin.register(PlanningAction)

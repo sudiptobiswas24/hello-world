@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .forecast import Forecast
 from .models import (
     PlannedDemand,
     PlannedOrder,
@@ -7,6 +8,22 @@ from .models import (
     PlanningRun,
     PlanningSettings,
 )
+
+
+class ForecastSerializer(serializers.ModelSerializer):
+    consumed = serializers.SerializerMethodField()
+    unconsumed = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Forecast
+        fields = ["id", "item", "warehouse", "starts_on", "ends_on",
+                  "quantity", "is_active", "notes", "consumed", "unconsumed"]
+
+    def get_consumed(self, obj):
+        return obj.consumed()
+
+    def get_unconsumed(self, obj):
+        return obj.unconsumed()
 
 
 class PlanningSettingsSerializer(serializers.ModelSerializer):
@@ -24,8 +41,8 @@ class PlannedDemandSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlannedDemand
         fields = ["id", "planned_order", "source", "quantity", "needed_by",
-                  "sales_order_line", "work_order", "parent", "line_number",
-                  "describes"]
+                  "sales_order_line", "work_order", "parent", "forecast",
+                  "line_number", "describes"]
 
 
 class PlannedOrderSerializer(serializers.ModelSerializer):

@@ -19,6 +19,7 @@ from apps.core.models import Party, to_date
 from apps.inventory.models import Warehouse
 
 from .levels import low_level_codes
+from .forecast import Forecast, coverage
 from .models import (
     PlannedDemand,
     PlannedOrder,
@@ -28,6 +29,7 @@ from .models import (
 )
 from .mrp import plan
 from .serializers import (
+    ForecastSerializer,
     PlannedDemandSerializer,
     PlanningActionSerializer,
     PlannedOrderSerializer,
@@ -42,6 +44,39 @@ def _run(callable_, *args, **kwargs):
         return callable_(*args, **kwargs)
     except DjangoValidationError as exc:
         raise DRFValidationError(exc.messages)
+
+
+class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = Forecast.objects.select_related("item", "warehouse")
+    serializer_class = ForecastSerializer
+
+    @action(detail=False, methods=["get"])
+    def coverage(self, request):
+        """Forecast against orders, period by period."""
+        from apps.inventory.models import Item, Warehouse
+
+        item = Item.objects.filter(pk=request.query_params.get("item")).first()
+        warehouse = Warehouse.objects.filter(
+            pk=request.query_params.get("warehouse")
+        ).first()
+        if item is None or warehouse is None:
+            raise DRFValidationError(["Name an item and a warehouse."])
+        return Response([
+            {
+                "forecast": row["forecast"].pk,
+                "starts_on": row["period"][0],
+                "ends_on": row["period"][1],
+                "expected": row["expected"],
+                "ordered": row["ordered"],
+                "unconsumed": row["unconsumed"],
+                "over_ordered": row["over_ordered"],
+                "accuracy_percent": row["accuracy_percent"],
+            }
+            for row in _run(
+                coverage, item, warehouse,
+                planned_on=to_date(request.query_params.get("on")) or None,
+            )
+        ])
 
 
 class PlanningSettingsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
