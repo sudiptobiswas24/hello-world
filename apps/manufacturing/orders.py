@@ -333,6 +333,20 @@ class WorkOrder(AuditModel):
         max_length=16, choices=WorkOrderStatus.choices,
         default=WorkOrderStatus.DRAFT,
     )
+    backflush = models.BooleanField(
+        default=False,
+        help_text="Frozen off the bill of materials at release. Whether output "
+                  "draws its own components, or a storeman issues them.",
+    )
+    rework_of = models.ForeignKey(
+        "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="rework_orders",
+        help_text="The batch this run is putting right. Required on a rework "
+                  "recipe and refused on any other: rework is always of a "
+                  "particular roll that a particular inspection failed, and a "
+                  "rework order that does not say which is a licence to draw "
+                  "good stock and call it salvage.",
+    )
     time_allowance_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("50"),
         help_text="How far past its planned time an operation may be booked. "
@@ -622,6 +636,7 @@ class WorkOrder(AuditModel):
             )
         if not self.bom.is_active:
             raise ValidationError(f"{self.bom} is not active.")
+        self._check_rework()
         if not self.bom.components.exists():
             raise ValidationError(
                 f"{self.bom} has no components, so nothing would ever be issued "
@@ -669,6 +684,11 @@ class WorkOrder(AuditModel):
             )
 
         self.routing = self.bom.routing
+        # Frozen with everything else. A plant that turns backflushing
+        # on halfway through a run would have the first half issued by
+        # hand and the second half drawn automatically, and the two
+        # would meet in the middle as a variance nobody can explain.
+        self.backflush = self.bom.backflush
         self.operations.all().delete()
         for operation in operations:
             WorkOrderOperation.objects.create(
@@ -701,10 +721,85 @@ class WorkOrder(AuditModel):
         self.released_at = timezone.now()
         super().save(update_fields=[
             "number", "planned_unit_cost", "planned_material_cost",
-            "planned_conversion_cost", "routing", "status", "released_at",
-            "updated_at",
+            "planned_conversion_cost", "routing", "backflush", "status",
+            "released_at", "updated_at",
         ])
         return self
+
+    def is_rework(self):
+        return self.rework_of_id is not None
+
+    def _check_rework(self):
+        """
+        A rework run names the batch it is putting right, and that
+        batch is one an inspection actually failed.
+
+        The second half is the one worth having. Rework consumes stock
+        at full value and books it back as good, so a rework order
+        pointed at a batch nothing is wrong with is a way of laundering
+        a shortage: draw two tonnes of good fabric, book two tonnes of
+        good fabric, and the difference disappears into the run.
+        """
+        from apps.quality.models import ReleaseStatus
+        from apps.quality.release import release_status
+
+        if self.bom.is_rework and self.rework_of_id is None:
+            raise ValidationError(
+                f"{self.bom} is a rework recipe and this run does not say "
+                "which batch it is putting right."
+            )
+        if not self.bom.is_rework and self.rework_of_id is not None:
+            raise ValidationError(
+                f"This run names {self.rework_of} as the batch to put right, "
+                f"but {self.bom} is not a rework recipe."
+            )
+        if self.rework_of_id is None:
+            return
+        if self.rework_of.item_id != self.item_id:
+            raise ValidationError(
+                f"{self.rework_of} is a batch of {self.rework_of.item} and "
+                f"this run makes {self.item}."
+            )
+        if release_status(self.rework_of) != ReleaseStatus.HELD:
+            raise ValidationError(
+                f"{self.rework_of} is not held — nothing has failed it. "
+                "Reworking a batch that passed draws good stock and books it "
+                "back as salvage, which is a shortage with a document over it."
+            )
+
+    def backflush_for(self, quantity):
+        """
+        What booking `quantity` of output draws from the shelf.
+
+        **Scrap consumes material too.** A run that made six hundred
+        good and spoiled fifty ate polymer for six hundred and fifty,
+        and a backflush counting only the good output under-issues by
+        the difference every single time. It then turns up at close as
+        a favourable material variance, which reads as the blend
+        running light when in fact the issue was never made. That is
+        the whole reason this takes a quantity rather than reading the
+        entry's good output itself.
+
+        Scaled off the frozen requirement rather than recomputed from
+        the bill of materials, because the specification will have
+        moved by the time the last shift books its output and the run
+        must draw against what it was released on.
+        """
+        if self.quantity_ordered <= 0:
+            return []
+        share = Decimal(quantity) / self.quantity_ordered
+        rows = []
+        for component in self.components.select_related("item", "uom").all():
+            # Quantized to what an issue line actually stores, so that
+            # what is computed is what is written. Six decimal places
+            # rounded into four on save is a difference that turns up
+            # at close as a variance with no cause.
+            wanted = (component.quantity_required * share).quantize(
+                Decimal("0.0001")
+            )
+            if wanted > 0:
+                rows.append((component, wanted))
+        return rows
 
     @transaction.atomic
     def close(self, on_date=None, memo=""):
@@ -1371,6 +1466,34 @@ class MaterialIssueLine(AuditModel):
     def stock_quantity(self):
         return self.item.to_stock_quantity(self.quantity, self.uom)
 
+    def _check_may_be_drawn(self, issue):
+        """
+        A held batch does not go into a run — except into the run that
+        exists to put it right.
+
+        The exemption is exactly one batch wide. Without it a rework
+        order cannot consume the roll it was raised for, which makes
+        the whole disposition useless; widened by one inch it becomes
+        the way every held batch gets used, because a rework order is
+        easy to raise and quality holds are inconvenient. So the line
+        must name the failed batch itself: a rework run drawing good
+        stock of the same item is salvage on paper and a shortage in
+        fact.
+        """
+        order = issue.work_order
+        if order.rework_of_id and self.item_id == order.item_id:
+            if self.lot_id != order.rework_of_id:
+                raise ValidationError(
+                    f"{order} is reworking {order.rework_of}, and this line "
+                    f"draws {self.item} from "
+                    f"{self.lot or 'no batch in particular'}. A rework run "
+                    "consumes the batch it was raised for and no other — "
+                    "drawing good stock instead books salvage the plant never "
+                    "made."
+                )
+            return
+        check_released(self.item, self.lot, action="go into a run")
+
     def post(self, issue, occurred_at, label):
         """Write the movement and return what it was worth, unsigned."""
         quantity = self.stock_quantity()
@@ -1379,7 +1502,7 @@ class MaterialIssueLine(AuditModel):
                 self.item, issue.warehouse, quantity, lot=self.lot,
                 action="issue",
             )
-            check_released(self.item, self.lot, action="go into a run")
+            self._check_may_be_drawn(issue)
             value = cost_of_removing(
                 self.item, issue.warehouse, quantity, lot=self.lot
             )
@@ -1526,6 +1649,14 @@ class ProductionEntry(AuditModel):
         related_name="+", editable=False,
     )
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
+    backflush_issue = models.ForeignKey(
+        "MaterialIssue", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="backflushed_by", editable=False,
+        help_text="The issue this entry drew for itself, on a run that "
+                  "backflushes. Recorded rather than recomputed, because "
+                  "voiding this entry has to put back exactly what it took "
+                  "and the requirement will have moved by then.",
+    )
 
     class Meta:
         ordering = ["-entry_date", "-id"]
@@ -1561,6 +1692,49 @@ class ProductionEntry(AuditModel):
         return self.work_order.item.to_stock_quantity(
             self.quantity_scrapped, self.uom
         )
+
+    def consumed_output(self):
+        """
+        Output this entry ate material for: the good and the spoiled
+        alike.
+
+        A run that made six hundred good and spoiled fifty ate polymer
+        for six hundred and fifty. Backflushing the good output alone
+        under-issues by the difference and then reports it at close as
+        a favourable material variance — the blend reading light when
+        in fact the issue was never made.
+        """
+        return self.quantity_produced + self.quantity_scrapped
+
+    def _backflush(self, label):
+        """
+        Draw what this output consumed, as its own issue.
+
+        Its own document rather than movements written here, so that
+        everything downstream — the work-in-progress balance, the
+        material variance, `quantity_issued`, the void path — reads a
+        backflushed run and a hand-issued one through exactly the same
+        rows. A second way of getting material out of a store is a
+        second set of bugs.
+        """
+        quantity = self.work_order.item.to_stock_quantity(
+            self.consumed_output(), self.uom
+        )
+        rows = self.work_order.backflush_for(quantity)
+        if not rows:
+            return None
+        issue = MaterialIssue.objects.create(
+            work_order=self.work_order, direction=IssueDirection.ISSUE,
+            issue_date=self.entry_date, warehouse=self.warehouse,
+            memo=f"Backflushed by {self.number}"[:255],
+        )
+        for index, (component, wanted) in enumerate(rows, start=1):
+            MaterialIssueLine.objects.create(
+                issue=issue, item=component.item, quantity=wanted,
+                uom=component.uom, line_number=index,
+            )
+        issue.post(memo=label)
+        return issue
 
     @transaction.atomic
     def post(self, memo=""):
@@ -1638,9 +1812,17 @@ class ProductionEntry(AuditModel):
         # Work in progress was credited, so what came out of it is the
         # other sign of what the balancing row took.
         self.posted_value = -released
+        # After the output, deliberately. The issue it raises posts
+        # against this same run and reads the shelf, and a backflush
+        # that fails for want of polymer must take the output booking
+        # down with it rather than leaving a run that made something
+        # out of nothing.
+        if order.backflush:
+            self.backflush_issue = self._backflush(label)
         super().save(update_fields=[
             "number", "entry_date", "posted", "posted_at", "posted_value",
-            "unit_cost", "stock_movement", "journal_entry", "updated_at",
+            "unit_cost", "stock_movement", "journal_entry", "backflush_issue",
+            "updated_at",
         ])
         return self.journal_entry
 
@@ -1678,6 +1860,13 @@ class ProductionEntry(AuditModel):
             )
         for row in byproducts:
             row.reverse(self, occurred_at, label)
+        # The reverse of the backflush, written in the same sitting as
+        # the backflush itself. Voiding output that drew its own
+        # material and leaving the material drawn would put the run's
+        # whole consumption into variance for output that no longer
+        # exists.
+        if self.backflush_issue_id and not self.backflush_issue.is_voided():
+            self.backflush_issue.void(on_date=on_date, memo=label)
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=label

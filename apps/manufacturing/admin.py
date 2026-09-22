@@ -208,8 +208,9 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
 @admin.register(BillOfMaterials)
 class BillOfMaterialsAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("__str__", "item", "version", "is_computed", "is_default",
-                    "is_active")
-    list_filter = ("is_computed", "is_default", "is_active")
+                    "is_rework", "backflush", "is_active")
+    list_filter = ("is_computed", "is_default", "is_rework", "backflush",
+                   "is_active")
     search_fields = ("name", "item__sku")
     inlines = [BomComponentInline, BomByproductInline]
 
@@ -295,14 +296,15 @@ class WorkOrderComponentInline(admin.TabularInline):
 @admin.register(WorkOrder)
 class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "item", "quantity_ordered", "uom", "work_centre",
-                    "status", "sales_order_line", "shown_produced", "planned_unit_cost",
-                    "shown_wip",
+                    "status", "sales_order_line", "rework_of", "shown_produced",
+                    "planned_unit_cost", "shown_wip",
                     "shown_unaccounted")
-    list_filter = ("status", "work_centre", "warehouse")
-    raw_id_fields = ("sales_order_line",)
+    list_filter = ("status", "work_centre", "warehouse", "backflush")
+    raw_id_fields = ("sales_order_line", "rework_of")
     search_fields = ("number", "item__sku")
     inlines = [WorkOrderComponentInline, WorkOrderOperationInline]
-    readonly_fields = ("number", "status", "routing", "planned_unit_cost",
+    readonly_fields = ("number", "status", "routing", "backflush",
+                       "planned_unit_cost",
                        "planned_material_cost", "planned_conversion_cost",
                        "shown_time_variance", "released_at", "closed_at",
                        "close_entry", "reopened_entry", "shown_wip", "shown_unaccounted",

@@ -75,6 +75,22 @@ class BillOfMaterials(AuditModel):
                   "explosion picks.",
     )
     name = models.CharField(max_length=255, blank=True)
+    is_rework = models.BooleanField(
+        default=False,
+        help_text="This recipe puts a failed batch back through the plant. It "
+                  "consumes the item it makes — a roll that missed its GSM is "
+                  "re-wound into a roll that meets it — plus whatever fresh "
+                  "material and machine time the second pass costs.",
+    )
+    backflush = models.BooleanField(
+        default=False,
+        help_text="Draw the components automatically when output is booked, "
+                  "rather than on a separate issue. Right for a continuous "
+                  "line where the material is metered in and nobody stands at "
+                  "a store counter; wrong where a storeman weighs out a blend "
+                  "and the difference between what was asked for and what went "
+                  "in is the number the plant manages.",
+    )
     quantity_produced = models.DecimalField(
         max_digits=18, decimal_places=4,
         help_text="How much of the item one run of this BOM makes, in `uom`.",
@@ -157,6 +173,39 @@ class BillOfMaterials(AuditModel):
             quantity = uom.convert_to(quantity, self.uom)
         return Decimal(quantity) / self.quantity_produced
 
+    def eats_itself(self):
+        """Whether this recipe consumes the item it makes."""
+        return self.components.filter(item_id=self.item_id).exists()
+
+    def check_rework(self):
+        """
+        A rework recipe consumes what it makes, and an ordinary one
+        does not.
+
+        Both halves are enforced, because both mistakes are silent.
+        A rework bill with no line for the failed batch makes good
+        stock out of nothing and leaves the bad roll on the shelf
+        holding its own value. And an ordinary bill that names its own
+        item is a loop that `explode` will cut and nobody will notice,
+        so the run quietly asks for a batch of itself.
+        """
+        if self.pk is None:
+            return
+        eats = self.eats_itself()
+        if self.is_rework and not eats:
+            raise ValidationError(
+                f"{self} is a rework recipe and has no line for {self.item}. "
+                "Rework consumes the batch it is putting right; without that "
+                "line this makes good stock out of nothing and leaves the "
+                "failed batch on the shelf still carrying its value."
+            )
+        if not self.is_rework and eats:
+            raise ValidationError(
+                f"{self} consumes {self.item}, which is what it makes. That is "
+                "a loop the explosion will cut without saying so. Mark it as "
+                "rework if that is what it is."
+            )
+
     def save(self, *args, **kwargs):
         if self.is_computed and not getattr(self, "_rebuilding", False):
             raise ValidationError(
@@ -234,6 +283,13 @@ class BomComponent(AuditModel):
                 "components with it. Change that."
             )
         self.item.check_uom(self.uom)
+        if self.item_id == self.bom.item_id and not self.bom.is_rework:
+            raise ValidationError(
+                f"{self.bom} makes {self.bom.item} and this line puts "
+                f"{self.item} into it. A recipe that consumes what it makes is "
+                "a loop the explosion cuts without saying so — mark the bill "
+                "of materials as rework if that is what this is."
+            )
         super().save(*args, **kwargs)
 
 

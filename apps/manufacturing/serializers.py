@@ -134,8 +134,8 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
     class Meta:
         model = BillOfMaterials
         fields = ["id", "item", "version", "name", "quantity_produced", "uom",
-                  "is_computed", "is_default", "is_active", "notes",
-                  "components", "byproducts"]
+                  "is_computed", "is_default", "is_active", "is_rework",
+                  "backflush", "notes", "components", "byproducts"]
         read_only_fields = ["is_computed"]
 
 
@@ -224,13 +224,14 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                   "close_entry", "reopened_entry", "routing", "sales_order_line",
                   "notes",
                   "time_allowance_percent", "planned_conversion_cost",
+                  "backflush", "rework_of",
                   "components", "operations", "planned_minutes",
                   "minutes_booked", "conversion_cost", "conversion_variance",
                   "quantity_produced", "wip_balance", "unaccounted"]
         read_only_fields = ["number", "status", "planned_unit_cost",
                             "planned_material_cost", "released_at", "closed_at",
                             "close_entry", "reopened_entry", "routing",
-                            "planned_conversion_cost"]
+                            "backflush", "planned_conversion_cost"]
 
     def get_planned_minutes(self, obj):
         return round(obj.planned_minutes(), 2)
