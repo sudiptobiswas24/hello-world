@@ -143,25 +143,41 @@ class WhenToStartTests(PlanningTestCase):
 
     def test_a_single_shift_line_takes_longer_than_a_continuous_one(self):
         """
-        Minutes are divided by the machine's own open hours.
+        Hours are taken from the machine's own days.
 
         An extruder on three shifts and a stitching line on one turn
         the same minutes into very different numbers of days, and a
         plant-wide day would promise the second one's work at the
         first one's speed.
+
+        `lead_days` is the gap between starting and finishing, not the
+        count of days worked: 1,060 minutes over eight-hour days fills
+        two whole days and part of a third, so the run occupies three
+        days and has to start two days before it is due.
         """
         self.loom.available_hours_per_day = Decimal("8")
         self.loom.save()
         self.sell(self.fabric, "1000", self.day(30))
-        # 1000 kg at 60 an hour is 16h 40m, plus an hour of setup:
-        # 17.667 hours against an eight-hour day is 2.21, so three.
-        self.assertEqual(self.orders()["FAB-10X10"].lead_days, 3)
+        fabric = self.orders()["FAB-10X10"]
+        self.assertEqual(fabric.lead_days, 2)
+        self.assertEqual(fabric.needed_by - fabric.release_on, datetime.timedelta(days=2))
+        # and on a continuous line the same work fits inside one day.
+        self.loom.available_hours_per_day = Decimal("24")
+        self.loom.save()
+        self.assertEqual(self.orders()["FAB-10X10"].lead_days, 1)
 
-    def test_a_queue_allowance_is_added_to_the_run_time(self):
+    def test_a_queue_allowance_comes_off_the_finish_date(self):
+        """
+        Time the run is given rather than time the machines are asked
+        to find: the allowance is taken off the date the work must be
+        finished, and the schedule then fills backwards from there.
+        """
         self.settings.queue_days = 2
         self.settings.save()
         self.sell(self.fabric, "1000", self.day(30))
-        self.assertEqual(self.orders()["FAB-10X10"].lead_days, 3)
+        # The work fits inside one day, so it finishes two days early
+        # and starts that same day: two days between start and due.
+        self.assertEqual(self.orders()["FAB-10X10"].lead_days, 2)
 
     def test_a_chain_that_cannot_fit_reports_as_late_rather_than_moving(self):
         """

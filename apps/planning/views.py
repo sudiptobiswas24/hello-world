@@ -70,6 +70,40 @@ class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(PlanningRunSerializer(run).data)
 
     @action(detail=True, methods=["get"])
+    def load(self, request, pk=None):
+        """
+        What each machine is being asked to do against what it can,
+        week by week.
+
+        Weekly because that is the grain a planner acts on: a loom
+        over its hours on one Tuesday and under them on the Wednesday
+        is not a problem, and reporting it as one buries the week that
+        really is full.
+        """
+        from apps.manufacturing.orders import WorkCentre
+
+        from .capacity import LoadBook, load_profile
+
+        run = self.get_object()
+        book = LoadBook(run.warehouse, run.planned_on, run.horizon_end)
+        centres = WorkCentre.objects.filter(is_active=True)
+        return Response([
+            {
+                "work_centre": row["work_centre"].pk,
+                "code": row["work_centre"].code,
+                "week_beginning": row["week_beginning"],
+                "available_minutes": row["available_minutes"],
+                "booked_minutes": row["booked_minutes"],
+                "spare_minutes": row["spare_minutes"],
+                "utilisation_percent": row["utilisation_percent"],
+                "unscheduled_minutes": row["unscheduled_minutes"],
+            }
+            for row in load_profile(
+                book, centres, run.planned_on, run.horizon_end
+            )
+        ])
+
+    @action(detail=True, methods=["get"])
     def actions(self, request, pk=None):
         """What this run says to move, pull in first."""
         run = self.get_object()

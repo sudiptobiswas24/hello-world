@@ -54,6 +54,7 @@ from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
 from apps.quality.release import plan_for, release_status
 from apps.quality.models import ReleaseStatus
 
+from .capacity import LoadBook, schedule_make
 from .leadtime import (
     buy_lead_days,
     calendar_offset,
@@ -771,6 +772,10 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         )
 
     calendar = plant_calendar(settings)
+    # One book for the whole run, because the failure this fixes is two
+    # orders being told the same hours are free. It has to remember
+    # what the last answer spent.
+    book = LoadBook(warehouse, planned_on, horizon_end)
     levels = low_level_codes()
     run = PlanningRun.objects.create(
         warehouse=warehouse, planned_on=planned_on, horizon_end=horizon_end,
@@ -829,7 +834,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         for shortage in shortages:
             order = _write(
                 run, item, warehouse, kind, bom, shortage, level, settings,
-                rule, calendar,
+                rule, calendar, book,
             )
             if kind != PlannedOrderKind.MAKE:
                 continue
@@ -887,15 +892,43 @@ def _write_action(run, item, warehouse, message, planned_on):
 
 
 def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
-           calendar=None):
+           calendar=None, book=None):
+    bottleneck = None
+    overloaded = False
     if kind == PlannedOrderKind.MAKE:
         vendor = None
-        days = make_lead_days(
-            item, bom, shortage.quantity, item.uom,
-            queue_days=settings.queue_days,
-            default=settings.default_make_lead_days,
+        # Scheduled against the machines where there are machines to
+        # schedule against. The routing's minutes over the machine's
+        # open hours answers how long the run takes; only the book
+        # answers when it can happen.
+        placed = (
+            schedule_make(
+                book, bom, shortage.quantity, item.uom, shortage.date,
+                run.planned_on, queue_days=settings.queue_days,
+            )
+            if book is not None else None
         )
-        release_on = offset(shortage.date, days, calendar)
+        if placed is not None:
+            release_on = placed["start"]
+            bottleneck = placed["bottleneck"]
+            overloaded = placed["overloaded"]
+            if release_on >= shortage.date:
+                # Never less than a day, however fast the machines
+                # are. A run that starts and finishes on the same date
+                # tells a planner nothing about when to release it,
+                # and — because supply on a date covers demand on that
+                # same date — it lets the run's own reground trim feed
+                # its own hopper, which is material the plant has not
+                # made yet.
+                release_on = offset(shortage.date, 1, calendar)
+            days = (shortage.date - release_on).days
+        else:
+            days = make_lead_days(
+                item, bom, shortage.quantity, item.uom,
+                queue_days=settings.queue_days,
+                default=settings.default_make_lead_days,
+            )
+            release_on = offset(shortage.date, days, calendar)
     else:
         from apps.purchasing.pricing import preferred_vendor
 
@@ -911,7 +944,8 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         run=run, item=item, warehouse=warehouse, kind=kind,
         quantity=shortage.quantity, needed_by=shortage.date,
         release_on=release_on, lead_days=days, level=level,
-        bom=bom, vendor=vendor,
+        bom=bom, vendor=vendor, bottleneck=bottleneck,
+        is_overloaded=overloaded,
         rounded_up_by=shortage.rounded,
     )
     for number, (row, taken) in enumerate(shortage.pegs, start=1):

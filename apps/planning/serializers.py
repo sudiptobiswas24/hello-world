@@ -32,17 +32,18 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
     demands = PlannedDemandSerializer(many=True, read_only=True)
     is_late = serializers.BooleanField(read_only=True)
     days_late = serializers.IntegerField(read_only=True)
+    why_late = serializers.CharField(read_only=True)
     explanation = serializers.CharField(read_only=True)
 
     class Meta:
         model = PlannedOrder
         fields = ["id", "run", "item", "warehouse", "kind", "quantity",
                   "needed_by", "release_on", "lead_days", "level", "bom",
-                  "vendor", "rounded_up_by", "status", "work_order",
-                  "requisition_line", "firmed_at", "is_late", "days_late",
-                  "explanation", "demands"]
+                  "vendor", "bottleneck", "is_overloaded", "rounded_up_by",
+                  "status", "work_order", "requisition_line", "firmed_at",
+                  "is_late", "days_late", "why_late", "explanation", "demands"]
         read_only_fields = ["status", "work_order", "requisition_line",
-                            "firmed_at"]
+                            "firmed_at", "bottleneck", "is_overloaded"]
 
 
 class PlanningActionSerializer(serializers.ModelSerializer):
@@ -63,12 +64,14 @@ class PlanningRunSerializer(serializers.ModelSerializer):
     expedites = serializers.SerializerMethodField()
     defers = serializers.SerializerMethodField()
     cancels = serializers.SerializerMethodField()
+    overloaded = serializers.SerializerMethodField()
 
     class Meta:
         model = PlanningRun
         fields = ["id", "warehouse", "planned_on", "horizon_end", "ran_at",
                   "cut_links", "deferred_demand", "notes", "is_complete",
-                  "late", "lapsed", "expedites", "defers", "cancels"]
+                  "late", "lapsed", "expedites", "defers", "cancels",
+                  "overloaded"]
         read_only_fields = ["ran_at", "cut_links", "deferred_demand"]
 
     def get_late(self, run):
@@ -87,3 +90,6 @@ class PlanningRunSerializer(serializers.ModelSerializer):
 
     def get_cancels(self, run):
         return run.cancels().count()
+
+    def get_overloaded(self, run):
+        return [order.pk for order in run.overloaded()]

@@ -127,12 +127,15 @@ class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     # and reads as duplicated data — which is what it looked like the
     # first time this page was opened against a real plant.
     list_display = ["run", "item", "kind", "quantity", "needed_by",
-                    "release_on", "late", "level", "status", "warehouse"]
-    list_filter = ["run", "kind", "status", "warehouse", "level"]
+                    "release_on", "late", "bottleneck", "level", "status",
+                    "warehouse"]
+    list_filter = ["run", "kind", "status", "warehouse", "is_overloaded",
+                   "bottleneck", "level"]
     search_fields = ["item__sku", "item__name"]
     inlines = [PlannedDemandInline]
     readonly_fields = ["work_order", "requisition_line", "firmed_at",
-                       "rounded_up_by", "lead_days", "level"]
+                       "rounded_up_by", "lead_days", "level", "bottleneck",
+                       "is_overloaded", "shown_why_late"]
     actions = [
         _act("Firmed", "firm", "Firm into a work order or requisition"),
         _act("Cancelled", "cancel", "Cancel this suggestion"),
@@ -140,7 +143,13 @@ class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
     @admin.display(description="Days late")
     def late(self, obj):
-        return obj.days_late() or ""
+        if not obj.is_late():
+            return ""
+        return f"{obj.days_late()}" + (" (machine)" if obj.is_overloaded else "")
+
+    @admin.display(description="Why late")
+    def shown_why_late(self, obj):
+        return obj.why_late() or "—"
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related(

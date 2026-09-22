@@ -202,6 +202,10 @@ class PlanningRun(AuditModel):
     def cancels(self):
         return self.actions.filter(action=RescheduleAction.CANCEL)
 
+    def overloaded(self):
+        """Suggestions the machines could not fit however far back they went."""
+        return self.orders.filter(is_overloaded=True)
+
     def lapsed(self):
         """
         Suggestions firmed into a document that has since been
@@ -262,6 +266,20 @@ class PlannedOrder(AuditModel):
         "core.Party", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Who a buy was priced and lead-timed against.",
     )
+    bottleneck = models.ForeignKey(
+        "manufacturing.WorkCentre", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="+",
+        help_text="The machine that held this run longest, and so the one "
+                  "that set its dates. The only one worth adding capacity to, "
+                  "and the one to name when the date slips.",
+    )
+    is_overloaded = models.BooleanField(
+        default=False,
+        help_text="The machines could not fit this run before the plan's own "
+                  "date however far back it was pushed. The release date is "
+                  "then the earliest the schedule reached, and it is a date "
+                  "nobody can keep.",
+    )
     rounded_up_by = models.DecimalField(
         max_digits=18, decimal_places=4, default=Decimal("0"),
         help_text="How much of this quantity nothing asked for: what rounding "
@@ -300,6 +318,23 @@ class PlannedOrder(AuditModel):
     def is_late(self):
         """Whether this needed starting before the plan was even run."""
         return self.release_on < self.run.planned_on
+
+    def why_late(self):
+        """
+        Lead time, a full machine, or both.
+
+        Worth separating because the two have different answers: a
+        lead time is shortened by ringing a vendor and a full loom is
+        not, and a planner handed one number cannot tell which
+        conversation to have.
+        """
+        if not self.is_late():
+            return None
+        if self.is_overloaded and self.bottleneck_id:
+            return f"{self.bottleneck} has no room before {self.run.planned_on}"
+        if self.kind == PlannedOrderKind.BUY:
+            return f"{self.lead_days} days to buy, and it is wanted sooner"
+        return f"{self.lead_days} days to make, and it is wanted sooner"
 
     def days_late(self):
         if not self.is_late():

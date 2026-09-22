@@ -8,6 +8,9 @@ the only thing on the list that cannot wait until after lunch.
 from django.core.management.base import BaseCommand, CommandError
 
 from apps.inventory.models import Warehouse
+from apps.manufacturing.orders import WorkCentre
+
+from apps.planning.capacity import LoadBook, overloaded_weeks
 
 from apps.planning.models import PlannedOrderKind
 from apps.planning.mrp import plan
@@ -48,6 +51,8 @@ class Command(BaseCommand):
                 f" — start {order.release_on}, wanted {order.needed_by}{late}"
             )
             self.stdout.write(f"      because {order.explanation()}")
+            if order.is_late():
+                self.stdout.write(f"      late because {order.why_late()}")
 
         for label, rows in (
             ("Pull in", run.expedites()),
@@ -60,6 +65,30 @@ class Command(BaseCommand):
             self.stdout.write(f"\n{label}:")
             for action in rows:
                 self.stdout.write(f"  {action.document()}: {action.sentence()}")
+
+        weeks = overloaded_weeks(
+            LoadBook(run.warehouse, run.planned_on, run.horizon_end),
+            WorkCentre.objects.filter(is_active=True),
+            run.planned_on, run.horizon_end,
+        )
+        if weeks:
+            self.stdout.write("\nWeeks a machine is over its hours:")
+            for row in weeks[:10]:
+                over = -row["spare_minutes"] / 60
+                self.stdout.write(
+                    f"  {row['work_centre'].code} week of "
+                    f"{row['week_beginning']}: {over:,.1f} hours over"
+                )
+
+        overloaded = list(run.overloaded())
+        if overloaded:
+            self.stdout.write("\nMachines with no room:")
+            for order in overloaded:
+                self.stdout.write(
+                    f"  {order.bottleneck or 'a machine'}: "
+                    f"{order.quantity} {order.item.uom} {order.item.sku} "
+                    f"wanted {order.needed_by}"
+                )
 
         if run.cut_links:
             self.stdout.write("\nLinks not planned through:")
