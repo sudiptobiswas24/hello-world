@@ -1,0 +1,93 @@
+"""
+The planning pages.
+
+A planned order is shown with the reason it exists inline, because the
+number on its own is unarguable and the reason is the whole point. The
+list leads with how late a suggestion already is, since that is the
+only column that changes what a planner does this morning.
+"""
+
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
+
+from apps.core.audit import AuditableAdminMixin
+
+from .models import PlannedDemand, PlannedOrder, PlanningRun, PlanningSettings
+
+
+def _act(label, method, description):
+    def run(modeladmin, request, queryset):
+        done = 0
+        for row in queryset:
+            try:
+                getattr(row, method)()
+                done += 1
+            except ValidationError as error:
+                messages.error(request, " ".join(error.messages))
+        if done:
+            messages.success(request, f"{label}: {done}.")
+
+    run.short_description = description
+    run.__name__ = f"action_{method}"
+    return run
+
+
+@admin.register(PlanningSettings)
+class PlanningSettingsAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ["__str__", "horizon_days", "default_buy_lead_days",
+                    "default_make_lead_days", "queue_days"]
+
+
+class PlannedDemandInline(admin.TabularInline):
+    model = PlannedDemand
+    fk_name = "planned_order"
+    extra = 0
+    fields = ["source", "quantity", "needed_by", "sales_order_line",
+              "work_order", "parent"]
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PlanningRun)
+class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ["__str__", "warehouse", "planned_on", "horizon_end",
+                    "suggested", "late_count", "lapsed_count", "complete"]
+    list_filter = ["warehouse"]
+    readonly_fields = ["ran_at", "cut_links", "deferred_demand"]
+
+    @admin.display(description="Suggestions")
+    def suggested(self, obj):
+        return obj.suggestions().count()
+
+    @admin.display(boolean=True, description="Everything netted")
+    def complete(self, obj):
+        return obj.is_complete()
+
+    @admin.display(description="Late")
+    def late_count(self, obj):
+        return len(obj.late()) or ""
+
+    @admin.display(description="Lapsed")
+    def lapsed_count(self, obj):
+        return len(obj.lapsed()) or ""
+
+
+@admin.register(PlannedOrder)
+class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ["item", "kind", "quantity", "needed_by", "release_on",
+                    "late", "level", "status", "warehouse"]
+    list_filter = ["kind", "status", "warehouse", "level"]
+    search_fields = ["item__sku", "item__name"]
+    inlines = [PlannedDemandInline]
+    readonly_fields = ["work_order", "requisition_line", "firmed_at",
+                       "rounded_up_by", "lead_days", "level"]
+    actions = [
+        _act("Firmed", "firm", "Firm into a work order or requisition"),
+        _act("Cancelled", "cancel", "Cancel this suggestion"),
+    ]
+
+    @admin.display(description="Days late")
+    def late(self, obj):
+        return obj.days_late() or ""

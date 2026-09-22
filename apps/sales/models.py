@@ -637,6 +637,11 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                   "confirming the order hold the stock; without it the order is a "
                   "promise against no particular shelf.",
     )
+    delivery_date = models.DateField(
+        null=True, blank=True,
+        help_text="When this line was promised. Left empty it falls back to the "
+                  "order date, which reads as 'wanted now'.",
+    )
     revenue_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -748,6 +753,19 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         # claim would simply survive its own document.
         release_for(self, "Line removed")
         super().delete(*args, **kwargs)
+
+    def promised_date(self):
+        """
+        When this line is wanted.
+
+        A line date rather than an order one, because a fifty-thousand
+        sack contract is called off in weekly lots against a single
+        order and a planner asked to make all of it on the first
+        Monday will say no to work it could have taken. The order date
+        is the fallback and it means "now", which is the honest
+        reading of a promise nobody dated.
+        """
+        return self.delivery_date or self.order.order_date
 
     def quantity_shipped(self):
         """Net quantity shipped: posted deliveries minus posted customer returns."""

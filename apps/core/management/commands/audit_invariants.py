@@ -16,7 +16,7 @@ from django.db import models
 
 OUR_APPS = (
     "core", "accounting", "inventory", "sales", "purchasing", "hr",
-    "assets", "manufacturing", "quality",
+    "assets", "manufacturing", "quality", "planning",
 )
 
 # Correction paths. A flow built only forwards is the single most
