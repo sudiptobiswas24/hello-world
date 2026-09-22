@@ -27,6 +27,7 @@ from .orders import (
     WorkCentre,
     WorkOrder,
 )
+from .demand import coverage, genealogy, uncovered
 from .routing import Routing, RoutingOperation, capacity_report
 from .serializers import (
     BagSpecificationSerializer,
@@ -252,6 +253,43 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         order = self.get_object()
         _run(order.cancel)
         return self._reply(order)
+
+    @action(detail=True, methods=["get"], url_path="coverage")
+    def coverage(self, request, pk=None):
+        """What the customer line this run is for still has uncovered."""
+        order = self.get_object()
+        if order.sales_order_line_id is None:
+            raise DRFValidationError(["This run is not against a customer line."])
+        report = coverage(order.sales_order_line)
+        return Response({
+            "sales_order": str(report["line"].order),
+            "item": report["item"].sku,
+            "ordered": report["ordered"],
+            "on_work_orders": report["on_work_orders"],
+            "made": report["made"],
+            "shipped": report["shipped"],
+            "uncovered": report["uncovered"],
+            "runs": [run.number or f"draft {run.pk}" for run in report["runs"]],
+        })
+
+    @action(detail=False, methods=["get"], url_path="uncovered")
+    def uncovered(self, request):
+        """
+        The planner's morning list: every customer line with something
+        nobody has started making.
+        """
+        return Response([
+            {
+                "sales_order": str(row["line"].order),
+                "line": row["line"].pk,
+                "item": row["item"].sku,
+                "name": row["item"].name,
+                "ordered": row["ordered"],
+                "on_work_orders": row["on_work_orders"],
+                "uncovered": row["uncovered"],
+            }
+            for row in uncovered()
+        ])
 
     @action(detail=True, methods=["get"], url_path="material-variance")
     def variance(self, request, pk=None):

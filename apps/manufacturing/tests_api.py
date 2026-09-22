@@ -409,3 +409,53 @@ class TimeBookingApiTests(RunTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("really ran that long", str(response.data))
+
+
+class DemandApiTests(RunTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Party
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        user = get_user_model().objects.create_superuser(
+            username="planner", email="planner@example.com", password="x"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+        customer = Party.objects.create(code="CEM", name="Deccan Cement")
+        sale = SalesOrder.objects.create(
+            customer=customer, order_date=datetime.date(2026, 9, 1),
+            currency=self.usd,
+        )
+        self.line = SalesOrderLine.objects.create(
+            order=sale, item=self.tape, uom=self.kg,
+            quantity=Decimal("4000"), unit_price=Decimal("120"),
+        )
+
+    def test_the_planners_morning_list_is_reachable(self):
+        response = self.client.get("/api/manufacturing/work-orders/uncovered/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["item"], "TAPE-1000")
+        self.assertEqual(Decimal(str(response.data[0]["uncovered"])), Decimal("4000"))
+
+    def test_a_run_against_a_line_covers_it(self):
+        order = self.order("4000")
+        order.sales_order_line = self.line
+        order.save()
+        response = self.client.get(
+            f"/api/manufacturing/work-orders/{order.pk}/coverage/"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Decimal(str(response.data["uncovered"])), Decimal("0"))
+        self.assertEqual(
+            self.client.get("/api/manufacturing/work-orders/uncovered/").data, []
+        )
+
+    def test_a_run_for_nobody_says_so(self):
+        order = self.order("1000")
+        response = self.client.get(
+            f"/api/manufacturing/work-orders/{order.pk}/coverage/"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not against a customer line", str(response.data))

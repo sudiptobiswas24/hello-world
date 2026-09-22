@@ -286,6 +286,15 @@ class WorkOrder(AuditModel):
         help_text="Copied off the bill of materials at release and frozen "
                   "there, like everything else about a released run.",
     )
+    sales_order_line = models.ForeignKey(
+        "sales.SalesOrderLine", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="work_orders",
+        help_text="The customer order this run is for, when it is one. The "
+                  "pointer is here rather than on the sales line because a "
+                  "make-to-order run is meaningless without the order and the "
+                  "order is perfectly meaningful without the run — and it "
+                  "keeps sales from having to know that manufacturing exists.",
+    )
     scheduled_start = models.DateField(null=True, blank=True)
     scheduled_end = models.DateField(null=True, blank=True)
     status = models.CharField(
@@ -569,6 +578,15 @@ class WorkOrder(AuditModel):
             raise ValidationError(
                 f"{self.bom} makes {self.bom.item}, and this order is for "
                 f"{self.item}."
+            )
+        if (
+            self.sales_order_line_id is not None
+            and self.sales_order_line.item_id != self.item_id
+        ):
+            raise ValidationError(
+                f"This run makes {self.item} and is against a customer line "
+                f"for {self.sales_order_line.item}. A run covers the line it "
+                "is for, or it covers nothing."
             )
         if not self.bom.is_active:
             raise ValidationError(f"{self.bom} is not active.")

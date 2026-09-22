@@ -106,13 +106,25 @@ class RunTestCase(TestCase):
             valuation=ByproductValuation.STANDARD,
         )
 
-    def stock(self, item, quantity, cost):
+    def stock(self, item, quantity, cost, lot=None):
         """Put stock on the shelf without going through a document."""
         return StockMovement.objects.create(
             item=item, warehouse=self.plant, movement_type=MovementType.RECEIPT,
             uom=self.kg, quantity=Decimal(quantity), unit_cost=Decimal(cost),
-            occurred_at=timezone.now(),
+            lot=lot, occurred_at=timezone.now(),
         )
+
+    def issue_with_lots(self, order, rows):
+        """An issue whose lines name the batch they came out of."""
+        document = MaterialIssue.objects.create(
+            work_order=order, issue_date=TODAY, warehouse=self.plant,
+        )
+        for index, (item, quantity, lot) in enumerate(rows, start=1):
+            MaterialIssueLine.objects.create(
+                issue=document, item=item, quantity=Decimal(quantity),
+                uom=self.kg, lot=lot, line_number=index,
+            )
+        return document
 
     def order(self, quantity="1000"):
         return WorkOrder.objects.create(
@@ -134,12 +146,12 @@ class RunTestCase(TestCase):
             )
         return document
 
-    def produce(self, order, quantity, scrapped="0", byproducts=()):
+    def produce(self, order, quantity, scrapped="0", byproducts=(), lot=None):
         entry = ProductionEntry.objects.create(
             work_order=order, entry_date=TODAY, warehouse=self.plant,
             quantity_produced=Decimal(quantity),
             quantity_scrapped=Decimal(scrapped), uom=self.kg,
-            work_centre=self.loom,
+            work_centre=self.loom, lot=lot,
         )
         for index, (item, amount) in enumerate(byproducts, start=1):
             ProductionByproduct.objects.create(

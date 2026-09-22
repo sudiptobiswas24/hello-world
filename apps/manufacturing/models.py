@@ -23,6 +23,13 @@ from .bom import (  # noqa: F401
     net_requirements,
     PlannedCost,
 )
+from .demand import (  # noqa: F401
+    consumed_lots,
+    coverage,
+    genealogy,
+    runs_that_made,
+    uncovered,
+)
 from .routing import (  # noqa: F401
     Routing,
     RoutingOperation,

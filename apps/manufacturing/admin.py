@@ -294,9 +294,11 @@ class WorkOrderComponentInline(admin.TabularInline):
 @admin.register(WorkOrder)
 class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "item", "quantity_ordered", "uom", "work_centre",
-                    "status", "shown_produced", "planned_unit_cost", "shown_wip",
+                    "status", "sales_order_line", "shown_produced", "planned_unit_cost",
+                    "shown_wip",
                     "shown_unaccounted")
     list_filter = ("status", "work_centre", "warehouse")
+    raw_id_fields = ("sales_order_line",)
     search_fields = ("number", "item__sku")
     inlines = [WorkOrderComponentInline, WorkOrderOperationInline]
     readonly_fields = ("number", "status", "routing", "planned_unit_cost",
