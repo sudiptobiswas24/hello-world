@@ -6,6 +6,8 @@ plan writes a run, and a planner who could refresh a page into a
 hundred stored plans would rightly stop using it.
 """
 
+from decimal import Decimal, InvalidOperation
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -13,7 +15,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
-from apps.core.models import Party
+from apps.core.models import Party, to_date
 from apps.inventory.models import Warehouse
 
 from .levels import low_level_codes
@@ -170,6 +172,70 @@ class PlannedDemandViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet)
         "planned_order", "sales_order_line", "work_order", "parent"
     )
     serializer_class = PlannedDemandSerializer
+
+
+class PromiseViewSet(viewsets.ViewSet):
+    """
+    What a rep can say on the telephone.
+
+    Read-only and stateless: a quotation reserves nothing, books no
+    machine and writes nothing down. Two enquiries the same morning
+    get the same date, and the cure is to confirm the order — which
+    does reserve stock — not to have the enquiry pretend it did.
+    """
+
+    queryset = PlannedOrder.objects.none()
+
+    def _asked(self, request):
+        from apps.inventory.models import Item, Warehouse
+
+        item = Item.objects.filter(pk=request.query_params.get("item")).first()
+        warehouse = Warehouse.objects.filter(
+            pk=request.query_params.get("warehouse")
+        ).first()
+        if item is None or warehouse is None:
+            raise DRFValidationError(["Name an item and a warehouse."])
+        on_date = to_date(request.query_params.get("on")) or None
+        return item, warehouse, on_date
+
+    def list(self, request):
+        """The uncommitted ladder, period by period."""
+        from .promise import available_to_promise
+
+        item, warehouse, on_date = self._asked(request)
+        return Response(_run(
+            available_to_promise, item, warehouse, planned_on=on_date
+        ))
+
+    @action(detail=False, methods=["get"])
+    def when(self, request):
+        """When a quantity could be promised, from stock or from a run."""
+        from .promise import capable_to_promise, when_can_we_promise
+
+        item, warehouse, on_date = self._asked(request)
+        try:
+            quantity = Decimal(str(request.query_params.get("quantity")))
+        except (TypeError, InvalidOperation, ValueError):
+            raise DRFValidationError(["Say how much, as a number."])
+        answer = _run(
+            capable_to_promise, item, warehouse, quantity, planned_on=on_date
+        )
+        return Response({
+            "item": answer["item"].pk,
+            "sku": answer["item"].sku,
+            "quantity": answer["quantity"],
+            "date": answer["date"],
+            "source": answer["source"],
+            "note": answer["note"],
+            "from_stock": _run(
+                when_can_we_promise, item, warehouse, quantity,
+                planned_on=on_date,
+            ),
+            "bottleneck": (
+                answer["bottleneck"].pk
+                if answer.get("bottleneck") is not None else None
+            ),
+        })
 
 
 class LowLevelCodeViewSet(viewsets.ViewSet):
