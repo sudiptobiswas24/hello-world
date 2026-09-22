@@ -253,7 +253,7 @@ class WorkCentreAdmin(AuditableAdminMixin, admin.ModelAdmin):
         return f"{obj.conversion_rate_per_hour():,.2f}"
 
     list_display = ("code", "name", "capacity_per_hour", "capacity_uom",
-                    "available_hours_per_day", "days_per_week",
+                    "available_hours_per_day", "working_days", "holiday_region",
                     "shown_rate", "is_active")
     search_fields = ("code", "name")
 

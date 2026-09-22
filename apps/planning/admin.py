@@ -76,9 +76,18 @@ class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 @admin.register(PlannedOrder)
 class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ["item", "kind", "quantity", "needed_by", "release_on",
-                    "late", "level", "status", "warehouse"]
-    list_filter = ["kind", "status", "warehouse", "level"]
+    """
+    A suggestion, the reasons under it, and which plan proposed it.
+    """
+
+    # The run leads, and it is not optional. Planning is re-run whenever
+    # anything changes and every run keeps its own suggestions, so a
+    # list without it shows three plans' worth of identical-looking rows
+    # and reads as duplicated data — which is what it looked like the
+    # first time this page was opened against a real plant.
+    list_display = ["run", "item", "kind", "quantity", "needed_by",
+                    "release_on", "late", "level", "status", "warehouse"]
+    list_filter = ["run", "kind", "status", "warehouse", "level"]
     search_fields = ["item__sku", "item__name"]
     inlines = [PlannedDemandInline]
     readonly_fields = ["work_order", "requisition_line", "firmed_at",
@@ -91,3 +100,8 @@ class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     @admin.display(description="Days late")
     def late(self, obj):
         return obj.days_late() or ""
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "run", "run__warehouse", "item", "warehouse"
+        )

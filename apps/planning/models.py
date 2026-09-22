@@ -69,6 +69,18 @@ class PlanningSettings(AuditModel):
                   "machine. A stated allowance, because nothing here schedules "
                   "against a machine's real backlog.",
     )
+    working_days = models.CharField(
+        max_length=7, default="1234567",
+        help_text="Which days this plant works, as ISO weekday numbers — 1 for "
+                  "Monday through 7 for Sunday. Run times are counted against "
+                  "this; a vendor's quoted lead time is not, because their "
+                  "weekends are already inside the number they quoted.",
+    )
+    holiday_region = models.CharField(
+        max_length=32, blank=True,
+        help_text="Which public holiday list shuts this plant. Blank takes the "
+                  "company-wide one only.",
+    )
     requisition_requester = models.ForeignKey(
         "core.Party", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
@@ -144,7 +156,14 @@ class PlanningRun(AuditModel):
         ordering = ["-ran_at", "-id"]
 
     def __str__(self):
-        return f"Plan for {self.warehouse} on {self.planned_on}"
+        # The time, not just the date. Planning is re-run whenever
+        # anything changes, so several runs a day against one warehouse
+        # is the normal case and a name that cannot tell them apart is
+        # a list of rows nobody can attribute.
+        return (
+            f"Plan {self.pk} for {self.warehouse} on {self.planned_on}"
+            f" ({timezone.localtime(self.ran_at):%H:%M})"
+        )
 
     def suggestions(self):
         return self.orders.filter(status=PlannedOrderStatus.SUGGESTED)
@@ -257,10 +276,18 @@ class PlannedOrder(AuditModel):
             return 0
         return (self.run.planned_on - self.release_on).days
 
+    # Rounding smaller than this is the last decimal place of the
+    # stored quantity and nothing else. It is recorded, because the
+    # reasons have to add up to the order exactly, and it is not said
+    # out loud: a plan that appends "0.0001 added by rounding" to
+    # twenty-two lines out of twenty-six has taught its reader to skip
+    # the line by the third one.
+    WORTH_SAYING = Decimal("0.0001")
+
     def explanation(self):
         """The sentence a planner reads instead of the number."""
         parts = [f"{demand.describe()}" for demand in self.demands.all()]
-        if self.rounded_up_by:
+        if self.rounded_up_by > self.WORTH_SAYING:
             parts.append(f"{self.rounded_up_by} added by rounding the order up")
         return "; ".join(parts) or "nothing recorded"
 

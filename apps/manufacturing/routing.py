@@ -33,7 +33,6 @@ from django.db.models import Q
 from apps.core.models import AuditModel
 
 MINUTES_PER_HOUR = Decimal("60")
-DAYS_PER_WEEK = Decimal("7")
 
 
 class Routing(AuditModel):
@@ -218,11 +217,15 @@ def capacity_report(work_centre, start, end):
     loom, and a planner asking "can I take this order" is better served
     by a number that rounds against them.
 
-    Available time is the work centre's own hours and days rather than a
-    calendar. A public holiday is a company-wide fact and this module
-    has no business owning one; a plant that runs six days sets
-    `days_per_week` to six and gets the right answer without manufacturing
-    importing a holiday list from somewhere else.
+    Available time is the days this machine actually works in this
+    window, from its own pattern and the public holiday list — not a
+    fraction of a nominal week. The fraction was here first, on the
+    argument that a holiday is a company-wide fact this module had no
+    business owning. The fact was already owned, in `hr`, and the
+    average it was replaced by is wrong in exactly the windows a
+    planner asks about: a long weekend has no capacity rather than
+    three sevenths of a week's worth, and a plant shut for a festival
+    has none at all.
     """
     from .orders import WorkOrderOperation, WorkOrderStatus
 
@@ -257,17 +260,13 @@ def capacity_report(work_centre, start, end):
     floating = sum(
         (row.planned_minutes or Decimal("0") for row in unscheduled), Decimal("0")
     )
-    days = Decimal((end - start).days + 1)
-    available = (
-        days
-        * (work_centre.days_per_week / DAYS_PER_WEEK)
-        * work_centre.available_hours_per_day
-        * MINUTES_PER_HOUR
-    )
+    days = Decimal(work_centre.calendar().count(start, end))
+    available = days * work_centre.available_hours_per_day * MINUTES_PER_HOUR
     return {
         "work_centre": work_centre,
         "start": start,
         "end": end,
+        "working_days": int(days),
         "load_minutes": load,
         "unscheduled_minutes": floating,
         "available_minutes": available,

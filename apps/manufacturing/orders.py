@@ -49,6 +49,7 @@ from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.hr.calendars import WorkingCalendar, parse_working_days
 from apps.inventory.availability import check_available
 from apps.inventory.costing import cost_of_removing
 from apps.quality.release import check_released
@@ -170,11 +171,16 @@ class WorkCentre(AuditModel):
                   "Twenty-four for a continuous line; less where a shift "
                   "pattern or a maintenance window says so.",
     )
-    days_per_week = models.DecimalField(
-        max_digits=4, decimal_places=2, default=Decimal("7"),
-        help_text="Days a week it runs. Deliberately a number rather than a "
-                  "calendar: a public holiday is a company-wide fact and this "
-                  "module has no business owning one.",
+    working_days = models.CharField(
+        max_length=7, default="1234567",
+        help_text="Which days this machine runs, as ISO weekday numbers — "
+                  "1 for Monday through 7 for Sunday. '1234567' is a "
+                  "continuous line; '123456' is six days; '12345' is weekdays.",
+    )
+    holiday_region = models.CharField(
+        max_length=32, blank=True,
+        help_text="Which public holiday list applies here. Blank takes the "
+                  "company-wide one only.",
     )
     machine_rate_per_hour = models.DecimalField(
         max_digits=18, decimal_places=4, default=Decimal("0"),
@@ -210,13 +216,37 @@ class WorkCentre(AuditModel):
                 name="work_centre_hours_in_a_day",
             ),
             models.CheckConstraint(
-                check=Q(days_per_week__gt=0) & Q(days_per_week__lte=7),
-                name="work_centre_days_in_a_week",
+                check=~Q(working_days=""), name="work_centre_works_some_day",
             ),
         ]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def clean(self):
+        # Parsed at the point somebody types it, not at the point a plan
+        # divides by it. A pattern nobody can read is a pattern that
+        # silently schedules the wrong days.
+        parse_working_days(self.working_days)
+
+    def calendar(self):
+        """
+        Which days this machine runs, holidays included.
+
+        A pattern rather than a count of days a week, which is what
+        this used to be. Six-sevenths of a window is the right average
+        and the wrong answer to every question actually asked of it: a
+        three-day window over a weekend has no capacity at all, not
+        three sevenths of a week's worth, and a plant shut for Diwali
+        has none for a fortnight. The company-wide holiday list already
+        existed in `hr`; this module declined to read it and computed
+        an average instead.
+        """
+        return WorkingCalendar(self.working_days, self.holiday_region)
+
+    def days_a_week(self):
+        """Derived from the pattern, never stored beside it."""
+        return self.calendar().days_a_week()
 
     def conversion_rate_per_hour(self):
         """

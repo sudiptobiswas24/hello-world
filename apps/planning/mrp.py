@@ -54,7 +54,13 @@ from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
 from apps.quality.release import plan_for, release_status
 from apps.quality.models import ReleaseStatus
 
-from .leadtime import buy_lead_days, make_lead_days, offset
+from .leadtime import (
+    buy_lead_days,
+    calendar_offset,
+    make_lead_days,
+    offset,
+    plant_calendar,
+)
 from .levels import level_of, low_level_codes
 from .models import (
     DemandSource,
@@ -557,6 +563,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
             "to plan against it."
         )
 
+    calendar = plant_calendar(settings)
     levels = low_level_codes()
     run = PlanningRun.objects.create(
         warehouse=warehouse, planned_on=planned_on, horizon_end=horizon_end,
@@ -606,7 +613,8 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         kind, bom = _make_or_buy(item)
         for shortage in shortages:
             order = _write(
-                run, item, warehouse, kind, bom, shortage, level, settings, rule,
+                run, item, warehouse, kind, bom, shortage, level, settings,
+                rule, calendar,
             )
             if kind != PlannedOrderKind.MAKE:
                 continue
@@ -644,7 +652,8 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
     return run
 
 
-def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule):
+def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
+           calendar=None):
     if kind == PlannedOrderKind.MAKE:
         vendor = None
         days = make_lead_days(
@@ -652,6 +661,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule):
             queue_days=settings.queue_days,
             default=settings.default_make_lead_days,
         )
+        release_on = offset(shortage.date, days, calendar)
     else:
         from apps.purchasing.pricing import preferred_vendor
 
@@ -662,10 +672,11 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule):
             item, vendor, quantity=shortage.quantity, on_date=shortage.date,
             default=settings.default_buy_lead_days,
         )
+        release_on = calendar_offset(shortage.date, days, calendar)
     order = PlannedOrder.objects.create(
         run=run, item=item, warehouse=warehouse, kind=kind,
         quantity=shortage.quantity, needed_by=shortage.date,
-        release_on=offset(shortage.date, days), lead_days=days, level=level,
+        release_on=release_on, lead_days=days, level=level,
         bom=bom, vendor=vendor,
         rounded_up_by=shortage.rounded,
     )

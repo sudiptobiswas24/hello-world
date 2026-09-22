@@ -209,6 +209,85 @@ class WhenToStartTests(PlanningTestCase):
         self.assertEqual(self.orders()["FAB-10X10"].needed_by, TODAY)
 
 
+class WhenThePlantIsShutTests(PlanningTestCase):
+    """
+    Run time is counted in the plant's working days; a vendor's quoted
+    lead time is not, because their weekends are already inside the
+    number they quoted. Both land on a day this plant works.
+
+    June 2026 starts on a Monday, so the 6th and 7th are a weekend.
+    """
+
+    def weekdays(self):
+        self.settings.working_days = "12345"
+        self.settings.save()
+
+    def test_a_run_wanted_on_monday_starts_the_friday_before(self):
+        self.weekdays()
+        self.sell(self.fabric, "1000", self.day(7))
+        fabric = self.orders()["FAB-10X10"]
+        # Wanted Monday the 8th, one working day of loom time.
+        self.assertEqual(fabric.needed_by, datetime.date(2026, 6, 8))
+        self.assertEqual(fabric.release_on, datetime.date(2026, 6, 5))
+
+    def test_a_run_wanted_on_a_sunday_is_finished_by_the_friday(self):
+        self.weekdays()
+        self.sell(self.fabric, "1000", self.day(6))
+        fabric = self.orders()["FAB-10X10"]
+        self.assertEqual(fabric.needed_by, datetime.date(2026, 6, 7))
+        # A Sunday is not a day this plant finishes anything on, so the
+        # single day of loom time is the Thursday into the Friday.
+        self.assertEqual(fabric.release_on, datetime.date(2026, 6, 4))
+
+    def test_a_festival_shutdown_pushes_the_start_back_further(self):
+        from apps.hr.calendars import PublicHoliday
+
+        self.weekdays()
+        for day in (3, 4):
+            PublicHoliday.objects.create(
+                name="Shutdown", date=datetime.date(2026, 6, day)
+            )
+        self.sell(self.fabric, "1000", self.day(7))
+        fabric = self.orders()["FAB-10X10"]
+        # Monday the 8th back one working day is the Friday still, but
+        # the tape below it now steps over the shut Wednesday and
+        # Thursday.
+        tape = self.orders()["TAPE-1000"]
+        self.assertEqual(tape.needed_by, datetime.date(2026, 6, 5))
+        self.assertEqual(tape.release_on, datetime.date(2026, 6, 2))
+
+    def test_a_continuous_line_is_unaffected(self):
+        self.sell(self.fabric, "1000", self.day(7))
+        fabric = self.orders()["FAB-10X10"]
+        self.assertEqual(fabric.release_on, datetime.date(2026, 6, 7))
+
+    def test_a_vendors_promise_is_counted_in_calendar_days(self):
+        """
+        Five weeks from the importer is five weeks of the world's time.
+        Counting it in this plant's working days would stretch a
+        five-day lead time into a seven-day one and buy everything
+        early.
+        """
+        self.weekdays()
+        self.rule(self.virgin, minimum="1000")
+        virgin = self.orders()["PP-RAFFIA"]
+        self.assertEqual(virgin.lead_days, 7)
+        # Wanted Monday the 1st, seven calendar days back is the Monday
+        # before — a day this plant works, so it stands.
+        self.assertEqual(virgin.needed_by, TODAY)
+        self.assertEqual(virgin.release_on, datetime.date(2026, 5, 25))
+
+    def test_a_purchase_is_never_released_on_a_day_nobody_is_in(self):
+        self.weekdays()
+        self.rule(self.virgin, minimum="1000")
+        self.settings.default_buy_lead_days = 9
+        self.settings.save()
+        virgin = self.orders()["PP-RAFFIA"]
+        # Nine calendar days before Monday the 1st is Saturday 23 May,
+        # so the order goes out on the Friday before it.
+        self.assertEqual(virgin.release_on, datetime.date(2026, 5, 22))
+
+
 class SupplyTests(PlanningTestCase):
     def confirmed_purchase(self, item, quantity, expected, uom=None):
         order = PurchaseOrder.objects.create(
@@ -753,6 +832,14 @@ class WhyEachOrderExistsTests(PlanningTestCase):
             [d.source for d in tape.demands.all()], [DemandSource.PLANNED]
         )
         self.assertEqual(tape.rounded_up_by, Decimal("0.0001"))
+        # Recorded, so the reasons add up, and not said out loud.
+        self.assertNotIn("rounding", tape.explanation())
+
+    def test_a_rounding_worth_reading_about_is_said_out_loud(self):
+        self.rule(self.virgin, multiple_of="1000")
+        self.sell(self.fabric, "1000", self.day(30))
+        virgin = self.orders()["PP-RAFFIA"]
+        self.assertIn("211.0246 added by rounding", virgin.explanation())
 
     def test_a_run_naming_a_work_order_says_which(self):
         order = WorkOrder.objects.create(

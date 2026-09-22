@@ -158,7 +158,8 @@ class WorkCentreSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkCentre
         fields = ["id", "code", "name", "description", "capacity_per_hour",
-                  "capacity_uom", "available_hours_per_day", "days_per_week",
+                  "capacity_uom", "available_hours_per_day", "working_days",
+                  "holiday_region",
                   "machine_rate_per_hour", "labour_rate_per_hour",
                   "overhead_rate_per_hour", "conversion_rate_per_hour",
                   "is_active"]

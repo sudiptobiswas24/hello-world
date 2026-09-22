@@ -238,11 +238,54 @@ class WhetherTheMachineHasTheHoursTests(RoutingTestCase):
         )
 
     def test_a_line_that_does_not_run_on_sundays(self):
-        self.extruder.days_per_week = Decimal("6")
+        self.extruder.working_days = "123456"
         self.extruder.save()
         report = capacity_report(self.extruder, self.start, self.end)
-        # Seven days, six sevenths of them, 24 hours: 8,640 minutes.
+        # Monday to Sunday less the Sunday: six days at 24 hours.
         self.assertEqual(report["available_minutes"], Decimal("8640.00"))
+        self.assertEqual(report["working_days"], 6)
+
+    def test_a_window_that_is_only_the_weekend_has_no_hours(self):
+        """
+        The case a fraction of a nominal week cannot answer.
+
+        Six sevenths of a two-day weekend is a day and a half of
+        capacity on a line that does not work weekends at all, and a
+        planner told that takes an order nothing can make.
+        """
+        self.extruder.working_days = "12345"
+        self.extruder.save()
+        report = capacity_report(
+            self.extruder, datetime.date(2026, 6, 6), datetime.date(2026, 6, 7)
+        )
+        self.assertEqual(report["available_minutes"], Decimal("0"))
+        self.assertIsNone(report["utilisation_percent"])
+
+    def test_a_public_holiday_takes_the_day_out(self):
+        from apps.hr.calendars import PublicHoliday
+
+        PublicHoliday.objects.create(
+            name="Bakrid", date=datetime.date(2026, 6, 3)
+        )
+        report = capacity_report(self.extruder, self.start, self.end)
+        # Seven days less the one nobody works: six at 24 hours.
+        self.assertEqual(report["available_minutes"], Decimal("8640.00"))
+
+    def test_a_holiday_for_another_region_does_not_shut_this_plant(self):
+        from apps.hr.calendars import PublicHoliday
+
+        PublicHoliday.objects.create(
+            name="Pongal", date=datetime.date(2026, 6, 3), region="TN"
+        )
+        self.extruder.holiday_region = "TS"
+        self.extruder.save()
+        report = capacity_report(self.extruder, self.start, self.end)
+        self.assertEqual(report["available_minutes"], Decimal("10080.00"))
+
+    def test_a_pattern_nobody_can_read_is_refused(self):
+        self.extruder.working_days = "Mon-Sat"
+        with self.assertRaises(ValidationError):
+            self.extruder.full_clean()
 
     def test_two_shifts_rather_than_three(self):
         self.extruder.available_hours_per_day = Decimal("16")

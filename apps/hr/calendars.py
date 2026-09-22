@@ -23,6 +23,12 @@ from apps.core.models import AuditModel
 # convention date.isoweekday() uses, so nothing has to convert.
 DEFAULT_WORKING_DAYS = "12345"
 
+# A plant shut for longer than this is not on holiday, it is closed, and
+# a date computed across it would be fiction. Long enough to cross the
+# longest festival shutdown an Indian plant takes and still refuse an
+# empty working pattern rather than looping for ever.
+MAX_SHUT_DAYS = 60
+
 
 class PublicHoliday(AuditModel):
     """
@@ -105,6 +111,106 @@ def working_days(start, end, pattern=DEFAULT_WORKING_DAYS, region=""):
             total += 1
         current += datetime.timedelta(days=1)
     return total
+
+
+class WorkingCalendar:
+    """
+    Which days a pattern works, and the arithmetic that runs on them.
+
+    Built as an object rather than a shelf of functions because the
+    callers that need it most — a plan offsetting a lead time for every
+    item it touches, a capacity report walking a window — ask the same
+    question hundreds of times against the same pattern and the same
+    holiday list. A function would go to the database once per question.
+    This loads the holidays once and answers from memory.
+
+    It deliberately does not know about shifts. A shift says how many
+    hours a machine runs on a day it runs at all; this says which days
+    those are. Conflating them gives a plant that works Saturdays at
+    half capacity no way to say so.
+    """
+
+    def __init__(self, pattern=DEFAULT_WORKING_DAYS, region="", holidays=None):
+        self.pattern = pattern or DEFAULT_WORKING_DAYS
+        self.region = region
+        self.days = parse_working_days(self.pattern)
+        if holidays is None:
+            rows = PublicHoliday.objects.filter(
+                models.Q(region="") | models.Q(region=region)
+            )
+            holidays = {row.date for row in rows}
+        self.holidays = holidays
+
+    def __str__(self):
+        return f"{self.pattern}" + (f" ({self.region})" if self.region else "")
+
+    def days_a_week(self):
+        """How many days of seven this pattern works."""
+        return len(self.days)
+
+    def is_working(self, day):
+        return day.isoweekday() in self.days and day not in self.holidays
+
+    def count(self, start, end):
+        """Working days in a range, both ends included."""
+        if end < start:
+            raise ValidationError("A range cannot end before it starts.")
+        total = 0
+        current = start
+        while current <= end:
+            if self.is_working(current):
+                total += 1
+            current += datetime.timedelta(days=1)
+        return total
+
+    def next_working(self, day, forwards=True):
+        """`day` itself if it is worked, otherwise the next one that is."""
+        step = datetime.timedelta(days=1 if forwards else -1)
+        guard = 0
+        while not self.is_working(day):
+            day += step
+            guard += 1
+            if guard > MAX_SHUT_DAYS:
+                raise ValidationError(
+                    f"No working day found within {MAX_SHUT_DAYS} days of "
+                    f"{day}. A pattern of '{self.pattern}' with these holidays "
+                    "never works, so no date can be computed from it."
+                )
+        return day
+
+    def offset_back(self, end, days):
+        """
+        The working day `days` working days before `end`.
+
+        Zero means `end` itself, pulled back to a working day if it is
+        not one: a run wanted on a Sunday has to be finished by Friday,
+        and saying "Sunday" would have the plant promising a date it
+        does not work.
+        """
+        return self._offset(end, days, forwards=False)
+
+    def offset_forward(self, start, days):
+        """The working day `days` working days after `start`."""
+        return self._offset(start, days, forwards=True)
+
+    def _offset(self, anchor, days, forwards):
+        if days < 0:
+            raise ValidationError("An offset cannot be a negative number of days.")
+        step = datetime.timedelta(days=1 if forwards else -1)
+        day = self.next_working(anchor, forwards=forwards)
+        remaining = int(days)
+        guard = 0
+        while remaining > 0:
+            day += step
+            guard += 1
+            if guard > MAX_SHUT_DAYS * (remaining + 1):
+                raise ValidationError(
+                    f"Counting {days} working days from {anchor} ran past "
+                    "every date worth considering. Check the working pattern."
+                )
+            if self.is_working(day):
+                remaining -= 1
+        return day
 
 
 def month_end(day):

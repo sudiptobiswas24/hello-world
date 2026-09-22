@@ -22,12 +22,22 @@ it is a stated allowance rather than a computed figure, and a plant
 that wants it computed should be told that is what `capacity_report`
 is for.
 
-Days are calendar days throughout. A plant on three shifts, seven
-days, which is what a sack line runs, loses very little to that; a
-single-shift weekday operation would want a working calendar, and the
-right place for one is `core`, where everything could use it. Said
-here because a lead time quietly counting Sundays is the kind of thing
-that goes unnoticed until a delivery does.
+Days are working days, counted against the plant's own pattern and the
+public holiday list in `hr`. They were calendar days first, with a
+note saying a working calendar "would want" building — and one already
+existed, three modules away, read by payroll and by nobody else. A
+lead time quietly counting Sundays goes unnoticed until a delivery
+does, and a plant shut for a week of Diwali finds out the hard way.
+
+The two lead times count differently, and it is worth saying why.
+**Run time is the plant's calendar**, because a loom does not weave on
+a day the plant is shut. **Purchase lead time is the vendor's promise
+and is counted in calendar days**, because "five weeks from the
+importer" is five weeks of the world's time, weekends included — the
+vendor's own shutdowns are already inside the number they quoted. The
+release date that comes out is then pulled back to a day this plant
+works, since nobody raises a purchase order on a day the office is
+closed.
 """
 
 import datetime
@@ -35,11 +45,29 @@ from decimal import ROUND_CEILING, Decimal
 
 from django.core.exceptions import ValidationError
 
+from apps.hr.calendars import WorkingCalendar
+
 MINUTES_PER_HOUR = Decimal("60")
 
 
 def _whole_days(days):
     return int(Decimal(days).to_integral_value(rounding=ROUND_CEILING))
+
+
+def plant_calendar(settings=None):
+    """
+    The days this plant works, for offsetting a run.
+
+    On the planning settings rather than on each work centre, because
+    this is the question "is the factory open", which a single machine
+    does not get to answer differently. A machine that runs fewer days
+    than the plant says so in its own pattern and the capacity report
+    reads that; the plan offsets against the site.
+    """
+    from .models import PlanningSettings
+
+    settings = settings or PlanningSettings.get()
+    return WorkingCalendar(settings.working_days, settings.holiday_region)
 
 
 def buy_lead_days(item, vendor, quantity=None, on_date=None, default=None):
@@ -122,6 +150,28 @@ def make_lead_days(item, bom, quantity, uom, queue_days=0, default=None):
     return max(1, _whole_days(run + Decimal(queue_days)))
 
 
-def offset(needed_by, days):
-    """The date work has to start for `needed_by` to hold."""
-    return needed_by - datetime.timedelta(days=int(days))
+def offset(needed_by, days, calendar=None):
+    """
+    The date work has to start for `needed_by` to hold.
+
+    Counted in working days when a calendar is given, and landing on a
+    day the plant works either way: a release date the factory is shut
+    on is a date nobody acts on, so the shortage sits until Monday and
+    the plan never said so.
+    """
+    if calendar is None:
+        return needed_by - datetime.timedelta(days=int(days))
+    return calendar.offset_back(needed_by, int(days))
+
+
+def calendar_offset(needed_by, days, calendar=None):
+    """
+    `days` calendar days earlier, then back to a day the plant works.
+
+    For a vendor's promise, which is quoted in the world's time rather
+    than in this plant's working days.
+    """
+    day = needed_by - datetime.timedelta(days=int(days))
+    if calendar is None:
+        return day
+    return calendar.next_working(day, forwards=False)
