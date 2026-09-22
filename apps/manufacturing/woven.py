@@ -64,6 +64,14 @@ from django.db.models import Q
 from apps.core.models import AuditModel, UnitOfMeasureCategory
 from apps.inventory.models import Item
 
+from apps.quality.models import (
+    Characteristic,
+    CharacteristicKind,
+    Evaluation,
+    InspectionPlan,
+    PlanLine,
+)
+
 from .bom import (
     BillOfMaterials,
     BomByproduct,
@@ -96,6 +104,42 @@ class Weave(models.TextChoices):
 
 def _percent(value):
     return (value or Decimal("0")) / ONE_HUNDRED
+
+
+def _measurement_unit(code, name):
+    """
+    The unit a characteristic is read in.
+
+    Deliberately in the "other" category rather than in the weight or
+    length chains: grammes a square metre is a measurement, not a
+    quantity of stock, and letting it into the stocking graph would put
+    a second root beside the kilogramme for the unit checks to trip
+    over. Created on first use, the same way a document sequence is, so
+    that saving a specification never fails on configuration nobody
+    knew they needed.
+    """
+    from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
+
+    return UnitOfMeasure.objects.get_or_create(
+        code=code,
+        defaults={"name": name, "category": UnitOfMeasureCategory.OTHER},
+    )[0]
+
+
+def _characteristic(code, name, unit_code):
+    unit = _measurement_unit(*unit_code) if unit_code else None
+    characteristic, created = Characteristic.objects.get_or_create(
+        code=code,
+        defaults={
+            "name": name,
+            "kind": CharacteristicKind.MEASURED,
+            "uom": unit,
+        },
+    )
+    if not created and characteristic.uom_id is None and unit is not None:
+        characteristic.uom = unit
+        characteristic.save()
+    return characteristic
 
 
 def _check_weighed_in(item, unit, label, owner):
@@ -184,6 +228,61 @@ class SpecificationMixin:
     def bom_routing(self):
         """The machines this passes through, or None."""
         return self.routing
+
+    def inspection_lines(self):
+        """
+        [(code, name, unit, target, lower, upper, samples, rule, source)]
+
+        What a batch of this must be measured against. Derived from the
+        same numbers the customer was quoted, because a hand-typed
+        inspection plan is the same stored copy of a derived fact that a
+        hand-typed bill of materials is, and goes stale the same way.
+        """
+        return []
+
+    @transaction.atomic
+    def rebuild_inspection_plan(self):
+        """
+        Make the plan say what the specification says.
+
+        The plan is mandatory only where the item is tracked by batch:
+        a gate that cannot say which batch it is gating is not a gate,
+        and refusing to generate anything at all would leave a plant
+        with no record of what it checks.
+        """
+        rows = self.inspection_lines()
+        plan = self.inspection_plan
+        if not rows:
+            if plan is not None:
+                type(self).objects.filter(pk=self.pk).update(inspection_plan=None)
+                self.inspection_plan = None
+                InspectionPlan.objects.filter(pk=plan.pk).update(is_computed=False)
+            return None
+        item = self.bom_item()
+        if plan is None:
+            plan = InspectionPlan(item=item, is_computed=True)
+        plan.item = item
+        plan.name = f"{self} — as specified"
+        plan.is_mandatory = item.tracking != "none"
+        plan._rebuilding = True
+        plan.save()
+        for row in plan.lines.all():
+            row._rebuilding = True
+            row.delete()
+        for index, row in enumerate(rows, start=1):
+            code, name, unit, target, lower, upper, samples, rule, source = row
+            characteristic = _characteristic(code, name, unit)
+            line = PlanLine(
+                plan=plan, characteristic=characteristic, target=target,
+                lower_limit=lower, upper_limit=upper, sample_size=samples,
+                evaluation=rule, derived_from=source, line_number=index,
+            )
+            line._rebuilding = True
+            line.save()
+        if self.inspection_plan_id != plan.pk:
+            self.inspection_plan = plan
+            type(self).objects.filter(pk=self.pk).update(inspection_plan=plan)
+        return plan
 
     @transaction.atomic
     def rebuild_bom(self):
@@ -338,6 +437,12 @@ class TapeSpecification(SpecificationMixin, AuditModel):
     uv_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("0")
     )
+    denier_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("5"),
+        help_text="How far the tape may be from its denier before a batch of "
+                  "it is out of specification. What the inspection plan "
+                  "generated from this uses.",
+    )
     extrusion_waste_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("3"),
         help_text="Of what is fed in: purge at start-up, edge trim, tape breaks.",
@@ -355,6 +460,11 @@ class TapeSpecification(SpecificationMixin, AuditModel):
                   "be edited and the routing is part of how the product is "
                   "made — so the specification carries it in like everything "
                   "else.",
+    )
+    inspection_plan = models.OneToOneField(
+        "quality.InspectionPlan", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="%(class)s_specification",
+        editable=False,
     )
     bom = models.OneToOneField(
         BillOfMaterials, null=True, blank=True, on_delete=models.SET_NULL,
@@ -444,6 +554,14 @@ class TapeSpecification(SpecificationMixin, AuditModel):
             ))
         return rows
 
+    def inspection_lines(self):
+        margin = self.denier * _percent(self.denier_tolerance_percent)
+        return [(
+            "DENIER", "Denier", ("den", "Denier"), self.denier,
+            self.denier - margin, self.denier + margin, 3,
+            Evaluation.MEAN, "denier",
+        )]
+
     def bom_byproducts(self):
         if self.regrind_item is None:
             return []
@@ -493,6 +611,7 @@ class TapeSpecification(SpecificationMixin, AuditModel):
         self._check_units()
         super().save(*args, **kwargs)
         self.rebuild_bom()
+        self.rebuild_inspection_plan()
 
 
 class FabricSpecification(SpecificationMixin, AuditModel):
@@ -573,6 +692,11 @@ class FabricSpecification(SpecificationMixin, AuditModel):
                   "be edited and the routing is part of how the product is "
                   "made — so the specification carries it in like everything "
                   "else.",
+    )
+    inspection_plan = models.OneToOneField(
+        "quality.InspectionPlan", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="%(class)s_specification",
+        editable=False,
     )
     bom = models.OneToOneField(
         BillOfMaterials, null=True, blank=True, on_delete=models.SET_NULL,
@@ -695,6 +819,17 @@ class FabricSpecification(SpecificationMixin, AuditModel):
             ),
         ]
 
+    def inspection_lines(self):
+        # Against what the customer was QUOTED, not against what the
+        # mesh makes. The loom's own figure is already checked when the
+        # specification saves; this is the promise the goods are sold on.
+        margin = self.target_gsm * _percent(self.gsm_tolerance_percent)
+        return [(
+            "GSM", "Grammes per square metre", ("gsm", "Grammes per square metre"),
+            self.target_gsm, self.target_gsm - margin, self.target_gsm + margin,
+            3, Evaluation.MEAN, "gsm",
+        )]
+
     def bom_byproducts(self):
         if self.loom_waste_item is None:
             return []
@@ -732,6 +867,7 @@ class FabricSpecification(SpecificationMixin, AuditModel):
             )
         super().save(*args, **kwargs)
         self.rebuild_bom()
+        self.rebuild_inspection_plan()
 
 
 class BagSpecification(SpecificationMixin, AuditModel):
@@ -839,6 +975,16 @@ class BagSpecification(SpecificationMixin, AuditModel):
                   "be edited and the routing is part of how the product is "
                   "made — so the specification carries it in like everything "
                   "else.",
+    )
+    weight_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("5"),
+        help_text="How far a finished sack may be from its computed weight. "
+                  "The number a customer's own goods-in scale argues about.",
+    )
+    inspection_plan = models.OneToOneField(
+        "quality.InspectionPlan", null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="%(class)s_specification",
+        editable=False,
     )
     bom = models.OneToOneField(
         BillOfMaterials, null=True, blank=True, on_delete=models.SET_NULL,
@@ -987,6 +1133,15 @@ class BagSpecification(SpecificationMixin, AuditModel):
             ))
         return rows
 
+    def inspection_lines(self):
+        weight = self.bag_grams()
+        margin = weight * _percent(self.weight_tolerance_percent)
+        return [(
+            "BAGWT", "Finished bag weight", ("g-bag", "Grammes a bag"),
+            weight, weight - margin, weight + margin, 10,
+            Evaluation.MEAN, "bag_weight",
+        )]
+
     def bom_byproducts(self):
         if self.cutting_waste_item is None:
             return []
@@ -1046,3 +1201,4 @@ class BagSpecification(SpecificationMixin, AuditModel):
             )
         super().save(*args, **kwargs)
         self.rebuild_bom()
+        self.rebuild_inspection_plan()

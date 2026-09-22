@@ -46,6 +46,7 @@ from apps.inventory.models import (
     release_for,
 )
 from apps.inventory.valuation import post_inventory_entry
+from apps.quality.release import check_released
 
 from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
 
@@ -2233,15 +2234,6 @@ class Delivery(AuditModel):
                             f"{line.order_line.uom}. Allow negative stock on the "
                             f"warehouse if backorders are expected."
                         )
-                    # Expired goods are the one thing a tracked item exists
-                    # to keep off a lorry. An adjustment may still write them
-                    # off — that is what a write-off is for — but a customer
-                    # must not receive them.
-                    if line.lot_id and line.lot.has_expired(self.delivery_date):
-                        raise ValidationError(
-                            f"Batch {line.lot.code} expired on {line.lot.expires_on} "
-                            "and cannot be shipped. Write it off instead."
-                        )
                     # Stock held for somebody else is on the shelf and not
                     # ours to take. This line's own claim is: the whole point
                     # of reserving was to be able to ship it, so it is added
@@ -2257,6 +2249,25 @@ class Delivery(AuditModel):
                             f"unreserved; {item.reserved_at(line.warehouse)} is promised "
                             "to other orders. Free a reservation or allow negative stock."
                         )
+
+                # Expired goods are the one thing a tracked item exists to
+                # keep off a lorry. An adjustment may still write them off —
+                # that is what a write-off is for — but a customer must not
+                # receive them.
+                #
+                # Outside the negative-stock branch, where it used to sit: a
+                # warehouse that allows backorders shipped expired goods, and
+                # the only thing between a customer and them was a setting
+                # about something else entirely.
+                if not is_return and line.lot_id and line.lot.has_expired(
+                    self.delivery_date
+                ):
+                    raise ValidationError(
+                        f"Batch {line.lot.code} expired on {line.lot.expires_on} "
+                        "and cannot be shipped. Write it off instead."
+                    )
+                if not is_return:
+                    check_released(item, line.lot, action="be shipped")
 
         # Held before anything reads the shelf, because the race is
         # between the read and the write and a lock taken after the

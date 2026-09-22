@@ -30,6 +30,11 @@ from .demand import (  # noqa: F401
     runs_that_made,
     uncovered,
 )
+from .explain import (  # noqa: F401
+    explains,
+    measured,
+    output_lots,
+)
 from .oee import (  # noqa: F401
     availability,
     by_operator,

@@ -283,3 +283,84 @@ class ConcurrentDraftDeliveryTests(DeliveryTestCase):
         second.post()
         self.assertNotEqual(first.number, second.number)
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("93"))
+
+
+class ExpiredGoodsDoNotGoOnALorryTests(DeliveryTestCase):
+    """
+    The guard used to sit inside the negative-stock branch, so a
+    warehouse that allowed backorders shipped expired goods — and
+    nothing tested it, which is why the nesting survived. Mutation
+    testing found it: deleting the check entirely broke no test.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.inventory.models import Lot, TrackingMode
+
+        self.item.tracking = TrackingMode.LOT
+        self.item.save()
+        self.fresh = Lot.objects.create(
+            item=self.item, code="GOOD", expires_on=datetime.date(2027, 1, 1)
+        )
+        self.stale = Lot.objects.create(
+            item=self.item, code="OLD", expires_on=datetime.date(2026, 1, 1)
+        )
+
+    def stock_lot(self, lot, quantity="100"):
+        StockMovement.objects.create(
+            item=self.item, warehouse=self.warehouse,
+            movement_type=MovementType.RECEIPT, uom=self.uom,
+            quantity=Decimal(quantity), unit_cost=Decimal("6"), lot=lot,
+            occurred_at=timezone.now(),
+        )
+
+    def ship(self, lot, quantity="4"):
+        line = self.make_order_line("10")
+        delivery = Delivery.objects.create(
+            sales_order=line.order, delivery_date=datetime.date(2026, 3, 5)
+        )
+        DeliveryLine.objects.create(
+            delivery=delivery, order_line=line, warehouse=self.warehouse,
+            quantity_shipped=Decimal(quantity), lot=lot,
+        )
+        return delivery
+
+    def test_an_expired_batch_is_refused(self):
+        self.stock_lot(self.stale)
+        with self.assertRaises(ValidationError) as caught:
+            self.ship(self.stale).post()
+        self.assertIn("expired on 2026-01-01", str(caught.exception))
+
+    def test_and_still_refused_where_backorders_are_allowed(self):
+        # This is the case that used to go through: the only thing
+        # standing between a customer and expired goods was a setting
+        # about something else entirely.
+        self.warehouse.allow_negative_stock = True
+        self.warehouse.save()
+        self.stock_lot(self.stale)
+        with self.assertRaises(ValidationError) as caught:
+            self.ship(self.stale).post()
+        self.assertIn("expired on 2026-01-01", str(caught.exception))
+
+    def test_a_batch_in_date_goes(self):
+        self.stock_lot(self.fresh)
+        self.ship(self.fresh).post()
+        self.assertEqual(self.fresh.on_hand_at(self.warehouse), Decimal("96"))
+
+    def test_a_customer_may_still_send_one_back(self):
+        # A return is goods coming the other way; refusing it would
+        # leave the customer holding stock the books say is ours.
+        self.warehouse.allow_negative_stock = True
+        self.warehouse.save()
+        self.stock_lot(self.stale)
+        line = self.make_order_line("10")
+        out = Delivery.objects.create(
+            sales_order=line.order, delivery_date=datetime.date(2026, 3, 5)
+        )
+        DeliveryLine.objects.create(
+            delivery=out, order_line=line, warehouse=self.warehouse,
+            quantity_shipped=Decimal("4"), lot=self.fresh,
+        )
+        self.stock_lot(self.fresh)
+        out.post()
+        self.assertEqual(self.fresh.on_hand_at(self.warehouse), Decimal("96"))

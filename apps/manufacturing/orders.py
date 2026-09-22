@@ -51,6 +51,7 @@ from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import AuditModel, DocumentSequence, to_date
 from apps.inventory.availability import check_available
 from apps.inventory.costing import cost_of_removing
+from apps.quality.release import check_released
 from apps.inventory.locking import lock_positions
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import inventory_account_for
@@ -1348,6 +1349,7 @@ class MaterialIssueLine(AuditModel):
                 self.item, issue.warehouse, quantity, lot=self.lot,
                 action="issue",
             )
+            check_released(self.item, self.lot, action="go into a run")
             value = cost_of_removing(
                 self.item, issue.warehouse, quantity, lot=self.lot
             )
