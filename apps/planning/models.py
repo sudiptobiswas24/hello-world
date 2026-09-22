@@ -44,6 +44,13 @@ class PlanningSettings(AuditModel):
     guess can be read back as one.
     """
 
+    reschedule_tolerance_days = models.PositiveIntegerField(
+        default=2,
+        help_text="How far out a date has to be before the plan says so. "
+                  "Nought produces a message for every order in the plant "
+                  "every morning, which is how action messages get ignored; "
+                  "too high and a week of lateness goes unreported.",
+    )
     horizon_days = models.PositiveIntegerField(
         default=90,
         help_text="How far ahead to plan. Demand beyond this is left alone: an "
@@ -111,6 +118,20 @@ class PlannedOrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
+class SupplySource(models.TextChoices):
+    PURCHASE = "purchase", "Confirmed purchase order"
+    REQUISITION = "requisition", "Purchase requisition"
+    WORK_ORDER = "work_order", "Work order"
+    BYPRODUCT = "byproduct", "By-product of a run"
+    PLANNED = "planned", "Planned order"
+
+
+class RescheduleAction(models.TextChoices):
+    EXPEDITE = "expedite", "Pull in"
+    DEFER = "defer", "Push out"
+    CANCEL = "cancel", "Cancel — nothing needs it"
+
+
 class DemandSource(models.TextChoices):
     SALES = "sales", "Sales order"
     WORK_ORDER = "work_order", "Open work order"
@@ -171,6 +192,15 @@ class PlanningRun(AuditModel):
     def late(self):
         """Suggestions that needed starting before the day they were planned."""
         return [order for order in self.orders.all() if order.is_late()]
+
+    def expedites(self):
+        return self.actions.filter(action=RescheduleAction.EXPEDITE)
+
+    def defers(self):
+        return self.actions.filter(action=RescheduleAction.DEFER)
+
+    def cancels(self):
+        return self.actions.filter(action=RescheduleAction.CANCEL)
 
     def lapsed(self):
         """
@@ -452,6 +482,111 @@ class PlannedOrder(AuditModel):
             )
         self.status = PlannedOrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
+
+
+class PlanningAction(AuditModel):
+    """
+    An order that already exists and is dated wrong.
+
+    The half of material requirements planning that a plant notices
+    first and that this module did not have. Raising new orders is the
+    obvious output and it is the smaller one: a plant that has been
+    running for a year has hundreds of open orders, and most of what
+    goes wrong is not that something was never ordered, it is that
+    what was ordered is coming at the wrong time. "Pull WO-00041 in by
+    four days" and "push PO-00318 out by three weeks, you are buying
+    too early" are the two sentences a planner acts on every morning.
+
+    Nothing here changes a document. An action is a message, and the
+    person who owns that order decides — because pulling a purchase in
+    means ringing a vendor who may say no, and pushing a run out means
+    a machine standing idle that somebody may have other plans for.
+
+    **Expedite and defer do not cost the same.** An expedite nobody
+    acts on is a delivery that misses; a defer nobody acts on is money
+    sitting in a warehouse. They share one tolerance because two
+    invites a plant to set the second one to infinity, but they are
+    listed apart so that the short list is read first.
+    """
+
+    run = models.ForeignKey(
+        PlanningRun, on_delete=models.CASCADE, related_name="actions"
+    )
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="+")
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    action = models.CharField(max_length=12, choices=RescheduleAction.choices)
+    source = models.CharField(max_length=16, choices=SupplySource.choices)
+    quantity = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="How much of that order this is about, in the item's "
+                  "stocking unit. A part-received purchase is only movable "
+                  "for the part still coming.",
+    )
+    scheduled_on = models.DateField(help_text="When the order says it will arrive.")
+    wanted_on = models.DateField(
+        null=True, blank=True,
+        help_text="When the demand it covers actually wants it. Empty on a "
+                  "cancel, where nothing wants it at all.",
+    )
+    days = models.PositiveIntegerField(
+        default=0, help_text="How far the date is out. Nought on a cancel.",
+    )
+    work_order = models.ForeignKey(
+        "manufacturing.WorkOrder", null=True, blank=True, on_delete=models.CASCADE,
+        related_name="planning_actions",
+    )
+    purchase_order_line = models.ForeignKey(
+        "purchasing.PurchaseOrderLine", null=True, blank=True,
+        on_delete=models.CASCADE, related_name="planning_actions",
+    )
+    requisition_line = models.ForeignKey(
+        "purchasing.PurchaseRequisitionLine", null=True, blank=True,
+        on_delete=models.CASCADE, related_name="planning_actions",
+    )
+    because = models.CharField(
+        max_length=255,
+        help_text="The demand that sets the wanted date, in words.",
+    )
+
+    class Meta:
+        ordering = ["run", "action", "-days", "item__sku", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(quantity__gt=0), name="planning_action_quantity_positive"
+            ),
+            # A cancel has nothing wanting it, so it has no wanted date
+            # and no distance; everything else has both.
+            models.CheckConstraint(
+                check=(
+                    models.Q(action="cancel", wanted_on__isnull=True)
+                    | (~models.Q(action="cancel") & models.Q(wanted_on__isnull=False))
+                ),
+                name="planning_action_cancel_wants_nothing",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_action_display()} {self.document()} — {self.sentence()}"
+
+    def document(self):
+        """The order this is about."""
+        return (
+            self.work_order or self.purchase_order_line or self.requisition_line
+        )
+
+    def sentence(self):
+        """What a planner reads instead of three dates."""
+        what = f"{self.quantity} {self.item.uom} {self.item.sku}"
+        if self.action == RescheduleAction.CANCEL:
+            return (
+                f"{what} due {self.scheduled_on} covers nothing inside the "
+                f"plan's horizon — {self.because}"
+            )
+        verb = "pull in" if self.action == RescheduleAction.EXPEDITE else "push out"
+        return (
+            f"{verb} {what} by {self.days} days, from {self.scheduled_on} to "
+            f"{self.wanted_on} — {self.because}"
+        )
 
 
 class PlannedDemand(AuditModel):

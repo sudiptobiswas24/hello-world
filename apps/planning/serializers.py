@@ -1,6 +1,12 @@
 from rest_framework import serializers
 
-from .models import PlannedDemand, PlannedOrder, PlanningRun, PlanningSettings
+from .models import (
+    PlannedDemand,
+    PlannedOrder,
+    PlanningAction,
+    PlanningRun,
+    PlanningSettings,
+)
 
 
 class PlanningSettingsSerializer(serializers.ModelSerializer):
@@ -8,7 +14,8 @@ class PlanningSettingsSerializer(serializers.ModelSerializer):
         model = PlanningSettings
         fields = ["id", "horizon_days", "default_buy_lead_days",
                   "default_make_lead_days", "queue_days",
-                  "requisition_requester"]
+                  "reschedule_tolerance_days", "working_days",
+                  "holiday_region", "requisition_requester"]
 
 
 class PlannedDemandSerializer(serializers.ModelSerializer):
@@ -38,16 +45,30 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
                             "firmed_at"]
 
 
+class PlanningActionSerializer(serializers.ModelSerializer):
+    sentence = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = PlanningAction
+        fields = ["id", "run", "item", "warehouse", "action", "source",
+                  "quantity", "scheduled_on", "wanted_on", "days",
+                  "work_order", "purchase_order_line", "requisition_line",
+                  "because", "sentence"]
+
+
 class PlanningRunSerializer(serializers.ModelSerializer):
     is_complete = serializers.BooleanField(read_only=True)
     late = serializers.SerializerMethodField()
     lapsed = serializers.SerializerMethodField()
+    expedites = serializers.SerializerMethodField()
+    defers = serializers.SerializerMethodField()
+    cancels = serializers.SerializerMethodField()
 
     class Meta:
         model = PlanningRun
         fields = ["id", "warehouse", "planned_on", "horizon_end", "ran_at",
                   "cut_links", "deferred_demand", "notes", "is_complete",
-                  "late", "lapsed"]
+                  "late", "lapsed", "expedites", "defers", "cancels"]
         read_only_fields = ["ran_at", "cut_links", "deferred_demand"]
 
     def get_late(self, run):
@@ -57,3 +78,12 @@ class PlanningRunSerializer(serializers.ModelSerializer):
     def get_lapsed(self, run):
         """What was firmed into a document somebody has since cancelled."""
         return [order.pk for order in run.lapsed()]
+
+    def get_expedites(self, run):
+        return run.expedites().count()
+
+    def get_defers(self, run):
+        return run.defers().count()
+
+    def get_cancels(self, run):
+        return run.cancels().count()

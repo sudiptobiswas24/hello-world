@@ -276,7 +276,7 @@ class TheCommandTests(PlanningTestCase):
         self.assertLess(report.index("LATE"), report.index("FAB-10X10"))
 
     def test_it_says_when_there_is_nothing_to_do(self):
-        self.assertIn("Nothing to raise.", self.run_it())
+        self.assertIn("Nothing to raise and nothing to move.", self.run_it())
 
     def test_it_can_firm_what_it_found(self):
         self.sell(self.fabric, "1000", self.day(30))

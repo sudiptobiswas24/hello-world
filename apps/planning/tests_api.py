@@ -29,7 +29,7 @@ class PlanningApiTests(PlantTestCase):
 
     def test_every_collection_answers(self):
         for path in ("settings", "runs", "planned-orders", "planned-demands",
-                     "levels"):
+                     "actions", "levels"):
             response = self.client.get(f"/api/planning/{path}/")
             self.assertEqual(response.status_code, 200, path)
 
@@ -52,6 +52,30 @@ class PlanningApiTests(PlantTestCase):
         skus = {row["item"] for row in orders.data}
         self.assertEqual(len(skus), 4)
         self.assertTrue(all(row["explanation"] for row in orders.data))
+
+    def test_a_run_reports_what_to_move_as_well_as_what_to_raise(self):
+        from apps.purchasing.models import PurchaseOrder, PurchaseOrderLine
+        from decimal import Decimal
+
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=TODAY, currency=self.inr,
+        )
+        PurchaseOrderLine.objects.create(
+            order=order, item=self.fabric, uom=self.kg,
+            quantity=Decimal("1000"), unit_price=Decimal("90"),
+            expected_date=self.day(60),
+        )
+        order.confirm()
+        self.sell(self.fabric, "1000", self.day(10))
+        response = self.client.post("/api/planning/runs/plan/", {
+            "warehouse": self.plant.pk, "planned_on": str(TODAY),
+        })
+        self.assertEqual(response.data["expedites"], 1)
+        actions = self.client.get(
+            f"/api/planning/runs/{response.data['id']}/actions/"
+        ).data
+        self.assertEqual(len(actions), 1)
+        self.assertIn("pull in", actions[0]["sentence"])
 
     def test_planning_without_a_warehouse_is_refused_as_an_answer(self):
         response = self.client.post("/api/planning/runs/plan/", {})

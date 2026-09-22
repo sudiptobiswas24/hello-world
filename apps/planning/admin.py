@@ -12,7 +12,13 @@ from django.core.exceptions import ValidationError
 
 from apps.core.audit import AuditableAdminMixin
 
-from .models import PlannedDemand, PlannedOrder, PlanningRun, PlanningSettings
+from .models import (
+    PlannedDemand,
+    PlannedOrder,
+    PlanningAction,
+    PlanningRun,
+    PlanningSettings,
+)
 
 
 def _act(label, method, description):
@@ -53,7 +59,8 @@ class PlannedDemandInline(admin.TabularInline):
 @admin.register(PlanningRun)
 class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ["__str__", "warehouse", "planned_on", "horizon_end",
-                    "suggested", "late_count", "lapsed_count", "complete"]
+                    "suggested", "late_count", "pull_in", "push_out",
+                    "lapsed_count", "complete"]
     list_filter = ["warehouse"]
     readonly_fields = ["ran_at", "cut_links", "deferred_demand"]
 
@@ -72,6 +79,40 @@ class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
     @admin.display(description="Lapsed")
     def lapsed_count(self, obj):
         return len(obj.lapsed()) or ""
+
+    @admin.display(description="Pull in")
+    def pull_in(self, obj):
+        return obj.expedites().count() or ""
+
+    @admin.display(description="Push out")
+    def push_out(self, obj):
+        return obj.defers().count() or ""
+
+
+@admin.register(PlanningAction)
+class PlanningActionAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    Orders that exist and are dated wrong, worst first.
+
+    Read-only, because an action is a message: pulling a purchase in
+    means ringing a vendor who may say no, and the person who owns
+    that order decides.
+    """
+
+    list_display = ["run", "action", "item", "quantity", "scheduled_on",
+                    "wanted_on", "days", "order", "because"]
+    list_filter = ["run", "action", "source", "warehouse"]
+    search_fields = ["item__sku", "item__name", "because"]
+
+    @admin.display(description="Order")
+    def order(self, obj):
+        return obj.document()
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(PlannedOrder)

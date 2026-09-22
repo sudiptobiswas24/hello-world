@@ -64,6 +64,9 @@ from .leadtime import (
 from .levels import level_of, low_level_codes
 from .models import (
     DemandSource,
+    PlanningAction,
+    RescheduleAction,
+    SupplySource,
     PlannedDemand,
     PlannedOrder,
     PlannedOrderKind,
@@ -80,8 +83,28 @@ QUANTITY = Decimal("0.0001")
 Demand = namedtuple(
     "Demand", "date quantity source sales_order_line work_order parent"
 )
-Supply = namedtuple("Supply", "date quantity")
+Supply = namedtuple("Supply", "date quantity source document movable")
+Pegged = namedtuple("Pegged", "supply wanted_on wanted_by used")
 Shortage = namedtuple("Shortage", "date quantity rounded pegs")
+Message = namedtuple("Message", "action supply wanted_on days quantity because")
+
+
+def _supply(date, quantity, source=None, document=None, movable=False):
+    """
+    A quantity arriving on a date, and whether anything can be done
+    about the date.
+
+    `movable` is the whole reason supply carries its document at all.
+    A confirmed purchase order dated a fortnight after the run that
+    needs it can be pulled in by ringing the vendor; the reground trim
+    a run throws off cannot be pulled in at all, because it comes off
+    when the run comes off. Telling a planner to expedite a by-product
+    is telling them to expedite something that does not exist yet.
+    """
+    return Supply(
+        date=date, quantity=quantity, source=source, document=document,
+        movable=movable,
+    )
 
 
 def _demand(date, quantity, source, sales_order_line=None, work_order=None, parent=None):
@@ -254,7 +277,10 @@ def purchase_supply(item, warehouse, on_date):
         )
         if remaining <= 0:
             continue
-        rows.append(Supply(date=line.expected_date or on_date, quantity=remaining))
+        rows.append(_supply(
+            line.expected_date or on_date, remaining,
+            source=SupplySource.PURCHASE, document=line, movable=True,
+        ))
     return rows
 
 
@@ -277,9 +303,9 @@ def work_order_supply(item, warehouse, on_date):
             continue
         when = order.scheduled_end or on_date
         if order.item_id == item.pk:
-            rows.append(Supply(
-                date=when,
-                quantity=order.item.to_stock_quantity(outstanding, order.uom),
+            rows.append(_supply(
+                when, order.item.to_stock_quantity(outstanding, order.uom),
+                source=SupplySource.WORK_ORDER, document=order, movable=True,
             ))
         rows.extend(byproduct_supply(order.bom, outstanding, order.uom, item, when))
     return rows
@@ -296,7 +322,10 @@ def byproduct_supply(bom, quantity, uom, item, when):
             byproduct.quantity * scale, byproduct.uom
         )
         if expected > 0:
-            rows.append(Supply(date=when, quantity=expected))
+            # Never movable. Trim comes off when the run comes off.
+            rows.append(_supply(
+                when, expected, source=SupplySource.BYPRODUCT, document=bom,
+            ))
     return rows
 
 
@@ -331,8 +360,9 @@ def requisition_supply(item, warehouse, on_date):
         )
         if remaining <= 0:
             continue
-        rows.append(Supply(
-            date=line.requisition.needed_by or on_date, quantity=remaining
+        rows.append(_supply(
+            line.requisition.needed_by or on_date, remaining,
+            source=SupplySource.REQUISITION, document=line, movable=True,
         ))
     return rows
 
@@ -485,6 +515,153 @@ def net(opening, safety, demands, supplies, planned_on, rule=None):
     return shortages
 
 
+# -- what is dated wrong -------------------------------------------------
+
+
+def peg_supply(opening, safety, demands, supplies, planned_on):
+    """
+    Match what is coming to the demand it ends up covering.
+
+    Earliest supply to earliest demand, which is what a store does:
+    the polymer already on the shelf goes into the first run that
+    wants it, and the order arriving next goes into the one after.
+    Nothing here cares whether the dates line up — that is the point.
+    A demand on the tenth served by an order arriving on the twentieth
+    is exactly the case worth reporting, and pegging by date first and
+    reading the mismatch afterwards is what finds it.
+
+    What comes back is, for each supply row, the date of the first
+    demand it serves and how much of it is spoken for. A row that
+    serves nothing is covering nothing, which is its own kind of news.
+    """
+    queue = [[planned_on, opening, None]]
+    for row in sorted(supplies, key=lambda r: (r.date, r.quantity)):
+        queue.append([max(row.date, planned_on), row.quantity, row])
+
+    wanted_on = {}
+    used = defaultdict(lambda: ZERO)
+    cursor = 0
+    for demand in sorted(demands, key=lambda d: d.date):
+        outstanding = demand.quantity
+        when = max(demand.date, planned_on)
+        while outstanding > 0 and cursor < len(queue):
+            slot = queue[cursor]
+            if slot[1] <= 0:
+                cursor += 1
+                continue
+            take = min(slot[1], outstanding)
+            slot[1] -= take
+            outstanding -= take
+            row = slot[2]
+            if row is None:
+                continue
+            used[id(row)] += take
+            wanted_on.setdefault(id(row), (when, demand))
+        # Demand left over is a shortage, which `net` answers with a
+        # planned order. It is not this function's business.
+
+    spare = [
+        (slot[2], slot[1]) for slot in queue[1:] if slot[1] > 0
+    ]
+    return [
+        Pegged(
+            supply=row,
+            wanted_on=(wanted_on.get(id(row)) or (None, None))[0],
+            wanted_by=(wanted_on.get(id(row)) or (None, None))[1],
+            used=used[id(row)],
+        )
+        for row in supplies
+    ], _uncovered(spare, safety)
+
+
+def _uncovered(spare, safety):
+    """
+    How much of what is coming nothing is asking for.
+
+    The safety floor comes off first and the latest arrivals are the
+    ones left holding it. Stock kept deliberately is not stock nobody
+    wants, and a plan that told a buyer to cancel the order that keeps
+    the floor would spend the next month telling them to raise it
+    again.
+    """
+    floor = safety
+    surplus = []
+    for row, quantity in sorted(
+        spare, key=lambda pair: pair[0].date if pair[0] else None, reverse=True
+    ):
+        if row is None:
+            continue
+        held = min(floor, quantity)
+        floor -= held
+        if quantity - held > 0:
+            surplus.append((row, quantity - held))
+    return surplus
+
+
+def reschedule(item, warehouse, opening, safety, demands, supplies, planned_on,
+               tolerance):
+    """
+    Every order that exists, is movable, and is dated wrong.
+
+    Only movable supply. A by-product comes off when its run comes
+    off, and a planned order from this very run was dated by this very
+    run, so neither has a date anybody can act on.
+    """
+    pegs, surplus = peg_supply(opening, safety, demands, supplies, planned_on)
+    spare = {id(row): quantity for row, quantity in surplus}
+    messages = []
+    for peg in pegs:
+        row = peg.supply
+        if not row.movable:
+            continue
+        over = spare.get(id(row), ZERO)
+        if over > 0:
+            # Reported whether or not the rest of the order is spoken
+            # for. A twenty-tonne order of which six tonnes is wanted
+            # and fourteen is not has two separate things wrong with
+            # it, and saying only that the six should move leaves the
+            # fourteen on a lorry.
+            messages.append(Message(
+                action=RescheduleAction.CANCEL, supply=row, wanted_on=None,
+                days=0, quantity=over,
+                because=(
+                    "nothing in the horizon wants it" if peg.used <= 0
+                    else f"the other {_show(peg.used)} of it is spoken for"
+                ),
+            ))
+        if peg.wanted_on is None:
+            continue
+        scheduled = max(row.date, planned_on)
+        days = abs((scheduled - peg.wanted_on).days)
+        if days <= tolerance:
+            continue
+        action = (
+            RescheduleAction.EXPEDITE if peg.wanted_on < scheduled
+            else RescheduleAction.DEFER
+        )
+        messages.append(Message(
+            action=action, supply=row, wanted_on=peg.wanted_on, days=days,
+            quantity=peg.used, because=_why(peg.wanted_by),
+        ))
+    return messages
+
+
+def _why(demand):
+    """The demand that sets the wanted date, named rather than dated."""
+    if demand is None:
+        return "nothing"
+    if demand.source == DemandSource.SALES and demand.sales_order_line:
+        line = demand.sales_order_line
+        return f"{line.order.number or 'a draft order'} wants it by {demand.date}"
+    if demand.source == DemandSource.WORK_ORDER and demand.work_order:
+        return f"{demand.work_order} draws it on {demand.date}"
+    if demand.source == DemandSource.PLANNED and demand.parent:
+        return f"planned {demand.parent} draws it on {demand.date}"
+    if demand.source == DemandSource.SAFETY:
+        return f"the safety floor wants it held from {demand.date}"
+    return f"demand on {demand.date}"
+
+
 # -- the run -------------------------------------------------------------
 
 
@@ -494,9 +671,25 @@ def _show(quantity):
 
 
 def _candidates(warehouse, planned_on, horizon_end):
-    """Items something has already asked for, before any explosion."""
+    """
+    Items something has asked for or something is bringing, before any
+    explosion.
+
+    Supply as well as demand, which it did not used to be. An item
+    nobody wants and a vendor is shipping anyway never reached the
+    planner at all — so the order nothing needs, which is the single
+    most expensive thing an order can be, was the one case the plan
+    could not see. A shortage announces itself through the item that
+    is short; a surplus has nothing to announce it but the surplus.
+    """
     from apps.manufacturing.orders import WorkOrderComponent
-    from apps.purchasing.models import ReorderRule
+    from apps.purchasing.models import OrderStatus as PurchaseStatus
+    from apps.purchasing.models import (
+        PurchaseOrderLine,
+        PurchaseRequisitionLine,
+        ReorderRule,
+        RequisitionStatus,
+    )
     from apps.sales.models import OrderStatus, SalesOrderLine
 
     items = {}
@@ -518,6 +711,20 @@ def _candidates(warehouse, planned_on, horizon_end):
         warehouse=warehouse, is_active=True, minimum__gt=0
     ).select_related("item"):
         items[rule.item_id] = rule.item
+    for line in PurchaseOrderLine.objects.filter(
+        order__status=PurchaseStatus.CONFIRMED, charge__isnull=True,
+        item__isnull=False,
+    ).select_related("item"):
+        items[line.item_id] = line.item
+    dead = (RequisitionStatus.REJECTED, RequisitionStatus.CANCELLED)
+    for line in PurchaseRequisitionLine.objects.exclude(
+        requisition__status__in=dead
+    ).select_related("item"):
+        items[line.item_id] = line.item
+    for order in WorkOrder.objects.filter(
+        status__in=LIVE, warehouse=warehouse
+    ).select_related("item"):
+        items[order.item_id] = order.item
     return items
 
 
@@ -606,6 +813,14 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
 
         safety, rule = safety_stock(item, warehouse)
         opening = opening_balance(item, warehouse, planned_on)
+        # Before netting, because rescheduling reads the world as it
+        # stands: an order this run is about to propose is not
+        # something anybody can be asked to pull in.
+        for message in reschedule(
+            item, warehouse, opening, safety, demands, supplies, planned_on,
+            settings.reschedule_tolerance_days,
+        ):
+            _write_action(run, item, warehouse, message, planned_on)
         shortages = net(opening, safety, demands, supplies, planned_on, rule)
         if not shortages:
             continue
@@ -650,6 +865,25 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         run.deferred_demand = "\n".join(deferred)
         run.save(update_fields=["deferred_demand", "updated_at"])
     return run
+
+
+SUPPLY_FIELD = {
+    SupplySource.PURCHASE: "purchase_order_line",
+    SupplySource.REQUISITION: "requisition_line",
+    SupplySource.WORK_ORDER: "work_order",
+}
+
+
+def _write_action(run, item, warehouse, message, planned_on):
+    row = message.supply
+    return PlanningAction.objects.create(
+        run=run, item=item, warehouse=warehouse, action=message.action,
+        source=row.source,
+        quantity=message.quantity.quantize(QUANTITY, rounding=ROUND_CEILING),
+        scheduled_on=max(row.date, planned_on), wanted_on=message.wanted_on,
+        days=message.days, because=message.because[:255],
+        **{SUPPLY_FIELD[row.source]: row.document},
+    )
 
 
 def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,

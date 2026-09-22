@@ -2,6 +2,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     LowLevelCodeViewSet,
+    PlanningActionViewSet,
     PlannedDemandViewSet,
     PlannedOrderViewSet,
     PlanningRunViewSet,
@@ -13,6 +14,7 @@ router.register("settings", PlanningSettingsViewSet)
 router.register("runs", PlanningRunViewSet)
 router.register("planned-orders", PlannedOrderViewSet)
 router.register("planned-demands", PlannedDemandViewSet)
+router.register("actions", PlanningActionViewSet)
 router.register("levels", LowLevelCodeViewSet, basename="levels")
 
 urlpatterns = router.urls

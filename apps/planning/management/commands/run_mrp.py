@@ -36,8 +36,8 @@ class Command(BaseCommand):
         self.stdout.write(f"{run}  (to {run.horizon_end})")
 
         orders = list(run.orders.select_related("item").prefetch_related("demands"))
-        if not orders:
-            self.stdout.write("Nothing to raise.")
+        if not orders and not run.actions.exists():
+            self.stdout.write("Nothing to raise and nothing to move.")
         for order in sorted(
             orders, key=lambda o: (-o.days_late(), o.release_on, o.item.sku)
         ):
@@ -48,6 +48,18 @@ class Command(BaseCommand):
                 f" — start {order.release_on}, wanted {order.needed_by}{late}"
             )
             self.stdout.write(f"      because {order.explanation()}")
+
+        for label, rows in (
+            ("Pull in", run.expedites()),
+            ("Push out", run.defers()),
+            ("Covering nothing", run.cancels()),
+        ):
+            rows = list(rows)
+            if not rows:
+                continue
+            self.stdout.write(f"\n{label}:")
+            for action in rows:
+                self.stdout.write(f"  {action.document()}: {action.sentence()}")
 
         if run.cut_links:
             self.stdout.write("\nLinks not planned through:")

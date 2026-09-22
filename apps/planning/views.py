@@ -17,10 +17,17 @@ from apps.core.models import Party
 from apps.inventory.models import Warehouse
 
 from .levels import low_level_codes
-from .models import PlannedDemand, PlannedOrder, PlanningRun, PlanningSettings
+from .models import (
+    PlannedDemand,
+    PlannedOrder,
+    PlanningAction,
+    PlanningRun,
+    PlanningSettings,
+)
 from .mrp import plan
 from .serializers import (
     PlannedDemandSerializer,
+    PlanningActionSerializer,
     PlannedOrderSerializer,
     PlanningRunSerializer,
     PlanningSettingsSerializer,
@@ -63,6 +70,16 @@ class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(PlanningRunSerializer(run).data)
 
     @action(detail=True, methods=["get"])
+    def actions(self, request, pk=None):
+        """What this run says to move, pull in first."""
+        run = self.get_object()
+        return Response(
+            PlanningActionSerializer(
+                run.actions.select_related("item", "warehouse"), many=True
+            ).data
+        )
+
+    @action(detail=True, methods=["get"])
     def orders(self, request, pk=None):
         run = self.get_object()
         return Response(
@@ -99,6 +116,19 @@ class PlannedOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         order = self.get_object()
         _run(order.cancel)
         return Response(self.get_serializer(order).data)
+
+
+class PlanningActionViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    Orders that exist and are dated wrong. Read-only: an action is a
+    message, and the person who owns that order decides.
+    """
+
+    queryset = PlanningAction.objects.select_related(
+        "run", "item", "warehouse", "work_order", "purchase_order_line",
+        "requisition_line",
+    )
+    serializer_class = PlanningActionSerializer
 
 
 class PlannedDemandViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
