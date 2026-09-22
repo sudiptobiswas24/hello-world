@@ -6,6 +6,7 @@ from .orders import (
     MaterialIssueLine,
     ProductionByproduct,
     ProductionEntry,
+    TimeBooking,
     WorkCentre,
     WorkOrder,
     WorkOrderComponent,
@@ -157,20 +158,36 @@ class WorkCentreSerializer(serializers.ModelSerializer):
         model = WorkCentre
         fields = ["id", "code", "name", "description", "capacity_per_hour",
                   "capacity_uom", "available_hours_per_day", "days_per_week",
+                  "machine_rate_per_hour", "labour_rate_per_hour",
+                  "overhead_rate_per_hour", "conversion_rate_per_hour",
                   "is_active"]
+
+    conversion_rate_per_hour = serializers.SerializerMethodField()
+
+    def get_conversion_rate_per_hour(self, obj):
+        return obj.conversion_rate_per_hour()
 
 
 class WorkOrderOperationSerializer(serializers.ModelSerializer):
     planned_hours = serializers.SerializerMethodField()
 
+    minutes_booked = serializers.SerializerMethodField()
+    quantity_completed = serializers.SerializerMethodField()
+
     class Meta:
         model = WorkOrderOperation
         fields = ["id", "work_order", "sequence", "name", "work_centre",
                   "setup_minutes", "units_per_hour", "planned_minutes",
-                  "planned_hours"]
+                  "planned_hours", "minutes_booked", "quantity_completed"]
 
     def get_planned_hours(self, obj):
         return round(obj.planned_minutes / 60, 2)
+
+    def get_minutes_booked(self, obj):
+        return obj.minutes_booked()
+
+    def get_quantity_completed(self, obj):
+        return obj.quantity_completed()
 
 
 class WorkOrderComponentSerializer(serializers.ModelSerializer):
@@ -189,6 +206,9 @@ class WorkOrderSerializer(serializers.ModelSerializer):
     components = WorkOrderComponentSerializer(many=True, read_only=True)
     operations = WorkOrderOperationSerializer(many=True, read_only=True)
     planned_minutes = serializers.SerializerMethodField()
+    minutes_booked = serializers.SerializerMethodField()
+    conversion_cost = serializers.SerializerMethodField()
+    conversion_variance = serializers.SerializerMethodField()
     quantity_produced = serializers.SerializerMethodField()
     wip_balance = serializers.SerializerMethodField()
     unaccounted = serializers.SerializerMethodField()
@@ -200,14 +220,26 @@ class WorkOrderSerializer(serializers.ModelSerializer):
                   "status", "over_production_percent", "planned_unit_cost",
                   "planned_material_cost", "released_at", "closed_at",
                   "close_entry", "reopened_entry", "routing", "notes",
+                  "time_allowance_percent", "planned_conversion_cost",
                   "components", "operations", "planned_minutes",
+                  "minutes_booked", "conversion_cost", "conversion_variance",
                   "quantity_produced", "wip_balance", "unaccounted"]
         read_only_fields = ["number", "status", "planned_unit_cost",
                             "planned_material_cost", "released_at", "closed_at",
-                            "close_entry", "reopened_entry", "routing"]
+                            "close_entry", "reopened_entry", "routing",
+                            "planned_conversion_cost"]
 
     def get_planned_minutes(self, obj):
         return round(obj.planned_minutes(), 2)
+
+    def get_minutes_booked(self, obj):
+        return obj.minutes_booked()
+
+    def get_conversion_cost(self, obj):
+        return round(obj.conversion_cost(), 2)
+
+    def get_conversion_variance(self, obj):
+        return round(obj.conversion_variance(), 2)
 
     def get_quantity_produced(self, obj):
         return round(obj.quantity_produced(), 4)
@@ -260,3 +292,20 @@ class ProductionEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["number", "posted", "posted_at", "posted_value",
                             "unit_cost", "stock_movement", "journal_entry",
                             "voided_entry", "voided_at"]
+
+
+class TimeBookingSerializer(serializers.ModelSerializer):
+    hours = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TimeBooking
+        fields = ["id", "number", "work_order", "operation", "booking_date",
+                  "minutes", "hours", "quantity_completed", "memo",
+                  "hourly_rate", "posted", "posted_at", "posted_value",
+                  "journal_entry", "voided_entry", "voided_at"]
+        read_only_fields = ["number", "hourly_rate", "posted", "posted_at",
+                            "posted_value", "journal_entry", "voided_entry",
+                            "voided_at"]
+
+    def get_hours(self, obj):
+        return round(obj.hours(), 3)

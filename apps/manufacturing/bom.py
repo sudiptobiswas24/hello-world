@@ -409,7 +409,9 @@ def material_balance(bom, quantity, uom=None):
     ]
 
 
-PlannedCost = namedtuple("PlannedCost", "materials byproducts net")
+PlannedCost = namedtuple(
+    "PlannedCost", "materials conversion byproducts net"
+)
 
 
 def planned_cost(bom, quantity, warehouse, uom=None):
@@ -427,13 +429,22 @@ def planned_cost(bom, quantity, warehouse, uom=None):
     run is not known until it closes and a lorry will not wait. What
     the run actually consumed lands as a variance when it does close.
 
-    Materials and the by-product credit are returned apart as well as
-    netted, because a by-product taking a share of the run has to take
-    it of something, and the net figure is what it would be a share of.
+    Materials, machine time and the by-product credit are returned apart
+    as well as netted: a by-product taking a share of the run has to
+    take it of something, and at close the material overrun and the time
+    overrun have to be told apart.
+
+    Machine time is what the routing says it is, at the work centres'
+    own rates. A plant with no routing, or one that leaves its rates at
+    zero, gets nothing here — and its finished goods are then worth
+    their materials, which is about three quarters of what they cost.
     """
     from apps.inventory.costing import unit_cost_for
 
     scale = bom.scale_for(quantity, uom)
+    batch_quantity = quantity
+    if uom is not None and uom.pk != bom.uom_id:
+        batch_quantity = uom.convert_to(quantity, bom.uom)
     materials = Decimal("0")
     for component in bom.components.select_related("item", "uom").all():
         required = component.gross_quantity() * scale
@@ -452,12 +463,22 @@ def planned_cost(bom, quantity, warehouse, uom=None):
                 )
             rate = component.item.standard_cost
         materials += rate * in_stock_units
+    conversion = Decimal("0")
+    if bom.routing_id is not None:
+        for operation in bom.routing.operations.select_related("work_centre"):
+            minutes = operation.minutes_for(batch_quantity, bom.uom)
+            conversion += (
+                minutes / Decimal("60")
+                * operation.work_centre.conversion_rate_per_hour()
+            )
     credit = Decimal("0")
     for byproduct in bom.byproducts.select_related("item", "uom").all():
         credit += byproduct_value(
-            byproduct, byproduct.quantity * scale, materials
+            byproduct, byproduct.quantity * scale, materials + conversion
         )
-    return PlannedCost(materials, credit, materials - credit)
+    return PlannedCost(
+        materials, conversion, credit, materials + conversion - credit
+    )
 
 
 def byproduct_value(byproduct, quantity, run_cost=None):

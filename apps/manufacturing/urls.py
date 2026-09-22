@@ -13,6 +13,7 @@ from .views import (
     RoutingOperationViewSet,
     RoutingViewSet,
     TapeSpecificationViewSet,
+    TimeBookingViewSet,
     WorkCentreViewSet,
     WorkOrderViewSet,
 )
@@ -32,5 +33,6 @@ router.register("material-issues", MaterialIssueViewSet)
 router.register("material-issue-lines", MaterialIssueLineViewSet)
 router.register("production-entries", ProductionEntryViewSet)
 router.register("production-byproducts", ProductionByproductViewSet)
+router.register("time-bookings", TimeBookingViewSet)
 
 urlpatterns = router.urls

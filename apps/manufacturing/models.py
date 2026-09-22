@@ -35,6 +35,7 @@ from .orders import (  # noqa: F401
     MaterialIssueLine,
     ProductionByproduct,
     ProductionEntry,
+    TimeBooking,
     WorkCentre,
     WorkOrder,
     WorkOrderComponent,

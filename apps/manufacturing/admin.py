@@ -24,6 +24,7 @@ from .orders import (
     MaterialIssueLine,
     ProductionByproduct,
     ProductionEntry,
+    TimeBooking,
     WorkCentre,
     WorkOrder,
     WorkOrderComponent,
@@ -246,8 +247,13 @@ class RoutingAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 @admin.register(WorkCentre)
 class WorkCentreAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    @admin.display(description="An hour costs")
+    def shown_rate(self, obj):
+        return f"{obj.conversion_rate_per_hour():,.2f}"
+
     list_display = ("code", "name", "capacity_per_hour", "capacity_uom",
-                    "available_hours_per_day", "days_per_week", "is_active")
+                    "available_hours_per_day", "days_per_week",
+                    "shown_rate", "is_active")
     search_fields = ("code", "name")
 
 
@@ -294,7 +300,8 @@ class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     search_fields = ("number", "item__sku")
     inlines = [WorkOrderComponentInline, WorkOrderOperationInline]
     readonly_fields = ("number", "status", "routing", "planned_unit_cost",
-                       "planned_material_cost", "released_at", "closed_at",
+                       "planned_material_cost", "planned_conversion_cost",
+                       "shown_time_variance", "released_at", "closed_at",
                        "close_entry", "reopened_entry", "shown_wip", "shown_unaccounted",
                        "shown_bottleneck", "shown_variance")
 
@@ -336,6 +343,16 @@ class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
             f"{obj.planned_minutes() / 60:.1f} hours planned across "
             f"{obj.operations.count()} operation(s); waits on {slowest.name} "
             f"on {slowest.work_centre.code} ({slowest.planned_minutes / 60:.1f} h)"
+        )
+
+    @admin.display(description="Machine time booked against earned")
+    def shown_time_variance(self, obj):
+        if obj.pk is None or not obj.operations.exists():
+            return "No routing"
+        return (
+            f"{obj.minutes_booked() / 60:.1f} h booked, "
+            f"{obj.time_variance_minutes() / 60:+.1f} h against what the "
+            f"output earned (₹{obj.conversion_variance():+,.2f})"
         )
 
     @admin.display(description="Material variance, in stocking units")
@@ -423,9 +440,36 @@ class ProductionEntryAdmin(AuditableAdminMixin, admin.ModelAdmin):
     ]
 
 
+@admin.register(TimeBooking)
+class TimeBookingAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("number", "work_order", "operation", "booking_date",
+                    "minutes", "shown_hours", "quantity_completed",
+                    "hourly_rate", "posted", "posted_value", "voided_at")
+    list_filter = ("posted", "booking_date")
+    search_fields = ("number", "work_order__number", "operation__name")
+    readonly_fields = ("number", "hourly_rate", "posted", "posted_at",
+                       "posted_value", "journal_entry", "voided_entry",
+                       "voided_at")
+    actions = [
+        _act("Posted", "post", "Post: charge the machine time to the run"),
+        _act("Voided", "void", "Void: take the hours back off the run"),
+    ]
+
+    def get_readonly_fields(self, request, obj=None):
+        if obj is not None and obj.posted:
+            return _frozen(self, obj, self.readonly_fields)
+        return self.readonly_fields
+
+    @admin.display(description="Hours")
+    def shown_hours(self, obj):
+        return f"{obj.hours():.2f}"
+
+
 @admin.register(ManufacturingSettings)
 class ManufacturingSettingsAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("__str__", "wip_account", "variance_account", "scrap_account")
+    list_display = ("__str__", "wip_account", "variance_account",
+                    "conversion_absorbed_account", "conversion_variance_account",
+                    "scrap_account")
 
     def has_add_permission(self, request):
         # One company, one set of accounts. A second row would be read by

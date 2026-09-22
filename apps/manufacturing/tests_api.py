@@ -330,3 +330,82 @@ class RoutingApiTests(RunTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("runs backwards", str(response.data))
+
+
+class TimeBookingApiTests(RunTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import Account, AccountType
+        from .orders import ManufacturingSettings, TimeBooking
+        from .routing import Routing, RoutingOperation
+
+        user = get_user_model().objects.create_superuser(
+            username="planner", email="planner@example.com", password="x"
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+        settings = ManufacturingSettings.get()
+        settings.conversion_absorbed_account = Account.objects.create(
+            code="5300", name="Conversion absorbed", account_type=AccountType.EXPENSE
+        )
+        settings.conversion_variance_account = Account.objects.create(
+            code="5400", name="Conversion variance", account_type=AccountType.EXPENSE
+        )
+        settings.save()
+        self.loom.machine_rate_per_hour = Decimal("360")
+        self.loom.capacity_per_hour = Decimal("180")
+        self.loom.capacity_uom = self.kg
+        self.loom.save()
+        plan = Routing.objects.create(code="R-EXT", name="Extrude")
+        RoutingOperation.objects.create(
+            routing=plan, sequence=10, name="Extrude",
+            work_centre=self.loom, setup_minutes=Decimal("90"),
+            units_per_hour=Decimal("180"), rate_uom=self.kg,
+        )
+        self.bom.routing = plan
+        self.bom.save()
+        self.booking_model = TimeBooking
+
+    def test_the_collection_answers(self):
+        response = self.client.get("/api/manufacturing/time-bookings/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_time_can_be_booked_and_taken_back(self):
+        order = self.order("1000")
+        order.release(TODAY)
+        booking = self.booking_model.objects.create(
+            work_order=order, operation=order.operations.get(),
+            booking_date=TODAY, minutes=Decimal("300"),
+        )
+        base = f"/api/manufacturing/time-bookings/{booking.pk}/"
+        self.assertEqual(self.client.post(f"{base}post/").status_code, 200)
+        booking.refresh_from_db()
+        # Five hours at ₹360.
+        self.assertEqual(booking.posted_value, Decimal("1800.00"))
+        self.assertEqual(self.client.post(f"{base}void/").status_code, 200)
+        self.assertEqual(order.conversion_cost(), Decimal("0"))
+
+    def test_a_run_carries_its_machine_time(self):
+        order = self.order("1000")
+        order.release(TODAY)
+        response = self.client.get(f"/api/manufacturing/work-orders/{order.pk}/")
+        self.assertEqual(response.status_code, 200)
+        # 90 minutes of setup then 1,000 kg at 180 an hour = 423.33
+        # minutes, at ₹6 a minute.
+        self.assertAlmostEqual(
+            Decimal(str(response.data["planned_conversion_cost"])),
+            Decimal("2540.00"), places=2,
+        )
+
+    def test_an_impossible_booking_is_a_sentence(self):
+        order = self.order("1000")
+        order.release(TODAY)
+        booking = self.booking_model.objects.create(
+            work_order=order, operation=order.operations.get(),
+            booking_date=TODAY, minutes=Decimal("60000"),
+        )
+        response = self.client.post(
+            f"/api/manufacturing/time-bookings/{booking.pk}/post/"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("really ran that long", str(response.data))

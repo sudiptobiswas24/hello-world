@@ -84,6 +84,23 @@ class ManufacturingSettings(AuditModel):
                   "is the number the plant manages: a run that ate more polymer "
                   "than the specification says shows up here and nowhere else.",
     )
+    conversion_absorbed_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Credited when machine time is charged to a run. A contra "
+                  "account against the power, wages and depreciation posted "
+                  "elsewhere: its balance is what the plant over- or "
+                  "under-absorbed, which is the question 'did the machines run "
+                  "as many hours as we costed them at'.",
+    )
+    conversion_variance_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Where a run's time overrun lands at close, kept apart from "
+                  "the material variance. A blend that ran heavy and a loom "
+                  "that ran slow are different problems with different owners, "
+                  "and one number for both names neither.",
+    )
     scrap_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
@@ -104,7 +121,9 @@ class ManufacturingSettings(AuditModel):
 
     NAMES = {
         "wip": "work in progress",
-        "variance": "production variance",
+        "variance": "material variance",
+        "conversion_absorbed": "conversion absorbed",
+        "conversion_variance": "conversion variance",
         "scrap": "production scrap",
     }
 
@@ -155,11 +174,34 @@ class WorkCentre(AuditModel):
                   "calendar: a public holiday is a company-wide fact and this "
                   "module has no business owning one.",
     )
+    machine_rate_per_hour = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal("0"),
+        help_text="Power and depreciation an hour. Twelve looms drawing three "
+                  "phase all night is not a rounding error on a sack.",
+    )
+    labour_rate_per_hour = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal("0"),
+        help_text="The crew this machine needs, an hour. A rate rather than a "
+                  "headcount: one operator minding four looms costs a quarter "
+                  "of themselves to each.",
+    )
+    overhead_rate_per_hour = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal("0"),
+        help_text="Everything else the hour carries — supervision, the "
+                  "building, maintenance. Three rates rather than one because "
+                  "a plant manager argues about them separately.",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["code"]
         constraints = [
+            models.CheckConstraint(
+                check=Q(machine_rate_per_hour__gte=0)
+                & Q(labour_rate_per_hour__gte=0)
+                & Q(overhead_rate_per_hour__gte=0),
+                name="work_centre_rates_not_negative",
+            ),
             models.CheckConstraint(
                 check=Q(available_hours_per_day__gt=0)
                 & Q(available_hours_per_day__lte=24),
@@ -173,6 +215,23 @@ class WorkCentre(AuditModel):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def conversion_rate_per_hour(self):
+        """
+        What an hour of this machine costs the run.
+
+        Zero for a plant that has chosen not to absorb conversion into
+        stock, which is a real choice and not an oversight: it then
+        carries power and labour as period cost and its finished goods
+        are worth their materials. Nothing here forces the other way —
+        but a plant that leaves this at zero should know that a sack on
+        its shelf is worth about three quarters of what it cost.
+        """
+        return (
+            self.machine_rate_per_hour
+            + self.labour_rate_per_hour
+            + self.overhead_rate_per_hour
+        )
 
     def capacity(self, start, end):
         """What this machine is being asked to do in a window, against what it can."""
@@ -233,6 +292,15 @@ class WorkOrder(AuditModel):
         max_length=16, choices=WorkOrderStatus.choices,
         default=WorkOrderStatus.DRAFT,
     )
+    time_allowance_percent = models.DecimalField(
+        max_digits=6, decimal_places=3, default=Decimal("50"),
+        help_text="How far past its planned time an operation may be booked. "
+                  "Wide on purpose — a breakdown, a bad batch of polymer or a "
+                  "new crew all cost real hours and none of them is an error. "
+                  "Forty-two times the plan is a typed zero, and it had put "
+                  "three hundred and sixty thousand rupees into work in "
+                  "progress.",
+    )
     over_production_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("10"),
         help_text="How far past the ordered quantity this run may book output. "
@@ -254,6 +322,12 @@ class WorkOrder(AuditModel):
                   "of the run takes its share of this — a fixed number — rather "
                   "than of what has been issued so far, which would value the "
                   "same regrind differently on Tuesday and Thursday.",
+    )
+    planned_conversion_cost = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="The machine-time side of the plan, frozen. Kept apart so "
+                  "the close can tell a blend that ran heavy from a loom that "
+                  "ran slow.",
     )
     released_at = models.DateTimeField(null=True, blank=True, editable=False)
     closed_at = models.DateTimeField(null=True, blank=True, editable=False)
@@ -357,6 +431,20 @@ class WorkOrder(AuditModel):
             total += issue.posted_value or Decimal("0")
         return total
 
+    def posted_time(self):
+        return self.time_bookings.filter(posted=True, voided_at__isnull=True)
+
+    def conversion_cost(self):
+        """Machine time charged to this run, at the values posted."""
+        total = Decimal("0")
+        for booking in self.posted_time():
+            total += booking.posted_value or Decimal("0")
+        return total
+
+    def minutes_booked(self):
+        total = self.posted_time().aggregate(total=models.Sum("minutes"))["total"]
+        return total or Decimal("0")
+
     def output_value(self):
         """What has come out, at the values posted."""
         total = Decimal("0")
@@ -369,12 +457,15 @@ class WorkOrder(AuditModel):
         What went in and has not come back out as stock or scrap.
 
         Positive means the run is either unfinished or it ate more than
-        the specification said. This is the figure the close sends to
-        variance, and it goes on reading the same after the close —
-        which is what makes it the right number to explain a finished
-        run by, and the wrong one to report as a balance.
+        the specification said — in polymer, in machine hours, or in
+        both. This is the figure the close splits between the two and
+        sends to variance, and it goes on reading the same after the
+        close: the right number to explain a finished run by, and the
+        wrong one to report as a balance.
         """
-        return self.material_cost() - self.output_value()
+        return (
+            self.material_cost() + self.conversion_cost() - self.output_value()
+        )
 
     def wip_balance(self):
         """
@@ -389,6 +480,44 @@ class WorkOrder(AuditModel):
         if self.status == WorkOrderStatus.CLOSED:
             return Decimal("0")
         return self.unaccounted()
+
+    def conversion_earned(self):
+        """
+        What the output this run booked was worth in machine time.
+
+        Per unit made rather than per unit ordered: a run that made half
+        of what it was for has earned half the machine hours, and the
+        rest is an overrun whether the loom was slow or simply stopped.
+        Scrap counts — the machine ran to make it.
+        """
+        if self.planned_conversion_cost is None:
+            return Decimal("0")
+        ordered = self.item.to_stock_quantity(self.quantity_ordered, self.uom)
+        if not ordered:
+            return Decimal("0")
+        made = self.item.to_stock_quantity(
+            self.quantity_produced() + self.quantity_scrapped(), self.uom
+        )
+        return self.planned_conversion_cost / ordered * made
+
+    def conversion_variance(self):
+        """Machine time charged against machine time earned."""
+        return self.conversion_cost() - self.conversion_earned()
+
+    def time_variance_minutes(self):
+        """
+        The same question in hours, which is the one a shift manager can
+        answer. Positive means the run took longer than it was planned
+        at.
+        """
+        ordered = self.item.to_stock_quantity(self.quantity_ordered, self.uom)
+        if not ordered:
+            return Decimal("0")
+        made = self.item.to_stock_quantity(
+            self.quantity_produced() + self.quantity_scrapped(), self.uom
+        )
+        earned = self.planned_minutes() / ordered * made
+        return self.minutes_booked() - earned
 
     def material_variance(self):
         """
@@ -513,6 +642,7 @@ class WorkOrder(AuditModel):
             self.quantity_ordered, self.uom
         )
         self.planned_material_cost = plan.materials
+        self.planned_conversion_cost = plan.conversion
         self.planned_unit_cost = (
             (plan.net / stock_quantity).quantize(Decimal("0.000001"))
             if stock_quantity else Decimal("0")
@@ -520,8 +650,9 @@ class WorkOrder(AuditModel):
         self.status = WorkOrderStatus.RELEASED
         self.released_at = timezone.now()
         super().save(update_fields=[
-            "number", "planned_unit_cost", "planned_material_cost", "routing",
-            "status", "released_at", "updated_at",
+            "number", "planned_unit_cost", "planned_material_cost",
+            "planned_conversion_cost", "routing", "status", "released_at",
+            "updated_at",
         ])
         return self
 
@@ -545,12 +676,27 @@ class WorkOrder(AuditModel):
         balance = round_money(self.unaccounted())
         if balance:
             label = memo or f"Closing variance on {self.number}"
+            rows = [(
+                ManufacturingSettings.account("wip", "a run is being closed"),
+                -balance,
+            )]
+            time_overrun = round_money(self.conversion_variance())
+            if time_overrun:
+                rows.append((
+                    ManufacturingSettings.account(
+                        "conversion_variance",
+                        "a run is being closed having taken more machine time "
+                        "than it was planned at",
+                    ),
+                    time_overrun,
+                ))
+            # Material takes the remainder rather than being computed in
+            # its own right, so the two always come to exactly what was
+            # left in work in progress. Scrap, by-product recovery and
+            # the rounding on five materials all land here, which is
+            # where somebody looking for missing polymer would look.
             self.close_entry, _ = _post_entry(
-                on_date, self.number, label,
-                [(
-                    ManufacturingSettings.account("wip", "a run is being closed"),
-                    -balance,
-                )],
+                on_date, self.number, label, rows,
                 balance_to=ManufacturingSettings.account(
                     "variance",
                     "a run is being closed with material unaccounted for",
@@ -736,6 +882,100 @@ class WorkOrderOperation(AuditModel):
 
     def __str__(self):
         return f"{self.work_order} · {self.sequence}. {self.name}"
+
+    def posted_bookings(self):
+        return self.bookings.filter(posted=True, voided_at__isnull=True)
+
+    def minutes_booked(self):
+        total = self.posted_bookings().aggregate(
+            total=models.Sum("minutes")
+        )["total"]
+        return total or Decimal("0")
+
+    def quantity_completed(self):
+        """
+        What has come off this operation, where the shift counted it.
+
+        A run's progress through its routing: how many sacks have been
+        cut against how many have been stitched. Bookings that did not
+        count contribute nothing rather than zero, which is the same
+        number and a different claim — so a caller wanting to know
+        whether anybody counted asks `counted_bookings()`.
+        """
+        total = self.posted_bookings().aggregate(
+            total=models.Sum("quantity_completed")
+        )["total"]
+        return total or Decimal("0")
+
+    def counted_bookings(self):
+        return self.posted_bookings().filter(quantity_completed__isnull=False)
+
+    def feeds_from(self):
+        """
+        The operation before this one that somebody actually counted.
+
+        Walked back rather than taken as the immediately preceding
+        sequence, because an operation nobody counted is not an
+        operation that made nothing — and treating it as zero would
+        refuse every booking after it.
+        """
+        for earlier in self.work_order.operations.filter(
+            sequence__lt=self.sequence
+        ).order_by("-sequence"):
+            if earlier.counted_bookings().exists():
+                return earlier
+        return None
+
+    def check_booking(self, minutes, completed):
+        """
+        Whether this booking is physically possible.
+
+        Three questions, all of which a shift can get wrong by typing:
+        whether the machine can have run that long, whether the run can
+        have made that much, and whether the operation before this one
+        has fed it that much. The third is the one no general-purpose
+        system asks, and the one that catches a shift booking against
+        the wrong line: a sack cannot be stitched before it is cut.
+        """
+        order = self.work_order
+        if self.planned_minutes > 0:
+            allowed = self.planned_minutes * (
+                Decimal("1") + (order.time_allowance_percent or Decimal("0"))
+                / Decimal("100")
+            )
+            if self.minutes_booked() + minutes > allowed:
+                raise ValidationError(
+                    f"{self} was planned at {self.planned_minutes} minutes and "
+                    f"allows {order.time_allowance_percent}% over. Booking "
+                    f"{minutes} on top of {self.minutes_booked()} would take it "
+                    f"past {allowed:.2f}. Raise the allowance on the order if "
+                    "the machine really ran that long."
+                )
+        if completed is None:
+            return
+        made = order.item.to_stock_quantity(completed, order.uom)
+        already = order.item.to_stock_quantity(
+            self.quantity_completed(), order.uom
+        )
+        ceiling = order.maximum_output()
+        if already + made > ceiling:
+            raise ValidationError(
+                f"{self} would have made {already + made} against a run for "
+                f"{order.quantity_ordered} {order.uom}, which allows up to "
+                f"{ceiling}."
+            )
+        upstream = self.feeds_from()
+        if upstream is not None:
+            fed = order.item.to_stock_quantity(
+                upstream.quantity_completed(), order.uom
+            )
+            if already + made > fed:
+                raise ValidationError(
+                    f"{self} would have made {already + made} from the "
+                    f"{fed} that {upstream.name} has fed it. Nothing can leave "
+                    "an operation that never went into it — check which "
+                    "operation this shift was booked against."
+                )
 
     def save(self, *args, **kwargs):
         if self.work_order.status != WorkOrderStatus.DRAFT:
@@ -1505,3 +1745,173 @@ class ProductionByproduct(AuditModel):
                 "Void it and raise another."
             )
         return super().delete(*args, **kwargs)
+
+
+class TimeBooking(AuditModel):
+    """
+    A machine ran for a while against a run, and what that cost.
+
+    Charged at the work centre's own rate and credited to conversion
+    absorbed, which is a contra account against the power, wages and
+    depreciation posted elsewhere. Its balance is the plant's
+    over- or under-absorption — whether the machines ran as many hours
+    as the standard costed them at.
+
+    A booking with a quantity on it is also the run's progress through
+    its routing: how many sacks have been cut against how many have been
+    stitched. Optional, because a shift that books four hours on a loom
+    and cannot say how many metres came off it has still told the truth
+    about the four hours.
+    """
+
+    number = models.CharField(max_length=32, blank=True)
+    work_order = models.ForeignKey(
+        WorkOrder, on_delete=models.PROTECT, related_name="time_bookings"
+    )
+    operation = models.ForeignKey(
+        WorkOrderOperation, on_delete=models.PROTECT, related_name="bookings",
+        help_text="Which of the run's operations ran. Its work centre is what "
+                  "sets the rate, so a booking cannot be made against a "
+                  "machine this run never went near.",
+    )
+    booking_date = models.DateField()
+    minutes = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        help_text="Time on the machine, setup included. Always positive: a "
+                  "booking made in error is voided, not negated.",
+    )
+    quantity_completed = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="What came off this operation in that time, in the run's "
+                  "own unit. Blank where the shift did not count it.",
+    )
+    memo = models.CharField(max_length=255, blank=True)
+    hourly_rate = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="What the machine cost an hour when this posted, frozen "
+                  "here. A work centre re-rated in April must not re-price a "
+                  "shift that ran in March.",
+    )
+    posted = models.BooleanField(default=False)
+    posted_at = models.DateTimeField(null=True, blank=True, editable=False)
+    posted_value = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="What this put into work in progress, frozen when it posted.",
+    )
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    voided_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    voided_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    class Meta:
+        ordering = ["-booking_date", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""),
+                name="time_booking_number_unique",
+            ),
+            models.CheckConstraint(
+                check=Q(minutes__gt=0), name="time_booking_minutes_positive"
+            ),
+            models.CheckConstraint(
+                check=Q(quantity_completed__isnull=True)
+                | Q(quantity_completed__gte=0),
+                name="time_booking_quantity_not_negative",
+            ),
+        ]
+
+    def __str__(self):
+        return self.number or f"Draft time booking {self.pk}"
+
+    def is_voided(self):
+        return self.voided_at is not None
+
+    def hours(self):
+        return self.minutes / Decimal("60")
+
+    @transaction.atomic
+    def post(self, memo=""):
+        if self.posted:
+            raise ValidationError(f"{self} is already posted.")
+        if self.operation.work_order_id != self.work_order_id:
+            raise ValidationError(
+                f"{self.operation} belongs to {self.operation.work_order}, not "
+                f"to {self.work_order}."
+            )
+        if not self.work_order.is_open():
+            raise ValidationError(
+                f"{self.work_order} is "
+                f"{self.work_order.get_status_display().lower()}; time can only "
+                "be booked against a released order."
+            )
+        self.operation.check_booking(self.minutes, self.quantity_completed)
+        self.booking_date = to_date(self.booking_date)
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "manufacturing.time_booking", self.booking_date,
+                name="Time Bookings", prefix="TB-",
+            )
+        label = memo or self.memo or (
+            f"{self.operation.name} on {self.operation.work_centre.code}, "
+            f"{self.number}"
+        )
+        self.hourly_rate = self.operation.work_centre.conversion_rate_per_hour()
+        value = self.hours() * self.hourly_rate
+        if value:
+            self.journal_entry, charged = _post_entry(
+                self.booking_date, self.number, label,
+                [(
+                    ManufacturingSettings.account(
+                        "conversion_absorbed", "machine time is being charged to a run"
+                    ),
+                    -value,
+                )],
+                balance_to=ManufacturingSettings.account(
+                    "wip", "machine time is being charged to a run"
+                ),
+            )
+            self.posted_value = charged
+        else:
+            # A plant that has chosen not to absorb conversion books the
+            # hours and posts nothing. The hours are still worth having:
+            # they are what the time variance is measured from.
+            self.posted_value = Decimal("0")
+        self.posted = True
+        self.posted_at = timezone.now()
+        super().save(update_fields=[
+            "number", "booking_date", "hourly_rate", "posted", "posted_at",
+            "posted_value", "journal_entry", "updated_at",
+        ])
+        return self.journal_entry
+
+    @transaction.atomic
+    def void(self, on_date=None, memo=""):
+        """Take the hours and their cost back off the run."""
+        if not self.posted:
+            raise ValidationError(f"{self} is not posted.")
+        if self.is_voided():
+            raise ValidationError(f"{self} is already voided.")
+        _check_order_is_open_for(self.work_order, "void this booking")
+        on_date = to_date(on_date) or timezone.now().date()
+        if self.journal_entry_id:
+            self.voided_entry = self.journal_entry.create_reversal(
+                entry_date=on_date, memo=memo or f"Void of {self.number}"
+            )
+        self.voided_at = timezone.now()
+        super().save(update_fields=["voided_entry", "voided_at", "updated_at"])
+        return self.voided_entry
+
+    def save(self, *args, **kwargs):
+        if self.pk and not self._state.adding:
+            previous = TimeBooking.objects.filter(pk=self.pk).first()
+            if previous is not None and previous.posted:
+                raise ValidationError(
+                    f"Cannot modify {self} once it is posted. Void it and book "
+                    "again."
+                )
+        super().save(*args, **kwargs)

@@ -23,6 +23,7 @@ from .orders import (
     MaterialIssueLine,
     ProductionByproduct,
     ProductionEntry,
+    TimeBooking,
     WorkCentre,
     WorkOrder,
 )
@@ -40,6 +41,7 @@ from .serializers import (
     RoutingOperationSerializer,
     RoutingSerializer,
     TapeSpecificationSerializer,
+    TimeBookingSerializer,
     WorkCentreSerializer,
     WorkOrderSerializer,
 )
@@ -327,3 +329,29 @@ class ProductionEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class ProductionByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ProductionByproduct.objects.select_related("item", "entry")
     serializer_class = ProductionByproductSerializer
+
+
+class TimeBookingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = TimeBooking.objects.select_related(
+        "work_order", "operation", "operation__work_centre"
+    )
+    serializer_class = TimeBookingSerializer
+    action_permission_map = {
+        "post": "manufacturing.change_timebooking",
+        "void": "manufacturing.change_timebooking",
+    }
+
+    @action(detail=True, methods=["post"])
+    def post(self, request, pk=None):
+        booking = self.get_object()
+        _run(booking.post, memo=request.data.get("memo", ""))
+        return Response(self.get_serializer(booking).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        booking = self.get_object()
+        _run(
+            booking.void,
+            on_date=request.data.get("on_date"), memo=request.data.get("memo", ""),
+        )
+        return Response(self.get_serializer(booking).data)
