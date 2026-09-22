@@ -2,6 +2,8 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     BomSubstituteViewSet,
+    CostVersionViewSet,
+    StandardCostViewSet,
     MaintenanceJobViewSet,
     MaintenanceScheduleViewSet,
     FabricRollViewSet,
@@ -34,6 +36,8 @@ router.register("tape-specifications", TapeSpecificationViewSet)
 router.register("fabric-specifications", FabricSpecificationViewSet)
 router.register("bag-specifications", BagSpecificationViewSet)
 router.register("boms", BillOfMaterialsViewSet)
+router.register("cost-versions", CostVersionViewSet)
+router.register("standard-costs", StandardCostViewSet)
 router.register("bom-components", BomComponentViewSet)
 router.register("bom-byproducts", BomByproductViewSet)
 router.register("bom-substitutes", BomSubstituteViewSet)

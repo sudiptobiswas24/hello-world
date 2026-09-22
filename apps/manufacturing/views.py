@@ -30,6 +30,7 @@ from .orders import (
 from .demand import coverage, genealogy, uncovered
 from .oee import by_operator, by_shift, effectiveness
 from .bom import BomSubstitute
+from .costing import CostVersion, StandardCost, against_actual, explain
 from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
@@ -37,6 +38,8 @@ from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
     BomSubstituteSerializer,
+    CostVersionSerializer,
+    StandardCostSerializer,
     MaintenanceJobSerializer,
     MaintenanceScheduleSerializer,
     FabricRollSerializer,
@@ -224,6 +227,89 @@ class BomSubstituteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "item", "component", "component__item", "component__bom"
     )
     serializer_class = BomSubstituteSerializer
+
+
+class CostVersionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    Standard costs, rolled and published.
+
+    `publish/` is a POST and it posts a journal entry, because a
+    standard cost change is a revaluation of every standard-costed
+    shelf in the company.
+    """
+
+    queryset = CostVersion.objects.prefetch_related("costs")
+    serializer_class = CostVersionSerializer
+    action_permission_map = {
+        "roll_up": "manufacturing.change_costversion",
+        "publish": "manufacturing.change_costversion",
+    }
+
+    @action(detail=True, methods=["post"])
+    def roll_up(self, request, pk=None):
+        version = self.get_object()
+        done = _run(version.roll_up)
+        return Response({"version": version.pk, "rolled": len(done)})
+
+    @action(detail=True, methods=["post"])
+    def publish(self, request, pk=None):
+        version = self.get_object()
+        entry = _run(
+            version.publish,
+            on_date=request.data.get("on_date"),
+            by=request.user if request.user.is_authenticated else None,
+        )
+        return Response({
+            **self.get_serializer(version).data,
+            "revaluation": entry.pk if entry else None,
+        })
+
+    @action(detail=True, methods=["get"])
+    def explain(self, request, pk=None):
+        """Why an item costs what it costs, one level down."""
+        from apps.inventory.models import Item
+
+        item = Item.objects.filter(pk=request.query_params.get("item")).first()
+        if item is None:
+            raise DRFValidationError(["Name an item."])
+        report = _run(explain, self.get_object(), item)
+        return Response({
+            "item": report["item"].pk,
+            "sku": report["item"].sku,
+            "cost": report["cost"],
+            "bought": report["bought"],
+            "material": report.get("material"),
+            "conversion": report.get("conversion"),
+            "byproduct_credit": report.get("byproduct_credit"),
+            "lines": [
+                {
+                    "item": line["item"].pk, "sku": line["item"].sku,
+                    "quantity_per_unit": line["quantity_per_unit"],
+                    "rate": line["rate"],
+                    "cost_per_unit": line["cost_per_unit"],
+                    "share_percent": line["share_percent"],
+                }
+                for line in report["lines"]
+            ],
+        })
+
+    @action(detail=True, methods=["get"])
+    def against_actual(self, request, pk=None):
+        """Where the standard has drifted from the shelf, worst first."""
+        return Response([
+            {
+                "item": row["item"].pk, "sku": row["item"].sku,
+                "standard": row["standard"], "actual": row["actual"],
+                "difference": row["difference"],
+                "difference_percent": row["difference_percent"],
+            }
+            for row in _run(against_actual, self.get_object())
+        ])
+
+
+class StandardCostViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = StandardCost.objects.select_related("version", "item", "bom")
+    serializer_class = StandardCostSerializer
 
 
 class MaintenanceScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

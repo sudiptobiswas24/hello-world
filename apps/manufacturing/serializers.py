@@ -13,6 +13,7 @@ from .orders import (
     WorkOrderOperation,
 )
 from .bom import BomSubstitute
+from .costing import CostVersion, StandardCost
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
@@ -149,6 +150,30 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
                   "is_computed", "is_default", "is_active", "is_rework",
                   "backflush", "notes", "components", "byproducts"]
         read_only_fields = ["is_computed"]
+
+
+class StandardCostSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StandardCost
+        fields = ["id", "version", "item", "material", "conversion",
+                  "byproduct_credit", "total", "is_rolled", "bom", "notes"]
+        read_only_fields = ["total", "is_rolled", "bom"]
+
+
+class CostVersionSerializer(serializers.ModelSerializer):
+    is_published = serializers.BooleanField(read_only=True)
+    items = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CostVersion
+        fields = ["id", "code", "name", "effective_from", "notes",
+                  "published_at", "published_on", "revaluation_entry",
+                  "is_published", "items"]
+        read_only_fields = ["published_at", "published_on",
+                            "revaluation_entry"]
+
+    def get_items(self, obj):
+        return obj.costs.count()
 
 
 class MaintenanceScheduleSerializer(serializers.ModelSerializer):

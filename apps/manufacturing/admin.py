@@ -35,6 +35,7 @@ from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .bom import BomSubstitute
 from .orders import WorkOrderSubstitute
+from .costing import CostVersion, StandardCost
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
@@ -208,6 +209,67 @@ class BomByproductInline(ComputedInlineMixin, admin.TabularInline):
     model = BomByproduct
     extra = 0
     autocomplete_fields = ("item",)
+
+
+class StandardCostInline(admin.TabularInline):
+    model = StandardCost
+    extra = 0
+    fields = ("item", "material", "conversion", "byproduct_credit", "total",
+              "is_rolled")
+    readonly_fields = ("total", "is_rolled")
+    raw_id_fields = ("item",)
+
+
+@admin.register(CostVersion)
+class CostVersionAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    """
+    A named set of standard costs.
+
+    Publishing one is a revaluation: stock at standard is worth
+    quantity times the standard, so the difference posts. Once
+    published the version is read-only, because it is what stock is
+    now valued at.
+    """
+
+    list_display = ("code", "name", "effective_from", "shown_items",
+                    "published_on", "revaluation_entry")
+    inlines = [StandardCostInline]
+    readonly_fields = ("published_at", "published_on", "published_by",
+                       "revaluation_entry")
+    actions = ["action_roll_up", "action_publish"]
+
+    @admin.display(description="Items")
+    def shown_items(self, obj):
+        return obj.costs.count()
+
+    @admin.action(description="Roll up every made item")
+    def action_roll_up(self, request, queryset):
+        for version in queryset:
+            try:
+                done = version.roll_up()
+                messages.success(request, f"{version}: rolled {len(done)}.")
+            except ValidationError as error:
+                messages.error(request, " ".join(error.messages))
+
+    @admin.action(description="Publish, posting the revaluation")
+    def action_publish(self, request, queryset):
+        for version in queryset:
+            try:
+                entry = version.publish(by=request.user)
+                messages.success(
+                    request,
+                    f"{version}: published"
+                    + (f", revaluation {entry.reference}." if entry else
+                       ", nothing to revalue."),
+                )
+            except ValidationError as error:
+                messages.error(request, " ".join(error.messages))
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj is not None and obj.is_published():
+            fields += ["code", "name", "effective_from"]
+        return fields
 
 
 class MaintenanceJobInline(admin.TabularInline):

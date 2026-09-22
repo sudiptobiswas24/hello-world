@@ -110,6 +110,15 @@ class ManufacturingSettings(AuditModel):
                   "that ran slow are different problems with different owners, "
                   "and one number for both names neither.",
     )
+    revaluation_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Where a standard cost change lands. Stock valued at "
+                  "standard is worth quantity times the standard, so "
+                  "publishing a new one changes what every shelf is worth — "
+                  "and that gain or loss has to go somewhere. An asset "
+                  "account that quietly grows is the one place it must not.",
+    )
     scrap_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
@@ -134,6 +143,7 @@ class ManufacturingSettings(AuditModel):
         "conversion_absorbed": "conversion absorbed",
         "conversion_variance": "conversion variance",
         "scrap": "production scrap",
+        "revaluation": "stock revaluation",
     }
 
     @classmethod
@@ -142,7 +152,8 @@ class ManufacturingSettings(AuditModel):
         if account is None:
             raise ValidationError(
                 f"Manufacturing has no {cls.NAMES[name]} account configured, "
-                f"and {why}."
+                f"and {why}. It has to land somewhere, and an asset account "
+                "that quietly grows is the one place it must not."
             )
         return account
 

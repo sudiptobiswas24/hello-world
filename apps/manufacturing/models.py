@@ -56,6 +56,12 @@ from .rolls import (  # noqa: F401
     unrolled_stock,
     weighed_gsm,
 )
+from .costing import (  # noqa: F401
+    CostVersion,
+    StandardCost,
+    against_actual,
+    explain,
+)
 from .maintenance import (  # noqa: F401
     MaintenanceJob,
     MaintenanceSchedule,
