@@ -379,3 +379,65 @@ class TheLoadPictureTests(PlanningTestCase):
         rows = overloaded_weeks(book, [self.loom], TODAY, self.day(14))
         self.assertTrue(rows)
         self.assertLess(rows[0]["spare_minutes"], Decimal("0"))
+
+
+class ABankOfLoomsSchedulesAsOneTests(PlanningTestCase):
+    """
+    The fixture's loom is a bank with no machines listed, and so is
+    its own single machine. Listing two changes what the plan believes
+    it can do in a day, and the plan has to notice.
+    """
+
+    def looms(self, count, **kwargs):
+        from apps.manufacturing.machines import Machine
+
+        return [
+            Machine.objects.create(
+                work_centre=self.loom, code=f"L-{index:02d}", **kwargs
+            )
+            for index in range(1, count + 1)
+        ]
+
+    def test_two_looms_halve_the_days_one_loom_needed(self):
+        """
+        2,120 minutes of weaving. On one eight-hour loom that is four
+        days and part of a fifth; on two it is two and part of a
+        third. A scheduler reading the bank's own hours would promise
+        the four-day date on a shed that can do it in two.
+        """
+        self.loom.available_hours_per_day = Decimal("8")
+        self.loom.save()
+        self.sell(self.fabric, "1000", self.day(30))
+        self.sell(self.fabric, "1000", self.day(30))
+        one = self.plan().orders.get(item=self.fabric)
+        self.assertEqual(one.lead_days, 4)
+
+        self.looms(2, available_hours_per_day=Decimal("8"))
+        two = self.plan().orders.get(item=self.fabric)
+        self.assertEqual(two.lead_days, 2)
+
+    def test_a_loom_switched_off_at_night_is_not_a_continuous_loom(self):
+        """
+        Eleven continuous looms and one on days is not twelve
+        continuous looms — and a bank whose own field still says
+        twenty-four hours must not be believed over its machines.
+        """
+        self.loom.available_hours_per_day = Decimal("24")
+        self.loom.save()
+        self.looms(1, available_hours_per_day=Decimal("4"))
+        self.sell(self.fabric, "1000", self.day(30))
+        order = self.plan().orders.get(item=self.fabric)
+        # 1,060 minutes at four hours a day is four days and part of
+        # a fifth, not the single day the bank's own hours claim.
+        self.assertEqual(order.lead_days, 4)
+
+    def test_a_sold_loom_takes_its_hours_out_of_the_plan(self):
+        self.loom.available_hours_per_day = Decimal("8")
+        self.loom.save()
+        both = self.looms(2, available_hours_per_day=Decimal("8"))
+        self.sell(self.fabric, "1000", self.day(30))
+        self.sell(self.fabric, "1000", self.day(30))
+        self.assertEqual(self.plan().orders.get(item=self.fabric).lead_days, 2)
+        both[1].is_active = False
+        both[1].save()
+        self.assertEqual(self.plan().orders.get(item=self.fabric).lead_days, 4)

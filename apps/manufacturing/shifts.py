@@ -196,6 +196,13 @@ class Downtime(AuditModel):
     work_centre = models.ForeignKey(
         "WorkCentre", on_delete=models.PROTECT, related_name="downtime"
     )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="downtime",
+        help_text="Which machine stopped. Blank where the whole bank did — a "
+                  "power cut takes twelve looms, and splitting it across "
+                  "twelve rows invents a precision nobody measured.",
+    )
     shift_date = models.DateField(
         help_text="The day the shift is named for. A stoppage at two in the "
                   "morning belongs to the night shift of the day before."
@@ -237,31 +244,67 @@ class Downtime(AuditModel):
     def hours(self):
         return self.minutes / MINUTES_PER_HOUR
 
+    def _check_fits_the_shift(self):
+        """
+        No machine stopped for longer than the shift it stopped in.
+
+        Asked of everything already recorded on this shift rather than
+        of this row alone: two stoppages of three hundred minutes each
+        pass one at a time and between them make an eight-hour shift
+        ten hours long. That had a loom reading nought per cent
+        available because somebody entered the same breakdown twice.
+
+        Asked **per machine**, which is the part a bank breaks. Twelve
+        looms in a weaving centre can honestly be down four hundred and
+        eighty minutes each in one eight-hour shift; totalling the bank
+        would refuse the second loom of the day. So each machine is
+        totalled on its own, and a bank-wide stoppage — a power cut,
+        with no machine named — counts against every one of them,
+        because it stopped every one of them.
+        """
+        already = Downtime.objects.filter(
+            work_centre=self.work_centre, shift_date=self.shift_date,
+            shift=self.shift,
+        )
+        if self.pk:
+            already = already.exclude(pk=self.pk)
+        rows = list(already) + [self]
+        shared = sum(
+            (row.minutes for row in rows if row.machine_id is None),
+            Decimal("0"),
+        )
+        per_machine = {}
+        for row in rows:
+            if row.machine_id is not None:
+                per_machine[row.machine_id] = (
+                    per_machine.get(row.machine_id, Decimal("0")) + row.minutes
+                )
+        if per_machine:
+            worst_id = max(per_machine, key=lambda key: per_machine[key])
+            total = shared + per_machine[worst_id]
+        else:
+            worst_id, total = None, shared
+        if total <= self.shift.minutes():
+            return
+        if worst_id is not None:
+            from .machines import Machine
+
+            stopped = Machine.objects.filter(pk=worst_id).first()
+        else:
+            stopped = None
+        raise ValidationError(
+            f"{self.shift} runs {self.shift.minutes()} minutes and "
+            f"{stopped or self.work_centre} would be down for {total} of them "
+            f"on {self.shift_date}. A machine cannot be stopped for longer "
+            "than the shift it was stopped in."
+        )
+
     def save(self, *args, **kwargs):
         self.shift_date = to_date(self.shift_date)
         if self.shift_id is not None:
-            # Asked of everything already recorded for this machine on
-            # this shift, not of this row alone: two stoppages of three
-            # hundred minutes each pass one at a time and between them
-            # make an eight-hour shift ten hours long. That had the loom
-            # reading nought per cent available because somebody entered
-            # the same breakdown twice.
-            already = Downtime.objects.filter(
-                work_centre=self.work_centre, shift_date=self.shift_date,
-                shift=self.shift,
-            )
-            if self.pk:
-                already = already.exclude(pk=self.pk)
-            total = sum(
-                (row.minutes for row in already), Decimal("0")
-            ) + self.minutes
-            if total > self.shift.minutes():
-                raise ValidationError(
-                    f"{self.shift} runs {self.shift.minutes()} minutes and "
-                    f"{self.work_centre} would be down for {total} of them on "
-                    f"{self.shift_date}. A machine cannot be stopped for longer "
-                    "than the shift it was stopped in."
-                )
+            self._check_fits_the_shift()
+        if self.machine_id is not None:
+            self.machine.check_in(self.work_centre)
         if self.work_order_id is not None:
             covers = self.work_order.operations.filter(
                 work_centre=self.work_centre

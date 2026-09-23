@@ -35,6 +35,7 @@ from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .bom import BomSubstitute
 from .orders import WorkOrderSubstitute
+from .machines import Machine
 from .costing import CostVersion, StandardCost
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
@@ -454,15 +455,45 @@ class RoutingAdmin(AuditableAdminMixin, admin.ModelAdmin):
         ) or "—"
 
 
+class MachineInline(admin.TabularInline):
+    model = Machine
+    extra = 0
+    fields = ("code", "name", "capacity_per_hour", "capacity_uom",
+              "available_hours_per_day", "working_days", "is_active")
+
+
+@admin.register(Machine)
+class MachineAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    @admin.display(description="Hours a day")
+    def shown_hours(self, obj):
+        own = obj.available_hours_per_day
+        return f"{obj.hours_per_day():g}" + ("" if own is not None else " (bank)")
+
+    @admin.display(description="Runs")
+    def shown_days(self, obj):
+        return obj.days_pattern() + ("" if obj.working_days else " (bank)")
+
+    list_display = ("code", "name", "work_centre", "capacity_per_hour",
+                    "capacity_uom", "shown_hours", "shown_days", "is_active")
+    list_filter = ("work_centre", "is_active")
+    search_fields = ("code", "name")
+
+
 @admin.register(WorkCentre)
 class WorkCentreAdmin(AuditableAdminMixin, admin.ModelAdmin):
     @admin.display(description="An hour costs")
     def shown_rate(self, obj):
         return f"{obj.conversion_rate_per_hour():,.2f}"
 
+    @admin.display(description="Machines")
+    def shown_machines(self, obj):
+        machines = obj.machine_list()
+        return ", ".join(m.code for m in machines) if machines else "—"
+
+    inlines = [MachineInline]
     list_display = ("code", "name", "capacity_per_hour", "capacity_uom",
                     "available_hours_per_day", "working_days", "holiday_region",
-                    "shown_rate", "is_active")
+                    "shown_machines", "shown_rate", "is_active")
     search_fields = ("code", "name")
 
 

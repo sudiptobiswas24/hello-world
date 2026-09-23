@@ -96,6 +96,14 @@ class FabricRoll(AuditModel):
                   "metre of it weighs twice what the GSM says. Getting this "
                   "wrong halves or doubles every grammage the plant reads.",
     )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="rolls",
+        help_text="The loom this came off. On the roll rather than on the "
+                  "entry because one entry books a shift's output and a roll "
+                  "is one physical roll off one machine — which is the whole "
+                  "point of weighing it at the loom rather than at the store.",
+    )
     notes = models.CharField(max_length=255, blank=True)
 
     class Meta:
@@ -240,6 +248,18 @@ class FabricRoll(AuditModel):
                 f"{self.lot}. A roll is the batch its own booking made, or the "
                 "genealogy points at the wrong run for ever."
             )
+        if self.machine_id is not None:
+            centres = entry.work_order.operations.values_list(
+                "work_centre_id", flat=True
+            )
+            if centres and self.machine.work_centre_id not in set(centres):
+                raise ValidationError(
+                    f"{self.machine} is in "
+                    f"{self.machine.work_centre.code} and "
+                    f"{entry.work_order} never goes near it. A roll "
+                    "attributed to a machine that did not make it is a "
+                    "by-loom report that points at the wrong loom."
+                )
         booked = entry.stock_quantity()
         if abs(booked - self.net_weight_kg) > Decimal("0.001"):
             raise ValidationError(
@@ -347,3 +367,53 @@ def weighed_gsm(work_order):
             (average - target) / target * ONE_HUNDRED if target else None
         ),
     }
+
+
+def by_machine(work_order):
+    """
+    A run's rolls, loom by loom: metres, kilos and the grammage each
+    one actually held.
+
+    The report a weaving shed argues over. Twelve looms on the same
+    beam at the same mesh should come off at the same grammage, and
+    the one that does not is either mis-set or slipping — either way
+    it is eating polymer that the run's overall figure averages away.
+    A bank at 2% over target hides one loom at 11% and eleven at zero.
+
+    Rolls with no machine on them are gathered under `None` rather
+    than dropped or spread across the looms: a shed that has only
+    started weighing at the loom this week still has last week's
+    rolls, and quietly attributing them somewhere is worse than
+    saying they are unattributed.
+    """
+    rows = {}
+    for roll in FabricRoll.objects.filter(
+        entry__work_order=work_order, entry__posted=True,
+        entry__voided_at__isnull=True,
+    ).select_related("machine", "specification", "entry"):
+        row = rows.setdefault(roll.machine_id, {
+            "machine": roll.machine,
+            "rolls": 0,
+            "kilos": Decimal("0"),
+            "metres": Decimal("0"),
+            "area_sqm": Decimal("0"),
+        })
+        row["rolls"] += 1
+        row["kilos"] += roll.net_weight_kg
+        row["metres"] += roll.length_m
+        row["area_sqm"] += roll.area_sqm()
+    out = []
+    for row in rows.values():
+        area = row["area_sqm"]
+        # Area-weighted for the same reason `weighed_gsm` is: a
+        # four-metre remnant is not one reading against a two-thousand
+        # metre roll.
+        row["measured_gsm"] = (
+            (row["kilos"] * GRAMMES_PER_KG / area).quantize(Decimal("0.0001"))
+            if area > 0 else None
+        )
+        out.append(row)
+    return sorted(
+        out,
+        key=lambda row: (row["machine"] is None, str(row["machine"] or "")),
+    )

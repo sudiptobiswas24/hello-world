@@ -45,6 +45,15 @@ class MaintenanceSchedule(AuditModel):
     work_centre = models.ForeignKey(
         "WorkCentre", on_delete=models.CASCADE, related_name="maintenance"
     )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="maintenance_schedules",
+        help_text="Which machine this service is for. Blank services the "
+                  "bank as a whole, which is right for a compressor feeding "
+                  "twelve looms and wrong for the looms: a beam change on "
+                  "loom seventeen falls due on loom seventeen's hours, not "
+                  "on the shed's.",
+    )
     name = models.CharField(max_length=255)
     every_days = models.PositiveIntegerField(
         null=True, blank=True,
@@ -92,7 +101,19 @@ class MaintenanceSchedule(AuditModel):
         ]
 
     def __str__(self):
-        return f"{self.name} on {self.work_centre.code}"
+        where = self.machine.code if self.machine_id else self.work_centre.code
+        return f"{self.name} on {where}"
+
+    def clean(self):
+        self._check_machine()
+
+    def save(self, *args, **kwargs):
+        self._check_machine()
+        super().save(*args, **kwargs)
+
+    def _check_machine(self):
+        if self.machine_id is not None and self.work_centre_id is not None:
+            self.machine.check_in(self.work_centre)
 
     def hours_run_since(self, on_date=None):
         """
@@ -113,6 +134,13 @@ class MaintenanceSchedule(AuditModel):
             operation__work_centre=self.work_centre, posted=True,
             voided_at__isnull=True,
         )
+        if self.machine_id is not None:
+            # One machine's hours, not the bank's. A twelve-loom shed
+            # runs twelve hours of bookings for every hour any one loom
+            # turns, so a beam change rated at five hundred hours would
+            # fall due every forty — and a service that cries wolf
+            # twelve times too often is a service nobody does.
+            bookings = bookings.filter(machine=self.machine)
         if self.last_done_on:
             bookings = bookings.filter(booking_date__gt=self.last_done_on)
         if on_date:
@@ -172,7 +200,8 @@ class MaintenanceSchedule(AuditModel):
         as_of = to_date(as_of) or timezone.now().date()
         when = to_date(due_on) or self.due_on(as_of) or as_of
         return MaintenanceJob.objects.create(
-            schedule=self, work_centre=self.work_centre, due_on=when,
+            schedule=self, work_centre=self.work_centre,
+            machine=self.machine, due_on=when,
             planned_minutes=self.duration_minutes,
         )
 
@@ -194,6 +223,13 @@ class MaintenanceJob(AuditModel):
     )
     work_centre = models.ForeignKey(
         "WorkCentre", on_delete=models.PROTECT, related_name="maintenance_jobs"
+    )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="maintenance_jobs",
+        help_text="Which machine goes out. Blank takes the bank, which is "
+                  "what a shared compressor does and what a beam change "
+                  "must not.",
     )
     due_on = models.DateField()
     planned_minutes = models.DecimalField(max_digits=10, decimal_places=2)
@@ -221,7 +257,19 @@ class MaintenanceJob(AuditModel):
 
     def __str__(self):
         label = self.schedule.name if self.schedule_id else "Maintenance"
-        return f"{label} on {self.work_centre.code}, {self.due_on}"
+        where = self.machine.code if self.machine_id else self.work_centre.code
+        return f"{label} on {where}, {self.due_on}"
+
+    def clean(self):
+        self._check_machine()
+
+    def save(self, *args, **kwargs):
+        self._check_machine()
+        super().save(*args, **kwargs)
+
+    def _check_machine(self):
+        if self.machine_id is not None and self.work_centre_id is not None:
+            self.machine.check_in(self.work_centre)
 
     def is_open(self):
         return self.done_on is None
@@ -254,7 +302,8 @@ class MaintenanceJob(AuditModel):
                 },
             )
         self.downtime = Downtime.objects.create(
-            work_centre=self.work_centre, shift_date=on_date, shift=shift,
+            work_centre=self.work_centre, machine=self.machine,
+            shift_date=on_date, shift=shift,
             reason=reason, minutes=minutes,
             notes=str(self)[:255],
         )

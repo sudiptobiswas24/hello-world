@@ -35,6 +35,7 @@ booking corrects the report and cannot leave a stale copy behind.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 
 MINUTES_PER_HOUR = Decimal("60")
 
@@ -77,7 +78,7 @@ def _in_bom_units(booking, quantity):
     return order.uom.convert_to(quantity, order.bom.uom)
 
 
-def _bookings(work_centre, start, end, shift=None):
+def _bookings(work_centre, start, end, shift=None, machine=None):
     from .orders import TimeBooking
 
     rows = TimeBooking.objects.filter(
@@ -88,26 +89,40 @@ def _bookings(work_centre, start, end, shift=None):
         "operation", "operation__work_order", "operation__work_order__uom",
         "operation__work_order__bom", "operation__work_order__bom__uom",
     )
+    if machine is not None:
+        rows = rows.filter(machine=machine)
     return _for_shift(rows, shift)
 
 
-def _downtime(work_centre, start, end, shift=None):
+def _downtime(work_centre, start, end, shift=None, machine=None):
     from .shifts import Downtime
 
     rows = Downtime.objects.filter(
         work_centre=work_centre,
         shift_date__gte=start, shift_date__lte=end,
     ).select_related("reason")
+    if machine is not None:
+        # This machine's own stoppages AND the bank's. A power cut
+        # recorded once against the shed stopped this loom as surely
+        # as its own warp break did, and a loom that reads as having
+        # run through it is a loom whose availability is a fiction.
+        # The consequence — bank-wide minutes counting once against
+        # each machine — is why these rows do not add back up to the
+        # centre's, and `by_machine` says so rather than hiding it.
+        rows = rows.filter(Q(machine=machine) | Q(machine__isnull=True))
     return _for_shift(rows, shift)
 
 
-def _entries(work_centre, start, end):
+def _entries(work_centre, start, end, machine=None):
     from .orders import ProductionEntry
 
-    return ProductionEntry.objects.filter(
+    rows = ProductionEntry.objects.filter(
         work_centre=work_centre, posted=True, voided_at__isnull=True,
         entry_date__gte=start, entry_date__lte=end,
     ).select_related("work_order", "work_order__item", "uom")
+    if machine is not None:
+        rows = rows.filter(machine=machine)
+    return rows
 
 
 def _check_window(start, end):
@@ -119,7 +134,7 @@ def _check_window(start, end):
         )
 
 
-def availability(work_centre, start, end, shift=None):
+def availability(work_centre, start, end, shift=None, machine=None):
     """
     Did it run. Planned and unplanned stoppage both count — the loom was
     stopped either way — but they are reported apart, because a
@@ -127,12 +142,13 @@ def availability(work_centre, start, end, shift=None):
     """
     _check_window(start, end)
     ran = sum(
-        (row.minutes for row in _bookings(work_centre, start, end, shift)),
+        (row.minutes
+         for row in _bookings(work_centre, start, end, shift, machine)),
         Decimal("0"),
     )
     stopped = Decimal("0")
     planned = Decimal("0")
-    for row in _downtime(work_centre, start, end, shift):
+    for row in _downtime(work_centre, start, end, shift, machine):
         stopped += row.minutes
         if row.reason.is_planned:
             planned += row.minutes
@@ -146,7 +162,7 @@ def availability(work_centre, start, end, shift=None):
     }
 
 
-def performance(work_centre, start, end, shift=None):
+def performance(work_centre, start, end, shift=None, machine=None):
     """
     Did it run at speed.
 
@@ -159,7 +175,7 @@ def performance(work_centre, start, end, shift=None):
     ideal = Decimal("0")
     actual = Decimal("0")
     counted = 0
-    for booking in _bookings(work_centre, start, end, shift):
+    for booking in _bookings(work_centre, start, end, shift, machine):
         if booking.quantity_completed is None:
             continue
         rate = booking.operation.units_per_hour
@@ -177,7 +193,7 @@ def performance(work_centre, start, end, shift=None):
     }
 
 
-def quality(work_centre, start, end):
+def quality(work_centre, start, end, machine=None):
     """
     Was the output any good.
 
@@ -188,7 +204,7 @@ def quality(work_centre, start, end):
     _check_window(start, end)
     per_item = {}
     roots = set()
-    for entry in _entries(work_centre, start, end):
+    for entry in _entries(work_centre, start, end, machine):
         item = entry.work_order.item
         row = per_item.setdefault(
             item.pk, {"item": item, "good": Decimal("0"), "scrapped": Decimal("0")}
@@ -216,7 +232,7 @@ def quality(work_centre, start, end):
     }
 
 
-def effectiveness(work_centre, start, end, shift=None):
+def effectiveness(work_centre, start, end, shift=None, machine=None):
     """
     The three together, and their product where all three exist.
 
@@ -224,9 +240,9 @@ def effectiveness(work_centre, start, end, shift=None):
     output has no performance figure, and a plant that reads a missing
     ratio as one would congratulate itself on a line it never measured.
     """
-    up = availability(work_centre, start, end, shift)
-    speed = performance(work_centre, start, end, shift)
-    good = quality(work_centre, start, end)
+    up = availability(work_centre, start, end, shift, machine)
+    speed = performance(work_centre, start, end, shift, machine)
+    good = quality(work_centre, start, end, machine)
     ratios = [up["ratio"], speed["ratio"], good["ratio"]]
     overall = None
     if all(ratio is not None for ratio in ratios):
@@ -238,6 +254,7 @@ def effectiveness(work_centre, start, end, shift=None):
     ]
     return {
         "work_centre": work_centre,
+        "machine": machine,
         "start": start,
         "end": end,
         "shift": shift,
@@ -247,6 +264,79 @@ def effectiveness(work_centre, start, end, shift=None):
         "oee": overall,
         "unmeasured": missing,
     }
+
+
+def by_machine(work_centre, start, end, shift=None):
+    """
+    A row per machine in the bank, which is the grouping the number
+    exists for.
+
+    A weaving shed at 78% overall is two dead looms and thirty good
+    ones, or thirty-two mediocre ones, and those are different
+    problems with different owners. The bank figure cannot tell them
+    apart; this can.
+
+    Every active machine appears, including the ones that booked
+    nothing — a loom with no hours against it all week is the most
+    interesting row on the page, and a report that lists only what
+    moved will never show it.
+
+    Last, the hours nobody attributed to a machine. A shed part-way
+    through putting machine numbers on its bookings has real hours
+    that belong to no row, and dropping them would make the rows look
+    complete when they are not.
+
+    **These rows do not add up to the bank's own figures, on purpose.**
+    A bank-wide stoppage counts once against every machine it stopped,
+    because it stopped every one of them. Summing the column would
+    count a power cut twelve times.
+    """
+    _check_window(start, end)
+    from .machines import machines_in
+
+    rows = []
+    for machine in machines_in(work_centre):
+        row = effectiveness(work_centre, start, end, shift, machine)
+        rows.append(row)
+    unattributed = _Unattributed()
+    loose = [
+        row for row in _bookings(work_centre, start, end, shift)
+        if row.machine_id is None
+    ]
+    if loose:
+        rows.append({
+            "work_centre": work_centre,
+            "machine": unattributed,
+            "start": start,
+            "end": end,
+            "shift": shift,
+            "availability": None,
+            "performance": None,
+            "quality": None,
+            "oee": None,
+            "unmeasured": ["availability", "performance", "quality"],
+            "loose_minutes": sum(
+                (row.minutes for row in loose), Decimal("0")
+            ),
+            "loose_bookings": len(loose),
+            "note": (
+                "Hours booked in this bank with no machine named. Not a "
+                "machine, and not spread across the ones that are: a shed "
+                "half-way through numbering its bookings has real hours "
+                "that belong to no row yet."
+            ),
+        })
+    return rows
+
+
+class _Unattributed:
+    """The row for hours nobody put a machine on."""
+
+    code = ""
+    name = "No machine named"
+
+    def __str__(self):
+        return self.name
 
 
 def by_shift(work_centre, start, end):

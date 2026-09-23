@@ -14,6 +14,7 @@ from .orders import (
 )
 from .bom import BomSubstitute
 from .costing import CostVersion, StandardCost
+from .machines import Machine
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
@@ -183,7 +184,7 @@ class MaintenanceScheduleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MaintenanceSchedule
-        fields = ["id", "work_centre", "name", "every_days",
+        fields = ["id", "work_centre", "machine", "name", "every_days",
                   "every_run_hours", "duration_minutes", "last_done_on",
                   "is_active", "notes", "hours_remaining", "due_on", "is_due"]
 
@@ -200,7 +201,7 @@ class MaintenanceScheduleSerializer(serializers.ModelSerializer):
 class MaintenanceJobSerializer(serializers.ModelSerializer):
     class Meta:
         model = MaintenanceJob
-        fields = ["id", "schedule", "work_centre", "due_on",
+        fields = ["id", "schedule", "work_centre", "machine", "due_on",
                   "planned_minutes", "done_on", "actual_minutes", "downtime",
                   "notes"]
         read_only_fields = ["done_on", "actual_minutes", "downtime"]
@@ -259,7 +260,7 @@ class FabricRollSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = FabricRoll
-        fields = ["id", "lot", "specification", "entry", "width_mm",
+        fields = ["id", "lot", "specification", "entry", "machine", "width_mm",
                   "length_m", "net_weight_kg", "core_weight_kg", "is_tubular",
                   "notes", "implied_gsm", "metres_per_kg",
                   "gsm_deviation_percent", "within_tolerance"]
@@ -293,6 +294,24 @@ class RoutingSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "description", "is_active", "operations"]
 
 
+class MachineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Machine
+        fields = ["id", "work_centre", "code", "name", "capacity_per_hour",
+                  "capacity_uom", "available_hours_per_day", "working_days",
+                  "hours_per_day", "days_pattern", "is_active", "notes"]
+
+    hours_per_day = serializers.SerializerMethodField()
+    days_pattern = serializers.SerializerMethodField()
+
+    def get_hours_per_day(self, obj):
+        """What it falls back to, shown beside what it states."""
+        return obj.hours_per_day()
+
+    def get_days_pattern(self, obj):
+        return obj.days_pattern()
+
+
 class WorkCentreSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkCentre
@@ -318,7 +337,7 @@ class WorkOrderOperationSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkOrderOperation
         fields = ["id", "work_order", "sequence", "name", "work_centre",
-                  "setup_minutes", "units_per_hour", "planned_minutes",
+                  "machine", "setup_minutes", "units_per_hour", "planned_minutes",
                   "planned_hours", "minutes_booked", "quantity_completed"]
 
     def get_planned_hours(self, obj):
@@ -429,7 +448,7 @@ class ProductionEntrySerializer(serializers.ModelSerializer):
         model = ProductionEntry
         fields = ["id", "number", "work_order", "entry_date", "warehouse",
                   "quantity_produced", "quantity_scrapped", "uom", "lot", "bin",
-                  "work_centre", "memo", "posted", "posted_at", "posted_value",
+                  "work_centre", "machine", "memo", "posted", "posted_at", "posted_value",
                   "unit_cost", "stock_movement", "journal_entry", "voided_entry",
                   "voided_at", "byproducts"]
         read_only_fields = ["number", "posted", "posted_at", "posted_value",
@@ -443,7 +462,7 @@ class TimeBookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = TimeBooking
         fields = ["id", "number", "work_order", "operation", "booking_date",
-                  "started_at", "shift", "operators", "minutes", "hours",
+                  "started_at", "shift", "machine", "operators", "minutes", "hours",
                   "quantity_completed", "memo", "hourly_rate", "posted",
                   "posted_at", "posted_value", "journal_entry", "voided_entry",
                   "voided_at"]
@@ -482,8 +501,8 @@ class DowntimeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Downtime
-        fields = ["id", "number", "work_centre", "shift_date", "shift",
-                  "reason", "minutes", "hours", "work_order", "notes"]
+        fields = ["id", "number", "work_centre", "machine", "shift_date",
+                  "shift", "reason", "minutes", "hours", "work_order", "notes"]
         read_only_fields = ["number"]
 
     def get_hours(self, obj):

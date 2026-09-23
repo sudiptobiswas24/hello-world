@@ -16,6 +16,7 @@ from apps.inventory.models import Lot, TrackingMode
 
 from .rolls import (
     FabricRoll,
+    by_machine,
     metres_on_hand,
     rolls_at,
     unrolled_stock,
@@ -372,3 +373,122 @@ class WeighingIsAMeasurementTests(RollTestCase):
         )
         order.release(TODAY)
         self.assertIsNone(weighed_gsm(order))
+
+
+class WhichLoomAteThePolymerTests(RollTestCase):
+    """
+    A shed at two per cent over target is one loom at eleven and
+    eleven at nothing. The bank figure cannot tell those apart.
+    """
+
+    def weaving(self, spec):
+        """A routing through a weaving bank with two looms on it."""
+        from .machines import Machine
+        from .orders import WorkCentre
+        from .routing import Routing, RoutingOperation
+
+        centre = WorkCentre.objects.create(code="WEAVE", name="Weaving")
+        looms = [
+            Machine.objects.create(work_centre=centre, code=code)
+            for code in ("L-17", "L-20")
+        ]
+        routing = Routing.objects.create(code="R-WEAVE", name="Weave")
+        RoutingOperation.objects.create(
+            routing=routing, sequence=10, name="Weave", work_centre=centre,
+            setup_minutes=Decimal("0"), units_per_hour=Decimal("40"),
+            rate_uom=self.kg,
+        )
+        # On the specification, not on the bill: a computed bill
+        # refuses to be edited, and the routing is part of how the
+        # product is made.
+        spec.routing = routing
+        spec.save()
+        return centre, looms
+
+    def run_with_rolls(self, rows):
+        """One run, one entry and one roll per (loom, weight)."""
+        from .orders import ProductionEntry, WorkOrder
+
+        spec = self.specification()
+        _centre, looms = self.weaving(spec)
+        self.stock(spec.warp_tape.tape_item, "2000", "120")
+        total = sum(Decimal(weight) for _index, weight in rows)
+        order = WorkOrder.objects.create(
+            item=self.fabric, bom=spec.bom, quantity_ordered=total,
+            uom=self.kg, warehouse=self.plant,
+        )
+        order.release(TODAY)
+        for number, (index, weight) in enumerate(rows, start=1):
+            lot = Lot.objects.create(item=self.fabric, code=f"R-{number}")
+            entry = ProductionEntry.objects.create(
+                work_order=order, entry_date=TODAY, warehouse=self.plant,
+                quantity_produced=Decimal(weight), uom=self.kg, lot=lot,
+            )
+            entry.post()
+            FabricRoll.objects.create(
+                lot=lot, entry=entry, specification=spec,
+                width_mm=Decimal("600"), length_m=Decimal("1000"),
+                net_weight_kg=Decimal(weight),
+                machine=looms[index] if index is not None else None,
+            )
+        return order, looms
+
+    def test_the_heavy_loom_is_named(self):
+        # Both rolls are 1,200 square metres. 104.4 kg is 87 GSM;
+        # 116.0 kg is 96.6667. The run as a whole reads 91.8333, which
+        # is 5.6% over target and names nobody.
+        order, looms = self.run_with_rolls([(0, "104.400"), (1, "116.000")])
+        rows = by_machine(order)
+        self.assertEqual([str(row["machine"]) for row in rows], ["L-17", "L-20"])
+        self.assertEqual(rows[0]["measured_gsm"], Decimal("87.0000"))
+        self.assertEqual(rows[1]["measured_gsm"], Decimal("96.6667"))
+        self.assertEqual(weighed_gsm(order)["measured"], Decimal("91.8333"))
+
+    def test_metres_and_kilos_come_out_per_loom(self):
+        order, _looms = self.run_with_rolls([(0, "104.400"), (1, "116.000")])
+        rows = by_machine(order)
+        self.assertEqual(rows[0]["kilos"], Decimal("104.400"))
+        self.assertEqual(rows[0]["metres"], Decimal("1000.00"))
+        self.assertEqual(rows[0]["rolls"], 1)
+
+    def test_rolls_with_no_loom_are_gathered_rather_than_dropped(self):
+        """
+        A shed that started weighing at the loom this week still has
+        last week's rolls. Attributing them somewhere is worse than
+        saying they are unattributed.
+        """
+        order, _looms = self.run_with_rolls([(0, "104.400"), (None, "110.000")])
+        rows = by_machine(order)
+        self.assertEqual(
+            [str(row["machine"]) for row in rows], ["L-17", "None"]
+        )
+        self.assertIsNone(rows[1]["machine"])
+        self.assertEqual(rows[1]["kilos"], Decimal("110.000"))
+
+    def test_a_roll_cannot_claim_a_loom_the_run_never_went_near(self):
+        from .machines import Machine
+        from .orders import ProductionEntry, WorkCentre, WorkOrder
+
+        spec = self.specification()
+        self.weaving(spec)
+        elsewhere = WorkCentre.objects.create(code="LAM", name="Lamination")
+        stranger = Machine.objects.create(work_centre=elsewhere, code="LAM-1")
+        self.stock(spec.warp_tape.tape_item, "2000", "120")
+        order = WorkOrder.objects.create(
+            item=self.fabric, bom=spec.bom,
+            quantity_ordered=Decimal("104.400"), uom=self.kg,
+            warehouse=self.plant,
+        )
+        order.release(TODAY)
+        lot = Lot.objects.create(item=self.fabric, code="R-X")
+        entry = ProductionEntry.objects.create(
+            work_order=order, entry_date=TODAY, warehouse=self.plant,
+            quantity_produced=Decimal("104.400"), uom=self.kg, lot=lot,
+        )
+        entry.post()
+        with self.assertRaisesMessage(ValidationError, "never goes near"):
+            FabricRoll.objects.create(
+                lot=lot, entry=entry, specification=spec,
+                width_mm=Decimal("600"), length_m=Decimal("1000"),
+                net_weight_kg=Decimal("104.400"), machine=stranger,
+            )

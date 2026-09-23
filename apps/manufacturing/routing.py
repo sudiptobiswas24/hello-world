@@ -261,7 +261,12 @@ def capacity_report(work_centre, start, end):
         (row.planned_minutes or Decimal("0") for row in unscheduled), Decimal("0")
     )
     days = Decimal(work_centre.calendar().count(start, end))
-    available = days * work_centre.available_hours_per_day * MINUTES_PER_HOUR
+    # Off the centre, which sums its machines where it has any. Days
+    # stay the bank's, because "how many days was the shed open" is a
+    # different question from "how many machine-minutes were in them"
+    # and a bank whose looms run different patterns has one honest
+    # answer to the first.
+    available = work_centre.minutes_available(start, end)
     return {
         "work_centre": work_centre,
         "start": start,

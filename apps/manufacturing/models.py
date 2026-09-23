@@ -38,6 +38,7 @@ from .explain import (  # noqa: F401
 )
 from .oee import (  # noqa: F401
     availability,
+    by_machine,
     by_operator,
     by_shift,
     effectiveness,
@@ -51,6 +52,7 @@ from .shifts import (  # noqa: F401
 )
 from .rolls import (  # noqa: F401
     FabricRoll,
+    by_machine as rolls_by_machine,
     metres_on_hand,
     rolls_at,
     unrolled_stock,
@@ -61,6 +63,10 @@ from .costing import (  # noqa: F401
     StandardCost,
     against_actual,
     explain,
+)
+from .machines import (  # noqa: F401
+    Machine,
+    machines_in,
 )
 from .maintenance import (  # noqa: F401
     MaintenanceJob,

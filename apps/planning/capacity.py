@@ -64,6 +64,7 @@ class LoadBook:
         self.horizon_end = horizon_end
         self._calendars = {}
         self._capacity = {}
+        self._machine_lists = {}
         self._booked = defaultdict(lambda: ZERO)
         self.unscheduled = defaultdict(lambda: ZERO)
         self.maintenance = defaultdict(lambda: ZERO)
@@ -78,7 +79,24 @@ class LoadBook:
         return self._calendars[centre.pk]
 
     def capacity_minutes(self, centre, day):
-        """What this machine can do on this day, before any bookings."""
+        """
+        What this bank can do on this day, before any bookings.
+
+        Summed over its machines where it lists any, each on its own
+        pattern: a bank of eleven continuous looms and one kept on
+        days is not twelve continuous looms, and the plan that says it
+        is will promise a date on the strength of a loom that is
+        switched off. A bank with no machines listed is its own single
+        machine and falls back to its own hours, which is how every
+        centre behaved before machines existed.
+
+        Not cached per centre any more, because it is no longer one
+        number: a bank's minutes now depend on the day, since its
+        machines can be on different patterns.
+        """
+        machines = self._machines(centre)
+        if machines:
+            return sum((m.minutes_on(day) for m in machines), ZERO)
         if not self.calendar(centre).is_working(day):
             return ZERO
         if centre.pk not in self._capacity:
@@ -86,6 +104,11 @@ class LoadBook:
                 Decimal(centre.available_hours_per_day) * MINUTES_PER_HOUR
             )
         return self._capacity[centre.pk]
+
+    def _machines(self, centre):
+        if centre.pk not in self._machine_lists:
+            self._machine_lists[centre.pk] = centre.machine_list()
+        return self._machine_lists[centre.pk]
 
     def free(self, centre, day):
         taken = self._booked[(centre.pk, day)]

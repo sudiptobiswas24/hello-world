@@ -160,12 +160,23 @@ class ManufacturingSettings(AuditModel):
 
 class WorkCentre(AuditModel):
     """
-    A machine or a line, and what a run of it is booked against.
+    A bank of machines, and what a routing names.
 
     One circular loom runs one fabric for days, and "which loom" is the
     identity of a run rather than a note on it: two looms set to the
     same mesh do not waste the same, and a plant that cannot say which
-    one ate the polymer has a number it cannot act on.
+    one ate the polymer has a number it cannot act on. That sentence
+    stood here for a while over a schema with nowhere to put the loom.
+    `Machine` is where it goes; this is the bank the routing points at,
+    because a routing is written once and cannot name loom seventeen.
+
+    A centre with no machines listed is its own single machine, and
+    every capacity figure here falls back to its own hours. A centre
+    with machines takes its capacity from them and its own
+    `available_hours_per_day` stops being read — the number that
+    matters is what the machines can do between them, and a bank-level
+    hours figure beside a machine-level one is two answers to one
+    question.
     """
 
     code = models.CharField(max_length=32, unique=True)
@@ -264,6 +275,45 @@ class WorkCentre(AuditModel):
     def days_a_week(self):
         """Derived from the pattern, never stored beside it."""
         return self.calendar().days_a_week()
+
+    def machine_list(self):
+        """The machines that count towards capacity, or an empty list."""
+        from .machines import machines_in
+
+        return machines_in(self)
+
+    def minutes_on(self, day):
+        """
+        Minutes this centre has on one day, before anything is booked.
+
+        Summed over its machines where it has any, each on its own
+        pattern and its own hours: a bank of eleven looms on a
+        continuous pattern and one kept on days is not twelve
+        continuous looms, and a plan that says it is will promise a
+        date on the strength of a loom that is switched off.
+        """
+        machines = self.machine_list()
+        if machines:
+            return sum((m.minutes_on(day) for m in machines), Decimal("0"))
+        if not self.calendar().is_working(day):
+            return Decimal("0")
+        return Decimal(self.available_hours_per_day) * Decimal("60")
+
+    def minutes_available(self, start, end):
+        """Minutes across a window, counting only the days it runs."""
+        if end < start:
+            raise ValidationError(
+                f"A window from {start} to {end} runs backwards, and the "
+                "hours it reports would too."
+            )
+        machines = self.machine_list()
+        if machines:
+            return sum(
+                (m.minutes_available(start, end) for m in machines),
+                Decimal("0"),
+            )
+        days = Decimal(self.calendar().count(start, end))
+        return days * Decimal(self.available_hours_per_day) * Decimal("60")
 
     def conversion_rate_per_hour(self):
         """
@@ -1098,6 +1148,14 @@ class WorkOrderOperation(AuditModel):
     work_centre = models.ForeignKey(
         WorkCentre, on_delete=models.PROTECT, related_name="work_order_operations"
     )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="work_order_operations",
+        help_text="Which machine in the bank this run was put on, where the "
+                  "planner said. Blank is the honest answer for a bank whose "
+                  "machines are interchangeable and where the shift decides "
+                  "on the day; the booking records what actually ran it.",
+    )
     setup_minutes = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0")
     )
@@ -1125,6 +1183,13 @@ class WorkOrderOperation(AuditModel):
 
     def __str__(self):
         return f"{self.work_order} · {self.sequence}. {self.name}"
+
+    def clean(self):
+        self._check_machine()
+
+    def _check_machine(self):
+        if self.machine_id is not None and self.work_centre_id is not None:
+            self.machine.check_in(self.work_centre)
 
     def posted_bookings(self):
         return self.bookings.filter(posted=True, voided_at__isnull=True)
@@ -1248,14 +1313,53 @@ class WorkOrderOperation(AuditModel):
                     "operation this shift was booked against."
                 )
 
+    FROZEN_AT_RELEASE = (
+        "sequence", "name", "work_centre_id", "setup_minutes",
+        "units_per_hour", "planned_minutes",
+    )
+
     def save(self, *args, **kwargs):
         if self.work_order.status != WorkOrderStatus.DRAFT:
-            raise ValidationError(
-                f"{self.work_order} is "
-                f"{self.work_order.get_status_display().lower()}; its routing "
-                "was frozen when it was released."
-            )
+            self._check_only_the_assignment_moved()
+        self._check_machine()
         super().save(*args, **kwargs)
+
+    def _check_only_the_assignment_moved(self):
+        """
+        Which loom a released run is on may still change. What it is
+        and how long it takes may not.
+
+        This guard used to refuse every save on a released operation,
+        with a message saying the routing was frozen — and the machine
+        is not the routing. Choosing the loom is a scheduling
+        decision, and a plant makes it on the morning of the run, well
+        after release; a guard that reads "the routing is frozen" and
+        means "nothing may be recorded here again" is the shape this
+        project has paid for before.
+
+        Closed and cancelled are another matter. Moving a finished run
+        to a different loom rewrites which machine ate the polymer,
+        and the by-loom reports are read back over history.
+        """
+        order = self.work_order
+        previous = (
+            WorkOrderOperation.objects.filter(pk=self.pk).first()
+            if self.pk else None
+        )
+        moved_only_the_machine = (
+            previous is not None
+            and order.status == WorkOrderStatus.RELEASED
+            and all(
+                getattr(previous, field) == getattr(self, field)
+                for field in self.FROZEN_AT_RELEASE
+            )
+        )
+        if moved_only_the_machine:
+            return
+        raise ValidationError(
+            f"{order} is {order.get_status_display().lower()}; its routing "
+            "was frozen when it was released."
+        )
 
     def delete(self, *args, **kwargs):
         if self.work_order.status != WorkOrderStatus.DRAFT:
@@ -1718,7 +1822,16 @@ class ProductionEntry(AuditModel):
     work_centre = models.ForeignKey(
         WorkCentre, null=True, blank=True, on_delete=models.PROTECT,
         related_name="production_entries",
-        help_text="Which machine this came off, when a run spans more than one.",
+        help_text="Which bank this came off, when a run spans more than one.",
+    )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="production_entries",
+        help_text="Which machine in that bank made it. Blank where the shed "
+                  "does not book output per machine — the effect is that the "
+                  "bank has a quality figure and its machines do not, which "
+                  "is the truth rather than a gap to be filled in with an "
+                  "average.",
     )
     memo = models.CharField(max_length=255, blank=True)
     posted = models.BooleanField(default=False)
@@ -1996,6 +2109,25 @@ class ProductionEntry(AuditModel):
                     f"Cannot modify {self} once it is posted. Void it and raise "
                     "another."
                 )
+        if self.machine_id is not None:
+            # Against the bank the entry names where it names one, and
+            # against the run's routing otherwise: an entry that says
+            # loom seventeen made it, on a run that never went near
+            # weaving, is a quality figure on the wrong machine.
+            if self.work_centre_id is not None:
+                self.machine.check_in(self.work_centre)
+            elif self.work_order_id is not None:
+                centres = set(
+                    self.work_order.operations.values_list(
+                        "work_centre_id", flat=True
+                    )
+                )
+                if centres and self.machine.work_centre_id not in centres:
+                    raise ValidationError(
+                        f"{self.machine} is in "
+                        f"{self.machine.work_centre.code} and "
+                        f"{self.work_order} never goes near it."
+                    )
         super().save(*args, **kwargs)
 
 
@@ -2173,6 +2305,15 @@ class TimeBooking(AuditModel):
         related_name="time_bookings",
         help_text="Which crew's slot. A plant that does not run shifts leaves "
                   "it empty and loses nothing but the by-shift reports.",
+    )
+    machine = models.ForeignKey(
+        "manufacturing.Machine", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="time_bookings",
+        help_text="Which machine in the bank actually ran it. Taken from the "
+                  "operation's assignment when the booking does not say, and "
+                  "recorded on the booking rather than read back through the "
+                  "operation because a run moved to another loom mid-way is a "
+                  "run whose first shift still happened on the first loom.",
     )
     operators = models.ManyToManyField(
         "hr.Employee", blank=True, related_name="time_bookings",
@@ -2367,4 +2508,25 @@ class TimeBooking(AuditModel):
                     f"Cannot modify {self} once it is posted. Void it and book "
                     "again."
                 )
+        self.resolve_machine()
         super().save(*args, **kwargs)
+
+    def resolve_machine(self):
+        """
+        Which machine this was, taken from the operation where the
+        booking did not say.
+
+        Frozen onto the booking rather than followed through to the
+        operation every time it is read. Reassigning a half-finished
+        run to a second loom is ordinary, and a booking that reads
+        back through the operation would then claim the first shift
+        ran on a machine it never touched — which is the shape of
+        defect this project has already paid for four times.
+        """
+        if self.machine_id is None:
+            operation = self.operation if self.operation_id else None
+            if operation is not None and operation.machine_id is not None:
+                self.machine_id = operation.machine_id
+                return
+        if self.machine_id is not None and self.operation_id is not None:
+            self.machine.check_in(self.operation.work_centre)

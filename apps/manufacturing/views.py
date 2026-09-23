@@ -28,6 +28,8 @@ from .orders import (
     WorkOrder,
 )
 from .demand import coverage, genealogy, uncovered
+from .machines import Machine
+from .oee import by_machine as oee_by_machine
 from .oee import by_operator, by_shift, effectiveness
 from .bom import BomSubstitute
 from .costing import CostVersion, StandardCost, against_actual, explain
@@ -37,6 +39,7 @@ from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
+    MachineSerializer,
     BomSubstituteSerializer,
     CostVersionSerializer,
     StandardCostSerializer,
@@ -87,8 +90,28 @@ def _window(request):
 
 def _effectiveness_payload(report):
     shift = report["shift"]
+    machine = report.get("machine")
+    if report["availability"] is None:
+        # The row for hours nobody put a machine on. It has no
+        # ratios, and inventing zeroes for it would read as a loom
+        # that stood still rather than as bookings nobody attributed.
+        return {
+            "work_centre": report["work_centre"].code,
+            "machine": str(machine) if machine else None,
+            "start": report["start"],
+            "end": report["end"],
+            "availability": None,
+            "performance": None,
+            "quality": None,
+            "oee": None,
+            "unmeasured": report["unmeasured"],
+            "loose_minutes": report.get("loose_minutes"),
+            "loose_bookings": report.get("loose_bookings"),
+            "note": report.get("note"),
+        }
     return {
         "work_centre": report["work_centre"].code,
+        "machine": getattr(machine, "code", None) if machine else None,
         "shift": getattr(shift, "code", None) if shift else None,
         "shift_name": str(shift) if shift else None,
         "start": report["start"],
@@ -449,6 +472,13 @@ class RoutingOperationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = RoutingOperationSerializer
 
 
+class MachineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Named machines: which loom, which extruder, which press."""
+
+    queryset = Machine.objects.select_related("work_centre").all()
+    serializer_class = MachineSerializer
+
+
 class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkCentre.objects.all()
     serializer_class = WorkCentreSerializer
@@ -480,6 +510,24 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response([
             _effectiveness_payload(row)
             for row in _run(by_shift, centre, start, end)
+        ])
+
+    @action(detail=True, methods=["get"], url_path="by-machine")
+    def by_machine(self, request, pk=None):
+        """
+        A row per machine in the bank, which is the grouping the
+        number exists for. A shed at 78% is two dead looms and thirty
+        good ones, or thirty-two mediocre ones.
+
+        These rows do not add up to the bank's own figures: a
+        bank-wide stoppage counts once against every machine it
+        stopped.
+        """
+        centre = self.get_object()
+        start, end = _window(request)
+        return Response([
+            _effectiveness_payload(row)
+            for row in _run(oee_by_machine, centre, start, end)
         ])
 
     @action(detail=True, methods=["get"])
