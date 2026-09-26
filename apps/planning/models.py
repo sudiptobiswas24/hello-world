@@ -195,6 +195,7 @@ class DemandSource(models.TextChoices):
     FORECAST = "forecast", "Forecast"
     WORK_ORDER = "work_order", "Open work order"
     PLANNED = "planned", "Another planned order"
+    PHANTOM = "phantom", "Through a phantom"
     SAFETY = "safety", "Safety stock"
 
 
@@ -831,4 +832,9 @@ class PlannedDemand(AuditModel):
             )
         if self.source == DemandSource.SAFETY:
             return f"{self.quantity} to hold safety stock"
+        if self.source == DemandSource.PHANTOM:
+            return (
+                f"{self.quantity} through a phantom made in another run, "
+                f"due {self.needed_by}"
+            )
         return f"{self.quantity} due {self.needed_by}"

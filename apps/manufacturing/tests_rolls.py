@@ -34,7 +34,7 @@ class RollTestCase(RunTestCase):
         )
 
     def specification(self, target="87", tolerance="3", fabric_item=None,
-                      code="F-60"):
+                      code="F-60", **extra):
         """A 10 x 10 mesh of 1,000-denier tape, 60 cm lay-flat tubular."""
         from .woven import FabricSpecification, TapeSpecification, Weave
 
@@ -57,6 +57,7 @@ class RollTestCase(RunTestCase):
             target_gsm=Decimal(target),
             gsm_tolerance_percent=Decimal(tolerance),
             weaving_waste_percent=Decimal("2"),
+            **extra,
         )
 
     def roll(self, code="R-1", length="1000", weight="104.400",

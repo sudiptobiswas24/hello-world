@@ -41,9 +41,10 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
+from apps.core import windows
 from apps.core.models import AuditModel, DocumentSequence, to_date
 from apps.inventory.models import Item, Lot
 
@@ -147,9 +148,14 @@ class InspectionPlan(AuditModel):
     """
     What must be checked about one item, and how strictly.
 
-    One per item: a second plan for the same thing would be two answers
-    to "has this passed", and the release check would take whichever the
-    database happened to return.
+    One per item at a time: a second plan for the same thing on the same
+    day would be two answers to "has this passed", and the release check
+    would take whichever the database happened to return.
+
+    "At a time" is a window, because a specification staged for the
+    first of next month brings its own limits with it, and the plan it
+    builds has to wait its turn beside the one it replaces rather than
+    colliding with it.
     """
 
     item = models.ForeignKey(
@@ -169,15 +175,38 @@ class InspectionPlan(AuditModel):
                   "a plan refuses to be edited by hand: the edit would survive "
                   "until the next rebuild and no longer.",
     )
+    valid_from = models.DateField(
+        null=True, blank=True,
+        help_text="The first day these limits apply. Blank is from the "
+                  "beginning.",
+    )
+    valid_to = models.DateField(
+        null=True, blank=True,
+        help_text="The last day these limits apply. Blank is open-ended.",
+    )
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
 
     class Meta:
         ordering = ["item__sku"]
         constraints = [
+            # Overlapping windows are refused on save. These keep the
+            # two commonest overlaps impossible in the table itself,
+            # where a bulk write cannot walk past them.
             models.UniqueConstraint(
-                fields=["item"], condition=Q(is_active=True),
-                name="one_active_plan_per_item",
+                fields=["item"],
+                condition=Q(is_active=True, valid_to__isnull=True),
+                name="one_open_ended_plan_per_item",
+            ),
+            models.UniqueConstraint(
+                fields=["item"],
+                condition=Q(is_active=True, valid_from__isnull=True),
+                name="one_unstarted_plan_per_item",
+            ),
+            models.CheckConstraint(
+                check=Q(valid_from__isnull=True) | Q(valid_to__isnull=True)
+                | Q(valid_to__gte=F("valid_from")),
+                name="plan_window_runs_forwards",
             ),
         ]
 
@@ -194,6 +223,31 @@ class InspectionPlan(AuditModel):
                 return owner
         return None
 
+    def _check_window(self):
+        """No two active plans for one item on the same day."""
+        if not self.is_active:
+            return
+        if windows.runs_backwards(self.valid_from, self.valid_to):
+            raise ValidationError(
+                f"{self} would run from {self.valid_from} to {self.valid_to}, "
+                "which is backwards."
+            )
+        others = InspectionPlan.objects.filter(
+            item_id=self.item_id, is_active=True
+        )
+        if self.pk:
+            others = others.exclude(pk=self.pk)
+        for other in others:
+            if windows.overlaps(
+                self.valid_from, self.valid_to, other.valid_from, other.valid_to
+            ):
+                raise ValidationError(
+                    f"{other} already sets the limits for {self.item} over "
+                    f"part of {windows.label(self.valid_from, self.valid_to)}. "
+                    "Close its window first — on the day before this one "
+                    "starts."
+                )
+
     def save(self, *args, **kwargs):
         if self.is_computed and not getattr(self, "_rebuilding", False):
             raise ValidationError(
@@ -201,6 +255,7 @@ class InspectionPlan(AuditModel):
                 f"{self.computed_by() or 'a specification'}. Change that; this "
                 "plan is rebuilt from it."
             )
+        self._check_window()
         if self.is_mandatory and self.item.tracking == "none":
             raise ValidationError(
                 f"{self.item} is not tracked by batch, so there is nothing for "

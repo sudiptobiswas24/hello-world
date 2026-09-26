@@ -29,7 +29,7 @@ silently truncated graph.
 
 from collections import namedtuple
 
-from apps.manufacturing.bom import default_bom_for
+from apps.manufacturing.bom import default_boms_for
 
 Cut = namedtuple("Cut", "item parent path")
 Levels = namedtuple("Levels", "code_of cuts")
@@ -60,8 +60,12 @@ def _walk(bom, depth, path, code_of, cuts):
             continue
         if depth + 1 >= MAX_DEPTH:
             continue
-        below = default_bom_for(item)
-        if below is not None:
+        # Every recipe the item has in any window, not only today's. A
+        # component that first appears in next month's specification
+        # is still a component, and an item given no level because its
+        # only recipe is not yet in force would be netted before the
+        # run that will ask for it had asked.
+        for below in default_boms_for(item):
             _walk(below, depth + 1, path + (item.pk,), code_of, cuts)
 
 

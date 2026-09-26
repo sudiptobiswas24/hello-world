@@ -155,7 +155,12 @@ class CostVersion(AuditModel):
                     "worth."
                 )
             return stated
-        bom = None if len(path) >= MAX_DEPTH else default_bom_for(item)
+        # The recipe in force on the day this version takes effect: a
+        # standard for October is the cost of making it October's way.
+        bom = (
+            None if len(path) >= MAX_DEPTH
+            else default_bom_for(item, self.effective_from)
+        )
         if bom is None:
             return self._bought_cost(item)
         material = ZERO
@@ -432,7 +437,10 @@ def explain(version, item):
     from .bom import default_bom_for
 
     row = version.costs.filter(item=item).first()
-    bom = row.bom if row is not None else default_bom_for(item)
+    bom = (
+        row.bom if row is not None
+        else default_bom_for(item, version.effective_from)
+    )
     if bom is None:
         return {
             "item": item, "cost": row.total if row else None,

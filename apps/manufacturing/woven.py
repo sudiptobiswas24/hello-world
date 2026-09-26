@@ -196,6 +196,32 @@ def _save_computed(row):
     return row
 
 
+class SpecificationWindow(models.Model):
+    """
+    When output made to a specification is due, passed to the bill of
+    materials it builds.
+
+    On the specification rather than on the bill because the bill is
+    computed and refuses to be edited: a plant staging a new sack
+    specification for the first of next month writes a second
+    specification for the same item, dated from then, and closes the
+    old one the day before. Each builds its own dated recipe, and an
+    overlap is refused where the recipe is saved.
+    """
+
+    valid_from = models.DateField(
+        null=True, blank=True,
+        help_text="The first date output made to this specification is due.",
+    )
+    valid_to = models.DateField(
+        null=True, blank=True,
+        help_text="The last date output made to this specification is due.",
+    )
+
+    class Meta:
+        abstract = True
+
+
 class SpecificationMixin:
     """
     The part every specification shares: it owns a BOM, and the BOM is
@@ -263,6 +289,11 @@ class SpecificationMixin:
             plan = InspectionPlan(item=item, is_computed=True)
         plan.item = item
         plan.name = f"{self} — as specified"
+        # The specification's own window: its limits apply to what is
+        # made while it is in force, and a staged specification's plan
+        # waits its turn beside the one it replaces.
+        plan.valid_from = self.valid_from
+        plan.valid_to = self.valid_to
         plan.is_mandatory = item.tracking != "none"
         plan._rebuilding = True
         plan.save()
@@ -296,8 +327,17 @@ class SpecificationMixin:
         """
         bom = self.bom
         if bom is None:
+            # The next free version for the item, not the default of
+            # one. A second specification for one fabric — the new
+            # recipe from the first of the month — was impossible while
+            # an item could have only one default; with dated recipes it
+            # is the normal way to stage a change, and both taking
+            # version one collided on the item's version numbering.
+            taken = BillOfMaterials.objects.filter(
+                item=self.bom_item()
+            ).aggregate(top=models.Max("version"))["top"] or 0
             bom = BillOfMaterials(
-                item=self.bom_item(), name=str(self),
+                item=self.bom_item(), name=str(self), version=taken + 1,
                 quantity_produced=self.bom_batch(), uom=self.bom_uom(),
                 is_computed=True,
             )
@@ -307,6 +347,8 @@ class SpecificationMixin:
             bom.quantity_produced = self.bom_batch()
             bom.uom = self.bom_uom()
         bom.routing = self.bom_routing()
+        bom.valid_from = self.valid_from
+        bom.valid_to = self.valid_to
         _save_computed(bom)
         bom.components.all().delete()
         bom.byproducts.all().delete()
@@ -365,7 +407,7 @@ class SpecificationMixin:
         return lost * _percent(self.waste_recovered_percent)
 
 
-class TapeSpecification(SpecificationMixin, AuditModel):
+class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     """
     What comes off the extrusion line: oriented PP tape at a denier.
 
@@ -614,7 +656,7 @@ class TapeSpecification(SpecificationMixin, AuditModel):
         self.rebuild_inspection_plan()
 
 
-class FabricSpecification(SpecificationMixin, AuditModel):
+class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     """
     What comes off the loom: tape woven at a mesh into a tube.
 
@@ -870,7 +912,7 @@ class FabricSpecification(SpecificationMixin, AuditModel):
         self.rebuild_inspection_plan()
 
 
-class BagSpecification(SpecificationMixin, AuditModel):
+class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     """
     The sack as the customer ordered it, and everything that follows.
 

@@ -421,6 +421,27 @@ class ASpecificationThatCannotBeMadeIsRefusedTests(WovenTestCase):
 
 class OneDefaultBomPerItemTests(WovenTestCase):
     def test_a_second_default_is_refused(self):
+        """
+        Refused on save now, with a message, since defaults gained
+        dated windows and "at the same time" became something to check.
+        """
+        from django.core.exceptions import ValidationError
+
+        BillOfMaterials.objects.create(
+            item=self.bag_item, quantity_produced=Decimal("1000"), uom=self.pcs,
+        )
+        with self.assertRaisesMessage(ValidationError, "already the recipe"):
+            BillOfMaterials.objects.create(
+                item=self.bag_item, version=2,
+                quantity_produced=Decimal("500"), uom=self.pcs,
+            )
+
+    def test_and_the_database_still_refuses_what_skips_save(self):
+        """
+        The backstop. A bulk write never calls `save()`, so the check
+        above cannot see it; two open-ended defaults must still be
+        impossible in the table itself.
+        """
         from django.db import IntegrityError, transaction
 
         BillOfMaterials.objects.create(
@@ -428,10 +449,10 @@ class OneDefaultBomPerItemTests(WovenTestCase):
         )
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
-                BillOfMaterials.objects.create(
+                BillOfMaterials.objects.bulk_create([BillOfMaterials(
                     item=self.bag_item, version=2,
                     quantity_produced=Decimal("500"), uom=self.pcs,
-                )
+                )])
 
     def test_an_explosion_picks_the_default(self):
         bom = BillOfMaterials.objects.create(

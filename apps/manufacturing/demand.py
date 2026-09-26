@@ -97,7 +97,9 @@ def uncovered(sales_order=None, item=None):
         lines = lines.filter(item=item)
     rows = []
     for line in lines:
-        if default_bom_for(line.item) is None:
+        # Made or bought for the day this line is due, which can be
+        # different answers for one item either side of a change.
+        if default_bom_for(line.item, line.promised_date()) is None:
             continue
         row = coverage(line)
         if row["shipped"] >= row["ordered"]:

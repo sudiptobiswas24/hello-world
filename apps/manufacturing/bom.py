@@ -33,14 +33,16 @@ without remembering where it has been will walk forever, so `explode()`
 carries its path and refuses to re-enter an item it is already inside.
 """
 
+import datetime
 from collections import namedtuple
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 from apps.core.models import AuditModel
+from apps.core import windows
 from apps.inventory.models import Item
 
 ONE_HUNDRED = Decimal("100")
@@ -120,6 +122,31 @@ class BillOfMaterials(AuditModel):
                   "made — one loom width or another — but only one of them can "
                   "be the answer to an unqualified question.",
     )
+    valid_from = models.DateField(
+        null=True, blank=True,
+        help_text="The first date output made to this recipe is DUE. Blank is "
+                  "from the beginning. Read against when the output is wanted "
+                  "rather than when the run is released, because that is what "
+                  "a specification change means in this plant — sacks "
+                  "delivered from the first of the month are made the new way "
+                  "— and because the release date depends on the lead time, "
+                  "which depends on which recipe's routing is used: asking by "
+                  "release date would be a question that needs its own answer "
+                  "first.",
+    )
+    valid_to = models.DateField(
+        null=True, blank=True,
+        help_text="The last date output made to this recipe is due. Blank is "
+                  "open-ended.",
+    )
+    is_phantom = models.BooleanField(
+        default=False,
+        help_text="Never made or stocked on its own: a run that needs it draws "
+                  "its components directly. For an intermediate that exists for "
+                  "a few metres between two machines on one run and is never "
+                  "put on a shelf — and whose separate run, stock movement and "
+                  "work in progress would be bookkeeping about nothing.",
+    )
     expected_reject_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("0"),
         help_text="Percentage of what comes OFF THE MACHINE that is expected "
@@ -143,9 +170,35 @@ class BillOfMaterials(AuditModel):
             # Two defaults is no default: an explosion would pick whichever
             # the database happened to return first, and the same order
             # costed twice would cost two different amounts.
+            # One default at a time, and "at a time" is now a window. Two
+            # overlapping windows are refused on save; these two keep the
+            # commonest mistake impossible in the database itself, where a
+            # bulk update cannot walk past them: two recipes both open-
+            # ended, or both running from the beginning.
             models.UniqueConstraint(
-                fields=["item"], condition=Q(is_default=True, is_active=True),
-                name="one_default_bom_per_item",
+                fields=["item"],
+                condition=Q(is_default=True, is_active=True, valid_to__isnull=True),
+                name="one_open_ended_default_bom_per_item",
+            ),
+            models.UniqueConstraint(
+                fields=["item"],
+                condition=Q(
+                    is_default=True, is_active=True, valid_from__isnull=True
+                ),
+                name="one_unstarted_default_bom_per_item",
+            ),
+            models.CheckConstraint(
+                check=Q(valid_from__isnull=True) | Q(valid_to__isnull=True)
+                | Q(valid_to__gte=F("valid_from")),
+                name="bom_window_runs_forwards",
+            ),
+            # Made in its parent's run, so it has no machines of its own
+            # to be scheduled on, and a rework recipe is a run by
+            # definition.
+            models.CheckConstraint(
+                check=Q(is_phantom=False)
+                | (Q(routing__isnull=True) & Q(is_rework=False)),
+                name="phantom_has_no_run_of_its_own",
             ),
             models.CheckConstraint(
                 check=Q(quantity_produced__gt=0), name="bom_batch_is_positive",
@@ -252,11 +305,58 @@ class BillOfMaterials(AuditModel):
                 "rework if that is what it is."
             )
 
+    def is_effective_on(self, day):
+        """Whether output due on `day` is made to this recipe."""
+        return windows.covers(self.valid_from, self.valid_to, day)
+
+    def _check_window(self):
+        """
+        No two default recipes for one item in force on the same day.
+
+        On save as well as in the database, because the database can
+        only say so for the two commonest shapes — two open-ended, two
+        from the beginning — and two bounded windows that overlap by a
+        week are the mistake a planner actually makes when staging a
+        change. An explosion reaching the item on a day both cover
+        would take whichever the database returned first.
+        """
+        if not (self.is_default and self.is_active):
+            return
+        if windows.runs_backwards(self.valid_from, self.valid_to):
+            raise ValidationError(
+                f"{self} would run from {self.valid_from} to {self.valid_to}, "
+                "which is backwards."
+            )
+        others = BillOfMaterials.objects.filter(
+            item_id=self.item_id, is_default=True, is_active=True,
+        )
+        if self.pk:
+            others = others.exclude(pk=self.pk)
+        for other in others:
+            if windows.overlaps(
+                self.valid_from, self.valid_to, other.valid_from, other.valid_to
+            ):
+                raise ValidationError(
+                    f"{other} is already the recipe for {self.item} over part "
+                    f"of {self.window_label()}. Close its window first — "
+                    "on the day before this one starts."
+                )
+
+    def window_label(self):
+        return windows.label(self.valid_from, self.valid_to)
+
     def save(self, *args, **kwargs):
         if self.is_computed and not getattr(self, "_rebuilding", False):
             raise ValidationError(
                 f"{self} is computed from {self.computed_by() or 'a specification'}. "
                 "Change that; this BOM is rebuilt from it."
+            )
+        self._check_window()
+        if self.is_phantom and self.pk and self.byproducts.exists():
+            raise ValidationError(
+                f"{self} throws off by-products, and a phantom is made inside "
+                "its parent's run: its trim comes off that run and belongs on "
+                "that bill of materials."
             )
         super().save(*args, **kwargs)
 
@@ -403,6 +503,12 @@ class BomByproduct(AuditModel):
                 f"{self.bom.computed_by() or 'a specification'}, and its "
                 "by-products with it. Change that."
             )
+        if self.bom.is_phantom:
+            raise ValidationError(
+                f"{self.bom} is a phantom, made inside its parent's run. Its "
+                "trim comes off that run, so it belongs on that bill of "
+                "materials — here it would never be booked by anything."
+            )
         self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
 
@@ -501,12 +607,70 @@ Requirement = namedtuple(
 )
 
 
-def default_bom_for(item):
-    """The BOM an explosion uses when it reaches this item unqualified."""
-    return item.boms.filter(is_default=True, is_active=True).first()
+def default_bom_for(item, on_date=None):
+    """
+    The BOM an explosion uses when it reaches this item unqualified, for
+    output due on `on_date` (today when not given).
+
+    At most one answers: overlapping default windows are refused where
+    they are saved.
+    """
+    on_date = on_date or datetime.date.today()
+    return item.boms.filter(
+        Q(valid_from__isnull=True) | Q(valid_from__lte=on_date),
+        Q(valid_to__isnull=True) | Q(valid_to__gte=on_date),
+        is_default=True, is_active=True,
+    ).first()
 
 
-def explode(bom, quantity, uom=None, _path=()):
+def default_boms_for(item):
+    """
+    Every default recipe the item has, whatever its window.
+
+    For the questions that are about the product's structure rather
+    than about a day: which items sit below which, and so which must be
+    planned after which.
+    """
+    return list(
+        item.boms.filter(is_default=True, is_active=True).order_by(
+            F("valid_from").asc(nulls_first=True), "pk"
+        )
+    )
+
+
+def drawn(bom, quantity, uom=None, on_date=None, _path=()):
+    """
+    What a run of `bom` draws from the stores, one level down, with any
+    phantom blown through to what it is made of.
+
+    Returned as [(component_line, required)], `required` in the line's
+    own unit and the line belonging to whichever bill it came from.
+    One level, as a run draws: a sub-assembly that is stocked is drawn
+    as itself, and only a phantom — never on a shelf, made inside this
+    run — is replaced by its own components.
+
+    The one place this is worked out. Release freezes it, the planned
+    cost prices it, and planning asks it for what a run will want, so
+    the three cannot disagree about whether a phantom's polymer is on
+    the list.
+    """
+    scale = bom.scale_for(bom.start_for(quantity), uom)
+    path = _path + (bom.item_id,)
+    rows = []
+    for component in bom.components.select_related("item", "uom").all():
+        required = component.gross_quantity() * scale
+        below = (
+            None if component.item_id in path
+            else default_bom_for(component.item, on_date)
+        )
+        if below is not None and below.is_phantom:
+            rows.extend(drawn(below, required, component.uom, on_date, path))
+            continue
+        rows.append((component, required))
+    return rows
+
+
+def explode(bom, quantity, uom=None, _path=(), on_date=None):
     """
     Everything it takes to make `quantity` of what `bom` makes, all the
     way down to what is bought rather than made.
@@ -536,7 +700,7 @@ def explode(bom, quantity, uom=None, _path=()):
         required = component.gross_quantity() * scale
         below = (
             None if component.item_id in path
-            else default_bom_for(component.item)
+            else default_bom_for(component.item, on_date)
         )
         rows.append(Requirement(
             item=component.item, quantity=required, uom=component.uom,
@@ -544,7 +708,7 @@ def explode(bom, quantity, uom=None, _path=()):
             is_leaf=below is None, path=path,
         ))
         if below is not None:
-            rows.extend(explode(below, required, component.uom, path))
+            rows.extend(explode(below, required, component.uom, path, on_date))
     for byproduct in bom.byproducts.select_related("item", "uom").all():
         rows.append(Requirement(
             item=byproduct.item, quantity=byproduct.quantity * scale,
@@ -611,7 +775,7 @@ PlannedCost = namedtuple(
 )
 
 
-def planned_cost(bom, quantity, warehouse, uom=None):
+def planned_cost(bom, quantity, warehouse, uom=None, on_date=None):
     """
     What a run of this BOM is expected to cost, from today's shelf.
 
@@ -646,8 +810,12 @@ def planned_cost(bom, quantity, warehouse, uom=None):
     if uom is not None and uom.pk != bom.uom_id:
         batch_quantity = uom.convert_to(started, bom.uom)
     materials = Decimal("0")
-    for component in bom.components.select_related("item", "uom").all():
-        required = component.gross_quantity() * scale
+    # What the run will draw, a phantom blown through to its own
+    # materials: it has no shelf to take a price from, and pricing it at
+    # a standard would cost the same polymer two different ways
+    # depending on whether it passed through an intermediate nobody
+    # stocks.
+    for component, required in drawn(bom, quantity, uom, on_date):
         in_stock_units = component.item.to_stock_quantity(required, component.uom)
         rate = unit_cost_for(component.item, warehouse, in_stock_units)
         if not rate:

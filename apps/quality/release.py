@@ -18,14 +18,30 @@ to the one before it, or to nobody — which is "not yet inspected",
 which is no. A stored flag would have had to remember to do that.
 """
 
+import datetime
+
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 
 from .models import Disposition, Inspection, InspectionPlan, ReleaseStatus
 
 
-def plan_for(item):
-    """The active inspection plan for an item, or None."""
-    return item.inspection_plans.filter(is_active=True).first()
+def plan_for(item, on_date=None):
+    """
+    The inspection plan in force for an item on `on_date` (today when not
+    given), or None.
+
+    Today is the right default for everything that asks it: whether a
+    batch may move now, and whether stock on hand is usable now. At most
+    one answers, because overlapping windows are refused where a plan is
+    saved.
+    """
+    on_date = on_date or datetime.date.today()
+    return item.inspection_plans.filter(
+        Q(valid_from__isnull=True) | Q(valid_from__lte=on_date),
+        Q(valid_to__isnull=True) | Q(valid_to__gte=on_date),
+        is_active=True,
+    ).first()
 
 
 def latest_inspection(lot):

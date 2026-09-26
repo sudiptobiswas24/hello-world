@@ -181,6 +181,10 @@ def capable_to_promise(item, warehouse, quantity, planned_on=None,
             "note": "out of what is on the shelf and already on order",
         }
 
+    # Today's recipe, knowingly. The date is what this is working out,
+    # so there is no due date yet to choose a recipe by, and a quote
+    # straddling a specification change is answered the current way —
+    # the same answer the rep would give from the current price list.
     kind, bom = _make_or_buy(item)
     if kind == "buy":
         vendor = _vendor_for(item, warehouse, planned_on)

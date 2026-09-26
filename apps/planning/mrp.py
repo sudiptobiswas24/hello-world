@@ -49,7 +49,7 @@ from django.db import transaction
 
 from apps.core.models import to_date
 from apps.inventory.tracking import TrackingMode, lots_at
-from apps.manufacturing.bom import default_bom_for
+from apps.manufacturing.bom import default_bom_for, drawn
 from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
 from apps.quality.release import plan_for, release_status
 from apps.quality.models import ReleaseStatus
@@ -253,14 +253,14 @@ def work_order_demand(item, warehouse, on_date):
         # draft is just the ordered quantity, under a comment claiming
         # the opposite: a draft run for a thousand at twenty per cent
         # reject went on asking for tape for a thousand.
-        scale = order.bom.scale_for(
-            order.bom.start_for(order.quantity_ordered), order.uom
-        )
-        for component in order.bom.components.filter(item=item).select_related(
-            "item", "uom"
+        for component, required in drawn(
+            order.bom, order.quantity_ordered, order.uom,
+            order.scheduled_end or on_date,
         ):
+            if component.item_id != item.pk:
+                continue
             required = component.item.to_stock_quantity(
-                component.gross_quantity() * scale, component.uom
+                required, component.uom
             )
             if required > 0:
                 rows.append(_demand(
@@ -763,6 +763,8 @@ def _why(demand):
         return f"the forecast for {demand.forecast.starts_on} expects it"
     if demand.source == DemandSource.SAFETY:
         return f"the safety floor wants it held from {demand.date}"
+    if demand.source == DemandSource.PHANTOM:
+        return f"a phantom made inside another run draws it on {demand.date}"
     return f"demand on {demand.date}"
 
 
@@ -912,7 +914,7 @@ def spare_elsewhere(item, warehouse, quantity, needed_by, planned_on):
     return None, None
 
 
-def _make_or_buy(item):
+def _make_or_buy(item, on_date=None):
     """
     An item with a default bill of materials is made; everything else
     is bought.
@@ -923,7 +925,10 @@ def _make_or_buy(item):
     second answer to a question already answered, and the two would
     drift.
     """
-    bom = default_bom_for(item)
+    # Asked for the day the output is wanted: a plant that brings a
+    # coating in-house from the first of the month buys it until then
+    # and makes it after, and that is one item with two answers.
+    bom = default_bom_for(item, on_date)
     return (PlannedOrderKind.MAKE, bom) if bom else (PlannedOrderKind.BUY, None)
 
 
@@ -1014,8 +1019,27 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         if not shortages:
             continue
 
-        kind, bom = _make_or_buy(item)
         for shortage in shortages:
+            kind, bom = _make_or_buy(item, shortage.date)
+            if bom is not None and bom.is_phantom:
+                # Never made or stocked on its own, so no planned order:
+                # what it is short of is wanted from its components on
+                # the same day, because it is made inside whatever run
+                # asked for it. Its own stock was used first — the
+                # netting above counted it — which is the one thing a
+                # phantom's shelf is for.
+                for child_item, row in _phantom_through(bom, item, shortage):
+                    if child_item.pk in done:
+                        deferred.append(
+                            f"{child_item.sku}: {_show(row.quantity)} "
+                            f"{child_item.uom} needed through phantom "
+                            f"{item.sku} was not netted, because "
+                            f"{child_item.sku} is planned before {item.sku}."
+                        )
+                        continue
+                    items.setdefault(child_item.pk, child_item)
+                    pending[child_item.pk].append(row)
+                continue
             route, _arrives = (
                 spare_elsewhere(
                     item, warehouse, shortage.quantity, shortage.date,
@@ -1194,16 +1218,36 @@ def _components(bom, order):
     exploding here would net the polymer against the sack's shelf
     instead of the polymer's.
     """
-    scale = bom.scale_for(bom.start_for(order.quantity), order.item.uom)
     rows = []
-    for component in bom.components.select_related("item", "uom").all():
-        required = component.item.to_stock_quantity(
-            component.gross_quantity() * scale, component.uom
-        )
+    for component, required in drawn(
+        bom, order.quantity, order.item.uom, order.needed_by
+    ):
+        required = component.item.to_stock_quantity(required, component.uom)
         if required <= 0:
             continue
         rows.append((component.item, _demand(
             order.release_on, required, DemandSource.PLANNED, parent=order,
+        )))
+    return rows
+
+
+def _phantom_through(bom, item, shortage):
+    """
+    What a phantom's shortfall wants of its components, the same day.
+
+    Not `_components`: there is no planned order to peg the demand to,
+    because a phantom never gets one. The demand says where it came
+    from in its own words instead.
+    """
+    rows = []
+    for component, required in drawn(
+        bom, shortage.quantity, item.uom, shortage.date
+    ):
+        required = component.item.to_stock_quantity(required, component.uom)
+        if required <= 0:
+            continue
+        rows.append((component.item, _demand(
+            shortage.date, required, DemandSource.PHANTOM,
         )))
     return rows
 

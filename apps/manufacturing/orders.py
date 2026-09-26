@@ -61,6 +61,7 @@ from .bom import (
     BillOfMaterials,
     ByproductValuation,
     byproduct_value,
+    drawn,
     planned_cost,
 )
 from .shifts import Downtime, DowntimeReason, Shift
@@ -800,6 +801,21 @@ class WorkOrder(AuditModel):
             )
         if not self.bom.is_active:
             raise ValidationError(f"{self.bom} is not active.")
+        if self.bom.is_phantom:
+            raise ValidationError(
+                f"{self.bom} is a phantom: never made on its own or put on a "
+                "shelf. A run that needs it draws its components directly."
+            )
+        # The recipe in force for output due when this run's output is
+        # due — the planner's date where there is one, today otherwise.
+        # Asked here, where the other recipe can still be chosen.
+        due = self.scheduled_end or to_date(on_date) or timezone.now().date()
+        if not self.bom.is_effective_on(due):
+            raise ValidationError(
+                f"{self.bom} is the recipe for output due "
+                f"{self.bom.window_label()}, and this run's is due {due}. "
+                "Release it against the recipe in force then."
+            )
         self._check_rework()
         # What the run will actually put through the machines, which
         # is more than it delivers wherever the bill expects to reject
@@ -855,23 +871,44 @@ class WorkOrder(AuditModel):
             operation.minutes_for(batch_quantity, self.bom.uom)
 
         self.components.all().delete()
-        for index, component in enumerate(
-            self.bom.components.select_related("item", "uom"), start=1
+        # What the run draws, a phantom blown through to its own
+        # materials, and merged by item: a phantom made of the same
+        # polymer the parent also takes directly would otherwise freeze
+        # two rows for one item, and `quantity_issued()` reads every
+        # issue of the item against each of them — counting it twice.
+        merged = {}
+        for component, required in drawn(
+            self.bom, self.quantity_ordered, self.uom, due
+        ):
+            key = (component.item_id, component.uom_id)
+            if key not in merged:
+                merged[key] = [component, Decimal("0"), []]
+            merged[key][1] += required
+            merged[key][2].append(component)
+        for index, (component, required, lines) in enumerate(
+            merged.values(), start=1
         ):
             frozen = WorkOrderComponent.objects.create(
                 work_order=self, item=component.item,
-                quantity_required=component.gross_quantity() * scale,
-                uom=component.uom, waste_percent=component.waste_percent,
+                quantity_required=required, uom=component.uom,
+                # For show: every quantity above already carries its
+                # own line's waste, so a merged row's is the first line's.
+                waste_percent=component.waste_percent,
                 line_number=index,
             )
-            for row in component.substitutes.filter(is_active=True):
-                # Frozen with everything else. A substitution approved
-                # after a run started must not retrospectively make
-                # that run read as issued.
-                WorkOrderSubstitute.objects.create(
-                    component=frozen, item=row.item,
-                    quantity_per=row.quantity_per, priority=row.priority,
-                )
+            substituted = set()
+            for line in lines:
+                for row in line.substitutes.filter(is_active=True):
+                    if row.item_id in substituted:
+                        continue
+                    substituted.add(row.item_id)
+                    # Frozen with everything else. A substitution
+                    # approved after a run started must not
+                    # retrospectively make that run read as issued.
+                    WorkOrderSubstitute.objects.create(
+                        component=frozen, item=row.item,
+                        quantity_per=row.quantity_per, priority=row.priority,
+                    )
 
         self.routing = self.bom.routing
         # Frozen with everything else. A plant that turns backflushing
@@ -908,7 +945,7 @@ class WorkOrder(AuditModel):
                 name="Work Orders", prefix="WO-",
             )
         plan = planned_cost(
-            self.bom, self.quantity_ordered, self.warehouse, self.uom
+            self.bom, self.quantity_ordered, self.warehouse, self.uom, due
         )
         # Divided by what comes OFF THE MACHINE, not by what is
         # delivered. Output is received at this and so is scrap, and
