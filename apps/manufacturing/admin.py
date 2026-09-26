@@ -452,7 +452,8 @@ class RoutingAdmin(AuditableAdminMixin, admin.ModelAdmin):
     @admin.display(description="Passes through")
     def shown_operations(self, obj):
         return " → ".join(
-            f"{row.name} ({row.work_centre.code})" for row in obj.operations.all()
+            f"{row.name} ({'outside' if row.is_outside else row.work_centre.code})"
+            for row in obj.operations.all()
         ) or "—"
 
 

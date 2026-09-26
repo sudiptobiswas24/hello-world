@@ -28,7 +28,7 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
         fields = [
             "id", "order", "item", "uom", "quantity", "unit_price",
             "discount_percent", "taxes", "expense_account", "quantity_received",
-            "quantity_billed", "bom", "components",
+            "quantity_billed", "bom", "components", "work_order_operation",
         ]
 
     def get_quantity_received(self, obj):

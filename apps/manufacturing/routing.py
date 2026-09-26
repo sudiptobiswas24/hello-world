@@ -84,12 +84,24 @@ class Routing(AuditModel):
 
 class RoutingOperation(AuditModel):
     """
-    One machine holding the work for a while.
+    One machine holding the work for a while — or one vendor.
 
     Rate rather than duration: a run is quoted in units an hour on the
     shop floor ("the coating line does four hundred kilos an hour"), and
     a duration typed against a quantity goes stale the moment the
     quantity changes.
+
+    **An outside operation is a step a vendor does.** A sack plant
+    without its own coating line sends the fabric out to be laminated
+    and gets it back, and the bag's routing is still laminate, print,
+    cut, stitch on one run: there is no intermediate item, so the whole-
+    item job work in purchasing — send components, receive a different
+    finished item — does not fit. What such a step has is a lead time
+    in the vendor's days rather than a rate on our machines, and a
+    charge per unit rather than an hourly rate. It names no work centre,
+    because it holds none of ours, and a stand-in "vendor" work centre
+    would turn up in every capacity report, effectiveness table and
+    maintenance list as a machine that is never busy.
     """
 
     routing = models.ForeignKey(
@@ -102,7 +114,27 @@ class RoutingOperation(AuditModel):
     )
     name = models.CharField(max_length=255)
     work_centre = models.ForeignKey(
-        "WorkCentre", on_delete=models.PROTECT, related_name="operations"
+        "WorkCentre", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="operations",
+        help_text="The machine. Blank exactly when the step is done outside.",
+    )
+    is_outside = models.BooleanField(
+        default=False,
+        help_text="A vendor does this step. It takes the vendor's lead time "
+                  "and charge instead of our machine time.",
+    )
+    outside_lead_days = models.PositiveIntegerField(
+        default=0,
+        help_text="Days the work is away, door to door — in the world's days "
+                  "rather than this plant's working days, because the vendor "
+                  "keeps their own calendar.",
+    )
+    outside_cost_per_unit = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True,
+        help_text="The standard charge per unit of `rate_uom`. What the plan "
+                  "and the standard cost use; what the vendor actually charges "
+                  "arrives on the purchase order, and the difference is a "
+                  "variance rather than a correction to this.",
     )
     setup_minutes = models.DecimalField(
         max_digits=10, decimal_places=2, default=Decimal("0"),
@@ -150,9 +182,35 @@ class RoutingOperation(AuditModel):
                 | Q(rate_uom__isnull=False),
                 name="operation_rate_says_what_it_counts",
             ),
+            # An inside step has a machine and no vendor terms; an
+            # outside step has vendor terms and no machine, no rate and
+            # no setup. Half of each is a step nothing can schedule: a
+            # machine that is also away for a week, or a vendor with an
+            # hourly rate on our loom.
+            models.CheckConstraint(
+                check=(
+                    Q(is_outside=False)
+                    & Q(work_centre__isnull=False)
+                    & Q(outside_lead_days=0)
+                    & Q(outside_cost_per_unit__isnull=True)
+                ) | (
+                    Q(is_outside=True)
+                    & Q(work_centre__isnull=True)
+                    & Q(units_per_hour__isnull=True)
+                    & Q(setup_minutes=0)
+                ),
+                name="operation_is_inside_or_outside",
+            ),
+            models.CheckConstraint(
+                check=Q(outside_cost_per_unit__isnull=True)
+                | (Q(outside_cost_per_unit__gte=0) & Q(rate_uom__isnull=False)),
+                name="outside_charge_says_what_it_counts",
+            ),
         ]
 
     def __str__(self):
+        if self.is_outside:
+            return f"{self.sequence}. {self.name} (outside)"
         return f"{self.sequence}. {self.name} on {self.work_centre.code}"
 
     def rate(self, uom):
@@ -169,6 +227,11 @@ class RoutingOperation(AuditModel):
         wrong one it used to give (fifty thousand pieces at a hundred
         and eighty kilos an hour: eleven days) is worse than none.
         """
+        if self.is_outside:
+            raise ValidationError(
+                f"{self} is done by a vendor and has no rate on our machines. "
+                "Ask it for its lead time and its charge instead."
+            )
         if self.units_per_hour is not None:
             rate, rate_uom, source = self.units_per_hour, self.rate_uom, self
         else:
@@ -200,8 +263,46 @@ class RoutingOperation(AuditModel):
                 "a date nobody can keep."
             )
 
+    def outside_charge_for(self, quantity, uom):
+        """
+        The standard vendor charge for `quantity` of `uom`, or zero where
+        the step is ours or its charge is not yet agreed.
+
+        Zero rather than refused when no charge is stated, which is a
+        choice and not an oversight: a plant that has not priced the
+        vendor yet can still plan the run, and the whole charge then
+        arrives as a variance at close — visible, and in the right
+        account. Refused when the charge counts something the run is
+        not counted in, for the same reason a rate is.
+        """
+        # No separate test for an inside step: the database refuses a
+        # vendor charge on one (`operation_is_inside_or_outside`), so
+        # its charge is always blank and this already answers nought.
+        # A second check would be a branch nothing can reach, implying
+        # a state the schema forbids.
+        if self.outside_cost_per_unit is None:
+            return Decimal("0")
+        quantity = Decimal(quantity)
+        if self.rate_uom_id != uom.pk:
+            try:
+                quantity = uom.convert_to(quantity, self.rate_uom)
+            except ValidationError:
+                raise ValidationError(
+                    f"{self} is charged per {self.rate_uom} and this run is "
+                    f"counted in {uom}, which is not the same kind of thing."
+                )
+        return quantity * self.outside_cost_per_unit
+
     def minutes_for(self, quantity, uom):
-        """Setup plus run time for `quantity` of `uom`."""
+        """
+        Setup plus run time for `quantity` of `uom`.
+
+        Nought for an outside step: no machine of ours holds the work,
+        and its time is the vendor's lead days, which are not minutes on
+        anything this plant owns.
+        """
+        if self.is_outside:
+            return Decimal("0")
         rate = self.rate(uom)
         return self.setup_minutes + (
             Decimal(quantity) / rate * MINUTES_PER_HOUR

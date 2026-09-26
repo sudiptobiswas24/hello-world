@@ -284,6 +284,7 @@ class RoutingOperationSerializer(serializers.ModelSerializer):
     class Meta:
         model = RoutingOperation
         fields = ["id", "routing", "sequence", "name", "work_centre",
+                  "is_outside", "outside_lead_days", "outside_cost_per_unit",
                   "setup_minutes", "units_per_hour", "rate_uom", "notes"]
 
 
@@ -338,6 +339,7 @@ class WorkOrderOperationSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkOrderOperation
         fields = ["id", "work_order", "sequence", "name", "work_centre",
+                  "is_outside", "outside_lead_days", "planned_outside_cost",
                   "machine", "setup_minutes", "units_per_hour", "planned_minutes",
                   "planned_hours", "minutes_booked", "quantity_completed"]
 

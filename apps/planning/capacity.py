@@ -245,6 +245,23 @@ def schedule_backwards(book, operations, quantity, uom, finish_by, floor):
     longest = Decimal("-1")
     spans = []
     for operation in sorted(operations, key=lambda o: o.sequence, reverse=True):
+        if operation.is_outside:
+            # The vendor's days, counted in the world's time and not
+            # booked on any machine of ours. The work has to be back by
+            # the time the next step starts, so it has to leave that
+            # many days earlier. Never the bottleneck: that is the
+            # machine worth adding capacity to, and a vendor is not
+            # one — a vendor who is too slow is a buying decision.
+            start = cursor - datetime.timedelta(
+                days=int(operation.outside_lead_days)
+            )
+            spans.append({
+                "operation": operation, "work_centre": None,
+                "minutes": ZERO, "start": start, "finish": cursor,
+                "outside": True,
+            })
+            cursor = start
+            continue
         minutes = operation.minutes_for(quantity, uom)
         start, ran_out = book.take_backwards(
             operation.work_centre, minutes, cursor, floor

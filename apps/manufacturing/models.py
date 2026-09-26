@@ -64,6 +64,7 @@ from .costing import (  # noqa: F401
     against_actual,
     explain,
 )
+from .outside import OutsideMovement  # noqa: F401
 from .machines import (  # noqa: F401
     Machine,
     machines_in,

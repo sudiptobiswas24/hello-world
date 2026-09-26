@@ -1738,6 +1738,15 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         related_name="drop_ship_lines",
         help_text="The customer line this drop-ship fulfils.",
     )
+    work_order_operation = models.ForeignKey(
+        "manufacturing.WorkOrderOperation", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="purchase_lines",
+        help_text="The outside step of a run this line pays a vendor for — "
+                  "lamination sent out mid-routing, say. Its receipt puts the "
+                  "vendor's charge into the run's work in progress through "
+                  "the goods-received accrual, rather than posting nothing "
+                  "and expensing the bill as an ordinary service would.",
+    )
     blanket_line = models.ForeignKey(
         "BlanketOrderLine", null=True, blank=True, on_delete=models.PROTECT,
         related_name="order_lines",
@@ -1775,7 +1784,54 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def __str__(self):
         return f"{self.label()} x{self.quantity}"
 
+    def _check_outside_step(self):
+        """
+        A line paying for a run's outside step is exactly that and
+        nothing else.
+
+        Each refusal is a line whose receipt could not honestly post
+        through the run: a stocked item would want to go on a shelf
+        rather than into work in progress; whole-item job work already
+        has its own receipt path and would be booked twice; a drop-ship
+        never touches this plant; and a step that is ours would get a
+        vendor's charge beside our own machine time. The unit has to be
+        the run's own because what comes back is counted against what
+        the run was planned to make.
+        """
+        if self.work_order_operation_id is None:
+            return
+        operation = self.work_order_operation
+        order = operation.work_order
+        if not operation.is_outside:
+            raise ValidationError(
+                f"{operation} is done on our own machines; a vendor has "
+                "nothing to charge it for."
+            )
+        if self.item_id is None or self.item.track_inventory:
+            raise ValidationError(
+                "A line paying for an outside step is for the vendor's "
+                "service, not a stocked item — nothing comes back to a shelf."
+            )
+        if self.bom_id is not None:
+            raise ValidationError(
+                "This line is whole-item job work already. Paying for a run's "
+                "outside step as well would book the vendor's work twice."
+            )
+        if self.order_id and self.order.is_drop_ship():
+            raise ValidationError(
+                "A drop-ship never passes through this plant, so it cannot "
+                "pay for a step of one of its runs."
+            )
+        if self.uom_id != order.uom_id:
+            raise ValidationError(
+                f"{order} is counted in {order.uom} and this line in "
+                f"{self.uom}. What comes back from the vendor is counted "
+                "against what the run was planned to make, so the two have "
+                "to count the same thing."
+            )
+
     def save(self, *args, **kwargs):
+        self._check_outside_step()
         if self.is_charge() and not self.expense_account_id:
             self.expense_account = self.charge.account_for(is_sale=False)
         if self.item_id and self.uom_id:
@@ -3129,7 +3185,14 @@ class BillLine(TaxedLineMixin, AuditModel):
         accrual; only a bill with no receipt behind it anywhere should
         expense.
         """
-        if not (self.item_id and self.item.track_inventory):
+        # A line paying for a run's outside step accrued when the work
+        # came back, though its item is a service — that is the whole
+        # difference between it and an ordinary service line, which
+        # accrues nothing and expenses on the bill.
+        outside = bool(
+            self.order_line_id and self.order_line.work_order_operation_id
+        )
+        if not outside and not (self.item_id and self.item.track_inventory):
             return Decimal("0")
 
         if self.order_line_id:
@@ -3918,6 +3981,9 @@ class GoodsReceipt(AuditModel):
         valued = []
         received = {}
         for line in lines:
+            if line.order_line.work_order_operation_id:
+                self._post_outside_step(line, is_return)
+                continue
             # Services and non-stocked items must never touch stock levels.
             if not line.order_line.item.track_inventory:
                 continue
@@ -4025,6 +4091,38 @@ class GoodsReceipt(AuditModel):
         self.posted_at = timezone.now()
         super(GoodsReceipt, self).save(
             update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
+        )
+
+    def _post_outside_step(self, line, is_return):
+        """
+        A vendor's work on a run, coming back or going back.
+
+        Through the run rather than onto a shelf: there is no item to
+        receive, only work done on one that never left work in
+        progress. Valued at the agreed price exactly as a stocked
+        receipt is, so the bill clears the accrual the same way and any
+        difference lands in purchase price variance, not on the run.
+        The run's own module does the posting — it is the one place that
+        writes work in progress — and this passes it the accrual to
+        credit.
+        """
+        from apps.manufacturing.outside import OutsideMovement
+
+        movement = OutsideMovement.objects.create(
+            operation=line.order_line.work_order_operation,
+            movement_date=self.receipt_date,
+            is_return=is_return,
+            quantity=line.quantity_received,
+            value=round_money(
+                line.quantity_received * line.order_line.unit_price
+            ),
+            credit_account=grni_account(),
+            reference=self.reference or self.number,
+        )
+        movement.post()
+        line.outside_movement = movement
+        super(GoodsReceiptLine, line).save(
+            update_fields=["outside_movement", "updated_at"]
         )
 
     @transaction.atomic
@@ -4420,6 +4518,12 @@ class GoodsReceiptLine(AuditModel):
                   "recorded here there is nothing to trace it from.",
     )
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
+    outside_movement = models.ForeignKey(
+        "manufacturing.OutsideMovement", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="receipt_lines", editable=False,
+        help_text="Where this line put a vendor's work into a run, when it "
+                  "pays for an outside step.",
+    )
     stock_movement = models.ForeignKey(
         "inventory.StockMovement", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,

@@ -213,11 +213,26 @@ class CostVersion(AuditModel):
         )
 
     def _conversion(self, bom):
+        """
+        Machine time at the centres' rates, plus any vendor's standard
+        charge for a step done outside.
+
+        The vendor's charge sits in the conversion element of a
+        standard rather than an element of its own: a standard is a
+        per-unit price that quotations are built from, and a customer
+        buying a laminated sack pays for the lamination whoever ran the
+        coating line. The run keeps the two apart, where the split
+        matters — at close, a slow loom and a dear vendor are
+        different people's problems.
+        """
         if bom.routing_id is None:
             return ZERO
         batch = bom.quantity_produced
         total = ZERO
         for operation in bom.routing.operations.select_related("work_centre"):
+            if operation.is_outside:
+                total += operation.outside_charge_for(batch, bom.uom)
+                continue
             minutes = operation.minutes_for(batch, bom.uom)
             total += (
                 minutes / MINUTES_PER_HOUR

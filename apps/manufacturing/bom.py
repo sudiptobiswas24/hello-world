@@ -606,7 +606,8 @@ def material_balance(bom, quantity, uom=None):
 
 
 PlannedCost = namedtuple(
-    "PlannedCost", "materials conversion byproducts net"
+    "PlannedCost", "materials conversion byproducts net outside",
+    defaults=(Decimal("0"),),
 )
 
 
@@ -663,8 +664,17 @@ def planned_cost(bom, quantity, warehouse, uom=None):
             rate = component.item.standard_cost
         materials += rate * in_stock_units
     conversion = Decimal("0")
+    outside = Decimal("0")
     if bom.routing_id is not None:
         for operation in bom.routing.operations.select_related("work_centre"):
+            if operation.is_outside:
+                # Kept apart from our own machine time, because at close
+                # the two overruns have different owners: a slow loom is
+                # the shift's, a vendor who charged more is the buyer's.
+                outside += operation.outside_charge_for(
+                    batch_quantity, bom.uom
+                )
+                continue
             minutes = operation.minutes_for(batch_quantity, bom.uom)
             conversion += (
                 minutes / Decimal("60")
@@ -673,10 +683,12 @@ def planned_cost(bom, quantity, warehouse, uom=None):
     credit = Decimal("0")
     for byproduct in bom.byproducts.select_related("item", "uom").all():
         credit += byproduct_value(
-            byproduct, byproduct.quantity * scale, materials + conversion
+            byproduct, byproduct.quantity * scale,
+            materials + conversion + outside,
         )
     return PlannedCost(
-        materials, conversion, credit, materials + conversion - credit
+        materials, conversion, credit,
+        materials + conversion + outside - credit, outside,
     )
 
 

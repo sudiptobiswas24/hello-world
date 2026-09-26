@@ -116,20 +116,41 @@ def make_run_days(bom, quantity, uom):
     # for the rejects too.
     quantity = bom.start_for(quantity)
     per_centre = {}
+    away = Decimal("0")
     for operation in bom.routing.operations.select_related("work_centre"):
+        if operation.is_outside:
+            # Counted as the plant's own days, though a vendor keeps the
+            # world's: over a weekend that plans the release a day or
+            # two early, which is the safe way to be wrong about work
+            # that is out of the building.
+            away += Decimal(operation.outside_lead_days)
+            continue
         minutes = operation.minutes_for(quantity, uom)
         centre = operation.work_centre
         per_centre.setdefault(centre.pk, [centre, Decimal("0")])[1] += minutes
-    days = Decimal("0")
+    days = away
     for centre, minutes in per_centre.values():
-        # No guard on the divisor: `work_centre_hours_in_a_day` already
-        # holds it strictly between zero and twenty-four, so a check
-        # here would be a branch nothing can reach, implying a state
-        # the database forbids.
-        days += minutes / (
-            Decimal(centre.available_hours_per_day) * MINUTES_PER_HOUR
-        )
+        days += minutes / (_hours_a_day(centre) * MINUTES_PER_HOUR)
     return days
+
+
+def _hours_a_day(centre):
+    """
+    What a bank can run in a day: its machines' hours between them, or
+    its own where it lists none.
+
+    This read the bank's own field alone after machines existed, which
+    is the two-answers-to-one-question the work centre's docstring
+    warns about — a bank of two eight-hour looms quoted a run at twice
+    the days the scheduler gave it. No guard on the divisor: the
+    database holds every hours figure strictly between zero and
+    twenty-four, and a bank's machines are only counted when it has
+    some.
+    """
+    machines = centre.machine_list()
+    if machines:
+        return sum((m.hours_per_day() for m in machines), Decimal("0"))
+    return Decimal(centre.available_hours_per_day)
 
 
 def make_lead_days(item, bom, quantity, uom, queue_days=0, default=None):

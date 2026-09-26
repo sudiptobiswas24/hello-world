@@ -614,6 +614,46 @@ class WorkOrder(AuditModel):
         total = self.posted_time().aggregate(total=models.Sum("minutes"))["total"]
         return total or Decimal("0")
 
+    def outside_cost(self):
+        """What vendors' work has put into this run, at the values posted."""
+        return sum(
+            (operation.outside_cost() for operation in self.operations.filter(
+                is_outside=True
+            )),
+            Decimal("0"),
+        )
+
+    def planned_outside_cost(self):
+        """The vendors' standard charges, as frozen onto the steps at release."""
+        return sum(
+            (operation.planned_outside_cost
+             for operation in self.operations.filter(is_outside=True)),
+            Decimal("0"),
+        )
+
+    def outside_earned(self):
+        """
+        What the output this run booked was worth in vendors' work.
+
+        The same shape as `conversion_earned`, and for the same reason:
+        a run that made half of what it was for has earned half the
+        lamination, whatever the laminator has invoiced so far.
+        """
+        planned = self.planned_outside_cost()
+        if not planned:
+            return Decimal("0")
+        started = self.item.to_stock_quantity(self.started_quantity(), self.uom)
+        if not started:
+            return Decimal("0")
+        made = self.item.to_stock_quantity(
+            self.quantity_produced() + self.quantity_scrapped(), self.uom
+        )
+        return planned / started * made
+
+    def outside_variance(self):
+        """Vendors' work charged against vendors' work earned."""
+        return self.outside_cost() - self.outside_earned()
+
     def output_value(self):
         """What has come out, at the values posted."""
         total = Decimal("0")
@@ -633,7 +673,8 @@ class WorkOrder(AuditModel):
         wrong one to report as a balance.
         """
         return (
-            self.material_cost() + self.conversion_cost() - self.output_value()
+            self.material_cost() + self.conversion_cost()
+            + self.outside_cost() - self.output_value()
         )
 
     def wip_balance(self):
@@ -797,6 +838,12 @@ class WorkOrder(AuditModel):
                 self.bom.routing.operations.select_related("work_centre")
             )
         for operation in operations:
+            if operation.is_outside:
+                # No machine of ours to be out of service. The charge is
+                # asked now for the same reason a rate is: one counted in
+                # the wrong unit fails here rather than at close.
+                operation.outside_charge_for(batch_quantity, self.bom.uom)
+                continue
             # Asked here, where a rate that nobody has stated can still be
             # stated and a machine that has been taken out can still be
             # swapped. By the first shift the loom has been running a day.
@@ -834,6 +881,18 @@ class WorkOrder(AuditModel):
         self.backflush = self.bom.backflush
         self.operations.all().delete()
         for operation in operations:
+            if operation.is_outside:
+                WorkOrderOperation.objects.create(
+                    work_order=self, sequence=operation.sequence,
+                    name=operation.name, work_centre=None, is_outside=True,
+                    outside_lead_days=operation.outside_lead_days,
+                    planned_outside_cost=operation.outside_charge_for(
+                        batch_quantity, self.bom.uom
+                    ),
+                    setup_minutes=Decimal("0"), units_per_hour=None,
+                    planned_minutes=Decimal("0"),
+                )
+                continue
             WorkOrderOperation.objects.create(
                 work_order=self, sequence=operation.sequence,
                 name=operation.name, work_centre=operation.work_centre,
@@ -998,6 +1057,20 @@ class WorkOrder(AuditModel):
                     ),
                     time_overrun,
                 ))
+            # A vendor's overrun is conversion done by somebody else, and
+            # it goes where conversion overruns go rather than into the
+            # material remainder below — where somebody looking for
+            # missing polymer would find a laminator's price rise.
+            vendor_overrun = round_money(self.outside_variance())
+            if vendor_overrun:
+                rows.append((
+                    ManufacturingSettings.account(
+                        "conversion_variance",
+                        "a run is being closed having cost more in vendors' "
+                        "work than it was planned at",
+                    ),
+                    vendor_overrun,
+                ))
             # Material takes the remainder rather than being computed in
             # its own right, so the two always come to exactly what was
             # left in work in progress. Scrap, by-product recovery and
@@ -1032,11 +1105,27 @@ class WorkOrder(AuditModel):
             raise ValidationError(
                 f"{self} is already {self.get_status_display().lower()}."
             )
-        if self.posted_issues().exists() or self.posted_entries().exists():
+        # Material, machine time and vendors' work all put money into
+        # work in progress, and a cancelled run is never closed, so any
+        # of them left there stays for ever. Machine time was missing
+        # from this check before vendors' work was added to it: a run
+        # with only hours booked could be cancelled, and its hours sat
+        # in work in progress against an order nobody would look at.
+        consumed = (
+            self.posted_issues().exists()
+            or self.posted_entries().exists()
+            or self.posted_time().exists()
+            or self.operations.filter(
+                outside_movements__posted=True,
+                outside_movements__voided_at__isnull=True,
+            ).exists()
+        )
+        if consumed:
             raise ValidationError(
-                f"{self} has material against it. An order that has consumed "
-                "something cannot be cancelled as though it never happened — "
-                "close it, and what it consumed becomes a variance."
+                f"{self} has material, machine time or vendors' work against "
+                "it. An order that has consumed something cannot be cancelled "
+                "as though it never happened — close it, and what it consumed "
+                "becomes a variance."
             )
         self.status = WorkOrderStatus.CANCELLED
         super().save(update_fields=["status", "updated_at"])
@@ -1222,7 +1311,18 @@ class WorkOrderOperation(AuditModel):
     sequence = models.PositiveIntegerField()
     name = models.CharField(max_length=255)
     work_centre = models.ForeignKey(
-        WorkCentre, on_delete=models.PROTECT, related_name="work_order_operations"
+        WorkCentre, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="work_order_operations",
+        help_text="Blank exactly when the step is done outside.",
+    )
+    is_outside = models.BooleanField(default=False)
+    outside_lead_days = models.PositiveIntegerField(default=0)
+    planned_outside_cost = models.DecimalField(
+        max_digits=18, decimal_places=6, default=Decimal("0"),
+        help_text="The vendor's standard charge for the whole run, frozen at "
+                  "release. What the run is credited with as its output "
+                  "comes off; what the vendor actually charged arrives "
+                  "through the goods receipt.",
     )
     machine = models.ForeignKey(
         "manufacturing.Machine", null=True, blank=True,
@@ -1236,8 +1336,9 @@ class WorkOrderOperation(AuditModel):
         max_digits=10, decimal_places=2, default=Decimal("0")
     )
     units_per_hour = models.DecimalField(
-        max_digits=18, decimal_places=4,
-        help_text="The rate this run was planned at, resolved at release — "
+        max_digits=18, decimal_places=4, null=True, blank=True,
+        help_text="Blank for an outside step, which has no rate on our "
+                  "machines. The rate this run was planned at, resolved at release — "
                   "the operation's own, or the machine's nominal one where the "
                   "operation did not say. Resolved rather than looked up "
                   "again, so a machine re-rated next month does not re-time a "
@@ -1255,6 +1356,17 @@ class WorkOrderOperation(AuditModel):
                 fields=["work_order", "sequence"],
                 name="one_work_order_operation_per_sequence",
             ),
+            models.CheckConstraint(
+                check=(
+                    Q(is_outside=False) & Q(work_centre__isnull=False)
+                    & Q(units_per_hour__isnull=False)
+                ) | (
+                    Q(is_outside=True) & Q(work_centre__isnull=True)
+                    & Q(units_per_hour__isnull=True)
+                    & Q(machine__isnull=True)
+                ),
+                name="work_order_operation_is_inside_or_outside",
+            ),
         ]
 
     def __str__(self):
@@ -1264,8 +1376,53 @@ class WorkOrderOperation(AuditModel):
         self._check_machine()
 
     def _check_machine(self):
+        if self.machine_id is not None and self.is_outside:
+            raise ValidationError(
+                f"{self} is done by a vendor. There is no loom of ours to "
+                "put it on."
+            )
         if self.machine_id is not None and self.work_centre_id is not None:
             self.machine.check_in(self.work_centre)
+
+    # -- an outside step ------------------------------------------------
+
+    def outside_receipts(self):
+        return self.outside_movements.filter(
+            posted=True, voided_at__isnull=True
+        )
+
+    def quantity_back(self):
+        """
+        What the vendor has sent back, net of anything returned to them,
+        in the run's own unit.
+
+        The outside step's progress, the way a booked quantity is an
+        inside step's. A cutting table cannot cut fabric that is still
+        at the laminator, and this is what lets the next operation say
+        so.
+        """
+        total = Decimal("0")
+        for row in self.outside_receipts():
+            total += -row.quantity if row.is_return else row.quantity
+        return total
+
+    def outside_cost(self):
+        """What the vendor's work has put into this run, at the values posted."""
+        total = Decimal("0")
+        for row in self.outside_receipts():
+            total += row.posted_value or Decimal("0")
+        return total
+
+    def is_counted(self):
+        """
+        Whether anybody has said how much has come off this step.
+
+        A booking with a quantity for our own machines; anything back
+        from the vendor for an outside one.
+        """
+        if self.is_outside:
+            return self.outside_receipts().exists()
+        return self.counted_bookings().exists()
 
     def posted_bookings(self):
         return self.bookings.filter(posted=True, voided_at__isnull=True)
@@ -1286,6 +1443,8 @@ class WorkOrderOperation(AuditModel):
         number and a different claim — so a caller wanting to know
         whether anybody counted asks `counted_bookings()`.
         """
+        if self.is_outside:
+            return self.quantity_back()
         total = self.posted_bookings().aggregate(
             total=models.Sum("quantity_completed")
         )["total"]
@@ -1306,7 +1465,7 @@ class WorkOrderOperation(AuditModel):
         for earlier in self.work_order.operations.filter(
             sequence__lt=self.sequence
         ).order_by("-sequence"):
-            if earlier.counted_bookings().exists():
+            if earlier.is_counted():
                 return earlier
         return None
 
@@ -1391,7 +1550,8 @@ class WorkOrderOperation(AuditModel):
 
     FROZEN_AT_RELEASE = (
         "sequence", "name", "work_centre_id", "setup_minutes",
-        "units_per_hour", "planned_minutes",
+        "units_per_hour", "planned_minutes", "is_outside",
+        "outside_lead_days", "planned_outside_cost",
     )
 
     def save(self, *args, **kwargs):
@@ -2584,6 +2744,16 @@ class TimeBooking(AuditModel):
                     f"Cannot modify {self} once it is posted. Void it and book "
                     "again."
                 )
+        if self.operation_id is not None and self.operation.is_outside:
+            # Refused where it is first knowable, which is here and not
+            # at posting: a draft booking of our hours against a step a
+            # vendor is doing is already wrong, and would sit on a
+            # shift's list looking like work somebody still had to post.
+            raise ValidationError(
+                f"{self.operation} is done by a vendor. Their time is what "
+                "their bill charges for; booking our machine hours against it "
+                "would charge the run twice."
+            )
         self.resolve_machine()
         super().save(*args, **kwargs)
 
