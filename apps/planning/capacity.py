@@ -281,6 +281,12 @@ def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
     operations = list(bom.routing.operations.select_related("work_centre"))
     if not operations:
         return None
+    # The quantity is what must be DELIVERED; the machines are asked
+    # for what must be STARTED. Every planning function that takes a
+    # bill and a quantity reads it that way, so that a plant expecting
+    # to reject three per cent books three per cent more loom and
+    # promises a date it can keep.
+    quantity = bom.start_for(quantity)
     floor = planned_on - datetime.timedelta(days=MAX_BACKLOG_DAYS)
     # The queue allowance comes off the finish date before anything is
     # scheduled, so it is time the run is given rather than time the

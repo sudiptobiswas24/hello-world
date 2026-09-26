@@ -365,7 +365,22 @@ class WorkOrder(AuditModel):
     bom = models.ForeignKey(
         BillOfMaterials, on_delete=models.PROTECT, related_name="work_orders"
     )
-    quantity_ordered = models.DecimalField(max_digits=18, decimal_places=4)
+    quantity_ordered = models.DecimalField(
+        max_digits=18, decimal_places=4,
+        help_text="What this run is to DELIVER. Where the bill expects to "
+                  "reject some of what it makes, more than this comes off "
+                  "the machine — see `quantity_to_start`.",
+    )
+    quantity_to_start = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="What must come off the machine to deliver the order, "
+                  "frozen at release in the order's own unit. Frozen, and "
+                  "never recomputed from the bill: the expected reject rate "
+                  "is a number a plant revises, and a run already on the "
+                  "floor would otherwise have its material allowance, its "
+                  "output ceiling and its earned time all move under it "
+                  "after the fact.",
+    )
     uom = models.ForeignKey(
         "core.UnitOfMeasure", on_delete=models.PROTECT, related_name="+"
     )
@@ -522,9 +537,35 @@ class WorkOrder(AuditModel):
         """The operation this run waits on, or None where it has no routing."""
         return self.operations.order_by("-planned_minutes", "sequence").first()
 
+    def started_quantity(self):
+        """
+        What this run is expected to make, spoilage included, in the
+        order's own unit.
+
+        The order's quantity where nothing was ever frozen — a draft,
+        or a run released before this plant admitted to a reject rate.
+        Everything that used to divide by `quantity_ordered` divides
+        by this instead, because a run that expects to reject three
+        per cent books three per cent more output, draws material for
+        it and occupies the loom for it.
+        """
+        if self.quantity_to_start is not None:
+            return self.quantity_to_start
+        return self.quantity_ordered
+
     def maximum_output(self):
-        """The most this run may book, in the item's stocking unit."""
-        ordered = self.item.to_stock_quantity(self.quantity_ordered, self.uom)
+        """
+        The most this run may book, in the item's stocking unit.
+
+        Off what it was planned to START, not what it was ordered to
+        deliver. A run for a thousand sacks at three per cent reject
+        must book a thousand and thirty — good and spoiled together —
+        and a ceiling set at a thousand would refuse the last booking
+        of a run that went exactly to plan.
+        """
+        ordered = self.item.to_stock_quantity(
+            self.started_quantity(), self.uom
+        )
         return ordered * (
             Decimal("1") + (self.over_production_percent or Decimal("0"))
             / Decimal("100")
@@ -620,7 +661,14 @@ class WorkOrder(AuditModel):
         """
         if self.planned_conversion_cost is None:
             return Decimal("0")
-        ordered = self.item.to_stock_quantity(self.quantity_ordered, self.uom)
+        # Against what it was planned to START. The planned conversion
+        # covers the spoiled units too — the loom ran to make them —
+        # so dividing it by the delivered quantity would earn more
+        # time per unit than was ever planned, and every run that went
+        # exactly to plan would report a favourable time variance.
+        ordered = self.item.to_stock_quantity(
+            self.started_quantity(), self.uom
+        )
         if not ordered:
             return Decimal("0")
         made = self.item.to_stock_quantity(
@@ -638,7 +686,9 @@ class WorkOrder(AuditModel):
         answer. Positive means the run took longer than it was planned
         at.
         """
-        ordered = self.item.to_stock_quantity(self.quantity_ordered, self.uom)
+        ordered = self.item.to_stock_quantity(
+            self.started_quantity(), self.uom
+        )
         if not ordered:
             return Decimal("0")
         made = self.item.to_stock_quantity(
@@ -710,26 +760,32 @@ class WorkOrder(AuditModel):
         if not self.bom.is_active:
             raise ValidationError(f"{self.bom} is not active.")
         self._check_rework()
+        # What the run will actually put through the machines, which
+        # is more than it delivers wherever the bill expects to reject
+        # some of it. Everything below is planned off this rather than
+        # off the order: the material, the machine time, the tool
+        # life and the output ceiling.
+        started = self.bom.start_for(self.quantity_ordered)
         for tool in self.tools.select_related("life_uom"):
             # Asked here, where a worn cylinder can still be swapped
             # for a fresh one. By the first shift the press is set up
             # and the changeover costs a run.
             tool.check_usable(f"go on {self.number or 'this run'}")
-            tool.quantity_for(self.quantity_ordered, self.uom)
+            tool.quantity_for(started, self.uom)
         if not self.bom.components.exists():
             raise ValidationError(
                 f"{self.bom} has no components, so nothing would ever be issued "
                 "against this order and its whole cost would fall to variance."
             )
-        scale = self.bom.scale_for(self.quantity_ordered, self.uom)
+        scale = self.bom.scale_for(started, self.uom)
         for byproduct in self.bom.byproducts.select_related("item"):
             # Asked here rather than at the first production entry: by
             # then the run is on the floor and the answer has not changed.
             byproduct_value(byproduct, byproduct.quantity * scale, Decimal("0"))
 
-        batch_quantity = self.quantity_ordered
+        batch_quantity = started
         if self.uom_id != self.bom.uom_id:
-            batch_quantity = self.uom.convert_to(self.quantity_ordered, self.bom.uom)
+            batch_quantity = self.uom.convert_to(started, self.bom.uom)
         operations = []
         if self.bom.routing_id is not None:
             if not self.bom.routing.is_active:
@@ -795,21 +851,33 @@ class WorkOrder(AuditModel):
         plan = planned_cost(
             self.bom, self.quantity_ordered, self.warehouse, self.uom
         )
-        stock_quantity = self.item.to_stock_quantity(
-            self.quantity_ordered, self.uom
-        )
+        # Divided by what comes OFF THE MACHINE, not by what is
+        # delivered. Output is received at this and so is scrap, and
+        # the two together are the started quantity: valuing them at a
+        # per-delivered-unit cost would credit work in progress with
+        # more than ever went into it and close every run on a
+        # favourable variance it never earned.
+        #
+        # The consequence, said plainly: expected spoilage lands in
+        # the scrap account like any other scrap rather than being
+        # absorbed into the good units. A good sack is worth what a
+        # sack costs to make, and the rejects are visible as their own
+        # number instead of being buried in the price of the ones that
+        # passed.
+        stock_quantity = self.item.to_stock_quantity(started, self.uom)
         self.planned_material_cost = plan.materials
         self.planned_conversion_cost = plan.conversion
         self.planned_unit_cost = (
             (plan.net / stock_quantity).quantize(Decimal("0.000001"))
             if stock_quantity else Decimal("0")
         )
+        self.quantity_to_start = Decimal(started).quantize(Decimal("0.0001"))
         self.status = WorkOrderStatus.RELEASED
         self.released_at = timezone.now()
         super().save(update_fields=[
             "number", "planned_unit_cost", "planned_material_cost",
-            "planned_conversion_cost", "routing", "backflush", "status",
-            "released_at", "updated_at",
+            "planned_conversion_cost", "routing", "backflush",
+            "quantity_to_start", "status", "released_at", "updated_at",
         ])
         return self
 
@@ -872,9 +940,17 @@ class WorkOrder(AuditModel):
         moved by the time the last shift books its output and the run
         must draw against what it was released on.
         """
-        if self.quantity_ordered <= 0:
+        started = self.started_quantity()
+        if started <= 0:
             return []
-        share = Decimal(quantity) / self.quantity_ordered
+        # Against the started quantity, because the frozen
+        # requirements are for the started quantity. A run for a
+        # thousand at three per cent reject holds material for a
+        # thousand and thirty, and a share taken against the thousand
+        # would draw all of it by the time the run had made a
+        # thousand — over-issuing by three per cent on every run in
+        # the plant.
+        share = Decimal(quantity) / started
         rows = []
         for component in self.components.select_related("item", "uom").all():
             # Quantized to what an issue line actually stores, so that
@@ -2203,7 +2279,7 @@ class ProductionByproduct(AuditModel):
             # that on Thursday.
             order = self.entry.work_order
             expected = row.quantity * order.bom.scale_for(
-                order.quantity_ordered, order.uom
+                order.started_quantity(), order.uom
             )
             expected = self.item.to_stock_quantity(expected, row.uom)
             share = (order.planned_material_cost or Decimal("0")) * (

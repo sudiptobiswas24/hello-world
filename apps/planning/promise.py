@@ -284,7 +284,7 @@ def _material_ready(item, bom, quantity, warehouse, planned_on, settings):
     from .mrp import _make_or_buy
 
     ready = planned_on
-    scale = bom.scale_for(quantity, item.uom)
+    scale = bom.scale_for(bom.start_for(quantity), item.uom)
     calendar = plant_calendar(settings)
     for component in bom.components.select_related("item", "uom").all():
         wanted = component.item.to_stock_quantity(

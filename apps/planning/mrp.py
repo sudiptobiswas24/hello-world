@@ -247,7 +247,15 @@ def work_order_demand(item, warehouse, on_date):
         # is not nullable, so a skip here would be a branch nothing can
         # reach — and a silent one, which is how a plan comes to think
         # a run's material is free.
-        scale = order.bom.scale_for(order.quantity_ordered, order.uom)
+        # Only drafts reach here, and a draft has frozen nothing — so
+        # the start quantity is asked of the bill as it stands today.
+        # An earlier version called `started_quantity()`, which on a
+        # draft is just the ordered quantity, under a comment claiming
+        # the opposite: a draft run for a thousand at twenty per cent
+        # reject went on asking for tape for a thousand.
+        scale = order.bom.scale_for(
+            order.bom.start_for(order.quantity_ordered), order.uom
+        )
         for component in order.bom.components.filter(item=item).select_related(
             "item", "uom"
         ):
@@ -316,11 +324,25 @@ def work_order_supply(item, warehouse, on_date):
 
 
 def byproduct_supply(bom, quantity, uom, item, when):
-    """What `quantity` off this bill of materials throws off of `item`."""
+    """
+    What `quantity` off this bill of materials throws off of `item`.
+
+    `quantity` is what must be delivered, as everywhere else here, and
+    the trim is taken off what must be started to deliver it.
+
+    For a run already on the floor this reads the bill's reject rate
+    rather than the rate frozen onto the run. That is deliberate and
+    not an oversight: this is a forecast of what will come off a
+    machine, not a record of what did, and a planner revising the rate
+    means the next few days of trim will follow the new one.
+    """
     if bom is None:
         return []
     rows = []
-    scale = bom.scale_for(quantity, uom)
+    # Trim comes off what goes through the machine, spoiled units
+    # included: a sack rejected at the stitching table threw off its
+    # offcut on the way.
+    scale = bom.scale_for(bom.start_for(quantity), uom)
     for byproduct in bom.byproducts.filter(item=item).select_related("item", "uom"):
         expected = byproduct.item.to_stock_quantity(
             byproduct.quantity * scale, byproduct.uom
@@ -1172,7 +1194,7 @@ def _components(bom, order):
     exploding here would net the polymer against the sack's shelf
     instead of the polymer's.
     """
-    scale = bom.scale_for(order.quantity, order.item.uom)
+    scale = bom.scale_for(bom.start_for(order.quantity), order.item.uom)
     rows = []
     for component in bom.components.select_related("item", "uom").all():
         required = component.item.to_stock_quantity(

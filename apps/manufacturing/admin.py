@@ -416,7 +416,8 @@ class FabricRollAdmin(AuditableAdminMixin, admin.ModelAdmin):
 @admin.register(BillOfMaterials)
 class BillOfMaterialsAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("__str__", "item", "version", "is_computed", "is_default",
-                    "is_rework", "backflush", "is_active")
+                    "is_rework", "backflush", "expected_reject_percent",
+                    "is_active")
     list_filter = ("is_computed", "is_default", "is_rework", "backflush",
                    "is_active")
     search_fields = ("name", "item__sku")
@@ -542,6 +543,7 @@ class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     search_fields = ("number", "item__sku")
     inlines = [WorkOrderComponentInline, WorkOrderOperationInline]
     readonly_fields = ("number", "status", "routing", "backflush",
+                       "quantity_to_start",
                        "planned_unit_cost",
                        "planned_material_cost", "planned_conversion_cost",
                        "shown_time_variance", "released_at", "closed_at",

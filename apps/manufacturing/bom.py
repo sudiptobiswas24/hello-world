@@ -120,6 +120,17 @@ class BillOfMaterials(AuditModel):
                   "made — one loom width or another — but only one of them can "
                   "be the answer to an unqualified question.",
     )
+    expected_reject_percent = models.DecimalField(
+        max_digits=6, decimal_places=3, default=Decimal("0"),
+        help_text="Percentage of what comes OFF THE MACHINE that is expected "
+                  "to fail inspection. Not the same thing as a component's "
+                  "waste: that is material fed in and lost on the way, this "
+                  "is finished units made and then rejected. A plant that "
+                  "loses three per cent of its bags at the stitching table "
+                  "must START a hundred and three to DELIVER a hundred, and "
+                  "a plan that does not know it is three per cent short on "
+                  "every order it ever promises.",
+    )
     is_active = models.BooleanField(default=True)
     notes = models.TextField(blank=True)
 
@@ -138,6 +149,14 @@ class BillOfMaterials(AuditModel):
             ),
             models.CheckConstraint(
                 check=Q(quantity_produced__gt=0), name="bom_batch_is_positive",
+            ),
+            # At a hundred per cent every unit made is rejected, so no
+            # quantity started ever delivers anything and the start
+            # quantity is a division by zero.
+            models.CheckConstraint(
+                check=Q(expected_reject_percent__gte=0)
+                & Q(expected_reject_percent__lt=100),
+                name="bom_reject_under_one_hundred",
             ),
         ]
 
@@ -172,6 +191,33 @@ class BillOfMaterials(AuditModel):
         if uom is not None and uom.pk != self.uom_id:
             quantity = uom.convert_to(quantity, self.uom)
         return Decimal(quantity) / self.quantity_produced
+
+    def start_for(self, quantity):
+        """
+        How much must come off the machine to deliver `quantity`.
+
+        Returned in whatever unit it was asked in, and it takes no
+        `uom` for that reason: the ratio is dimensionless, so a
+        conversion here would be a round trip that can only lose
+        precision.
+
+        Delivered over one-minus-reject, and not delivered times
+        one-plus-reject, for the same reason a component's waste
+        divides: the percentage is of the gross. At three per cent the
+        two readings differ by a tenth of a per cent — a rounding
+        error on one order and a shortfall on every order.
+
+        The inverse of a question nothing here could answer. A run for
+        a thousand sacks issued material for a thousand, booked a
+        thousand, delivered nine hundred and seventy, and the thirty
+        were somebody else's problem every time.
+        """
+        quantity = Decimal(quantity)
+        if not self.expected_reject_percent:
+            return quantity
+        return quantity / (
+            Decimal("1") - self.expected_reject_percent / ONE_HUNDRED
+        )
 
     def eats_itself(self):
         """Whether this recipe consumes the item it makes."""
@@ -477,7 +523,12 @@ def explode(bom, quantity, uom=None, _path=()):
     a leaf and not entered: it is a real requirement, taken from a real
     shelf, and it is not a sub-assembly.
     """
-    scale = bom.scale_for(quantity, uom)
+    # The quantity asked for is what must be DELIVERED, so the
+    # explosion is of what must be started to deliver it. A bill that
+    # expects to reject three per cent needs the material for a
+    # hundred and three, and an explosion answering for a hundred
+    # under-issues every run in the plant by the same three per cent.
+    scale = bom.scale_for(bom.start_for(quantity), uom)
     level = len(_path)
     path = _path + (bom.item_id,)
     rows = []
@@ -586,10 +637,13 @@ def planned_cost(bom, quantity, warehouse, uom=None):
     """
     from apps.inventory.costing import unit_cost_for
 
-    scale = bom.scale_for(quantity, uom)
-    batch_quantity = quantity
+    # Costed on what must be started, as the explosion is. The
+    # material spoiled on the way to a good sack was still bought.
+    started = bom.start_for(quantity)
+    scale = bom.scale_for(started, uom)
+    batch_quantity = started
     if uom is not None and uom.pk != bom.uom_id:
-        batch_quantity = uom.convert_to(quantity, bom.uom)
+        batch_quantity = uom.convert_to(started, bom.uom)
     materials = Decimal("0")
     for component in bom.components.select_related("item", "uom").all():
         required = component.gross_quantity() * scale

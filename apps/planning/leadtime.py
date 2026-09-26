@@ -112,6 +112,9 @@ def make_run_days(bom, quantity, uom):
     """
     if bom is None or bom.routing_id is None:
         return None
+    # What must be started rather than what is wanted — the loom runs
+    # for the rejects too.
+    quantity = bom.start_for(quantity)
     per_centre = {}
     for operation in bom.routing.operations.select_related("work_centre"):
         minutes = operation.minutes_for(quantity, uom)

@@ -149,7 +149,8 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
         model = BillOfMaterials
         fields = ["id", "item", "version", "name", "quantity_produced", "uom",
                   "is_computed", "is_default", "is_active", "is_rework",
-                  "backflush", "notes", "components", "byproducts"]
+                  "backflush", "expected_reject_percent", "notes",
+                  "components", "byproducts"]
         read_only_fields = ["is_computed"]
 
 
@@ -375,7 +376,8 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WorkOrder
-        fields = ["id", "number", "item", "bom", "quantity_ordered", "uom",
+        fields = ["id", "number", "item", "bom", "quantity_ordered",
+                  "quantity_to_start", "uom",
                   "warehouse", "work_centre", "scheduled_start", "scheduled_end",
                   "status", "over_production_percent", "planned_unit_cost",
                   "planned_material_cost", "released_at", "closed_at",
