@@ -1,9 +1,667 @@
-# hello-world
-my first repository
-hey guys how are you doing???
+# ERP
 
-=============================
+A modular ERP built one module at a time on a shared domain kernel, so
+modules stay stitchable instead of needing rework later.
 
+## Architecture
 
-have been working on a projecct for a while..what do u sae??
-3
+Single Django project (modular monolith, not microservices), PostgreSQL in
+production / SQLite for local dev by default. Every module builds on the
+`core` kernel instead of inventing its own version of shared concepts:
+
+- **`apps/core`** — the kernel. Every other module builds on it rather
+  than redefining "customer", "currency" or "address" for itself.
+  - `Party` + `PartyRoleAssignment` — one record per real entity, with
+    roles attached, so a company that both buys and sells is one row.
+    Plus `Contact` (the people at that organisation), `Address`
+    (structured, typed billing/shipping, with `Country`),
+    `PartyBankAccount` and `PartyTag`.
+  - `Currency` + `ExchangeRate` — date-effective rates quoted against
+    the base currency, so a historical transaction keeps converting at
+    the rate that applied on its date. A missing rate raises rather
+    than silently assuming 1:1.
+  - `PaymentTerms` — **installments**, plus early-settlement discounts.
+    A term is a list of `PaymentTermsLine` (percent, days, optional
+    day-of-month for "net 30 EOM"), so "50% on order, 50% on delivery"
+    and "30/60/90" are expressible; a term with no lines is the
+    one-installment case, so every simple term behaves as it always did.
+    Percentages are checked when a schedule is *produced*, not as each
+    line is saved — a 50/50 is built one line at a time and a per-line
+    check would fail on the first. The consequence downstream is that
+    "is this overdue" and "how much is late" stop being the same
+    question: `amount_overdue()` counts only installments past their own
+    due date, aging emits a row per installment (so one invoice can
+    legitimately sit in two buckets), dunning chases what is actually
+    late rather than the whole balance, and `payment_run()` pays what is
+    due by the date rather than the whole bill. Original notes: net days
+    plus early-settlement discounts (2/10
+    net 30), shared by AR and AP since the arithmetic is identical.
+  - `DocumentSequence` — human-facing document numbers
+    (`INV-2026-00001`) handed out under a row lock, with optional
+    yearly reset, instead of leaking primary keys onto paperwork.
+  - `Company` — singleton profile: identity, base currency, fiscal
+    year start (with `fiscal_year_bounds()`).
+  - `UnitOfMeasure` — with base-unit conversion factors.
+- **`apps/inventory`** — `Warehouse`, `Item`, `StockMovement`. On-hand
+  quantity is always derived by summing the movement ledger
+  (`Item.on_hand_at`), never stored as a separate counter, so it can't
+  drift out of sync with reality.
+  **Valuation** is weighted average, derived the same way: each movement
+  carries a `unit_cost`, and `average_cost_at()` / `stock_value_at()`
+  replay the ledger rather than maintaining a running average field that
+  would drift when a movement is corrected. FIFO was the alternative;
+  it needs a separate mutable cost-layer table, which is exactly the
+  parallel state this design avoids. The tradeoff to know: weighted
+  average smooths margin when purchase prices swing, and moving to FIFO
+  later is a migration, not a setting.
+  `valuation.post_inventory_entry()` turns stock movements into ledger
+  entries (see the perpetual flow under Accounting).
+- **`apps/accounting`** — also home to **tax configuration**, which
+  lives here rather than in Core because a tax is meaningless without
+  the GL accounts it posts to (Odoo puts `account.tax` in its
+  accounting module for the same reason). `Tax` supports percentage
+  and per-unit fixed rates, tax-inclusive pricing, compound taxes
+  (`include_base_amount` + `sequence`), and separate collected/paid
+  accounts for the sales and purchase sides. `compute_taxes()` applies
+  a set of taxes to an amount and returns the net base, per-tax
+  amounts, and total. `FiscalPosition` substitutes or removes taxes
+  per customer (zero-rated exports, reverse charge), and
+  `PartyTaxProfile` attaches that plus outright exemption to a
+  `core.Party` — again from the Accounting side, so Core stays
+  independent. Both Sales and Purchasing consume all of this.
+  `ChargeType` lives here too, for the same reason and because it is
+  genuinely one concept read two ways: a carrier charges the company
+  freight, and the company recharges freight to its customers. One row
+  carries both a revenue and an expense account; two models would be
+  two code lists to keep aligned and two places to get the tax
+  treatment wrong.
+  `mixins.py` holds `TaxedLineMixin`/`TaxedDocumentMixin` — the line
+  arithmetic both trading modules need. They live here because neither
+  may import the other, and a second implementation is how the two
+  sides drift into taxing differently on the way in and on the way
+  out.
+  Also here: `Payment` — money actually moving, posted as Dr Bank / Cr
+  Receivable (or the reverse for a disbursement), numbered from a
+  sequence, immutable once posted and corrected by voiding. It is
+  deliberately free of any link to invoices or bills, because
+  Accounting must not import Sales or Purchasing; each of those owns
+  its own allocation model pointing back here.
+  **Bank reconciliation** lives here too: `BankStatement` and
+  `BankStatementLine` are a period of an account as the *bank* reports
+  it. This is the only place in the system an outside source gets to
+  disagree — everything else derives one number from another inside the
+  same system — and a books-to-bank difference nobody has explained is
+  how both fraud and plain error stay invisible. A line is explained
+  either by matching a `Payment` (sign, amount and account must all
+  agree, or matching would hide the difference) or by posting straight
+  to an account for the entries the bank originates: charges, interest,
+  a direct debit nobody recorded. `auto_match()` is deliberately
+  conservative — two candidates for one line means neither is taken,
+  because an automatic match that is wrong is worse than no match,
+  nobody looks at it again. `reconciliation()` names every reconciling
+  item, chiefly the unpresented payments (cheques written, not yet
+  cashed) that legitimately explain the gap. `close()` refuses while
+  anything is unexplained: a reconciliation that closes over a
+  difference is not a reconciliation. Keying the statement in and
+  signing it off are separate permissions.
+  Plus `Account` (chart of accounts, hierarchical,
+  type-checked against its parent), `JournalEntry`/`JournalLine`
+  (double-entry ledger, references `Party` from the kernel). A
+  `JournalEntry` can only be posted if its debits equal its credits;
+  once posted, the entry and its lines are immutable — corrections are
+  made by posting a reversing entry (`JournalEntry.create_reversal()`),
+  never by editing history. `JournalLine` deliberately has no
+  quantity/unit fields — inventory valuation integrates via
+  `inventory.valuation`, a service that creates journal entries from
+  stock movements, not via schema coupling between the two modules.
+
+  **Perpetual inventory.** Stock is an asset on the books, not an
+  expense at purchase time:
+
+      receive goods   Dr Inventory       Cr GRNI
+      vendor bill     Dr GRNI            Cr Accounts Payable
+      ship goods      Dr Cost of Sales   Cr Inventory
+
+  The GRNI (goods received not invoiced) accrual in the middle is what
+  stops a bill expensing goods that will be expensed again when sold.
+  Accounts come from the `Item`, falling back to the `Company`
+  defaults; a stocked item with neither configured refuses to post
+  rather than quietly skipping the cost. Service lines expense directly
+  and never touch stock.
+
+- **`apps/sales`** — `SalesOrder`/`SalesOrderLine`, `Invoice`/`InvoiceLine`.
+  Customers are `Party` records with the `CUSTOMER` role (no separate
+  Customer model — the whole point of the kernel). This is the module
+  that actually consumes the kernel: taxes, document sequences,
+  payment terms, addresses and exchange rates all land here.
+  - **Pricing**: leave a line's `unit_price` blank and it resolves from
+    the customer's own `PriceList`, else the default list for the
+    document's currency, else the item's `sale_price` — with volume
+    breaks (`min_quantity`) picking the highest qualifying tier. An
+    item nothing can price fails loudly rather than posting at zero.
+  - **Credit limits**: `CustomerProfile.credit_limit` is checked at
+    order confirmation against `committed_balance()` — what is owed on
+    posted invoices *plus* what is promised on confirmed but uninvoiced
+    orders. Counting invoices alone would wave through any number of
+    orders. Override deliberately with
+    `confirm(ignore_credit_limit=True)`.
+  - **Line arithmetic**: gross → discount → net → tax, in that order
+    (tax is charged on the discounted amount). Totals are derived from
+    lines, never stored.
+  - **Numbering**: `confirm()` assigns `SO-2026-00001`, posting assigns
+    `INV-2026-00001`, credit notes draw from their own `CN-` sequence.
+  - **Payment terms** default from the customer and set `due_date` at
+    posting time.
+  - **Multi-currency**: the document keeps its own currency; posting
+    converts to base at the rate effective on the invoice date and
+    freezes that rate on the invoice. The receivable debit is set to
+    the exact sum of the converted credits — rounding each line
+    independently can leave the entry a cent out of balance and make a
+    legitimate invoice unpostable.
+  - **Order → invoice**: `SalesOrder.create_invoice()` bills whatever
+    is still *invoiceable*, carrying discounts and taxes across. What
+    that means is the order's `invoice_policy`: `ORDERED` bills the
+    whole order up front, `DELIVERED` bills only what has actually
+    shipped, which is the honest default for physical goods — billing
+    for stock you still owe is the fastest way to lose the argument
+    about whether the customer has to pay. Invoice
+    lines link back to the order line, so quantities draw down
+    (`quantity_invoiced()` / `quantity_uninvoiced()`) exactly like
+    shipments do, and an order cannot be billed twice. A credit note
+    releases the quantity again. `invoice_status()` and
+    `delivery_status()` report none / partial / full.
+  - **Settlement**: `InvoicePayment` applies an `accounting.Payment` to
+    an invoice. The ledger entry was already made when the payment
+    posted — the allocation records *which* invoices that money
+    settles, which is what makes aging possible. Over-allocating either
+    the payment or the invoice is refused, as is settling with another
+    party's payment or a disbursement. `amount_paid()`,
+    `amount_credited()` (posted credit notes count against the
+    balance), `amount_due()` and `settlement_status()` follow from it.
+  - **AR aging**: `ar_aging()` buckets outstanding invoices by days
+    overdue (current / 1-30 / 31-60 / 61-90 / 90+).
+  - **Quotations**: `Quotation`/`QuotationLine` are a separate document
+    rather than another `SalesOrder` status — a quote expires and can be
+    declined, neither of which an order does, and an order carries
+    fulfilment state a quote has no business having. `accept()` converts
+    to a confirmed order carrying prices, discounts and taxes across, so
+    the quoted price holds even if the price list has moved since.
+  - **Document output**: invoices, credit notes and quotations all
+    render through one layout in `documents.py` (reportlab — pure
+    Python, where WeasyPrint would need cairo/pango).
+    `email_to_customer()` attaches the PDF and records `sent_at`;
+    `Quotation.mark_sent()` only *records* a send that happened by some
+    other route. The recipient is the customer's primary contact,
+    falling back to the party's own address.
+  - **Tax rounding is a jurisdiction's rule, not a preference**:
+    `Company.tax_rounding` picks line-level (the default, and what the
+    ledger already contains) or document-level. Three lines of 33.33 at
+    20% give 20.01 one way and 20.00 the other — small enough to be
+    invisible, persistent enough to fail a VAT return's reconciliation.
+    Under document rounding the penny is pushed back onto the largest
+    line rather than left floating, so the sum of the lines still equals
+    the document; otherwise the ledger, `revenue_report()` and the
+    statement each disagree with the invoice by a cent. Lines are
+    grouped by their exact effective tax set before rounding, because
+    compound and price-included taxes depend on what else applies to the
+    same line.
+  - **Tax follows the customer**: a line's `effective_taxes()` runs the
+    configured taxes through the customer's `PartyTaxProfile`, so a
+    zero-rated or exempt customer is charged correctly without anyone
+    remembering to swap the tax by hand. Display and posting use the
+    same mapped set.
+  - **Realised exchange differences**: a foreign invoice is booked at
+    the rate on its own date and settled at the rate on the payment's.
+    In its own currency it's square — 1,000 EUR owed, 1,000 EUR paid —
+    but in base currency the two sides differ, and the control account
+    was left holding that difference forever. It isn't an error to hide:
+    the company genuinely received more or fewer pounds than it expected
+    when it booked the sale, because the rate moved while the money was
+    outstanding. `accounting/settlement.py` clears the residue and books
+    the other side to `fx_gain_account`/`fx_loss_account`. A receivable
+    and a payable are mirrors — the rate move that costs you on an
+    invoice saves you on a bill. Re-sizing or removing an allocation
+    restates the difference, because an allocation can be re-pointed
+    after the fact and the difference it caused has to move with it.
+  - **Settlement is still single-currency**: a payment must be in the
+    invoice's currency. Paying a EUR invoice with a USD receipt is a
+    different problem from the rate moving: how many euros a given
+    dollar payment settles is a judgement nobody has made, and guessing
+    it silently writes off the difference. Refused rather than guessed.
+  - **Early-settlement discount**: terms like 2/10 net 30 are worth
+    nothing until something honours them. `Invoice.settlement_discount()`
+    and `discount_due_date()` read the terms, and
+    `apply_settlement_discount()` writes the difference off to the
+    company's `settlement_discount_account` (Dr discount / Cr
+    receivable) so the invoice settles clean instead of leaving a 2%
+    stub that ages forever. It refuses after the window unless forced,
+    and refuses twice.
+  - **Discount approval**: RBAC answers *who may confirm an order*; it
+    said nothing about how much they may give away while doing it, so a
+    rep with permission to confirm could discount 90% and sell below
+    cost with no check anywhere. `ApprovalPolicy` sets a maximum line
+    discount, a gross-margin floor and a maximum order value; every
+    threshold is optional, because a blank one that silently behaved
+    like zero would block every order the day this is switched on.
+    `approval_reasons()` returns all breaches at once — an approver
+    needs to see what they're signing, not discover the next problem
+    each time the last is fixed — and `confirm()` refuses while any are
+    outstanding. The margin floor catches what a discount percentage
+    misses: a thin-margin item at a small discount is still a sale at a
+    loss. Re-pricing an approved order **withdraws** the approval, since
+    an approval covers the order someone actually looked at.
+    The credit limit folded into this and lost its
+    `ignore_credit_limit=True` bypass, which was reachable by anyone who
+    could confirm an order at all — the very rep the limit exists to
+    check — and left no record of who decided. It is now one approval
+    reason among several, cleared by someone holding
+    `sales.approve_order`, which Sales Rep deliberately does not have.
+  - **Charges that aren't stock**: `ChargeType` covers freight,
+    handling, installation, a rush surcharge. A line carries *either* an
+    item or a charge, enforced by a check constraint, which means
+    charges reuse the discount, tax, posting and credit-note machinery
+    unchanged. The alternative — inventing an Item for shipping — routes
+    freight through inventory valuation and folds recharged shipping
+    into product margin, so gross margin quietly improves every time the
+    company posts a parcel; a charge names its own revenue account
+    instead. `order.add_charge()` brings the charge's default taxes
+    across, because billing freight untaxed where the jurisdiction taxes
+    it is the commonest way to get this wrong. A charge is never
+    shipped, so it's excluded from `delivery_status()` (it would
+    otherwise pin the order at PARTIAL forever), refused on a delivery
+    line, and billable immediately even under a delivery policy.
+  - **Down payments**: `SalesOrder.create_down_payment_invoice()` bills
+    the customer up front by amount or percent. The line credits
+    `Company.customer_deposit_account` — a *liability* — not revenue:
+    taking money doesn't earn it, and recognising revenue against goods
+    still in the warehouse overstates income and hides what the company
+    owes. It's also the only honest way to bill ahead on an order that
+    invoices on delivery. Posting the real invoice draws the deposit
+    down automatically (Dr deposits / Cr receivable) via
+    `DepositApplication`, because the day someone forgets to do it by
+    hand the customer is billed for money they already paid. The
+    drawdown doesn't require the deposit to have been *paid*: two open
+    receivables side by side still add up to what is owed, and blocking
+    the final invoice on a slow payer has no accounting justification.
+    Deposits are excluded from `revenue_report()` and commission (a
+    deposit is not a sale) and netted out of `committed_balance()`, so
+    taking money up front doesn't consume the customer's credit limit.
+  - **Bad debt**: dunning has to escalate to something. `write_off()`
+    charges an uncollectable receivable to `Company.bad_debt_account`
+    (Dr bad debt expense / Cr receivable) and records an
+    `InvoiceWriteOff` per occasion — partial write-offs are normal, and
+    each needs its own date, reason and entry. It is deliberately *not*
+    a credit note: a credit note reverses revenue, which says the sale
+    never happened, where a write-off says it happened and the money
+    never came. Both clear the receivable; only one is true, and they
+    land in different places on the P&L. `recover_write_off()` reverses
+    one when the customer pays after all, leaving the original visibly
+    reversed rather than quietly netted away. `settlement_status()`
+    reports WRITTEN_OFF rather than PAID, because a zero balance reached
+    by giving up is not the same fact. Writing off is a Controller
+    permission, not an AR Manager one — whoever can both invoice and
+    write off can make any receivable disappear.
+  - **Statements**: dunning chases one invoice; a customer with forty
+    open items wants one document that adds up.
+    `customer_statement()` lists every movement on the account with a
+    running balance, and the property the tests hold it to is that the
+    closing balance foots to `outstanding_balance()` under every
+    settlement path — payments, credit notes, write-offs, write-off
+    recoveries, settlement discounts and deposit drawdowns all appear,
+    because any one of them missing makes the statement disagree with
+    the ledger. It's **open-item, not balance-forward**: B2B customers
+    reconcile by matching invoices to remittances, and balance-forward
+    throws away the detail that makes that possible — `since` still
+    gives a period view with an opening balance. Deliberately derived
+    rather than a stored document, since a stored statement is a second
+    copy of the truth that goes stale the moment anything settles.
+    Mixed currencies are refused rather than summed, the same stance as
+    cross-currency settlement. `send_statements()` runs the batch and
+    reports unreachable customers instead of swallowing them.
+  - **Dunning**: `DunningLevel` defines the chase sequence by days
+    overdue; `run_dunning()` raises the reminders now due. An invoice
+    gets each level at most once and jumps straight to the level it has
+    reached, so a long-ignored debt doesn't also receive the early
+    reminders. A customer with no email address is reported, not
+    recorded — writing the notice anyway would mark the level as used
+    and silently exempt that debtor from every future chase.
+  - **Backorders**: a short shipment leaves a visible remainder.
+    `Delivery.create_backorder()` raises a draft delivery for what the
+    order still owes, linked by `backorder_of`, so the outstanding
+    quantity is a document someone can plan against rather than the gap
+    between two numbers.
+  - **Quotation revisions**: once a quote has gone to the customer it is
+    frozen — it records what they were told. `create_revision()`
+    supersedes it with an editable copy numbered `QT-2026-00001-R2`,
+    leaving both versions on record. A quote still in draft is edited
+    in place instead — revising it would burn a sequence number and put
+    a revision on record that no customer ever saw. A superseded quote
+    can't be accepted or revised again.
+  - **Commissions**: `SalesRep` pairs a `Party` holding the EMPLOYEE
+    role with a `CommissionPlan`. The plan's basis matters — paying on
+    what was *invoiced* rewards booking the sale, paying on what was
+    *collected* rewards it actually being paid for. The rep carries
+    from quote to order to invoice; `commission_report()` nets credit
+    notes off either basis.
+  - **Recurring invoicing**: `RecurringInvoice` issues the same invoice
+    on a schedule. `generate_due_invoices()` catches a late schedule up
+    one invoice per period rather than one lump, because each period
+    genuinely happened. Month-end schedules anchor to their start day,
+    so Jan 31 bills Feb 28 then Mar 31 rather than drifting backwards.
+  - **Reporting**: `revenue_report()` gives net/tax/gross grouped by
+    customer, item or month, reading documents rather than the ledger
+    because the ledger doesn't record which item a line was for. Credit
+    notes count negative.
+  Posting builds a balanced `JournalEntry` via Accounting (Dr Accounts
+  Receivable / Cr Revenue per line / Cr tax account per tax); Sales
+  never writes ledger rows directly. A posted invoice is immutable like
+  a `JournalEntry` — the only correction path is
+  `Invoice.create_credit_note()`. Credits can be **partial** — pass
+  `quantities={line: qty}` to give back three of ten units — and a
+  line tracks `quantity_credited()` / `quantity_creditable()` so the
+  same goods can't be refunded twice. A credit note posts the mirror
+  of the invoice (Cr Receivable / Dr Revenue / Dr tax) at the exchange
+  rate the invoice was billed at, never today's, so crediting an old
+  foreign-currency invoice can't book a spurious FX gain. A credit
+  that happens to cover every line in full is additionally linked as a
+  reversal of the original entry.
+  **Returns refund.** `Delivery.create_return()` reverses the stock and
+  the cost, then credits whatever was invoiced for those goods,
+  allocating the returned quantity oldest-invoice-first and raising one
+  credit note per affected invoice. Pass `credit_invoices=False` for a
+  replacement rather than a refund.
+
+- **`apps/purchasing`** — mirrors Sales for the payables side.
+  `PurchaseOrder`/`PurchaseOrderLine`, `Bill`/`BillLine`. Vendors are
+  `Party` records with the `VENDOR` role. Posting a bill builds a
+  balanced `JournalEntry` (Dr Expense or GRNI per line / Dr input tax /
+  Cr Accounts Payable). Corrections go through
+  `Bill.create_debit_note()`, same immutable-then-reverse pattern as
+  Sales' credit notes — deliberately not a third, different correction
+  mechanism.
+  - **Receiving**: `GoodsReceipt`/`GoodsReceiptLine` post real
+    `StockMovement` rows against a `PurchaseOrderLine`, enforce that
+    received quantity (net of returns) never exceeds ordered quantity,
+    and track partial receipts across deliveries. A bad receipt is
+    corrected with `GoodsReceipt.create_return()` — a whole-receipt
+    reversal, not an edit.
+  - **Order lifecycle**: orders confirm and cancel. Goods cannot be
+    received against an order that isn't confirmed, because receiving
+    books real stock and a GRNI liability for goods nobody agreed to
+    buy. Returns stay allowed against a cancelled order — calling the
+    order off is exactly when the goods go back.
+  - **Numbering**: `PO-`, `BILL-`, `DN-`, `GRN-` and `PRTN-` all draw
+    from `DocumentSequence`, behind the same partial unique constraint
+    Sales uses so drafts (all carrying an empty number) can coexist.
+    Before this every document identified itself by primary key, which
+    is not a document number: not sequential per year, leaks the size
+    of the table, and a vendor can't quote it back at you.
+  - **Tax on the way in**: bill and order lines carry taxes and
+    discounts through `TaxedLineMixin`, which now lives in
+    `apps/accounting` so both trading modules share one implementation.
+    Input tax is debited to the tax's `paid_account` — VAT paid to a
+    vendor is a *recoverable asset*, not a cost, and burying it in the
+    expense both overstates costs and loses the reclaim. Vendor fiscal
+    positions work, so a reverse-charge vendor carries no input tax.
+  - **Three-way match**: `BillLine.order_line` links a bill back to what
+    was ordered, so `quantity_billed()`/`quantity_billable()` draw down
+    exactly as Sales' invoicing does. `PurchaseOrder.bill_policy`
+    defaults to **RECEIVED** where Sales' equivalent defaults to
+    ORDERED — a deliberate asymmetry: billing a customer early is a
+    relationship risk a company may choose to take, but paying a vendor
+    early is its own money leaving for goods it doesn't have. Posting
+    checks quantity against the order, quantity against the receipt,
+    and price against the order within
+    `Company.purchase_price_tolerance_percent`. Billing *below* the
+    agreed price is always fine — a vendor charging less than they
+    quoted is not a control failure. `match_report()` lines all three
+    documents up per line.
+  - **Purchase price variance**: GRNI only self-clears if it's cleared
+    at what it *accrued*. A receipt accrues at the order price; clearing
+    at the billed price left any difference inside the tolerance sitting
+    on GRNI forever — which is how an account that should net to zero
+    quietly grows a balance nobody can explain. The bill clears the
+    accrual at the received cost and sends the difference to
+    `Company.purchase_price_variance_account`. Variance goes to the P&L
+    rather than revaluing stock: by the time the bill arrives the goods
+    may already be sold, and chasing the difference through a weighted
+    average that has moved on costs more than it's worth. A bill with no
+    receipt behind it expenses instead of touching GRNI — stock is
+    created by receiving it, never by being billed for it.
+  - **Duplicate vendor invoices**: a partial unique constraint on
+    (vendor, reference), with a readable check in front of it. Paying
+    the same invoice because it arrived by post and again by email is
+    the commonest way money leaves an AP department by accident.
+  - **Partial debit notes**: `create_debit_note(quantities={line: qty})`
+    gives back part of a bill, matching Sales' partial credit notes. A
+    line records the account it actually posted to, so the note returns
+    the money where it came from — recomputing would send it elsewhere,
+    since the original bill still counts as billed when the note posts.
+    A note covering every line in full is still linked as a reversal.
+    Debit notes take a bill to zero but never below: beyond that the
+    money has already gone out, so what's left is a `refund_due()` on
+    the note, and `vendor_balance()` reads negative when a vendor has
+    been overpaid.
+  - **Settlement discounts taken**: `take_settlement_discount()` claims
+    the vendor's early-payment terms (Dr payables / Cr discount
+    received). Inert for exactly as long as its Sales twin was — the
+    terms were modelled in the kernel, Sales learned to honour them, and
+    the purchase side didn't, so discounts the company was entitled to
+    went unclaimed every month.
+  - **Billed but not held**: returning goods you've been billed for is
+    legitimate — that's what you do with faulty stock — but it can't be
+    silent. The return isn't blocked (the goods physically went);
+    `billed_not_held()` reports the gap instead, and each row is a debit
+    note waiting to be raised.
+  - **Vendor prepayments**: `create_prepayment_bill()` records a
+    vendor's request for money up front. The line debits
+    `Company.vendor_prepayment_account` — an *asset* — because handing
+    money over doesn't consume it; until the goods arrive the vendor
+    owes either the goods or the money back. It's also the only honest
+    way to pay ahead on an order that bills on receipt. Posting the real
+    bill draws it down automatically (Dr payables / Cr prepayments), and
+    doesn't wait for the prepayment bill to have been paid: two open
+    payables side by side still sum to what's owed. A prepayment carries
+    no order line, so it stays out of the three-way match by
+    construction while remaining a real payable.
+  - **Charges from a vendor**: the same `ChargeType` the sales side
+    uses, read from the expense direction. Charges never arrive, so
+    they're excluded from `receipt_status()`, refused on a receipt line,
+    and exempt from the *receipt* leg of the three-way match — the
+    quantity and price legs still apply.
+  - **Partial returns, and returns that pay for themselves**:
+    `GoodsReceipt.create_return(quantities=...)` sends back part of a
+    receipt, with `quantity_returnable()` so the same goods can't go
+    back twice — the last correction path here that was still
+    all-or-nothing. It also raises the debit notes for what it sent
+    back, oldest-bill-first, mirroring how a customer return credits its
+    invoices. Before that, sending goods back reversed the stock and
+    left the company still owing the vendor for them.
+    `create_return(debit_bills=False)` is the replacement case, where
+    the vendor is sending new goods rather than money, and that is the
+    case `billed_not_held()` now exists for.
+  - **Landed cost billed separately**: freight, duty and the customs
+    broker arrive as three bills, weeks apart, from three parties who
+    never met, so the same-bill path covers the rare case.
+    `BillLine.allocate_landed_cost(receipt_lines)` spreads a capitalised
+    charge from *any* posted bill over goods received on others, by the
+    value of what was received — a defensible default, since weight and
+    volume would be better and the system holds neither. The charge
+    already expensed when its own bill posted, so this moves it: Dr
+    inventory / Cr that expense, plus the value-only `StockMovement`
+    that keeps `average_cost()` with it. `release()` takes it back out,
+    because a costing decision made weeks after the goods arrived is
+    exactly the kind that gets revised.
+  - **Landed cost**: a charge marked `capitalise_into_inventory` is part
+    of what the goods cost to get here, so it debits inventory rather
+    than an expense. Expensing it leaves gross margin reading better
+    than it is, permanently: the revenue carries the sale but the cost
+    of landing the stock sits elsewhere on the P&L. The allocation
+    splits by value across the bill's stocked lines, then across the
+    warehouses that actually received them — per-warehouse valuation is
+    a real number here, not a rollup. Crucially it is also written into
+    the stock ledger as a value-only `StockMovement`, so `average_cost()`
+    rises with the GL instead of drifting from it; otherwise the next
+    sale posts a COGS that disagrees with the inventory it relieved. A
+    capitalised charge with nothing on the bill to absorb it (a
+    freight-only bill) falls back to expense rather than being refused.
+  - **Vendor payments**: `BillPayment` allocates an
+    `accounting.Payment` disbursement to a bill, mirroring
+    `InvoicePayment`. `amount_due()`, `settlement_status()`,
+    `vendor_balance()` and `ap_aging()` follow. `payment_run()` is the
+    AP counterpart of dunning — what must go out and by when, grouped
+    per vendor *and currency*, since bills in different currencies
+    cannot be added together. Whoever raises a bill cannot also settle
+    it: Purchasing Clerk sees allocations, AP Manager makes them.
+
+- **`apps/hr`** — `Department`, `Employee` (backed by a `Party` with the
+  `EMPLOYEE` role, same reuse pattern as customers/vendors),
+  `LeaveRequest` with a pending → approved/rejected/cancelled workflow.
+  **Payroll is explicitly out of scope here** — it would need its own
+  ledger-posting design (like Sales/Purchasing got for AR/AP) rather
+  than being bolted onto employee records.
+
+## Module roadmap
+
+1. ~~Inventory~~ (done)
+2. ~~Accounting~~ (done) — chart of accounts + double-entry ledger
+3. ~~Sales / CRM~~ (done) — orders, invoicing, credit notes
+4. ~~Purchasing~~ (done) — orders, vendor bills, debit notes
+5. ~~HR~~ (done) — employees, departments, leave requests (no payroll yet)
+
+## Permissions
+
+Built on Django's own auth system (users, groups, permissions) rather
+than a bespoke framework. Two layers:
+
+- `DjangoModelPermissions` gates standard CRUD per model
+  (`add_invoice`, `change_bill`, ...). Anonymous requests are rejected
+  outright.
+- `ActionPermission` (`apps/core/permissions.py`) gates the actions
+  that actually commit something — posting to the ledger, posting to
+  stock, approving leave — behind separate custom permissions:
+  `accounting.post_journalentry`, `sales.post_invoice`,
+  `purchasing.post_bill`, `purchasing.post_goodsreceipt`,
+  `hr.decide_leaverequest`.
+
+**The point is segregation of duties**: being able to create a journal
+entry, invoice, or bill does not imply being able to post it. Run
+`python manage.py setup_roles` to create the default role groups
+(Bookkeeper vs Controller, Sales Rep vs AR Manager, Purchasing Clerk
+vs AP Manager, Warehouse Staff, HR Admin, Employee Self Service) —
+the "clerk" roles deliberately lack the matching `post_*` permission.
+The command is idempotent, so rerun it after changing the role map.
+
+Note that Django superusers bypass every check above by design. Keep
+that to as few accounts as possible.
+
+## Sales: still to do
+
+Nothing substantial. The flow runs quote → revision → order → ship →
+backorder → invoice → collect → chase → report, with correct stock,
+ledger, tax and commission consequences throughout.
+
+## Core: remaining work toward Odoo/ERPNext parity
+
+Core is being deepened module-first; this is what a mature ERP's kernel
+has that this one still doesn't.
+
+- **UoM categories as a model.** Odoo models categories with a reference
+  unit and rounding precision per unit; here `category` is still a
+  plain choice field. Changing it touches `Item`, so it's its own pass.
+- ~~Tax configuration~~ — **done**, built in `apps/accounting` rather
+  than Core (see above). Both Sales and Purchasing consume it.
+- **Chatter / activities / attachments** — the message thread,
+  follower list, scheduled activities and file attachments Odoo puts on
+  every record. `AuditModel` records who and when, but there's no
+  discussion or document trail.
+- **Multi-company** — deliberately single-company; see below.
+- ~~Number sequence coverage~~ — Sales and Purchasing both use
+  `DocumentSequence` now. Inventory's own documents (transfers,
+  adjustments) still carry hand-typed references.
+
+## Known gaps (not yet addressed)
+
+- **Permissions are model-level, not object-level.** A user with
+  `hr.decide_leaverequest` can approve *anyone's* leave, not just
+  their reports'; a user with `sales.post_invoice` can post *any*
+  invoice. Row-level rules ("only your own manager approves your
+  leave") need the User↔Employee link below.
+- **No User↔Employee link.** `LeaveRequest.approve/reject` take an
+  explicit `decided_by` employee id rather than inferring it from the
+  logged-in user, because there's no account-to-employee mapping yet.
+  This is the prerequisite for object-level permissions.
+- **Payroll** is not built. Employee compensation, pay runs, and the
+  resulting ledger postings are a separate design effort.
+- ~~Bill ↔ GoodsReceipt three-way match~~ — **done**, see Purchasing
+  above.
+- ~~Vendor prepayments~~ — **done**, see Purchasing.
+- ~~Landed cost~~ — **done**, see Purchasing.
+- ~~Settlement discounts are sales-only~~ — **done**, see Purchasing.
+
+## Local setup
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver
+```
+
+- Admin UI: `/admin/`
+- Core API: `/api/core/` (parties, contacts, addresses, bank-accounts,
+  countries, currencies, exchange-rates, units-of-measure, payment-terms,
+  company). Effective rate lookup:
+  `GET /api/core/currencies/{id}/rate/?on=YYYY-MM-DD`.
+- Inventory API: `/api/inventory/` (warehouses, items, stock-movements)
+- Accounting API: `/api/accounting/` (accounts, journal-entries,
+  journal-lines, taxes, tax-groups, fiscal-positions,
+  fiscal-position-tax-mappings, party-tax-profiles). Post an entry with
+  `POST /api/accounting/journal-entries/{id}/post_entry/`,
+  reverse a posted one with `POST /api/accounting/journal-entries/{id}/reverse/`.
+  Try a tax calculation without creating a document:
+  `POST /api/accounting/taxes/preview/` with
+  `{"amount": "100.00", "tax_ids": [1], "party_id": 5}` — the party's
+  fiscal position and exemption are applied.
+- Sales API: `/api/sales/` (sales-orders, invoices, invoice-lines,
+  deliveries, delivery-lines, quotations, price-lists, customer-profiles,
+  dunning-levels). Quote flow:
+  `POST /quotations/{id}/mark_sent/` then `/accept/` or `/decline/`.
+  Invoice documents: `GET /invoices/{id}/pdf/` and
+  `POST /invoices/{id}/send/`. Reports:
+  `GET /invoices/revenue/?group_by=customer|item|month` and
+  `GET /commission-plans/report/`. Chase overdue accounts with
+  `POST /dunning-levels/run/` (`{"send": false}` previews). Revise a
+  quote with `POST /quotations/{id}/revise/`, raise a backorder with
+  `POST /deliveries/{id}/backorder/`, and issue due subscriptions with
+  `POST /recurring-invoices/run/`. Ship with
+  `POST /api/sales/deliveries/{id}/post_delivery/`, take goods back with
+  `POST /api/sales/deliveries/{id}/customer_return/`.
+  Confirm an order with `POST /api/sales/sales-orders/{id}/confirm/`,
+  turn it into an invoice with
+  `POST /api/sales/sales-orders/{id}/create_invoice/`
+  (`{"receivable_account": 1}`). Post an invoice with
+  `POST /api/sales/invoices/{id}/post_invoice/`, correct a posted one
+  with `POST /api/sales/invoices/{id}/credit_note/`. Apply money via
+  `POST /api/sales/invoice-payments/`
+  (`{"invoice": 1, "payment": 1, "amount": "250.00"}`) and read
+  `GET /api/sales/invoices/aging/?as_of=YYYY-MM-DD`.
+  Payments themselves live at `/api/accounting/payments/`
+  (`post_payment/`, `void/`).
+- Purchasing API: `/api/purchasing/` (purchase-orders, bills, bill-lines,
+  goods-receipts, goods-receipt-lines). Post a bill with
+  `POST /api/purchasing/bills/{id}/post_bill/`, correct a posted one with
+  `POST /api/purchasing/bills/{id}/debit_note/`. Post a receipt with
+  `POST /api/purchasing/goods-receipts/{id}/post_receipt/`, correct one
+  with `POST /api/purchasing/goods-receipts/{id}/return_receipt/`.
+- HR API: `/api/hr/` (departments, employees, leave-requests). Decide a
+  leave request with `POST /api/hr/leave-requests/{id}/approve/` or
+  `/reject/` (body: `decided_by: <employee id>`), or `/cancel/`.
+
+## Tests
+
+```bash
+python manage.py test
+```
