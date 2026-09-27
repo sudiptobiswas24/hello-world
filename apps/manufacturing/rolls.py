@@ -106,9 +106,73 @@ class FabricRoll(AuditModel):
     )
     notes = models.CharField(max_length=255, blank=True)
 
+    # -- how it was weighed, where a loom exit station weighed it -------
+    station = models.ForeignKey(
+        "manufacturing.LoomStation", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="rolls",
+    )
+    weighed_by = models.ForeignKey(
+        "hr.Employee", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="rolls_weighed",
+        help_text="Who put it on the scale, from their own PIN. Every roll "
+                  "names a person, so a shared login is never the answer.",
+    )
+    weighed_at = models.DateTimeField(null=True, blank=True)
+    shift = models.ForeignKey(
+        "manufacturing.Shift", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+    )
+    shift_date = models.DateField(
+        null=True, blank=True,
+        help_text="The shift-day, not the calendar day: two in the morning is "
+                  "the night shift of the day before.",
+    )
+    core_type = models.ForeignKey(
+        "manufacturing.CoreType", null=True, blank=True,
+        on_delete=models.PROTECT, related_name="+",
+    )
+    weight_source = models.CharField(
+        max_length=8, blank=True,
+        choices=[("scale", "Scale"), ("manual", "Manual, supervisor-approved")],
+    )
+    approved_by = models.ForeignKey(
+        "hr.Employee", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="roll_overrides_approved",
+    )
+    override_reason = models.CharField(
+        max_length=16, blank=True,
+        choices=[
+            ("scale_offline", "Scale not connected"),
+            ("calibration", "Scale under calibration"),
+            ("does_not_fit", "Roll does not fit platform"),
+            ("other", "Other"),
+        ],
+    )
+    override_note = models.CharField(max_length=255, blank=True)
+    metres_from_weight = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="What the net weight supports at the specification's GSM, "
+                  "frozen when it was weighed.",
+    )
+    metres_variance_percent = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Declared metres against weight-derived, as a percentage.",
+    )
+    metres_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The limit the station held it to, frozen: a tolerance "
+                  "changed next month does not re-judge this roll.",
+    )
+    is_metres_exception = models.BooleanField(default=False, editable=False)
+
     class Meta:
         ordering = ["lot__item", "lot__code"]
         constraints = [
+            models.CheckConstraint(
+                check=~Q(weight_source="manual")
+                | (Q(approved_by__isnull=False) & ~Q(override_reason="")),
+                name="fabric_roll_manual_weight_is_approved",
+            ),
             models.CheckConstraint(
                 check=Q(width_mm__gt=0) & Q(length_m__gt=0)
                 & Q(net_weight_kg__gt=0),

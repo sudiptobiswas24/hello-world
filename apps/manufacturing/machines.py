@@ -100,6 +100,13 @@ class Machine(AuditModel):
                   "it out of the bank's capacity from now on and leaves "
                   "every run it ever made pointing at it.",
     )
+    contractor = models.ForeignKey(
+        "core.Party", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="operated_machines",
+        help_text="The in-premises contractor who runs this machine, where one "
+                  "does. Their declared output is checked against what the "
+                  "scale says it can have been.",
+    )
     notes = models.CharField(max_length=255, blank=True)
 
     class Meta:

@@ -14,8 +14,12 @@ forms and the admin, but nothing depends on it being called.
 """
 
 import datetime
+import hashlib
+import hmac
+import secrets
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
@@ -64,6 +68,12 @@ class Department(AuditModel):
         return f"{self.code} - {self.name}"
 
 
+def pin_digest(pin):
+    return hmac.new(
+        settings.SECRET_KEY.encode(), f"station-pin:{pin}".encode(), hashlib.sha256
+    ).hexdigest()
+
+
 class Employee(AuditModel):
     """
     An Employee is always backed by a core.Party with the EMPLOYEE role —
@@ -95,12 +105,59 @@ class Employee(AuditModel):
         max_length=32, blank=True,
         help_text="Which public holidays apply. Blank means the company-wide set only.",
     )
+    pin_digest = models.CharField(
+        max_length=64, null=True, blank=True, unique=True, editable=False,
+        help_text="A keyed digest of the person's shop-floor PIN, never the PIN. "
+                  "Unique, because a station knows who you are from the PIN alone.",
+    )
 
     class Meta:
         ordering = ["employee_number"]
 
     def __str__(self):
         return f"{self.employee_number} - {self.party.name}"
+
+    # -- the shop-floor PIN ------------------------------------------------
+
+    def issue_pin(self):
+        """
+        Give this person a new six-digit PIN and return it, once.
+
+        Issued rather than chosen. A PIN is the whole of a station
+        login, so no two people may share one — and a person choosing
+        theirs would learn, from the refusal, somebody else's.
+
+        Kept as a keyed digest (HMAC with the site's secret), not a slow
+        password hash: a station finds the person from the PIN alone,
+        which a salted hash cannot do without trying every employee.
+        That makes the digest only as private as SECRET_KEY; the station
+        lockout, not the digest, is what stops guessing.
+        """
+        for _ in range(50):
+            pin = f"{secrets.randbelow(10**6):06d}"
+            digest = pin_digest(pin)
+            if len(set(pin)) > 1 and not Employee.objects.filter(pin_digest=digest).exists():
+                self.pin_digest = digest
+                super().save(update_fields=["pin_digest", "updated_at"])
+                return pin
+        raise ValidationError("Could not find a free PIN; ask again.")
+
+    def revoke_pin(self):
+        self.pin_digest = None
+        super().save(update_fields=["pin_digest", "updated_at"])
+
+    @classmethod
+    def by_pin(cls, pin, on_date=None):
+        """The person this PIN belongs to, if they work here on `on_date`."""
+        pin = str(pin or "").strip()
+        person = cls.objects.select_related("party").filter(
+            pin_digest=pin_digest(pin)
+        ).first()
+        if person is None or person.employment_status != EmploymentStatus.ACTIVE:
+            return None
+        if not person.is_employed_on(on_date or timezone.now().date()):
+            return None
+        return person
 
     def is_employed_on(self, on_date):
         on_date = to_date(on_date)

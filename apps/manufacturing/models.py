@@ -66,6 +66,7 @@ from .costing import (  # noqa: F401
 )
 from .outside import OutsideMovement  # noqa: F401
 from .changeover import ChangeoverRule, SetupFamily  # noqa: F401
+from .station import CoreType, LoomStation, StationAttempt  # noqa: F401
 from .machines import (  # noqa: F401
     Machine,
     machines_in,
