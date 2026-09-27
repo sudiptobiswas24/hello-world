@@ -53,7 +53,7 @@ class RollTestCase(RunTestCase):
         return FabricSpecification.objects.create(
             code=code, fabric_item=fabric_item or self.fabric, warp_tape=tape,
             ends_per_inch=Decimal("10"), picks_per_inch=Decimal("10"),
-            lay_flat_width_cm=Decimal("60"), weave=Weave.TUBULAR,
+            lay_flat_width_cm=Decimal("60"), weave=Weave.TUBULAR, shrink_percent=Decimal("0"),
             target_gsm=Decimal(target),
             gsm_tolerance_percent=Decimal(tolerance),
             weaving_waste_percent=Decimal("2"),

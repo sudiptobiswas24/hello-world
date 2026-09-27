@@ -176,7 +176,7 @@ class SpecificationApiTests(WovenTestCase):
             "code": "F-BAD", "fabric_item": self.fabric_item.pk,
             "warp_tape": self.tape().pk, "ends_per_inch": "8",
             "picks_per_inch": "8", "lay_flat_width_cm": "60",
-            "weave": "tubular", "target_gsm": "87.5",
+            "weave": "tubular", "target_gsm": "87.5", "shrink_percent": "0",
             "gsm_tolerance_percent": "5",
         }, format="json")
         self.assertEqual(response.status_code, 400)

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .bom import BillOfMaterials, BomByproduct, BomComponent
@@ -58,7 +60,7 @@ class FabricSpecificationSerializer(serializers.ModelSerializer):
         model = FabricSpecification
         fields = [
             "id", "code", "name", "fabric_item", "warp_tape", "weft_tape",
-            "ends_per_inch", "picks_per_inch", "lay_flat_width_cm", "weave",
+            "ends_per_inch", "picks_per_inch", "lay_flat_width_cm", "shrink_percent", "weave",
             "target_gsm", "gsm_tolerance_percent", "weaving_waste_percent",
             "waste_recovered_percent", "loom_waste_item", "bom", "is_active",
             "gsm", "gsm_deviation_percent", "grams_per_metre", "metres_per_kg",
@@ -99,7 +101,7 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
             "gusset_cm", "closure", "bopp_film_item", "bopp_micron", "bopp_faces",
             "bopp_waste_percent", "valve_patch_item", "valve_patch_grams",
             "cover_patch_item", "cover_patch_grams", "liner_micron",
-            "liner_width_cm", "liner_length_cm", "weight_tolerance_percent",
+            "liner_width_cm", "liner_length_cm", "target_grams", "weight_tolerance_percent",
             "cut_length_cm", "fabric_area_sqm", "fabric_grams", "bag_grams",
             "fabric_metres_per_bag", "construction",
         ]
@@ -122,6 +124,38 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
 
     def get_fabric_metres_per_bag(self, obj):
         return round(obj.fabric_metres_per_bag(), 4)
+
+
+class BagSolveSerializer(serializers.ModelSerializer):
+    """
+    A sack described before any fabric exists for it: the construction,
+    the contracted weight and the loom's mesh, and nothing saved.
+    """
+
+    target_grams = serializers.DecimalField(max_digits=10, decimal_places=3,
+                                            min_value=Decimal("0.001"))
+    ends_per_inch = serializers.DecimalField(max_digits=6, decimal_places=2,
+                                             min_value=Decimal("0.01"))
+    picks_per_inch = serializers.DecimalField(max_digits=6, decimal_places=2,
+                                              min_value=Decimal("0.01"))
+    shrink_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2, min_value=Decimal("0"), max_value=Decimal("99.99"),
+        default=FabricSpecification._meta.get_field("shrink_percent").default,
+    )
+    warp_tape_denier = serializers.DecimalField(max_digits=8, decimal_places=2,
+                                                min_value=Decimal("0.01"), required=False)
+
+    class Meta:
+        model = BagSpecification
+        fields = [
+            "bag_width_cm", "bag_length_cm", "gusset_cm", "bottom_hem_cm", "top_hem_cm",
+            "is_laminated", "lamination_gsm", "bopp_micron", "bopp_faces",
+            "print_colours", "printed_faces", "ink_grams_per_sqm_per_colour",
+            "thread_grams_per_bag", "liner_grams_per_bag", "liner_micron",
+            "liner_width_cm", "liner_length_cm", "valve_patch_grams", "cover_patch_grams",
+            "weight_tolerance_percent", "target_grams", "ends_per_inch", "picks_per_inch",
+            "shrink_percent", "warp_tape_denier",
+        ]
 
 
 class BomSubstituteSerializer(serializers.ModelSerializer):

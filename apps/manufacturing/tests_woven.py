@@ -72,7 +72,7 @@ class WovenTestCase(TestCase):
         values = dict(
             code="F87", fabric_item=self.fabric_item, warp_tape=tape or self.tape(),
             ends_per_inch=Decimal("10"), picks_per_inch=Decimal("10"),
-            lay_flat_width_cm=Decimal("60"), weave=Weave.TUBULAR,
+            lay_flat_width_cm=Decimal("60"), weave=Weave.TUBULAR, shrink_percent=Decimal("0"),
             target_gsm=Decimal("87.5"), gsm_tolerance_percent=Decimal("5"),
             weaving_waste_percent=Decimal("2"),
             waste_recovered_percent=Decimal("85"),

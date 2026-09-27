@@ -86,6 +86,9 @@ INCHES_PER_METRE = Decimal("39.3701")
 ONE_HUNDRED = Decimal("100")
 GRAMMES_PER_KG = Decimal("1000")
 CM_PER_M = Decimal("100")
+# A sack is cut from a woven tube, which laid flat is two thicknesses.
+# BagSpecification.save refuses flat fabric, so this is always true there.
+TUBE_LAYERS = Decimal("2")
 
 # The batch each generated BOM is written for. A thousand sacks makes
 # grammes per bag and kilos per batch the same number; a hundred kilos
@@ -658,6 +661,24 @@ class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         super().save(*args, **kwargs)
         self.rebuild_bom()
         self.rebuild_inspection_plan()
+        self.resave_dependents()
+
+    def resave_dependents(self):
+        """
+        Every fabric woven from this tape, saved again against it.
+
+        A fabric's weight is its tape's denier on a mesh, and its bill,
+        its tolerance check and the sacks cut from it were all worked
+        out from the denier as it was. Changing the tape and leaving
+        them is a stored copy of a derived fact. A fabric the new
+        denier puts outside its quotation refuses, and the tape change
+        rolls back with it.
+        """
+        fabrics = FabricSpecification.objects.filter(
+            Q(warp_tape=self) | Q(weft_tape=self)
+        ).distinct()
+        for fabric in fabrics:
+            fabric.save()
 
 
 class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
@@ -703,6 +724,13 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         max_digits=8, decimal_places=2,
         help_text="The width of the tube laid flat, which is the width of the "
                   "sack it will become.",
+    )
+    shrink_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("4"),
+        help_text="How much finer the tape line runs than the fabric weighs. "
+                  "The tape card carries the fabric's denier less this; the "
+                  "tape specification is the line's denier, so the fabric "
+                  "weighs the tapes laid straight divided by (1 - shrink).",
     )
     weave = models.CharField(
         max_length=8, choices=Weave.choices, default=Weave.TUBULAR
@@ -779,6 +807,10 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 & Q(weaving_waste_percent__lt=100),
                 name="fabric_waste_under_one_hundred",
             ),
+            models.CheckConstraint(
+                check=Q(shrink_percent__gte=0) & Q(shrink_percent__lt=100),
+                name="fabric_shrink_under_one_hundred",
+            ),
         ]
 
     def __str__(self):
@@ -790,16 +822,20 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         """The weft tape, which is the warp tape unless it was named."""
         return self.weft_tape or self.warp_tape
 
+    def fabric_denier(self, tape):
+        """The tape's denier as it lies in the fabric, shrink taken back out."""
+        return tape.denier / (Decimal("1") - _percent(self.shrink_percent))
+
     def warp_grams_per_sqm(self):
         return (
             self.ends_per_inch * INCHES_PER_METRE
-            * self.warp_tape.denier / DENIER_LENGTH_M
+            * self.fabric_denier(self.warp_tape) / DENIER_LENGTH_M
         )
 
     def weft_grams_per_sqm(self):
         return (
             self.picks_per_inch * INCHES_PER_METRE
-            * self.weft().denier / DENIER_LENGTH_M
+            * self.fabric_denier(self.weft()) / DENIER_LENGTH_M
         )
 
     def gsm(self):
@@ -905,8 +941,8 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         if deviation > self.gsm_tolerance_percent:
             raise ValidationError(
                 f"{self.code}: a {self.ends_per_inch} x {self.picks_per_inch} mesh "
-                f"of {self.warp_tape.denier} denier tape makes {self.gsm():.1f} "
-                f"GSM, which is {deviation:.1f}% from the {self.target_gsm} GSM "
+                f"of {self.warp_tape.denier} denier tape at {self.shrink_percent}% "
+                f"shrink makes {self.gsm():.1f} GSM, which is {deviation:.1f}% from the {self.target_gsm} GSM "
                 f"quoted and outside the {self.gsm_tolerance_percent}% tolerance. "
                 "Change the mesh, the denier or the quotation — the loom will not "
                 "split the difference."
@@ -914,6 +950,11 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         super().save(*args, **kwargs)
         self.rebuild_bom()
         self.rebuild_inspection_plan()
+        # The sacks cut from this fabric were weighed against it as it
+        # was. Each is saved again, and one that no longer meets its
+        # contracted weight refuses the change to the fabric.
+        for bag in self.bags.all():
+            bag.save()
 
 
 class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
@@ -1081,10 +1122,17 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                   "made — so the specification carries it in like everything "
                   "else.",
     )
+    target_grams = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True,
+        help_text="The weight the customer contracted for. When given, the "
+                  "sack this specification computes must fall within the "
+                  "tolerance of it, and the weight check inspects against it.",
+    )
     weight_tolerance_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("5"),
-        help_text="How far a finished sack may be from its computed weight. "
-                  "The number a customer's own goods-in scale argues about.",
+        help_text="How far a finished sack may be from its contracted weight, "
+                  "or its computed one when none was contracted. The number a "
+                  "customer's own goods-in scale argues about.",
     )
     inspection_plan = models.OneToOneField(
         "quality.InspectionPlan", null=True, blank=True,
@@ -1147,6 +1195,14 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             models.CheckConstraint(
                 check=Q(bopp_faces__in=[1, 2]), name="bag_bopp_faces_known",
             ),
+            models.CheckConstraint(
+                check=Q(target_grams__isnull=True) | Q(target_grams__gt=0),
+                name="bag_target_weight_positive",
+            ),
+            models.CheckConstraint(
+                check=Q(weight_tolerance_percent__gte=0),
+                name="bag_weight_tolerance_not_negative",
+            ),
         ]
 
     def __str__(self):
@@ -1170,7 +1226,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         inside that width, so they change the face and not the fabric.
         """
         return (
-            self.fabric.layers()
+            TUBE_LAYERS
             * (self.bag_width_cm / CM_PER_M)
             * (self.cut_length_cm() / CM_PER_M)
         )
@@ -1200,7 +1256,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         0.91: a micron over a square metre is a cubic centimetre, and
         BOPP weighs 0.91 g of it, as LDPE weighs 0.92.
         """
-        if self.bopp_film_item_id is None:
+        if not self.bopp_micron:
             return Decimal("0")
         share = Decimal(self.bopp_faces) / 2
         return self.fabric_area_sqm() * share * self.bopp_micron * BOPP_GRAMS_PER_MICRON
@@ -1249,11 +1305,33 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         The number a customer checks on a weighbridge and the number a
         costing is built on, and they had better be the same one.
         """
+        return self.fabric_grams() + self.addon_grams()
+
+    def addon_grams(self):
+        """Everything in the sack that is not the woven fabric."""
         return (
-            self.fabric_grams() + self.lamination_grams() + self.bopp_grams()
-            + self.ink_grams() + self.thread_grams_per_bag + self.liner_grams()
+            self.lamination_grams() + self.bopp_grams() + self.ink_grams()
+            + self.thread_grams_per_bag + self.liner_grams()
             + self.valve_patch_grams + self.cover_patch_grams
         )
+
+    def fabric_gsm_for(self, target_grams):
+        """
+        The fabric a sack of this construction needs to weigh `target_grams`.
+
+        Linear, because every add-on is fixed by the construction and the
+        fabric is the only weight left to choose: what the customer
+        contracted, less the add-ons, over the fabric in the sack.
+        """
+        target = Decimal(target_grams)
+        addons = self.addon_grams()
+        if addons >= target:
+            raise ValidationError(
+                f"The sack without its fabric already weighs {addons:.2f} g, "
+                f"so no fabric makes it {target} g. Raise the weight or take "
+                "something off."
+            )
+        return (target - addons) / self.fabric_area_sqm()
 
     def fabric_metres_per_bag(self):
         """What the cutting table sets the machine to."""
@@ -1320,8 +1398,16 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             ))
         return rows
 
+    def weight_deviation_percent(self):
+        """How far the computed sack is from the contracted one, if any."""
+        if self.target_grams is None:
+            return None
+        return (self.bag_grams() - self.target_grams) / self.target_grams * ONE_HUNDRED
+
     def inspection_lines(self):
-        weight = self.bag_grams()
+        # Against the contract where there is one: that is the number
+        # the goods are sold on and the customer's scale checks.
+        weight = self.target_grams if self.target_grams is not None else self.bag_grams()
         margin = weight * _percent(self.weight_tolerance_percent)
         return [(
             "BAGWT", "Finished bag weight", ("g-bag", "Grammes a bag"),
@@ -1390,9 +1476,46 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{self.code}: the sack is printed in {self.print_colours} "
                 "colour(s) and the specification does not say what with."
             )
+        deviation = self.weight_deviation_percent()
+        if deviation is not None and abs(deviation) > self.weight_tolerance_percent:
+            raise ValidationError(
+                f"{self.code}: the sack as specified weighs "
+                f"{self.bag_grams():.2f} g, which is {abs(deviation):.1f}% from "
+                f"the {self.target_grams} g contracted and outside the "
+                f"{self.weight_tolerance_percent}% tolerance. The fabric, the "
+                "add-ons or the contract has to change."
+            )
         super().save(*args, **kwargs)
         self.rebuild_bom()
         self.rebuild_inspection_plan()
+
+    def _check_shape(self):
+        """
+        What the sack's own figures rule out, before any material is
+        named — so an enquiry that has no items yet is held to it too.
+        """
+        lead = f"{self.code}: " if self.code else ""
+        if 2 * self.gusset_cm >= self.bag_width_cm:
+            raise ValidationError(
+                f"{lead}{self.gusset_cm} cm gussets fold in from both sides of "
+                f"a {self.bag_width_cm} cm sack and leave no face."
+            )
+        if self.bopp_micron and not self.is_laminated:
+            raise ValidationError(
+                f"{lead}BOPP film is bonded by the extruded coating. Set the "
+                "lamination it is laminated with."
+            )
+        if self.liner_micron:
+            if self.liner_grams_per_bag:
+                raise ValidationError(
+                    f"{lead}the liner is typed at {self.liner_grams_per_bag} g "
+                    "and computed from its film too. Give one or the other."
+                )
+            if not (self.liner_width_cm and self.liner_length_cm):
+                raise ValidationError(
+                    f"{lead}a liner computed from its film needs its width and "
+                    "length."
+                )
 
     def _check_construction(self):
         """
@@ -1401,20 +1524,11 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         it, thread in a sack that has none, a weight nobody buys.
         """
         code = self.code
-        if 2 * self.gusset_cm >= self.bag_width_cm:
-            raise ValidationError(
-                f"{code}: {self.gusset_cm} cm gussets fold in from both sides of "
-                f"a {self.bag_width_cm} cm sack and leave no face."
-            )
+        self._check_shape()
         if (self.bopp_film_item_id is None) != (not self.bopp_micron):
             raise ValidationError(
                 f"{code}: BOPP film needs both the film and its thickness; one "
                 "without the other is film nobody can weigh."
-            )
-        if self.bopp_film_item_id and not self.is_laminated:
-            raise ValidationError(
-                f"{code}: BOPP film is bonded by the extruded coating. Set the "
-                "lamination it is laminated with."
             )
         if self.closure == "welded":
             if not self.is_laminated:
@@ -1435,19 +1549,39 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 raise ValidationError(
                     f"{code}: the {label} need both an item and a weight."
                 )
-        if self.liner_micron:
-            if self.liner_grams_per_bag:
-                raise ValidationError(
-                    f"{code}: the liner is typed at {self.liner_grams_per_bag} g "
-                    "and computed from its film too. Give one or the other."
-                )
-            if not (self.liner_width_cm and self.liner_length_cm):
-                raise ValidationError(
-                    f"{code}: a liner computed from its film needs its width and "
-                    "length."
-                )
         if (self.liner_micron or self.liner_grams_per_bag) and self.liner_item_id is None:
             raise ValidationError(
                 f"{code}: the sack has a liner and the specification does not say "
                 "what it is, so it would weigh in every sack and cost in none."
             )
+
+
+def denier_for(gsm, ends_per_inch, picks_per_inch, shrink_percent, warp_tape_denier=None):
+    """
+    The deniers that weave `gsm` at a mesh: in the fabric, and on the
+    tape line, which runs finer by the shrink.
+
+    With no warp given, warp and weft are the same tape. With one given
+    (as the tape line runs it), the weft is whatever makes up the rest.
+    """
+    gsm, ends, picks = Decimal(gsm), Decimal(ends_per_inch), Decimal(picks_per_inch)
+    if ends <= 0 or picks <= 0:
+        raise ValidationError("A mesh needs tapes both ways: ends and picks per inch.")
+    keep = Decimal("1") - _percent(Decimal(shrink_percent))
+    if not 0 < keep <= 1:
+        raise ValidationError("Shrink is a percentage from 0 up to, not including, 100.")
+    per_denier = INCHES_PER_METRE / DENIER_LENGTH_M
+    if warp_tape_denier is None:
+        warp = weft = gsm / ((ends + picks) * per_denier)
+    else:
+        warp = Decimal(warp_tape_denier) / keep
+        weft = (gsm / per_denier - ends * warp) / picks
+        if weft <= 0:
+            raise ValidationError(
+                f"A {warp_tape_denier} denier warp at {ends} ends already weighs "
+                f"{gsm:.1f} GSM or more; there is nothing left for the weft."
+            )
+    return {
+        "warp_fabric_denier": warp, "weft_fabric_denier": weft,
+        "warp_tape_denier": warp * keep, "weft_tape_denier": weft * keep,
+    }

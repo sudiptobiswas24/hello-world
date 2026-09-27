@@ -1,6 +1,8 @@
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -57,6 +59,7 @@ from .serializers import (
     PrintDesignSerializer,
     ToolSerializer,
     ToolUsageSerializer,
+    BagSolveSerializer,
     BagSpecificationSerializer,
     BillOfMaterialsSerializer,
     BomByproductSerializer,
@@ -79,7 +82,7 @@ from .serializers import (
     WorkCentreSerializer,
     WorkOrderSerializer,
 )
-from .woven import BagSpecification, FabricSpecification, TapeSpecification
+from .woven import BagSpecification, FabricSpecification, TapeSpecification, denier_for
 
 
 def _run(callable_, *args, **kwargs):
@@ -167,6 +170,62 @@ class FabricSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BagSpecification.objects.select_related("bag_item", "fabric", "bom")
     serializer_class = BagSpecificationSerializer
+    # Solving writes nothing, so it asks only to see specifications:
+    # whoever quotes a sack need not be allowed to create one.
+    action_permission_map = {"solve": "manufacturing.view_bagspecification"}
+
+    @action(detail=False, methods=["post"],
+            permission_classes=[IsAuthenticated, ActionPermission])
+    def solve(self, request):
+        """
+        From a contracted weight to the fabric that makes it: the GSM,
+        the deniers in the fabric and on the tape line, and every fabric
+        already specified at that width that would land the sack inside
+        its tolerance, nearest first.
+        """
+        serializer = BagSolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = dict(serializer.validated_data)
+        target = data.pop("target_grams")
+        mesh = (data.pop("ends_per_inch"), data.pop("picks_per_inch"))
+        shrink = data.pop("shrink_percent")
+        warp = data.pop("warp_tape_denier", None)
+        sack = BagSpecification(**data)
+        try:
+            sack._check_shape()
+            gsm = sack.fabric_gsm_for(target)
+            deniers = denier_for(gsm, *mesh, shrink, warp)
+        except DjangoValidationError as error:
+            raise DRFValidationError(error.messages)
+        area, addons = sack.fabric_area_sqm(), sack.addon_grams()
+        tolerance = sack.weight_tolerance_percent
+        matches = []
+        # A fabric whose specification has already ended cannot be made
+        # to; one staged for later can, and a quote is usually for later.
+        current = Q(valid_to__isnull=True) | Q(valid_to__gte=timezone.localdate())
+        for fabric in FabricSpecification.objects.filter(
+            current, is_active=True, weave="tubular", lay_flat_width_cm=sack.bag_width_cm,
+        ).select_related("warp_tape", "weft_tape"):
+            weight = addons + area * fabric.gsm()
+            deviation = (weight - target) / target * 100
+            if abs(deviation) <= tolerance:
+                matches.append((abs(deviation), fabric.code, {
+                    "fabric": fabric.pk, "code": fabric.code,
+                    "gsm": str(round(fabric.gsm(), 3)),
+                    "bag_grams": str(round(weight, 3)),
+                    # round() keeps the sign of a deviation too small to
+                    # show, and "-0.00" reads as under weight when it is not.
+                    "deviation_percent": str(round(deviation, 2) + 0),
+                }))
+        return Response({
+            "target_grams": str(target),
+            "addon_grams": str(round(addons, 3)),
+            "fabric_area_sqm": str(round(area, 6)),
+            "fabric_gsm": str(round(gsm, 3)),
+            **{key: str(round(value, 1)) for key, value in deniers.items()},
+            "shrink_percent": str(shrink),
+            "fabrics": [row for _, _, row in sorted(matches, key=lambda m: m[:2])],
+        })
 
 
 class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
