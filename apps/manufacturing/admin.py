@@ -35,6 +35,7 @@ from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
 from .bom import BomSubstitute
 from .orders import WorkOrderSubstitute
+from .changeover import ChangeoverRule, SetupFamily
 from .machines import Machine
 from .costing import CostVersion, StandardCost
 from .maintenance import MaintenanceJob, MaintenanceSchedule
@@ -455,6 +456,27 @@ class RoutingAdmin(AuditableAdminMixin, admin.ModelAdmin):
             f"{row.name} ({'outside' if row.is_outside else row.work_centre.code})"
             for row in obj.operations.all()
         ) or "—"
+
+
+@admin.register(SetupFamily)
+class SetupFamilyAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("item", "work_centre", "family")
+    list_filter = ("work_centre", "family")
+    search_fields = ("item__sku", "family")
+
+
+@admin.register(ChangeoverRule)
+class ChangeoverRuleAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    @admin.display(description="From")
+    def shown_from(self, obj):
+        return obj.from_family or "any"
+
+    @admin.display(description="To")
+    def shown_to(self, obj):
+        return obj.to_family or "any"
+
+    list_display = ("work_centre", "shown_from", "shown_to", "minutes")
+    list_filter = ("work_centre",)
 
 
 class MachineInline(admin.TabularInline):

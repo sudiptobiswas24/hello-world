@@ -28,6 +28,8 @@ from .orders import (
     WorkOrder,
 )
 from .demand import coverage, genealogy, uncovered
+from .changeover import ChangeoverRule, SetupFamily
+from .changeover import sequence as changeover_sequence
 from .machines import Machine
 from .oee import by_machine as oee_by_machine
 from .oee import by_operator, by_shift, effectiveness
@@ -39,7 +41,9 @@ from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from .serializers import (
+    ChangeoverRuleSerializer,
     MachineSerializer,
+    SetupFamilySerializer,
     BomSubstituteSerializer,
     CostVersionSerializer,
     StandardCostSerializer,
@@ -472,6 +476,20 @@ class RoutingOperationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = RoutingOperationSerializer
 
 
+class SetupFamilyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Which family an item belongs to on a machine."""
+
+    queryset = SetupFamily.objects.select_related("item", "work_centre").all()
+    serializer_class = SetupFamilySerializer
+
+
+class ChangeoverRuleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Minutes to change a machine from one family to another."""
+
+    queryset = ChangeoverRule.objects.select_related("work_centre").all()
+    serializer_class = ChangeoverRuleSerializer
+
+
 class MachineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """Named machines: which loom, which extruder, which press."""
 
@@ -511,6 +529,49 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             _effectiveness_payload(row)
             for row in _run(by_shift, centre, start, end)
         ])
+
+    @action(detail=True, methods=["get"])
+    def sequence(self, request, pk=None):
+        """
+        The queue on this machine as planned, and the order that changes
+        over least — a proposal, with the runs it would make later named.
+        Pass `machine` (a machine code) to ask about one loom or press.
+        """
+        centre = self.get_object()
+        machine = None
+        code = request.query_params.get("machine")
+        if code:
+            machine = Machine.objects.filter(code=code).first()
+            if machine is None:
+                raise DRFValidationError([f"No machine with code {code}."])
+        result = _run(changeover_sequence, centre, machine)
+
+        def rows(sequence):
+            return [
+                {
+                    "work_order": row["operation"].work_order.number,
+                    "item": row["item"].sku,
+                    "family": row["family"],
+                    "changeover_minutes": row["changeover_minutes"],
+                }
+                for row in sequence
+            ]
+
+        current = result["on_the_machine"]
+        return Response({
+            "work_centre": centre.code,
+            "machine": machine.code if machine else None,
+            "on_the_machine": current.sku if current else None,
+            "planned": rows(result["planned"]),
+            "planned_minutes": result["planned_minutes"],
+            "proposed": rows(result["proposed"]),
+            "proposed_minutes": result["proposed_minutes"],
+            "saved_minutes": result["saved_minutes"],
+            "moved_later": [
+                op.work_order.number for op in result["moved_later"]
+            ],
+            "note": result["note"],
+        })
 
     @action(detail=True, methods=["get"], url_path="by-machine")
     def by_machine(self, request, pk=None):

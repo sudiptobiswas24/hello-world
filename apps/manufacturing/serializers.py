@@ -14,6 +14,7 @@ from .orders import (
 )
 from .bom import BomSubstitute
 from .costing import CostVersion, StandardCost
+from .changeover import ChangeoverRule, SetupFamily
 from .machines import Machine
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
@@ -294,6 +295,19 @@ class RoutingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Routing
         fields = ["id", "code", "name", "description", "is_active", "operations"]
+
+
+class SetupFamilySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SetupFamily
+        fields = ["id", "item", "work_centre", "family"]
+
+
+class ChangeoverRuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChangeoverRule
+        fields = ["id", "work_centre", "from_family", "to_family", "minutes",
+                  "notes"]
 
 
 class MachineSerializer(serializers.ModelSerializer):

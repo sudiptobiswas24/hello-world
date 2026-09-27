@@ -27,7 +27,9 @@ from .views import (
     ShiftViewSet,
     TapeSpecificationViewSet,
     TimeBookingViewSet,
+    ChangeoverRuleViewSet,
     MachineViewSet,
+    SetupFamilyViewSet,
     WorkCentreViewSet,
     WorkOrderViewSet,
 )
@@ -49,6 +51,8 @@ router.register("tool-usage", ToolUsageViewSet)
 router.register("routings", RoutingViewSet)
 router.register("routing-operations", RoutingOperationViewSet)
 router.register("machines", MachineViewSet)
+router.register("setup-families", SetupFamilyViewSet)
+router.register("changeover-rules", ChangeoverRuleViewSet)
 router.register("work-centres", WorkCentreViewSet)
 router.register("maintenance-schedules", MaintenanceScheduleViewSet)
 router.register("maintenance-jobs", MaintenanceJobViewSet)
