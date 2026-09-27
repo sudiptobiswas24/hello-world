@@ -160,6 +160,12 @@ class OutsideMovement(AuditModel):
                     "returned that never came."
                 )
         else:
+            from .jobwork import check_back_was_sent
+
+            # Once the step goes out on challans, nothing comes back that
+            # was not sent. Here rather than in the goods receipt, so every
+            # way of booking a vendor's work meets it.
+            check_back_was_sent(operation, self.quantity)
             # Against what the run was planned to start, with the same
             # allowance its output has: the vendor processes the spoiled
             # units too, and cannot have processed more than the run

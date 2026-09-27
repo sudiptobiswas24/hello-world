@@ -1,3 +1,5 @@
+import datetime
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import BasePermission, IsAuthenticated
@@ -46,3 +48,22 @@ class Gstr1JsonView(ReturnView):
 
 class Gstr3bView(ReturnView):
     compile = staticmethod(gstr3b)
+
+
+class Itc04View(APIView):
+    """GET ?start=YYYY-MM-DD&end=YYYY-MM-DD: the half-year or year asked for."""
+
+    permission_classes = [IsAuthenticated, CanCompileReturns]
+
+    def get(self, request):
+        from .itc04 import itc04
+
+        try:
+            start = datetime.date.fromisoformat(request.query_params.get("start", ""))
+            end = datetime.date.fromisoformat(request.query_params.get("end", ""))
+        except ValueError:
+            raise DRFValidationError(["Give start and end as YYYY-MM-DD."])
+        try:
+            return Response(itc04(start, end))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)

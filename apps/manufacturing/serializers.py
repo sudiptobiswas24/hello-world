@@ -15,6 +15,7 @@ from .orders import (
 from .bom import BomSubstitute
 from .costing import CostVersion, StandardCost
 from .changeover import ChangeoverRule, SetupFamily
+from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss
 from .machines import Machine
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
@@ -525,3 +526,28 @@ class DowntimeSerializer(serializers.ModelSerializer):
 
     def get_hours(self, obj):
         return round(obj.hours(), 3)
+
+
+class JobWorkLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobWorkLine
+        fields = ["id", "challan", "operation", "description", "hsn_code", "quantity",
+                  "value", "tax_rate", "is_capital_goods"]
+
+
+class JobWorkChallanSerializer(serializers.ModelSerializer):
+    lines = JobWorkLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = JobWorkChallan
+        fields = ["id", "number", "job_worker", "challan_date", "vehicle", "notes",
+                  "job_worker_gstin", "job_worker_state", "posted", "posted_at",
+                  "voided_at", "lines"]
+        read_only_fields = ["number", "job_worker_gstin", "job_worker_state", "posted",
+                            "posted_at", "voided_at"]
+
+
+class JobWorkLossSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = JobWorkLoss
+        fields = ["id", "line", "loss_date", "quantity", "note"]

@@ -31,6 +31,7 @@ from .demand import coverage, genealogy, uncovered
 from .trace import recall
 from .changeover import ChangeoverRule, SetupFamily
 from .changeover import sequence as changeover_sequence
+from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss
 from .machines import Machine
 from .oee import by_machine as oee_by_machine
 from .oee import by_operator, by_shift, effectiveness
@@ -59,6 +60,9 @@ from .serializers import (
     BomByproductSerializer,
     BomComponentSerializer,
     FabricSpecificationSerializer,
+    JobWorkChallanSerializer,
+    JobWorkLineSerializer,
+    JobWorkLossSerializer,
     MaterialIssueLineSerializer,
     MaterialIssueSerializer,
     ProductionByproductSerializer,
@@ -947,3 +951,96 @@ class LotTraceViewSet(viewsets.ViewSet):
             ],
             "not_followed": [_lot_row(lot) for lot in report["not_followed"]],
         })
+
+
+
+class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    Challans for goods going out to a job worker. Drafted and edited
+    freely; issued with `post`, withdrawn with `void`, never edited once
+    issued.
+    """
+
+    queryset = JobWorkChallan.objects.select_related("job_worker").prefetch_related("lines")
+    serializer_class = JobWorkChallanSerializer
+    action_permission_map = {
+        "post": "manufacturing.change_jobworkchallan",
+        "void": "manufacturing.change_jobworkchallan",
+    }
+
+    def perform_create(self, serializer):
+        _run(serializer.save)
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        if instance.posted:
+            raise DRFValidationError([f"{instance} is issued. Void it instead."])
+        instance.delete()
+
+    @action(detail=True, methods=["post"])
+    def post(self, request, pk=None):
+        challan = self.get_object()
+        _run(challan.post)
+        return Response(self.get_serializer(challan).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        challan = self.get_object()
+        _run(challan.void)
+        return Response(self.get_serializer(challan).data)
+
+    @action(detail=False, methods=["get"], url_path="still-out")
+    def still_out(self, request):
+        """What is out, when it must be back, and whether that day has passed."""
+        from .jobwork import still_out
+
+        given = request.query_params.get("as_of")
+        try:
+            as_of = parse_date(given) if given else None
+        except ValueError:
+            as_of = None
+        # parse_date answers None for a string that is no date at all;
+        # read as "today", a typo would quietly report the wrong day.
+        if given and as_of is None:
+            raise DRFValidationError(["as_of must be a date."])
+        rows = still_out(as_of=as_of)
+        return Response([
+            {
+                "challan": row["challan"].number, "challan_date": row["challan"].challan_date,
+                "job_worker": row["challan"].job_worker.name,
+                "description": row["line"].description,
+                "outstanding": str(row["outstanding"]),
+                "due_back_by": row["due_back_by"], "overdue": row["overdue"],
+                "due_soon": row["due_soon"],
+            }
+            for row in rows
+        ])
+
+
+class JobWorkLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = JobWorkLine.objects.select_related("challan", "operation")
+    serializer_class = JobWorkLineSerializer
+
+    def perform_create(self, serializer):
+        _run(serializer.save)
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        if instance.challan.posted:
+            raise DRFValidationError([f"{instance.challan} is issued; its lines are fixed."])
+        instance.delete()
+
+
+class JobWorkLossViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Losses at a job worker: recorded, never edited or deleted."""
+
+    queryset = JobWorkLoss.objects.select_related("line")
+    serializer_class = JobWorkLossSerializer
+    http_method_names = ["get", "post", "head", "options"]
+
+    def perform_create(self, serializer):
+        _run(serializer.save)

@@ -1,0 +1,336 @@
+"""
+Goods out to a job worker on a challan.
+
+The outside fixture's run is 1,000 kg of tape going out to be coated.
+Two challans send it: 600 kg on the first, 400 kg on the second.
+"""
+
+import datetime
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
+
+from apps.accounting.models import PartyTaxProfile
+from apps.core.models import Party
+
+from .jobwork import (
+    JobWorkChallan,
+    JobWorkLine,
+    JobWorkLoss,
+    allocation,
+    check_back_was_sent,
+    still_out,
+)
+from .tests_orders import TODAY
+from .tests_outside import OutsideTestCase
+
+DAY = datetime.timedelta(days=1)
+
+
+class JobWorkTestCase(OutsideTestCase):
+    def setUp(self):
+        super().setUp()
+        self.laminator = Party.objects.create(code="LAM", name="Laminator")
+        PartyTaxProfile.objects.create(party=self.laminator, gstin="29AABCE5678F1ZD")
+        self.lamination = self.released()
+        self.coat = self.lamination.operations.get(is_outside=True)
+
+    def challan(self, quantity, day=TODAY, post=True, capital=False, operation=None):
+        challan = JobWorkChallan.objects.create(job_worker=self.laminator, challan_date=day)
+        JobWorkLine.objects.create(
+            challan=challan, operation=operation or self.coat,
+            description="Woven fabric for coating", hsn_code="63053300",
+            quantity=Decimal(quantity), value=Decimal(quantity) * 95,
+            tax_rate=Decimal("5"), is_capital_goods=capital,
+        )
+        if post:
+            challan.post()
+        return challan
+
+    def state(self, challan):
+        return allocation(self.coat)[challan.lines.get().pk]
+
+
+class IssuingAChallanTests(JobWorkTestCase):
+    def test_it_is_numbered_and_freezes_the_job_workers_registration(self):
+        challan = self.challan("600")
+        self.assertTrue(challan.number.startswith("JWC-"))
+        self.assertEqual((challan.job_worker_gstin, challan.job_worker_state),
+                         ("29AABCE5678F1ZD", "29"))
+
+    def test_an_issued_challan_cannot_be_edited(self):
+        challan = self.challan("600")
+        challan.vehicle = "KA-01-1234"
+        with self.assertRaisesMessage(ValidationError, "is issued"):
+            challan.save()
+        with self.assertRaisesMessage(ValidationError, "lines are fixed"):
+            line = challan.lines.get()
+            line.quantity = Decimal("1")
+            line.save()
+
+    def test_it_cannot_be_issued_twice(self):
+        challan = self.challan("600")
+        with self.assertRaisesMessage(ValidationError, "already issued"):
+            challan.post()
+
+    def test_an_empty_challan_sends_nothing(self):
+        challan = JobWorkChallan.objects.create(job_worker=self.laminator, challan_date=TODAY)
+        with self.assertRaisesMessage(ValidationError, "nothing on it"):
+            challan.post()
+
+    def test_nothing_goes_out_for_one_of_our_own_steps(self):
+        inside = self.lamination.operations.get(is_outside=False)
+        with self.assertRaisesMessage(ValidationError, "our own machines"):
+            self.challan("100", operation=inside, post=False)
+
+    def test_a_line_needs_a_real_hsn(self):
+        challan = JobWorkChallan.objects.create(job_worker=self.laminator, challan_date=TODAY)
+        for code in ("", "63053"):
+            with self.subTest(code=code), self.assertRaises(ValidationError):
+                JobWorkLine.objects.create(
+                    challan=challan, operation=self.coat, description="Fabric",
+                    hsn_code=code, quantity=Decimal("1"), value=Decimal("1"),
+                    tax_rate=Decimal("5"),
+                )
+
+    def test_no_more_goes_out_than_the_run_holds(self):
+        # 1,000 kg with the run's 10% over-production allowance is 1,100.
+        self.assertEqual(self.lamination.maximum_output(), Decimal("1100"))
+        self.challan("600")
+        self.challan("500")
+        with self.assertRaisesMessage(ValidationError, "would be out on challans"):
+            self.challan("1")
+
+    def test_a_run_that_is_not_running_sends_nothing(self):
+        challan = self.challan("600", post=False)
+        self.lamination.cancel()
+        with self.assertRaisesMessage(ValidationError, "not running"):
+            challan.post()
+
+    def test_a_line_that_cannot_be(self):
+        challan = JobWorkChallan.objects.create(job_worker=self.laminator, challan_date=TODAY)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            JobWorkLine.objects.create(
+                challan=challan, operation=self.coat, description="Fabric",
+                hsn_code="6305", quantity=Decimal("0"), value=Decimal("1"),
+                tax_rate=Decimal("5"),
+            )
+
+
+class WhatCameBackTests(JobWorkTestCase):
+    def setUp(self):
+        super().setUp()
+        self.first = self.challan("600", day=TODAY - 2 * DAY)
+        self.second = self.challan("400", day=TODAY - DAY)
+
+    def test_what_comes_back_fills_the_oldest_challan_first(self):
+        self.back(self.lamination, "700", "1400")
+        self.assertEqual((self.state(self.first)["back"], self.state(self.first)["outstanding"]),
+                         (Decimal("600"), Decimal("0")))
+        self.assertEqual((self.state(self.second)["back"], self.state(self.second)["outstanding"]),
+                         (Decimal("100"), Decimal("300")))
+
+    def test_work_sent_back_for_rework_reopens_the_latest_it_filled(self):
+        self.back(self.lamination, "700", "1400")
+        self.back(self.lamination, "50", "100", is_return=True)
+        self.assertEqual(self.state(self.second)["outstanding"], Decimal("350"))
+        self.assertEqual(self.state(self.first)["outstanding"], Decimal("0"))
+        self.assertEqual([quantity for _, quantity in self.state(self.second)["events"]],
+                         [Decimal("100"), Decimal("-50")])
+
+    def test_rework_larger_than_the_latest_fill_reaches_back(self):
+        self.back(self.lamination, "700", "1400")
+        self.back(self.lamination, "150", "300", is_return=True)
+        self.assertEqual(self.state(self.second)["outstanding"], Decimal("400"))
+        self.assertEqual(self.state(self.first)["outstanding"], Decimal("50"))
+
+    def test_what_was_lost_is_not_filled_by_what_comes_back(self):
+        JobWorkLoss.objects.create(line=self.first.lines.get(), loss_date=TODAY,
+                                   quantity=Decimal("12"))
+        self.back(self.lamination, "700", "1400")
+        self.assertEqual(self.state(self.first)["back"], Decimal("588"))
+        self.assertEqual(self.state(self.second)["back"], Decimal("112"))
+        self.assertEqual(self.state(self.second)["outstanding"], Decimal("288"))
+
+    def test_a_full_challan_takes_nothing_from_later_receipts(self):
+        self.back(self.lamination, "700", "1400")
+        self.back(self.lamination, "200", "400")
+        self.assertEqual([q for _, q in self.state(self.first)["events"]], [Decimal("600")])
+
+    def test_a_voided_receipt_came_back_as_nothing(self):
+        movement = self.back(self.lamination, "700", "1400")
+        movement.void()
+        self.assertEqual(self.state(self.first)["outstanding"], Decimal("600"))
+
+    def test_nothing_comes_back_that_was_not_sent(self):
+        self.back(self.lamination, "1000", "2000")
+        with self.assertRaisesMessage(ValidationError, "still out on challans"):
+            check_back_was_sent(self.coat, Decimal("1"))
+
+    def test_the_receipt_itself_is_refused(self):
+        self.second.void()
+        with self.assertRaisesMessage(ValidationError, "still out on challans"):
+            self.back(self.lamination, "700", "1400")
+
+    def test_a_step_without_challans_is_left_alone(self):
+        other = self.released("500")
+        self.back(other, "500", "1000")
+        self.assertEqual(other.operations.get(is_outside=True).quantity_back(), Decimal("500"))
+
+
+class LossesAtTheJobWorkerTests(JobWorkTestCase):
+    def setUp(self):
+        super().setUp()
+        self.first = self.challan("600")
+
+    def loss(self, quantity, challan=None):
+        return JobWorkLoss.objects.create(
+            line=(challan or self.first).lines.get(), loss_date=TODAY,
+            quantity=Decimal(quantity), note="Edge trim",
+        )
+
+    def test_a_loss_is_no_longer_out(self):
+        self.loss("12")
+        self.assertEqual(self.state(self.first)["outstanding"], Decimal("588"))
+
+    def test_nor_can_it_come_back(self):
+        self.loss("12")
+        with self.assertRaisesMessage(ValidationError, "still out on challans"):
+            self.back(self.lamination, "590", "1180")
+
+    def test_no_more_lost_than_is_out(self):
+        self.back(self.lamination, "590", "1180")
+        with self.assertRaisesMessage(ValidationError, "Only 10"):
+            self.loss("11")
+
+    def test_a_recorded_loss_stays_recorded(self):
+        loss = self.loss("12")
+        loss.quantity = Decimal("1")
+        with self.assertRaisesMessage(ValidationError, "is a fact"):
+            loss.save()
+
+    def test_not_against_a_withdrawn_challan(self):
+        second = self.challan("100")
+        second.void()
+        with self.assertRaisesMessage(ValidationError, "not an issued challan"):
+            self.loss("1", challan=second)
+
+
+class WithdrawingAChallanTests(JobWorkTestCase):
+    def test_one_nothing_came_back_against(self):
+        challan = self.challan("600")
+        challan.void()
+        self.assertIsNotNone(challan.voided_at)
+        self.assertEqual(allocation(self.coat), {})
+
+    def test_not_once_work_came_back_against_it(self):
+        challan = self.challan("600")
+        self.back(self.lamination, "100", "200")
+        with self.assertRaisesMessage(ValidationError, "has come back"):
+            challan.void()
+
+    def test_unless_another_challan_covers_it(self):
+        first = self.challan("600")
+        self.challan("400")
+        self.back(self.lamination, "300", "600")
+        first.void()
+        self.assertIsNotNone(first.voided_at)
+
+    def test_not_with_losses_recorded(self):
+        challan = self.challan("600")
+        JobWorkLoss.objects.create(line=challan.lines.get(), loss_date=TODAY,
+                                   quantity=Decimal("1"))
+        with self.assertRaisesMessage(ValidationError, "Losses are recorded"):
+            challan.void()
+
+    def test_not_twice(self):
+        challan = self.challan("600")
+        challan.void()
+        with self.assertRaisesMessage(ValidationError, "not an issued challan"):
+            challan.void()
+
+
+class DueBackTests(JobWorkTestCase):
+    def test_inputs_have_a_year_and_capital_goods_three(self):
+        inputs = self.challan("300", day=datetime.date(2025, 6, 1))
+        capital = self.challan("300", day=datetime.date(2025, 6, 1), capital=True)
+        rows = {row["challan"].pk: row for row in still_out(as_of=datetime.date(2026, 6, 2))}
+        self.assertEqual(rows[inputs.pk]["due_back_by"], datetime.date(2026, 6, 1))
+        self.assertTrue(rows[inputs.pk]["overdue"])
+        self.assertEqual(rows[capital.pk]["due_back_by"], datetime.date(2028, 5, 31))
+        self.assertFalse(rows[capital.pk]["overdue"])
+        self.assertFalse(rows[capital.pk]["due_soon"])
+
+    def test_the_last_day_is_still_in_time(self):
+        challan = self.challan("300", day=datetime.date(2025, 6, 1))
+        (row,) = still_out(as_of=datetime.date(2026, 6, 1))
+        self.assertEqual((row["challan"], row["overdue"]), (challan, False))
+
+    def test_due_soon_and_what_is_back_is_not_listed(self):
+        soon = self.challan("300", day=datetime.date(2025, 6, 20))
+        done = self.challan("300", day=datetime.date(2025, 6, 10))
+        self.back(self.lamination, "300", "600")  # fills the older one, `done`
+        rows = still_out(as_of=datetime.date(2026, 6, 1), within_days=30)
+        self.assertEqual([row["challan"].pk for row in rows], [soon.pk])
+        self.assertTrue(rows[0]["due_soon"])
+        self.assertFalse(rows[0]["overdue"])
+        self.assertNotIn(done.pk, [row["challan"].pk for row in rows])
+
+
+class JobWorkApiTests(JobWorkTestCase):
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        self.client = APIClient()
+        self.client.force_authenticate(User.objects.create_superuser("planner"))
+        self.base = "/api/manufacturing/"
+
+    def draft(self):
+        challan = self.client.post(self.base + "job-work-challans/", {
+            "job_worker": self.laminator.pk, "challan_date": "2026-06-01",
+        }, format="json").json()
+        line = self.client.post(self.base + "job-work-lines/", {
+            "challan": challan["id"], "operation": self.coat.pk,
+            "description": "Woven fabric for coating", "hsn_code": "63053300",
+            "quantity": "600", "value": "57000", "tax_rate": "5",
+        }, format="json")
+        self.assertEqual(line.status_code, 201, line.content)
+        return challan
+
+    def test_draft_issue_and_the_line_fixed_after(self):
+        challan = self.draft()
+        issued = self.client.post(f"{self.base}job-work-challans/{challan['id']}/post/")
+        self.assertEqual(issued.status_code, 200, issued.content)
+        self.assertEqual(issued.json()["job_worker_gstin"], "29AABCE5678F1ZD")
+        line_id = issued.json()["lines"][0]["id"]
+        response = self.client.patch(f"{self.base}job-work-lines/{line_id}/",
+                                     {"quantity": "1"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            self.client.delete(f"{self.base}job-work-challans/{challan['id']}/").status_code, 400)
+
+    def test_what_is_still_out(self):
+        challan = self.draft()
+        self.client.post(f"{self.base}job-work-challans/{challan['id']}/post/")
+        rows = self.client.get(self.base + "job-work-challans/still-out/?as_of=2026-06-02").json()
+        self.assertEqual(rows[0]["outstanding"], "600.0000")
+        self.assertEqual(rows[0]["due_back_by"], "2027-06-01")
+        self.assertEqual(self.client.get(
+            self.base + "job-work-challans/still-out/?as_of=June").status_code, 400)
+
+    def test_a_loss_is_recorded_and_not_edited(self):
+        challan = self.draft()
+        issued = self.client.post(f"{self.base}job-work-challans/{challan['id']}/post/").json()
+        loss = self.client.post(self.base + "job-work-losses/", {
+            "line": issued["lines"][0]["id"], "loss_date": "2026-06-05", "quantity": "4",
+        }, format="json")
+        self.assertEqual(loss.status_code, 201, loss.content)
+        self.assertEqual(self.client.patch(f"{self.base}job-work-losses/{loss.json()['id']}/",
+                                           {"quantity": "1"}, format="json").status_code, 405)
+        too_much = self.client.post(self.base + "job-work-losses/", {
+            "line": issued["lines"][0]["id"], "loss_date": "2026-06-05", "quantity": "700",
+        }, format="json")
+        self.assertEqual(too_much.status_code, 400)
