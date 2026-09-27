@@ -107,19 +107,22 @@ def explains(work_order, source="gsm"):
         return None
     planned = work_order.planned_material_cost or Decimal("0")
     accounted = planned * reading["deviation_percent"] / Decimal("100")
-    unaccounted = work_order.unaccounted()
+    # Against the material's own overrun, not everything left in the
+    # run: a heavy fabric explains polymer, and a slow loom is not
+    # polymer.
+    overrun = work_order.material_overrun()
     # A run that came out light explains a saving, not an overrun, and
     # the share is then meaningless — dividing by a negative overrun
     # would report a confident percentage of the wrong thing.
     share = (
-        accounted / unaccounted * Decimal("100")
-        if unaccounted > 0 and accounted > 0 else None
+        accounted / overrun * Decimal("100")
+        if overrun > 0 and accounted > 0 else None
     )
     return {
         **reading,
         "planned_material_cost": planned,
         "accounted_for": accounted,
-        "unaccounted": unaccounted,
+        "material_overrun": overrun,
         "share_percent": share,
         "note": (
             "A first-order estimate: the material that scales with this "

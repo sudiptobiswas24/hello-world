@@ -404,6 +404,19 @@ class AtCloseTheVendorsOverrunIsItsOwnTests(OutsideTestCase):
         )
         self.assertEqual(order.wip_balance(), Decimal("0"))
 
+    def test_a_dearer_vendor_is_not_material(self):
+        """What the material overrun reports is what the close sends to
+        material variance: the laminator's price rise is not polymer."""
+        order = self.run_with_vendor_at("2300")
+        expected = order.material_overrun()
+        self.assertAlmostEqual(
+            expected, order.unaccounted() - Decimal("300") - order.conversion_variance(),
+            places=6,
+        )
+        order.close(TODAY)
+        variance = ManufacturingSettings.account("variance", "test")
+        self.assertAlmostEqual(self.balance(variance), expected, places=2)
+
 
 class ACancelledRunLeavesNothingBehindTests(OutsideTestCase):
     def test_vendor_work_stops_a_cancel(self):

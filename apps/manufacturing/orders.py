@@ -655,6 +655,19 @@ class WorkOrder(AuditModel):
         """Vendors' work charged against vendors' work earned."""
         return self.outside_cost() - self.outside_earned()
 
+    def material_overrun(self):
+        """
+        What is left in work in progress once machine time and vendors'
+        work have taken their overruns: the material's share, in money.
+
+        The remainder a close sends to material variance, and the figure
+        a measurement of the output can explain part of. Named once so
+        the two cannot drift: an explanation measured against the whole
+        of what was left counted a slow loom as polymer nobody could
+        account for.
+        """
+        return self.unaccounted() - self.conversion_variance() - self.outside_variance()
+
     def output_value(self):
         """What has come out, at the values posted."""
         total = Decimal("0")

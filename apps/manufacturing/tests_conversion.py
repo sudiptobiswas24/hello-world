@@ -13,10 +13,21 @@ machine time and every figure below can be checked in your head.
 
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from rest_framework.test import APIClient
 
 from apps.accounting.models import Account, AccountType
+from apps.inventory.models import Lot, TrackingMode
+from apps.quality.models import (
+    Characteristic,
+    Evaluation,
+    Inspection,
+    InspectionPlan,
+    PlanLine,
+    Reading,
+)
 
 from .orders import (
     ManufacturingSettings,
@@ -24,6 +35,7 @@ from .orders import (
     WorkOrderOperation,
     WorkOrderStatus,
 )
+from .explain import explains
 from .routing import Routing, RoutingOperation
 from .tests_orders import TODAY, RunTestCase
 
@@ -442,3 +454,78 @@ class ClosingNeedsSomewhereToPutItTests(ConversionTestCase):
         self.assertIn("conversion variance account", str(caught.exception))
         order.refresh_from_db()
         self.assertEqual(order.status, WorkOrderStatus.RELEASED)
+
+
+class AMeasurementExplainsPolymerNotLoomTimeTests(ConversionTestCase):
+    """
+    A heavy fabric explains extra polymer. Measured against everything
+    left in the run, a loom that also ran slow diluted the share: its
+    overrun is machine time, and it was counted as material nobody
+    could account for.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tape.tracking = TrackingMode.LOT
+        self.tape.save()
+        self.reel = Lot.objects.create(item=self.tape, code="T-001")
+        gsm = Characteristic.objects.create(code="GSM", name="GSM", uom=self.kg)
+        plan = InspectionPlan.objects.create(item=self.tape, is_mandatory=False)
+        self.line = PlanLine.objects.create(
+            plan=plan, characteristic=gsm, target=Decimal("87.5"),
+            lower_limit=Decimal("83.125"), upper_limit=Decimal("91.875"),
+            sample_size=1, evaluation=Evaluation.MEAN, derived_from="gsm",
+        )
+        self.plan_for_reading = plan
+
+    def heavy_and_slow(self):
+        order = self.routed()
+        rows = [(c.item, c.quantity_required) for c in order.components.all()]
+        rows[0] = (rows[0][0], rows[0][1] + Decimal("600"))
+        self.issue(order, rows).post()
+        self.book(order, "1600").post()
+        self.produce(order, "4000", lot=self.reel).post()
+        inspection = Inspection.objects.create(
+            lot=self.reel, plan=self.plan_for_reading, inspected_on=TODAY
+        )
+        Reading.objects.create(inspection=inspection, plan_line=self.line,
+                               value=Decimal("91"))
+        inspection.post()
+        return order
+
+    def test_the_share_is_of_the_material_overrun(self):
+        order = self.heavy_and_slow()
+        report = explains(order)
+        machine = order.conversion_variance()
+        self.assertAlmostEqual(machine, Decimal("1060.00"), places=2)
+        self.assertAlmostEqual(
+            report["material_overrun"], order.unaccounted() - machine, places=6
+        )
+        self.assertAlmostEqual(
+            report["share_percent"],
+            report["accounted_for"] / report["material_overrun"] * 100, places=6,
+        )
+
+    def test_the_material_overrun_is_what_the_close_sends_to_material(self):
+        order = self.heavy_and_slow()
+        expected = order.material_overrun()
+        order.close(TODAY)
+        self.assertAlmostEqual(self.balance(self.variance), expected, places=2)
+
+    def test_the_run_says_all_three_and_what_explains_the_material(self):
+        order = self.heavy_and_slow()
+        client = APIClient()
+        client.force_authenticate(User.objects.create_user("planner"))
+        body = client.get(f"/api/manufacturing/work-orders/{order.pk}/variance/").json()
+
+        self.assertAlmostEqual(Decimal(body["machine_time"]), Decimal("1060.00"), places=2)
+        self.assertAlmostEqual(
+            Decimal(body["material"]),
+            Decimal(body["unaccounted"]) - Decimal(body["machine_time"])
+            - Decimal(body["vendors"]),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            Decimal(body["explained"]["gsm"]["deviation_percent"]), Decimal("4"), places=6
+        )
+        self.assertIsNone(body["explained"]["weighed"])

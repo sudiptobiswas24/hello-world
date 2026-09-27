@@ -696,6 +696,35 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             for row in uncovered()
         ])
 
+    @action(detail=True, methods=["get"], url_path="variance")
+    def money_variance(self, request, pk=None):
+        """
+        What is left in the run and why: machine time, vendors' work and
+        material, and how much of the material its own measurements
+        explain — by inspection and by the roll scale, which weighs
+        every roll whether or not anything reached a laboratory.
+        """
+        from .explain import explains
+
+        order = self.get_object()
+        explained = {}
+        for source in ("gsm", "weighed"):
+            report = explains(order, source)
+            explained[source] = None if report is None else {
+                key: report[key] for key in (
+                    "target", "measured", "deviation_percent", "accounted_for",
+                    "share_percent", "note",
+                )
+            }
+        return Response({
+            "unaccounted": order.unaccounted(),
+            "machine_time": order.conversion_variance(),
+            "machine_minutes": order.time_variance_minutes(),
+            "vendors": order.outside_variance(),
+            "material": order.material_overrun(),
+            "explained": explained,
+        })
+
     @action(detail=True, methods=["get"], url_path="material-variance")
     def variance(self, request, pk=None):
         """Kilo for kilo, what the run took against what it should have."""
