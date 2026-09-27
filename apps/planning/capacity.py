@@ -68,6 +68,7 @@ class LoadBook:
         self._booked = defaultdict(lambda: ZERO)
         self.unscheduled = defaultdict(lambda: ZERO)
         self.maintenance = defaultdict(lambda: ZERO)
+        self._last = {}
         self._load_commitments()
         self._load_maintenance()
 
@@ -192,6 +193,31 @@ class LoadBook:
             self.book(job.work_centre, job.due_on, job.planned_minutes)
             self.maintenance[job.work_centre_id] += job.planned_minutes
 
+    # -- what each machine will have just run ----------------------------
+
+    def run_minutes(self, operation, item, quantity, uom):
+        """
+        Minutes for this operation of `item`, with the changeover from
+        what the machine will have run just before — and the machine
+        then counts as having run `item`.
+
+        A planned run joins the end of the queue: the first follows the
+        last released run (or what the machine last ran), and each one
+        planned after it follows the one before. Runs of one item
+        planned together therefore change over once, which is how a
+        planner would load them.
+        """
+        from apps.manufacturing.changeover import changeover_minutes, last_in_line
+
+        centre = operation.work_centre
+        if centre.pk not in self._last:
+            self._last[centre.pk] = last_in_line(centre)
+        setup = changeover_minutes(
+            centre, self._last[centre.pk], item, operation.setup_minutes
+        )
+        self._last[centre.pk] = item
+        return operation.minutes_for(quantity, uom, setup=setup)
+
     # -- scheduling ------------------------------------------------------
 
     def take_backwards(self, centre, minutes, finish_by, floor):
@@ -229,7 +255,7 @@ def _days_between(start, end):
         day += datetime.timedelta(days=1)
 
 
-def schedule_backwards(book, operations, quantity, uom, finish_by, floor):
+def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item):
     """
     Place a whole routing so that its last operation ends on
     `finish_by`, and say when the first one has to start.
@@ -262,7 +288,7 @@ def schedule_backwards(book, operations, quantity, uom, finish_by, floor):
             })
             cursor = start
             continue
-        minutes = operation.minutes_for(quantity, uom)
+        minutes = book.run_minutes(operation, item, quantity, uom)
         start, ran_out = book.take_backwards(
             operation.work_centre, minutes, cursor, floor
         )
@@ -310,7 +336,7 @@ def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
     # machines are asked to find.
     finish_by = needed_by - datetime.timedelta(days=int(queue_days))
     return schedule_backwards(
-        book, operations, quantity, uom, finish_by, floor
+        book, operations, quantity, uom, finish_by, floor, bom.item
     )
 
 

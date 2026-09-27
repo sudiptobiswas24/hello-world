@@ -217,6 +217,22 @@ def queue_on(work_centre, machine=None):
     )
 
 
+def last_in_line(work_centre):
+    """
+    What a run planned now would follow on this machine: the last run
+    released to it and not yet started, or, with nothing waiting, what
+    it last ran.
+
+    Planning's view of a new run is that it joins the end of the queue.
+    Its changeover is from whatever is there, not a flat average — a
+    white run planned behind a queue of black ones pays the wash-down.
+    """
+    queue = queue_on(work_centre)
+    if queue:
+        return queue[-1].work_order.item
+    return on_the_machine(work_centre)
+
+
 def _walk(work_centre, current, operations):
     """Each run with the changeover it costs coming after the one before."""
     rows = []

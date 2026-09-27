@@ -293,9 +293,12 @@ class RoutingOperation(AuditModel):
                 )
         return quantity * self.outside_cost_per_unit
 
-    def minutes_for(self, quantity, uom):
+    def minutes_for(self, quantity, uom, setup=None):
         """
         Setup plus run time for `quantity` of `uom`.
+
+        `setup` replaces the flat setup when the caller knows better —
+        the changeover from what the machine will have run just before.
 
         Nought for an outside step: no machine of ours holds the work,
         and its time is the vendor's lead days, which are not minutes on
@@ -304,7 +307,7 @@ class RoutingOperation(AuditModel):
         if self.is_outside:
             return Decimal("0")
         rate = self.rate(uom)
-        return self.setup_minutes + (
+        return (self.setup_minutes if setup is None else setup) + (
             Decimal(quantity) / rate * MINUTES_PER_HOUR
         )
 

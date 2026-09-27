@@ -110,6 +110,8 @@ def make_run_days(bom, quantity, uom):
     here knows the transfer batch size that would let it say by how
     much.
     """
+    from apps.manufacturing.changeover import changeover_minutes, last_in_line
+
     if bom is None or bom.routing_id is None:
         return None
     # What must be started rather than what is wanted — the loom runs
@@ -125,8 +127,14 @@ def make_run_days(bom, quantity, uom):
             # that is out of the building.
             away += Decimal(operation.outside_lead_days)
             continue
-        minutes = operation.minutes_for(quantity, uom)
         centre = operation.work_centre
+        # The changeover from what is last in line on the machine, as
+        # the load book reads it: two answers to "how long is the
+        # setup" would give two lead times for one run.
+        setup = changeover_minutes(
+            centre, last_in_line(centre), bom.item, operation.setup_minutes
+        )
+        minutes = operation.minutes_for(quantity, uom, setup=setup)
         per_centre.setdefault(centre.pk, [centre, Decimal("0")])[1] += minutes
     days = away
     for centre, minutes in per_centre.values():
