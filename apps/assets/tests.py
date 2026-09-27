@@ -259,7 +259,9 @@ class RegisterTests(AssetTestCase):
         self.assertEqual(asset_register(as_of=datetime.date(2026, 6, 1)), [])
 
 
-class CapitalisationTests(AssetTestCase):
+class CapitalisationFixture(AssetTestCase):
+    """A vendor, an expense account and a posted bill line to capitalise."""
+
     def setUp(self):
         super().setUp()
         from apps.core.models import UnitOfMeasure
@@ -292,6 +294,8 @@ class CapitalisationTests(AssetTestCase):
         bill.post()
         return line
 
+
+class CapitalisationTests(CapitalisationFixture):
     def test_capitalising_moves_the_cost_onto_the_asset_account(self):
         line = self.bill_line("1", "12000")
 

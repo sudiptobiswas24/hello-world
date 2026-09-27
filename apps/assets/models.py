@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, round_money
@@ -37,6 +37,7 @@ class AssetStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     IN_SERVICE = "in_service", "In service"
     DISPOSED = "disposed", "Disposed"
+    CANCELLED = "cancelled", "Cancelled"
 
 
 class AssetCategory(AuditModel):
@@ -117,6 +118,13 @@ class FixedAsset(AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
     )
+    capitalisation_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The entry that moved this asset's cost onto the asset "
+                  "account, when it came from a bill — kept so that it can be "
+                  "reversed rather than left behind.",
+    )
 
     class Meta:
         ordering = ["-acquisition_date", "-id"]
@@ -129,12 +137,33 @@ class FixedAsset(AuditModel):
             models.CheckConstraint(
                 check=Q(salvage_value__gte=0), name="asset_salvage_not_negative"
             ),
+            # In the table as well as on save: at or above cost there is
+            # nothing to depreciate, and the monthly charge comes out at
+            # nothing or less.
+            models.CheckConstraint(
+                check=Q(salvage_value__lt=F("cost")),
+                name="asset_salvage_below_cost",
+            ),
+            models.CheckConstraint(
+                check=Q(in_service_date__isnull=True)
+                | Q(in_service_date__gte=F("acquisition_date")),
+                name="asset_in_service_after_acquisition",
+            ),
         ]
 
     def __str__(self):
         return f"{self.number or f'FA-draft-{self.pk}'} {self.name}"
 
+    def save(self, *args, **kwargs):
+        # `clean()` is not called for an asset made in code — which is
+        # every asset capitalised from a bill — or through the API, so
+        # the question is asked here, where every one of them passes.
+        self.clean()
+        super().save(*args, **kwargs)
+
     def clean(self):
+        self.acquisition_date = to_date(self.acquisition_date)
+        self.in_service_date = to_date(self.in_service_date)
         if self.salvage_value is not None and self.cost is not None:
             if self.salvage_value >= self.cost:
                 raise ValidationError(
@@ -152,13 +181,15 @@ class FixedAsset(AuditModel):
             return Decimal("0")
         return round_money(self.depreciable_base() / self.life_months)
 
-    def accumulated(self):
-        return sum(
-            (entry.amount for entry in self.depreciation_entries.all()), Decimal("0")
-        )
+    def accumulated(self, as_of=None):
+        """Depreciation charged, through `as_of` when given."""
+        entries = self.depreciation_entries.all()
+        if as_of is not None:
+            entries = entries.filter(period_end__lte=to_date(as_of))
+        return sum((entry.amount for entry in entries), Decimal("0"))
 
-    def net_book_value(self):
-        return self.cost - self.accumulated()
+    def net_book_value(self, as_of=None):
+        return self.cost - self.accumulated(as_of)
 
     def remaining_to_depreciate(self):
         return max(self.depreciable_base() - self.accumulated(), Decimal("0"))
@@ -167,6 +198,8 @@ class FixedAsset(AuditModel):
     def place_in_service(self, on_date=None):
         if self.status != AssetStatus.DRAFT:
             raise ValidationError(f"This asset is already {self.get_status_display().lower()}.")
+        # Checked by `save()`, which every path through here reaches —
+        # a date before the asset arrived is refused there.
         self.in_service_date = to_date(on_date) or self.in_service_date or self.acquisition_date
         if not self.number:
             self.number = DocumentSequence.next_for(
@@ -241,16 +274,65 @@ class FixedAsset(AuditModel):
         return made
 
     @transaction.atomic
+    def uncapitalise(self, on_date=None, memo=""):
+        """
+        Undo capitalising a bill line into this asset, before it has
+        ever been used.
+
+        The reverse of `BillLine.capitalise_as_asset`, written because a
+        debit note on a capitalised line used to credit the account the
+        capitalisation had already emptied — driving it below nothing
+        while the asset stayed on the books at full cost. Only a draft:
+        an asset that has been in service has been depreciated or could
+        have been, and taking it off is a disposal.
+        """
+        if self.status != AssetStatus.DRAFT:
+            raise ValidationError(
+                f"{self} has been in service. Taking it off the books is a "
+                "disposal, not an undo."
+            )
+        if self.capitalisation_entry_id is None:
+            raise ValidationError(
+                f"{self} was not capitalised from a bill, so there is nothing "
+                "to undo — delete the draft instead."
+            )
+        on_date = to_date(on_date) or timezone.now().date()
+        self.capitalisation_entry.create_reversal(
+            entry_date=on_date, memo=memo or f"Un-capitalised {self}"
+        )
+        # Cancelled, not disposed: nothing was sold or scrapped, the
+        # capitalisation simply never stood — and the register, which
+        # leaves drafts out, must not start showing it as a disposal.
+        self.status = AssetStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+
+    @transaction.atomic
     def dispose(self, on_date=None, proceeds=Decimal("0"), memo=""):
         """
-        Take the asset off the books and recognise what the sale made or
-        lost against its remaining value.
+        Take the asset off the books at its remaining value.
+
+        Every month due before the disposal is charged first. Without
+        that, an asset sold in June with depreciation run to March took
+        April's and May's charge into the loss on disposal: the total
+        came out right and both lines of the profit and loss account came
+        out wrong.
+
+        **The proceeds are not banked here.** This entry takes the asset's
+        cost and accumulated depreciation off and leaves its book value
+        in the disposal account; the sale itself is invoiced to the
+        buyer with the disposal account as its revenue account, and the
+        two together leave the gain or loss there. `proceeds` shows the
+        gain or loss on this entry's lines — it does not debit a bank or
+        a receivable, and a disposal nobody invoices leaves the whole
+        book value as a loss.
         """
         on_date = to_date(on_date) or timezone.now().date()
         if self.status == AssetStatus.DISPOSED:
             raise ValidationError("This asset has already been disposed of.")
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service can be disposed of.")
+        month_before = on_date.replace(day=1) - datetime.timedelta(days=1)
+        self.depreciate(through=month_before)
 
         account = self.category.disposal_account
         if account is None:
@@ -322,11 +404,20 @@ class DepreciationEntry(AuditModel):
 
 
 def asset_register(as_of=None, category=None):
-    """Cost, depreciation to date and net book value per asset."""
+    """
+    Cost, depreciation and net book value per asset, as they stood on
+    `as_of`.
+
+    As they stood, which is the whole of the question: depreciation is
+    counted through that date, and an asset bought after it is left out.
+    This used to report today's depreciation under any date asked and
+    list assets that did not exist yet, so a register "as at last March"
+    was today's register with March written on it.
+    """
     as_of = to_date(as_of) or timezone.now().date()
     assets = FixedAsset.objects.select_related("category").exclude(
-        status=AssetStatus.DRAFT
-    )
+        status__in=(AssetStatus.DRAFT, AssetStatus.CANCELLED)
+    ).filter(acquisition_date__lte=as_of)
     if category is not None:
         assets = assets.filter(category=category)
 
@@ -338,8 +429,8 @@ def asset_register(as_of=None, category=None):
             "asset": asset,
             "category": asset.category,
             "cost": asset.cost,
-            "accumulated": asset.accumulated(),
-            "net_book_value": asset.net_book_value(),
+            "accumulated": asset.accumulated(as_of),
+            "net_book_value": asset.net_book_value(as_of),
             "monthly_charge": asset.monthly_charge(),
         })
     return sorted(rows, key=lambda row: -row["net_book_value"])

@@ -3220,12 +3220,18 @@ class BillLine(TaxedLineMixin, AuditModel):
                 "Capitalise whole units; a fraction of an asset cannot be disposed of."
             )
 
-        unit_cost = round_money(self.net_amount() / self.quantity)
+        # In base currency, at the rate the bill posted at — which is
+        # what the bill put in the account this takes it out of. At the
+        # bill's own figures a foreign machine went onto the asset
+        # account at its euro price and left the difference behind.
+        rate = self.bill.exchange_rate or Decimal("1")
+        total = round_money(self.net_amount() * rate)
+        unit_cost = round_money(total / self.quantity)
         memo = f"Capitalised from {self.bill.number}"
         source = self.posted_account or self.expense_account
 
         created = []
-        remaining = self.net_amount()
+        remaining = total
         count = int(self.quantity)
         for index in range(count):
             cost = remaining if index == count - 1 else unit_cost
@@ -3252,6 +3258,8 @@ class BillLine(TaxedLineMixin, AuditModel):
                 entry=entry, account=source, credit=cost, description=memo[:255],
             )
             entry.post()
+            asset.capitalisation_entry = entry
+            asset.save(update_fields=["capitalisation_entry", "updated_at"])
             created.append(asset)
         return created
 
@@ -3446,6 +3454,18 @@ class BillLine(TaxedLineMixin, AuditModel):
         if self.bill_id and Bill.objects.filter(pk=self.bill_id, posted=True).exists():
             raise ValidationError(
                 "Cannot modify a line on a posted bill. Issue a debit note instead."
+            )
+        if self.debits_line_id and self.debits_line.assets.exclude(
+            status="cancelled"
+        ).exists():
+            # The line's cost has moved onto the asset account, so a
+            # debit note crediting the line's own account would take it
+            # out of an account that no longer holds it — below nothing —
+            # while the asset stayed on the books at full cost.
+            raise ValidationError(
+                f"{self.debits_line.label()} was capitalised as fixed assets. "
+                "Un-capitalise them first, or, once in service, dispose of "
+                "them — then the bill can be debited."
             )
         super().save(*args, **kwargs)
 
