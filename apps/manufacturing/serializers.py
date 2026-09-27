@@ -65,6 +65,7 @@ class FabricSpecificationSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "fabric_item", "warp_tape", "weft_tape",
             "ends_per_inch", "picks_per_inch", "lay_flat_width_cm", "shrink_percent", "weave",
+            "is_leno",
             "target_gsm", "gsm_tolerance_percent", "weaving_waste_percent",
             "waste_recovered_percent", "loom_waste_item", "bom", "is_active",
             "gsm", "gsm_deviation_percent", "grams_per_metre", "metres_per_kg",
@@ -128,7 +129,9 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
             "waste_recovered_percent", "cutting_waste_item", "bom", "is_active",
             "gusset_cm", "closure", "bopp_film_item", "bopp_micron", "bopp_faces",
             "bopp_waste_percent", "valve_patch_item", "valve_patch_grams",
-            "cover_patch_item", "cover_patch_grams", "liner_micron",
+            "cover_patch_item", "cover_patch_grams", "handle_item", "handle_grams",
+            "dcut_area_sqcm", "metallic_film_item", "metallic_micron",
+            "metallic_coverage_percent", "liner_micron",
             "liner_width_cm", "liner_length_cm", "target_grams", "weight_tolerance_percent",
             "cut_length_cm", "fabric_area_sqm", "fabric_grams", "bag_grams",
             "fabric_metres_per_bag", "construction",
@@ -197,6 +200,7 @@ class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
             "fold_type", "thread_grams_per_bag", "thread_denier", "stitches_per_dm",
             "liner_grams_per_bag", "liner_micron",
             "liner_width_cm", "liner_length_cm", "valve_patch_grams", "cover_patch_grams",
+            "handle_grams", "dcut_area_sqcm", "metallic_micron", "metallic_coverage_percent",
             "weight_tolerance_percent", "target_grams", "ends_per_inch", "picks_per_inch",
             "shrink_percent", "warp_tape_denier",
         ]

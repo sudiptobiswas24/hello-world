@@ -755,6 +755,12 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     weave = models.CharField(
         max_length=8, choices=Weave.choices, default=Weave.TUBULAR
     )
+    is_leno = models.BooleanField(
+        default=False,
+        help_text="Open mesh, the warp tapes twisted in pairs around the weft: "
+                  "onion and potato sacks. It weighs what its mesh and denier "
+                  "make like any fabric, and there is nothing to coat.",
+    )
     target_gsm = models.DecimalField(
         max_digits=8, decimal_places=2,
         help_text="What the customer was quoted. The loom makes what the mesh "
@@ -1132,6 +1138,27 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         max_digits=8, decimal_places=3, default=Decimal("0"),
         help_text="Both ends together.",
     )
+    handle_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="A handle strip or loop sewn to the sack.",
+    )
+    handle_grams = models.DecimalField(max_digits=8, decimal_places=3, default=Decimal("0"))
+    dcut_area_sqcm = models.DecimalField(
+        max_digits=8, decimal_places=2, default=Decimal("0"),
+        help_text="The D-cut handle's hole, on one face. It is punched through "
+                  "both, fabric, coating and film with it: bought, cut, and "
+                  "not in the sack.",
+    )
+    metallic_film_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Metallised film on the front face, bonded by the coating.",
+    )
+    metallic_micron = models.DecimalField(max_digits=6, decimal_places=2, default=Decimal("0"))
+    metallic_coverage_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("100"),
+        help_text="Of the face the film covers: 100 for full metallic, less "
+                  "for a window film with the product showing through.",
+    )
     liner_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="An inner LDPE liner, for sacks that must keep moisture out.",
@@ -1242,6 +1269,12 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 name="bag_fold_type_known",
             ),
             models.CheckConstraint(
+                check=Q(handle_grams__gte=0) & Q(dcut_area_sqcm__gte=0)
+                & Q(metallic_micron__gte=0) & Q(metallic_coverage_percent__gt=0)
+                & Q(metallic_coverage_percent__lte=100),
+                name="bag_handle_cut_and_metallic_in_range",
+            ),
+            models.CheckConstraint(
                 check=Q(bopp_waste_percent__gte=0) & Q(bopp_waste_percent__lt=100),
                 name="bag_film_waste_under_one_hundred",
             ),
@@ -1336,6 +1369,34 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         share = Decimal(self.bopp_faces) / 2
         return self.fabric_area_sqm() * share * self.bopp_micron * BOPP_GRAMS_PER_MICRON
 
+    def metallic_grams(self):
+        """Film over the front face, or the share of it a window leaves."""
+        if not self.metallic_micron:
+            return Decimal("0")
+        return (
+            self.fabric_area_sqm() / TUBE_LAYERS * _percent(self.metallic_coverage_percent)
+            * self.metallic_micron * BOPP_GRAMS_PER_MICRON
+        )
+
+    def punched_area_sqm(self):
+        """The D-cut through both faces: one layer of fabric on each."""
+        return TUBE_LAYERS * self.dcut_area_sqcm / (CM_PER_M * CM_PER_M)
+
+    def punched_addon_grams(self):
+        """Coating and film that go out with the D-cut."""
+        hole = self.dcut_area_sqcm / (CM_PER_M * CM_PER_M)
+        if not hole:
+            return Decimal("0")
+        coat = TUBE_LAYERS * hole * self.lamination_gsm if self.is_laminated else Decimal("0")
+        film = hole * Decimal(self.bopp_faces) * self.bopp_micron * BOPP_GRAMS_PER_MICRON
+        metallic = (hole * _percent(self.metallic_coverage_percent)
+                    * self.metallic_micron * BOPP_GRAMS_PER_MICRON)
+        return coat + film + metallic
+
+    def punched_grams(self):
+        """All of it: waste the plant bought, cut and can partly recover."""
+        return self.punched_area_sqm() * self.fabric.gsm() + self.punched_addon_grams()
+
     def liner_grams(self):
         """Typed, or two layers of film at the liner's size and thickness."""
         if self.liner_micron:
@@ -1352,14 +1413,22 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             parts.append("BOPP laminated")
         elif self.is_laminated:
             parts.append("laminated")
+        elif self.fabric.is_leno:
+            parts.append("leno")
         else:
             parts.append("unlaminated")
+        if self.metallic_film_item_id:
+            parts.append("metallic" if self.metallic_coverage_percent == 100 else "metallic window")
         if self.gusset_cm:
             parts.append("gusseted")
         if self.valve_patch_item_id:
             parts.append("valve")
         if self.closure == "welded":
             parts.append("block bottom")
+        if self.dcut_area_sqcm:
+            parts.append("D-cut")
+        if self.handle_item_id:
+            parts.append("with handle")
         if self.liner_item_id:
             parts.append("with liner")
         return ", ".join(parts)
@@ -1376,14 +1445,18 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         The number a customer checks on a weighbridge and the number a
         costing is built on, and they had better be the same one.
         """
-        return self.fabric_grams() + self.addon_grams()
+        # The fabric bought is all of fabric_grams(); the D-cut takes
+        # some of it back out of the sack.
+        fabric_in_sack = self.fabric_area_sqm() - self.punched_area_sqm()
+        return fabric_in_sack * self.fabric.gsm() + self.addon_grams()
 
     def addon_grams(self):
-        """Everything in the sack that is not the woven fabric."""
+        """Everything in the finished sack that is not the woven fabric."""
         return (
-            self.lamination_grams() + self.bopp_grams() + self.ink_grams()
-            + self.thread_grams() + self.liner_grams()
-            + self.valve_patch_grams + self.cover_patch_grams
+            self.lamination_grams() + self.bopp_grams() + self.metallic_grams()
+            + self.ink_grams() + self.thread_grams() + self.liner_grams()
+            + self.valve_patch_grams + self.cover_patch_grams + self.handle_grams
+            - self.punched_addon_grams()
         )
 
     def fabric_gsm_for(self, target_grams):
@@ -1402,7 +1475,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"so no fabric makes it {target} g. Raise the weight or take "
                 "something off."
             )
-        return (target - addons) / self.fabric_area_sqm()
+        return (target - addons) / (self.fabric_area_sqm() - self.punched_area_sqm())
 
     def fabric_metres_per_bag(self):
         """What the cutting table sets the machine to."""
@@ -1464,6 +1537,18 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 self.thread_item.uom, self.conversion_waste_percent,
                 "Sewing thread",
             ))
+        if self.metallic_film_item is not None:
+            rows.append((
+                self.metallic_film_item, self.metallic_grams(), self.metallic_film_item.uom,
+                self.bopp_waste_percent,
+                f"Metallic film, {self.metallic_micron} micron, "
+                f"{self.metallic_coverage_percent}% of the face",
+            ))
+        if self.handle_item is not None:
+            rows.append((
+                self.handle_item, self.handle_grams, self.handle_item.uom,
+                self.conversion_waste_percent, "Handle",
+            ))
         if self.liner_item is not None:
             rows.append((
                 self.liner_item, self.liner_grams(),
@@ -1504,7 +1589,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             return []
         recovered = self.recovered_waste(
             self.fabric_grams(), self.conversion_waste_percent
-        )
+        ) + self.punched_grams() * _percent(self.waste_recovered_percent)
         return [(
             self.cutting_waste_item, recovered, self.cutting_waste_item.uom,
             ByproductValuation.STANDARD,
@@ -1529,6 +1614,8 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             (self.bopp_film_item, "the BOPP film"),
             (self.valve_patch_item, "the valve"),
             (self.cover_patch_item, "the cover sheets"),
+            (self.handle_item, "the handle"),
+            (self.metallic_film_item, "the metallic film"),
             (self.cutting_waste_item, "the cutting waste"),
         ):
             if item is not None:
@@ -1635,10 +1722,16 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{lead}{self.gusset_cm} cm gussets fold in from both sides of "
                 f"a {self.bag_width_cm} cm sack and leave no face."
             )
-        if self.bopp_micron and not self.is_laminated:
+        if (self.bopp_micron or self.metallic_micron) and not self.is_laminated:
             raise ValidationError(
-                f"{lead}BOPP film is bonded by the extruded coating. Set the "
+                f"{lead}film is bonded by the extruded coating. Set the "
                 "lamination it is laminated with."
+            )
+        hole = self.dcut_area_sqcm / (CM_PER_M * CM_PER_M)
+        if hole and hole >= self.face_area_sqm():
+            raise ValidationError(
+                f"{lead}a {self.dcut_area_sqcm} cm2 D-cut is as big as the "
+                "sack's face; there would be no sack left around it."
             )
         if self.thread_denier:
             if self.thread_grams_per_bag:
@@ -1699,7 +1792,21 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{code}: the thread needs both an item and a weight (typed, or "
                 "a denier and a fold to work it from)."
             )
+        if self.fabric.is_leno:
+            for present, what in (
+                (self.is_laminated, "coated"), (self.handle_item_id or self.handle_grams, "given a handle"),
+            ):
+                if present:
+                    raise ValidationError(
+                        f"{code}: {self.fabric.code} is leno, an open mesh, and "
+                        f"cannot be {what}."
+                    )
+        if (self.metallic_film_item_id is None) != (not self.metallic_micron):
+            raise ValidationError(
+                f"{code}: metallic film needs both the film and its thickness."
+            )
         for item, grams, label in (
+            (self.handle_item_id, self.handle_grams, "handle"),
             (self.valve_patch_item_id, self.valve_patch_grams, "valve"),
             (self.cover_patch_item_id, self.cover_patch_grams, "cover sheets"),
             (self.reducer_item_id, self.reducer_percent, "reducer"),
