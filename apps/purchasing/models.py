@@ -2621,19 +2621,18 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 # supposedly self-clearing account silently accumulates a
                 # balance nobody can explain; clearing it at the bill's
                 # rate did exactly that for every foreign purchase.
+                # What the receipts accrued, discount and all: the
+                # receipt accrued the net price, so applying this line's
+                # discount again would clear less than went in — which is
+                # exactly how a discount used to be left in the accrual.
+                # A price the vendor bills differently is variance.
                 doc, base = line.accrual(consumed, rate)
-                # Frozen before the discount, the way `accrual()` answers
-                # and a return hands it over, so that a debit note
-                # mirroring this line applies the discount once — not
-                # again on top of a figure that already carries it.
                 if line.accrued_doc is None:
                     line.accrued_doc = doc.quantize(Decimal("0.000001"))
                     line.accrued_base = base.quantize(Decimal("0.000001"))
                     super(BillLine, line).save(update_fields=[
                         "accrued_doc", "accrued_base", "updated_at",
                     ])
-                keep = Decimal("1") - line.discount_percent / Decimal("100")
-                doc, base = doc * keep, base * keep
                 debits.append((account, round_money(base), label))
                 variance_total += net - round_money(doc)
                 # What the accrual is worth at this bill's rate, against
@@ -3022,9 +3021,8 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 expense_account=line.expense_account,
             )
             if accruals and line in accruals:
-                # Before discount, as `accrual()` returns it: the entry
-                # applies the line's discount to it once, as it does for
-                # the bill.
+                # What the returned receipt lines accrued, net of the
+                # order's discount as they booked it.
                 doc, base = accruals[line]
                 note_line.accrued_doc = doc
                 note_line.accrued_base = base
@@ -3328,15 +3326,18 @@ class BillLine(TaxedLineMixin, AuditModel):
         """
         if self.accrued_base is not None and self.accrued_doc is not None:
             return self.accrued_doc, self.accrued_base
+        # What this line's own discount leaves, for the two cases below
+        # that clear at the line's own figures rather than a receipt's.
+        keep = Decimal("1") - self.discount_percent / Decimal("100")
         if self.debits_line_id:
             original = self.debits_line
             if original.accrued_base is not None and original.quantity:
                 share = self.quantity / original.quantity
                 return original.accrued_doc * share, original.accrued_base * share
-            unit = self.accrued_unit_cost()
-            return self.quantity * unit, self.quantity * unit * rate
+            doc = self.quantity * self.accrued_unit_cost() * keep
+            return doc, doc * rate
         if not self.order_line_id:
-            doc = self.quantity * self.unit_price
+            doc = self.quantity * self.unit_price * keep
             return doc, doc * rate
         candidates = [self.order_line]
         remaining = self.quantity
@@ -3365,7 +3366,10 @@ class BillLine(TaxedLineMixin, AuditModel):
             # was received before anything was frozen, or billed ahead
             # of its receipt. At the order's price and the bill's own
             # figures, which is what this line did before.
-            unit = self.accrued_unit_cost()
+            order_line = self.order_line
+            unit = order_line.unit_price * (
+                Decimal("1") - order_line.discount_percent / Decimal("100")
+            )
             doc += remaining * unit
             base += remaining * unit * rate
         return doc, base
@@ -4303,10 +4307,16 @@ class GoodsReceipt(AuditModel):
             line.accrued_unit_cost = original.accrued_unit_cost
             return
         rate = self.exchange_rate or Decimal("1")
-        line.accrued_unit_price = line.order_line.unit_price
-        line.accrued_unit_cost = (
-            line.order_line.unit_price * rate
-        ).quantize(Decimal("0.000001"))
+        # Net of the order line's discount, which is what the goods
+        # cost. Accrued at the gross price, a ten per cent discount left
+        # its ten per cent in the accrual when the bill cleared the net
+        # figure, and the stock stayed overstated by it.
+        order_line = line.order_line
+        price = order_line.unit_price * (
+            Decimal("1") - order_line.discount_percent / Decimal("100")
+        )
+        line.accrued_unit_price = price.quantize(Decimal("0.000001"))
+        line.accrued_unit_cost = (price * rate).quantize(Decimal("0.000001"))
 
     def _post_outside_step(self, line, is_return):
         """
