@@ -53,6 +53,23 @@ class PlanningSettings(AuditModel):
                   "every morning, which is how action messages get ignored; "
                   "too high and a week of lateness goes unreported.",
     )
+    planning_fence_days = models.PositiveIntegerField(
+        default=0,
+        help_text="The frozen zone, in the plant's working days from the day "
+                  "the plan runs. Nothing new is planned to be wanted inside "
+                  "it: the runs there are sequenced, the material is on the "
+                  "floor, and a plan that drops a fresh order into tomorrow is "
+                  "a plan the shift will ignore. A shortage that falls inside "
+                  "is planned for the first day outside and says it is late. "
+                  "Nought is off.",
+    )
+    demand_fence_days = models.PositiveIntegerField(
+        default=0,
+        help_text="Inside this many days only real orders count. Forecast "
+                  "that close in and still not ordered is not going to be, "
+                  "and planning for it builds stock nobody will call off. "
+                  "Nought is off.",
+    )
     horizon_days = models.PositiveIntegerField(
         default=90,
         help_text="How far ahead to plan. Demand beyond this is left alone: an "
@@ -231,6 +248,17 @@ class PlanningRun(AuditModel):
                   "link, and the one thing a planner must read before trusting "
                   "the rest.",
     )
+    fence_ends = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="The first day outside the frozen zone for this run, or "
+                  "blank where the plant runs without one.",
+    )
+    unforecast = models.TextField(
+        blank=True, editable=False,
+        help_text="Forecast this run left out because it fell inside the "
+                  "demand fence, one item per line — said rather than dropped, "
+                  "because a forecast nobody ordered against is itself news.",
+    )
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -252,6 +280,14 @@ class PlanningRun(AuditModel):
     def late(self):
         """Suggestions that needed starting before the day they were planned."""
         return [order for order in self.orders.all() if order.is_late()]
+
+    def fenced(self):
+        """Suggestions pushed out of the frozen zone: late by construction."""
+        return self.orders.filter(fenced_from__isnull=False)
+
+    def into_the_fence(self):
+        """Messages that would change something inside the frozen zone."""
+        return self.actions.filter(inside_fence=True)
 
     def expedites(self):
         return self.actions.filter(action=RescheduleAction.EXPEDITE)
@@ -356,6 +392,13 @@ class PlannedOrder(AuditModel):
                   "blend is a judgement somebody makes with the customer's "
                   "specification in front of them.",
     )
+    fenced_from = models.DateField(
+        null=True, blank=True,
+        help_text="When it was actually wanted, where that fell inside the "
+                  "frozen zone and the order was planned for the first day "
+                  "outside it instead. Kept so the lateness is on the order "
+                  "rather than absorbed into it.",
+    )
     rounded_up_by = models.DecimalField(
         max_digits=18, decimal_places=4, default=Decimal("0"),
         help_text="How much of this quantity nothing asked for: what rounding "
@@ -395,6 +438,9 @@ class PlannedOrder(AuditModel):
         """Whether this needed starting before the plan was even run."""
         return self.release_on < self.run.planned_on
 
+    def was_fenced(self):
+        return self.fenced_from is not None
+
     def why_late(self):
         """
         Lead time, a full machine, or both.
@@ -428,6 +474,11 @@ class PlannedOrder(AuditModel):
     def explanation(self):
         """The sentence a planner reads instead of the number."""
         parts = [f"{demand.describe()}" for demand in self.demands.all()]
+        if self.fenced_from is not None:
+            parts.append(
+                f"wanted {self.fenced_from}, inside the frozen zone; planned "
+                f"for {self.needed_by}, the first day the plan may change"
+            )
         if self.rounded_up_by > self.WORTH_SAYING:
             parts.append(f"{self.rounded_up_by} added by rounding the order up")
         return "; ".join(parts) or "nothing recorded"
@@ -716,6 +767,14 @@ class PlanningAction(AuditModel):
     because = models.CharField(
         max_length=255,
         help_text="The demand that sets the wanted date, in words.",
+    )
+    inside_fence = models.BooleanField(
+        default=False,
+        help_text="Acting on this would change something inside the frozen "
+                  "zone — pull an order into it, or move or cancel one already "
+                  "there. Still said, because hiding a shortage is worse than "
+                  "reporting one nobody can easily fix; flagged, because it "
+                  "is a decision for a person and not a routine reschedule.",
     )
 
     class Meta:

@@ -43,7 +43,8 @@ def _act(label, method, description):
 @admin.register(PlanningSettings)
 class PlanningSettingsAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ["__str__", "horizon_days", "default_buy_lead_days",
-                    "default_make_lead_days", "queue_days"]
+                    "default_make_lead_days", "queue_days",
+                    "planning_fence_days", "demand_fence_days"]
 
 
 class PlannedDemandInline(admin.TabularInline):
@@ -64,7 +65,8 @@ class PlanningRunAdmin(AuditableAdminMixin, admin.ModelAdmin):
                     "suggested", "late_count", "pull_in", "push_out",
                     "lapsed_count", "complete"]
     list_filter = ["warehouse"]
-    readonly_fields = ["ran_at", "cut_links", "deferred_demand"]
+    readonly_fields = ["ran_at", "cut_links", "deferred_demand",
+                       "fence_ends", "unforecast"]
 
     @admin.display(description="Suggestions")
     def suggested(self, obj):
@@ -136,7 +138,7 @@ class PlanningActionAdmin(AuditableAdminMixin, admin.ModelAdmin):
     """
 
     list_display = ["run", "action", "item", "quantity", "scheduled_on",
-                    "wanted_on", "days", "order", "because"]
+                    "wanted_on", "days", "order", "inside_fence", "because"]
     list_filter = ["run", "action", "source", "warehouse"]
     search_fields = ["item__sku", "item__name", "because"]
 
@@ -170,7 +172,8 @@ class PlannedOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
     search_fields = ["item__sku", "item__name"]
     inlines = [PlannedDemandInline]
     readonly_fields = ["work_order", "requisition_line", "firmed_at",
-                       "rounded_up_by", "lead_days", "level", "bottleneck",
+                       "rounded_up_by", "fenced_from", "lead_days", "level",
+                       "bottleneck",
                        "is_overloaded", "shown_why_late"]
     actions = [
         _act("Firmed", "firm", "Firm into a work order or requisition"),

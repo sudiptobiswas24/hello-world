@@ -39,6 +39,7 @@ class PlanningSettingsSerializer(serializers.ModelSerializer):
         model = PlanningSettings
         fields = ["id", "horizon_days", "default_buy_lead_days",
                   "default_make_lead_days", "queue_days",
+                  "planning_fence_days", "demand_fence_days",
                   "reschedule_tolerance_days", "working_days",
                   "holiday_region", "requisition_requester"]
 
@@ -66,7 +67,7 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
                   "needed_by", "release_on", "lead_days", "level", "bom",
                   "vendor", "from_warehouse", "transfer", "bottleneck",
                   "is_overloaded", "stand_in_note",
-                  "rounded_up_by",
+                  "rounded_up_by", "fenced_from",
                   "status", "work_order", "requisition_line", "firmed_at",
                   "is_late", "days_late", "why_late", "explanation", "demands"]
         read_only_fields = ["status", "work_order", "requisition_line",
@@ -82,7 +83,7 @@ class PlanningActionSerializer(serializers.ModelSerializer):
         fields = ["id", "run", "item", "warehouse", "action", "source",
                   "quantity", "scheduled_on", "wanted_on", "days",
                   "work_order", "purchase_order_line", "requisition_line",
-                  "because", "sentence"]
+                  "because", "inside_fence", "sentence"]
 
 
 class PlanningRunSerializer(serializers.ModelSerializer):
@@ -97,10 +98,12 @@ class PlanningRunSerializer(serializers.ModelSerializer):
     class Meta:
         model = PlanningRun
         fields = ["id", "warehouse", "planned_on", "horizon_end", "ran_at",
-                  "cut_links", "deferred_demand", "notes", "is_complete",
+                  "cut_links", "deferred_demand", "fence_ends", "unforecast",
+                  "notes", "is_complete",
                   "late", "lapsed", "expedites", "defers", "cancels",
                   "overloaded"]
-        read_only_fields = ["ran_at", "cut_links", "deferred_demand"]
+        read_only_fields = ["ran_at", "cut_links", "deferred_demand",
+                            "fence_ends", "unforecast"]
 
     def get_late(self, run):
         """What needed starting before the plan was even run."""

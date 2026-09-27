@@ -965,7 +965,19 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
     # what the last answer spent.
     book = LoadBook(warehouse, planned_on, horizon_end)
     levels = low_level_codes()
+    # In the plant's working days: a frozen zone of five days is five
+    # days of shifts, and a weekend inside it freezes nothing.
+    fence_ends = (
+        calendar.offset_forward(planned_on, settings.planning_fence_days)
+        if settings.planning_fence_days else None
+    )
+    demand_fence = (
+        calendar.offset_forward(planned_on, settings.demand_fence_days)
+        if settings.demand_fence_days else None
+    )
+    unforecast = []
     run = PlanningRun.objects.create(
+        fence_ends=fence_ends,
         warehouse=warehouse, planned_on=planned_on, horizon_end=horizon_end,
         cut_links="\n".join(
             f"{cut.parent.sku} consumes {cut.item.sku}, which is already above "
@@ -995,7 +1007,17 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         level = level_of(levels, item)
 
         demands = sales_demand(item, warehouse, planned_on)
-        demands += forecast_demand(item, warehouse, planned_on, horizon_end)
+        forecast = forecast_demand(item, warehouse, planned_on, horizon_end)
+        if demand_fence is not None:
+            close_in = [row for row in forecast if row.date < demand_fence]
+            if close_in:
+                ignored = sum((row.quantity for row in close_in), ZERO)
+                unforecast.append(
+                    f"{item.sku}: {_show(ignored)} {item.uom} forecast before "
+                    f"{demand_fence} and not ordered, left out."
+                )
+            forecast = [row for row in forecast if row.date >= demand_fence]
+        demands += forecast
         demands += work_order_demand(item, warehouse, planned_on)
         demands += pending.pop(item.pk, [])
         demands = [row for row in demands if row.date <= horizon_end]
@@ -1020,6 +1042,15 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
             continue
 
         for shortage in shortages:
+            fenced_from = None
+            if fence_ends is not None and shortage.date < fence_ends:
+                # Planned for the first day the plan may change, and the
+                # day it was really wanted kept on the order. Moved
+                # before the recipe is chosen, because the output will
+                # be due then, and the recipe is the one in force for
+                # output due that day.
+                fenced_from = shortage.date
+                shortage = shortage._replace(date=fence_ends)
             kind, bom = _make_or_buy(item, shortage.date)
             if bom is not None and bom.is_phantom:
                 # Never made or stocked on its own, so no planned order:
@@ -1049,7 +1080,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
             )
             order = _write(
                 run, item, warehouse, kind, bom, shortage, level, settings,
-                rule, calendar, book, route,
+                rule, calendar, book, route, fenced_from,
             )
             if kind == PlannedOrderKind.BUY and route is None:
                 _note_stand_ins(order, item, warehouse, planned_on)
@@ -1086,6 +1117,9 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
     if deferred:
         run.deferred_demand = "\n".join(deferred)
         run.save(update_fields=["deferred_demand", "updated_at"])
+    if unforecast:
+        run.unforecast = "\n".join(unforecast)
+        run.save(update_fields=["unforecast", "updated_at"])
     return run
 
 
@@ -1098,12 +1132,19 @@ SUPPLY_FIELD = {
 
 def _write_action(run, item, warehouse, message, planned_on):
     row = message.supply
+    scheduled_on = max(row.date, planned_on)
+    # Reaches into the frozen zone if either end of the move is inside
+    # it: pulling an order in to a day inside, or moving or cancelling
+    # one that is already there.
+    touched = min(scheduled_on, message.wanted_on or scheduled_on)
+    inside = run.fence_ends is not None and touched < run.fence_ends
     return PlanningAction.objects.create(
         run=run, item=item, warehouse=warehouse, action=message.action,
         source=row.source,
         quantity=message.quantity.quantize(QUANTITY, rounding=ROUND_CEILING),
-        scheduled_on=max(row.date, planned_on), wanted_on=message.wanted_on,
+        scheduled_on=scheduled_on, wanted_on=message.wanted_on,
         days=message.days, because=message.because[:255],
+        inside_fence=inside,
         **{SUPPLY_FIELD[row.source]: row.document},
     )
 
@@ -1130,7 +1171,7 @@ def _note_stand_ins(order, item, warehouse, planned_on):
 
 
 def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
-           calendar=None, book=None, route=None):
+           calendar=None, book=None, route=None, fenced_from=None):
     bottleneck = None
     overloaded = False
     source = None
@@ -1197,7 +1238,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         release_on=release_on, lead_days=days, level=level,
         bom=bom, vendor=vendor, from_warehouse=source,
         bottleneck=bottleneck, is_overloaded=overloaded,
-        rounded_up_by=shortage.rounded,
+        rounded_up_by=shortage.rounded, fenced_from=fenced_from,
     )
     for number, (row, taken) in enumerate(shortage.pegs, start=1):
         PlannedDemand.objects.create(
