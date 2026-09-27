@@ -22,6 +22,7 @@ from .views import (
     ProductionEntryViewSet,
     DowntimeReasonViewSet,
     DowntimeViewSet,
+    DispatchViewSet,
     JobWorkChallanViewSet,
     JobWorkLineViewSet,
     JobWorkLossViewSet,
@@ -76,6 +77,7 @@ router.register("stations", LoomStationViewSet, basename="station")
 router.register("job-work-challans", JobWorkChallanViewSet)
 router.register("job-work-lines", JobWorkLineViewSet)
 router.register("job-work-losses", JobWorkLossViewSet)
+router.register("dispatch", DispatchViewSet, basename="dispatch")
 router.register("station-reports", StationReportViewSet, basename="station-report")
 
 urlpatterns = router.urls

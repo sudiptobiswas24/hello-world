@@ -1398,6 +1398,12 @@ class WorkOrderOperation(AuditModel):
                   "again, so a machine re-rated next month does not re-time a "
                   "run that has already happened.",
     )
+    planned_start = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the committed schedule has it starting — a plan, "
+                  "rewritten each time the dispatcher commits one.",
+    )
+    planned_finish = models.DateTimeField(null=True, blank=True)
     planned_minutes = models.DecimalField(
         max_digits=14, decimal_places=2,
         help_text="Setup plus run time for the whole order, frozen.",

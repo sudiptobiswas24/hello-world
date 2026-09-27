@@ -5,9 +5,11 @@ from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
+from apps.core.permissions import ActionPermission
 from apps.inventory.models import Lot, Warehouse
 
 from .bom import (
@@ -1044,3 +1046,37 @@ class JobWorkLossViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         _run(serializer.save)
+
+
+
+class DispatchViewSet(viewsets.ViewSet):
+    """
+    The detailed schedule by machine. Reading it changes nothing;
+    committing it writes each operation's machine and planned times.
+    """
+
+    permission_classes = [IsAuthenticated, ActionPermission]
+    action_permission_map = {"commit": "manufacturing.change_workorderoperation"}
+
+    @staticmethod
+    def _row(row):
+        order = row["order"]
+        return {
+            "run": order.number, "item": order.item.sku,
+            "operation": row["operation"].name, "sequence": row["operation"].sequence,
+            "start": row["start"], "finish": row["finish"],
+            "changeover_minutes": str(row["changeover"]), "late": row["late"],
+            "due": order.scheduled_end,
+        }
+
+    def list(self, request):
+        from .dispatch import build, dispatch_list
+
+        board = dispatch_list(build())
+        return Response({code: [self._row(row) for row in rows] for code, rows in board.items()})
+
+    @action(detail=False, methods=["post"])
+    def commit(self, request):
+        from .dispatch import build, commit
+
+        return Response({"committed": _run(commit, build())})
