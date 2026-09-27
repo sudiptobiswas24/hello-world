@@ -24,6 +24,8 @@ from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
+from apps.inventory.models import Item
+
 from .woven import (
     FOLD_ALLOWANCE_CM, BagSpecification, FabricSpecification, TapeSpecification,
 )
@@ -96,7 +98,15 @@ class FoldAllowanceDefault:
         return attrs
 
 
+class CoatingLineSerializer(serializers.Serializer):
+    item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
+    parts = serializers.DecimalField(max_digits=10, decimal_places=3)
+
+
 class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
+    # Written through the specification, never line by line, so that
+    # the blend is checked and the bill rebuilt in the same save.
+    coating = CoatingLineSerializer(many=True, required=False, source="coating_lines")
     cut_length_cm = serializers.SerializerMethodField()
     fabric_area_sqm = serializers.SerializerMethodField()
     fabric_grams = serializers.SerializerMethodField()
@@ -109,7 +119,7 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
         fields = [
             "id", "code", "name", "bag_item", "fabric", "bag_width_cm",
             "bag_length_cm", "bottom_hem_cm", "top_hem_cm", "is_laminated",
-            "lamination_gsm", "lamination_item", "lamination_waste_percent",
+            "lamination_gsm", "coating", "lamination_waste_percent",
             "print_colours", "print_colours_back", "ink_grams_per_sqm_per_colour",
             "ink_item", "reducer_item", "reducer_percent", "solvent_item", "solvent_percent",
             "fold_type", "thread_grams_per_bag", "thread_denier", "stitches_per_dm",
@@ -142,6 +152,21 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
 
     def get_fabric_metres_per_bag(self, obj):
         return round(obj.fabric_metres_per_bag(), 4)
+
+    def _save(self, instance, validated_data):
+        blend = validated_data.pop("coating_lines", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if blend is not None:
+            instance.set_coating([(row["item"], row["parts"]) for row in blend])
+        instance.save()
+        return instance
+
+    def create(self, validated_data):
+        return self._save(BagSpecification(), validated_data)
+
+    def update(self, instance, validated_data):
+        return self._save(instance, validated_data)
 
 
 class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):

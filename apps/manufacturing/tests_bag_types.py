@@ -70,7 +70,7 @@ class BagTypesTestCase(WovenTestCase):
 
     def bopp(self, **overrides):
         values = dict(
-            is_laminated=True, lamination_gsm=Decimal("15"), lamination_item=self.coat,
+            is_laminated=True, lamination_gsm=Decimal("15"), coating=[(self.coat, 100)],
             bopp_film_item=self.film, bopp_micron=Decimal("20"),
             print_colours=4, print_colours_back=4, ink_item=self.ink,
             ink_grams_per_sqm_per_colour=Decimal("3"),
@@ -82,7 +82,7 @@ class BagTypesTestCase(WovenTestCase):
         values = dict(
             fabric=self.tube(50), bag_width_cm=Decimal("50"), bag_length_cm=Decimal("80"),
             bottom_hem_cm=Decimal("6"), top_hem_cm=Decimal("6"), closure="welded",
-            is_laminated=True, lamination_gsm=Decimal("20"), lamination_item=self.coat,
+            is_laminated=True, lamination_gsm=Decimal("20"), coating=[(self.coat, 100)],
             thread_item=None, thread_grams_per_bag=Decimal("0"),
             valve_patch_item=self.valve, valve_patch_grams=Decimal("4.5"),
             cover_patch_item=self.cover, cover_patch_grams=Decimal("7.0"),
@@ -112,7 +112,7 @@ class UnlaminatedAndLaminatedTests(BagTypesTestCase):
         self.assertEqual(bag.construction(), "unlaminated")
 
     def test_laminated(self):
-        bag = self.bag(is_laminated=True, lamination_gsm=Decimal("15"), lamination_item=self.coat)
+        bag = self.bag(is_laminated=True, lamination_gsm=Decimal("15"), coating=[(self.coat, 100)])
         self.assertTrue(close(bag.bag_grams(), "130.3363"))
         self.assertTrue(close(self.row(bag, self.coat).quantity, "18.9"))
         self.assertEqual(bag.construction(), "laminated")
@@ -179,7 +179,7 @@ class BoppTests(BagTypesTestCase):
 
     def test_film_needs_the_coat_that_bonds_it(self):
         self.refused("bonded by the extruded coating", self.bopp, is_laminated=False,
-                     lamination_gsm=Decimal("0"), lamination_item=None)
+                     lamination_gsm=Decimal("0"), coating=[])
 
 
 class ValveTests(BagTypesTestCase):
@@ -194,7 +194,7 @@ class ValveTests(BagTypesTestCase):
 
     def test_a_welded_sack_must_be_coated(self):
         self.refused("nothing to weld", self.valve_bag, is_laminated=False,
-                     lamination_gsm=Decimal("0"), lamination_item=None)
+                     lamination_gsm=Decimal("0"), coating=[])
 
     def test_a_welded_sack_has_no_thread(self):
         self.refused("is not sewn", self.valve_bag, thread_item=self.thread,
@@ -267,7 +267,7 @@ class BagTypesApiTests(BagTypesTestCase):
             "bag_width_cm": "60", "bag_length_cm": "100", "gusset_cm": "5",
             "bottom_hem_cm": "3", "top_hem_cm": "2",
             "thread_item": self.thread.pk, "thread_grams_per_bag": "1.2",
-            "is_laminated": True, "lamination_gsm": "15", "lamination_item": self.coat.pk,
+            "is_laminated": True, "lamination_gsm": "15", "coating": [{"item": self.coat.pk, "parts": "100"}],
             "bopp_film_item": self.film.pk, "bopp_micron": "20", "bopp_faces": 2,
             "print_colours": 4, "print_colours_back": 4, "ink_item": self.ink.pk,
             "ink_grams_per_sqm_per_colour": "3",

@@ -1046,10 +1046,6 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         help_text="Weight of the coating per square metre of fabric, typically "
                   "12 to 20. Applied over the same area the fabric covers.",
     )
-    lamination_item = models.ForeignKey(
-        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
-        help_text="The polymer the coating is extruded from.",
-    )
     lamination_waste_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("4"),
         help_text="Of the coating polymer fed in. A coating line's own loss, "
@@ -1432,11 +1428,13 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             f"Fabric, {self.fabric_metres_per_bag():.3f} m per bag at "
             f"{self.fabric.lay_flat_width_cm} cm",
         )]
-        if self.is_laminated and self.lamination_item is not None:
+        blend = self.coating_blend()
+        total = sum(parts for _, parts in blend)
+        for item, parts in blend:
             rows.append((
-                self.lamination_item, self.lamination_grams(),
-                self.lamination_item.uom, self.lamination_waste_percent,
-                f"Coating at {self.lamination_gsm} GSM",
+                item, self.lamination_grams() * parts / total,
+                item.uom, self.lamination_waste_percent,
+                f"Coating, {parts / total * ONE_HUNDRED:.1f}% of {self.lamination_gsm} GSM",
             ))
         if self.bopp_film_item is not None:
             rows.append((
@@ -1522,7 +1520,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             )
         unit = self.fabric.fabric_item.uom
         for item, label in (
-            (self.lamination_item, "the coating polymer"),
+            *((item, "the coating") for item, _ in self.coating_blend()),
             (self.ink_item, "the ink"),
             (self.thread_item, "the thread"),
             (self.reducer_item, "the reducer"),
@@ -1554,11 +1552,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 "lay-flat. The tube is the sack's width — one of the two is wrong."
             )
         self._check_construction()
-        if self.is_laminated and self.lamination_item is None:
-            raise ValidationError(
-                f"{self.code}: the sack is laminated and the specification does "
-                "not say what with."
-            )
+        self._check_coating()
         colours = self.print_colours + self.print_colours_back
         if colours and self.ink_item is None:
             raise ValidationError(
@@ -1575,8 +1569,60 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 "add-ons or the contract has to change."
             )
         super().save(*args, **kwargs)
+        if getattr(self, "_coating", None) is not None:
+            self.coating_lines.all().delete()
+            for item, parts in self._coating:
+                line = BagCoatingLine(specification=self, item=item, parts=parts)
+                line._via_specification = True
+                line.save()
+            self._coating = None
         self.rebuild_bom()
         self.rebuild_inspection_plan()
+
+    # -- the coating blend ----------------------------------------------
+
+    def set_coating(self, blend):
+        """
+        The coating as [(item, parts)], parts relative: 80 and 20 is the
+        same blend as 4 and 1. Held until save(), which checks it,
+        writes it and builds the bill from it in one transaction, so a
+        laminated sack is never saved with a coating it does not have.
+        """
+        self._coating = [(item, Decimal(parts)) for item, parts in blend]
+
+    def coating_blend(self):
+        if getattr(self, "_coating", None) is not None:
+            return self._coating
+        if self.pk is None:
+            return []
+        return [(line.item, line.parts)
+                for line in self.coating_lines.select_related("item__uom").order_by("id")]
+
+    def _check_coating(self):
+        blend = self.coating_blend()
+        if self.is_laminated and not blend:
+            raise ValidationError(
+                f"{self.code}: the sack is laminated and the specification does "
+                "not say what with."
+            )
+        if blend and not self.is_laminated:
+            raise ValidationError(
+                f"{self.code}: a coating blend on a sack that is not laminated "
+                "would be bought for every sack and put on none."
+            )
+        seen = set()
+        for item, parts in blend:
+            if parts <= 0:
+                raise ValidationError(
+                    f"{self.code}: {item.sku} is in the coating at {parts} parts; "
+                    "a share of the blend is more than nothing."
+                )
+            if item.pk in seen:
+                raise ValidationError(
+                    f"{self.code}: {item.sku} is in the coating twice. Give it once, "
+                    "with its whole share."
+                )
+            seen.add(item.pk)
 
     def _check_shape(self):
         """
@@ -1668,6 +1714,50 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{code}: the sack has a liner and the specification does not say "
                 "what it is, so it would weigh in every sack and cost in none."
             )
+
+
+class BagCoatingLine(AuditModel):
+    """
+    One polymer in a sack's coating blend, as a share by weight.
+
+    Written only through its specification (`set_coating()` and save),
+    which checks the blend and rebuilds the bill with it: a line saved
+    on its own would change what the sack is coated with and leave the
+    bill saying otherwise.
+    """
+
+    specification = models.ForeignKey(
+        BagSpecification, on_delete=models.CASCADE, related_name="coating_lines"
+    )
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="+")
+    parts = models.DecimalField(
+        max_digits=10, decimal_places=3,
+        help_text="Relative share by weight: 80 and 20, or 4 and 1.",
+    )
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["specification", "item"],
+                                    name="one_coating_line_per_item"),
+            models.CheckConstraint(check=Q(parts__gt=0), name="coating_parts_positive"),
+        ]
+
+    def _refuse_unless_through_specification(self):
+        if not getattr(self, "_via_specification", False):
+            raise ValidationError(
+                "A coating line is changed through its specification: "
+                "set_coating() and save it, so the blend is checked and the "
+                "bill rebuilt with it."
+            )
+
+    def save(self, *args, **kwargs):
+        self._refuse_unless_through_specification()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self._refuse_unless_through_specification()
+        return super().delete(*args, **kwargs)
 
 
 def denier_for(gsm, ends_per_inch, picks_per_inch, shrink_percent, warp_tape_denier=None):

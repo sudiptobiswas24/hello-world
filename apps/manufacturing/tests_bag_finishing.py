@@ -101,7 +101,7 @@ class ThreadTests(FinishingTestCase):
         self.refused("is not sewn", self.bag, fabric=fabric, closure="welded", thread_item=None,
                      thread_grams_per_bag=Decimal("0"), thread_denier=Decimal("1000"),
                      fold_type="SFSS", is_laminated=True, lamination_gsm=Decimal("15"),
-                     lamination_item=coat)
+                     coating=[(coat, 100)])
 
     def test_the_database_refuses_an_unknown_fold(self):
         bag = self.bag()

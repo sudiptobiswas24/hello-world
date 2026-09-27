@@ -41,7 +41,7 @@ from .costing import CostVersion, StandardCost
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
-from .woven import BagSpecification, FabricSpecification, TapeSpecification
+from .woven import BagCoatingLine, BagSpecification, FabricSpecification, TapeSpecification
 
 
 def _run(request, action, *args, **kwargs):
@@ -133,8 +133,25 @@ class FabricSpecificationAdmin(AuditableAdminMixin, admin.ModelAdmin):
         return f"{obj.metres_per_kg():.3f} m"
 
 
+class BagCoatingLineInline(admin.TabularInline):
+    """
+    Shown, not edited: a blend changes through the specification's API,
+    which checks it and rebuilds the bill in the same save.
+    """
+
+    model = BagCoatingLine
+    extra = 0
+    fields = ("item", "parts")
+    readonly_fields = ("item", "parts")
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(BagSpecification)
 class BagSpecificationAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    inlines = [BagCoatingLineInline]
     list_display = ("code", "bag_item", "shown_size", "fabric", "is_laminated",
                     "print_colours", "shown_bag_grams", "is_active")
     list_filter = ("is_laminated", "is_active")

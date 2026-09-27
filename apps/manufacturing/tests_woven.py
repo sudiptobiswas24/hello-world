@@ -98,7 +98,12 @@ class WovenTestCase(TestCase):
             cutting_waste_item=self.regrind,
         )
         values.update(overrides)
-        return BagSpecification.objects.create(**values)
+        coating = values.pop("coating", None)
+        bag = BagSpecification(**values)
+        if coating is not None:
+            bag.set_coating(coating)
+        bag.save()
+        return bag
 
     def component(self, bom, item):
         return bom.components.get(item=item)
@@ -161,7 +166,7 @@ class TheArithmeticTests(WovenTestCase):
     def test_lamination_covers_the_same_area_as_the_fabric(self):
         bag = self.bag(
             is_laminated=True, lamination_gsm=Decimal("15"),
-            lamination_item=self.virgin,
+            coating=[(self.virgin, 100)],
         )
         # 1.26 square metres at 15 GSM.
         self.assertTrue(close(bag.lamination_grams(), "18.9"))
