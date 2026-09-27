@@ -24,7 +24,7 @@ class GstBillTests(PurchaseTaxTestCase):
                 code=account_code, name=f"Input {code}", account_type=AccountType.ASSET
             )
             return Tax.objects.create(
-                code=code, name=code, rate=Decimal(rate),
+                code=code, name=code, rate=Decimal(rate), gst_head=code[:4].lower(),
                 collected_account=account, paid_account=account,
             )
 
@@ -57,3 +57,28 @@ class GstBillTests(PurchaseTaxTestCase):
         self.assertEqual(self.balance(self.cgst.paid_account), Decimal("90"))
         self.assertEqual(self.balance(self.sgst.paid_account), Decimal("90"))
         self.assertEqual(self.balance(self.igst.paid_account), Decimal("0"))
+
+    def test_a_debit_note_gives_back_what_was_charged_after_the_vendor_moves(self):
+        profile = PartyTaxProfile.objects.create(party=self.vendor, gstin="27AABCD1234E2Z7")
+        bill = self.taxed_bill("10", "100", taxes=[self.cgst, self.sgst])
+        bill.post()
+        profile.gstin = "29AABCE5678F1ZD"
+        profile.gst_state = ""
+        profile.save()
+
+        note = bill.create_debit_note()
+
+        self.assertEqual(self.balance(self.cgst.paid_account), Decimal("0"))
+        self.assertEqual(self.balance(self.sgst.paid_account), Decimal("0"))
+        self.assertEqual(self.balance(self.igst.paid_account), Decimal("0"))
+        self.assertEqual(note.party_gstin, "27AABCD1234E2Z7")
+
+    def test_a_bill_records_the_vendor_as_it_stood(self):
+        PartyTaxProfile.objects.create(party=self.vendor, gstin="29AABCE5678F1ZD")
+        bill = self.taxed_bill("10", "100", taxes=[self.cgst, self.sgst])
+        bill.post()
+        bill.refresh_from_db()
+
+        self.assertEqual((bill.party_gstin, bill.place_of_supply), ("29AABCE5678F1ZD", "29"))
+        rows = [(r.gst_head, r.amount) for r in bill.lines.get().recorded_taxes.all()]
+        self.assertEqual(rows, [("igst", Decimal("180.00"))])

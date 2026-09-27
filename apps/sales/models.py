@@ -48,7 +48,13 @@ from apps.inventory.models import (
 from apps.inventory.valuation import post_inventory_entry
 from apps.quality.release import check_released
 
-from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
+from apps.accounting.mixins import (
+    PostedLineMixin,
+    PostedTaxDocumentMixin,
+    RecordedLineTax,
+    TaxedDocumentMixin,
+    TaxedLineMixin,
+)
 
 from apps.accounting.settlement import (
     amount_overdue,
@@ -830,7 +836,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return self.quantity_invoiced() >= self.quantity
 
 
-class Invoice(TaxedDocumentMixin, AuditModel):
+class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Sales invoice. Posting creates a balanced JournalEntry (Dr Accounts
     Receivable / Cr Revenue / Cr tax accounts) via Accounting — Sales
@@ -920,6 +926,12 @@ class Invoice(TaxedDocumentMixin, AuditModel):
 
     def is_credit_note(self):
         return bool(self.credits_id)
+
+    def tax_party(self):
+        return self.customer
+
+    def corrected_document(self):
+        return self.credits
 
     def render_pdf(self):
         from .documents import render_invoice_pdf
@@ -1455,13 +1467,15 @@ class Invoice(TaxedDocumentMixin, AuditModel):
             entry = self._build_journal_entry(self.exchange_rate)
             entry.post()
 
+        self.record_taxes()
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
         super(Invoice, self).save(
             update_fields=[
                 "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
-                "posted", "posted_at", "updated_at",
+                "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
+                "place_of_supply", "updated_at",
             ]
         )
 
@@ -1529,7 +1543,7 @@ class Invoice(TaxedDocumentMixin, AuditModel):
         return credit_note
 
 
-class InvoiceLine(TaxedLineMixin, AuditModel):
+class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     invoice = models.ForeignKey(Invoice, related_name="lines", on_delete=models.CASCADE)
     order_line = models.ForeignKey(
         SalesOrderLine, null=True, blank=True, on_delete=models.PROTECT,
@@ -1551,6 +1565,15 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
 
     def party_for_tax(self):
         return self.invoice.customer
+
+    def document(self):
+        return self.invoice
+
+    def corrected_line(self):
+        return self.credits_line
+
+    def corrections(self):
+        return self.credit_lines.filter(invoice__posted=True)
 
     def __str__(self):
         return f"{self.label()} x{self.quantity}"
@@ -1587,6 +1610,10 @@ class InvoiceLine(TaxedLineMixin, AuditModel):
                 "Cannot delete a line on a posted invoice. Issue a credit note instead."
             )
         super().delete(*args, **kwargs)
+
+
+class InvoiceLineTax(RecordedLineTax):
+    line = models.ForeignKey(InvoiceLine, on_delete=models.CASCADE, related_name="recorded_taxes")
 
 
 class InvoicePayment(AuditModel):
@@ -2856,7 +2883,7 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
     # would book the sale twice, once on the deposit and once on the
     # invoice that draws it down.
     invoices = Invoice.objects.filter(posted=True, is_down_payment=False).prefetch_related(
-        "lines__taxes", "lines__item"
+        "lines__taxes", "lines__item", "lines__recorded_taxes__tax"
     ).select_related("customer")
     if date_from:
         invoices = invoices.filter(invoice_date__gte=date_from)

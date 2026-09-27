@@ -15,7 +15,7 @@ from django.db import models
 
 from apps.core.models import Company
 
-from .models import compute_taxes, round_money
+from .models import Tax, compute_taxes, round_money
 
 
 class TaxedLineMixin(models.Model):
@@ -65,6 +65,14 @@ class TaxedLineMixin(models.Model):
         """
         return None
 
+    def fixed_tax_amounts(self):
+        """
+        [(tax, amount)] this line is bound to rather than computes, or None
+        when it computes. Only a line that posts is ever bound; see
+        PostedLineMixin.
+        """
+        return None
+
     def effective_taxes(self):
         """
         The taxes that actually apply, after the party's fiscal position
@@ -72,6 +80,9 @@ class TaxedLineMixin(models.Model):
         there decorative: an export customer still gets charged VAT, and a
         reverse-charge vendor still has input tax claimed on their bill.
         """
+        fixed = self.fixed_tax_amounts()
+        if fixed is not None:
+            return [tax for tax, _ in fixed]
         taxes = list(self.taxes.all())
         party = self.party_for_tax()
         if not taxes or party is None:
@@ -96,6 +107,9 @@ class TaxedLineMixin(models.Model):
 
     def tax_amounts(self):
         """[(tax, amount)] for this line, honouring inclusive and compound taxes."""
+        fixed = self.fixed_tax_amounts()
+        if fixed is not None:
+            return fixed
         taxes = self.effective_taxes()
         if not taxes:
             return []
@@ -152,6 +166,11 @@ class TaxedDocumentMixin(models.Model):
         if Company.get().tax_rounding != "document":
             return {line: line.tax_amounts() for line in lines}
 
+        # A line bound to what was posted is not re-rounded with the rest:
+        # re-allocating its pennies is recomputing a fact.
+        fixed = {line: line.fixed_tax_amounts() for line in lines}
+        lines = [line for line in lines if fixed[line] is None]
+
         # Group by the exact set of taxes that applies, because compound
         # and price-included taxes depend on what else is on the line.
         groups = defaultdict(list)
@@ -177,6 +196,7 @@ class TaxedDocumentMixin(models.Model):
                     allocated += part
                     amounts[line].append((tax, part))
                 amounts[biggest].append((tax, target - allocated))
+        amounts.update({line: bound for line, bound in fixed.items() if bound is not None})
         return amounts
 
     def tax_total(self):
@@ -195,3 +215,188 @@ class TaxedDocumentMixin(models.Model):
             for tax, amount in amounts:
                 totals[tax] += amount
         return dict(totals)
+
+
+class PostedLineMixin(models.Model):
+    """
+    A line of a document that posts to the ledger: an invoice line, a
+    bill line.
+
+    What such a line bore in tax is a fact once it posts, recorded in its
+    `recorded_taxes` and never recomputed. Recomputing it reads today's
+    configuration: the party moved state, took an export position, or
+    GST was switched on, and a posted invoice would quietly show taxes it
+    never charged, disagreeing with its own journal entry and with the
+    return it was filed in.
+
+    A correcting line (a credit note's, a debit note's) is bound to the
+    line it corrects: the same taxes, in proportion to how much of the
+    line's value it gives back, the last of it taking whatever is left so
+    that what is reversed never differs from what was charged by a penny.
+    "The last of it" is measured in value, not quantity: a price
+    adjustment credits every unit at a fraction of the price, and by
+    quantity would reverse the whole tax.
+    Before this, a credit note re-derived its taxes from the party as it
+    stood, so a customer who moved state between invoice and credit note
+    had central and state tax charged and integrated tax reversed.
+    """
+
+    hsn_code = models.CharField(
+        max_length=8, blank=True, editable=False,
+        help_text="HSN or SAC as it stood when the line posted — the code "
+                  "its return reports, whatever the item says later.",
+    )
+
+    class Meta:
+        abstract = True
+
+    def document(self):
+        raise NotImplementedError
+
+    def corrected_line(self):
+        """The line this one corrects, on a credit or debit note."""
+        return None
+
+    def corrections(self):
+        """Posted lines correcting this one."""
+        raise NotImplementedError
+
+    def current_hsn(self):
+        corrected = self.corrected_line()
+        if corrected is not None and corrected.document().taxes_recorded:
+            return corrected.hsn_code
+        if getattr(self, "item_id", None):
+            return self.item.hsn_code
+        if getattr(self, "charge_id", None):
+            return self.charge.hsn_code
+        return ""
+
+    def fixed_tax_amounts(self):
+        if self.document().taxes_recorded:
+            return [(row.tax, row.amount) for row in self.recorded_taxes.all()]
+        original = self.corrected_line()
+        if original is None or not original.document().taxes_recorded:
+            return None
+        rows = list(original.recorded_taxes.all())
+        others = [line for line in original.corrections() if line.pk != self.pk]
+        net = self.net_amount()
+        if net >= original.net_amount() - sum(
+            (line.net_amount() for line in others), Decimal("0")
+        ):
+            taken = defaultdict(Decimal)
+            for line in others:
+                for tax, amount in line.tax_amounts():
+                    taken[tax.pk] += amount
+            return [(row.tax, row.amount - taken[row.tax_id]) for row in rows]
+        return [
+            (row.tax, round_money(row.amount * net / row.taxable) if row.taxable else row.amount)
+            for row in rows
+        ]
+
+
+class RecordedLineTax(models.Model):
+    """
+    One tax as a posted line bore it: the rate and the return column
+    frozen with it, because a rate is changed by notification and a
+    column by whoever edits the tax next.
+    """
+
+    tax = models.ForeignKey(Tax, on_delete=models.PROTECT, related_name="+")
+    rate = models.DecimalField(max_digits=9, decimal_places=4)
+    gst_head = models.CharField(max_length=8, blank=True)
+    taxable = models.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text="The line's net amount the tax was charged on, in the "
+                  "document's currency.",
+    )
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        abstract = True
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0, taxable__gte=0),
+                name="%(app_label)s_%(class)s_not_negative",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError(
+                "What a posted line bore in tax is a fact. Correct it with a "
+                "credit or debit note."
+            )
+        super().save(*args, **kwargs)
+
+
+class PostedTaxDocumentMixin(models.Model):
+    """
+    The tax facts a document freezes when it posts: each line's taxes,
+    and the party's registration and state as they stood.
+
+    A correcting note takes its original's registration and state, not
+    the party's current ones: under GST a credit note is reported
+    against the invoice it corrects, and a customer's re-registration
+    does not move an old sale.
+    """
+
+    taxes_recorded = models.BooleanField(
+        default=False, editable=False,
+        help_text="Set when posting wrote down what each line bore. A "
+                  "document posted before that existed computes, as it "
+                  "always did.",
+    )
+    party_gstin = models.CharField(max_length=15, blank=True, editable=False)
+    party_registration = models.CharField(
+        max_length=16, blank=True, editable=False,
+        help_text="Regular, SEZ, overseas… as it stood: which table of a "
+                  "return the document is filed in.",
+    )
+    place_of_supply = models.CharField(max_length=2, blank=True, editable=False)
+
+    class Meta:
+        abstract = True
+
+    def tax_party(self):
+        raise NotImplementedError
+
+    def corrected_document(self):
+        return None
+
+    def record_taxes(self):
+        """
+        Write down what every line bore. Called last in posting, after the
+        journal entry is built from the same figures: a posting that fails
+        before this point leaves nothing that claims to be recorded.
+        """
+        from .gst import GstSettings
+
+        under_gst = GstSettings.active() is not None
+        original = self.corrected_document()
+        if original is not None and original.taxes_recorded:
+            self.party_gstin = original.party_gstin
+            self.party_registration = original.party_registration
+            self.place_of_supply = original.place_of_supply
+        else:
+            profile = getattr(self.tax_party(), "tax_profile", None)
+            self.party_gstin = profile.gstin if profile else ""
+            self.party_registration = profile.gst_registration if profile else ""
+            self.place_of_supply = (profile.place_of_supply() or "") if profile else ""
+
+        for line, amounts in self.line_tax_amounts().items():
+            for tax, amount in amounts:
+                if under_gst and not tax.gst_head:
+                    raise ValidationError(
+                        f"Tax {tax.code} has no GST head, so no return can say "
+                        "which column it belongs in. Set it before posting."
+                    )
+                line.recorded_taxes.create(
+                    tax=tax, rate=tax.rate, gst_head=tax.gst_head,
+                    taxable=line.net_amount(), amount=amount,
+                )
+            hsn = line.current_hsn()
+            if hsn != line.hsn_code:
+                type(line).objects.filter(pk=line.pk).update(hsn_code=hsn)
+                line.hsn_code = hsn
+        self.taxes_recorded = True

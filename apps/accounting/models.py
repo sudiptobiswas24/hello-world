@@ -348,6 +348,19 @@ class Tax(AuditModel):
         help_text="Purchases: where tax paid is debited (usually a recoverable asset).",
     )
     is_active = models.BooleanField(default=True)
+    gst_head = models.CharField(
+        max_length=8, blank=True,
+        choices=[
+            ("cgst", "Central tax (CGST)"),
+            ("sgst", "State or union territory tax (SGST/UTGST)"),
+            ("igst", "Integrated tax (IGST)"),
+            ("cess", "Compensation cess"),
+            ("other", "Not GST"),
+        ],
+        help_text="Which column of a GST return this tax is reported in. "
+                  "Blank is refused on a document posted under GST: a return "
+                  "cannot put an unclassified tax anywhere.",
+    )
 
     class Meta:
         verbose_name_plural = "taxes"
@@ -463,12 +476,22 @@ class ChargeType(AuditModel):
                   "actually cost to get here.",
     )
     is_active = models.BooleanField(default=True)
+    hsn_code = models.CharField(
+        max_length=8, blank=True,
+        help_text="SAC for a service charge — 9965 for goods transport, say.",
+    )
 
     class Meta:
         ordering = ["code"]
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        from .gst import validate_hsn
+
+        self.hsn_code = validate_hsn(self.hsn_code)
+        super().save(*args, **kwargs)
 
     def account_for(self, is_sale):
         account = self.revenue_account if is_sale else self.expense_account
@@ -606,6 +629,10 @@ class PartyTaxProfile(AuditModel):
             raise ValidationError(f"{self.gst_state} is not a GST state code.")
 
     def place_of_supply(self):
+        from .gst import OVERSEAS_PLACE
+
+        if self.gst_registration == "overseas":
+            return OVERSEAS_PLACE
         return self.gst_state
 
     def applicable_taxes(self, taxes):

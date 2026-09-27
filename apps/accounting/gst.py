@@ -52,6 +52,10 @@ STATES = {
 }
 STATE_CHOICES = sorted(STATES.items())
 
+# Place of supply for a supply out of India. Not a state a party can be
+# in, so not in STATES: it follows from an overseas registration.
+OVERSEAS_PLACE = "96"
+
 _CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _SHAPE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 _HSN = re.compile(r"^([0-9]{4}|[0-9]{6}|[0-9]{8})$")

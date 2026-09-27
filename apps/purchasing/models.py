@@ -9,7 +9,13 @@ from django.utils import timezone
 
 from django.db.models import Q
 
-from apps.accounting.mixins import TaxedDocumentMixin, TaxedLineMixin
+from apps.accounting.mixins import (
+    PostedLineMixin,
+    PostedTaxDocumentMixin,
+    RecordedLineTax,
+    TaxedDocumentMixin,
+    TaxedLineMixin,
+)
 from apps.accounting.models import (
     Account,
     ChargeType,
@@ -2138,7 +2144,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return max(self.quantity_billed() - self.quantity_received(), Decimal("0"))
 
 
-class Bill(TaxedDocumentMixin, AuditModel):
+class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
     a balanced JournalEntry (Dr Expense per line / Cr Accounts Payable)
@@ -2226,6 +2232,12 @@ class Bill(TaxedDocumentMixin, AuditModel):
 
     def is_debit_note(self):
         return bool(self.debits_id)
+
+    def tax_party(self):
+        return self.vendor
+
+    def corrected_document(self):
+        return self.debits
 
     def _rate_for_posting(self):
         """
@@ -2777,12 +2789,14 @@ class Bill(TaxedDocumentMixin, AuditModel):
             entry = self._build_journal_entry(self.exchange_rate)
             entry.post()
 
+        self.record_taxes()
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
         super(Bill, self).save(update_fields=[
             "number", "bill_date", "due_date", "exchange_rate", "journal_entry",
-            "posted", "posted_at", "updated_at",
+            "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
+            "place_of_supply", "updated_at",
         ])
 
         if not self.is_debit_note():
@@ -3034,7 +3048,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
         return debit_note
 
 
-class BillLine(TaxedLineMixin, AuditModel):
+class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     bill = models.ForeignKey(Bill, related_name="lines", on_delete=models.CASCADE)
     debits_line = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="debit_lines",
@@ -3272,6 +3286,15 @@ class BillLine(TaxedLineMixin, AuditModel):
     def quantity_debitable(self):
         return self.quantity - self.quantity_debited()
 
+    def document(self):
+        return self.bill
+
+    def corrected_line(self):
+        return self.debits_line
+
+    def corrections(self):
+        return self.debit_lines.filter(bill__posted=True)
+
     def unbilled_receipt_quantity(self):
         """
         How much of this item has been received but not yet billed — the
@@ -3475,6 +3498,10 @@ class BillLine(TaxedLineMixin, AuditModel):
                 "Cannot delete a line on a posted bill. Issue a debit note instead."
             )
         super().delete(*args, **kwargs)
+
+
+class BillLineTax(RecordedLineTax):
+    line = models.ForeignKey(BillLine, on_delete=models.CASCADE, related_name="recorded_taxes")
 
 
 class PrepaymentApplication(AuditModel):
