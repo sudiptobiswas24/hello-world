@@ -24,7 +24,17 @@ from rest_framework.response import Response
 from . import barcode
 from .rolls import FabricRoll
 from .shifts import Shift
-from .station import CoreType, LoomStation, latest_tape_lot, record_roll, run_on, specification_for
+from .station import (
+    CoreType,
+    LoomStation,
+    LoomWaste,
+    TapeCount,
+    latest_tape_lot,
+    record_roll,
+    run_on,
+    specification_for,
+)
+from .station_report import morning_report
 
 SIGNED_IN_FOR = datetime.timedelta(hours=12)
 
@@ -103,7 +113,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "locked": station.is_locked(now),
             "looms": [
                 {"code": machine.code,
-                 "contractor": machine.contractor.name if machine.contractor_id else None}
+                 "contractor": machine.contractor.name if machine.contractor_id else None,
+                 "contractor_code": machine.contractor.code if machine.contractor_id else None}
                 for machine in station.machines.select_related("contractor").order_by("code")
             ],
             "cores": [
@@ -196,6 +207,59 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "label": f"label/{roll.lot.code}/",
         }, status=201)
 
+    # -- the tape balance's own figures ------------------------------------
+
+    def _contractor(self, station, code):
+        machine = station.machines.filter(contractor__code=code).select_related(
+            "contractor").first()
+        if machine is None:
+            raise DRFValidationError([f"No loom here is run by {code}."])
+        return machine.contractor
+
+    @action(detail=True, methods=["post"], url_path="tape-count")
+    def tape_count(self, request, code=None):
+        """
+        Tape on a contractor's looms when a shift-day closed. The day is
+        given, not guessed from the clock: the eight o'clock count closes
+        yesterday, and at shift change the clock says today.
+        """
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        contractor = self._contractor(station, request.data.get("contractor"))
+        try:
+            shift_date = datetime.date.fromisoformat(str(request.data.get("shift_date")))
+        except ValueError:
+            raise DRFValidationError(["shift_date must be a date."])
+        kg = _decimal(request.data, "kg")
+        if kg < 0:
+            raise DRFValidationError(["A count cannot be negative."])
+        if TapeCount.objects.filter(station=station, contractor=contractor,
+                                    shift_date=shift_date).exists():
+            raise DRFValidationError([f"Tape for {contractor.name} on {shift_date} is "
+                                      "already counted."])
+        TapeCount.objects.create(station=station, contractor=contractor,
+                                 shift_date=shift_date, kg=kg, counted_by=operator,
+                                 counted_at=timezone.now())
+        return Response({"contractor": contractor.code, "shift_date": shift_date,
+                         "kg": _exact(kg)}, status=201)
+
+    @action(detail=True, methods=["post"])
+    def waste(self, request, code=None):
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        contractor = self._contractor(station, request.data.get("contractor"))
+        kg = _decimal(request.data, "kg")
+        if kg <= 0:
+            raise DRFValidationError(["Weigh some waste."])
+        now = timezone.now()
+        shift = Shift.covering(now)
+        if shift is None:
+            raise DRFValidationError(["No shift is running."])
+        LoomWaste.objects.create(station=station, contractor=contractor,
+                                 shift_date=shift.shift_date_for(now), kg=kg,
+                                 weighed_by=operator, weighed_at=now)
+        return Response({"contractor": contractor.code, "kg": _exact(kg)}, status=201)
+
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
         """
@@ -224,3 +288,58 @@ class LoomStationViewSet(viewsets.GenericViewSet):
 <div class="code">{escape(text)}</div></div></body></html>"""
         return HttpResponse(page, content_type="text/html; charset=utf-8")
 
+
+
+class CanReadStationReports(BasePermission):
+    def has_permission(self, request, view):
+        return request.user.has_perm("manufacturing.view_loomstation")
+
+
+def report_payload(report):
+    """The morning report as JSON, figures as exact strings."""
+    return {
+        "station": report["station"].code,
+        "shift_date": report["shift_date"],
+        "rolls": report["rolls"],
+        "by_shift": report["by_shift"],
+        "from_scale": report["from_scale"],
+        "manual": report["manual"],
+        "manual_percent": _exact(report["manual_percent"]),
+        "looms": [
+            {"loom": row["loom"], "rolls": row["rolls"],
+             "from_weight": _exact(row["from_weight"]), "declared": _exact(row["declared"]),
+             "variance_percent": _exact(row["variance_percent"]),
+             "tolerance_percent": _exact(row["tolerance"]), "over": row["over"]}
+            for row in report["looms"]
+        ],
+        "overrides": [
+            {**row, "net_kg": _exact(row["net_kg"])} for row in report["overrides"]
+        ],
+        "balances": [
+            {"contractor": row["contractor"].code, "name": row["contractor"].name,
+             "missing": row["missing"], "over": row["over"],
+             **{key: _exact(row[key]) for key in (
+                 "opening", "issued", "closing", "consumed", "rolls_kg", "waste",
+                 "unaccounted", "unaccounted_percent")}}
+            for row in report["balances"]
+        ],
+        "exceptions": report["exceptions"],
+    }
+
+
+class StationReportViewSet(viewsets.GenericViewSet):
+    """The 8 AM report, for whoever manages the station rather than runs it."""
+
+    queryset = LoomStation.objects.all()
+    lookup_field = "code"
+    permission_classes = [IsAuthenticated, CanReadStationReports]
+
+    def retrieve(self, request, code=None):
+        station = self.get_object()
+        value = request.query_params.get("date")
+        try:
+            shift_date = (datetime.date.fromisoformat(value) if value
+                          else timezone.localdate() - datetime.timedelta(days=1))
+        except ValueError:
+            raise DRFValidationError(["date must be YYYY-MM-DD."])
+        return Response(report_payload(morning_report(station, shift_date)))

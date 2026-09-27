@@ -160,6 +160,55 @@ class CoreType(AuditModel):
         return f"{self.code} ({self.tare_kg} kg)"
 
 
+class TapeCount(AuditModel):
+    """
+    Tape found on a contractor's looms when the shift-day closed.
+
+    Recorded against the shift-day it closes, so the next day's opening
+    figure is simply this one. A day with either count missing cannot
+    be balanced, and the morning report says so rather than counting
+    the missing tape as none.
+    """
+
+    station = models.ForeignKey(LoomStation, on_delete=models.PROTECT, related_name="tape_counts")
+    contractor = models.ForeignKey("core.Party", on_delete=models.PROTECT, related_name="+")
+    shift_date = models.DateField()
+    kg = models.DecimalField(max_digits=12, decimal_places=3)
+    counted_by = models.ForeignKey("hr.Employee", on_delete=models.PROTECT, related_name="+")
+    counted_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-shift_date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["station", "contractor", "shift_date"],
+                name="one_tape_count_per_contractor_per_day",
+            ),
+            models.CheckConstraint(check=Q(kg__gte=0), name="tape_count_not_negative"),
+        ]
+
+
+class LoomWaste(AuditModel):
+    """
+    Loom waste weighed at the station: the tape that became neither
+    fabric nor anything else. A measurement for the tape balance, like
+    the paper register it replaces; it is not a movement of stock.
+    """
+
+    station = models.ForeignKey(LoomStation, on_delete=models.PROTECT, related_name="waste")
+    contractor = models.ForeignKey("core.Party", on_delete=models.PROTECT, related_name="+")
+    shift_date = models.DateField()
+    kg = models.DecimalField(max_digits=12, decimal_places=3)
+    weighed_by = models.ForeignKey("hr.Employee", on_delete=models.PROTECT, related_name="+")
+    weighed_at = models.DateTimeField()
+
+    class Meta:
+        ordering = ["-weighed_at"]
+        constraints = [
+            models.CheckConstraint(check=Q(kg__gt=0), name="loom_waste_positive"),
+        ]
+
+
 # -- what a loom is making ---------------------------------------------
 
 

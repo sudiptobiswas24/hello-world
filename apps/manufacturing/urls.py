@@ -1,6 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
-from .station_views import LoomStationViewSet
+from .station_views import LoomStationViewSet, StationReportViewSet
 from .views import (
     BomSubstituteViewSet,
     CostVersionViewSet,
@@ -70,5 +70,6 @@ router.register("downtime", DowntimeViewSet)
 router.register("operator-yield", OperatorYieldViewSet, basename="operator-yield")
 router.register("lot-trace", LotTraceViewSet, basename="lot-trace")
 router.register("stations", LoomStationViewSet, basename="station")
+router.register("station-reports", StationReportViewSet, basename="station-report")
 
 urlpatterns = router.urls

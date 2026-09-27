@@ -1760,6 +1760,12 @@ class MaterialIssue(AuditModel):
         max_length=8, choices=IssueDirection.choices, default=IssueDirection.ISSUE
     )
     issue_date = models.DateField()
+    contractor = models.ForeignKey(
+        "core.Party", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Whose looms the material went to, where a contractor runs "
+                  "them: the tape they are then accountable for.",
+    )
     warehouse = models.ForeignKey(
         Warehouse, on_delete=models.PROTECT, related_name="material_issues"
     )
