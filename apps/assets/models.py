@@ -154,12 +154,43 @@ class FixedAsset(AuditModel):
     def __str__(self):
         return f"{self.number or f'FA-draft-{self.pk}'} {self.name}"
 
+    # What every depreciation charge was worked out from. Once the asset
+    # has left draft, changing any of them would leave the charges
+    # already posted computed from figures the asset no longer has.
+    FIXED_IN_SERVICE = (
+        "category_id", "acquisition_date", "in_service_date", "cost",
+        "salvage_value", "life_months",
+    )
+
     def save(self, *args, **kwargs):
         # `clean()` is not called for an asset made in code — which is
         # every asset capitalised from a bill — or through the API, so
         # the question is asked here, where every one of them passes.
         self.clean()
+        if self.pk:
+            previous = FixedAsset.objects.filter(pk=self.pk).first()
+            if previous is not None and previous.status != AssetStatus.DRAFT:
+                changed = [
+                    name for name in self.FIXED_IN_SERVICE
+                    if getattr(previous, name) != getattr(self, name)
+                ]
+                if changed:
+                    raise ValidationError(
+                        f"{self} is {previous.get_status_display().lower()}; "
+                        f"its {', '.join(n.replace('_id', '') for n in changed)} "
+                        "can no longer change. Its depreciation was worked out "
+                        "from them — dispose of it and register it again."
+                    )
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.status != AssetStatus.DRAFT or self.capitalisation_entry_id:
+            raise ValidationError(
+                f"{self} is on the books — in service, disposed of, or "
+                "capitalised from a bill. Only a draft typed in by hand can "
+                "be deleted; un-capitalise or dispose of the rest."
+            )
+        return super().delete(*args, **kwargs)
 
     def clean(self):
         self.acquisition_date = to_date(self.acquisition_date)
