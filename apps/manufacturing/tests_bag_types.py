@@ -72,7 +72,8 @@ class BagTypesTestCase(WovenTestCase):
         values = dict(
             is_laminated=True, lamination_gsm=Decimal("15"), lamination_item=self.coat,
             bopp_film_item=self.film, bopp_micron=Decimal("20"),
-            print_colours=4, ink_item=self.ink,
+            print_colours=4, print_colours_back=4, ink_item=self.ink,
+            ink_grams_per_sqm_per_colour=Decimal("3"),
         )
         values.update(overrides)
         return self.gusseted(**values)
@@ -123,7 +124,7 @@ class GussetedTests(BagTypesTestCase):
         self.assertEqual(bag.face_width_cm(), Decimal("50"))
         self.assertTrue(close(bag.fabric_area_sqm(), "1.26"))
         self.assertTrue(close(bag.bag_grams(), "111.4363"))
-        self.assertTrue(close(bag.printed_area_sqm(), "1.0"))
+        self.assertTrue(close(bag.face_area_sqm(), "0.5"))
         self.assertEqual(bag.construction(), "unlaminated, gusseted")
 
     def test_gussets_that_meet_leave_no_face(self):
@@ -268,7 +269,8 @@ class BagTypesApiTests(BagTypesTestCase):
             "thread_item": self.thread.pk, "thread_grams_per_bag": "1.2",
             "is_laminated": True, "lamination_gsm": "15", "lamination_item": self.coat.pk,
             "bopp_film_item": self.film.pk, "bopp_micron": "20", "bopp_faces": 2,
-            "print_colours": 4, "ink_item": self.ink.pk,
+            "print_colours": 4, "print_colours_back": 4, "ink_item": self.ink.pk,
+            "ink_grams_per_sqm_per_colour": "3",
         }, format="json")
         self.assertEqual(response.status_code, 201, response.content)
         body = response.json()

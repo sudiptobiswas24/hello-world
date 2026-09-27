@@ -181,6 +181,7 @@ class SolveTests(ContractTestCase):
 
 class SolveApiTests(ContractTestCase):
     body = {"bag_width_cm": "60", "bag_length_cm": "100", "target_grams": "111.437",
+            "thread_grams_per_bag": "1.2",
             "ends_per_inch": "10", "picks_per_inch": "10"}
 
     def client_with(self, *codenames):

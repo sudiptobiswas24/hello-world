@@ -89,6 +89,26 @@ CM_PER_M = Decimal("100")
 # A sack is cut from a woven tube, which laid flat is two thicknesses.
 # BagSpecification.save refuses flat fabric, so this is always true there.
 TUBE_LAYERS = Decimal("2")
+# The bottom as the trade names it: single or double fold, single or
+# double stitch, or easy-open. The fold is fabric (inches: 1.25 single,
+# 2 double, 0.75 easy-open without fold); the stitch is thread rows.
+FOLD_TYPES = [
+    ("", "Not stated"),
+    ("SFSS", "Single fold, single stitch"), ("SFDS", "Single fold, double stitch"),
+    ("DFSS", "Double fold, single stitch"), ("DFDS", "Double fold, double stitch"),
+    ("EZWF", "Easy-open with fold"), ("EZWOF", "Easy-open without fold"),
+]
+# In centimetres to the two places the hem is stored at: a figure with
+# more would build the bill from 3.175 and read back as 3.18.
+FOLD_ALLOWANCE_CM = {
+    "SFSS": Decimal("3.18"), "SFDS": Decimal("3.18"), "DFSS": Decimal("5.08"),
+    "DFDS": Decimal("5.08"), "EZWF": Decimal("3.18"), "EZWOF": Decimal("1.91"),
+}
+BOTTOM_STITCH_ROWS = {"SFSS": 1, "SFDS": 2, "DFSS": 1, "DFDS": 2, "EZWF": 1, "EZWOF": 1}
+# Chain stitch at the reference 12.5 stitches a decimetre takes 4.5
+# times the seam's length in thread.
+CHAIN_STITCH_FACTOR = Decimal("4.5")
+REFERENCE_STITCHES_PER_DM = Decimal("12.5")
 
 # The batch each generated BOM is written for. A thousand sacks makes
 # grammes per bag and kilos per batch the same number; a hundred kilos
@@ -996,6 +1016,12 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                   "the gusset moves fabric from the face to the side, and adds "
                   "none.",
     )
+    fold_type = models.CharField(
+        max_length=8, choices=FOLD_TYPES, blank=True, default="",
+        help_text="How the bottom is folded and stitched. Sets the stitch rows "
+                  "a computed thread is worked from, and offers the fold's "
+                  "fabric allowance when none is given.",
+    )
     bottom_hem_cm = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal("3"),
         help_text="Fabric turned up and stitched at the bottom. Real fabric, "
@@ -1003,8 +1029,9 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     )
     top_hem_cm = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal("2"),
-        help_text="Fabric folded at the mouth, hemmed or left raw. On a "
-                  "block-bottom valve sack, the top end's fold allowance.",
+        help_text="Fabric folded and hemmed at the mouth, one stitch row; "
+                  "nought for a raw mouth. On a block-bottom valve sack, the "
+                  "top end's fold allowance.",
     )
     closure = models.CharField(
         max_length=8, default="sewn",
@@ -1046,14 +1073,14 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         max_digits=6, decimal_places=3, default=Decimal("4"),
         help_text="Of the film fed in: registration, trim and splices.",
     )
-    print_colours = models.PositiveSmallIntegerField(default=0)
-    printed_faces = models.PositiveSmallIntegerField(
-        default=2,
-        help_text="How many faces of the sack carry the print. Two is the usual "
-                  "answer and it is twice the ink of one.",
+    print_colours = models.PositiveSmallIntegerField(
+        default=0, help_text="Colours printed on the front face.",
+    )
+    print_colours_back = models.PositiveSmallIntegerField(
+        default=0, help_text="Colours printed on the back face; often fewer.",
     )
     ink_grams_per_sqm_per_colour = models.DecimalField(
-        max_digits=8, decimal_places=3, default=Decimal("3"),
+        max_digits=8, decimal_places=3, default=Decimal("0.5"),
         help_text="Ink laid down per square metre per colour. Small, and the "
                   "only reason it is here is that a plant printing four colours "
                   "on a million sacks is buying ink by the tonne.",
@@ -1062,11 +1089,38 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
     thread_grams_per_bag = models.DecimalField(
-        max_digits=8, decimal_places=3, default=Decimal("1.2"),
-        help_text="Sewing thread in the bottom seam.",
+        max_digits=8, decimal_places=3, default=Decimal("0"),
+        help_text="Sewing thread, typed. Leave at nought to compute it from "
+                  "the thread's denier and the stitch rows.",
+    )
+    thread_denier = models.DecimalField(
+        max_digits=8, decimal_places=2, default=Decimal("0"),
+        help_text="The sewing yarn's denier, to compute the thread from the "
+                  "seams: each row is the sack's width in chain stitch.",
+    )
+    stitches_per_dm = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("12.5"),
+        help_text="Stitch density; more stitches, more thread.",
     )
     thread_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    reducer_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Thins the ink on the press and evaporates: bought and used, "
+                  "never in the sack.",
+    )
+    reducer_percent = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0"),
+        help_text="Of the ink's weight.",
+    )
+    solvent_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="MIBK or another press solvent. Like the reducer, used and gone.",
+    )
+    solvent_percent = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0"),
+        help_text="Of the ink's weight.",
     )
     valve_patch_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
@@ -1183,6 +1237,15 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 name="bag_quantities_not_negative",
             ),
             models.CheckConstraint(
+                check=Q(thread_denier__gte=0) & Q(stitches_per_dm__gt=0)
+                & Q(reducer_percent__gte=0) & Q(solvent_percent__gte=0),
+                name="bag_thread_and_solvents_not_negative",
+            ),
+            models.CheckConstraint(
+                check=Q(fold_type__in=[code for code, _ in FOLD_TYPES]),
+                name="bag_fold_type_known",
+            ),
+            models.CheckConstraint(
                 check=Q(bopp_waste_percent__gte=0) & Q(bopp_waste_percent__lt=100),
                 name="bag_film_waste_under_one_hundred",
             ),
@@ -1235,12 +1298,28 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         """What shows from the front once the gussets are folded in."""
         return self.bag_width_cm - 2 * self.gusset_cm
 
+    def face_area_sqm(self):
+        return (self.face_width_cm() / CM_PER_M) * (self.bag_length_cm / CM_PER_M)
+
     def printed_area_sqm(self):
-        return (
-            Decimal(self.printed_faces)
-            * (self.face_width_cm() / CM_PER_M)
-            * (self.bag_length_cm / CM_PER_M)
+        """The faces that carry any print."""
+        faces = (1 if self.print_colours else 0) + (1 if self.print_colours_back else 0)
+        return Decimal(faces) * self.face_area_sqm()
+
+    def stitch_rows(self):
+        """The bottom's rows by its fold, and one more for a hemmed mouth."""
+        return BOTTOM_STITCH_ROWS.get(self.fold_type, 0) + (1 if self.top_hem_cm else 0)
+
+    def thread_grams(self):
+        """Typed, or each stitch row as a width of chain stitch in the yarn."""
+        if not self.thread_denier:
+            return self.thread_grams_per_bag
+        per_row = (
+            (self.bag_width_cm / CM_PER_M)
+            * (self.stitches_per_dm / REFERENCE_STITCHES_PER_DM)
+            * CHAIN_STITCH_FACTOR * self.thread_denier / DENIER_LENGTH_M
         )
+        return per_row * self.stitch_rows()
 
     def fabric_grams(self):
         return self.fabric_area_sqm() * self.fabric.gsm()
@@ -1290,13 +1369,9 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         return ", ".join(parts)
 
     def ink_grams(self):
-        if not self.print_colours:
-            return Decimal("0")
-        return (
-            self.printed_area_sqm()
-            * self.ink_grams_per_sqm_per_colour
-            * Decimal(self.print_colours)
-        )
+        """Each colour on each face it is printed on, dry."""
+        colours = self.print_colours + self.print_colours_back
+        return self.face_area_sqm() * self.ink_grams_per_sqm_per_colour * Decimal(colours)
 
     def bag_grams(self):
         """
@@ -1311,7 +1386,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         """Everything in the sack that is not the woven fabric."""
         return (
             self.lamination_grams() + self.bopp_grams() + self.ink_grams()
-            + self.thread_grams_per_bag + self.liner_grams()
+            + self.thread_grams() + self.liner_grams()
             + self.valve_patch_grams + self.cover_patch_grams
         )
 
@@ -1368,15 +1443,26 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 self.bopp_film_item, self.bopp_grams(), self.bopp_film_item.uom,
                 self.bopp_waste_percent, f"BOPP film, {self.bopp_micron} micron",
             ))
-        if self.print_colours and self.ink_item is not None:
+        if self.ink_item is not None:
             rows.append((
                 self.ink_item, self.ink_grams(), self.ink_item.uom,
                 self.conversion_waste_percent,
-                f"Ink, {self.print_colours} colour(s) on {self.printed_faces} face(s)",
+                f"Ink, {self.print_colours} front and {self.print_colours_back} back",
             ))
+        # Solvents are bought by the ink they thin and leave nothing in
+        # the sack, so they are in the bill and not in bag_grams().
+        for item, percent, label in (
+            (self.reducer_item, self.reducer_percent, "Reducer"),
+            (self.solvent_item, self.solvent_percent, "Solvent"),
+        ):
+            if item is not None:
+                rows.append((
+                    item, self.ink_grams() * _percent(percent), item.uom,
+                    self.conversion_waste_percent, f"{label}, {percent}% of the ink",
+                ))
         if self.thread_item is not None:
             rows.append((
-                self.thread_item, self.thread_grams_per_bag,
+                self.thread_item, self.thread_grams(),
                 self.thread_item.uom, self.conversion_waste_percent,
                 "Sewing thread",
             ))
@@ -1439,6 +1525,8 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             (self.lamination_item, "the coating polymer"),
             (self.ink_item, "the ink"),
             (self.thread_item, "the thread"),
+            (self.reducer_item, "the reducer"),
+            (self.solvent_item, "the solvent"),
             (self.liner_item, "the liner"),
             (self.bopp_film_item, "the BOPP film"),
             (self.valve_patch_item, "the valve"),
@@ -1471,9 +1559,10 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{self.code}: the sack is laminated and the specification does "
                 "not say what with."
             )
-        if self.print_colours and self.ink_item is None:
+        colours = self.print_colours + self.print_colours_back
+        if colours and self.ink_item is None:
             raise ValidationError(
-                f"{self.code}: the sack is printed in {self.print_colours} "
+                f"{self.code}: the sack is printed in {colours} "
                 "colour(s) and the specification does not say what with."
             )
         deviation = self.weight_deviation_percent()
@@ -1504,6 +1593,24 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             raise ValidationError(
                 f"{lead}BOPP film is bonded by the extruded coating. Set the "
                 "lamination it is laminated with."
+            )
+        if self.thread_denier:
+            if self.thread_grams_per_bag:
+                raise ValidationError(
+                    f"{lead}the thread is typed at {self.thread_grams_per_bag} g "
+                    "and computed from its denier too. Give one or the other."
+                )
+            if not self.fold_type:
+                raise ValidationError(
+                    f"{lead}a thread computed from its denier needs the fold type: "
+                    "the stitch rows follow from it."
+                )
+        if (self.reducer_percent or self.solvent_percent) and not (
+            self.print_colours or self.print_colours_back
+        ):
+            raise ValidationError(
+                f"{lead}the sack is not printed, so there is no ink for a reducer "
+                "or solvent to thin."
             )
         if self.liner_micron:
             if self.liner_grams_per_bag:
@@ -1536,18 +1643,25 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                     f"{code}: a welded block bottom melts the coating together; "
                     "an uncoated sack has nothing to weld."
                 )
-            if self.thread_item_id or self.thread_grams_per_bag:
+            if self.thread_item_id or self.thread_grams_per_bag or self.thread_denier:
                 raise ValidationError(
                     f"{code}: a welded sack is not sewn. Take the thread off, or "
                     "it is costed into every sack and used in none."
                 )
+        elif (self.thread_item_id is None) != (not self.thread_grams()):
+            raise ValidationError(
+                f"{code}: the thread needs both an item and a weight (typed, or "
+                "a denier and a fold to work it from)."
+            )
         for item, grams, label in (
             (self.valve_patch_item_id, self.valve_patch_grams, "valve"),
             (self.cover_patch_item_id, self.cover_patch_grams, "cover sheets"),
+            (self.reducer_item_id, self.reducer_percent, "reducer"),
+            (self.solvent_item_id, self.solvent_percent, "solvent"),
         ):
             if (item is None) != (not grams):
                 raise ValidationError(
-                    f"{code}: the {label} need both an item and a weight."
+                    f"{code}: the {label} need both an item and a quantity."
                 )
         if (self.liner_micron or self.liner_grams_per_bag) and self.liner_item_id is None:
             raise ValidationError(

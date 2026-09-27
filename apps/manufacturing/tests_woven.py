@@ -81,9 +81,15 @@ class WovenTestCase(TestCase):
         values.update(overrides)
         return FabricSpecification.objects.create(**values)
 
+    def default_fabric(self):
+        """One fixture fabric a test, however many sacks it builds on it."""
+        if getattr(self, "_default_fabric", None) is None:
+            self._default_fabric = self.fabric()
+        return self._default_fabric
+
     def bag(self, fabric=None, **overrides):
         values = dict(
-            code="B60X100", bag_item=self.bag_item, fabric=fabric or self.fabric(),
+            code="B60X100", bag_item=self.bag_item, fabric=fabric or self.default_fabric(),
             bag_width_cm=Decimal("60"), bag_length_cm=Decimal("100"),
             bottom_hem_cm=Decimal("3"), top_hem_cm=Decimal("2"),
             thread_item=self.thread, thread_grams_per_bag=Decimal("1.2"),
@@ -163,7 +169,7 @@ class TheArithmeticTests(WovenTestCase):
 
     def test_ink_is_per_colour_per_printed_face(self):
         bag = self.bag(
-            print_colours=2, printed_faces=2, ink_item=self.colour,
+            print_colours=2, print_colours_back=2, ink_item=self.colour,
             ink_grams_per_sqm_per_colour=Decimal("3"),
         )
         # Printing covers the sack's face, not the hems: 2 x 0.60 x 1.00

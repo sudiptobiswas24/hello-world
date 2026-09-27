@@ -24,7 +24,9 @@ from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
-from .woven import BagSpecification, FabricSpecification, TapeSpecification
+from .woven import (
+    FOLD_ALLOWANCE_CM, BagSpecification, FabricSpecification, TapeSpecification,
+)
 
 
 class TapeSpecificationSerializer(serializers.ModelSerializer):
@@ -80,7 +82,21 @@ class FabricSpecificationSerializer(serializers.ModelSerializer):
         return round(obj.metres_per_kg(), 4)
 
 
-class BagSpecificationSerializer(serializers.ModelSerializer):
+class FoldAllowanceDefault:
+    """
+    A fold named without an allowance takes the fold's own: 1.25 inches
+    single, 2 double, 0.75 easy-open without fold. Given one, it stands.
+    """
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        fold = attrs.get("fold_type")
+        if fold and "bottom_hem_cm" not in self.initial_data:
+            attrs["bottom_hem_cm"] = FOLD_ALLOWANCE_CM[fold]
+        return attrs
+
+
+class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
     cut_length_cm = serializers.SerializerMethodField()
     fabric_area_sqm = serializers.SerializerMethodField()
     fabric_grams = serializers.SerializerMethodField()
@@ -94,8 +110,10 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
             "id", "code", "name", "bag_item", "fabric", "bag_width_cm",
             "bag_length_cm", "bottom_hem_cm", "top_hem_cm", "is_laminated",
             "lamination_gsm", "lamination_item", "lamination_waste_percent",
-            "print_colours", "printed_faces", "ink_grams_per_sqm_per_colour",
-            "ink_item", "thread_grams_per_bag", "thread_item", "liner_item",
+            "print_colours", "print_colours_back", "ink_grams_per_sqm_per_colour",
+            "ink_item", "reducer_item", "reducer_percent", "solvent_item", "solvent_percent",
+            "fold_type", "thread_grams_per_bag", "thread_denier", "stitches_per_dm",
+            "thread_item", "liner_item",
             "liner_grams_per_bag", "conversion_waste_percent",
             "waste_recovered_percent", "cutting_waste_item", "bom", "is_active",
             "gusset_cm", "closure", "bopp_film_item", "bopp_micron", "bopp_faces",
@@ -126,7 +144,7 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
         return round(obj.fabric_metres_per_bag(), 4)
 
 
-class BagSolveSerializer(serializers.ModelSerializer):
+class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
     """
     A sack described before any fabric exists for it: the construction,
     the contracted weight and the loom's mesh, and nothing saved.
@@ -150,8 +168,9 @@ class BagSolveSerializer(serializers.ModelSerializer):
         fields = [
             "bag_width_cm", "bag_length_cm", "gusset_cm", "bottom_hem_cm", "top_hem_cm",
             "is_laminated", "lamination_gsm", "bopp_micron", "bopp_faces",
-            "print_colours", "printed_faces", "ink_grams_per_sqm_per_colour",
-            "thread_grams_per_bag", "liner_grams_per_bag", "liner_micron",
+            "print_colours", "print_colours_back", "ink_grams_per_sqm_per_colour",
+            "fold_type", "thread_grams_per_bag", "thread_denier", "stitches_per_dm",
+            "liner_grams_per_bag", "liner_micron",
             "liner_width_cm", "liner_length_cm", "valve_patch_grams", "cover_patch_grams",
             "weight_tolerance_percent", "target_grams", "ends_per_inch", "picks_per_inch",
             "shrink_percent", "warp_tape_denier",

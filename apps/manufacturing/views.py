@@ -217,7 +217,17 @@ class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                     # show, and "-0.00" reads as under weight when it is not.
                     "deviation_percent": str(round(deviation, 2) + 0),
                 }))
+        # The app's own sense checks: not refusals, since a sack outside
+        # the usual range can be real, but not to be quoted unread.
+        warnings = []
+        if not 40 <= gsm <= 200:
+            warnings.append(f"Fabric at {gsm:.0f} GSM is outside the usual 40 to 200.")
+        for key in ("warp_tape_denier", "weft_tape_denier"):
+            if not 300 <= deniers[key] <= 2500:
+                warnings.append(f"The {key.split('_')[0]} tape at {deniers[key]:.0f} denier "
+                                "is outside the usual 300 to 2,500.")
         return Response({
+            "warnings": warnings,
             "target_grams": str(target),
             "addon_grams": str(round(addons, 3)),
             "fabric_area_sqm": str(round(area, 6)),
