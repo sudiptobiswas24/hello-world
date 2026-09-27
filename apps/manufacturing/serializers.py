@@ -84,6 +84,7 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
     fabric_grams = serializers.SerializerMethodField()
     bag_grams = serializers.SerializerMethodField()
     fabric_metres_per_bag = serializers.SerializerMethodField()
+    construction = serializers.SerializerMethodField()
 
     class Meta:
         model = BagSpecification
@@ -95,13 +96,20 @@ class BagSpecificationSerializer(serializers.ModelSerializer):
             "ink_item", "thread_grams_per_bag", "thread_item", "liner_item",
             "liner_grams_per_bag", "conversion_waste_percent",
             "waste_recovered_percent", "cutting_waste_item", "bom", "is_active",
+            "gusset_cm", "closure", "bopp_film_item", "bopp_micron", "bopp_faces",
+            "bopp_waste_percent", "valve_patch_item", "valve_patch_grams",
+            "cover_patch_item", "cover_patch_grams", "liner_micron",
+            "liner_width_cm", "liner_length_cm", "weight_tolerance_percent",
             "cut_length_cm", "fabric_area_sqm", "fabric_grams", "bag_grams",
-            "fabric_metres_per_bag",
+            "fabric_metres_per_bag", "construction",
         ]
         read_only_fields = ["bom"]
 
     def get_cut_length_cm(self, obj):
         return obj.cut_length_cm()
+
+    def get_construction(self, obj):
+        return obj.construction()
 
     def get_fabric_area_sqm(self, obj):
         return round(obj.fabric_area_sqm(), 6)

@@ -59,7 +59,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import F, Q
 
 from apps.core.models import AuditModel, UnitOfMeasureCategory
 from apps.inventory.models import Item
@@ -95,6 +95,10 @@ CM_PER_M = Decimal("100")
 TAPE_BATCH_KG = Decimal("100")
 FABRIC_BATCH_KG = Decimal("100")
 BAG_BATCH_PIECES = Decimal("1000")
+# Grammes per square metre per micron of film: the film's density in
+# grammes per cubic centimetre. BOPP is 0.91, LDPE liner film 0.92.
+BOPP_GRAMS_PER_MICRON = Decimal("0.91")
+LDPE_GRAMS_PER_MICRON = Decimal("0.92")
 
 
 class Weave(models.TextChoices):
@@ -936,11 +940,20 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     bag_width_cm = models.DecimalField(
         max_digits=8, decimal_places=2,
         help_text="The finished sack's width, which is the fabric's lay-flat "
-                  "width: the tube is woven at the width of the bag it becomes.",
+                  "width: the tube is woven at the width of the bag it becomes. "
+                  "On a gusseted sack this is the whole width, gussets folded "
+                  "inside it, the way the trade quotes it.",
     )
     bag_length_cm = models.DecimalField(
         max_digits=8, decimal_places=2,
         help_text="The finished sack's length, hems excluded.",
+    )
+    gusset_cm = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0"),
+        help_text="How deep each side's gusset folds in. A 28-inch sack with "
+                  "2-inch gussets is a 28-inch tube with a 24-inch printed face: "
+                  "the gusset moves fabric from the face to the side, and adds "
+                  "none.",
     )
     bottom_hem_cm = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal("3"),
@@ -949,7 +962,15 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     )
     top_hem_cm = models.DecimalField(
         max_digits=6, decimal_places=2, default=Decimal("2"),
-        help_text="Fabric folded at the mouth, hemmed or left raw.",
+        help_text="Fabric folded at the mouth, hemmed or left raw. On a "
+                  "block-bottom valve sack, the top end's fold allowance.",
+    )
+    closure = models.CharField(
+        max_length=8, default="sewn",
+        choices=[("sewn", "Sewn"), ("welded", "Welded (block bottom)")],
+        help_text="Sewn with thread, or folded into a block bottom and welded "
+                  "with hot air, as valve sacks for cement are. A welded sack "
+                  "has no thread and must be coated: the coating is what melts.",
     )
     is_laminated = models.BooleanField(default=False)
     lamination_gsm = models.DecimalField(
@@ -965,6 +986,24 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         max_digits=6, decimal_places=3, default=Decimal("4"),
         help_text="Of the coating polymer fed in. A coating line's own loss, "
                   "separate from what cutting and stitching waste.",
+    )
+    bopp_film_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Printed BOPP film laminated over the fabric. It is bonded by "
+                  "the extruded coating, so a BOPP sack is also laminated.",
+    )
+    bopp_micron = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0"),
+        help_text="Film thickness; 18 to 25 is usual. Covers the whole outer "
+                  "fabric area.",
+    )
+    bopp_faces = models.PositiveSmallIntegerField(
+        default=2, choices=[(1, "One face (SS)"), (2, "Both faces (BS)")],
+        help_text="Film laminated on one face of the flattened tube or on both.",
+    )
+    bopp_waste_percent = models.DecimalField(
+        max_digits=6, decimal_places=3, default=Decimal("4"),
+        help_text="Of the film fed in: registration, trim and splices.",
     )
     print_colours = models.PositiveSmallIntegerField(default=0)
     printed_faces = models.PositiveSmallIntegerField(
@@ -988,13 +1027,37 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     thread_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    valve_patch_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The valve a valve sack is filled through.",
+    )
+    valve_patch_grams = models.DecimalField(max_digits=8, decimal_places=3,
+                                            default=Decimal("0"))
+    cover_patch_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The cover sheets welded over a block bottom's folds.",
+    )
+    cover_patch_grams = models.DecimalField(
+        max_digits=8, decimal_places=3, default=Decimal("0"),
+        help_text="Both ends together.",
+    )
     liner_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="An inner LDPE liner, for sacks that must keep moisture out.",
     )
     liner_grams_per_bag = models.DecimalField(
-        max_digits=8, decimal_places=3, default=Decimal("0")
+        max_digits=8, decimal_places=3, default=Decimal("0"),
+        help_text="Typed, where the liner is bought or weighed as a finished "
+                  "piece. Leave at nought to compute it from the film below.",
     )
+    liner_micron = models.DecimalField(
+        max_digits=6, decimal_places=2, default=Decimal("0"),
+        help_text="Liner film thickness, to compute its weight from its size.",
+    )
+    liner_width_cm = models.DecimalField(max_digits=8, decimal_places=2,
+                                         default=Decimal("0"))
+    liner_length_cm = models.DecimalField(max_digits=8, decimal_places=2,
+                                          default=Decimal("0"))
     conversion_waste_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("2.5"),
         help_text="Of the fabric fed into cutting and stitching: the offcut at "
@@ -1063,6 +1126,27 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 check=Q(bottom_hem_cm__gte=0) & Q(top_hem_cm__gte=0),
                 name="bag_hems_not_negative",
             ),
+            models.CheckConstraint(
+                check=Q(gusset_cm__gte=0) & Q(bopp_micron__gte=0)
+                & Q(valve_patch_grams__gte=0) & Q(cover_patch_grams__gte=0)
+                & Q(liner_micron__gte=0) & Q(liner_width_cm__gte=0)
+                & Q(liner_length_cm__gte=0) & Q(liner_grams_per_bag__gte=0)
+                & Q(thread_grams_per_bag__gte=0),
+                name="bag_quantities_not_negative",
+            ),
+            models.CheckConstraint(
+                check=Q(bopp_waste_percent__gte=0) & Q(bopp_waste_percent__lt=100),
+                name="bag_film_waste_under_one_hundred",
+            ),
+            models.CheckConstraint(
+                check=Q(closure__in=["sewn", "welded"]), name="bag_closure_known",
+            ),
+            models.CheckConstraint(
+                check=Q(bag_width_cm__gt=F("gusset_cm") * 2), name="bag_gussets_leave_a_face",
+            ),
+            models.CheckConstraint(
+                check=Q(bopp_faces__in=[1, 2]), name="bag_bopp_faces_known",
+            ),
         ]
 
     def __str__(self):
@@ -1082,7 +1166,8 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         Single-layer fabric in one sack.
 
         A tube laid flat is two thicknesses, so a 60 cm sack cut at 105
-        cm carries 2 x 0.60 x 1.05 square metres — not 0.63.
+        cm carries 2 x 0.60 x 1.05 square metres — not 0.63. Gussets fold
+        inside that width, so they change the face and not the fabric.
         """
         return (
             self.fabric.layers()
@@ -1090,10 +1175,14 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             * (self.cut_length_cm() / CM_PER_M)
         )
 
+    def face_width_cm(self):
+        """What shows from the front once the gussets are folded in."""
+        return self.bag_width_cm - 2 * self.gusset_cm
+
     def printed_area_sqm(self):
         return (
             Decimal(self.printed_faces)
-            * (self.bag_width_cm / CM_PER_M)
+            * (self.face_width_cm() / CM_PER_M)
             * (self.bag_length_cm / CM_PER_M)
         )
 
@@ -1104,6 +1193,45 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         if not self.is_laminated:
             return Decimal("0")
         return self.fabric_area_sqm() * self.lamination_gsm
+
+    def bopp_grams(self):
+        """
+        Film over one face of the flattened tube or both. Its density is
+        0.91: a micron over a square metre is a cubic centimetre, and
+        BOPP weighs 0.91 g of it, as LDPE weighs 0.92.
+        """
+        if self.bopp_film_item_id is None:
+            return Decimal("0")
+        share = Decimal(self.bopp_faces) / 2
+        return self.fabric_area_sqm() * share * self.bopp_micron * BOPP_GRAMS_PER_MICRON
+
+    def liner_grams(self):
+        """Typed, or two layers of film at the liner's size and thickness."""
+        if self.liner_micron:
+            return (
+                2 * (self.liner_width_cm / CM_PER_M) * (self.liner_length_cm / CM_PER_M)
+                * self.liner_micron * LDPE_GRAMS_PER_MICRON
+            )
+        return self.liner_grams_per_bag
+
+    def construction(self):
+        """What kind of sack this is, in the words the trade uses."""
+        parts = []
+        if self.bopp_film_item_id:
+            parts.append("BOPP laminated")
+        elif self.is_laminated:
+            parts.append("laminated")
+        else:
+            parts.append("unlaminated")
+        if self.gusset_cm:
+            parts.append("gusseted")
+        if self.valve_patch_item_id:
+            parts.append("valve")
+        if self.closure == "welded":
+            parts.append("block bottom")
+        if self.liner_item_id:
+            parts.append("with liner")
+        return ", ".join(parts)
 
     def ink_grams(self):
         if not self.print_colours:
@@ -1122,8 +1250,9 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         costing is built on, and they had better be the same one.
         """
         return (
-            self.fabric_grams() + self.lamination_grams() + self.ink_grams()
-            + self.thread_grams_per_bag + self.liner_grams_per_bag
+            self.fabric_grams() + self.lamination_grams() + self.bopp_grams()
+            + self.ink_grams() + self.thread_grams_per_bag + self.liner_grams()
+            + self.valve_patch_grams + self.cover_patch_grams
         )
 
     def fabric_metres_per_bag(self):
@@ -1156,6 +1285,11 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 self.lamination_item.uom, self.lamination_waste_percent,
                 f"Coating at {self.lamination_gsm} GSM",
             ))
+        if self.bopp_film_item is not None:
+            rows.append((
+                self.bopp_film_item, self.bopp_grams(), self.bopp_film_item.uom,
+                self.bopp_waste_percent, f"BOPP film, {self.bopp_micron} micron",
+            ))
         if self.print_colours and self.ink_item is not None:
             rows.append((
                 self.ink_item, self.ink_grams(), self.ink_item.uom,
@@ -1168,10 +1302,21 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 self.thread_item.uom, self.conversion_waste_percent,
                 "Sewing thread",
             ))
-        if self.liner_item is not None and self.liner_grams_per_bag:
+        if self.liner_item is not None:
             rows.append((
-                self.liner_item, self.liner_grams_per_bag,
+                self.liner_item, self.liner_grams(),
                 self.liner_item.uom, self.conversion_waste_percent, "Inner liner",
+            ))
+        if self.valve_patch_item is not None:
+            rows.append((
+                self.valve_patch_item, self.valve_patch_grams,
+                self.valve_patch_item.uom, self.conversion_waste_percent, "Valve",
+            ))
+        if self.cover_patch_item is not None:
+            rows.append((
+                self.cover_patch_item, self.cover_patch_grams,
+                self.cover_patch_item.uom, self.conversion_waste_percent,
+                "Block-bottom cover sheets",
             ))
         return rows
 
@@ -1209,6 +1354,9 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             (self.ink_item, "the ink"),
             (self.thread_item, "the thread"),
             (self.liner_item, "the liner"),
+            (self.bopp_film_item, "the BOPP film"),
+            (self.valve_patch_item, "the valve"),
+            (self.cover_patch_item, "the cover sheets"),
             (self.cutting_waste_item, "the cutting waste"),
         ):
             if item is not None:
@@ -1231,6 +1379,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{self.fabric.code} is woven {self.fabric.lay_flat_width_cm} cm "
                 "lay-flat. The tube is the sack's width — one of the two is wrong."
             )
+        self._check_construction()
         if self.is_laminated and self.lamination_item is None:
             raise ValidationError(
                 f"{self.code}: the sack is laminated and the specification does "
@@ -1244,3 +1393,61 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         super().save(*args, **kwargs)
         self.rebuild_bom()
         self.rebuild_inspection_plan()
+
+    def _check_construction(self):
+        """
+        The combinations a sack cannot be. Each refusal is a material the
+        costing would otherwise count or miss: film with nothing to hold
+        it, thread in a sack that has none, a weight nobody buys.
+        """
+        code = self.code
+        if 2 * self.gusset_cm >= self.bag_width_cm:
+            raise ValidationError(
+                f"{code}: {self.gusset_cm} cm gussets fold in from both sides of "
+                f"a {self.bag_width_cm} cm sack and leave no face."
+            )
+        if (self.bopp_film_item_id is None) != (not self.bopp_micron):
+            raise ValidationError(
+                f"{code}: BOPP film needs both the film and its thickness; one "
+                "without the other is film nobody can weigh."
+            )
+        if self.bopp_film_item_id and not self.is_laminated:
+            raise ValidationError(
+                f"{code}: BOPP film is bonded by the extruded coating. Set the "
+                "lamination it is laminated with."
+            )
+        if self.closure == "welded":
+            if not self.is_laminated:
+                raise ValidationError(
+                    f"{code}: a welded block bottom melts the coating together; "
+                    "an uncoated sack has nothing to weld."
+                )
+            if self.thread_item_id or self.thread_grams_per_bag:
+                raise ValidationError(
+                    f"{code}: a welded sack is not sewn. Take the thread off, or "
+                    "it is costed into every sack and used in none."
+                )
+        for item, grams, label in (
+            (self.valve_patch_item_id, self.valve_patch_grams, "valve"),
+            (self.cover_patch_item_id, self.cover_patch_grams, "cover sheets"),
+        ):
+            if (item is None) != (not grams):
+                raise ValidationError(
+                    f"{code}: the {label} need both an item and a weight."
+                )
+        if self.liner_micron:
+            if self.liner_grams_per_bag:
+                raise ValidationError(
+                    f"{code}: the liner is typed at {self.liner_grams_per_bag} g "
+                    "and computed from its film too. Give one or the other."
+                )
+            if not (self.liner_width_cm and self.liner_length_cm):
+                raise ValidationError(
+                    f"{code}: a liner computed from its film needs its width and "
+                    "length."
+                )
+        if (self.liner_micron or self.liner_grams_per_bag) and self.liner_item_id is None:
+            raise ValidationError(
+                f"{code}: the sack has a liner and the specification does not say "
+                "what it is, so it would weigh in every sack and cost in none."
+            )
