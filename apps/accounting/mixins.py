@@ -18,6 +18,23 @@ from apps.core.models import Company
 from .models import Tax, compute_taxes, round_money
 
 
+def refuse_included(taxes):
+    """
+    A tax included in the price is supported by the tax engine but by no
+    document: every document books its lines' net amount as revenue or
+    cost and adds the tax on top, so an inclusive 1,180 was billed at
+    1,360 with 180 of tax left inside revenue. Refused where a document
+    first computes its tax, until documents extract the base.
+    """
+    for tax in taxes:
+        if tax.price_included:
+            raise ValidationError(
+                f"{tax.code} is set as included in the price, which documents "
+                "do not support: the line's amount would be booked with the "
+                "tax still inside it and the tax charged again on top."
+            )
+
+
 class TaxedLineMixin(models.Model):
     """
     Money arithmetic for one line of a trading document: gross, discount,
@@ -113,6 +130,7 @@ class TaxedLineMixin(models.Model):
         taxes = self.effective_taxes()
         if not taxes:
             return []
+        refuse_included(taxes)
         _, lines, _ = compute_taxes(taxes, self.net_amount(), self.quantity)
         return lines
 
@@ -182,6 +200,7 @@ class TaxedDocumentMixin(models.Model):
         for taxes, group in groups.items():
             if not taxes:
                 continue
+            refuse_included(taxes)
             net = sum((line.net_amount() for line in group), Decimal("0"))
             quantity = sum((line.quantity for line in group), Decimal("0"))
             _, totals, _ = compute_taxes(list(taxes), net, quantity)
@@ -280,7 +299,8 @@ class PostedLineMixin(models.Model):
         rows = list(original.recorded_taxes.all())
         others = [line for line in original.corrections() if line.pk != self.pk]
         net = self.net_amount()
-        if net >= original.net_amount() - sum(
+        whole = original.net_amount()
+        if net >= whole - sum(
             (line.net_amount() for line in others), Decimal("0")
         ):
             taken = defaultdict(Decimal)
@@ -289,7 +309,7 @@ class PostedLineMixin(models.Model):
                     taken[tax.pk] += amount
             return [(row.tax, row.amount - taken[row.tax_id]) for row in rows]
         return [
-            (row.tax, round_money(row.amount * net / row.taxable) if row.taxable else row.amount)
+            (row.tax, round_money(row.amount * net / whole) if whole else row.amount)
             for row in rows
         ]
 

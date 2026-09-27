@@ -82,3 +82,16 @@ class GstBillTests(PurchaseTaxTestCase):
         self.assertEqual((bill.party_gstin, bill.place_of_supply), ("29AABCE5678F1ZD", "29"))
         rows = [(r.gst_head, r.amount) for r in bill.lines.get().recorded_taxes.all()]
         self.assertEqual(rows, [("igst", Decimal("180.00"))])
+
+    def test_a_price_that_includes_tax_is_refused_on_a_bill_too(self):
+        from django.core.exceptions import ValidationError
+
+        PartyTaxProfile.objects.create(party=self.vendor, gstin="27AABCD1234E2Z7")
+        inclusive = Tax.objects.create(
+            code="GST18I", name="GST incl", rate=Decimal("18"), price_included=True,
+            gst_head="igst", collected_account=self.igst.paid_account,
+            paid_account=self.igst.paid_account,
+        )
+        bill = self.taxed_bill("1", "1180", taxes=[inclusive])
+        with self.assertRaisesMessage(ValidationError, "included in the price"):
+            bill.post()

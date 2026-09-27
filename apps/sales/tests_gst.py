@@ -127,6 +127,22 @@ class RecordedTaxTests(GstSalesTestCase):
         line.refresh_from_db()
         self.assertEqual(line.hsn_code, "63053300")
 
+    def test_a_price_that_includes_tax_is_refused_not_billed_twice(self):
+        """An inclusive 1,180 was billed at 1,360: net booked as revenue
+        with the tax inside it, and the tax charged again on top."""
+        inclusive = Tax.objects.create(
+            code="IGST18I", name="IGST incl", rate=Decimal("18"), price_included=True,
+            gst_head="igst", collected_account=self.igst.collected_account,
+            paid_account=self.igst.collected_account,
+        )
+        invoice = self.make_invoice("1180", taxes=[inclusive], post=False)
+        with self.assertRaisesMessage(ValidationError, "included in the price"):
+            invoice.post()
+        Company.objects.update(tax_rounding="document")
+        with self.assertRaisesMessage(ValidationError, "included in the price"):
+            invoice.tax_total()
+        self.assertEqual(self.balance("1100"), Decimal("0"))
+
     def test_a_posted_invoice_does_not_change_when_the_customer_moves(self):
         invoice = self.make_invoice("1000", taxes=[self.cgst, self.sgst])
         self.move_customer_to_karnataka()

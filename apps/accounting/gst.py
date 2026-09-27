@@ -145,6 +145,13 @@ class GstSettings(AuditModel):
                   "rate.",
     )
     is_active = models.BooleanField(default=True)
+    b2cl_limit = models.DecimalField(
+        max_digits=18, decimal_places=2, default=100000,
+        help_text="An inter-state invoice to an unregistered buyer above this "
+                  "is reported invoice by invoice (B2CL) rather than in the "
+                  "summary. 1,00,000 since August 2024; a setting because it "
+                  "is set by notification.",
+    )
 
     class Meta:
         verbose_name = "GST settings"

@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "apps.quality",
     "apps.planning",
     "apps.assets",
+    "apps.gst",
 ]
 
 MIDDLEWARE = [
