@@ -1091,13 +1091,18 @@ class WorkOrder(AuditModel):
             )
         on_date = to_date(on_date) or timezone.now().date()
         balance = round_money(self.unaccounted())
-        if balance:
+        time_overrun = round_money(self.conversion_variance())
+        vendor_overrun = round_money(self.outside_variance())
+        # Not only when something is left. A run that saved polymer and
+        # lost loom time by the same amount leaves nothing in work in
+        # progress and two variances that cancel; skipping the entry
+        # then reported neither, and the slow loom went unexplained.
+        if balance or time_overrun or vendor_overrun:
             label = memo or f"Closing variance on {self.number}"
             rows = [(
                 ManufacturingSettings.account("wip", "a run is being closed"),
                 -balance,
             )]
-            time_overrun = round_money(self.conversion_variance())
             if time_overrun:
                 rows.append((
                     ManufacturingSettings.account(
@@ -1111,7 +1116,6 @@ class WorkOrder(AuditModel):
             # it goes where conversion overruns go rather than into the
             # material remainder below — where somebody looking for
             # missing polymer would find a laminator's price rise.
-            vendor_overrun = round_money(self.outside_variance())
             if vendor_overrun:
                 rows.append((
                     ManufacturingSettings.account(

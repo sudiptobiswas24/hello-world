@@ -404,6 +404,25 @@ class AtCloseTheVendorsOverrunIsItsOwnTests(OutsideTestCase):
         )
         self.assertEqual(order.wip_balance(), Decimal("0"))
 
+    def test_a_dearer_vendor_and_a_polymer_saving_that_cancel(self):
+        """Nothing left in the run, and the laminator's rise still reported."""
+        from .orders import IssueDirection, MaterialIssueLine
+
+        order = self.run_with_vendor_at("2300")
+        left = round(order.unaccounted(), 2)
+        drawn = MaterialIssueLine.objects.get(
+            issue__work_order=order, item=self.virgin
+        )
+        self.issue(
+            order, [(self.virgin, left / drawn.unit_cost, drawn)],
+            direction=IssueDirection.RETURN,
+        ).post()
+        self.assertEqual(round(order.unaccounted(), 2), Decimal("0.00"))
+
+        order.close(TODAY)
+        self.assertEqual(self.balance(self.conversion_variance), Decimal("300.00"))
+        self.assertEqual(order.wip_balance(), Decimal("0"))
+
     def test_a_dearer_vendor_is_not_material(self):
         """What the material overrun reports is what the close sends to
         material variance: the laminator's price rise is not polymer."""

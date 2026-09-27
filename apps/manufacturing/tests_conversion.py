@@ -30,7 +30,9 @@ from apps.quality.models import (
 )
 
 from .orders import (
+    IssueDirection,
     ManufacturingSettings,
+    MaterialIssueLine,
     TimeBooking,
     WorkOrderOperation,
     WorkOrderStatus,
@@ -291,6 +293,28 @@ class ClosingTellsTheTwoOverrunsApartTests(ConversionTestCase):
         order.close(TODAY)
         total = self.balance(self.variance) + self.balance(self.time_variance)
         self.assertAlmostEqual(total, left, places=2)
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+    def test_two_overruns_that_cancel_are_still_both_reported(self):
+        """
+        Polymer saved and loom time lost by the same amount leave
+        nothing in work in progress. The close skipped its entry then,
+        and neither variance was ever reported.
+        """
+        order = self.run_it("1600")
+        left = round(order.unaccounted(), 2)
+        drawn = MaterialIssueLine.objects.get(
+            issue__work_order=order, item=self.virgin
+        )
+        self.issue(
+            order, [(self.virgin, left / drawn.unit_cost, drawn)],
+            direction=IssueDirection.RETURN,
+        ).post()
+        self.assertEqual(round(order.unaccounted(), 2), Decimal("0.00"))
+
+        order.close(TODAY)
+        self.assertAlmostEqual(self.balance(self.time_variance), Decimal("1060.00"), places=2)
+        self.assertAlmostEqual(self.balance(self.variance), Decimal("-1060.00"), places=2)
         self.assertEqual(self.balance(self.wip), Decimal("0"))
 
     def test_a_run_that_made_half_earns_half_the_machine_time(self):

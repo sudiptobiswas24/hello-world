@@ -226,6 +226,10 @@ def last_in_line(work_centre):
     Planning's view of a new run is that it joins the end of the queue.
     Its changeover is from whatever is there, not a flat average — a
     white run planned behind a queue of black ones pays the wash-down.
+
+    One tail for the whole centre: on a bank of twelve looms the run
+    lands on one of them, and which one is the dispatcher's choice,
+    not planning's. The approximation is the queue as a whole.
     """
     queue = queue_on(work_centre)
     if queue:
