@@ -42,6 +42,8 @@ from .oee import by_operator, by_shift, effectiveness
 from .bom import BomSubstitute
 from .costing import CostVersion, StandardCost, against_actual, explain
 from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
+from . import quoting
+from .quoting import CostSheet, MaterialRate, QuotePolicy, StageRate
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
@@ -61,6 +63,12 @@ from .serializers import (
     ToolUsageSerializer,
     BagSolveSerializer,
     BagSpecificationSerializer,
+    CostSheetSerializer,
+    CostSheetRequestSerializer,
+    MaterialRateSerializer,
+    QuotePolicySerializer,
+    QuoteRequestSerializer,
+    StageRateSerializer,
     BillOfMaterialsSerializer,
     BomByproductSerializer,
     BomComponentSerializer,
@@ -236,6 +244,58 @@ class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "shrink_percent": str(shrink),
             "fabrics": [row for _, _, row in sorted(matches, key=lambda m: m[:2])],
         })
+
+
+class _DatedRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    # A rate is superseded, not edited: no PUT or PATCH. Delete stays,
+    # and the model allows it only for a rate not yet in force.
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+
+class MaterialRateViewSet(_DatedRateViewSet):
+    queryset = MaterialRate.objects.select_related("item")
+    serializer_class = MaterialRateSerializer
+
+
+class StageRateViewSet(_DatedRateViewSet):
+    queryset = StageRate.objects.all()
+    serializer_class = StageRateSerializer
+
+
+class QuotePolicyViewSet(_DatedRateViewSet):
+    queryset = QuotePolicy.objects.all()
+    serializer_class = QuotePolicySerializer
+
+
+class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    A sack costed on a day, frozen. POST costs it; nothing edits it;
+    quote/ puts its price on a draft quotation.
+    """
+
+    queryset = CostSheet.objects.select_related("specification").prefetch_related("lines")
+    serializer_class = CostSheetSerializer
+    http_method_names = ["get", "post", "delete", "head", "options"]
+    action_permission_map = {"quote": "sales.add_quotationline"}
+
+    def create(self, request, *args, **kwargs):
+        request_data = CostSheetRequestSerializer(data=request.data)
+        request_data.is_valid(raise_exception=True)
+        data = request_data.validated_data
+        sheet = quoting.cost(
+            data["specification"], data["quantity"], data.get("costed_on"),
+            data.get("margin_percent"),
+        )
+        return Response(CostSheetSerializer(sheet).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def quote(self, request, pk=None):
+        request_data = QuoteRequestSerializer(data=request.data)
+        request_data.is_valid(raise_exception=True)
+        line = quoting.quote(self.get_object(), request_data.validated_data["quotation"],
+                             request_data.validated_data["taxes"])
+        return Response({"quotation_line": line.pk, "unit_price": str(line.unit_price)},
+                        status=201)
 
 
 class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

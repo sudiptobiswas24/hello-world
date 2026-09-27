@@ -19,12 +19,15 @@ from .costing import CostVersion, StandardCost
 from .changeover import ChangeoverRule, SetupFamily
 from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss
 from .machines import Machine
+from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageRate
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
 from .shifts import Downtime, DowntimeReason, Shift
+from apps.accounting.models import Tax
 from apps.inventory.models import Item
+from apps.sales.models import Quotation
 
 from .woven import (
     FOLD_ALLOWANCE_CM, BagSpecification, FabricSpecification, TapeSpecification,
@@ -204,6 +207,67 @@ class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
             "weight_tolerance_percent", "target_grams", "ends_per_inch", "picks_per_inch",
             "shrink_percent", "warp_tape_denier",
         ]
+
+
+class MaterialRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MaterialRate
+        fields = ["id", "item", "rate", "valid_from", "note"]
+
+
+class StageRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StageRate
+        fields = ["id", "stage", "rate", "valid_from", "note"]
+
+
+class QuotePolicySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuotePolicy
+        fields = ["id", "overhead_percent", "margin_percent", "valid_from", "note"]
+
+
+class CostSheetLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CostSheetLine
+        fields = ["kind", "stage", "item", "description", "quantity", "rate", "amount",
+                  "last_receipt_cost"]
+
+
+class CostSheetSerializer(serializers.ModelSerializer):
+    lines = CostSheetLineSerializer(many=True, read_only=True)
+    per_kg = serializers.SerializerMethodField()
+    order_value = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CostSheet
+        fields = [
+            "id", "specification", "quantity", "costed_on", "bag_grams", "overhead_percent",
+            "margin_percent", "material", "conversion", "credit", "overhead", "cost", "price",
+            "quoted_price", "per_kg", "order_value", "quotation_line", "lines",
+        ]
+        read_only_fields = fields
+
+    def get_per_kg(self, obj):
+        return str(obj.per_kg())
+
+    def get_order_value(self, obj):
+        return str(obj.order_value())
+
+
+class CostSheetRequestSerializer(serializers.Serializer):
+    specification = serializers.PrimaryKeyRelatedField(queryset=BagSpecification.objects.all())
+    quantity = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("1"))
+    costed_on = serializers.DateField(required=False)
+    margin_percent = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
+
+
+class QuoteRequestSerializer(serializers.Serializer):
+    quotation = serializers.PrimaryKeyRelatedField(queryset=Quotation.objects.all())
+    # Required, if only as an empty list: a line's taxes are its own,
+    # and none is a statement, not a default.
+    taxes = serializers.PrimaryKeyRelatedField(queryset=Tax.objects.all(), many=True,
+                                               allow_empty=True)
 
 
 class BomSubstituteSerializer(serializers.ModelSerializer):
