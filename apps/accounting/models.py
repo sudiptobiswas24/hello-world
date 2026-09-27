@@ -551,20 +551,73 @@ class PartyTaxProfile(AuditModel):
     exemption_reference = models.CharField(
         max_length=64, blank=True, help_text="Certificate or registration number for the exemption."
     )
+    gstin = models.CharField(
+        max_length=15, blank=True,
+        help_text="The party's GST registration, checked character by "
+                  "character. Its first two digits are its state.",
+    )
+    gst_state = models.CharField(
+        max_length=2, blank=True,
+        help_text="Where the party is, as a GST state code. Read off the "
+                  "GSTIN when there is one; typed only for an unregistered "
+                  "party, whose state still decides which taxes a supply to "
+                  "it bears.",
+    )
+    gst_registration = models.CharField(
+        max_length=16, blank=True,
+        choices=[
+            ("regular", "Registered, regular"),
+            ("composition", "Registered, composition"),
+            ("sez", "Special economic zone"),
+            ("unregistered", "Unregistered"),
+            ("overseas", "Overseas"),
+        ],
+    )
 
     def __str__(self):
         return f"Tax profile for {self.party}"
 
     def clean(self):
+        self._check()
+
+    def save(self, *args, **kwargs):
+        # On save as well: profiles are made in code by every import and
+        # fixture, and `clean()` is not called for those — which is how
+        # an exempt party with no exemption on file got through before.
+        self._check()
+        super().save(*args, **kwargs)
+
+    def _check(self):
+        from .gst import STATES, validate_gstin
+
         if self.tax_exempt and not self.exemption_reference:
             raise ValidationError("An exempt party needs an exemption reference on file.")
+        if self.gstin:
+            self.gstin = validate_gstin(self.gstin)
+            if self.gst_state and self.gst_state != self.gstin[:2]:
+                raise ValidationError(
+                    f"{self.gstin} is registered in {STATES[self.gstin[:2]]}, "
+                    f"not {STATES.get(self.gst_state, self.gst_state)}."
+                )
+            self.gst_state = self.gstin[:2]
+            if not self.gst_registration or self.gst_registration == "unregistered":
+                self.gst_registration = "regular"
+        elif self.gst_state and self.gst_state not in STATES:
+            raise ValidationError(f"{self.gst_state} is not a GST state code.")
+
+    def place_of_supply(self):
+        return self.gst_state
 
     def applicable_taxes(self, taxes):
+        from .gst import gst_taxes
+
         if self.tax_exempt:
             return []
         if self.fiscal_position_id:
+            # What the party is (an exporter under bond, a unit in a
+            # special economic zone) outranks where it is.
             return self.fiscal_position.map_taxes(taxes)
-        return list(taxes)
+        return gst_taxes(self, taxes)
 
 
 class PaymentDirection(models.TextChoices):
@@ -1033,3 +1086,6 @@ class BankStatementLine(AuditModel):
         self.journal_entry = entry
         self.save(update_fields=["journal_entry", "updated_at"])
         return entry
+
+
+from .gst import GstSettings  # noqa: E402,F401

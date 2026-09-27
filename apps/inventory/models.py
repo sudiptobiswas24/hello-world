@@ -159,6 +159,13 @@ class Item(AuditModel):
     )
     sku = models.CharField(max_length=64, unique=True)
     name = models.CharField(max_length=255)
+    hsn_code = models.CharField(
+        max_length=8, blank=True,
+        help_text="The tariff code tax law classifies this under — HSN for "
+                  "goods, SAC for a service. Four, six or eight digits. On "
+                  "every GST invoice line and in the HSN summary of the "
+                  "return; the rate is still the tax's, not the code's.",
+    )
     description = models.TextField(blank=True)
     item_type = models.CharField(max_length=16, choices=ItemType.choices, default=ItemType.GOODS)
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="items")
@@ -300,9 +307,12 @@ class Item(AuditModel):
             )
 
     def save(self, *args, **kwargs):
+        from apps.accounting.gst import validate_hsn
+
         self._check_costing_is_answerable()
         self._check_matches_template()
         self._check_variant_key_frozen()
+        self.hsn_code = validate_hsn(self.hsn_code)
         super().save(*args, **kwargs)
 
     def on_hand_at(self, warehouse):

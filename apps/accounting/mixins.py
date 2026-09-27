@@ -10,6 +10,7 @@ a price, a discount and some taxes on it".
 from collections import defaultdict
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from apps.core.models import Company
@@ -77,6 +78,19 @@ class TaxedLineMixin(models.Model):
             return taxes
         profile = getattr(party, "tax_profile", None)
         if profile is None:
+            from .gst import GstSettings
+
+            if GstSettings.active() is not None:
+                # Under GST a party nobody has placed cannot be taxed:
+                # whether the supply bears central and state tax or
+                # integrated tax depends on where it is. Charging the
+                # intra-state pair by default is the plausible wrong
+                # answer that takes months to unwind.
+                raise ValidationError(
+                    f"{party} has no tax profile, so there is no knowing "
+                    "which state it is in — and a supply inside the state "
+                    "and one across a state line bear different taxes."
+                )
             return taxes
         return profile.applicable_taxes(taxes)
 

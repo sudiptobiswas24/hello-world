@@ -36,3 +36,20 @@ class StockLevelTests(TestCase):
         self._move(MovementType.RECEIPT, "5")
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("5"))
         self.assertEqual(self.item.on_hand_at(other_warehouse), 0)
+
+
+class HsnCodeTests(TestCase):
+    """Items are made by imports and fixtures, so the check is on save."""
+
+    def setUp(self):
+        self.uom = UnitOfMeasure.objects.create(code="each", name="Each")
+
+    def test_a_valid_code_is_kept(self):
+        item = Item.objects.create(sku="SACK", name="Sack", uom=self.uom, hsn_code="63053300")
+        self.assertEqual(item.hsn_code, "63053300")
+
+    def test_a_malformed_code_is_refused_on_save(self):
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaises(ValidationError):
+            Item.objects.create(sku="SACK", name="Sack", uom=self.uom, hsn_code="63053")
