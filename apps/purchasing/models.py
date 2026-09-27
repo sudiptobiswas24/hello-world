@@ -2070,6 +2070,40 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def quantity_unbilled(self):
         return self.quantity - self.quantity_billed()
 
+    def accrual_layers(self):
+        """
+        What each posted receipt of this line put into the accrual and
+        still has there, oldest first: [(quantity, price, base cost)].
+
+        Net of returns against each receipt line, and at the figures the
+        receipt froze — the price agreed then, at the rate on the day it
+        arrived. A receipt from before those figures were frozen booked
+        the order's price as base currency, so it reads back that way.
+        """
+        rows = []
+        lines = self.receipt_lines.filter(
+            receipt__posted=True, receipt__reverses__isnull=True,
+        ).select_related("receipt").order_by(
+            "receipt__receipt_date", "receipt_id", "id"
+        )
+        for line in lines:
+            returned = line.return_lines.filter(
+                receipt__posted=True
+            ).aggregate(total=models.Sum("quantity_received"))["total"]
+            net = line.quantity_received - (returned or Decimal("0"))
+            if net <= 0:
+                continue
+            price = (
+                line.accrued_unit_price if line.accrued_unit_price is not None
+                else self.unit_price
+            )
+            cost = (
+                line.accrued_unit_cost if line.accrued_unit_cost is not None
+                else self.unit_price * (line.receipt.exchange_rate or Decimal("1"))
+            )
+            rows.append((net, price, cost))
+        return rows
+
     def quantity_billable(self):
         """
         What may be billed right now — the third leg of the three-way
@@ -2570,6 +2604,8 @@ class Bill(TaxedDocumentMixin, AuditModel):
 
         debits = []
         variance_total = Decimal("0")
+        exchange_total = Decimal("0")
+        consumed = {}
         for line in lines:
             label = line.description or str(line.item)
             net = line.net_amount()
@@ -2578,15 +2614,33 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 line.posted_account = account
                 super(BillLine, line).save(update_fields=["posted_account", "updated_at"])
             if line.clears_grni():
-                # Clear the accrual at exactly what the receipt booked —
-                # quantity billed at the *order* price. Clearing it at the
-                # billed price instead leaves GRNI holding the difference
-                # forever, which is how a supposedly self-clearing account
-                # silently accumulates a balance nobody can explain.
-                accrued = round_money(line.quantity * line.accrued_unit_cost())
-                accrued -= round_money(accrued * line.discount_percent / Decimal("100"))
-                debits.append((account, round_money(accrued * rate), label))
-                variance_total += net - accrued
+                # Clear the accrual at exactly what the receipts booked —
+                # at their agreed price and at THEIR rate, not this
+                # bill's. Clearing it at the billed price instead leaves
+                # GRNI holding the difference forever, which is how a
+                # supposedly self-clearing account silently accumulates a
+                # balance nobody can explain; clearing it at the bill's
+                # rate did exactly that for every foreign purchase.
+                doc, base = line.accrual(consumed, rate)
+                # Frozen before the discount, the way `accrual()` answers
+                # and a return hands it over, so that a debit note
+                # mirroring this line applies the discount once — not
+                # again on top of a figure that already carries it.
+                if line.accrued_doc is None:
+                    line.accrued_doc = doc.quantize(Decimal("0.000001"))
+                    line.accrued_base = base.quantize(Decimal("0.000001"))
+                    super(BillLine, line).save(update_fields=[
+                        "accrued_doc", "accrued_base", "updated_at",
+                    ])
+                keep = Decimal("1") - line.discount_percent / Decimal("100")
+                doc, base = doc * keep, base * keep
+                debits.append((account, round_money(base), label))
+                variance_total += net - round_money(doc)
+                # What the accrual is worth at this bill's rate, against
+                # what it was booked at: the rate moved between the goods
+                # arriving and the bill, and that is an exchange
+                # difference, not a price.
+                exchange_total += round_money(doc * rate) - round_money(base)
             elif line.is_charge() and line.charge.capitalise_into_inventory:
                 shares = {
                     item_pk: amount for (charge_pk, item_pk), amount in landed.items()
@@ -2615,6 +2669,22 @@ class Bill(TaxedDocumentMixin, AuditModel):
                     "company has no purchase price variance account configured."
                 )
             debits.append((account, round_money(variance_total * rate), "Price variance"))
+
+        if exchange_total:
+            company = Company.get()
+            account = (
+                company.fx_loss_account if exchange_total > 0
+                else company.fx_gain_account
+            )
+            if account is None:
+                raise ValidationError(
+                    f"The rate moved between these goods arriving and this "
+                    f"bill, by {exchange_total} in base currency, and the "
+                    "company has no exchange "
+                    f"{'loss' if exchange_total > 0 else 'gain'} account "
+                    "configured to put it in."
+                )
+            debits.append((account, exchange_total, "Exchange difference"))
 
         # Input tax is an asset, not a cost: VAT paid to a vendor is
         # reclaimable, so it is debited to the tax's paid_account rather
@@ -2897,7 +2967,7 @@ class Bill(TaxedDocumentMixin, AuditModel):
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
     @transaction.atomic
-    def create_debit_note(self, memo="", quantities=None):
+    def create_debit_note(self, memo="", quantities=None, accruals=None):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
@@ -2951,6 +3021,16 @@ class Bill(TaxedDocumentMixin, AuditModel):
                 discount_percent=line.discount_percent,
                 expense_account=line.expense_account,
             )
+            if accruals and line in accruals:
+                # Before discount, as `accrual()` returns it: the entry
+                # applies the line's discount to it once, as it does for
+                # the bill.
+                doc, base = accruals[line]
+                note_line.accrued_doc = doc
+                note_line.accrued_base = base
+                super(BillLine, note_line).save(update_fields=[
+                    "accrued_doc", "accrued_base", "updated_at",
+                ])
             note_line.taxes.set(line.taxes.all())
         debit_note.post(memo=memo)
         return debit_note
@@ -2984,6 +3064,19 @@ class BillLine(TaxedLineMixin, AuditModel):
         editable=False,
         help_text="Where this line actually landed when the bill posted, frozen so a "
                   "debit note gives it back to the same place.",
+    )
+    accrued_doc = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="What the receipts this line clears accrued, in the bill's "
+                  "currency, frozen when it posted.",
+    )
+    accrued_base = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="The same in base currency, at the receipts' own rates — "
+                  "exactly what this line took out of goods received not "
+                  "invoiced. A debit note puts back the same, and the gap "
+                  "between this and the bill's own rate is an exchange "
+                  "difference.",
     )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="bill_lines")
 
@@ -3208,6 +3301,74 @@ class BillLine(TaxedLineMixin, AuditModel):
              for line in candidates),
             Decimal("0"),
         )
+
+    def accrual(self, consumed, rate):
+        """
+        (doc, base): what the receipts this line clears accrued, for its
+        quantity.
+
+        Oldest receipt first, after whatever earlier bills and earlier
+        lines of this bill have already cleared — `consumed` carries the
+        latter, keyed by order line, because this bill is not yet posted
+        and so does not count itself as billed. Taken in that order,
+        every receipt is cleared exactly once over the life of the line,
+        so the accrual ends at nothing whatever the rates did.
+
+        A debit note does not walk the receipts: it puts back what the
+        line it debits took, or — raised by a return — what the returned
+        receipt line booked, which the return has already frozen onto it.
+
+        A bill line that names no order line is cleared at its own price
+        and at this bill's rate, as it always was. Without the link there
+        is no agreed price and no particular receipt to clear, and an
+        earlier version that walked every order for the item cleared a
+        receipt an earlier unlinked bill had already paid for — nothing
+        counts an unlinked bill against any order line. Exact clearing in
+        a foreign currency needs the link.
+        """
+        if self.accrued_base is not None and self.accrued_doc is not None:
+            return self.accrued_doc, self.accrued_base
+        if self.debits_line_id:
+            original = self.debits_line
+            if original.accrued_base is not None and original.quantity:
+                share = self.quantity / original.quantity
+                return original.accrued_doc * share, original.accrued_base * share
+            unit = self.accrued_unit_cost()
+            return self.quantity * unit, self.quantity * unit * rate
+        if not self.order_line_id:
+            doc = self.quantity * self.unit_price
+            return doc, doc * rate
+        candidates = [self.order_line]
+        remaining = self.quantity
+        doc = base = Decimal("0")
+        for order_line in candidates:
+            skip = order_line.quantity_billed() + consumed.get(
+                order_line.pk, Decimal("0")
+            )
+            for quantity, price, cost in order_line.accrual_layers():
+                if remaining <= 0:
+                    break
+                if skip >= quantity:
+                    skip -= quantity
+                    continue
+                available = quantity - skip
+                skip = Decimal("0")
+                taken = min(available, remaining)
+                doc += taken * price
+                base += taken * cost
+                remaining -= taken
+                consumed[order_line.pk] = (
+                    consumed.get(order_line.pk, Decimal("0")) + taken
+                )
+        if remaining > 0:
+            # More billed than there is accrual left to clear — the rest
+            # was received before anything was frozen, or billed ahead
+            # of its receipt. At the order's price and the bill's own
+            # figures, which is what this line did before.
+            unit = self.accrued_unit_cost()
+            doc += remaining * unit
+            base += remaining * unit * rate
+        return doc, base
 
     def clears_grni(self):
         """
@@ -3873,6 +4034,18 @@ class GoodsReceipt(AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, related_name="goods_receipts")
     receipt_date = models.DateField()
+    exchange_rate = models.DecimalField(
+        max_digits=18, decimal_places=8, null=True, blank=True, editable=False,
+        help_text="What one unit of the order's currency was worth in base "
+                  "currency when this receipt posted, frozen. The stock and "
+                  "the accrual are booked at it, and the bill clears the "
+                  "accrual at exactly what this booked — any movement in the "
+                  "rate before the bill is an exchange difference, not a "
+                  "change in what the goods cost. Blank on receipts posted "
+                  "before this was recorded, which booked the order's figures "
+                  "as base currency: read as one, because that is what they "
+                  "did.",
+    )
     reference = models.CharField(max_length=64, blank=True)
     reverses = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by"
@@ -3928,6 +4101,18 @@ class GoodsReceipt(AuditModel):
             raise ValidationError("Cannot return an unposted goods receipt.")
 
         self.receipt_date = to_date(self.receipt_date)
+        # Frozen before anything is valued. A return goes back at the
+        # rate its receipt came in at: it undoes what that receipt
+        # booked, and at today's rate it would leave the difference
+        # sitting in the accrual.
+        if is_return:
+            self.exchange_rate = self.reverses.exchange_rate or Decimal("1")
+        else:
+            currency = self.purchase_order.currency
+            self.exchange_rate = (
+                Decimal("1") if currency is None or currency.is_base
+                else currency.rate_on(self.receipt_date)
+            )
         if not is_return and self.purchase_order.status != OrderStatus.CONFIRMED:
             # Receiving against a draft order books stock and a GRNI
             # liability for goods nobody agreed to buy; against a cancelled
@@ -3997,7 +4182,13 @@ class GoodsReceipt(AuditModel):
                 continue
             movement_type = MovementType.ISSUE if is_return else MovementType.RECEIPT
             quantity = -line.quantity_received if is_return else line.quantity_received
-            unit_cost = line.order_line.unit_price
+            self._freeze_accrual(line)
+            # In base currency, at the receipt's rate. Booked at the
+            # order's figure as though it were base currency, a euro
+            # purchase went on the shelf at the euro number, and the bill
+            # — which does convert — cleared a different amount from the
+            # accrual than the receipt had put in it, for ever.
+            unit_cost = line.accrued_unit_cost
             # Where the goods land. suggest_putaway() existed and nothing
             # called it, so a binned warehouse refused every receipt that
             # did not name a shelf by hand. The answer is written back to
@@ -4058,7 +4249,8 @@ class GoodsReceipt(AuditModel):
             line.stock_movement = movement
             super(GoodsReceiptLine, line).save(
                 update_fields=[
-                    "stock_movement", "bin", "landed_warehouse", "updated_at",
+                    "stock_movement", "bin", "landed_warehouse",
+                    "accrued_unit_price", "accrued_unit_cost", "updated_at",
                 ]
             )
             # Only the vendor's charge hits the ledger: the component
@@ -4090,8 +4282,31 @@ class GoodsReceipt(AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super(GoodsReceipt, self).save(
-            update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
+            update_fields=[
+                "number", "receipt_date", "exchange_rate", "posted",
+                "posted_at", "updated_at",
+            ]
         )
+
+    def _freeze_accrual(self, line):
+        """
+        What this line puts into the accrual per unit, in the order's
+        currency and in base, written onto the line.
+
+        A return takes back what its receipt line booked, not today's
+        price at today's rate: the order may have been re-priced since,
+        and either difference would be left in the accrual.
+        """
+        original = line.reverses_line
+        if original is not None and original.accrued_unit_cost is not None:
+            line.accrued_unit_price = original.accrued_unit_price
+            line.accrued_unit_cost = original.accrued_unit_cost
+            return
+        rate = self.exchange_rate or Decimal("1")
+        line.accrued_unit_price = line.order_line.unit_price
+        line.accrued_unit_cost = (
+            line.order_line.unit_price * rate
+        ).quantize(Decimal("0.000001"))
 
     def _post_outside_step(self, line, is_return):
         """
@@ -4108,22 +4323,22 @@ class GoodsReceipt(AuditModel):
         """
         from apps.manufacturing.outside import OutsideMovement
 
+        self._freeze_accrual(line)
         movement = OutsideMovement.objects.create(
             operation=line.order_line.work_order_operation,
             movement_date=self.receipt_date,
             is_return=is_return,
             quantity=line.quantity_received,
-            value=round_money(
-                line.quantity_received * line.order_line.unit_price
-            ),
+            value=round_money(line.quantity_received * line.accrued_unit_cost),
             credit_account=grni_account(),
             reference=self.reference or self.number,
         )
         movement.post()
         line.outside_movement = movement
-        super(GoodsReceiptLine, line).save(
-            update_fields=["outside_movement", "updated_at"]
-        )
+        super(GoodsReceiptLine, line).save(update_fields=[
+            "outside_movement", "accrued_unit_price", "accrued_unit_cost",
+            "updated_at",
+        ])
 
     @transaction.atomic
     def _post_drop_ship(self, lines, is_return=False):
@@ -4154,7 +4369,11 @@ class GoodsReceipt(AuditModel):
             item = line.order_line.item
             if not item.track_inventory:
                 continue
-            value = round_money(line.quantity_received * line.order_line.unit_price)
+            self._freeze_accrual(line)
+            super(GoodsReceiptLine, line).save(update_fields=[
+                "accrued_unit_price", "accrued_unit_cost", "updated_at",
+            ])
+            value = round_money(line.quantity_received * line.accrued_unit_cost)
             if value:
                 totals[cogs_account_for(item)] += value
 
@@ -4205,7 +4424,10 @@ class GoodsReceipt(AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super(GoodsReceipt, self).save(
-            update_fields=["number", "receipt_date", "posted", "posted_at", "updated_at"]
+            update_fields=[
+                "number", "receipt_date", "exchange_rate", "posted",
+                "posted_at", "updated_at",
+            ]
         )
 
     def quarantined_lines(self):
@@ -4408,6 +4630,11 @@ class GoodsReceipt(AuditModel):
         remembered.
         """
         allocations = defaultdict(dict)
+        # What each return line took out of the accrual, per bill line
+        # it lands on, so the debit note puts back exactly that — at the
+        # returned receipt's price and rate, not at the average the bill
+        # line cleared across several receipts.
+        returned = defaultdict(dict)
         for line in self.lines.all():
             remaining = line.quantity_received
             bill_lines = BillLine.objects.filter(
@@ -4424,11 +4651,20 @@ class GoodsReceipt(AuditModel):
                 taken = min(available, remaining)
                 per_bill = allocations[bill_line.bill]
                 per_bill[bill_line] = per_bill.get(bill_line, Decimal("0")) + taken
+                if line.accrued_unit_cost is not None:
+                    doc, base = returned[bill_line.bill].get(
+                        bill_line, (Decimal("0"), Decimal("0"))
+                    )
+                    returned[bill_line.bill][bill_line] = (
+                        doc + taken * line.accrued_unit_price,
+                        base + taken * line.accrued_unit_cost,
+                    )
                 remaining -= taken
 
         return [
             bill.create_debit_note(
-                memo=f"Goods returned on {self.number}", quantities=quantities
+                memo=f"Goods returned on {self.number}", quantities=quantities,
+                accruals=returned.get(bill, {}),
             )
             for bill, quantities in allocations.items()
         ]
@@ -4518,6 +4754,17 @@ class GoodsReceiptLine(AuditModel):
                   "recorded here there is nothing to trace it from.",
     )
     quantity_received = models.DecimalField(max_digits=18, decimal_places=4)
+    accrued_unit_price = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="The agreed price this receipt accrued at, in the order's "
+                  "currency, frozen. The order's price can still be revised "
+                  "before a bill arrives; what this receipt booked cannot.",
+    )
+    accrued_unit_cost = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="The same in base currency, at the receipt's rate — what "
+                  "went into goods received not invoiced per unit.",
+    )
     outside_movement = models.ForeignKey(
         "manufacturing.OutsideMovement", null=True, blank=True,
         on_delete=models.PROTECT, related_name="receipt_lines", editable=False,
