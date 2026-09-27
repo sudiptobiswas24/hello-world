@@ -8,7 +8,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
-from apps.inventory.models import Warehouse
+from apps.inventory.models import Lot, Warehouse
 
 from .bom import (
     BillOfMaterials,
@@ -28,6 +28,7 @@ from .orders import (
     WorkOrder,
 )
 from .demand import coverage, genealogy, uncovered
+from .trace import recall
 from .changeover import ChangeoverRule, SetupFamily
 from .changeover import sequence as changeover_sequence
 from .machines import Machine
@@ -849,3 +850,71 @@ class OperatorYieldViewSet(viewsets.ViewSet):
             }
             for row in _run(by_operator, start, end, work_centre=centre)
         ])
+
+
+def _lot_row(lot):
+    return {"id": lot.pk, "code": lot.code, "item": lot.item.sku}
+
+
+class LotTraceViewSet(viewsets.ViewSet):
+    """
+    A batch traced both ways: back to what it was made from, for a
+    complaint; forward to what was made from it and who holds it, for a
+    recall.
+    """
+
+    # Computed, not listed: here so the permission check has a model to
+    # ask about, and reading a trace is reading lots.
+    queryset = Lot.objects.none()
+
+    def _lot(self, pk):
+        lot = Lot.objects.select_related("item").filter(pk=pk).first()
+        if lot is None:
+            raise DRFValidationError([f"No lot {pk}."])
+        return lot
+
+    def _depth(self, request):
+        try:
+            depth = int(request.query_params.get("depth", 4))
+        except ValueError:
+            raise DRFValidationError(["depth must be a whole number."])
+        if not 1 <= depth <= 10:
+            raise DRFValidationError(["depth must be between 1 and 10."])
+        return depth
+
+    @action(detail=True, methods=["get"], url_path="made-from")
+    def made_from(self, request, pk=None):
+        lot = self._lot(pk)
+        return Response([
+            {
+                "level": row["level"], "lot": _lot_row(row["lot"]),
+                "made_by": row["made_by"].number,
+                "from_lot": _lot_row(row["from_lot"]), "quantity": row["quantity"],
+            }
+            for row in genealogy(lot, depth=self._depth(request))
+        ])
+
+    @action(detail=True, methods=["get"])
+    def recall(self, request, pk=None):
+        lot = self._lot(pk)
+        report = recall(lot, depth=self._depth(request))
+        return Response({
+            "lot": _lot_row(lot),
+            "descendants": [
+                {
+                    "level": row["level"], "lot": _lot_row(row["lot"]),
+                    "used_by": row["used_by"].number, "quantity": row["quantity"],
+                    "made": [_lot_row(child) for child in row["made"]],
+                }
+                for row in report["descendants"]
+            ],
+            "customers": [
+                {
+                    "customer": row["customer"].code, "name": row["customer"].name,
+                    "lot": _lot_row(row["lot"]), "quantity": row["quantity"],
+                    "deliveries": row["deliveries"],
+                }
+                for row in report["customers"]
+            ],
+            "not_followed": [_lot_row(lot) for lot in report["not_followed"]],
+        })

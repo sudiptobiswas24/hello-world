@@ -21,6 +21,7 @@ from .views import (
     ProductionEntryViewSet,
     DowntimeReasonViewSet,
     DowntimeViewSet,
+    LotTraceViewSet,
     OperatorYieldViewSet,
     RoutingOperationViewSet,
     RoutingViewSet,
@@ -66,5 +67,6 @@ router.register("shifts", ShiftViewSet)
 router.register("downtime-reasons", DowntimeReasonViewSet)
 router.register("downtime", DowntimeViewSet)
 router.register("operator-yield", OperatorYieldViewSet, basename="operator-yield")
+router.register("lot-trace", LotTraceViewSet, basename="lot-trace")
 
 urlpatterns = router.urls
