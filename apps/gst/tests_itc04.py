@@ -77,6 +77,11 @@ class ReceivedTests(Itc04TestCase):
         self.assertEqual((row["original_challan"], row["quantity"], row["losses_quantity"]),
                          (self.first.number, 0, Decimal("12")))
 
+    def test_a_voided_loss_is_not_reported(self):
+        JobWorkLoss.objects.create(line=self.first.lines.get(), loss_date=TODAY,
+                                   quantity=Decimal("12")).void()
+        self.assertEqual(itc04(*H1)["received"], [])
+
     def test_receipts_and_losses_outside_the_period_are_not_in_it(self):
         self.back(self.lamination, "700", "1400")
         JobWorkLoss.objects.create(line=self.second.lines.get(), loss_date=datetime.date(2026, 10, 2),

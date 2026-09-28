@@ -704,4 +704,4 @@ class JobWorkChallanSerializer(serializers.ModelSerializer):
 class JobWorkLossSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobWorkLoss
-        fields = ["id", "line", "loss_date", "quantity", "note"]
+        fields = ["id", "line", "loss_date", "quantity", "note", "voided_at"]

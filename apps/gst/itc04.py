@@ -95,9 +95,10 @@ def itc04(start, end):
                     "losses_uqc": _uqc(line), "losses_quantity": ZERO,
                 })
     # A loss is only ever recorded against an issued challan, and a
-    # challan with losses cannot be withdrawn, so every loss counts.
+    # challan with losses cannot be withdrawn; a loss withdrawn as an
+    # error was never a loss.
     for loss in JobWorkLoss.objects.filter(
-        loss_date__gte=start, loss_date__lte=end,
+        loss_date__gte=start, loss_date__lte=end, voided_at__isnull=True,
     ).select_related("line__challan__job_worker", "line__operation__work_order__uom__gst_uqc"):
         line = loss.line
         received.append({

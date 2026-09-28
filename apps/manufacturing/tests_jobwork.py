@@ -210,6 +210,26 @@ class LossesAtTheJobWorkerTests(JobWorkTestCase):
         with self.assertRaisesMessage(ValidationError, "is a fact"):
             loss.save()
 
+    def test_a_loss_recorded_in_error_is_voided_not_deleted(self):
+        loss = self.loss("12")
+        with self.assertRaisesMessage(ValidationError, "void it rather than delete it"):
+            loss.delete()
+        loss.void()
+        self.assertEqual(self.state(self.first)["outstanding"], Decimal("600"))
+        self.back(self.lamination, "600", "1200")  # all of it can come back now
+        with self.assertRaisesMessage(ValidationError, "already withdrawn"):
+            loss.void()
+
+    def test_a_voided_loss_does_not_hold_the_challan(self):
+        self.loss("12").void()
+        self.first.void()
+        self.assertIsNotNone(self.first.voided_at)
+
+    def test_not_before_the_goods_went_out(self):
+        with self.assertRaisesMessage(ValidationError, "nothing on it was lost"):
+            JobWorkLoss.objects.create(line=self.first.lines.get(), quantity=Decimal("1"),
+                                       loss_date=TODAY - datetime.timedelta(days=1))
+
     def test_not_against_a_withdrawn_challan(self):
         second = self.challan("100")
         second.void()
@@ -244,6 +264,19 @@ class WithdrawingAChallanTests(JobWorkTestCase):
         with self.assertRaisesMessage(ValidationError, "Losses are recorded"):
             challan.void()
 
+    def test_an_issued_challan_is_never_deleted(self):
+        challan = self.challan("600")
+        with self.assertRaisesMessage(ValidationError, "cannot be deleted"):
+            challan.delete()
+        with self.assertRaisesMessage(ValidationError, "its lines are fixed"):
+            challan.lines.get().delete()
+        challan.void()
+        with self.assertRaisesMessage(ValidationError, "cannot be deleted"):
+            challan.delete()
+        draft = self.challan("100", post=False)
+        draft.delete()
+        self.assertFalse(JobWorkChallan.objects.filter(pk=draft.pk).exists())
+
     def test_not_twice(self):
         challan = self.challan("600")
         challan.void()
@@ -261,6 +294,15 @@ class DueBackTests(JobWorkTestCase):
         self.assertEqual(rows[capital.pk]["due_back_by"], datetime.date(2028, 5, 31))
         self.assertFalse(rows[capital.pk]["overdue"])
         self.assertFalse(rows[capital.pk]["due_soon"])
+
+    def test_as_of_a_day_only_what_had_happened_by_then(self):
+        self.challan("300", day=datetime.date(2026, 5, 1))
+        self.back(self.lamination, "300", "600")  # dated TODAY, 1 June
+        later = self.challan("50", day=datetime.date(2026, 6, 10))
+        (row,) = still_out(as_of=datetime.date(2026, 5, 31))
+        self.assertEqual(row["outstanding"], Decimal("300"))
+        (row,) = still_out(as_of=datetime.date(2026, 6, 10))
+        self.assertEqual(row["challan"], later)
 
     def test_the_last_day_is_still_in_time(self):
         challan = self.challan("300", day=datetime.date(2025, 6, 1))

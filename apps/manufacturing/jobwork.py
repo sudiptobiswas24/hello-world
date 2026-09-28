@@ -83,6 +83,13 @@ class JobWorkChallan(AuditModel):
             raise ValidationError(f"{self} is issued. Void it and issue another.")
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        # The mirror of save(): an issued challan left the gate and is on
+        # ITC-04. Voiding withdraws it and keeps the record.
+        if JobWorkChallan.objects.filter(pk=self.pk, posted=True).exists():
+            raise ValidationError(f"{self} is issued. Void it; it cannot be deleted.")
+        return super().delete(*args, **kwargs)
+
     @transaction.atomic
     def post(self):
         """Issue the challan: numbered, the job worker's registration frozen."""
@@ -139,7 +146,7 @@ class JobWorkChallan(AuditModel):
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not an issued challan.")
         for line in self.lines.all():
-            if line.losses.exists():
+            if line.losses.filter(voided_at__isnull=True).exists():
                 raise ValidationError(f"Losses are recorded against {line}.")
             remaining = sum(
                 (other.quantity for other in JobWorkLine.objects.filter(
@@ -207,6 +214,11 @@ class JobWorkLine(AuditModel):
             raise ValidationError("A challan line needs its HSN code.")
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        if JobWorkChallan.objects.filter(pk=self.challan_id, posted=True).exists():
+            raise ValidationError(f"{self.challan} is issued; its lines are fixed.")
+        return super().delete(*args, **kwargs)
+
     def due_back_by(self):
         days = CAPITAL_GOODS_DAYS if self.is_capital_goods else INPUTS_DAYS
         return self.challan.challan_date + datetime.timedelta(days=days)
@@ -219,6 +231,10 @@ class JobWorkLoss(AuditModel):
     loss_date = models.DateField()
     quantity = models.DecimalField(max_digits=18, decimal_places=4)
     note = models.CharField(max_length=255, blank=True)
+    voided_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text="Withdrawn as recorded in error. Kept, and counted nowhere.",
+    )
 
     class Meta:
         ordering = ["loss_date", "id"]
@@ -227,11 +243,19 @@ class JobWorkLoss(AuditModel):
         ]
 
     def save(self, *args, **kwargs):
+        if not self._state.adding and not getattr(self, "_voiding", False):
+            raise ValidationError("A recorded loss is a fact; void it and record the right one.")
         if not self._state.adding:
-            raise ValidationError("A recorded loss is a fact; record another to correct it.")
+            super().save(*args, **kwargs)
+            return
         line = self.line
         if not line.challan.posted or line.challan.voided_at is not None:
             raise ValidationError(f"{line.challan} is not an issued challan.")
+        if to_date(self.loss_date) < line.challan.challan_date:
+            raise ValidationError(
+                f"{line.challan} went out on {line.challan.challan_date}; nothing on "
+                f"it was lost at the job worker on {self.loss_date}."
+            )
         state = allocation(line.operation)[line.pk]
         if self.quantity > state["outstanding"]:
             raise ValidationError(
@@ -240,19 +264,39 @@ class JobWorkLoss(AuditModel):
             )
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A recorded loss is a fact; void it rather than delete it.")
+
+    @transaction.atomic
+    def void(self):
+        """Withdraw a loss recorded in error; the goods count as still out again."""
+        if self.voided_at is not None:
+            raise ValidationError("This loss is already withdrawn.")
+        self.voided_at = timezone.now()
+        self._voiding = True
+        self.save(update_fields=["voided_at", "updated_at"])
+
 
 # -- what came back against what -----------------------------------------
 
 
-def live_lines(operation):
-    return list(
-        JobWorkLine.objects.filter(
-            operation=operation, challan__posted=True, challan__voided_at__isnull=True,
-        ).select_related("challan").order_by("challan__challan_date", "challan_id", "id")
+def live_lines(operation, as_of=None):
+    lines = JobWorkLine.objects.filter(
+        operation=operation, challan__posted=True, challan__voided_at__isnull=True,
     )
+    if as_of is not None:
+        lines = lines.filter(challan__challan_date__lte=as_of)
+    return list(lines.select_related("challan").order_by("challan__challan_date", "challan_id", "id"))
 
 
-def allocation(operation):
+def live_losses(line, as_of=None):
+    losses = line.losses.filter(voided_at__isnull=True)
+    if as_of is not None:
+        losses = losses.filter(loss_date__lte=as_of)
+    return losses
+
+
+def allocation(operation, as_of=None):
     """
     {line id: {sent, back, lost, outstanding, events}} for a step.
 
@@ -260,19 +304,22 @@ def allocation(operation):
     step's challan lines: work back fills the oldest line with something
     still out; work sent back for rework reopens the latest line that
     was filled. `events` is [(movement, quantity)] per line, negative
-    for rework sent back.
+    for rework sent back. As of a day, only what had happened by then.
     """
-    lines = live_lines(operation)
+    lines = live_lines(operation, as_of)
     state = {
         line.pk: {
             "line": line, "sent": line.quantity, "back": ZERO,
-            "lost": sum((loss.quantity for loss in line.losses.all()), ZERO),
+            "lost": sum((loss.quantity for loss in live_losses(line, as_of)), ZERO),
             "events": [],
         }
         for line in lines
     }
     filled = []  # (line id, quantity) in the order it was laid
-    movements = operation.outside_receipts().order_by("movement_date", "id")
+    movements = operation.outside_receipts()
+    if as_of is not None:
+        movements = movements.filter(movement_date__lte=as_of)
+    movements = movements.order_by("movement_date", "id")
     for movement in movements:
         quantity = movement.quantity
         if movement.is_return:
@@ -312,7 +359,7 @@ def check_back_was_sent(operation, quantity):
     if not lines:
         return
     sent = sum((line.quantity for line in lines), ZERO)
-    lost = sum((loss.quantity for line in lines for loss in line.losses.all()), ZERO)
+    lost = sum((loss.quantity for line in lines for loss in live_losses(line)), ZERO)
     back = operation.quantity_back()
     if back + Decimal(quantity) > sent - lost:
         raise ValidationError(
@@ -336,7 +383,7 @@ def still_out(as_of=None, within_days=30):
     }
     rows = []
     for operation in operations.values():
-        for row in allocation(operation).values():
+        for row in allocation(operation, as_of).values():
             if row["outstanding"] <= 0:
                 continue
             line = row["line"]

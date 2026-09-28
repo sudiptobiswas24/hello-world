@@ -1172,10 +1172,16 @@ class JobWorkLossViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = JobWorkLoss.objects.select_related("line")
     serializer_class = JobWorkLossSerializer
     http_method_names = ["get", "post", "head", "options"]
+    action_permission_map = {"void": "manufacturing.change_jobworkloss"}
 
     def perform_create(self, serializer):
         _run(serializer.save)
 
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        loss = self.get_object()
+        loss.void()
+        return Response(JobWorkLossSerializer(loss).data)
 
 
 class DispatchViewSet(viewsets.ViewSet):
