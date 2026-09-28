@@ -32,7 +32,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
@@ -52,6 +52,19 @@ class ComponentBasis(models.TextChoices):
     FIXED = "fixed", "Fixed amount"
     PERCENT_OF_GROSS = "percent", "Percentage of taxable gross"
     PER_HOUR = "per_hour", "Rate per hour"
+    PER_UNIT = "per_unit", "Rate per unit produced"
+
+
+# What piece work can be counted in, registered by the modules that record
+# output (manufacturing registers metres and kilograms woven), so payroll
+# imports none of them. code -> (label, counter); counter(employee, up_to)
+# returns [(date, quantity)] for everything the person made up to and
+# including that date that still stands.
+PIECE_MEASURES = {}
+
+
+def register_piece_measure(code, label, counter):
+    PIECE_MEASURES[code] = (label, counter)
 
 
 class PayComponent(AuditModel):
@@ -81,6 +94,11 @@ class PayComponent(AuditModel):
         help_text="What a deduction or employer contribution is owed into — tax "
                   "payable, pension payable.",
     )
+    measure = models.CharField(
+        max_length=32, blank=True,
+        help_text="For piece work, what is counted: a measure the production "
+                  "side records against a person, such as metres woven.",
+    )
     is_taxable = models.BooleanField(
         default=True,
         help_text="Counts towards the gross that percentage components are worked "
@@ -106,6 +124,20 @@ class PayComponent(AuditModel):
         return f"{self.code} - {self.name}"
 
     def clean(self):
+        if self.basis == ComponentBasis.PER_UNIT:
+            if self.kind != ComponentKind.EARNING:
+                raise ValidationError(f"{self.code}: piece work is something earned.")
+            if self.measure not in PIECE_MEASURES:
+                raise ValidationError(
+                    f"{self.code} is paid per unit and counts "
+                    f"{self.measure or 'nothing'}; what can be counted is "
+                    f"{', '.join(sorted(PIECE_MEASURES)) or 'nothing yet'}."
+                )
+        elif self.measure:
+            raise ValidationError(
+                f"{self.code} is not paid per unit, so it counts nothing; "
+                f"{self.measure} would be read by nobody."
+            )
         if self.kind == ComponentKind.EARNING and self.expense_account_id is None:
             raise ValidationError(f"{self.code} is an earning and needs an expense account.")
         if self.kind == ComponentKind.DEDUCTION and self.liability_account_id is None:
@@ -634,11 +666,21 @@ class Payslip(AuditModel):
         ).select_related("component").order_by("component__sequence", "component__code")
 
         running_taxable = Decimal("0")
+        pieces_done = set()
         for row in rows:
             component = row.component
-            amount = self._amount_for(row, proportion, running_taxable, hours)
+            quantity = None
+            if component.basis == ComponentBasis.PER_UNIT:
+                # A rate changed mid-period is two rows of one component;
+                # piece work is worked out once, at each day's own rate.
+                if component.pk in pieces_done:
+                    continue
+                pieces_done.add(component.pk)
+                amount, quantity, row = self.piece_work(component)
+            else:
+                amount = self._amount_for(row, proportion, running_taxable, hours)
             amount = round_money(amount)
-            if not amount:
+            if amount <= 0:
                 continue
             PayslipLine.objects.create(
                 payslip=self,
@@ -653,10 +695,55 @@ class Payslip(AuditModel):
                 basis=component.basis,
                 is_taxable=component.is_taxable,
                 amount=amount,
+                quantity=quantity,
             )
             if component.kind == ComponentKind.EARNING and component.is_taxable:
                 running_taxable += amount
         return list(self.lines.all())
+
+    def piece_work(self, component):
+        """
+        (amount, quantity, rate row) owed for piece work on this run.
+
+        Paid by difference: everything the person has made up to the end
+        of the period, each day at the rate in force that day, less what
+        posted runs have already paid them for it. So a roll voided after
+        payday is taken back from the next run, and one entered late is
+        paid in it, and nothing needs remembering which run paid which
+        roll. More taken back than earned leaves nothing on this slip and
+        the rest to the next.
+
+        Output on a day no rate covers was not piece work, and is not
+        paid. Runs are worked in order: once a later period has paid
+        piece work, an earlier one cannot be calculated behind it.
+        """
+        label, counter = PIECE_MEASURES.get(component.measure, (None, None))
+        if counter is None:
+            raise ValidationError(f"Nothing counts {component.measure} for {component.code}.")
+        paid_lines = PayslipLine.objects.filter(
+            component=component, payslip__employee=self.employee,
+            payslip__run__status=PayRunStatus.POSTED,
+        ).exclude(payslip__run=self.run)
+        later = paid_lines.filter(payslip__run__period_end__gt=self.run.period_end).first()
+        if later is not None:
+            raise ValidationError(
+                f"{later.payslip.run} has already paid {self.employee} {component.code} "
+                f"for a later period. Piece work is paid in order; void that run first."
+            )
+        rates = list(EmployeeCompensation.objects.filter(
+            employee=self.employee, component=component,
+        ).order_by("effective_from"))
+        earned, made = Decimal("0"), Decimal("0")
+        for day, quantity in counter(self.employee, self.run.period_end):
+            row = next((rate for rate in rates if rate.covers(day)), None)
+            if row is not None:
+                earned += quantity * row.amount
+                made += quantity
+        paid = paid_lines.aggregate(amount=Sum("amount"), quantity=Sum("quantity"))
+        in_force = next((rate for rate in reversed(rates)
+                         if rate.effective_from <= self.run.period_end), rates[-1])
+        return (round_money(earned) - (paid["amount"] or Decimal("0")),
+                made - (paid["quantity"] or Decimal("0")), in_force)
 
     def worked_hours(self):
         """
@@ -733,6 +820,11 @@ class PayslipLine(AuditModel):
     )
     is_taxable = models.BooleanField(default=True, editable=False)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
+    quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="On piece work, the units this line pays for: what was made to "
+                  "the end of the period less what earlier runs paid.",
+    )
     posted_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,

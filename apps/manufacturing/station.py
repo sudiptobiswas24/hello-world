@@ -301,12 +301,16 @@ def roll_code(machine, shift, shift_date):
 
 @transaction.atomic
 def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
-                source="scale", supervisor=None, reason="", note="", at=None):
+                source="scale", supervisor=None, reason="", note="", at=None, weaver=None):
     """
     Weigh a roll off `machine` and put it into stock.
 
     Returns the `FabricRoll`. A declared length outside the station's
     tolerance is recorded as an exception, not refused.
+
+    `weaver` is who wove it, where the plant pays weavers by the piece.
+    Not on a contractor's loom: the contractor pays its own weavers, and
+    crediting one of ours with that cloth pays for it twice.
     """
     from apps.inventory.models import Lot
 
@@ -326,6 +330,11 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
     machine = Machine.objects.select_for_update().get(pk=machine.pk)
     if not station.machines.filter(pk=machine.pk).exists():
         raise ValidationError(f"{station} does not weigh for {machine.code}.")
+    if weaver is not None and machine.contractor_id is not None:
+        raise ValidationError(
+            f"{machine.code} is run by {machine.contractor}, who pays its own weavers; "
+            "no weaver of ours is credited with its cloth."
+        )
 
     gross_kg, declared_m = Decimal(gross_kg), Decimal(declared_m)
     if declared_m <= 0:
@@ -355,7 +364,8 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
     if shift is None:
         raise ValidationError(f"No shift runs at {timezone.localtime(at):%H:%M}.")
     shift_date = shift.shift_date_for(at)
-    for person, role in ((operator, "weighing"), (supervisor, "approving")):
+    for person, role in ((operator, "weighing"), (supervisor, "approving"),
+                         (weaver, "weaving")):
         if person is not None and not person.is_working_on(shift_date):
             raise ValidationError(f"{person} does not work here on {shift_date}; not {role}.")
 
@@ -384,7 +394,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
         width_mm=spec.lay_flat_width_cm * 10, length_m=declared_m,
         net_weight_kg=net_kg, core_weight_kg=core_type.tare_kg,
         is_tubular=spec.weave == Weave.TUBULAR,
-        station=station, weighed_by=operator, weighed_at=at,
+        station=station, weighed_by=operator, weighed_at=at, woven_by=weaver,
         shift=shift, shift_date=shift_date, core_type=core_type,
         weight_source=source,
         approved_by=supervisor if source == "manual" else None,

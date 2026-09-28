@@ -199,13 +199,17 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         supervisor = None
         if source == "manual":
             supervisor = _run(station.identify, data.get("supervisor_pin"))
+        # The weaver's own PIN, never a number typed for them: this is
+        # what their piece work is paid on.
+        weaver = _run(station.identify, data["weaver_pin"]) if data.get("weaver_pin") else None
         roll = _run(
             record_roll, station, operator, loom, _decimal(data, "gross_kg"), core,
             _decimal(data, "declared_m"), source=source, supervisor=supervisor,
-            reason=data.get("reason", ""), note=data.get("note", ""),
+            reason=data.get("reason", ""), note=data.get("note", ""), weaver=weaver,
         )
         return Response({
             "code": roll.lot.code,
+            "woven_by": _person(weaver) if weaver else None,
             "net_kg": _exact(roll.net_weight_kg),
             "gross_kg": _exact(roll.gross_weight_kg()),
             "declared_m": _exact(roll.length_m),

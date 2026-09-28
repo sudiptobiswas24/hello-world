@@ -118,6 +118,14 @@ class FabricRoll(AuditModel):
                   "names a person, so a shared login is never the answer.",
     )
     weighed_at = models.DateTimeField(null=True, blank=True)
+    woven_by = models.ForeignKey(
+        "hr.Employee", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="rolls_woven",
+        help_text="The weaver, from their own PIN, where the plant pays by the "
+                  "piece. Not whoever weighed it: at a loom exit station those "
+                  "are different people, and piece work paid to the weigher "
+                  "pays for somebody else's cloth.",
+    )
     shift = models.ForeignKey(
         "manufacturing.Shift", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
