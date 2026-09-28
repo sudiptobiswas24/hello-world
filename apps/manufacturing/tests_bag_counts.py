@@ -233,3 +233,22 @@ class BagStationApiTests(StationApiTestCase):
                           {"start": "2026-06-01", "end": "2026-06-01"}).json()
         self.assertEqual([(row["who"], row["bags"], row["conceded"]) for row in rows["by_machine"]],
                          [("C-1", 500, 1)])
+
+
+class AnInspectedSpecificationTests(ConversionTestCase):
+    def test_its_window_closes_though_its_limits_were_rounded_to_store(self):
+        # 110.123 g at 3.33%: a margin of 3.6670959 g, stored at six places
+        # as 3.667096. Compared unrounded, the plan would never read back
+        # equal and closing the window would count as changing the limits.
+        self.bag_spec.target_grams = Decimal("110.123")
+        self.bag_spec.weight_tolerance_percent = Decimal("3.33")
+        self.bag_spec.save()
+        self.count()
+        self.bag_spec.valid_to = TODAY
+        self.bag_spec.save()
+        line = self.bag_spec.inspection_plan.lines.get()
+        self.assertEqual((line.lower_limit, line.upper_limit),
+                         (Decimal("106.455904"), Decimal("113.790096")))
+        self.bag_spec.weight_tolerance_percent = Decimal("3")
+        with self.assertRaisesMessage(ValidationError, "stage a new one from the day"):
+            self.bag_spec.save()

@@ -70,6 +70,7 @@ from apps.quality.models import (
     Evaluation,
     InspectionPlan,
     PlanLine,
+    Reading,
 )
 
 from .bom import (
@@ -167,6 +168,26 @@ def _characteristic(code, name, unit_code):
         characteristic.uom = unit
         characteristic.save()
     return characteristic
+
+
+def _six(value):
+    # The places a plan line stores: a computed limit compared unrounded
+    # would never equal the one read back.
+    return None if value is None else Decimal(value).quantize(Decimal("0.000001"))
+
+
+def _plan_row(index, row):
+    code, _name, _unit, target, lower, upper, samples, rule, source = row
+    return (index, code, _six(target), _six(lower), _six(upper), samples, rule, source)
+
+
+def _plan_rows(plan):
+    return [
+        (line.line_number, line.characteristic.code, _six(line.target),
+         _six(line.lower_limit), _six(line.upper_limit), line.sample_size,
+         line.evaluation, line.derived_from)
+        for line in plan.lines.select_related("characteristic").order_by("line_number")
+    ]
 
 
 def _check_weighed_in(item, unit, label, owner):
@@ -322,6 +343,21 @@ class SpecificationMixin:
         plan.valid_from = self.valid_from
         plan.valid_to = self.valid_to
         plan.is_mandatory = item.tracking != "none"
+        # Lines already saying what the specification says are left alone:
+        # a batch measured against them keeps them in place, and a save
+        # that changes nothing about them, such as closing the window to
+        # stage a successor, must not trip over its own history.
+        unchanged = plan.pk is not None and _plan_rows(plan) == [
+            _plan_row(index, row) for index, row in enumerate(rows, start=1)
+        ]
+        if not unchanged and plan.pk is not None and Reading.objects.filter(
+                plan_line__plan=plan).exists():
+            raise ValidationError(
+                f"{self}: batches have been inspected against its limits, and "
+                "what judged them cannot change under them. Close this "
+                "specification's window and stage a new one from the day the "
+                "new limits apply."
+            )
         plan._rebuilding = True
         try:
             plan.save()
@@ -329,6 +365,8 @@ class SpecificationMixin:
             # The plan stays cached on the specification; left set, its next
             # save would pass the computed-plan guard too.
             plan._rebuilding = False
+        if unchanged:
+            return plan
         for row in plan.lines.all():
             row._rebuilding = True
             row.delete()
@@ -517,6 +555,20 @@ class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                   "it is out of specification. What the inspection plan "
                   "generated from this uses.",
     )
+    min_tenacity_gpd = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="The least strength a batch may have, in grammes per denier. "
+                  "Given, every batch is tested for it: filler is cheap and "
+                  "weak, and this is where that shows.",
+    )
+    elongation_min_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="How far the tape must stretch before it breaks, at least.",
+    )
+    elongation_max_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="And at most: over-stretchy tape makes a sack that sags.",
+    )
     extrusion_waste_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("3"),
         help_text="Of what is fed in: purge at start-up, edge trim, tape breaks.",
@@ -630,11 +682,26 @@ class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
 
     def inspection_lines(self):
         margin = self.denier * _percent(self.denier_tolerance_percent)
-        return [(
+        rows = [(
             "DENIER", "Denier", ("den", "Denier"), self.denier,
             self.denier - margin, self.denier + margin, 3,
             Evaluation.MEAN, "denier",
         )]
+        # Strength and stretch, where the customer set them: measured on
+        # every batch, and the history the filler prediction learns from.
+        if self.min_tenacity_gpd is not None:
+            rows.append((
+                "TENACITY", "Tenacity", ("gpd", "Grammes per denier"), None,
+                self.min_tenacity_gpd, None, 5, Evaluation.MEAN, "tenacity",
+            ))
+        low, high = self.elongation_min_percent, self.elongation_max_percent
+        if low is not None or high is not None:
+            rows.append((
+                "ELONG", "Elongation at break", ("%", "Per cent"),
+                (low + high) / 2 if low is not None and high is not None else None,
+                low, high, 5, Evaluation.MEAN, "elongation",
+            ))
+        return rows
 
     def bom_byproducts(self):
         if self.regrind_item is None:
@@ -682,11 +749,26 @@ class TapeSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                     f"{self.code}: the blend is {percent}% {label} and the "
                     "specification does not say which one."
                 )
+        self._check_strength()
         self._check_units()
         super().save(*args, **kwargs)
         self.rebuild_bom()
         self.rebuild_inspection_plan()
         self.resave_dependents()
+
+    def _check_strength(self):
+        # In save(), not clean(): specifications arrive through the API's
+        # serializer and from code, and neither calls clean().
+        if self.min_tenacity_gpd is not None and self.min_tenacity_gpd <= 0:
+            raise ValidationError(f"{self.code}: a minimum tenacity is more than nothing.")
+        low, high = self.elongation_min_percent, self.elongation_max_percent
+        if any(value is not None and value <= 0 for value in (low, high)):
+            raise ValidationError(f"{self.code}: elongation is more than nothing.")
+        if low is not None and high is not None and low > high:
+            raise ValidationError(
+                f"{self.code}: elongation of at least {low}% and at most {high}% leaves "
+                "nothing between."
+            )
 
     def resave_dependents(self):
         """

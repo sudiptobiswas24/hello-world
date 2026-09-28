@@ -188,6 +188,35 @@ class TapeSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = TapeSpecification.objects.select_related("tape_item", "bom")
     serializer_class = TapeSpecificationSerializer
 
+    @action(detail=True, methods=["get"])
+    def strength(self, request, pk=None):
+        """What the plant's own batches say this tape will measure; ?filler= to ask
+        about another filler before changing the recipe."""
+        from . import strength
+
+        spec = self.get_object()
+        filler = request.query_params.get("filler")
+        try:
+            filler = Decimal(filler) if filler not in (None, "") else None
+        except InvalidOperation:
+            raise DRFValidationError(["filler is a percentage."])
+        rows = _run(strength.check, spec, filler)
+
+        def text(value):
+            # format(), not str(): a filler asked as 1E+1 reads back as 10.
+            return None if value is None else format(value, "f")
+
+        return Response([{
+            **{key: row.get(key) for key in ("measure", "verdict", "why", "batches",
+                                             "left_out")},
+            "r_squared": text(row.get("r_squared")),
+            "per_point_of_filler": text(row.get("per_point_of_filler")),
+            "wanted": {key: text(value) for key, value in (row.get("wanted") or {}).items()},
+            "prediction": None if row["prediction"] is None else {
+                key: (value if isinstance(value, bool) else text(value))
+                for key, value in row["prediction"].items()},
+        } for row in rows])
+
 
 class FabricSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = FabricSpecification.objects.select_related(

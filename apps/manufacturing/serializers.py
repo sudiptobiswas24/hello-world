@@ -54,6 +54,8 @@ class TapeSpecificationSerializer(serializers.ModelSerializer):
             "filler_item", "filler_percent", "masterbatch_item",
             "masterbatch_percent", "uv_item", "uv_percent",
             "extrusion_waste_percent", "waste_recovered_percent",
+            "denier_tolerance_percent", "min_tenacity_gpd", "elongation_min_percent",
+            "elongation_max_percent",
             "bom", "is_active", "virgin_percent", "metres_per_kg",
         ]
         read_only_fields = ["bom"]
