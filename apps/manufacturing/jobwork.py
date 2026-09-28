@@ -49,6 +49,16 @@ INPUTS_DAYS = 365
 CAPITAL_GOODS_DAYS = 3 * 365
 
 
+# Asked before a challan is voided, by modules that hold something against
+# it (an e-way bill). Each raises to refuse.
+CHALLAN_VOID_GUARDS = []
+
+
+def register_challan_void_guard(guard):
+    if guard not in CHALLAN_VOID_GUARDS:
+        CHALLAN_VOID_GUARDS.append(guard)
+
+
 class JobWorkChallan(AuditModel):
     number = models.CharField(max_length=32, blank=True)
     job_worker = models.ForeignKey("core.Party", on_delete=models.PROTECT,
@@ -145,6 +155,8 @@ class JobWorkChallan(AuditModel):
         """
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not an issued challan.")
+        for guard in CHALLAN_VOID_GUARDS:
+            guard(self)
         for line in self.lines.all():
             if line.losses.filter(voided_at__isnull=True).exists():
                 raise ValidationError(f"Losses are recorded against {line}.")

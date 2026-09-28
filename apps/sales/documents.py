@@ -58,7 +58,7 @@ def _money(amount, currency):
 
 def _render_document(*, heading, document, party, address, meta, totals,
                      party_label="BILL TO", note=None, table=None, currency=None,
-                     number=""):
+                     number="", qr=None):
     """
     `meta` is [[label, value]] for the details block; `totals` is
     [[label, Decimal]] with the last row emphasised as the bottom line.
@@ -182,6 +182,10 @@ def _render_document(*, heading, document, party, address, meta, totals,
         story.append(Spacer(1, 6 * mm))
         story.append(Paragraph(note, style["muted"]))
 
+    if qr:
+        story.append(Spacer(1, 6 * mm))
+        story.append(_qr_drawing(qr))
+
     footer = [company.legal_name or company.name]
     if company.tax_id:
         footer.append(f"Tax ID {company.tax_id}")
@@ -198,6 +202,18 @@ def _render_document(*, heading, document, party, address, meta, totals,
     return buffer.getvalue()
 
 
+def _qr_drawing(text, size=38 * mm):
+    from reportlab.graphics.barcode.qr import QrCodeWidget
+    from reportlab.graphics.shapes import Drawing
+
+    widget = QrCodeWidget(text)
+    left, bottom, right, top = widget.getBounds()
+    drawing = Drawing(size, size, transform=[size / (right - left), 0, 0,
+                                             size / (top - bottom), 0, 0])
+    drawing.add(widget)
+    return drawing
+
+
 def render_invoice_pdf(invoice):
     """Return the invoice as PDF bytes."""
     currency = invoice.currency
@@ -212,6 +228,12 @@ def render_invoice_pdf(invoice):
         meta.append(["Reference", invoice.reference])
     if invoice.is_credit_note() and invoice.credits_id:
         meta.append(["Credits", invoice.credits.number])
+    from .models import invoice_stamps
+
+    qr = None
+    for stamp in invoice_stamps(invoice):
+        meta.extend([label, value] for label, value in stamp["rows"])
+        qr = qr or stamp.get("qr")
 
     totals = [["Subtotal", invoice.subtotal()]]
     for tax, amount in sorted(invoice.tax_breakdown().items(), key=lambda pair: pair[0].code):
@@ -233,7 +255,7 @@ def render_invoice_pdf(invoice):
     return _render_document(
         heading="Credit Note" if invoice.is_credit_note() else "Invoice",
         document=invoice, party=invoice.customer, address=invoice.billing_address,
-        meta=meta, totals=totals, note=note,
+        meta=meta, totals=totals, note=note, qr=qr,
     )
 
 

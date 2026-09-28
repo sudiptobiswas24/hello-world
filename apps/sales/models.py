@@ -237,6 +237,22 @@ class CustomerProfile(AuditModel):
 # so sales asks without importing whoever knows the recipe.
 MATERIAL_CHECKERS = []
 
+# What a printed invoice carries that sales does not decide: a tax
+# registration's number and code, and whether it may be sent without
+# them. Registered by the module that knows (gst), so sales imports
+# nothing of it. Each returns None or {"rows": [(label, value)], "qr":
+# text or None, "refuse_sending": reason or None}.
+INVOICE_STAMPS = []
+
+
+def register_invoice_stamp(provider):
+    if provider not in INVOICE_STAMPS:
+        INVOICE_STAMPS.append(provider)
+
+
+def invoice_stamps(invoice):
+    return [stamp for stamp in (provider(invoice) for provider in INVOICE_STAMPS) if stamp]
+
 
 def register_material_checker(checker):
     if checker not in MATERIAL_CHECKERS:
@@ -1023,6 +1039,9 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         if not self.posted:
             raise ValidationError("Only a posted invoice can be sent.")
+        for stamp in invoice_stamps(self):
+            if stamp.get("refuse_sending"):
+                raise ValidationError(stamp["refuse_sending"])
         recipient = to or self.recipient_email()
         if not recipient:
             raise ValidationError(

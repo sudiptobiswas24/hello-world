@@ -90,6 +90,8 @@ class Line:
     cgst: Decimal = ZERO
     sgst: Decimal = ZERO
     cess: Decimal = ZERO
+    source: object = None
+    rates: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -146,7 +148,8 @@ def _document(source, date, state, is_note):
         place=place, inter=(place != state) if place else False,
         value=base(source.total()),
     )
-    for line in source.lines.all():
+    # In entry order: the e-invoice numbers its items from these.
+    for line in sorted(source.lines.all(), key=lambda line: line.pk):
         rows = list(line.recorded_taxes.all())
         gst = [row for row in rows if row.gst_head in HEADS]
         if document.zero_rated:
@@ -167,9 +170,11 @@ def _document(source, date, state, is_note):
             nature=nature,
             rate=sum((row.rate for row in gst if row.gst_head != "cess"), ZERO),
             taxable=base(line.net_amount()),
+            source=line,
         )
         for row in gst:
             setattr(recorded, row.gst_head, getattr(recorded, row.gst_head) + base(row.amount))
+            recorded.rates[row.gst_head] = recorded.rates.get(row.gst_head, ZERO) + row.rate
         document.lines.append(recorded)
     return document
 

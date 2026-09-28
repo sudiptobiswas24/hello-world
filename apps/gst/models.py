@@ -42,3 +42,7 @@ class UnitQuantityCode(AuditModel):
 
     def __str__(self):
         return f"{self.uom.code} → {self.code}"
+
+
+from .einvoice import EInvoice  # noqa: E402,F401
+from .ewaybill import EwayBill  # noqa: E402,F401

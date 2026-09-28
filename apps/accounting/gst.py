@@ -59,6 +59,7 @@ OVERSEAS_PLACE = "96"
 _CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _SHAPE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 _HSN = re.compile(r"^([0-9]{4}|[0-9]{6}|[0-9]{8})$")
+_PIN = re.compile(r"^[1-9][0-9]{5}$")
 
 
 def gstin_check_character(gstin):
@@ -113,6 +114,35 @@ def validate_hsn(code):
     return code
 
 
+def validate_pincode(code, what="The address"):
+    """An Indian postal code: six digits, the first not zero."""
+    code = (code or "").replace(" ", "")
+    if not _PIN.match(code):
+        raise ValidationError(
+            f"{what} has {code or 'no'} postal code; an e-way bill or e-invoice needs "
+            "a six-digit PIN."
+        )
+    return code
+
+
+def state_code(address):
+    """
+    The GST state code of an address, or None.
+
+    An address holds its state as typed text, so this reads either a
+    two-digit code or the state's name as the GST network spells it.
+    Anything else is None rather than a guess: "Bombay" is not a state,
+    and a wrong state on an e-way bill moves the tax to the wrong one.
+    """
+    text = (getattr(address, "state", "") or "").strip()
+    if text in STATES:
+        return text
+    for code, name in STATES.items():
+        if name.lower() == text.lower():
+            return code
+    return None
+
+
 class GstRegistration(models.TextChoices):
     REGULAR = "regular", "Registered, regular"
     COMPOSITION = "composition", "Registered, composition"
@@ -151,6 +181,20 @@ class GstSettings(AuditModel):
                   "is reported invoice by invoice (B2CL) rather than in the "
                   "summary. 1,00,000 since August 2024; a setting because it "
                   "is set by notification.",
+    )
+    einvoicing_from = models.DateField(
+        null=True, blank=True,
+        help_text="The first invoice date that must carry an IRN: from when "
+                  "aggregate turnover passed 5 crore. A fact the company "
+                  "declares, since turnover across every registration on its "
+                  "PAN is not in this system. A date, not a switch, so an "
+                  "invoice from before it is not asked for one.",
+    )
+    eway_bill_limit = models.DecimalField(
+        max_digits=18, decimal_places=2, default=50000,
+        help_text="A consignment worth more than this moves on an e-way bill. "
+                  "50,000 by the central rule; some states set a higher one "
+                  "for movement inside the state, which this does not model.",
     )
 
     class Meta:
