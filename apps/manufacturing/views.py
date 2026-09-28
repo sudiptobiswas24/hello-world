@@ -48,6 +48,13 @@ from . import certificates, quoting
 from .certificates import TestCertificate
 from . import energy
 from .energy import EnergyMeter, EnergyTariff, MeterReading
+from . import inward
+from .inward import (
+    CustomerMaterialReceipt,
+    CustomerMaterialReceiptLine,
+    CustomerMaterialReturn,
+    CustomerMaterialReturnLine,
+)
 from .quoting import CostSheet, MaterialRate, QuotePolicy, StageRate
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
@@ -75,6 +82,10 @@ from .serializers import (
     QuoteRequestSerializer,
     StageRateSerializer,
     EnergyMeterSerializer,
+    CustomerMaterialReceiptLineSerializer,
+    CustomerMaterialReceiptSerializer,
+    CustomerMaterialReturnLineSerializer,
+    CustomerMaterialReturnSerializer,
     EnergyTariffSerializer,
     MeterReadingSerializer,
     TestCertificateSerializer,
@@ -264,6 +275,84 @@ class _DatedRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class MaterialRateViewSet(_DatedRateViewSet):
     queryset = MaterialRate.objects.select_related("item")
     serializer_class = MaterialRateSerializer
+
+
+class _InwardViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Drafted freely, posted, voided with a reason; never edited once posted."""
+
+    def perform_create(self, serializer):
+        _run(serializer.save)
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        _run(instance.delete)
+
+    @action(detail=True, methods=["post"])
+    def post(self, request, pk=None):
+        document = self.get_object()
+        _run(document.post)
+        return Response(self.get_serializer(document).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        document = self.get_object()
+        _run(document.void, str(request.data.get("reason", "")))
+        return Response(self.get_serializer(document).data)
+
+
+class CustomerMaterialReceiptViewSet(_InwardViewSet):
+    """A customer's material arriving on their challan. register/?customer= says
+    what is received, used, returned and on hand."""
+
+    queryset = CustomerMaterialReceipt.objects.prefetch_related("lines")
+    serializer_class = CustomerMaterialReceiptSerializer
+    action_permission_map = {
+        "post": "manufacturing.change_customermaterialreceipt",
+        "void": "manufacturing.change_customermaterialreceipt",
+    }
+
+    @action(detail=False, methods=["get"])
+    def register(self, request):
+        from apps.core.models import Party
+
+        customer = get_object_or_404(Party, pk=request.query_params.get("customer"))
+        as_of = parse_date(request.query_params.get("as_of", "") or "")
+        return Response([{
+            "item": row["item"].sku,
+            **{key: inward._q(row[key]) for key in ("received", "consumed", "returned",
+                                                    "on_hand", "unexplained")},
+            "overdue": [late | {"left": inward._q(late["left"])} for late in row["overdue"]],
+        } for row in inward.register(customer, as_of=as_of)])
+
+
+class CustomerMaterialReceiptLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = CustomerMaterialReceiptLine.objects.select_related("receipt")
+    serializer_class = CustomerMaterialReceiptLineSerializer
+
+    def perform_create(self, serializer):
+        _run(serializer.save)
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        _run(instance.delete)
+
+
+class CustomerMaterialReturnViewSet(_InwardViewSet):
+    queryset = CustomerMaterialReturn.objects.prefetch_related("lines")
+    serializer_class = CustomerMaterialReturnSerializer
+    action_permission_map = {
+        "post": "manufacturing.change_customermaterialreturn",
+        "void": "manufacturing.change_customermaterialreturn",
+    }
+
+
+class CustomerMaterialReturnLineViewSet(CustomerMaterialReceiptLineViewSet):
+    queryset = CustomerMaterialReturnLine.objects.select_related("material_return")
+    serializer_class = CustomerMaterialReturnLineSerializer
 
 
 class EnergyTariffViewSet(_DatedRateViewSet):

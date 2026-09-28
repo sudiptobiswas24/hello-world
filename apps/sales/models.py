@@ -273,6 +273,25 @@ def material_problems(customer, item, lots=(), on_date=None):
     return list(dict.fromkeys(problems))
 
 
+# Asked of every shipment, rules or none: whether any batch in it was made
+# from material that belongs to somebody else (a customer's, sent to be
+# worked on). Registered by manufacturing, which knows what made what.
+OWNERSHIP_CHECKERS = []
+
+
+def register_ownership_checker(checker):
+    if checker not in OWNERSHIP_CHECKERS:
+        OWNERSHIP_CHECKERS.append(checker)
+
+
+def refuse_ownership_problems(customer, lots):
+    problems = []
+    for checker in OWNERSHIP_CHECKERS:
+        problems.extend(checker(customer, list(lots)))
+    if problems:
+        raise ValidationError(" ".join(dict.fromkeys(problems)))
+
+
 def refuse_material_problems(customer, rows):
     """rows: [(item, lots, on_date)]. Refuse naming every problem at once."""
     problems = []
@@ -2355,6 +2374,11 @@ class Delivery(AuditModel):
                         f"{line.warehouse} holds {line.warehouse.consignment_vendor}'s "
                         "stock; draw it into your own before shipping it."
                     )
+                if line.warehouse.held_for_id:
+                    raise ValidationError(
+                        f"{line.warehouse} holds {line.warehouse.held_for}'s material, "
+                        "which goes back on a material return, not a delivery."
+                    )
                 if item.track_inventory and not line.warehouse.allow_negative_stock:
                     on_hand = item.on_hand_at(line.warehouse)
                     # On hand is counted in the item's stocking unit; the line
@@ -2541,6 +2565,10 @@ class Delivery(AuditModel):
                  [row.lot for row in line.allocations.select_related("lot") if row.lot_id],
                  self.delivery_date)
                 for line in lines if line.order_line.item_id is not None
+            ])
+            refuse_ownership_problems(self.sales_order.customer, [
+                row.lot for line in lines
+                for row in line.allocations.select_related("lot") if row.lot_id
             ])
 
         post_inventory_entry(

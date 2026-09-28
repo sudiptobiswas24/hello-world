@@ -190,9 +190,9 @@ class StockTransfer(AuditModel):
         for warehouse, role in (
             (self.from_warehouse, "from"), (self.to_warehouse, "to"),
         ):
-            if warehouse.consignment_vendor_id:
+            if warehouse.holds_others_goods():
                 raise ValidationError(
-                    f"{warehouse} holds {warehouse.consignment_vendor}'s stock, which is "
+                    f"{warehouse} holds {warehouse.owner()}'s stock, which is "
                     f"not the company's to transfer {role}."
                 )
         if self.from_warehouse.is_quarantine:

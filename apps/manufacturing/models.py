@@ -68,6 +68,12 @@ from .outside import OutsideMovement  # noqa: F401
 from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageRate  # noqa: F401
 from .certificates import TestCertificate  # noqa: F401
 from .energy import EnergyMeter, EnergyTariff, MeterReading  # noqa: F401
+from .inward import (  # noqa: F401
+    CustomerMaterialReceipt,
+    CustomerMaterialReceiptLine,
+    CustomerMaterialReturn,
+    CustomerMaterialReturnLine,
+)
 from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss  # noqa: F401
 from .changeover import ChangeoverRule, SetupFamily  # noqa: F401
 from .station import (  # noqa: F401

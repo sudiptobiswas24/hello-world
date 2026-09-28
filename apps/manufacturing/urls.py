@@ -25,6 +25,10 @@ from .views import (
     CostSheetViewSet,
     TestCertificateViewSet,
     EnergyMeterViewSet,
+    CustomerMaterialReceiptLineViewSet,
+    CustomerMaterialReceiptViewSet,
+    CustomerMaterialReturnLineViewSet,
+    CustomerMaterialReturnViewSet,
     EnergyTariffViewSet,
     MeterReadingViewSet,
     DispatchViewSet,
@@ -92,6 +96,10 @@ router.register("quote-policies", QuotePolicyViewSet)
 router.register("cost-sheets", CostSheetViewSet)
 router.register("test-certificates", TestCertificateViewSet)
 router.register("energy-meters", EnergyMeterViewSet)
+router.register("customer-material-receipts", CustomerMaterialReceiptViewSet)
+router.register("customer-material-receipt-lines", CustomerMaterialReceiptLineViewSet)
+router.register("customer-material-returns", CustomerMaterialReturnViewSet)
+router.register("customer-material-return-lines", CustomerMaterialReturnLineViewSet)
 router.register("meter-readings", MeterReadingViewSet)
 router.register("energy-tariffs", EnergyTariffViewSet)
 router.register("station-reports", StationReportViewSet, basename="station-report")

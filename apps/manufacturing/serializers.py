@@ -21,6 +21,12 @@ from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss
 from .machines import Machine
 from .certificates import TestCertificate
 from .energy import EnergyMeter, EnergyTariff, MeterReading
+from .inward import (
+    CustomerMaterialReceipt,
+    CustomerMaterialReceiptLine,
+    CustomerMaterialReturn,
+    CustomerMaterialReturnLine,
+)
 from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageRate
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
@@ -223,6 +229,40 @@ class MaterialRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = MaterialRate
         fields = ["id", "item", "rate", "valid_from", "note"]
+
+
+class CustomerMaterialReceiptLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomerMaterialReceiptLine
+        fields = ["id", "receipt", "item", "lot", "quantity", "declared_value"]
+
+
+class CustomerMaterialReceiptSerializer(serializers.ModelSerializer):
+    lines = CustomerMaterialReceiptLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CustomerMaterialReceipt
+        fields = ["id", "number", "customer", "warehouse", "received_on", "their_challan",
+                  "their_challan_date", "posted", "posted_at", "voided_at", "voided_reason",
+                  "lines"]
+        read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
+        validators = []
+
+
+class CustomerMaterialReturnLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomerMaterialReturnLine
+        fields = ["id", "material_return", "receipt_line", "item", "lot", "quantity"]
+
+
+class CustomerMaterialReturnSerializer(serializers.ModelSerializer):
+    lines = CustomerMaterialReturnLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CustomerMaterialReturn
+        fields = ["id", "number", "customer", "warehouse", "returned_on", "posted",
+                  "posted_at", "voided_at", "voided_reason", "lines"]
+        read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
 
 
 class EnergyMeterSerializer(serializers.ModelSerializer):

@@ -1750,6 +1750,41 @@ class IssueDirection(models.TextChoices):
     RETURN = "return", "Returned to the store"
 
 
+def _check_whose(issue, line):
+    """
+    Stock that is not the company's goes only where its owner allows.
+
+    A vendor's consignment is bought before it is used: drawn at nothing
+    into a run, it would be consumed without ever being paid for. A
+    customer's material goes into that customer's runs only, and comes
+    back to the shelf it left: handed back into the company's own store,
+    stock that cost nothing would sit in its average.
+    """
+    store = issue.warehouse
+    if store.consignment_vendor_id and issue.direction == IssueDirection.ISSUE:
+        raise ValidationError(
+            f"{store} holds {store.consignment_vendor}'s stock; draw it into your own "
+            "before it goes into a run."
+        )
+    if store.held_for_id and issue.direction == IssueDirection.ISSUE:
+        order_line = issue.work_order.sales_order_line
+        customer_id = order_line.order.customer_id if order_line is not None else None
+        if customer_id != store.held_for_id:
+            raise ValidationError(
+                f"{store} holds {store.held_for}'s material, and {issue.work_order} is "
+                + (f"for {order_line.order.customer}." if order_line is not None
+                   else "not for any customer's order.")
+                + " It goes into their work only."
+            )
+    if issue.direction == IssueDirection.RETURN and line.returns_line_id is not None:
+        came_from = line.returns_line.issue.warehouse
+        if came_from.pk != store.pk and (came_from.holds_others_goods()
+                                          or store.holds_others_goods()):
+            raise ValidationError(
+                f"That material came from {came_from}; it goes back there, not to {store}."
+            )
+
+
 class MaterialIssue(AuditModel):
     """
     Material drawn from the store against a run, or handed back.
@@ -2006,6 +2041,7 @@ class MaterialIssueLine(AuditModel):
     def post(self, issue, occurred_at, label):
         """Write the movement and return what it was worth, unsigned."""
         quantity = self.stock_quantity()
+        _check_whose(issue, self)
         if issue.direction == IssueDirection.ISSUE:
             check_available(
                 self.item, issue.warehouse, quantity, lot=self.lot,
@@ -2282,6 +2318,11 @@ class ProductionEntry(AuditModel):
             raise ValidationError(
                 f"{order} has no planned cost, so there is nothing to value this "
                 "output at. Release it first."
+            )
+        if self.warehouse.holds_others_goods():
+            raise ValidationError(
+                f"{self.warehouse} holds {self.warehouse.owner()}'s stock. Output is "
+                "valued into the company's own."
             )
         byproducts = list(self.byproducts.select_related("item", "uom"))
         lock_positions(

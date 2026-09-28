@@ -261,8 +261,18 @@ class Command(BaseCommand):
                 body = self._class_body(code, model.__name__)
                 if body is None:
                     continue
-                guard = self._method_body(body, "save")
-                if guard is None or "posted" not in guard or "raise" not in guard:
+                # The guard may be inherited from an abstract base in the
+                # same app; a document is guarded if any class it is built
+                # from carries one. Each still has to say posted and raise.
+                guards = []
+                for cls in model.__mro__:
+                    if cls is models.Model:
+                        break
+                    found = self._class_body(code, cls.__name__)
+                    guard = found and self._method_body(found, "save")
+                    if guard:
+                        guards.append(guard)
+                if not any("posted" in guard and "raise" in guard for guard in guards):
                     findings.append((
                         "mutable posted document",
                         f"{label}.{model.__name__} has a posted flag but no save() "

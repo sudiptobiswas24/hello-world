@@ -18,6 +18,13 @@ class Warehouse(AuditModel):
         help_text="Set when the stock here belongs to a vendor until it is used. "
                   "It is on the premises and not on the books.",
     )
+    held_for = models.ForeignKey(
+        "core.Party", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="held_warehouses",
+        help_text="Set when the stock here is a customer's, sent to be worked on. "
+                  "On the premises, not on the books, and for that customer's "
+                  "work only.",
+    )
     is_quarantine = models.BooleanField(
         default=False,
         help_text="Holds goods received but not yet accepted. The stock is owned and "
@@ -71,6 +78,19 @@ class Warehouse(AuditModel):
     def __str__(self):
         return f"{self.code} - {self.name}"
 
+    def owner(self):
+        """Whose stock this is, when it is not the company's."""
+        return self.consignment_vendor or self.held_for
+
+    def holds_others_goods(self):
+        """
+        Stock on the premises and off the books: a vendor's until drawn, a
+        customer's until worked on. One question, asked by every place that
+        must not pick, plan, transfer or value it, so a third kind of owner
+        is one change here rather than a hunt.
+        """
+        return bool(self.consignment_vendor_id or self.held_for_id)
+
     def receipt_steps(self):
         """
         Every place arriving goods pass through, in order, ending here.
@@ -102,6 +122,10 @@ class Warehouse(AuditModel):
         return None
 
     def clean(self):
+        if self.consignment_vendor_id and self.held_for_id:
+            raise ValidationError(
+                f"{self.code} cannot hold a vendor's stock and a customer's at once."
+            )
         if self.receipt_route in ("input", "inspect") and self.input_warehouse is None:
             raise ValidationError(
                 f"{self.code} receives through a bay and has not said which."
@@ -135,6 +159,19 @@ class Warehouse(AuditModel):
 
     def save(self, *args, **kwargs):
         self.clean()
+        if self.pk:
+            before = Warehouse.objects.filter(pk=self.pk).values(
+                "consignment_vendor_id", "held_for_id").first()
+            changed = before and (before["consignment_vendor_id"] != self.consignment_vendor_id
+                                  or before["held_for_id"] != self.held_for_id)
+            if changed and self.movements.exists():
+                # Whose the shelf is decides whose every unit on it is.
+                # Changed with stock on it, it would hand the stock over
+                # without a single document saying so.
+                raise ValidationError(
+                    f"Stock has moved through {self.code}; whose it holds cannot change. "
+                    "Open another warehouse."
+                )
         super().save(*args, **kwargs)
 
 
@@ -385,7 +422,7 @@ class Item(AuditModel):
         pick from. Reserved stock is on the shelf and spoken for, which
         for anyone asking "can I promise this?" is the same answer.
         """
-        if warehouse.is_quarantine or warehouse.is_transit or warehouse.consignment_vendor_id:
+        if warehouse.is_quarantine or warehouse.is_transit or warehouse.holds_others_goods():
             return 0
         return self.on_hand_at(warehouse) - self.reserved_at(warehouse)
 

@@ -901,7 +901,7 @@ def spare_elsewhere(item, warehouse, quantity, needed_by, planned_on):
     )
     for route in routes:
         source = route.from_warehouse
-        if source.is_quarantine or source.is_transit or source.consignment_vendor_id:
+        if source.is_quarantine or source.is_transit or source.holds_others_goods():
             continue
         ready = when_can_we_promise(
             item, source, quantity, planned_on=planned_on,
@@ -953,7 +953,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
     horizon_days = settings.horizon_days if horizon_days is None else horizon_days
     horizon_end = planned_on + datetime.timedelta(days=horizon_days)
 
-    if warehouse.is_quarantine or warehouse.is_transit or warehouse.consignment_vendor_id:
+    if warehouse.is_quarantine or warehouse.is_transit or warehouse.holds_others_goods():
         raise ValidationError(
             f"{warehouse} holds stock nobody may pick from, so there is nothing "
             "to plan against it."

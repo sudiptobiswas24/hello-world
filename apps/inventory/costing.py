@@ -55,6 +55,14 @@ def _movements(item, warehouse=None, before_id=None, as_of=None, after=None):
     movements = item.movements.all()
     if warehouse is not None:
         movements = movements.filter(warehouse=warehouse)
+    else:
+        # The company's stock is what the company owns. A vendor's
+        # consignment and a customer's material sit here at no cost; left
+        # in, they drag the average of the company's own stock towards
+        # nothing, and every margin check and cost fallback that asks for
+        # it prices low.
+        movements = movements.filter(warehouse__consignment_vendor__isnull=True,
+                                     warehouse__held_for__isnull=True)
     if before_id is not None:
         movements = movements.filter(id__lt=before_id)
     if as_of is not None:

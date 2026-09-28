@@ -3684,8 +3684,10 @@ def draw_consignment(item, from_warehouse, to_warehouse, quantity, payable_accou
     vendor = from_warehouse.consignment_vendor
     if vendor is None:
         raise ValidationError(f"{from_warehouse} does not hold consignment stock.")
-    if to_warehouse.consignment_vendor_id:
-        raise ValidationError("Drawing into another consignment warehouse owns nothing.")
+    if to_warehouse.holds_others_goods():
+        raise ValidationError(
+            f"{to_warehouse} holds {to_warehouse.owner()}'s stock; drawing into it owns nothing."
+        )
 
     quantity = Decimal(quantity)
     lock_positions(((item, from_warehouse), (item, to_warehouse)))
@@ -4228,6 +4230,11 @@ class GoodsReceipt(AuditModel):
             # no value and no liability are. Booking it would put the
             # vendor's inventory on the company's balance sheet and accrue
             # a bill nobody owes yet.
+            if line.warehouse.held_for_id:
+                raise ValidationError(
+                    f"{line.warehouse} holds {line.warehouse.held_for}'s material. What "
+                    "the company buys goes into its own stock."
+                )
             if line.warehouse.consignment_vendor_id:
                 self._move_consignment(line, is_return)
                 continue
