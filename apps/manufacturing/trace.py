@@ -14,12 +14,13 @@ The walk mirrors the backward one: depth-limited, because regrind
 loops back on itself, and by-products followed, because contaminated
 regrind is exactly the batch a recall has to chase.
 
-**Shipped is read from the stock ledger.** A delivery records which
-batches it took; a customer return records nothing but the stock it
-put back. Counting deliveries alone would name a customer who sent the
-whole batch back, and a recall that rings the wrong people wastes the
-day it has. So what each customer holds is the net of the movements
-the deliveries and their returns made against the batch.
+**Shipped is read from what the deliveries recorded.** A delivery
+holds each batch it took and the movement that took it; a customer
+return holds each batch it put back the same way. What a customer
+holds is the net of the two. Counting deliveries alone would name a
+customer who sent the whole batch back, and matching movements by the
+reference printed on them would count any adjustment somebody typed
+that number on.
 """
 
 from collections import defaultdict
@@ -94,27 +95,16 @@ def held_by_customers(lots):
     Rows of {customer, lot, quantity, deliveries}, only where something
     is still out there.
     """
-    from apps.inventory.models import StockMovement
-    from apps.sales.models import Delivery
+    from apps.sales.models import DeliveryAllocation
 
-    lots = list(lots)
-    movements = StockMovement.objects.filter(lot__in=lots)
-    references = set(movements.values_list("reference", flat=True))
-    # A delivery has a number, and moves stock, only once it has posted.
-    deliveries = {
-        delivery.number: delivery
-        for delivery in Delivery.objects.filter(
-            number__in=references
-        ).select_related("sales_order__customer")
-    }
     held = defaultdict(lambda: {"quantity": ZERO, "deliveries": set()})
-    for movement in movements.select_related("lot"):
-        delivery = deliveries.get(movement.reference)
-        if delivery is None:
-            continue
-        row = held[(delivery.sales_order.customer, movement.lot)]
-        # A shipment takes stock out (negative); a return puts it back.
-        row["quantity"] -= movement.quantity
+    allocations = DeliveryAllocation.objects.filter(lot__in=list(lots)).select_related(
+        "lot", "line__delivery__sales_order__customer", "line__delivery__reverses",
+    )
+    for allocation in allocations:
+        delivery = allocation.line.delivery
+        row = held[(delivery.sales_order.customer, allocation.lot)]
+        row["quantity"] += -allocation.quantity if delivery.is_return() else allocation.quantity
         row["deliveries"].add(delivery.number)
     return [
         {"customer": customer, "lot": lot, "quantity": row["quantity"],

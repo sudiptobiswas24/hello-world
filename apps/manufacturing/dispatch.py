@@ -146,12 +146,24 @@ def build(start_at=None):
         key=lambda order: (order.scheduled_end or FAR, order.scheduled_start or FAR, order.pk),
     )
     rows = []
+
+    def held(operation, order, reason):
+        rows.append({"operation": operation, "order": order, "machine": operation.machine,
+                     "resource": None, "start": None, "finish": None, "changeover": ZERO,
+                     "outside": operation.is_outside, "held": reason})
+
     for order in orders:
         ready = start_at
+        waiting_on = None
         if order.scheduled_start:
             ready = max(ready, datetime.datetime.combine(order.scheduled_start, day_start))
         started = order.started_quantity()
         for operation in order.operations.order_by("sequence"):
+            if waiting_on is not None:
+                # A step after a held one cannot be timed; it is listed as
+                # waiting rather than dropped from the board.
+                held(operation, order, f"Waits for step {waiting_on}, which is held.")
+                continue
             if operation.is_outside:
                 if operation.quantity_back() >= started:
                     continue
@@ -165,10 +177,20 @@ def build(start_at=None):
             if minutes <= 0 and begun:
                 continue
             candidates = pool(operation.work_centre)
+            moved_from = None
             if operation.machine_id:
                 # Started there, or put there by the dispatcher: it stays.
                 pinned = [r for r in candidates if r.machine and
                           r.machine.pk == operation.machine_id]
+                if not pinned and begun:
+                    # Half a roll is on a loom now out of use. Moving it is
+                    # not a scheduling decision, so it is held and said.
+                    held(operation, order, f"Started on {operation.machine.code}, which is "
+                                           "out of use; it is not moved to another machine.")
+                    waiting_on = operation.sequence
+                    continue
+                if not pinned:
+                    moved_from = operation.machine.code
                 candidates = pinned or candidates
             best = None
             for resource in candidates:
@@ -187,9 +209,14 @@ def build(start_at=None):
             resource.last_item = order.item
             rows.append({"operation": operation, "order": order, "machine": resource.machine,
                          "resource": resource.code, "start": began, "finish": finish,
-                         "changeover": change, "outside": False})
+                         "changeover": change, "outside": False, "moved_from": moved_from})
             ready = finish
     for row in rows:
+        row.setdefault("held", None)
+        row.setdefault("moved_from", None)
+        if row["held"]:
+            row["late"] = None
+            continue
         due = row["order"].scheduled_end
         row["late"] = due is not None and row["finish"].date() > due
         row["start"] = timezone.make_aware(row["start"])
@@ -200,7 +227,10 @@ def build(start_at=None):
 @transaction.atomic
 def commit(rows):
     """Write the schedule onto the operations: the dispatcher's decision."""
+    written = 0
     for row in rows:
+        if row["held"]:
+            continue
         operation = row["operation"]
         operation.planned_start = row["start"]
         operation.planned_finish = row["finish"]
@@ -209,12 +239,17 @@ def commit(rows):
             operation.machine = row["machine"]
             fields.append("machine")
         operation.save(update_fields=fields)
-    return len(rows)
+        written += 1
+    return written
 
 
 def dispatch_list(rows):
     """The schedule by machine, each machine's work in the order it runs."""
     board = defaultdict(list)
     for row in rows:
+        if row["held"]:
+            board["held"].append(row)
+            continue
         board["outside" if row["outside"] else row["resource"]].append(row)
-    return {code: sorted(items, key=lambda row: row["start"]) for code, items in board.items()}
+    return {code: items if code == "held" else sorted(items, key=lambda row: row["start"])
+            for code, items in board.items()}

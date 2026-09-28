@@ -4,14 +4,19 @@ shipped any of it. The recall, which is the complaint's mirror.
 """
 
 import datetime
+import importlib
 from decimal import Decimal
 
+from django.apps import apps as django_apps
 from django.contrib.auth.models import User
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.core.models import PartyRole, PartyRoleAssignment
-from apps.inventory.models import Lot, TrackingMode
-from apps.sales.models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
+from apps.inventory.models import Lot, MovementType, StockMovement, TrackingMode
+from apps.sales.models import (
+    Delivery, DeliveryAllocation, DeliveryLine, SalesOrder, SalesOrderLine,
+)
 
 from .orders import IssueDirection, MaterialIssue, MaterialIssueLine
 from .tests_demand import DemandTestCase
@@ -156,6 +161,39 @@ class WhoHoldsItTests(TraceTestCase):
         self.a_run()
         self.ship("600").create_return(credit_invoices=False)
         self.assertEqual(held_by_customers([self.tape_lot]), [])
+
+    def test_a_movement_that_only_carries_the_delivery_number_is_not_one(self):
+        self.a_run()
+        delivery = self.ship("600")
+        for kind, quantity in ((MovementType.ADJUSTMENT, "-50"), (MovementType.RECEIPT, "100")):
+            StockMovement.objects.create(
+                item=self.tape, warehouse=self.plant, movement_type=kind, lot=self.tape_lot,
+                uom=self.kg, quantity=Decimal(quantity), unit_cost=Decimal("1"),
+                reference=delivery.number, occurred_at=timezone.now(),
+            )
+        (row,) = held_by_customers([self.tape_lot])
+        self.assertEqual(row["quantity"], Decimal("600"))
+
+    def test_a_return_records_the_batches_it_put_back(self):
+        self.a_run()
+        back = self.ship("600").create_return(credit_invoices=False)
+        (allocation,) = DeliveryAllocation.objects.filter(line__delivery=back)
+        self.assertEqual((allocation.lot, allocation.quantity), (self.tape_lot, Decimal("600")))
+        self.assertEqual(allocation.movement.movement_type, MovementType.RECEIPT)
+
+    def test_returns_posted_before_they_recorded_it_are_backfilled(self):
+        backfill = importlib.import_module("apps.sales.migrations.0032_return_allocations").backfill
+        self.a_run()
+        self.ship("600")
+        back = self.ship("300", day=16).create_return(credit_invoices=False)
+        DeliveryAllocation.objects.filter(line__delivery=back).delete()
+        (row,) = held_by_customers([self.tape_lot])
+        self.assertEqual(row["quantity"], Decimal("900"))  # the return unseen
+        backfill(django_apps, None)
+        (row,) = held_by_customers([self.tape_lot])
+        self.assertEqual(row["quantity"], Decimal("600"))
+        backfill(django_apps, None)  # run twice, recorded once
+        self.assertEqual(DeliveryAllocation.objects.filter(line__delivery=back).count(), 1)
 
     def test_what_is_left_after_one_of_two_shipments_comes_back(self):
         self.a_run()

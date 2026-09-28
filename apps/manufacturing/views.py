@@ -1201,7 +1201,7 @@ class DispatchViewSet(viewsets.ViewSet):
             "operation": row["operation"].name, "sequence": row["operation"].sequence,
             "start": row["start"], "finish": row["finish"],
             "changeover_minutes": str(row["changeover"]), "late": row["late"],
-            "due": order.scheduled_end,
+            "due": order.scheduled_end, "held": row["held"], "moved_from": row["moved_from"],
         }
 
     def list(self, request):

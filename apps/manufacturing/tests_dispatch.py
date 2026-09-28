@@ -152,6 +152,32 @@ class WhatHasStartedTests(DispatchTestCase):
         self.assertEqual(timezone.make_naive(row["finish"]), at(D1, 16, 50))
         self.assertEqual(row["changeover"], Decimal("0"))
 
+    def test_on_a_machine_now_out_of_use_it_is_held_not_moved(self):
+        b = self.run_of("600", D2)
+        operation = b.operations.get()
+        operation.machine = self.l2
+        operation.save()
+        TimeBooking.objects.create(work_order=b, operation=operation, booking_date=TODAY,
+                                   minutes=Decimal("100")).post()
+        Machine.objects.filter(pk=self.l2.pk).update(is_active=False)
+        rows = self.schedule()
+        row = self.row(rows, b)
+        self.assertEqual((row["machine"], row["start"], row["late"]), (self.l2, None, None))
+        self.assertIn("L-2, which is out of use", row["held"])
+        self.assertEqual(dispatch_list(rows)["held"], [row])
+        self.assertEqual(commit(rows), 0)
+        operation.refresh_from_db()
+        self.assertEqual((operation.machine, operation.planned_start), (self.l2, None))
+
+    def test_a_pin_that_never_started_moves_and_says_so(self):
+        b = self.run_of("600", D2)
+        operation = b.operations.get()
+        operation.machine = self.l2
+        operation.save()
+        Machine.objects.filter(pk=self.l2.pk).update(is_active=False)
+        row = self.row(self.schedule(), b)
+        self.assertEqual((row["machine"], row["moved_from"], row["held"]), (self.l1, "L-2", None))
+
     def test_a_run_waits_for_its_own_start_date(self):
         b = self.run_of("600", D3)
         WorkOrder.objects.filter(pk=b.pk).update(scheduled_start=D2)
@@ -203,6 +229,20 @@ class ARoutingIsAChainTests(DispatchTestCase):
         self.assertTrue(coat["outside"])
         self.assertEqual(timezone.make_naive(coat["finish"]), at(D2, 13) + datetime.timedelta(days=5))
         self.assertEqual([r["order"] for r in dispatch_list(rows)["outside"]], [b])
+
+    def test_the_steps_after_a_held_one_wait_on_the_board(self):
+        b = self.run_of("600", D2)
+        weave = b.operations.get(sequence=10)
+        weave.machine = self.l1
+        weave.save()
+        TimeBooking.objects.create(work_order=b, operation=weave, booking_date=TODAY,
+                                   minutes=Decimal("100")).post()
+        Machine.objects.filter(pk=self.l1.pk).update(is_active=False)
+        rows = self.schedule()
+        stitch, coat = self.row(rows, b, 20), self.row(rows, b, 30)
+        self.assertEqual((stitch["held"], coat["held"]),
+                         ("Waits for step 10, which is held.",) * 2)
+        self.assertEqual(len(dispatch_list(rows)["held"]), 3)
 
     def test_a_step_after_the_vendor_waits_for_the_vendor(self):
         RoutingOperation.objects.create(

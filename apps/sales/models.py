@@ -2410,11 +2410,14 @@ class Delivery(AuditModel):
                     notes=notes,
                 )
                 cost += entry_cost
-                if not is_return:
-                    DeliveryAllocation.objects.create(
-                        line=line, lot=chosen_lot, bin=chosen_bin,
-                        quantity=chosen_quantity, movement=movement,
-                    )
+                # Both ways: a return holds the movement that put stock
+                # back, as a shipment holds the one that took it, so a
+                # trace reads which customer has which batch from links
+                # rather than from a reference anybody can type.
+                DeliveryAllocation.objects.create(
+                    line=line, lot=chosen_lot, bin=chosen_bin,
+                    quantity=chosen_quantity, movement=movement,
+                )
 
             if frozen is None:
                 # One rate on the line for a shipment that may have come
@@ -2691,7 +2694,8 @@ class DeliveryLine(AuditModel):
 
 class DeliveryAllocation(AuditModel):
     """
-    One batch, off one shelf, on one delivery line.
+    One batch, off one shelf, on one delivery line — or, on a customer
+    return, back onto one.
 
     A line says what the customer ordered; a shipment of forty may come
     off two batches and three shelves, and which is the answer a recall
