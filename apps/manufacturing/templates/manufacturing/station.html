@@ -347,8 +347,29 @@ function setServer(ok) {
 // treated as settled once three readings in a row agree. Connected over
 // Web Serial in a Chromium browser; `window.stationScale.feed(line)` lets
 // a bridge or a test supply readings instead.
+//
+// At a bridged station the scale is not on this machine: its bridge posts
+// to the server, and the screen asks the server what the scale reads and
+// whether that reading would be taken (settled, fresh, not already used).
 const scale = {
   connected: false, kg: null, stable: false, _same: 0, _last: null,
+  bridged: false, raw: null, refusal: null, _timer: null,
+  async poll() {
+    try {
+      const body = await api("scale/");
+      this.connected = true;
+      this.raw = body.gross_kg;
+      this.kg = body.gross_kg == null ? null : parseFloat(body.gross_kg);
+      this.stable = !!body.usable;
+      this.refusal = body.refusal;
+    } catch (e) { this.connected = false; this.stable = false; }
+    renderScale(); renderCheck();
+  },
+  follow() {
+    if (!this.bridged || this._timer) return;
+    this.poll();
+    this._timer = setInterval(() => this.poll(), 1000);
+  },
   feed(line) {
     const match = /(ST|US)?[^0-9+\-]*([+\-]?\s*\d+(?:\.\d+)?)\s*kg/i.exec(line);
     if (!match) return;
@@ -402,6 +423,8 @@ function renderScale() {
   const pill = document.getElementById("stable");
   pill.textContent = scale.kg == null ? t("waiting") : t(scale.stable ? "stable" : "unstable");
   pill.className = "pill " + (scale.kg == null ? "" : scale.stable ? "ok" : "warn");
+  // The server's own words for why a bridged reading would not be taken.
+  if (scale.bridged && !scale.stable && scale.refusal) pill.textContent = scale.refusal;
   document.getElementById("source-text").textContent = t("scale_source");
 }
 
@@ -493,6 +516,7 @@ function showWeigh() {
   document.getElementById("hdr-operator").textContent =
     `${station.operator.number} · ${station.operator.name}`;
   show("weigh"); document.getElementById("loom").focus();
+  scale.follow();
 }
 
 // -- the roll -------------------------------------------------------------------
@@ -530,7 +554,10 @@ async function submitRoll(extra) {
   try {
     const roll = await api("rolls/", { body: {
       loom: loom.loom, core: document.getElementById("core").value,
-      gross_kg: extra && extra.gross_kg ? extra.gross_kg : scale.kg.toFixed(2),
+      // A bridged reading goes back exactly as the server gave it, so the
+      // server refuses it if the scale has read something else since.
+      gross_kg: extra && extra.gross_kg ? extra.gross_kg
+        : scale.bridged ? scale.raw : scale.kg.toFixed(2),
       declared_m: document.getElementById("declared").value, ...(extra || {}),
     } });
     await printLabel(roll);
@@ -606,6 +633,8 @@ async function start() {
   const shift = station.shift ? `${station.shift_name} · ${station.shift_date}` : "";
   document.getElementById("shift-line").textContent = shift;
   document.getElementById("hdr-shift").textContent = shift;
+  scale.bridged = !!station.scale_bridged;
+  document.getElementById("btn-scale").hidden = scale.bridged;
   const core = document.getElementById("core");
   station.cores.forEach((c) => {
     const o = document.createElement("option"); o.value = c.code; o.textContent = `${c.code} · ${c.tare_kg} kg`; core.appendChild(o);

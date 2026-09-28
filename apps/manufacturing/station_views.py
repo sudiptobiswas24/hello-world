@@ -114,6 +114,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "name": station.name,
             "kind": station.kind,
             "scale": station.scale_code,
+            "scale_bridged": station.scale_bridged,
             "printer": station.printer_code,
             "tolerance_percent": _exact(station.metres_tolerance_percent),
             "shift": shift.code if shift else None,
@@ -203,8 +204,11 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         # The weaver's own PIN, never a number typed for them: this is
         # what their piece work is paid on.
         weaver = _run(station.identify, data["weaver_pin"]) if data.get("weaver_pin") else None
+        # A bridged scale's weight comes from the scale; a figure sent
+        # with it must agree.
+        gross = _decimal(data, "gross_kg") if data.get("gross_kg") not in (None, "") else None
         roll = _run(
-            record_roll, station, operator, loom, _decimal(data, "gross_kg"), core,
+            record_roll, station, operator, loom, gross, core,
             _decimal(data, "declared_m"), source=source, supervisor=supervisor,
             reason=data.get("reason", ""), note=data.get("note", ""), weaver=weaver,
         )
@@ -474,9 +478,13 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                       if data.get("supervisor_pin") else None)
         doff = _run(record_tape, station, operator, self._machine(station, data.get("machine")),
                     data.get("gross_kg"), data.get("bobbins"), core,
-                    data.get("denier") or [], supervisor, data.get("reason", ""))
+                    data.get("denier") or [], supervisor, data.get("reason", ""),
+                    source=data.get("source", "scale"),
+                    typed_reason=data.get("typed_reason", ""),
+                    typed_note=data.get("typed_note", ""))
         return Response({
             "id": doff.pk, "batch": doff.lot.code, "net_kg": _exact(doff.net_kg),
+            "gross_kg": _exact(doff.gross_kg), "source": doff.weight_source,
             "mean_denier": _exact(doff.mean_denier),
             "inspection": doff.inspection.number or None,
             "awaiting_lab": not doff.inspection.posted,
@@ -492,6 +500,31 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         supervisor = _run(station.identify, request.data.get("supervisor_pin"))
         _run(void_doff, doff, station, supervisor, operator, request.data.get("reason", ""))
         return Response({"id": doff.pk, "voided": True})
+
+    @action(detail=True, methods=["get"])
+    def scale(self, request, code=None):
+        """What the station's scale last reported, and whether it would be taken."""
+        from .station_scale import latest, take_reading
+
+        station = self.get_object()
+        self._require_operator(request, station)
+        if not station.scale_bridged:
+            return Response({"bridged": False})
+        now = timezone.now()
+        with transaction.atomic():
+            reading = latest(station, now)
+            try:
+                take_reading(station, now)
+                refusal = None
+            except DjangoValidationError as exc:
+                refusal = exc.messages[0]
+        return Response({
+            "bridged": True, "scale": station.scale_code,
+            "gross_kg": _exact(reading.gross_kg) if reading else None,
+            "stable": reading.stable if reading else None,
+            "read_at": reading.read_at if reading else None,
+            "usable": refusal is None, "refusal": refusal,
+        })
 
     @action(detail=True, methods=["post"])
     def coating(self, request, code=None):
@@ -628,3 +661,27 @@ class StationReportViewSet(viewsets.GenericViewSet):
         return Response({key: [row | {"mean_deviation_percent":
                                       _exact(row["mean_deviation_percent"])} for row in rows]
                          for key, rows in found.items()})
+
+
+class CanPostScaleReadings(BasePermission):
+    def has_permission(self, request, view):
+        return request.user.has_perm("manufacturing.add_scalereading")
+
+
+class ScaleReadingViewSet(viewsets.GenericViewSet):
+    """
+    Where a scale's bridge posts what the scale reads: {"scale", "gross_kg",
+    "stable"}. The bridge signs in as a user that may do nothing else.
+    """
+
+    permission_classes = [IsAuthenticated, CanPostScaleReadings]
+
+    def create(self, request):
+        from .station_scale import post_reading
+
+        data = request.data
+        reading = _run(post_reading, data.get("scale"), data.get("gross_kg"),
+                       data.get("stable"))
+        return Response({"id": reading.pk, "scale": reading.scale_code,
+                         "gross_kg": _exact(reading.gross_kg), "stable": reading.stable,
+                         "read_at": reading.read_at}, status=201)

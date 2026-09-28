@@ -84,6 +84,11 @@ class LoomStation(AuditModel):
         help_text="Who may approve a typed weight here.",
     )
     scale_code = models.CharField(max_length=32, blank=True)
+    scale_bridged = models.BooleanField(
+        default=False,
+        help_text="The scale posts its readings through a bridge: a scale weight "
+                  "here is what the scale reported, never a typed figure.",
+    )
     printer_code = models.CharField(max_length=32, blank=True)
     metres_tolerance_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("2.00"),
@@ -106,6 +111,8 @@ class LoomStation(AuditModel):
                 & Q(unaccounted_threshold_percent__gt=0),
                 name="station_limits_positive",
             ),
+            models.CheckConstraint(check=Q(scale_bridged=False) | ~Q(scale_code=""),
+                                   name="bridged_station_names_its_scale"),
         ]
 
     def __str__(self):
@@ -338,6 +345,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
     from .orders import ProductionEntry
     from .rolls import FabricRoll
     from .shifts import Shift
+    from .station_scale import check_typed_weight, gross_weight
     from .woven import Weave
 
     at = at or timezone.now()
@@ -356,9 +364,10 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
             "no weaver of ours is credited with its cloth."
         )
 
-    gross_kg, declared_m = Decimal(gross_kg), Decimal(declared_m)
+    declared_m = Decimal(declared_m)
     if declared_m <= 0:
         raise ValidationError("Enter the metres the loom counter shows.")
+    gross_kg, reading = gross_weight(station, gross_kg, source, at)
     net_kg = gross_kg - core_type.tare_kg
     if net_kg <= 0:
         raise ValidationError(
@@ -367,16 +376,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
         )
 
     if source == "manual":
-        if supervisor is None:
-            raise ValidationError("A typed weight needs a supervisor's PIN.")
-        if supervisor.pk == operator.pk:
-            raise ValidationError("A typed weight is approved by somebody else.")
-        if not station.supervisors.filter(pk=supervisor.pk).exists():
-            raise ValidationError(f"{supervisor} does not approve weights at {station}.")
-        if not reason:
-            raise ValidationError("Give the reason the scale was not used.")
-        if reason == "other" and not note.strip():
-            raise ValidationError("Say what the other reason was.")
+        check_typed_weight(station, operator, supervisor, reason, note)
     elif source != "scale":
         raise ValidationError(f"{source!r} is not a weight source.")
 
@@ -416,7 +416,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
         is_tubular=spec.weave == Weave.TUBULAR,
         station=station, weighed_by=operator, weighed_at=at, woven_by=weaver,
         shift=shift, shift_date=shift_date, core_type=core_type,
-        weight_source=source,
+        weight_source=source, scale_reading=reading,
         approved_by=supervisor if source == "manual" else None,
         override_reason=reason if source == "manual" else "",
         override_note=note.strip() if source == "manual" else "",

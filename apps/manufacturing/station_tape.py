@@ -11,6 +11,10 @@ tape specification's inspection.
 into stock against the run on the line, measured against the tape's
 denier limits.
 
+**The weight** is the scale's where the station's scale is bridged, and
+a typed weight needs a supervisor's PIN and a reason, as at the loom
+exit.
+
 **Denier out of limits** is not booked without a supervisor's PIN and a
 reason, the same rule a bundle of sacks off weight is held to.
 
@@ -31,6 +35,8 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel
 
+from .station_scale import TYPED_REASONS
+
 ZERO = Decimal("0")
 
 
@@ -45,6 +51,16 @@ class TapeDoff(AuditModel):
     inspection = models.ForeignKey("quality.Inspection", null=True, blank=True,
                                    on_delete=models.SET_NULL, related_name="+")
     gross_kg = models.DecimalField(max_digits=12, decimal_places=3)
+    weight_source = models.CharField(
+        max_length=8, default="scale",
+        choices=[("scale", "Scale"), ("manual", "Manual, supervisor-approved")])
+    scale_reading = models.OneToOneField(
+        "manufacturing.ScaleReading", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="tape_doff", editable=False)
+    weight_approved_by = models.ForeignKey("hr.Employee", null=True, blank=True,
+                                           on_delete=models.PROTECT, related_name="+")
+    typed_reason = models.CharField(max_length=16, blank=True, choices=TYPED_REASONS)
+    typed_note = models.CharField(max_length=255, blank=True)
     bobbins = models.PositiveIntegerField()
     core_type = models.ForeignKey("manufacturing.CoreType", on_delete=models.PROTECT,
                                   related_name="+")
@@ -63,6 +79,10 @@ class TapeDoff(AuditModel):
         ordering = ["-weighed_at"]
         constraints = [
             models.CheckConstraint(check=models.Q(net_kg__gt=0), name="tape_doff_net_positive"),
+            models.CheckConstraint(
+                check=~models.Q(weight_source="manual")
+                | (models.Q(weight_approved_by__isnull=False) & ~models.Q(typed_reason="")),
+                name="tape_doff_typed_weight_is_approved"),
         ]
 
     def __str__(self):
@@ -78,7 +98,8 @@ def doff_code(machine, shift, shift_date):
 
 @transaction.atomic
 def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier_readings,
-                supervisor=None, reason="", at=None, instrument=None):
+                supervisor=None, reason="", at=None, instrument=None, source="scale",
+                typed_reason="", typed_note=""):
     from apps.inventory.models import Lot
     from apps.quality.models import Disposition, Inspection, Reading
 
@@ -86,6 +107,7 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
     from .orders import ProductionEntry
     from .station import LineKind, check_supervisor, run_on
     from .station_floor import _context, _number
+    from .station_scale import check_typed_weight, gross_weight
     from .woven import TapeSpecification
 
     at = at or timezone.now()
@@ -93,7 +115,12 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
         raise ValidationError(f"{station} is not a tape line's station.")
     machine = Machine.objects.select_for_update().get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
-    gross = _number(gross_kg, "The gross weight")
+    if source == "manual":
+        check_typed_weight(station, operator, supervisor, typed_reason, typed_note)
+    elif source != "scale":
+        raise ValidationError(f"{source!r} is not a weight source.")
+    gross, reading = gross_weight(station, gross_kg, source, at)
+    gross = _number(gross, "The gross weight")
     try:
         bobbins = int(bobbins)
     except (TypeError, ValueError):
@@ -145,7 +172,11 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
     entry.post()
     return TapeDoff.objects.create(
         station=station, machine=machine, lot=lot, entry=entry, inspection=inspection,
-        gross_kg=gross, bobbins=bobbins, core_type=core_type, net_kg=net,
+        gross_kg=gross, weight_source=source, scale_reading=reading,
+        weight_approved_by=supervisor if source == "manual" else None,
+        typed_reason=typed_reason if source == "manual" else "",
+        typed_note=(typed_note or "").strip() if source == "manual" else "",
+        bobbins=bobbins, core_type=core_type, net_kg=net,
         mean_denier=mean.quantize(Decimal("0.01")), weighed_by=operator, weighed_at=at,
         shift=shift, shift_date=shift_date, conceded_by=None if passed else supervisor,
         reason=reason,

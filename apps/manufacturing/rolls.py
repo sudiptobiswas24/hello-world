@@ -38,6 +38,8 @@ from django.db.models import Q
 
 from apps.core.models import AuditModel
 
+from .station_scale import TYPED_REASONS
+
 GRAMMES_PER_KG = Decimal("1000")
 MM_PER_M = Decimal("1000")
 ONE_HUNDRED = Decimal("100")
@@ -147,14 +149,11 @@ class FabricRoll(AuditModel):
         "hr.Employee", null=True, blank=True, on_delete=models.PROTECT,
         related_name="roll_overrides_approved",
     )
-    override_reason = models.CharField(
-        max_length=16, blank=True,
-        choices=[
-            ("scale_offline", "Scale not connected"),
-            ("calibration", "Scale under calibration"),
-            ("does_not_fit", "Roll does not fit platform"),
-            ("other", "Other"),
-        ],
+    override_reason = models.CharField(max_length=16, blank=True, choices=TYPED_REASONS)
+    scale_reading = models.OneToOneField(
+        "manufacturing.ScaleReading", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="fabric_roll", editable=False,
+        help_text="What a bridged scale reported for it.",
     )
     override_note = models.CharField(max_length=255, blank=True)
     metres_from_weight = models.DecimalField(

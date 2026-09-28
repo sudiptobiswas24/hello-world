@@ -111,6 +111,34 @@ class StationScreenTests(StationTestCase, LiveServerTestCase):
         self.assertIn("<svg", printed)
         self.assertIn(roll.lot.code, page.inner_text("#flash"))
 
+    def test_a_bridged_scale_is_read_from_the_server(self):
+        from .station import LoomStation
+        from .station_scale import post_reading
+
+        LoomStation.objects.filter(pk=self.station.pk).update(scale_code="SC-1",
+                                                               scale_bridged=True)
+        page = self.open_station()
+        self.assertTrue(page.is_hidden("#btn-scale"))
+        self.sign_in(page)
+        page.wait_for_function("document.getElementById('stable').textContent"
+                               ".includes('reported nothing')")
+        page.fill("#loom", "L-17")
+        page.press("#loom", "Enter")
+        page.wait_for_function("document.getElementById('contractor').textContent.length > 0")
+        page.fill("#declared", "1006")
+        self.assertTrue(page.is_disabled("#btn-confirm"))
+        reading = post_reading("SC-1", "106.8", True)
+        page.wait_for_function("document.getElementById('net').textContent === '104.40'")
+        page.wait_for_function("!document.getElementById('btn-confirm').disabled")
+        page.evaluate("() => { window.print = () => { window.__printed = true; }; }")
+        page.click("#btn-confirm")
+        page.wait_for_function("window.__printed !== undefined")
+        roll = FabricRoll.objects.get()
+        self.assertEqual((roll.scale_reading, roll.net_weight_kg), (reading, Decimal("104.400")))
+        # The same reading again is not a second roll.
+        page.wait_for_function("document.getElementById('stable').textContent"
+                               ".includes('already weighed')")
+
     def test_an_unsettled_reading_cannot_be_confirmed(self):
         page = self.open_station()
         self.sign_in(page)
