@@ -307,9 +307,16 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             raise DRFValidationError([f"{station} does not count for {data.get('machine')}."])
         supervisor = (_run(station.identify, data["supervisor_pin"])
                       if data.get("supervisor_pin") else None)
+        instrument = None
+        if data.get("scale"):
+            from apps.quality.calibration import Instrument
+
+            instrument = Instrument.objects.filter(code=data.get("scale")).first()
+            if instrument is None:
+                raise DRFValidationError([f"No scale {data.get('scale')}."])
         count = _run(record_bags, station, operator, machine, data.get("bags"),
                      data.get("sample_grams") or [], supervisor=supervisor,
-                     reason=data.get("reason", ""))
+                     reason=data.get("reason", ""), instrument=instrument)
         return Response({
             "id": count.pk, "batch": count.inspection.lot.code, "bags": count.bags,
             "target_grams": _exact(count.target_grams),

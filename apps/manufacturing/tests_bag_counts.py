@@ -252,3 +252,24 @@ class AnInspectedSpecificationTests(ConversionTestCase):
         self.bag_spec.weight_tolerance_percent = Decimal("3")
         with self.assertRaisesMessage(ValidationError, "stage a new one from the day"):
             self.bag_spec.save()
+
+
+class WeighedOnANamedScaleTests(BagStationApiTests):
+    def test_the_weights_rely_on_the_scales_calibration(self):
+        from apps.quality.calibration import Calibration, Instrument
+
+        scale = Instrument.objects.create(code="SC-CV", name="Conversion scale",
+                                          interval_days=90)
+        calibration = Calibration.objects.create(instrument=scale, calibrated_on=TODAY,
+                                                 result="pass", performed_by="Lab")
+        calibration.post()
+        self.post_cv("sign-in/", {"pin": self.pin})
+        response = self.post_cv("bags/", {"machine": "C-1", "bags": 500, "sample_grams": IN,
+                                          "scale": "SC-CV"})
+        self.assertEqual(response.status_code, 201, response.content)
+        count = BagCount.objects.get(pk=response.json()["id"])
+        self.assertEqual({reading.calibration for reading in count.inspection.readings.all()},
+                         {calibration})
+        response = self.post_cv("bags/", {"machine": "C-1", "bags": 500, "sample_grams": IN,
+                                          "scale": "NOPE"})
+        self.assertEqual(response.status_code, 400)

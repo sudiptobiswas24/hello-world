@@ -14,8 +14,11 @@ from .models import (
     PlanLine,
     Reading,
 )
+from .calibration import Calibration, Instrument, due
 from .release import latest_inspection, release_status
 from .serializers import (
+    CalibrationSerializer,
+    InstrumentSerializer,
     CharacteristicSerializer,
     InspectionPlanSerializer,
     InspectionSerializer,
@@ -101,3 +104,55 @@ class LotStatusViewSet(viewsets.ViewSet):
             "result": latest.result if latest else None,
             "disposition": latest.disposition if latest else None,
         })
+
+
+class InstrumentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Scales and testers. GET due/?within=30: what needs calibrating."""
+
+    queryset = Instrument.objects.prefetch_related("measures")
+    serializer_class = InstrumentSerializer
+
+    @action(detail=False, methods=["get"])
+    def due(self, request):
+        try:
+            within = int(request.query_params.get("within", 30))
+        except ValueError:
+            raise DRFValidationError(["within is a number of days."])
+        return Response([{
+            "instrument": row["instrument"].code, "status": row["status"],
+            "due_on": str(row["due_on"]) if row["due_on"] else None,
+        } for row in due(within, request.query_params.get("on"))])
+
+
+class CalibrationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Drafted, then posted; a posted one is voided, never edited."""
+
+    queryset = Calibration.objects.select_related("instrument")
+    serializer_class = CalibrationSerializer
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        _run(instance.delete)
+
+    @action(detail=True, methods=["post"])
+    def post(self, request, pk=None):
+        calibration = self.get_object()
+        _run(calibration.post)
+        return Response(self.get_serializer(calibration).data)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        calibration = self.get_object()
+        _run(calibration.void, request.data.get("reason", ""))
+        return Response(self.get_serializer(calibration).data)
+
+    @action(detail=True, methods=["get"])
+    def suspects(self, request, pk=None):
+        """Inspections nobody can now vouch for, where this found it out of tolerance."""
+        calibration = self.get_object()
+        return Response([{
+            "inspection": inspection.number, "lot": inspection.lot.code,
+            "inspected_on": str(inspection.inspected_on),
+        } for inspection in calibration.suspect_inspections()])

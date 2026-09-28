@@ -40,7 +40,7 @@ it does not go into another run.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
@@ -119,6 +119,11 @@ class Characteristic(AuditModel):
                   "claiming something about one of them.",
     )
     is_active = models.BooleanField(default=True)
+    needs_calibrated_instrument = models.BooleanField(
+        default=False,
+        help_text="Every reading names the instrument it was taken on, and that "
+                  "instrument is in calibration on the day.",
+    )
 
     class Meta:
         ordering = ["code"]
@@ -563,6 +568,7 @@ class Inspection(AuditModel):
             and self.decided_by_id == self.inspected_by_id
         )
 
+    @transaction.atomic
     def post(self):
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
@@ -621,6 +627,9 @@ class Inspection(AuditModel):
                     "be taking it out of specification. This plant asks for a "
                     "second person on a concession."
                 )
+        from .calibration import check_readings
+
+        check_readings(self)
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "quality.inspection", self.inspected_on,
@@ -702,6 +711,13 @@ class Reading(AuditModel):
                   "ively fail a batch that was inside the one it was sold to.",
     )
     passed = models.BooleanField(null=True, blank=True, editable=False)
+    instrument = models.ForeignKey(
+        "quality.Instrument", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="readings", help_text="What it was measured on.")
+    calibration = models.ForeignKey(
+        "quality.Calibration", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="readings", editable=False,
+        help_text="The calibration the instrument was under when this posted, frozen.")
 
     class Meta:
         ordering = ["inspection", "plan_line", "id"]
@@ -732,3 +748,6 @@ class Reading(AuditModel):
                 "posted."
             )
         return super().delete(*args, **kwargs)
+
+
+from .calibration import Calibration, Instrument  # noqa: E402,F401

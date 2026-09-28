@@ -131,7 +131,7 @@ def _check_supervisor(station, supervisor, operator, shift_date, what):
 
 @transaction.atomic
 def record_bags(station, operator, machine, bags, sample_grams, supervisor=None, reason="",
-                at=None):
+                at=None, instrument=None):
     """Count a bundle off `machine`, weigh its sample, and book it if it may be booked."""
     from apps.inventory.models import Lot
     from apps.quality.models import Disposition, Inspection, Reading
@@ -207,7 +207,7 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
     )
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,
-                               sample_reference=f"S{number}")
+                               sample_reference=f"S{number}", instrument=instrument)
     inspection.post()
     entry = ProductionEntry.objects.create(
         work_order=order, entry_date=shift_date, warehouse=station.warehouse,
