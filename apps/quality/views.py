@@ -193,3 +193,20 @@ class ControlChartViewSet(viewsets.ViewSet):
             "capability": None if capability is None else {
                 key: text(value) for key, value in capability.items()},
         })
+
+
+class SamplingPlanViewSet(viewsets.ViewSet):
+    """GET sampling/?lot_size=&level=II&aql=2.5: how many to pull and how many may fail."""
+
+    queryset = Inspection.objects.none()
+
+    def list(self, request):
+        from .sampling import sampling_plan
+
+        params = request.query_params
+        try:
+            lot_size = int(params.get("lot_size", ""))
+        except ValueError:
+            raise DRFValidationError(["lot_size is a whole number of units."])
+        return Response(_run(sampling_plan, lot_size, params.get("level", "II"),
+                             params.get("aql", "")))

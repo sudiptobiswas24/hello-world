@@ -23,7 +23,7 @@ class PlanLineSerializer(serializers.ModelSerializer):
         model = PlanLine
         fields = ["id", "plan", "characteristic", "target", "lower_limit",
                   "upper_limit", "sample_size", "evaluation", "derived_from",
-                  "line_number"]
+                  "line_number", "aql", "inspection_level"]
         read_only_fields = ["derived_from"]
 
 
@@ -56,9 +56,9 @@ class InspectionSerializer(serializers.ModelSerializer):
         fields = ["id", "number", "lot", "plan", "inspected_on", "inspected_by",
                   "disposition", "decided_by", "decision_note", "result",
                   "posted", "posted_at", "voided_at", "voided_reason", "notes",
-                  "readings", "self_approved", "lot_status"]
+                  "readings", "self_approved", "lot_status", "lot_size", "sampling"]
         read_only_fields = ["number", "result", "posted", "posted_at",
-                            "voided_at", "voided_reason"]
+                            "voided_at", "voided_reason", "sampling"]
 
     def get_self_approved(self, obj):
         return obj.self_approved()

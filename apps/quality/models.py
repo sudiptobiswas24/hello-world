@@ -298,6 +298,16 @@ class PlanLine(AuditModel):
         default=1,
         help_text="How many to look at. Nobody weighs every sack.",
     )
+    aql = models.DecimalField(
+        max_digits=6, decimal_places=3, null=True, blank=True,
+        help_text="Acceptance quality limit, per cent nonconforming. Given, the sample "
+                  "and how many may fail come from the lot size (ISO 2859-1, normal, "
+                  "single sampling) and `sample_size` is not used.",
+    )
+    inspection_level = models.CharField(
+        max_length=4, default="II",
+        help_text="General I, II, III or special S-1 to S-4. II unless the buyer says.",
+    )
     evaluation = models.CharField(
         max_length=8, choices=Evaluation.choices, default=Evaluation.EVERY,
         help_text="Whether every reading must be inside the limits or only "
@@ -343,6 +353,16 @@ class PlanLine(AuditModel):
                 f"{self.plan.computed_by() or 'a specification'}, and its lines "
                 "with it. Change that."
             )
+        if self.aql is not None:
+            from .sampling import sampling_plan
+
+            # Asked of a lot of 100 only to have the AQL and level checked.
+            sampling_plan(100, self.inspection_level, self.aql)
+            if self.evaluation == Evaluation.MEAN:
+                raise ValidationError(
+                    f"{self.characteristic}: an AQL counts the samples that fail; it is "
+                    "not judged on their mean."
+                )
         if self._state.adding and not self.characteristic.is_active:
             raise ValidationError(
                 f"{self.characteristic} has been retired and cannot be added "
@@ -446,6 +466,13 @@ class Inspection(AuditModel):
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
     voided_reason = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
+    lot_size = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="How many units the sample was drawn from. Needed where a line "
+                  "samples by AQL; left blank for a counted item, what is on hand.")
+    sampling = models.JSONField(
+        default=dict, blank=True, editable=False,
+        help_text="The sampling plan each AQL line was judged by, frozen at posting.")
 
     class Meta:
         ordering = ["-inspected_on", "-id"]
@@ -513,9 +540,20 @@ class Inspection(AuditModel):
             by_line.setdefault(reading.plan_line_id, []).append(reading)
 
         overall = Result.PASS
+        self.sampling = {}
         for line in self.plan.lines.select_related("characteristic"):
             readings = by_line.get(line.pk, [])
-            if len(readings) < line.sample_size:
+            if line.aql is not None:
+                plan = self._sampling_for(line)
+                self.sampling[str(line.pk)] = plan
+                if len(readings) != plan["sample"]:
+                    raise ValidationError(
+                        f"{line.characteristic} at AQL {plan['aql']}, level "
+                        f"{plan['level']}, on a lot of {self.lot_size} takes "
+                        f"{plan['sample']} samples (code {plan['letter']}); this "
+                        f"inspection has {len(readings)}."
+                    )
+            elif len(readings) < line.sample_size:
                 raise ValidationError(
                     f"{line.characteristic} asks for {line.sample_size} "
                     f"reading(s) and this inspection has {len(readings)}. A "
@@ -544,7 +582,10 @@ class Inspection(AuditModel):
                     "lower_limit", "upper_limit", "passed", "updated_at"
                 ])
                 verdicts.append(verdict)
-            if line.evaluation == Evaluation.MEAN and line.characteristic.is_measured():
+            if line.aql is not None:
+                failed = len([verdict for verdict in verdicts if not verdict])
+                line_passed = failed <= self.sampling[str(line.pk)]["accept"]
+            elif line.evaluation == Evaluation.MEAN and line.characteristic.is_measured():
                 values = [r.value for r in readings]
                 mean = sum(values, Decimal("0")) / len(values)
                 line_passed = line.passes(mean)
@@ -553,6 +594,23 @@ class Inspection(AuditModel):
             if not line_passed:
                 overall = Result.FAIL
         return overall
+
+    def _sampling_for(self, line):
+        from apps.core.models import UnitOfMeasureCategory
+
+        from .sampling import sampling_plan
+
+        if self.lot_size is None:
+            item = self.lot.item
+            on_hand = self.lot.on_hand_at()
+            if item.uom.category != UnitOfMeasureCategory.COUNT or \
+                    on_hand != on_hand.to_integral_value() or on_hand < 2:
+                raise ValidationError(
+                    f"{line.characteristic} samples by AQL: say how many units the "
+                    "lot holds."
+                )
+            self.lot_size = int(on_hand)
+        return sampling_plan(self.lot_size, line.inspection_level, line.aql)
 
     def self_approved(self):
         """
@@ -638,7 +696,7 @@ class Inspection(AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super().save(update_fields=[
-            "number", "inspected_on", "result", "disposition", "posted",
+            "number", "inspected_on", "result", "disposition", "posted", "lot_size", "sampling",
             "posted_at", "updated_at",
         ])
         return self

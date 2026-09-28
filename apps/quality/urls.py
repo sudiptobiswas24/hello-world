@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    SamplingPlanViewSet,
     ControlChartViewSet,
     CalibrationViewSet,
     InstrumentViewSet,
@@ -22,5 +23,6 @@ router.register("lot-status", LotStatusViewSet, basename="lot-status")
 router.register("instruments", InstrumentViewSet)
 router.register("calibrations", CalibrationViewSet)
 router.register("spc", ControlChartViewSet, basename="spc")
+router.register("sampling", SamplingPlanViewSet, basename="sampling")
 
 urlpatterns = router.urls
