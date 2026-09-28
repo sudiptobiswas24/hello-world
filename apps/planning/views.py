@@ -87,6 +87,60 @@ class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             )
         ])
 
+    def _statistical_args(self, params):
+        from apps.inventory.models import Item
+
+        item = Item.objects.filter(pk=params.get("item")).first()
+        warehouse = Warehouse.objects.filter(pk=params.get("warehouse")).first()
+        if item is None or warehouse is None:
+            raise DRFValidationError(["Name an item and a warehouse."])
+        try:
+            months = int(params.get("months", 6))
+        except (TypeError, ValueError):
+            raise DRFValidationError(["months is a whole number."])
+        trend = str(params.get("trend", "")).lower() in ("1", "true", "yes")
+        return item, warehouse, to_date(params.get("on")) or None, months, trend
+
+    @staticmethod
+    def _rows(rows):
+        return [{"starts_on": row["starts_on"], "ends_on": row["ends_on"],
+                 "quantity": str(row["quantity"])} for row in rows]
+
+    @action(detail=False, methods=["get"])
+    def propose(self, request):
+        """What shipments by season say the coming months will ship. Writes nothing."""
+        from .statistical import propose
+
+        found = _run(propose, *self._statistical_args(request.query_params))
+        backtest = {key: (str(value) if isinstance(value, Decimal) else value)
+                    for key, value in found["backtest"].items()}
+        return Response({
+            "method": found["method"],
+            "history_months": found["history_months"],
+            "history_from": found["history_from"],
+            "level": str(found["level"]),
+            "indices": ({month: str(index) for month, index in found["indices"].items()}
+                        if found["indices"] else None),
+            "year_on_year_growth": (str(found["year_on_year_growth"])
+                                    if found["year_on_year_growth"] is not None else None),
+            "trend_applied": found["trend_applied"],
+            "backtest": backtest,
+            "rows": self._rows(found["rows"]),
+            "notes": found["notes"],
+        })
+
+    @action(detail=False, methods=["post"])
+    def accept(self, request):
+        """Work the proposal out again and keep it as forecasts."""
+        from .statistical import accept
+
+        created, skipped = _run(accept, *self._statistical_args(request.data))
+        return Response({
+            "created": ForecastSerializer(created, many=True).data,
+            "skipped": [row | {"quantity": str(row["quantity"]), "reason": reason}
+                        for row, reason in skipped],
+        }, status=201 if created else 200)
+
 
 class PlanningSettingsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PlanningSettings.objects.select_related("requisition_requester")
