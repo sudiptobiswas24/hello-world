@@ -168,11 +168,35 @@ class GstSettings(AuditModel):
                 "The company has one GST registration here. A plant registered "
                 "in a second state is a second company to this system."
             )
+        if self.pk:
+            before = GstSettings.objects.filter(pk=self.pk).values_list("gstin", flat=True).first()
+            if before is not None and before != self.gstin and _anything_recorded():
+                # Returns compare each document's frozen place of supply
+                # with this state. Changing it re-reads every past sale.
+                raise ValidationError(
+                    f"Documents have recorded tax under {before}. A different "
+                    "GSTIN is a different registration, and last month's "
+                    "returns must not change with it."
+                )
         super().save(*args, **kwargs)
 
     @classmethod
     def active(cls):
         return cls.objects.filter(is_active=True).first()
+
+
+def _anything_recorded():
+    """Whether any posted document froze its taxes. Asked of the models
+    that record them, without this module importing sales or purchasing."""
+    from django.apps import apps
+
+    from .mixins import PostedTaxDocumentMixin
+
+    return any(
+        model.objects.filter(taxes_recorded=True).exists()
+        for model in apps.get_models()
+        if issubclass(model, PostedTaxDocumentMixin)
+    )
 
 
 def gst_taxes(profile, taxes):

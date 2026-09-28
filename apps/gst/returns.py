@@ -205,9 +205,12 @@ def _invoices(start, end, state):
 
 
 def _bills(start, end, state):
+    # The mirror of _invoices: a prepayment is no inward supply, and
+    # neither is the debit note that gives one back. Counted, its lines
+    # carry no tax and read as exempt purchases, netted out of table 5.
     queryset = Bill.objects.filter(
         posted=True, is_prepayment=False, bill_date__gte=start, bill_date__lte=end,
-    )
+    ).exclude(debits__is_prepayment=True)
     _refuse_unrecorded(queryset, "bills and debit notes")
     queryset = queryset.prefetch_related("lines__recorded_taxes__tax").order_by("bill_date", "number")
     return [_document(bill, bill.bill_date, state, bill.is_debit_note()) for bill in queryset]

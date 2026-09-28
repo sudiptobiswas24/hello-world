@@ -371,6 +371,32 @@ class RefusalTests(GstReturnTestCase):
         self.assertEqual(result["documents"], [])
         self.assertEqual(gstr3b(*SEPTEMBER)["3.1c"]["taxable"], D("0"))
 
+    def test_the_registration_cannot_move_under_recorded_documents(self):
+        settings = GstSettings.objects.get()
+        settings.gstin = gstin("29AABCD1234E1Z")
+        settings.save()  # nothing recorded yet: a typo can still be fixed
+        self.sell(self.party("MH", gstin=gstin("29AABCM1111A1Z")), "100")
+        settings.gstin = gstin("27AABCD1234E1Z")
+        with self.assertRaisesMessage(ValidationError, "must not change with it"):
+            settings.save()
+
+    def test_prepayments_and_their_debit_notes_are_not_supplies(self):
+        vendor = self.party("V", role=PartyRole.VENDOR, gstin=gstin("27AABCV1111A1Z"))
+        prepaid = Account.objects.create(code="1400", name="Prepaid",
+                                         account_type=AccountType.ASSET)
+        prepayment = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap,
+                                         is_prepayment=True)
+        BillLine.objects.create(bill=prepayment, description="Advance", quantity=D("1"),
+                                unit_price=D("5000"), expense_account=prepaid)
+        prepayment.post()
+        note = prepayment.create_debit_note()
+        Bill.objects.filter(pk=note.pk).update(bill_date=DAY)
+
+        result = gstr3b(*SEPTEMBER)
+        self.assertEqual(result["5"], {"inter": D("0"), "intra": D("0")})
+        self.assertEqual(result["4A5"], {"igst": D("0"), "cgst": D("0"), "sgst": D("0"),
+                                         "cess": D("0")})
+
     def test_a_composition_or_sez_supplier_is_not_claimed(self):
         for code, registration, first in [("COMP", "composition", "27AABCC5555E1Z"),
                                           ("SEZV", "sez", "24AABCZ6666F1Z")]:
