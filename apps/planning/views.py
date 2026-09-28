@@ -28,8 +28,10 @@ from .models import (
     PlanningSettings,
     TransferRoute,
 )
+from .mps import MasterScheduleEntry, schedule_view
 from .mrp import plan
 from .serializers import (
+    MasterScheduleEntrySerializer,
     ForecastSerializer,
     TransferRouteSerializer,
     PlannedDemandSerializer,
@@ -384,3 +386,64 @@ class LowLevelCodeViewSet(viewsets.ViewSet):
                 for cut in levels.cuts
             ],
         })
+
+
+def _text(value):
+    return format(Decimal(value).normalize(), "f")
+
+
+class MasterScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Build-ahead commitments by week: draft, rough-cut, commit, withdraw."""
+
+    queryset = MasterScheduleEntry.objects.select_related("item", "warehouse", "work_order")
+    serializer_class = MasterScheduleEntrySerializer
+
+    def perform_create(self, serializer):
+        _run(serializer.save)
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        _run(instance.delete)
+
+    @action(detail=True, methods=["get"], url_path="rough-cut")
+    def rough_cut(self, request, pk=None):
+        entry = self.get_object()
+        rows = _run(entry.rough_cut, request.query_params.get("on"))
+        return Response([{"work_centre": row["work_centre"].code,
+                          "needed_minutes": _text(round(row["needed"], 2)),
+                          "free_minutes": _text(round(row["free"], 2))} for row in rows])
+
+    @action(detail=True, methods=["post"])
+    def commit(self, request, pk=None):
+        entry = self.get_object()
+        _run(entry.commit, request.data.get("accept_overload", ""), request.data.get("on"))
+        return Response(self.get_serializer(entry).data)
+
+    @action(detail=True, methods=["post"])
+    def withdraw(self, request, pk=None):
+        entry = self.get_object()
+        _run(entry.withdraw, request.data.get("reason", ""))
+        return Response(self.get_serializer(entry).data)
+
+    @action(detail=False, methods=["get"])
+    def weeks(self, request):
+        """?item=&warehouse=&start=&weeks=8: wanted, coming, scheduled, projected."""
+        from django.shortcuts import get_object_or_404
+
+        from apps.inventory.models import Item
+
+        params = request.query_params
+        item = get_object_or_404(Item, pk=params.get("item"))
+        warehouse = get_object_or_404(Warehouse, pk=params.get("warehouse"))
+        try:
+            weeks = int(params.get("weeks", 8))
+        except ValueError:
+            raise DRFValidationError(["weeks is a number."])
+        if not params.get("start"):
+            raise DRFValidationError(["Give the week to start from."])
+        rows = schedule_view(item, warehouse, params.get("start"), weeks, params.get("on"))
+        return Response([{**{key: _text(row[key]) for key in (
+            "wanted", "coming", "of_which_scheduled", "projected")},
+            "week_of": str(row["week_of"])} for row in rows])

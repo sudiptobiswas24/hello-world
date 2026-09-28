@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    MasterScheduleViewSet,
     ForecastViewSet,
     TransferRouteViewSet,
     LowLevelCodeViewSet,
@@ -22,5 +23,6 @@ router.register("planned-demands", PlannedDemandViewSet)
 router.register("actions", PlanningActionViewSet)
 router.register("levels", LowLevelCodeViewSet, basename="levels")
 router.register("promise", PromiseViewSet, basename="promise")
+router.register("master-schedule", MasterScheduleViewSet)
 
 urlpatterns = router.urls

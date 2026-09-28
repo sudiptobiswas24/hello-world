@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .forecast import Forecast
+from .mps import MasterScheduleEntry
 from .models import (
     PlannedDemand,
     PlannedOrder,
@@ -126,3 +127,12 @@ class PlanningRunSerializer(serializers.ModelSerializer):
 
     def get_overloaded(self, run):
         return [order.pk for order in run.overloaded()]
+
+
+class MasterScheduleEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MasterScheduleEntry
+        fields = ["id", "item", "warehouse", "week_of", "quantity", "reason", "work_order",
+                  "committed_at", "overload_accepted", "withdrawn_at", "withdrawn_reason"]
+        read_only_fields = ["work_order", "committed_at", "overload_accepted",
+                            "withdrawn_at", "withdrawn_reason"]

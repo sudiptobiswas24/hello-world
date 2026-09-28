@@ -932,3 +932,6 @@ class PlannedDemand(AuditModel):
                 f"due {self.needed_by}"
             )
         return f"{self.quantity} due {self.needed_by}"
+
+
+from .mps import MasterScheduleEntry  # noqa: E402,F401
