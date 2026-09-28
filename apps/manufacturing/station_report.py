@@ -42,13 +42,10 @@ def tape_balance(station, contractor, shift_date, rolls):
     """One contractor's tape for one shift-day, or why it cannot be balanced."""
     from .orders import MaterialIssueLine
 
-    opening = TapeCount.objects.filter(
-        station=station, contractor=contractor,
-        shift_date=shift_date - datetime.timedelta(days=1),
-    ).first()
-    closing = TapeCount.objects.filter(
-        station=station, contractor=contractor, shift_date=shift_date
-    ).first()
+    counts = TapeCount.objects.filter(station=station, contractor=contractor,
+                                      voided_at__isnull=True)
+    opening = counts.filter(shift_date=shift_date - datetime.timedelta(days=1)).first()
+    closing = counts.filter(shift_date=shift_date).first()
     issued = ZERO
     for line in MaterialIssueLine.objects.filter(
         issue__contractor=contractor, issue__issue_date=shift_date,
@@ -61,7 +58,8 @@ def tape_balance(station, contractor, shift_date, rolls):
     )
     waste = sum(
         (row.kg for row in LoomWaste.objects.filter(
-            station=station, contractor=contractor, shift_date=shift_date)),
+            station=station, contractor=contractor, shift_date=shift_date,
+            voided_at__isnull=True)),
         ZERO,
     )
     row = {
@@ -86,7 +84,10 @@ def tape_balance(station, contractor, shift_date, rolls):
 
 def morning_report(station, shift_date):
     rolls = list(
-        FabricRoll.objects.filter(station=station, shift_date=shift_date)
+        # A roll whose booking was voided was weighed in error: no fabric,
+        # no metres to pay for, nothing for the tape balance.
+        FabricRoll.objects.filter(station=station, shift_date=shift_date,
+                                  entry__voided_at__isnull=True)
         .select_related("lot", "machine__contractor", "shift", "approved_by",
                         "weighed_by")
         .order_by("weighed_at", "id")

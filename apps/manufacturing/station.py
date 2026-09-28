@@ -160,14 +160,47 @@ class CoreType(AuditModel):
         return f"{self.code} ({self.tare_kg} kg)"
 
 
-class TapeCount(AuditModel):
+class VoidedMeasurement(models.Model):
+    """
+    A figure taken at the station that turned out wrong. Not edited and
+    not deleted: voided, with a supervisor's name, and replaced.
+    """
+
+    voided_at = models.DateTimeField(null=True, blank=True, editable=False)
+    voided_by = models.ForeignKey("hr.Employee", null=True, blank=True, on_delete=models.PROTECT,
+                                  related_name="+", editable=False)
+
+    class Meta:
+        abstract = True
+
+    def void(self, supervisor, operator, station, at=None):
+        if self.voided_at is not None:
+            raise ValidationError("This figure is already withdrawn.")
+        check_supervisor(station, supervisor, operator)
+        self.voided_at = at or timezone.now()
+        self.voided_by = supervisor
+        self.save(update_fields=["voided_at", "voided_by", "updated_at"])
+
+
+def check_supervisor(station, supervisor, operator):
+    """Somebody else, who approves at this station: the rule for a typed weight."""
+    if supervisor is None:
+        raise ValidationError("A correction needs a supervisor's PIN.")
+    if operator is not None and supervisor.pk == operator.pk:
+        raise ValidationError("A correction is approved by somebody else.")
+    if not station.supervisors.filter(pk=supervisor.pk).exists():
+        raise ValidationError(f"{supervisor} does not approve at {station}.")
+
+
+class TapeCount(VoidedMeasurement, AuditModel):
     """
     Tape found on a contractor's looms when the shift-day closed.
 
     Recorded against the shift-day it closes, so the next day's opening
     figure is simply this one. A day with either count missing cannot
     be balanced, and the morning report says so rather than counting
-    the missing tape as none.
+    the missing tape as none. A count typed wrong is voided with a
+    supervisor's PIN and counted again.
     """
 
     station = models.ForeignKey(LoomStation, on_delete=models.PROTECT, related_name="tape_counts")
@@ -182,13 +215,14 @@ class TapeCount(AuditModel):
         constraints = [
             models.UniqueConstraint(
                 fields=["station", "contractor", "shift_date"],
+                condition=Q(voided_at__isnull=True),
                 name="one_tape_count_per_contractor_per_day",
             ),
             models.CheckConstraint(check=Q(kg__gte=0), name="tape_count_not_negative"),
         ]
 
 
-class LoomWaste(AuditModel):
+class LoomWaste(VoidedMeasurement, AuditModel):
     """
     Loom waste weighed at the station: the tape that became neither
     fabric nor anything else. A measurement for the tape balance, like
@@ -321,6 +355,9 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
     if shift is None:
         raise ValidationError(f"No shift runs at {timezone.localtime(at):%H:%M}.")
     shift_date = shift.shift_date_for(at)
+    for person, role in ((operator, "weighing"), (supervisor, "approving")):
+        if person is not None and not person.is_working_on(shift_date):
+            raise ValidationError(f"{person} does not work here on {shift_date}; not {role}.")
 
     order = run_on(machine)
     spec = specification_for(order.item, shift_date)

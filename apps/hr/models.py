@@ -159,6 +159,10 @@ class Employee(AuditModel):
             return None
         return person
 
+    def is_working_on(self, on_date):
+        """Active, and employed on that day: who may sign or approve for the plant."""
+        return self.employment_status == EmploymentStatus.ACTIVE and self.is_employed_on(on_date)
+
     def is_employed_on(self, on_date):
         on_date = to_date(on_date)
         if on_date < self.hire_date:

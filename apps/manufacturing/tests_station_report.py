@@ -21,6 +21,7 @@ from rest_framework.test import APIClient
 
 from .orders import IssueDirection, MaterialIssue, MaterialIssueLine
 from .station import LoomWaste, TapeCount
+from .rolls import FabricRoll
 from .station_report import morning_report
 from .tests_orders import TODAY
 from .tests_station import StationTestCase, at
@@ -74,6 +75,13 @@ class WhatCameOffTheLoomsTests(ReportTestCase):
         self.assertEqual(report["by_shift"], {"D": 3, "N": 1})
         self.assertEqual((report["from_scale"], report["manual"]), (3, 1))
         self.assertEqual(report["manual_percent"], Decimal("25.00"))
+
+    def test_a_roll_voided_as_weighed_in_error_is_not_in_it(self):
+        FabricRoll.objects.get(length_m=Decimal("1120")).entry.void()
+        report = self.report()
+        self.assertEqual(report["rolls"], 3)
+        l17 = report["looms"][0]
+        self.assertEqual((l17["rolls"], l17["declared"]), (1, Decimal("1006")))
 
     def test_metres_by_loom(self):
         l17, l20 = self.report()["looms"]
@@ -288,6 +296,35 @@ class CountsAndWasteAtTheStationTests(ReportTestCase):
                                              "shift_date": "2026-06-01"})
         self.assertEqual(response.status_code, 400)
         self.assertIn("already counted", str(response.content))
+
+    def test_a_count_typed_wrong_is_corrected_with_a_supervisors_pin(self):
+        supervisor_pin = self.supervisor.issue_pin()
+        self.post("sign-in/", {"pin": self.pin})
+        data = {"contractor": "CON-A", "kg": "405", "shift_date": "2026-06-01", "correct": True}
+        self.assertEqual(self.post("tape-count/", data).status_code, 400)  # no supervisor
+        response = self.post("tape-count/", {**data, "supervisor_pin": self.pin})
+        self.assertIn("somebody else", str(response.content))
+        stranger_pin = self.employee("EMP-0999", "Not a supervisor here").issue_pin()
+        response = self.post("tape-count/", {**data, "supervisor_pin": stranger_pin})
+        self.assertIn("does not approve", str(response.content))
+        response = self.post("tape-count/", {**data, "supervisor_pin": supervisor_pin})
+        self.assertEqual(response.status_code, 201, response.content)
+        old, new = TapeCount.objects.filter(shift_date=TODAY).order_by("id")
+        self.assertEqual((old.kg, old.voided_by, new.kg), (Decimal("395"), self.supervisor,
+                                                           Decimal("405")))
+        (balance,) = self.report()["balances"]
+        self.assertEqual(balance["closing"], Decimal("405"))
+
+    def test_waste_weighed_wrong_is_withdrawn_with_a_supervisors_pin(self):
+        supervisor_pin = self.supervisor.issue_pin()
+        self.post("sign-in/", {"pin": self.pin})
+        waste = LoomWaste.objects.get(shift_date=TODAY)
+        url = f"waste/{waste.pk}/void/"
+        self.assertEqual(self.post(url, {"supervisor_pin": self.pin}).status_code, 400)
+        self.assertEqual(self.post(url, {"supervisor_pin": supervisor_pin}).status_code, 200)
+        (balance,) = self.report()["balances"]
+        self.assertEqual(balance["waste"], Decimal("0"))
+        self.assertEqual(self.post(url, {"supervisor_pin": supervisor_pin}).status_code, 400)
 
     def test_counts_that_cannot_be(self):
         self.post("sign-in/", {"pin": self.pin})

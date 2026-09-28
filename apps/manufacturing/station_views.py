@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.html import escape
@@ -87,7 +88,15 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         if timezone.now() - since > SIGNED_IN_FOR:
             del request.session[self._key(station)]
             return None
-        return Employee.objects.select_related("party").filter(pk=held["employee"]).first()
+        person = Employee.objects.select_related("party").filter(pk=held["employee"]).first()
+        # Asked again on every request, as the PIN was at sign-in: a PIN
+        # revoked or reissued, or a person who has left, ends the session
+        # now rather than twelve hours later.
+        if (person is None or person.pin_digest != held.get("pin")
+                or not person.is_working_on(timezone.localdate())):
+            del request.session[self._key(station)]
+            return None
+        return person
 
     def _require_operator(self, request, station):
         operator = self._operator(request, station)
@@ -130,6 +139,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         operator = _run(station.identify, request.data.get("pin"))
         request.session[self._key(station)] = {
             "employee": operator.pk, "since": timezone.now().isoformat(),
+            "pin": operator.pin_digest,
         }
         return Response({"operator": _person(operator)})
 
@@ -153,7 +163,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         on_date = shift.shift_date_for(timezone.now()) if shift else timezone.now().date()
         spec = specification_for(order.item, on_date)
         tape = latest_tape_lot(order)
-        previous = FabricRoll.objects.filter(machine=loom).select_related("lot").order_by(
+        previous = FabricRoll.objects.filter(
+            machine=loom, entry__voided_at__isnull=True).select_related("lot").order_by(
             "-weighed_at", "-id").first()
         return Response({
             "loom": loom.code,
@@ -233,13 +244,20 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         kg = _decimal(request.data, "kg")
         if kg < 0:
             raise DRFValidationError(["A count cannot be negative."])
-        if TapeCount.objects.filter(station=station, contractor=contractor,
-                                    shift_date=shift_date).exists():
-            raise DRFValidationError([f"Tape for {contractor.name} on {shift_date} is "
-                                      "already counted."])
-        TapeCount.objects.create(station=station, contractor=contractor,
-                                 shift_date=shift_date, kg=kg, counted_by=operator,
-                                 counted_at=timezone.now())
+        existing = TapeCount.objects.filter(station=station, contractor=contractor,
+                                            shift_date=shift_date,
+                                            voided_at__isnull=True).first()
+        with transaction.atomic():
+            if existing is not None:
+                if not request.data.get("correct"):
+                    raise DRFValidationError([
+                        f"Tape for {contractor.name} on {shift_date} is already counted. "
+                        "To correct it, count again with a supervisor's PIN."])
+                supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+                _run(existing.void, supervisor, operator, station)
+            TapeCount.objects.create(station=station, contractor=contractor,
+                                     shift_date=shift_date, kg=kg, counted_by=operator,
+                                     counted_at=timezone.now())
         return Response({"contractor": contractor.code, "shift_date": shift_date,
                          "kg": _exact(kg)}, status=201)
 
@@ -255,10 +273,21 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         shift = Shift.covering(now)
         if shift is None:
             raise DRFValidationError(["No shift is running."])
-        LoomWaste.objects.create(station=station, contractor=contractor,
-                                 shift_date=shift.shift_date_for(now), kg=kg,
-                                 weighed_by=operator, weighed_at=now)
-        return Response({"contractor": contractor.code, "kg": _exact(kg)}, status=201)
+        waste = LoomWaste.objects.create(station=station, contractor=contractor,
+                                         shift_date=shift.shift_date_for(now), kg=kg,
+                                         weighed_by=operator, weighed_at=now)
+        return Response({"id": waste.pk, "contractor": contractor.code, "kg": _exact(kg)},
+                        status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"waste/(?P<waste>[0-9]+)/void")
+    def void_waste(self, request, code=None, waste=None):
+        """A weighing taken wrong, withdrawn with a supervisor's PIN."""
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        row = get_object_or_404(LoomWaste, pk=waste, station=station)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(row.void, supervisor, operator, station)
+        return Response({"id": row.pk, "voided": True})
 
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
@@ -270,7 +299,11 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         the whole point of being able to ask for one.
         """
         self.get_object()
-        found = get_object_or_404(FabricRoll.objects.select_related("lot"), lot__code=roll)
+        found = get_object_or_404(FabricRoll.objects.select_related("lot", "entry"), lot__code=roll)
+        if found.entry is not None and found.entry.voided_at is not None:
+            # A label is how a roll is picked and shipped; one for a roll
+            # taken back off the books would put it back into the world.
+            raise DRFValidationError([f"{roll} was voided; it has no label."])
         text = found.lot.code
         page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{escape(text)}</title>

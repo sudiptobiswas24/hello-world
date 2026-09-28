@@ -216,6 +216,22 @@ class WhichRunTests(StationTestCase):
         self.assertEqual(run_on(self.l20), self.run)
 
 
+class WhoMayWeighTests(StationTestCase):
+    def test_not_somebody_who_has_left(self):
+        Employee.objects.filter(pk=self.operator.pk).update(
+            termination_date=TODAY - datetime.timedelta(days=1))
+        self.operator.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "does not work here"):
+            self.weigh()
+
+    def test_nor_approved_by_one(self):
+        Employee.objects.filter(pk=self.supervisor.pk).update(
+            employment_status=EmploymentStatus.TERMINATED)
+        self.supervisor.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "not approving"):
+            self.weigh(source="manual", supervisor=self.supervisor, reason="scale_offline")
+
+
 class ATypedWeightTests(StationTestCase):
     def manual(self, **extra):
         extra.setdefault("supervisor", self.supervisor)

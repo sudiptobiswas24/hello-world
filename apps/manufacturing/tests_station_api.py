@@ -8,6 +8,7 @@ from django.contrib.auth.models import Permission, User
 from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
+from apps.hr.models import Employee
 from apps.inventory.models import Lot
 
 from . import barcode
@@ -170,6 +171,38 @@ class StationApiTests(StationApiTestCase):
             self.assertEqual(self.roll(source="manual", supervisor_pin=wrong,
                                        reason="scale_offline").status_code, 400)
         self.assertTrue(self.client.get(self.base).json()["locked"])
+
+    def test_a_revoked_pin_ends_the_session_it_opened(self):
+        self.sign_in()
+        self.operator.revoke_pin()
+        self.assertEqual(self.roll().status_code, 400)
+        self.assertIsNone(self.client.get(self.base).json()["operator"])
+
+    def test_a_reissued_pin_ends_it_too(self):
+        self.sign_in()
+        self.operator.issue_pin()
+        self.assertEqual(self.roll().status_code, 400)
+
+    def test_somebody_who_has_left_is_signed_out(self):
+        self.sign_in()
+        Employee.objects.filter(pk=self.operator.pk).update(
+            termination_date=TODAY - datetime.timedelta(days=1))
+        self.assertEqual(self.roll().status_code, 400)
+
+    def test_the_previous_roll_is_one_still_on_the_books(self):
+        self.sign_in()
+        self.roll()
+        second = self.roll().json()["code"]
+        Lot.objects.get(code=second).fabric_roll.entry.void()
+        body = self.client.get(self.base + "looms/L-17/").json()
+        self.assertEqual(body["previous_roll"]["code"], "FR-260601-D-L17-01")
+
+    def test_a_voided_roll_has_no_label(self):
+        self.sign_in()
+        code = self.roll().json()["code"]
+        Lot.objects.get(code=code).fabric_roll.entry.void()
+        response = self.client.get(self.base + f"label/{code}/")
+        self.assertEqual(response.status_code, 400)
 
     def test_signing_out_ends_it(self):
         self.sign_in()
