@@ -212,6 +212,16 @@ class CustomerProfile(AuditModel):
         max_digits=5, decimal_places=2, null=True, blank=True,
         help_text="The least UV stabiliser the tape must carry.",
     )
+    third_party_inspection = models.BooleanField(
+        default=False,
+        help_text="Their own inspector passes each batch before it may be loaded. "
+                  "What a new order takes; an order may say otherwise.",
+    )
+    release_covers_returns = models.BooleanField(
+        default=False,
+        help_text="Goods they send back go back under their inspector's release. Off, "
+                  "returned sacks must be inspected again before they go out again.",
+    )
 
     class Meta:
         constraints = [
@@ -353,6 +363,13 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                   "price on each line is the conversion charge, billed as a "
                   "service.",
     )
+    third_party_inspection = models.BooleanField(
+        null=True, blank=True,
+        help_text="Whether the customer's inspector must release the goods first. "
+                  "Blank takes the customer's setting when the order is written; "
+                  "fixed once anything has shipped on it.",
+    )
+
     class Meta:
         ordering = ["-order_date", "-id"]
         permissions = [
@@ -377,7 +394,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             self._apply_customer_defaults()
         else:
             before = SalesOrder.objects.filter(pk=self.pk).values(
-                "status", "is_job_work").first()
+                "status", "is_job_work", "third_party_inspection").first()
             if (before and before["status"] != OrderStatus.DRAFT
                     and before["is_job_work"] != self.is_job_work):
                 # Whether the customer supplies the material decides who
@@ -385,6 +402,14 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 # invoice bills. Changed after confirming, all three move.
                 raise ValidationError(
                     f"{self} is confirmed; whether it is job work cannot change."
+                )
+            if (before and before["third_party_inspection"] != self.third_party_inspection
+                    and Delivery.objects.filter(sales_order=self, posted=True).exists()):
+                # What has shipped went out under one answer; changing it
+                # would re-judge those deliveries and what they drew on.
+                raise ValidationError(
+                    f"{self} has shipped; whether its goods wait for the customer's "
+                    "inspector cannot change now."
                 )
         super().save(*args, **kwargs)
 
@@ -400,6 +425,9 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         self.payment_terms = self.payment_terms or customer.payment_terms
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
+        if self.third_party_inspection is None:
+            profile = CustomerProfile.objects.filter(party=customer).first()
+            self.third_party_inspection = bool(profile and profile.third_party_inspection)
 
     def credit_limit_breach(self):
         """
@@ -2384,6 +2412,12 @@ class Delivery(AuditModel):
         help_text="Shipped by the vendor straight to the customer. Records what the "
                   "customer received without moving stock the company never held.",
     )
+    returned_under_release = models.BooleanField(
+        default=False, editable=False,
+        help_text="On a customer return: whether the goods came back under the "
+                  "customer's inspector's release, as their profile said when it was "
+                  "posted. Recorded, so changing the profile later does not rewrite it.",
+    )
 
     class Meta:
         verbose_name_plural = "deliveries"
@@ -2661,6 +2695,12 @@ class Delivery(AuditModel):
                 row.lot for line in lines
                 for row in line.allocations.select_related("lot") if row.lot_id
             ])
+            from .third_party import refuse_uncovered
+
+            refuse_uncovered(self, lines)
+        else:
+            profile = CustomerProfile.objects.filter(party=self.sales_order.customer).first()
+            self.returned_under_release = bool(profile and profile.release_covers_returns)
 
         post_inventory_entry(
             valued,
@@ -2677,7 +2717,8 @@ class Delivery(AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super(Delivery, self).save(
-            update_fields=["number", "delivery_date", "posted", "posted_at", "updated_at"]
+            update_fields=["number", "delivery_date", "posted", "posted_at",
+                           "returned_under_release", "updated_at"]
         )
 
     def _credit_returned_goods(self):
@@ -3812,3 +3853,6 @@ def generate_due_invoices(as_of=None):
         ):
             issued.append(schedule.generate_one())
     return issued
+
+
+from .third_party import ThirdPartyRelease, ThirdPartyReleaseLine  # noqa: E402,F401

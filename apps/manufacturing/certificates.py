@@ -180,7 +180,11 @@ def issue(delivery, on_date=None):
     if TestCertificate.objects.filter(delivery=delivery, voided_at__isnull=True).exists():
         raise ValidationError(f"{delivery} is already certified. Void that certificate to "
                               "issue another.")
+    from apps.sales.third_party import releases_for, requires_inspection
+
     on_date = on_date or timezone.localdate()
+    order = delivery.sales_order
+    inspected = requires_inspection(order)
     lines = []
     for line in delivery.lines.select_related("order_line__item"):
         item = line.order_line.item
@@ -191,6 +195,13 @@ def issue(delivery, on_date=None):
             batch = _measured(allocation.lot)
             batch["quantity"] = _number(allocation.quantity)
             batch["made_from"] = _ancestry(allocation.lot)
+            if inspected:
+                # The customer's own inspector's word, beside the plant's.
+                batch["released_by"] = [{
+                    "release": release.number, "agency": release.agency.name,
+                    "certificate": release.their_reference,
+                    "inspected_on": str(release.inspected_on),
+                } for release in releases_for(order.customer, allocation.lot, order)]
             batches.append(batch)
         lines.append({
             "item": item.sku, "item_name": item.name,
@@ -199,7 +210,6 @@ def issue(delivery, on_date=None):
             "specification": _specification(item, delivery.delivery_date),
             "batches": batches,
         })
-    order = delivery.sales_order
     content = {
         "customer": order.customer.name, "customer_code": order.customer.code,
         "delivery": delivery.number, "delivery_date": str(delivery.delivery_date),

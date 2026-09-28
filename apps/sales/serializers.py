@@ -2,6 +2,8 @@ from rest_framework import serializers
 
 from .models import (
     SuppliedItem,
+    ThirdPartyRelease,
+    ThirdPartyReleaseLine,
     CommissionPlan,
     CustomerProfile,
     Delivery,
@@ -61,6 +63,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             "payment_terms", "billing_address", "shipping_address", "sales_rep",
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
+            "third_party_inspection",
         ]
         read_only_fields = ["number", "status"]
 
@@ -138,8 +141,10 @@ class DeliverySerializer(serializers.ModelSerializer):
         fields = [
             "id", "number", "sales_order", "delivery_date", "reference",
             "shipping_address", "reverses", "backorder_of", "posted", "posted_at", "lines",
+            "returned_under_release",
         ]
-        read_only_fields = ["number", "reverses", "backorder_of", "posted", "posted_at"]
+        read_only_fields = ["number", "reverses", "backorder_of", "posted", "posted_at",
+                            "returned_under_release"]
 
 
 class PriceListItemSerializer(serializers.ModelSerializer):
@@ -163,7 +168,8 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomerProfile
         fields = ["id", "party", "price_list", "credit_limit", "virgin_only",
-                  "max_filler_percent", "min_uv_percent"]
+                  "max_filler_percent", "min_uv_percent", "third_party_inspection",
+                  "release_covers_returns"]
 
 
 class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
@@ -241,3 +247,20 @@ class RecurringInvoiceSerializer(serializers.ModelSerializer):
             "next_run_date", "auto_post", "is_active", "lines",
         ]
         read_only_fields = ["next_run_date"]
+
+
+class ThirdPartyReleaseLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ThirdPartyReleaseLine
+        fields = ["id", "lot", "quantity_offered", "quantity_released", "remarks"]
+
+
+class ThirdPartyReleaseSerializer(serializers.ModelSerializer):
+    lines = ThirdPartyReleaseLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = ThirdPartyRelease
+        fields = ["id", "number", "customer", "sales_order", "agency", "inspector",
+                  "their_reference", "inspected_on", "posted", "posted_at", "voided_at",
+                  "voided_reason", "lines"]
+        read_only_fields = fields

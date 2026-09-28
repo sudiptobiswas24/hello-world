@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 
@@ -16,6 +17,8 @@ from django.http import HttpResponse
 
 from .models import (
     SuppliedItem,
+    ThirdPartyRelease,
+    ThirdPartyReleaseLine,
     bad_debt_report,
     send_statements,
     CommissionPlan,
@@ -45,6 +48,7 @@ from .models import (
 )
 from .serializers import (
     SuppliedItemSerializer,
+    ThirdPartyReleaseSerializer,
     CommissionPlanSerializer,
     CustomerProfileSerializer,
     DeliveryLineSerializer,
@@ -537,3 +541,79 @@ class SalesReportViewSet(viewsets.ViewSet):
         """
         sent = send_statements(as_of=request.data.get("as_of"))
         return Response({"sent": len(sent) if sent is not None else 0})
+
+
+class ThirdPartyReleaseViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """An agency's inspection certificate, entered and posted in one step."""
+
+    queryset = ThirdPartyRelease.objects.select_related("customer", "agency").prefetch_related(
+        "lines")
+    serializer_class = ThirdPartyReleaseSerializer
+
+    @action(detail=False, methods=["post"])
+    def record(self, request):
+        from django.db import transaction
+
+        data = request.data
+        rows = data.get("lines") or []
+        try:
+            with transaction.atomic():
+                release = ThirdPartyRelease.objects.create(
+                    customer_id=data.get("customer"), agency_id=data.get("agency"),
+                    sales_order_id=data.get("sales_order") or None,
+                    inspector=data.get("inspector") or "",
+                    their_reference=data.get("their_reference") or "",
+                    inspected_on=data.get("inspected_on"),
+                )
+                for row in rows:
+                    ThirdPartyReleaseLine.objects.create(
+                        release=release, lot_id=row.get("lot"),
+                        quantity_offered=Decimal(str(row.get("quantity_offered"))),
+                        quantity_released=Decimal(str(row.get("quantity_released"))),
+                        remarks=row.get("remarks") or "",
+                    )
+                release.post()
+        except (DjangoValidationError, InvalidOperation, TypeError) as exc:
+            messages = getattr(exc, "messages", None) or ["Quantities are numbers."]
+            raise DRFValidationError(messages)
+        except IntegrityError:
+            raise DRFValidationError(["Customer, agency, date and each line's batch and "
+                                      "quantities are needed, and passed cannot exceed "
+                                      "offered."])
+        return Response(self.get_serializer(release).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        release = self.get_object()
+        try:
+            release.void(request.data.get("reason", ""))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(release).data)
+
+    @action(detail=False, methods=["get"])
+    def coverage(self, request):
+        """?customer=&lot=: released, shipped and spare for one batch."""
+        from apps.core.models import Party
+        from apps.inventory.models import Lot
+
+        from .third_party import coverage
+
+        customer = get_object_or_404(Party, pk=request.query_params.get("customer"))
+        lot = get_object_or_404(Lot, pk=request.query_params.get("lot"))
+        found = coverage(customer, lot)
+
+        def text(value):
+            # normalize() for 450 rather than 450.0000; format() so it never
+            # comes back as 4.5E+2.
+            return format(value.normalize(), "f")
+
+        return Response({
+            **found,
+            "released_for_any_order": text(found["released_for_any_order"]),
+            "released_for_orders": {str(k): text(v)
+                                    for k, v in found["released_for_orders"].items()},
+            "net_shipped_by_order": {str(k): text(v)
+                                     for k, v in found["net_shipped_by_order"].items()},
+            "spare_for_any_order": text(found["spare_for_any_order"]),
+        })
