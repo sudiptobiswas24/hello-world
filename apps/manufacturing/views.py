@@ -48,6 +48,7 @@ from . import certificates, quoting
 from .certificates import TestCertificate
 from . import energy
 from .energy import EnergyMeter, EnergyTariff, MeterReading
+from .bales import Bale
 from . import inward
 from .inward import (
     CustomerMaterialReceipt,
@@ -1288,6 +1289,7 @@ class LotTraceViewSet(viewsets.ViewSet):
                 }
                 for row in report["customers"]
             ],
+            "bales": report["bales"],
             "not_followed": [_lot_row(lot) for lot in report["not_followed"]],
         })
 
@@ -1423,3 +1425,131 @@ class DispatchViewSet(viewsets.ViewSet):
         from .dispatch import build, commit
 
         return Response({"committed": _run(commit, build())})
+
+
+def _plain(value):
+    """A quantity as people write it: 1000, not 1E+3, which normalize() alone gives."""
+    return format(Decimal(value).normalize(), "f")
+
+
+class BaleViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Bales: POST pack/ {warehouse, packed_by, lines: [{lot, quantity}], gross_kg} presses
+    and seals one; {id}/break/ with a reason frees its bundles; load/ {delivery,
+    bales, order_line} puts sealed bales on a draft delivery and {id}/unload/ takes
+    one off; {id}/label/ is the 100 x 75 mm label; {id}/trace/ reads it both ways.
+    """
+
+    queryset = Bale.objects.select_related("item", "warehouse", "packed_by__party", "delivery")
+    action_permission_map = {
+        "break_": "manufacturing.change_bale",
+        "load": "manufacturing.change_bale",
+        "unload": "manufacturing.change_bale",
+    }
+
+    def _row(self, bale):
+        return {
+            "id": bale.pk, "number": bale.number, "item": bale.item.sku,
+            "warehouse": bale.warehouse.code, "packed_on": bale.packed_on,
+            "packed_by": bale.packed_by.employee_number, "status": bale.status(),
+            "bags": _plain(bale.bags()), "nominal_kg": str(bale.nominal_kg()),
+            "gross_kg": None if bale.gross_kg is None else str(bale.gross_kg),
+            "delivery": bale.delivery.number if bale.delivery_id else None,
+            "lines": [{"lot": line.lot.code, "bags": _plain(line.quantity)}
+                      for line in bale.lines.select_related("lot")],
+        }
+
+    def list(self, request):
+        return Response([self._row(bale) for bale in self.get_queryset()[:200]])
+
+    def retrieve(self, request, pk=None):
+        return Response(self._row(self.get_object()))
+
+    @action(detail=False, methods=["post"])
+    def pack(self, request):
+        from apps.hr.models import Employee
+
+        from .bales import pack
+
+        data = request.data
+        warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
+        packed_by = get_object_or_404(Employee, pk=data.get("packed_by"))
+        rows = [(get_object_or_404(Lot, pk=row.get("lot")), row.get("quantity"))
+                for row in data.get("lines") or []]
+        bale = _run(pack, warehouse, packed_by, rows, on_date=data.get("packed_on"),
+                    gross_kg=data.get("gross_kg"))
+        return Response(self._row(bale), status=201)
+
+    @action(detail=True, methods=["post"], url_path="break")
+    def break_(self, request, pk=None):
+        from .bales import break_bale
+
+        bale = self.get_object()
+        _run(break_bale, bale, str(request.data.get("reason", "")))
+        return Response(self._row(bale))
+
+    @action(detail=False, methods=["post"])
+    def load(self, request):
+        from apps.sales.models import Delivery, SalesOrderLine
+
+        from .bales import Bale, load
+
+        delivery = get_object_or_404(Delivery, pk=request.data.get("delivery"))
+        bales = [get_object_or_404(Bale, pk=pk) for pk in request.data.get("bales") or []]
+        order_line = (get_object_or_404(SalesOrderLine, pk=request.data["order_line"])
+                      if request.data.get("order_line") else None)
+        if not bales:
+            raise DRFValidationError(["Name the bales to load."])
+        _run(load, delivery, bales, order_line=order_line)
+        return Response([self._row(Bale.objects.get(pk=bale.pk)) for bale in bales])
+
+    @action(detail=True, methods=["post"])
+    def unload(self, request, pk=None):
+        from .bales import unload
+
+        return Response(self._row(_run(unload, self.get_object())))
+
+    @action(detail=True, methods=["get"])
+    def trace(self, request, pk=None):
+        from .bales import trace
+
+        found = trace(self.get_object())
+        found["bags"] = _plain(found["bags"])
+        for bundle in found["bundles"]:
+            bundle["bags"] = _plain(bundle["bags"])
+            for key in ("mean_grams", "target_grams"):
+                bundle[key] = None if bundle[key] is None else str(bundle[key])
+        return Response(found)
+
+    @action(detail=True, methods=["get"])
+    def label(self, request, pk=None):
+        """The bale's own label: its number as a barcode, and what is in it."""
+        from django.utils.html import escape
+
+        from . import barcode
+
+        bale = self.get_object()
+        if bale.broken_at is not None:
+            raise DRFValidationError([f"{bale} was broken; it has no label."])
+        bundles = ", ".join(f"{line.lot.code} x {_plain(line.quantity)}"
+                            for line in bale.lines.select_related("lot"))
+        page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{escape(bale.number)}</title>
+<style>
+  @page {{ size: 100mm 75mm; margin: 0; }}
+  html, body {{ margin: 0; background: #fff; color: #000; }}
+  .label {{ width: 100mm; height: 75mm; box-sizing: border-box; padding: 4mm 5mm;
+           display: flex; flex-direction: column; gap: 1.5mm; font: 3mm/1.25 system-ui, sans-serif; }}
+  .bars {{ height: 22mm; }} .bars svg {{ width: 100%; height: 100%; display: block; }}
+  .code {{ font: 600 6mm/1 ui-monospace, monospace; }}
+  .big {{ font-size: 5mm; font-weight: 600; }}
+</style></head>
+<body><div class="label">
+<div class="bars">{barcode.svg(bale.number)}</div>
+<div class="code">{escape(bale.number)}</div>
+<div class="big">{escape(bale.item.name)} &middot; {_plain(bale.bags())} bags</div>
+<div>Nominal {bale.nominal_kg()} kg{f" &middot; weighed {bale.gross_kg} kg" if bale.gross_kg else ""}
+ &middot; packed {bale.packed_on:%d %b %Y} by {escape(bale.packed_by.employee_number)}</div>
+<div>Bundles: {escape(bundles)}</div>
+</div></body></html>"""
+        return HttpResponse(page, content_type="text/html; charset=utf-8")

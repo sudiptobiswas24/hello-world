@@ -128,8 +128,12 @@ def recall(lot, depth=4):
     for row in rows:
         for child in row["made"]:
             affected[child.pk] = child
+    from .bales import bales_holding
+
     return {
         "descendants": rows,
         "customers": held_by_customers(affected.values()),
+        # The bale number is what the customer's warehouse can see.
+        "bales": bales_holding(affected.values()),
         "not_followed": beyond,
     }

@@ -69,6 +69,7 @@ from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageR
 from .certificates import TestCertificate  # noqa: F401
 from .energy import EnergyMeter, EnergyTariff, MeterReading  # noqa: F401
 from .conversion import BagCount  # noqa: F401
+from .bales import Bale, BaleLine  # noqa: F401
 from .inward import (  # noqa: F401
     CustomerMaterialReceipt,
     CustomerMaterialReceiptLine,
