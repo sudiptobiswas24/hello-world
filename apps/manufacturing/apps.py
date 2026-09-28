@@ -8,7 +8,10 @@ class ManufacturingConfig(AppConfig):
 
     def ready(self):
         from apps.inventory.models import register_unit_provider
+        from apps.sales.models import register_material_checker
 
+        from .compliance import material_problems
         from .woven import sack_units
 
         register_unit_provider(sack_units)
+        register_material_checker(material_problems)

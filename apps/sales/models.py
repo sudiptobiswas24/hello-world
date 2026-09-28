@@ -196,9 +196,76 @@ class CustomerProfile(AuditModel):
         max_digits=18, decimal_places=2, null=True, blank=True,
         help_text="Maximum this customer may owe. Blank means no limit.",
     )
+    # What the customer's goods may be made of: a food or pharma packer
+    # buying virgin-only sacks, a buyer capping filler for strength, an
+    # export customer requiring UV-stabilised tape.
+    virgin_only = models.BooleanField(
+        default=False,
+        help_text="Nothing recovered from waste — regrind of any kind — anywhere "
+                  "in what they are sold, checked on the recipe and on the lots shipped.",
+    )
+    max_filler_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="The most filler (calcium carbonate) the tape may carry.",
+    )
+    min_uv_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="The least UV stabiliser the tape must carry.",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=(Q(max_filler_percent__isnull=True)
+                       | (Q(max_filler_percent__gte=0) & Q(max_filler_percent__lte=100)))
+                & (Q(min_uv_percent__isnull=True)
+                   | (Q(min_uv_percent__gte=0) & Q(min_uv_percent__lte=100))),
+                name="customer_material_rules_are_percentages",
+            ),
+        ]
 
     def __str__(self):
         return f"Sales profile for {self.party}"
+
+    def has_material_rules(self):
+        return (self.virgin_only or self.max_filler_percent is not None
+                or self.min_uv_percent is not None)
+
+
+# Checks an app can make of what an item or a batch is made of, registered
+# when it loads: `fn(profile, item, lots, on_date) -> [problem, ...]`. Here
+# so sales asks without importing whoever knows the recipe.
+MATERIAL_CHECKERS = []
+
+
+def register_material_checker(checker):
+    if checker not in MATERIAL_CHECKERS:
+        MATERIAL_CHECKERS.append(checker)
+
+
+def material_problems(customer, item, lots=(), on_date=None):
+    """What stands between this customer's rules and these goods, if anything."""
+    profile = CustomerProfile.objects.filter(party=customer).first()
+    if profile is None or not profile.has_material_rules() or item is None:
+        return []
+    if not MATERIAL_CHECKERS:
+        return [f"{customer} buys under material rules, and nothing here can check "
+                f"{item.sku} against them."]
+    problems = []
+    for checker in MATERIAL_CHECKERS:
+        problems.extend(checker(profile, item, list(lots), to_date(on_date) or timezone.localdate()))
+    return list(dict.fromkeys(problems))
+
+
+def refuse_material_problems(customer, rows):
+    """rows: [(item, lots, on_date)]. Refuse naming every problem at once."""
+    problems = []
+    for item, lots, on_date in rows:
+        problems.extend(material_problems(customer, item, lots, on_date))
+    if problems:
+        raise ValidationError(
+            f"{customer}'s material rules are not met: " + " ".join(dict.fromkeys(problems))
+        )
 
 
 class InvoicePolicy(models.TextChoices):
@@ -431,6 +498,12 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 "This order needs approval before it can be confirmed: "
                 + " ".join(self.approval_reasons())
             )
+        # The recipe in force when the goods are promised. Checked again
+        # when they ship, on the batches that actually go.
+        refuse_material_problems(self.customer, [
+            (line.item, (), self.order_date) for line in self.lines.select_related("item")
+            if line.item_id is not None
+        ])
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "sales.order", self.order_date, name="Sales Orders", prefix="SO-"
@@ -2440,6 +2513,16 @@ class Delivery(AuditModel):
                 ).open():
                     reservation.consume(shipped)
             valued.append((item, cost))
+
+        if not is_return:
+            # The batches this shipment took are known only now. A rule
+            # added since the order, or a lot made with regrind, stops it.
+            refuse_material_problems(self.sales_order.customer, [
+                (line.order_line.item,
+                 [row.lot for row in line.allocations.select_related("lot") if row.lot_id],
+                 self.delivery_date)
+                for line in lines if line.order_line.item_id is not None
+            ])
 
         post_inventory_entry(
             valued,

@@ -149,7 +149,8 @@ class PriceListSerializer(serializers.ModelSerializer):
 class CustomerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomerProfile
-        fields = ["id", "party", "price_list", "credit_limit"]
+        fields = ["id", "party", "price_list", "credit_limit", "virgin_only",
+                  "max_filler_percent", "min_uv_percent"]
 
 
 class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
