@@ -97,6 +97,71 @@ Working a list in the order it was written rather than the order things
 depend on. Vendor prices had to precede blanket orders and RFQ, or both
 would have been retrofitted. **Sort by what the next thing needs.**
 
+## Pre-flight checklist
+
+The list above is about design. This one is about the mechanics that
+turned green work red in the last sessions, every item more than once.
+Go through it before running anything.
+
+**Before writing code**
+- Scenario table first: every case with its expected number worked by
+  a separate plain-Python script, and the refusals listed before the
+  happy path.
+- Name the reverse path, the edit path and the delete path of every
+  guard (see audit shape 1).
+
+**Numbers**
+- Read the printed number before typing it into a test or a commit
+  message. Never type an expected value or a test count from memory.
+- Expected values carry only the places the column stores: a 6-place
+  kilogramme is a 3-place gramme, and a hem stored at 2 places holds
+  3.18, not 3.175. A constant with more places than its field builds
+  the bill from one figure and reads back another.
+- A frozen record is computed from its frozen figures; the test must be
+  too.
+- `round()` of a small negative Decimal is `-0.00`; add `+ 0`.
+- A `DecimalField` in a raw `Response` becomes a float; send `str()`.
+
+**Migrations**
+- Redirect `makemigrations` to a file and read it; never pipe it into
+  `head`. Check every change names the model you meant (mistake 8).
+- The autodetector puts `RemoveField` first. Any data-copy step must
+  come before it: reorder by hand.
+- `AddField` with a default rewrites every existing row. If the new
+  default would change what existing rows compute, add at the old
+  meaning and `AlterField` to the new default after.
+- Test a data migration with `MigrationExecutor` in a
+  `TransactionTestCase`.
+
+**Test fixtures**
+- Codes are unique: a helper that builds a tape or fabric each call
+  fails the second call in a test. Reuse one (`default_fabric()`).
+- Never name a test helper or attribute `run` or `order`.
+- Two refusals in one test need two separate builds, each of which
+  must not collide with the other.
+- Django never calls `full_clean()` for you; `ModelSerializer` does not
+  run check constraints either. Guard in `save()` or the view.
+
+**Browser tests**
+- Playwright `evaluate` calls a function expression: wrap statements in
+  `() => {...}`.
+- A class mixing `TestCase` and `LiveServerTestCase` needs
+  `_databases_support_transactions` returning False.
+- Run with `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium`,
+  or they skip and the count looks right.
+
+**Mutation testing**
+- Never edit sources while a harness runs; it restores from its own
+  copy. If you kill one, restore the file from that copy and check it.
+- For model-code mutations, a settings module with
+  `TEST["MIGRATE"] = False` runs in seconds instead of minutes. Check
+  the unmutated tests pass under it first, or a missing seed row reads
+  as a kill.
+
+**Committing**
+- Suite, `audit_invariants`, `makemigrations --check`, then commit.
+  Never in one command (mistake 9).
+
 ## Auditing
 
 `.claude/skills/audit/SKILL.md` holds the defect shapes three audits
