@@ -20,6 +20,7 @@ from .changeover import ChangeoverRule, SetupFamily
 from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss
 from .machines import Machine
 from .certificates import TestCertificate
+from .energy import EnergyMeter, EnergyTariff, MeterReading
 from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageRate
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
@@ -222,6 +223,31 @@ class MaterialRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = MaterialRate
         fields = ["id", "item", "rate", "valid_from", "note"]
+
+
+class EnergyMeterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EnergyMeter
+        fields = ["id", "code", "machine", "work_centre", "multiplier", "installed_on",
+                  "initial_reading", "retired_on"]
+        # The model's own save says why a pair is wrong; the serializer's
+        # generic unique-together message would not.
+        validators = []
+
+
+class MeterReadingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MeterReading
+        fields = ["id", "meter", "shift_date", "shift", "reading", "read_by", "voided_at",
+                  "voided_reason"]
+        read_only_fields = ["voided_at", "voided_reason"]
+        validators = []
+
+
+class EnergyTariffSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = EnergyTariff
+        fields = ["id", "rate", "valid_from", "note"]
 
 
 class StageRateSerializer(serializers.ModelSerializer):
@@ -500,7 +526,7 @@ class WorkCentreSerializer(serializers.ModelSerializer):
                   "holiday_region",
                   "machine_rate_per_hour", "labour_rate_per_hour",
                   "overhead_rate_per_hour", "conversion_rate_per_hour",
-                  "is_active"]
+                  "standard_kwh_per_hour", "is_active"]
 
     conversion_rate_per_hour = serializers.SerializerMethodField()
 

@@ -46,6 +46,8 @@ from .costing import CostVersion, StandardCost, against_actual, explain
 from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
 from . import certificates, quoting
 from .certificates import TestCertificate
+from . import energy
+from .energy import EnergyMeter, EnergyTariff, MeterReading
 from .quoting import CostSheet, MaterialRate, QuotePolicy, StageRate
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
@@ -72,6 +74,9 @@ from .serializers import (
     QuotePolicySerializer,
     QuoteRequestSerializer,
     StageRateSerializer,
+    EnergyMeterSerializer,
+    EnergyTariffSerializer,
+    MeterReadingSerializer,
     TestCertificateSerializer,
     BillOfMaterialsSerializer,
     BomByproductSerializer,
@@ -259,6 +264,68 @@ class _DatedRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class MaterialRateViewSet(_DatedRateViewSet):
     queryset = MaterialRate.objects.select_related("item")
     serializer_class = MaterialRateSerializer
+
+
+class EnergyTariffViewSet(_DatedRateViewSet):
+    queryset = EnergyTariff.objects.all()
+    serializer_class = EnergyTariffSerializer
+
+
+def _kwh(value):
+    return None if value is None else str(value.quantize(Decimal("0.001")))
+
+
+def _rupees(value):
+    return None if value is None else str(value.quantize(Decimal("0.01")))
+
+
+class EnergyMeterViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Meters, and idle/?start=&end= for what was drawn with nothing booked."""
+
+    queryset = EnergyMeter.objects.select_related("machine", "work_centre")
+    serializer_class = EnergyMeterSerializer
+
+    @action(detail=False, methods=["get"])
+    def idle(self, request):
+        start = parse_date(request.query_params.get("start", "") or "")
+        end = parse_date(request.query_params.get("end", "") or "")
+        if start is None or end is None:
+            raise DRFValidationError(["Give start and end as YYYY-MM-DD."])
+        rows = energy.idle_energy(start, end)
+        return Response([row | {"kwh": _kwh(row["kwh"]), "cost": _rupees(row["cost"])}
+                         for row in rows])
+
+    @action(detail=True, methods=["get"])
+    def balance(self, request, pk=None):
+        """Everything the meter recorded, and where it went: runs, and idle."""
+        from .orders import WorkOrder
+
+        meter = self.get_object()
+        runs = energy.by_run(meter)
+        numbers = dict(WorkOrder.objects.filter(pk__in=runs).values_list("pk", "number"))
+        idle = sum((kwh for _, kwh in energy.allocation(meter)[1]), Decimal("0"))
+        metered = energy.metered_total(meter)
+        return Response({
+            "metered": _kwh(metered),
+            "runs": {numbers[pk]: _kwh(kwh) for pk, kwh in runs.items()},
+            "idle": _kwh(idle),
+            "not_laid_out": _kwh(metered - sum(runs.values(), Decimal("0")) - idle),
+        })
+
+
+class MeterReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Readings are entered and voided; never edited or deleted."""
+
+    queryset = MeterReading.objects.select_related("meter", "shift")
+    serializer_class = MeterReadingSerializer
+    http_method_names = ["get", "post", "head", "options"]
+    action_permission_map = {"void": "manufacturing.change_meterreading"}
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        reading = self.get_object()
+        reading.void(str(request.data.get("reason", "")))
+        return Response(MeterReadingSerializer(reading).data)
 
 
 class StageRateViewSet(_DatedRateViewSet):
@@ -798,6 +865,20 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "reopen": "manufacturing.change_workorder",
         "cancel": "manufacturing.change_workorder",
     }
+
+    @action(detail=True, methods=["get"])
+    def energy(self, request, pk=None):
+        """What the meters say this run drew. Read, never posted."""
+        found = energy.run_energy(self.get_object())
+        return Response(found | {
+            "kwh": _kwh(found["kwh"]), "cost": _rupees(found["cost"]),
+            "kwh_per_unit": (None if found["kwh_per_unit"] is None
+                             else str(found["kwh_per_unit"].quantize(Decimal("0.000001")))),
+            "standard_kwh": _kwh(found["standard_kwh"]),
+            "variance_kwh": _kwh(found["variance_kwh"]),
+            "metered_minutes": str(found["metered_minutes"]),
+            "unmetered_minutes": str(found["unmetered_minutes"]),
+        })
 
     def _reply(self, order):
         return Response(self.get_serializer(order).data)

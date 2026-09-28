@@ -228,6 +228,11 @@ class WorkCentre(AuditModel):
                   "building, maintenance. Three rates rather than one because "
                   "a plant manager argues about them separately.",
     )
+    standard_kwh_per_hour = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True,
+        help_text="What an hour of this work centre should draw, for reading "
+                  "the meters against. Blank where nobody has set one.",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

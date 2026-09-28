@@ -24,6 +24,9 @@ from .views import (
     DowntimeViewSet,
     CostSheetViewSet,
     TestCertificateViewSet,
+    EnergyMeterViewSet,
+    EnergyTariffViewSet,
+    MeterReadingViewSet,
     DispatchViewSet,
     MaterialRateViewSet,
     QuotePolicyViewSet,
@@ -88,6 +91,9 @@ router.register("stage-rates", StageRateViewSet)
 router.register("quote-policies", QuotePolicyViewSet)
 router.register("cost-sheets", CostSheetViewSet)
 router.register("test-certificates", TestCertificateViewSet)
+router.register("energy-meters", EnergyMeterViewSet)
+router.register("meter-readings", MeterReadingViewSet)
+router.register("energy-tariffs", EnergyTariffViewSet)
 router.register("station-reports", StationReportViewSet, basename="station-report")
 
 urlpatterns = router.urls
