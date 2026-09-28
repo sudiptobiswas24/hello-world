@@ -156,3 +156,40 @@ class CalibrationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "inspection": inspection.number, "lot": inspection.lot.code,
             "inspected_on": str(inspection.inspected_on),
         } for inspection in calibration.suspect_inspections()])
+
+
+class ControlChartViewSet(viewsets.ViewSet):
+    """GET spc/?item=&characteristic=CODE&start=&end=&baseline_end=: X-bar and R (or
+    individuals) for one characteristic of one item, with signals and capability."""
+
+    queryset = Inspection.objects.none()
+
+    def list(self, request):
+        from django.shortcuts import get_object_or_404
+
+        from apps.inventory.models import Item
+
+        from .spc import chart
+
+        params = request.query_params
+        item = get_object_or_404(Item, pk=params.get("item"))
+        characteristic = get_object_or_404(Characteristic, code=params.get("characteristic"))
+        found = _run(chart, item, characteristic, params.get("start"), params.get("end"),
+                     params.get("baseline_end"))
+
+        def text(value):
+            return None if value is None else format(round(float(value), 4), ".4f")
+
+        capability = found["capability"]
+        return Response({
+            **found, "centre": text(found["centre"]), "sigma": text(found["sigma"]),
+            "subgroup_sizes": {str(k): v for k, v in found["subgroup_sizes"].items()},
+            "points": [{
+                **point, "inspected_on": str(point["inspected_on"]),
+                **{key: text(point.get(key)) for key in (
+                    "mean", "range", "ucl", "lcl", "r_ucl", "r_lcl", "moving_range")
+                   if key in point},
+            } for point in found["points"]],
+            "capability": None if capability is None else {
+                key: text(value) for key, value in capability.items()},
+        })
