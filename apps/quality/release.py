@@ -44,6 +44,24 @@ def plan_for(item, on_date=None):
     ).first()
 
 
+# Where a batch was re-made from other batches (split or joined), the
+# module that knows says which: `fn(lot) -> [lot, ...]`. Registered so
+# quality asks without importing the manufacturing that does it.
+LOT_SOURCES = []
+
+
+def register_lot_sources(provider):
+    if provider not in LOT_SOURCES:
+        LOT_SOURCES.append(provider)
+
+
+def lot_sources(lot):
+    found = []
+    for provider in LOT_SOURCES:
+        found.extend(provider(lot))
+    return found
+
+
 def latest_inspection(lot):
     """The inspection that currently speaks for this batch."""
     return Inspection.objects.filter(
@@ -58,10 +76,21 @@ def release_status(lot):
     Rework and rejection are both held: a roll waiting to be re-wound is
     not stock anybody may draw on, however likely it is to pass the
     second time.
+
+    A batch re-made from others and not inspected itself stands as they
+    do: released only if all of them are, held if any is. Mixing a held
+    batch into passed ones holds the lot; it never passes the held sacks.
     """
     inspection = latest_inspection(lot)
     if inspection is None:
-        return ReleaseStatus.UNINSPECTED
+        sources = lot_sources(lot)
+        if not sources:
+            return ReleaseStatus.UNINSPECTED
+        statuses = {release_status(source) for source in sources}
+        for status in (ReleaseStatus.HELD, ReleaseStatus.UNINSPECTED):
+            if status in statuses:
+                return status
+        return ReleaseStatus.RELEASED
     if inspection.disposition in (Disposition.ACCEPT, Disposition.CONCESSION):
         return ReleaseStatus.RELEASED
     return ReleaseStatus.HELD
@@ -94,6 +123,11 @@ def check_released(item, lot, action="issue"):
             f"inspected is not passed, so it cannot {action} yet."
         )
     held = latest_inspection(lot)
+    if held is None:
+        raise ValidationError(
+            f"{lot} is held: it was re-made from a batch that is held or not yet "
+            f"inspected. Inspect it before it can {action}."
+        )
     raise ValidationError(
         f"{lot} is held: {held.get_disposition_display().lower()} on "
         f"{held.inspected_on} ({held.number}). It cannot {action}."

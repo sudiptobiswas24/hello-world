@@ -63,22 +63,29 @@ def descendants(lot, depth=4, beyond=None):
     A batch at the depth limit that was itself used further is added
     to `beyond` when a list is given: a recall that stops at four
     levels without saying so reads as complete.
+
+    A batch split or joined into others is followed into them the same
+    way, with the re-batch as what used it: the sacks are the same sacks
+    under a new number.
     """
+    from .rebatch import remade_into
+
     seen = set()
 
     def walk(batch, level):
         if batch.pk in seen:
             return []
         if level > depth:
-            if beyond is not None and runs_that_used(batch):
+            if beyond is not None and (runs_that_used(batch) or remade_into(batch)):
                 beyond.append(batch)
             return []
         seen.add(batch.pk)
         rows = []
-        for run, quantity in runs_that_used(batch):
-            made = output_lots(run)
+        uses = [(run, quantity, output_lots(run)) for run, quantity in runs_that_used(batch)]
+        uses += remade_into(batch)
+        for used_by, quantity, made in uses:
             rows.append({
-                "level": level, "lot": batch, "used_by": run,
+                "level": level, "lot": batch, "used_by": used_by,
                 "quantity": quantity, "made": made,
             })
             for child in made:

@@ -71,6 +71,7 @@ from .energy import EnergyMeter, EnergyTariff, MeterReading  # noqa: F401
 from .conversion import BagCount  # noqa: F401
 from .bales import Bale, BaleLine  # noqa: F401
 from .scrap import OperationReport, ProductionScrap, ScrapReason  # noqa: F401
+from .rebatch import Rebatch, RebatchLine  # noqa: F401
 from .inward import (  # noqa: F401
     CustomerMaterialReceipt,
     CustomerMaterialReceiptLine,

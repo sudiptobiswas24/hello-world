@@ -64,7 +64,10 @@ from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from . import scrap
 from .scrap import OperationReport, ProductionScrap, ScrapReason
+from . import rebatch as rebatching
+from .rebatch import Rebatch
 from .serializers import (
+    RebatchSerializer,
     OperationReportSerializer,
     ProductionScrapSerializer,
     ScrapReasonSerializer,
@@ -1665,3 +1668,47 @@ class RunFlowViewSet(viewsets.ViewSet):
             raise DRFValidationError(["Give start and end dates."])
         rows = _run(scrap.scrap_report, start, end)
         return Response([{**row, "quantity": _stock_text(row["quantity"])} for row in rows])
+
+
+class RebatchViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """Batches split or joined: record (posted at once) and void."""
+
+    queryset = Rebatch.objects.prefetch_related("lines__lot")
+    serializer_class = RebatchSerializer
+
+    @action(detail=False, methods=["post"])
+    def record(self, request):
+        from django.db import transaction
+
+        from apps.inventory.models import Item, Lot, Warehouse
+
+        data = request.data
+        item = get_object_or_404(Item, pk=data.get("item"))
+        warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
+        try:
+            taken = [(get_object_or_404(Lot, pk=row.get("lot")), Decimal(str(row.get("quantity"))))
+                     for row in data.get("taken") or []]
+            made_rows = [(str(row.get("code") or "").strip(), Decimal(str(row.get("quantity"))))
+                         for row in data.get("made") or []]
+        except (InvalidOperation, AttributeError):
+            raise DRFValidationError(["Each row gives a batch and a quantity."])
+        if any(not code for code, _ in made_rows):
+            raise DRFValidationError(["Each new batch needs a code."])
+
+        def record_it():
+            with transaction.atomic():
+                # New batches by code; one that exists and has held stock is
+                # refused by the re-batch itself.
+                made = [(Lot.objects.get_or_create(item=item, code=code)[0], quantity)
+                        for code, quantity in made_rows]
+                return rebatching.rebatch(item, warehouse, taken, made, data.get("reason"),
+                                          on_date=data.get("rebatched_on"))
+
+        document = _run(record_it)
+        return Response(self.get_serializer(document).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        document = self.get_object()
+        _run(document.void, request.data.get("reason", ""))
+        return Response(self.get_serializer(document).data)

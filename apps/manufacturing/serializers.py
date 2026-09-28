@@ -33,6 +33,7 @@ from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
 from .scrap import OperationReport, ProductionScrap, ScrapReason
+from .rebatch import Rebatch, RebatchLine
 from .shifts import Downtime, DowntimeReason, Shift
 from apps.accounting.models import Tax
 from apps.inventory.models import Item
@@ -802,4 +803,22 @@ class OperationReportSerializer(serializers.ModelSerializer):
         model = OperationReport
         fields = ["id", "operation", "reported_on", "quantity_good", "machine", "memo",
                   "voided_at", "voided_reason"]
+        read_only_fields = fields
+
+
+class RebatchLineSerializer(serializers.ModelSerializer):
+    lot_code = serializers.CharField(source="lot.code", read_only=True)
+
+    class Meta:
+        model = RebatchLine
+        fields = ["id", "side", "lot", "lot_code", "quantity"]
+
+
+class RebatchSerializer(serializers.ModelSerializer):
+    lines = RebatchLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Rebatch
+        fields = ["id", "number", "item", "warehouse", "rebatched_on", "reason", "posted",
+                  "posted_at", "voided_at", "voided_reason", "lines"]
         read_only_fields = fields

@@ -142,24 +142,38 @@ def runs_that_made(lot):
     one: contaminated regrind ruins the next three runs that eat it, and
     a genealogy that could only walk back from main output would stop at
     exactly the batch somebody wants to trace.
+
+    A batch re-made from others (split or joined, see `rebatch`) was made
+    by whatever made them: it answers through its sources, or the
+    ownership and material checks that ask this would see nothing made
+    it and pass it.
     """
     from .orders import ProductionByproduct, ProductionEntry
+    from .rebatch import sources
 
-    entries = list(ProductionEntry.objects.filter(
-        lot=lot, posted=True, voided_at__isnull=True
-    ).select_related("work_order"))
-    entries.extend(
-        row.entry for row in ProductionByproduct.objects.filter(
-            lot=lot, entry__posted=True, entry__voided_at__isnull=True
-        ).select_related("entry", "entry__work_order")
-    )
-    seen = set()
-    runs = []
-    for entry in sorted(entries, key=lambda row: (row.entry_date, row.pk)):
-        if entry.work_order_id in seen:
-            continue
-        seen.add(entry.work_order_id)
-        runs.append(entry.work_order)
+    seen_lots, seen, runs = set(), set(), []
+
+    def walk(batch):
+        if batch.pk in seen_lots:
+            return
+        seen_lots.add(batch.pk)
+        entries = list(ProductionEntry.objects.filter(
+            lot=batch, posted=True, voided_at__isnull=True
+        ).select_related("work_order"))
+        entries.extend(
+            row.entry for row in ProductionByproduct.objects.filter(
+                lot=batch, entry__posted=True, entry__voided_at__isnull=True
+            ).select_related("entry", "entry__work_order")
+        )
+        for entry in sorted(entries, key=lambda row: (row.entry_date, row.pk)):
+            if entry.work_order_id in seen:
+                continue
+            seen.add(entry.work_order_id)
+            runs.append(entry.work_order)
+        for source in sources(batch):
+            walk(source)
+
+    walk(lot)
     return runs
 
 

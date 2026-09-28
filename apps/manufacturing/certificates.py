@@ -96,8 +96,18 @@ def _measured(lot):
     from apps.quality.models import Disposition
     from apps.quality.release import latest_inspection, plan_for
 
+    from .rebatch import sources
+
     inspection = latest_inspection(lot)
     row = {"lot": lot.code, "item": lot.item.sku, "item_name": lot.item.name}
+    remade_from = sources(lot) if inspection is None else []
+    if remade_from:
+        # Split or joined and not measured since: what was measured is
+        # what its sources were measured at, and that is what is said.
+        row.update(inspection=None, status="as the batches it was re-made from",
+                   characteristics=[], remade_from=[_measured(source)
+                                                    for source in remade_from])
+        return row
     if inspection is None:
         plan = plan_for(lot.item)
         if plan is not None and plan.is_mandatory:
