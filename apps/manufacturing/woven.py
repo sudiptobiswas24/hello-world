@@ -323,7 +323,12 @@ class SpecificationMixin:
         plan.valid_to = self.valid_to
         plan.is_mandatory = item.tracking != "none"
         plan._rebuilding = True
-        plan.save()
+        try:
+            plan.save()
+        finally:
+            # The plan stays cached on the specification; left set, its next
+            # save would pass the computed-plan guard too.
+            plan._rebuilding = False
         for row in plan.lines.all():
             row._rebuilding = True
             row.delete()

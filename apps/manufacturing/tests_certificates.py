@@ -174,6 +174,14 @@ class FrozenTests(CertificateTestCase):
         certificate.refresh_from_db()
         self.assertEqual(self.batch(certificate)["inspection"], tape.number)
 
+    def test_a_withdrawn_certificate_is_still_not_edited(self):
+        self.inspect(self.tape_plan, self.tape_lot, ["1000", "1010", "990"])
+        certificate = issue(self.shipped())
+        certificate.void("Wrong customer reference")
+        certificate.issued_on = TODAY + datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, "Void it"):
+            certificate.save()
+
     def test_nothing_edits_or_deletes_one(self):
         self.inspect(self.tape_plan, self.tape_lot, ["1000", "1010", "990"])
         certificate = issue(self.shipped())

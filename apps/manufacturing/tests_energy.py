@@ -195,6 +195,13 @@ class ReadingsTests(EnergyTestCase):
         first.void("Misread")
         self.read(SEP(1), self.day, "10130")
 
+    def test_a_voided_reading_is_still_not_edited(self):
+        reading = self.read(SEP(1), self.day, "10120")
+        reading.void("Misread")
+        reading.reading = Decimal("10121")
+        with self.assertRaisesMessage(ValidationError, "Void it and read again"):
+            reading.save()
+
     def test_not_edited_not_deleted(self):
         reading = self.read(SEP(1), self.day, "10120")
         reading.reading = Decimal("10121")

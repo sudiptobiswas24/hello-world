@@ -220,6 +220,13 @@ class LossesAtTheJobWorkerTests(JobWorkTestCase):
         with self.assertRaisesMessage(ValidationError, "already withdrawn"):
             loss.void()
 
+    def test_a_voided_loss_is_still_not_edited(self):
+        loss = self.loss("12")
+        loss.void()
+        loss.quantity = Decimal("1")
+        with self.assertRaisesMessage(ValidationError, "is a fact"):
+            loss.save()
+
     def test_a_voided_loss_does_not_hold_the_challan(self):
         self.loss("12").void()
         self.first.void()

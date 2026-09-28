@@ -190,8 +190,12 @@ class EwayBill(AuditModel):
             raise ValidationError("Say what the other reason is.")
         self.cancelled_at, self.cancel_reason, self.cancel_remarks = now, reason, remarks[:100]
         self._cancelling = True
-        self.save(update_fields=["cancelled_at", "cancel_reason", "cancel_remarks",
-                                 "updated_at"])
+        try:
+            self.save(update_fields=["cancelled_at", "cancel_reason", "cancel_remarks",
+                                     "updated_at"])
+        finally:
+            # Left set, the next save of this object would pass the guard too.
+            self._cancelling = False
 
 
 def _document_date(document):

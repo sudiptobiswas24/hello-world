@@ -217,6 +217,12 @@ class QuoteTests(QuotingTestCase):
         self.assertIn("B60X100: unlaminated", line.description)
         self.assertEqual(CostSheet.objects.get(pk=self.sheet.pk).quotation_line, line)
 
+    def test_a_quoted_sheet_is_still_not_edited(self):
+        quote(self.sheet, self.quotation, [])
+        self.sheet.quoted_price = Decimal("1")
+        with self.assertRaisesMessage(ValidationError, "Cost it again rather than change it"):
+            self.sheet.save()
+
     def test_the_line_carries_the_taxes_named(self):
         gst = Tax.objects.create(code="GST5", name="GST 5%", rate=Decimal("5"))
         line = quote(self.sheet, self.quotation, [gst])

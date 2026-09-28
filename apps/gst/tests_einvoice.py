@@ -399,6 +399,9 @@ class InvoiceEwayBillTests(EInvoiceTestCase):
         with self.assertRaisesMessage(ValidationError, "cancel it"):
             bill.delete()
         bill.cancel(CancelReason.DATA_ENTRY)
+        bill.vehicle_number = "KA25ZZ0000"
+        with self.assertRaisesMessage(ValidationError, "is generated. Cancel it"):
+            bill.save()
         again = prepare_eway(invoice, vehicle_number="KA25AB9999")
         self.assertNotEqual(again.pk, bill.pk)
         self.assertEqual(EwayBill.objects.filter(invoice=invoice).count(), 2)

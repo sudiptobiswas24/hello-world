@@ -293,6 +293,43 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         _run(row.void, supervisor, operator, station)
         return Response({"id": row.pk, "voided": True})
 
+    @action(detail=True, methods=["post"])
+    def bags(self, request, code=None):
+        """A bundle counted off a machine, its sample weighed. Off weight needs a
+        supervisor's PIN and a reason, or nothing is booked."""
+        from .conversion import record_bags
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        machine = station.machines.filter(code=data.get("machine")).first()
+        if machine is None:
+            raise DRFValidationError([f"{station} does not count for {data.get('machine')}."])
+        supervisor = (_run(station.identify, data["supervisor_pin"])
+                      if data.get("supervisor_pin") else None)
+        count = _run(record_bags, station, operator, machine, data.get("bags"),
+                     data.get("sample_grams") or [], supervisor=supervisor,
+                     reason=data.get("reason", ""))
+        return Response({
+            "id": count.pk, "batch": count.inspection.lot.code, "bags": count.bags,
+            "target_grams": _exact(count.target_grams),
+            "sample_mean_grams": _exact(count.sample_mean_grams), "passed": count.passed,
+            "conceded_by": _person(count.supervisor) if count.supervisor_id else None,
+            "inspection": count.inspection.number,
+        }, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"bags/(?P<count>[0-9]+)/void")
+    def void_bags(self, request, code=None, count=None):
+        """A count taken wrong, withdrawn with a supervisor's PIN and a reason."""
+        from .conversion import BagCount, void_bags
+
+        station = self.get_object()
+        self._require_operator(request, station)
+        row = get_object_or_404(BagCount, pk=count, station=station)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_bags, row, supervisor, request.data.get("reason", ""))
+        return Response({"id": row.pk, "voided": True})
+
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
         """
@@ -380,3 +417,19 @@ class StationReportViewSet(viewsets.GenericViewSet):
         except ValueError:
             raise DRFValidationError(["date must be YYYY-MM-DD."])
         return Response(report_payload(morning_report(station, shift_date)))
+
+    @action(detail=True, methods=["get"])
+    def bags(self, request, code=None):
+        """Bags and off-weight bundles by machine and by operator, ?start=&end=."""
+        from .conversion import summary
+
+        station = self.get_object()
+        try:
+            start = datetime.date.fromisoformat(request.query_params.get("start", ""))
+            end = datetime.date.fromisoformat(request.query_params.get("end", ""))
+        except ValueError:
+            raise DRFValidationError(["start and end must be YYYY-MM-DD."])
+        found = summary(start, end, station=station)
+        return Response({key: [row | {"mean_deviation_percent":
+                                      _exact(row["mean_deviation_percent"])} for row in rows]
+                         for key, rows in found.items()})

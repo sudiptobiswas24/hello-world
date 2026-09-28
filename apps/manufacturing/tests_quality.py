@@ -56,6 +56,14 @@ class ASpecificationWritesItsOwnInspectionPlanTests(WovenTestCase):
         self.assertEqual(line.upper_limit, Decimal("91.875000"))
         self.assertEqual(line.evaluation, Evaluation.MEAN)
 
+    def test_the_plan_a_specification_keeps_is_still_not_edited(self):
+        self.fabric_item.tracking = TrackingMode.LOT
+        self.fabric_item.save()
+        plan = self.fabric().inspection_plan
+        plan.name = "Edited by hand"
+        with self.assertRaisesMessage(ValidationError, "this plan is rebuilt from it"):
+            plan.save()
+
     def test_a_tape_plan_checks_the_denier(self):
         self.tape_item.tracking = TrackingMode.LOT
         self.tape_item.save()

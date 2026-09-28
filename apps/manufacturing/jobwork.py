@@ -286,7 +286,11 @@ class JobWorkLoss(AuditModel):
             raise ValidationError("This loss is already withdrawn.")
         self.voided_at = timezone.now()
         self._voiding = True
-        self.save(update_fields=["voided_at", "updated_at"])
+        try:
+            self.save(update_fields=["voided_at", "updated_at"])
+        finally:
+            # Left set, the next save of this object would pass the guard too.
+            self._voiding = False
 
 
 # -- what came back against what -----------------------------------------

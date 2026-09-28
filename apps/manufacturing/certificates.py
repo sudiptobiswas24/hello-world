@@ -77,7 +77,11 @@ class TestCertificate(AuditModel):
         self.voided_at = timezone.now()
         self.voided_reason = reason.strip()
         self._voiding = True
-        self.save(update_fields=["voided_at", "voided_reason", "updated_at"])
+        try:
+            self.save(update_fields=["voided_at", "voided_reason", "updated_at"])
+        finally:
+            # Left set, the next save of this object would pass the guard too.
+            self._voiding = False
 
 
 def _number(value):
