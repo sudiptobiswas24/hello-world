@@ -227,3 +227,50 @@ class KnockOnTests(FiniteTestCase):
                                needed_by=self.day(2), expected_on=self.day(6))
         ((item, rows),) = _byproducts(self.tape_bom, late)
         self.assertEqual((item, {row.date for row in rows}), (self.regrind, {self.day(6)}))
+
+
+class FirmedRunsHoldTheirHoursTests(FiniteTestCase):
+    def test_a_firmed_run_is_on_the_loom_for_the_next_plan(self):
+        # Firmed for days 3 to 5: 1,060 minutes, 353.33 a day. The next
+        # fabric finds 126.67 free on each of those days, all of day 2
+        # and 200 of day 1: it starts on day 1, not on day 3 on hours
+        # already promised.
+        self.shift(self.loom, "8")
+        self.stock(self.tape, "9000")
+        other = self.other_fabric()
+        self.sell(self.fabric, "1000", self.day(5))
+        first = self.orders()["FAB-10X10"]
+        self.assertEqual(first.release_on, self.day(3))
+        first.firm()
+        self.sell(other, "1000", self.day(5))
+        self.assertEqual(self.orders()["FAB-12X12"].release_on, self.day(1))
+
+    def test_a_draft_with_no_dates_is_counted_beside_the_plan(self):
+        from apps.manufacturing.orders import WorkOrder
+
+        from .capacity import LoadBook
+
+        WorkOrder.objects.create(item=self.fabric, bom=self.fabric_bom,
+                                 quantity_ordered=Decimal("1000"), uom=self.kg,
+                                 warehouse=self.plant)
+        book = LoadBook(self.plant, self.day(0), self.day(30))
+        # The 2% loom waste grosses up the tape it eats, not the fabric it
+        # must make: 1,000 minutes of loom and an hour's setup.
+        self.assertEqual(round(book.unscheduled[self.loom.pk], 2), Decimal("1060.00"))
+
+    def test_a_drafts_outside_step_holds_no_machine_of_ours(self):
+        from apps.manufacturing.orders import WorkOrder
+        from apps.manufacturing.routing import RoutingOperation
+
+        from .capacity import LoadBook
+
+        RoutingOperation.objects.create(routing=self.weaving, sequence=20, name="Laminate",
+                                        is_outside=True, outside_lead_days=5,
+                                        outside_cost_per_unit=Decimal("2"), rate_uom=self.kg)
+        WorkOrder.objects.create(item=self.fabric, bom=self.fabric_bom,
+                                 quantity_ordered=Decimal("1000"), uom=self.kg,
+                                 warehouse=self.plant, scheduled_start=self.day(1),
+                                 scheduled_end=self.day(2))
+        book = LoadBook(self.plant, self.day(0), self.day(30))
+        self.assertEqual((book.booked(self.loom, self.day(1)), book.booked(self.loom, self.day(2))),
+                         (Decimal("530"), Decimal("530")))

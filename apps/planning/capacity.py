@@ -184,6 +184,45 @@ class LoadBook:
             share = minutes / len(days)
             for day in days:
                 self.book(operation.work_centre, day, share)
+        self._load_drafts()
+
+    def _load_drafts(self):
+        """
+        Draft runs decided on and not yet released: firmed from the plan,
+        or committed from the master schedule.
+
+        A run's operations are only written when it is released, so a
+        draft has none, and these were missed — a firmed run's hours read
+        as free to the next order planned. Timed from its routing as a
+        release would time it, at the achieved speed, for what it will
+        start with, and spread over its dates like any other.
+        """
+        from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
+
+        drafts = WorkOrder.objects.filter(
+            status=WorkOrderStatus.DRAFT, warehouse=self.warehouse, bom__isnull=False,
+        ).exclude(operations__isnull=False).select_related("bom", "uom", "routing")
+        for order in drafts:
+            routing = order.routing or order.bom.routing
+            if routing is None:
+                continue
+            quantity = order.bom.start_for(order.quantity_ordered)
+            if order.uom_id != order.bom.uom_id:
+                quantity = order.uom.convert_to(quantity, order.bom.uom)
+            for operation in routing.operations.select_related("work_centre"):
+                if operation.is_outside:
+                    continue
+                minutes = operation.minutes_for(quantity, order.bom.uom, bom=order.bom)
+                start, end = order.scheduled_start, order.scheduled_end
+                days = [] if start is None or end is None or end < start else [
+                    day for day in _days_between(start, end)
+                    if self.calendar(operation.work_centre).is_working(day)
+                ]
+                if not days:
+                    self.unscheduled[operation.work_centre_id] += minutes
+                    continue
+                for day in days:
+                    self.book(operation.work_centre, day, minutes / len(days))
 
     def _load_maintenance(self):
         """
