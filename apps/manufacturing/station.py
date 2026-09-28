@@ -46,9 +46,27 @@ LOCK_AFTER = 5
 LOCK_WINDOW = datetime.timedelta(minutes=10)
 
 
-class LoomStation(AuditModel):
-    """A weighing point at the end of a row of looms."""
+class LineKind(models.TextChoices):
+    LOOM_EXIT = "loom_exit", "Loom exit"
+    CONVERSION = "conversion", "Cutting and stitching"
+    EXTRUSION = "extrusion", "Tape line"
+    PRINTING = "printing", "Printing"
+    COATING = "coating", "Coating and lamination"
 
+
+class LoomStation(AuditModel):
+    """
+    A terminal on the floor: at the end of a row of looms, beside the
+    tape line's take-up, the printer, the coater, the cutting tables.
+
+    Every station books stoppages, step counts, scrap and machine
+    clocks for the machines it serves; what else it weighs depends on
+    its kind (rolls at a loom exit, bundles at conversion, doffs of tape
+    at a tape line).
+    """
+
+    kind = models.CharField(max_length=16, choices=LineKind.choices,
+                            default=LineKind.LOOM_EXIT)
     code = models.CharField(max_length=32, unique=True)
     name = models.CharField(max_length=128)
     warehouse = models.ForeignKey(

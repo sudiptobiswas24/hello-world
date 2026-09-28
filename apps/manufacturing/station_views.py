@@ -112,6 +112,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         return Response({
             "code": station.code,
             "name": station.name,
+            "kind": station.kind,
             "scale": station.scale_code,
             "printer": station.printer_code,
             "tolerance_percent": _exact(station.metres_tolerance_percent),
@@ -459,6 +460,38 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         supervisor = _run(station.identify, request.data.get("supervisor_pin"))
         _run(void_clock, clock, station, supervisor, operator, request.data.get("reason", ""))
         return Response({"id": clock.pk, "voided": True})
+
+    @action(detail=True, methods=["post"])
+    def tape(self, request, code=None):
+        """A doff off the tape line: gross kg, bobbins, bobbin type, denier checks."""
+        from .station_tape import record_tape
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        core = get_object_or_404(CoreType, code=data.get("core"))
+        supervisor = (_run(station.identify, data["supervisor_pin"])
+                      if data.get("supervisor_pin") else None)
+        doff = _run(record_tape, station, operator, self._machine(station, data.get("machine")),
+                    data.get("gross_kg"), data.get("bobbins"), core,
+                    data.get("denier") or [], supervisor, data.get("reason", ""))
+        return Response({
+            "id": doff.pk, "batch": doff.lot.code, "net_kg": _exact(doff.net_kg),
+            "mean_denier": _exact(doff.mean_denier),
+            "inspection": doff.inspection.number or None,
+            "awaiting_lab": not doff.inspection.posted,
+        }, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"tape/(?P<row>[0-9]+)/void")
+    def void_tape(self, request, code=None, row=None):
+        from .station_tape import TapeDoff, void_doff
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        doff = get_object_or_404(TapeDoff, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_doff, doff, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": doff.pk, "voided": True})
 
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
