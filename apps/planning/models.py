@@ -214,6 +214,7 @@ class DemandSource(models.TextChoices):
     PLANNED = "planned", "Another planned order"
     PHANTOM = "phantom", "Through a phantom"
     SAFETY = "safety", "Safety stock"
+    EXPIRY = "expiry", "Stock expiring unused"
 
 
 class PlanningRun(AuditModel):
@@ -681,6 +682,7 @@ class PlannedOrder(AuditModel):
             uom=self.item.uom,
             quantity=self.quantity,
             suggested_vendor=self.vendor,
+            warehouse=self.warehouse,
         )
         return self.requisition_line
 

@@ -95,8 +95,15 @@ def available_to_promise(item, warehouse, planned_on=None, horizon_days=90):
         item, warehouse, planned_on, horizon_end
     )
 
+    from .mrp import expiring_unused
+
     arriving = defaultdict(lambda: ZERO)
     arriving[planned_on] += opening
+    expiring = defaultdict(lambda: ZERO)
+    for row in expiring_unused(item, warehouse, planned_on, demands):
+        if row.date <= horizon_end:
+            expiring[row.date] += row.quantity
+            arriving[row.date] += ZERO
     for row in supplies:
         when = max(row.date, planned_on)
         if when <= horizon_end:
@@ -116,7 +123,7 @@ def available_to_promise(item, warehouse, planned_on=None, horizon_days=90):
         )
         windows.append({
             "date": when, "arriving": arriving[when], "owed": due,
-            "uncommitted": arriving[when] - due,
+            "uncommitted": arriving[when] - due, "expiring": expiring[when],
         })
 
     # Backward pass: a short period is covered by what arrived before
@@ -127,9 +134,14 @@ def available_to_promise(item, warehouse, planned_on=None, horizon_days=90):
             windows[index - 1]["uncommitted"] += short
             windows[index]["uncommitted"] = ZERO
 
+    # Stock that expires unused leaves on the day after its date. It can
+    # be promised for any day up to then, so it is not a debt earlier
+    # stock must cover — the backward pass above would have made it one,
+    # and hidden sacks that could still be sold — only a drop in what
+    # can be promised from that day on.
     running = ZERO
     for window in windows:
-        running += window["uncommitted"]
+        running += window["uncommitted"] - window["expiring"]
         window["promisable"] = max(running, ZERO)
     return windows
 

@@ -206,6 +206,23 @@ class AwardTests(RfqTestCase):
         order = rfq.award(self.invitations[1], order_date=datetime.date(2026, 1, 20))
         self.assertEqual(order.lines.get().expected_date, datetime.date(2026, 2, 10))
 
+    def test_the_order_is_for_the_warehouse_the_requisition_wanted(self):
+        from .models import PurchaseRequisition, PurchaseRequisitionLine
+
+        requester = Party.objects.create(code="E-9", name="Requester")
+        requisition = PurchaseRequisition.objects.create(
+            requested_by=requester, request_date=datetime.date(2026, 1, 1))
+        wanted = PurchaseRequisitionLine.objects.create(
+            requisition=requisition, item=self.item, uom=self.uom, quantity=Decimal("100"),
+            warehouse=self.warehouse)
+        rfq = self.rfq("100", issue=False)
+        RfqLine.objects.filter(pk=self.line.pk).update(requisition_line=wanted)
+        rfq.issue()
+        self.line.refresh_from_db()
+        self.invitations[0].quote(self.line, "5.00", lead_time_days=7)
+        order = rfq.award(self.invitations[0], order_date=datetime.date(2026, 1, 20))
+        self.assertEqual(order.lines.get().warehouse, self.warehouse)
+
     def test_a_vendor_who_did_not_quote_everything_cannot_be_awarded(self):
         rfq = self.rfq("100")
         RfqLine.objects.create(

@@ -305,6 +305,7 @@ class RequestForQuotation(AuditModel):
             PurchaseOrderLine.objects.create(
                 order=order, item=line.item, uom=line.uom,
                 requisition_line=line.requisition_line,
+                warehouse=line.requisition_line.warehouse if line.requisition_line_id else None,
                 quantity=line.quantity, unit_price=quote.unit_price,
                 expected_date=(
                     order_date + datetime.timedelta(days=quote.lead_time_days)
@@ -570,7 +571,7 @@ class PurchaseRequisition(AuditModel):
             remaining = line.quantity - line.quantity_ordered()
             PurchaseOrderLine.objects.create(
                 order=order, requisition_line=line, item=line.item, uom=line.uom,
-                expense_account=line.expense_account,
+                expense_account=line.expense_account, warehouse=line.warehouse,
                 quantity=remaining,
                 unit_price=resolve_purchase_price(
                     line.item, vendor, quantity=remaining,
@@ -607,6 +608,11 @@ class PurchaseRequisitionLine(AuditModel):
         help_text="Who the requester had in mind, if anyone. Not binding.",
     )
     notes = models.CharField(max_length=255, blank=True)
+    warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where it is wanted. Carried to the order line, and what planning "
+                  "counts it as coming to.",
+    )
 
     class Meta:
         ordering = ["id"]
@@ -1172,8 +1178,10 @@ class ReorderRule(AuditModel):
         how a reorder rule turns one shortage into two months of excess.
         """
         lines = PurchaseOrderLine.objects.filter(
-            item=self.item, order__status=OrderStatus.CONFIRMED, charge__isnull=True
-        )
+            item=self.item, order__status=OrderStatus.CONFIRMED, charge__isnull=True,
+            # A drop-ship goes to the customer, never onto this shelf.
+            order__drop_ship_for__isnull=True,
+        ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
         return sum(
             (max(line.quantity - line.quantity_received(), Decimal("0")) for line in lines),
             Decimal("0"),
@@ -1186,7 +1194,7 @@ class ReorderRule(AuditModel):
 
         lines = SalesOrderLine.objects.filter(
             item=self.item, order__status=SalesOrderStatus.CONFIRMED, charge__isnull=True
-        )
+        ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
         return sum(
             (max(line.quantity - line.quantity_shipped(), Decimal("0")) for line in lines),
             Decimal("0"),
@@ -1761,6 +1769,13 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     expected_date = models.DateField(
         null=True, blank=True,
         help_text="When the vendor said it would arrive — what on-time is measured against.",
+    )
+    warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where it is to be received. Planning counts it as coming there; "
+                  "blank, it is counted as coming to whichever warehouse is planned, "
+                  "which is right only on one site. A receipt line that names no "
+                  "warehouse takes this one.",
     )
     inspect_on_receipt = models.BooleanField(
         default=False,
@@ -3824,7 +3839,7 @@ def raise_reorder_requisition(requested_by, warehouse=None, on_date=None, rows=N
         PurchaseRequisitionLine.objects.create(
             requisition=requisition, item=row["item"], uom=row["item"].uom,
             quantity=row["quantity"], estimated_price=row["unit_price"],
-            suggested_vendor=row["vendor"],
+            suggested_vendor=row["vendor"], warehouse=row["rule"].warehouse,
             notes=f"Projected {row['projected']} against a minimum of {row['rule'].minimum}",
         )
     return requisition
@@ -5030,6 +5045,10 @@ class GoodsReceiptLine(AuditModel):
             raise ValidationError(
                 f"'{self.order_line.charge}' is a charge, not goods; nothing arrives for it."
             )
+        if self._state.adding and self.warehouse_id is None and self.order_line_id:
+            # Where the order said it was going, unless the receipt says
+            # where it actually went.
+            self.warehouse_id = self.order_line.warehouse_id
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

@@ -33,11 +33,15 @@ the same polymer twice. Batches a mandatory inspection plan has not
 passed, and batches that have expired, are taken out instead: they are
 owned and valued and no run may draw on them.
 
-**What is not modelled, said out loud.** A purchase order line names
-no warehouse until it is received, so a confirmed order counts as
-inbound to whichever warehouse is being planned. On one site that is
-right. On several it under-reports shortages, and the fix is a
-warehouse on the purchase line, not a heuristic here.
+**Inbound to where it is going.** A purchase line and a requisition
+line name the warehouse they are for, and count only there. One that
+names none (entered before they could) still counts as inbound to
+whichever warehouse is being planned, which is right on one site. A
+drop-ship order never comes here and never counts.
+
+**Stock that expires before it is used is not cover.** Batches are
+drawn first-expired-first-out; whatever a batch would still hold on
+its expiry date is lost that day, and is planned for as a demand then.
 """
 
 import datetime
@@ -144,6 +148,48 @@ def unusable_on_hand(item, warehouse, on_date):
         elif mandatory and release_status(lot) != ReleaseStatus.RELEASED:
             total += quantity
     return total
+
+
+def expiring_unused(item, warehouse, on_date, demands):
+    """
+    What will expire on the shelf before anything draws it.
+
+    Usable batches with an expiry date are drawn first-expired-first-out
+    against the dated demand, which is how issues and deliveries pick
+    them. Whatever a batch would still hold on its expiry date is lost
+    the day after, and is returned as a demand dated then: counted in the
+    opening balance, it would otherwise cover a need it will not live to
+    meet.
+    """
+    if item.tracking == TrackingMode.NONE:
+        return []
+    inspected = plan_for(item)
+    mandatory = inspected is not None and inspected.is_mandatory
+    batches = sorted(
+        ((lot, quantity) for lot, quantity in lots_at(item, warehouse)
+         if quantity > 0 and lot.expires_on is not None and not lot.has_expired(on_date)
+         and not (mandatory and release_status(lot) != ReleaseStatus.RELEASED)),
+        key=lambda row: (row[0].expires_on, row[0].pk),
+    )
+    if not batches:
+        return []
+    left = {lot.pk: quantity for lot, quantity in batches}
+    for row in sorted(demands, key=lambda row: max(row.date, on_date)):
+        wanted, needed_on = row.quantity, max(row.date, on_date)
+        for lot, _ in batches:
+            if wanted <= 0:
+                break
+            # Usable on the day it expires, not after.
+            if lot.expires_on < needed_on or left[lot.pk] <= 0:
+                continue
+            taken = min(left[lot.pk], wanted)
+            left[lot.pk] -= taken
+            wanted -= taken
+    return [
+        _demand(lot.expires_on + datetime.timedelta(days=1), left[lot.pk],
+                DemandSource.EXPIRY)
+        for lot, _ in batches if left[lot.pk] > 0
+    ]
 
 
 def opening_balance(item, warehouse, on_date):
@@ -316,8 +362,12 @@ def purchase_supply(item, warehouse, on_date):
     rows = []
     lines = (
         PurchaseOrderLine.objects.filter(
-            item=item, order__status=OrderStatus.CONFIRMED, charge__isnull=True
+            item=item, order__status=OrderStatus.CONFIRMED, charge__isnull=True,
+            # Shipped by the vendor straight to the customer: it never
+            # comes here, and counting it hid the shortage it leaves.
+            order__drop_ship_for__isnull=True,
         )
+        .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
         .select_related("order", "item", "uom")
     )
     for line in lines:
@@ -417,6 +467,7 @@ def requisition_supply(item, warehouse, on_date):
     rows = []
     lines = (
         PurchaseRequisitionLine.objects.filter(item=item)
+        .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
         .exclude(requisition__status__in=dead)
         .select_related("requisition", "item", "uom")
     )
@@ -803,6 +854,8 @@ def _why(demand):
         return f"the forecast for {demand.forecast.starts_on} expects it"
     if demand.source == DemandSource.SAFETY:
         return f"the safety floor wants it held from {demand.date}"
+    if demand.source == DemandSource.EXPIRY:
+        return f"stock expires unused on {demand.date - datetime.timedelta(days=1)}"
     if demand.source == DemandSource.PHANTOM:
         return f"a phantom made inside another run draws it on {demand.date}"
     return f"demand on {demand.date}"
@@ -1067,6 +1120,8 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         demands += work_order_demand(item, warehouse, planned_on)
         demands += pending.pop(item.pk, [])
         demands = [row for row in demands if row.date <= horizon_end]
+        demands += [row for row in expiring_unused(item, warehouse, planned_on, demands)
+                    if row.date <= horizon_end]
 
         supplies = purchase_supply(item, warehouse, planned_on)
         supplies += requisition_supply(item, warehouse, planned_on)
