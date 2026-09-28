@@ -190,6 +190,13 @@ class GstSettings(AuditModel):
                   "PAN is not in this system. A date, not a switch, so an "
                   "invoice from before it is not asked for one.",
     )
+    job_work_sac = models.CharField(
+        max_length=8, blank=True,
+        help_text="The SAC a job-work order's conversion is billed under: "
+                  "manufacturing services on goods the customer owns. A "
+                  "setting, because the code for plastic products is chosen "
+                  "with the company's adviser, not by this system.",
+    )
     eway_bill_limit = models.DecimalField(
         max_digits=18, decimal_places=2, default=50000,
         help_text="A consignment worth more than this moves on an e-way bill. "
@@ -207,6 +214,12 @@ class GstSettings(AuditModel):
     def save(self, *args, **kwargs):
         self.gstin = validate_gstin(self.gstin)
         self.state = self.gstin[:2]
+        self.job_work_sac = validate_hsn(self.job_work_sac)
+        if self.job_work_sac and not self.job_work_sac.startswith("99"):
+            raise ValidationError(
+                f"{self.job_work_sac} is a goods code. Conversion is a service: its "
+                "code starts 99."
+            )
         if not self.pk and GstSettings.objects.exists():
             raise ValidationError(
                 "The company has one GST registration here. A plant registered "

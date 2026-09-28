@@ -364,6 +364,12 @@ class InvoiceEwayBillTests(EInvoiceTestCase):
         for shape in ("22BH1234AB", "TR09AB1234"):
             self.assertEqual(prepare_eway(invoice, vehicle_number=shape).vehicle_number, shape)
 
+    def test_a_number_the_portal_cannot_take(self):
+        invoice = self.s1()
+        Invoice.objects.filter(pk=invoice.pk).update(number="INV-2026-000000001")
+        with self.assertRaisesMessage(ValidationError, "up to 16 letters"):
+            prepare_eway(Invoice.objects.get(pk=invoice.pk), vehicle_number="KA25AB1234")
+
     def test_what_moves_no_goods_or_comes_back(self):
         invoice = self.s1()
         with self.assertRaisesMessage(ValidationError, "only services"):

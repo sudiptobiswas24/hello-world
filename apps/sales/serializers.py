@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import (
+    SuppliedItem,
     CommissionPlan,
     CustomerProfile,
     Delivery,
@@ -59,9 +60,21 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             "id", "number", "customer", "order_date", "reference", "status", "currency",
             "payment_terms", "billing_address", "shipping_address", "sales_rep",
             "lines", "subtotal", "tax_total", "total",
-            "invoice_status", "delivery_status",
+            "invoice_status", "delivery_status", "is_job_work", "supplied_items",
         ]
         read_only_fields = ["number", "status"]
+
+    supplied_items = serializers.SerializerMethodField()
+
+    def get_supplied_items(self, obj):
+        return list(obj.supplied_items.values_list("item_id", flat=True))
+
+
+class SuppliedItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SuppliedItem
+        fields = ["id", "order", "item"]
+        validators = []
 
 
 class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):

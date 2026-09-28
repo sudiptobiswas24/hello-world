@@ -9,7 +9,13 @@ Two documents move goods out of this plant:
 - an invoice, for goods sold (sub-type Supply, or Export);
 - a job-work challan, for goods sent to be worked on (sub-type Job Work).
   Sent to another state, that needs an e-way bill whatever it is worth;
-  inside the state, only above the limit like anything else.
+  inside the state, only above the limit like anything else;
+- a delivery on a job-work sales order, for the customer's goods going
+  back converted (sub-type Job Work Returns, on a delivery challan). No
+  invoice carries them: the invoice bills the conversion, a service. The
+  value is the goods' whole value, the customer's material included,
+  which only the plant and the customer know, so it is stated; it may not
+  be less than the conversion billed on those lines.
 
 **Required is said, not enforced.** Under the limit an e-way bill is
 optional and some plants make one anyway, so a payload is built either
@@ -83,6 +89,8 @@ class EwayBill(AuditModel):
                                 on_delete=models.PROTECT, related_name="eway_bills")
     challan = models.ForeignKey("manufacturing.JobWorkChallan", null=True, blank=True,
                                 on_delete=models.PROTECT, related_name="eway_bills")
+    delivery = models.ForeignKey("sales.Delivery", null=True, blank=True,
+                                 on_delete=models.PROTECT, related_name="eway_bills")
     mode = models.CharField(max_length=1, choices=TransportMode.choices,
                             default=TransportMode.ROAD)
     distance_km = models.PositiveIntegerField(
@@ -109,8 +117,12 @@ class EwayBill(AuditModel):
         verbose_name = "e-way bill"
         constraints = [
             models.CheckConstraint(
-                check=(Q(invoice__isnull=False) & Q(challan__isnull=True))
-                | (Q(invoice__isnull=True) & Q(challan__isnull=False)),
+                check=(Q(invoice__isnull=False) & Q(challan__isnull=True)
+                       & Q(delivery__isnull=True))
+                | (Q(invoice__isnull=True) & Q(challan__isnull=False)
+                   & Q(delivery__isnull=True))
+                | (Q(invoice__isnull=True) & Q(challan__isnull=True)
+                   & Q(delivery__isnull=False)),
                 name="eway_bill_one_document"),
             models.UniqueConstraint(fields=["number"], condition=~Q(number=""),
                                     name="eway_bill_number_unique"),
@@ -118,13 +130,15 @@ class EwayBill(AuditModel):
                                     name="one_standing_eway_bill_per_invoice"),
             models.UniqueConstraint(fields=["challan"], condition=Q(cancelled_at__isnull=True),
                                     name="one_standing_eway_bill_per_challan"),
+            models.UniqueConstraint(fields=["delivery"], condition=Q(cancelled_at__isnull=True),
+                                    name="one_standing_eway_bill_per_delivery"),
         ]
 
     def __str__(self):
         return f"E-way bill {self.number or '(not generated)'} for {self.document().number}"
 
     def document(self):
-        return self.invoice or self.challan
+        return self.invoice or self.challan or self.delivery
 
     def save(self, *args, **kwargs):
         if (self.pk and not getattr(self, "_cancelling", False)
@@ -181,7 +195,11 @@ class EwayBill(AuditModel):
 
 
 def _document_date(document):
-    return getattr(document, "invoice_date", None) or document.challan_date
+    for name in ("invoice_date", "challan_date", "delivery_date"):
+        value = getattr(document, name, None)
+        if value:
+            return value
+    return None
 
 
 def normalise_vehicle(number):
@@ -396,15 +414,103 @@ def _challan_payload(challan):
     return payload, required, because
 
 
+def _delivery_payload(delivery, declared_value):
+    from apps.accounting.models import PartyTaxProfile, round_money
+
+    if not delivery.posted:
+        raise ValidationError(f"{delivery} has not shipped.")
+    if delivery.is_return():
+        raise ValidationError(
+            f"{delivery} is goods coming back; the customer sending them generates the "
+            "e-way bill."
+        )
+    order = delivery.sales_order
+    if not order.is_job_work:
+        raise ValidationError(
+            f"{delivery} is a sale: its goods move on the invoice's e-way bill."
+        )
+    if declared_value is None:
+        raise ValidationError(
+            "State the goods' value going back: the customer's material and the "
+            "conversion together."
+        )
+    try:
+        declared_value = Decimal(str(declared_value))
+    except (ArithmeticError, ValueError):
+        raise ValidationError(f"{declared_value} is not an amount.")
+    if declared_value <= 0:
+        raise ValidationError("Goods going back are worth something; state what.")
+    lines = list(delivery.lines.select_related("order_line__item", "order_line__uom__gst_uqc"))
+    conversion = []
+    for line in lines:
+        order_line = line.order_line
+        # What the line bills after its discount: the floor is the
+        # conversion actually charged, not the list price of it.
+        gross = line.quantity_shipped * (order_line.unit_price or ZERO)
+        conversion.append(round_money(
+            gross * (Decimal("100") - order_line.discount_percent) / Decimal("100")))
+    base = order.currency is None or order.currency.is_base
+    if base and declared_value < sum(conversion, ZERO):
+        raise ValidationError(
+            f"The conversion billed on these goods alone is {sum(conversion, ZERO)}; they "
+            f"cannot be worth {declared_value}."
+        )
+    registration = p.settings()
+    customer = order.customer
+    profile = PartyTaxProfile.objects.filter(party=customer).first()
+    gstin = profile.gstin if profile else ""
+    going_to = delivery.shipping_address or order.shipping_address or customer.shipping_address()
+    place = p.place(going_to, f"{customer}'s delivery address",
+                    registered_state=gstin[:2] if gstin else None)
+    items, spread, total = [], ZERO, sum(conversion, ZERO)
+    for number, (line, share) in enumerate(zip(lines, conversion), start=1):
+        item = line.order_line.item
+        if not item.hsn_code:
+            raise ValidationError(f"{item} has no HSN code.")
+        # The stated value laid on the lines as the conversion is; the last
+        # takes what rounding leaves, so the lines foot to the whole.
+        value = (declared_value - spread if number == len(lines) else
+                 round_money(declared_value * share / total) if total else ZERO)
+        spread += value
+        unit = getattr(line.order_line.uom, "gst_uqc", None)
+        items.append({
+            "itemNo": number,
+            "productName": p.text(item.name, f"Line {number}'s description", 1, 100),
+            "productDesc": p.text(line.order_line.label(), f"Line {number}'s description", 1, 100),
+            "hsnCode": int(item.hsn_code),
+            "quantity": p.quantity(line.quantity_shipped, f"Line {number}'s quantity"),
+            "qtyUnit": unit.code if unit else "OTH",
+            "taxableAmount": float(value),
+            "cgstRate": 0, "sgstRate": 0, "igstRate": 0, "cessRate": 0, "cessNonadvol": 0,
+        })
+    payload = {
+        "supplyType": "O", "subSupplyType": "6", "subSupplyDesc": "",
+        "docType": "CHL", "docNo": delivery.number,
+        "docDate": p.portal_date(delivery.delivery_date),
+        **_from(p.seller()),
+        **_to(gstin or p.UNREGISTERED, p.party_name(customer), place,
+              gstin[:2] if gstin else place["state"]),
+        "transactionType": 1,
+        "totalValue": float(declared_value),
+        "cgstValue": 0, "sgstValue": 0, "igstValue": 0, "cessValue": 0,
+        "cessNonAdvolValue": 0, "otherValue": 0,
+        "totInvValue": float(declared_value),
+        "itemList": items,
+    }
+    required, because = _limit_test(declared_value, registration)
+    return payload, required, because
+
+
 @transaction.atomic
 def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
             transporter_name="", vehicle_number="", vehicle_type=VehicleType.REGULAR,
-            transport_doc_number="", transport_doc_date=None):
-    """Build the payload for an invoice or a challan, with how it goes, and keep it."""
-    from apps.sales.models import Invoice
+            transport_doc_number="", transport_doc_date=None, declared_value=None):
+    """Build the payload for an invoice, a challan or a job-work delivery, and keep it."""
+    from apps.sales.models import Delivery, Invoice
 
     is_invoice = isinstance(document, Invoice)
-    if not is_invoice:
+    is_delivery = isinstance(document, Delivery)
+    if not is_invoice and not is_delivery:
         challan_vehicle = normalise_vehicle(document.vehicle)
         given = normalise_vehicle(vehicle_number)
         if challan_vehicle and given and given != challan_vehicle:
@@ -415,9 +521,22 @@ def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
     transport = _transport(mode, distance_km, transporter_id, transporter_name,
                            vehicle_number, vehicle_type, transport_doc_number,
                            transport_doc_date, _document_date(document))
-    payload, required, because = (_invoice_payload if is_invoice else _challan_payload)(document)
+    if is_invoice:
+        payload, required, because = _invoice_payload(document)
+    elif is_delivery:
+        payload, required, because = _delivery_payload(document, declared_value)
+    else:
+        payload, required, because = _challan_payload(document)
+    if not _DOC_NUMBER.match(payload["docNo"] or ""):
+        # Defined with the other portal limits and, until now, checked by
+        # nothing: a longer number built a payload the portal refuses.
+        raise ValidationError(
+            f"{payload['docNo']} cannot go on an e-way bill: the portal takes up to 16 "
+            "letters, digits, / and -."
+        )
     payload |= _transport_payload(transport)
-    key = {"invoice": document} if is_invoice else {"challan": document}
+    key = ({"invoice": document} if is_invoice else {"delivery": document} if is_delivery
+           else {"challan": document})
     existing = EwayBill.objects.select_for_update().filter(
         cancelled_at__isnull=True, **key).first()
     if existing is not None and existing.number:

@@ -119,7 +119,7 @@ class EInvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 class EwayBillViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
     """
-    POST {invoice | challan, mode, distance_km, transporter_id,
+    POST {invoice | challan | delivery (with declared_value), mode, distance_km, transporter_id,
     transporter_name, vehicle_number, vehicle_type, transport_doc_number,
     transport_doc_date} builds the payload; record/ keeps the number the
     portal gave; cancel/ within 24 hours of it.
@@ -131,13 +131,14 @@ class EwayBillViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
     def create(self, request):
         from apps.manufacturing.jobwork import JobWorkChallan
-        from apps.sales.models import Invoice
+        from apps.sales.models import Delivery, Invoice
 
         data = request.data
-        if bool(data.get("invoice")) == bool(data.get("challan")):
-            raise DRFValidationError(["Name an invoice or a challan, one of them."])
-        document = (get_object_or_404(Invoice, pk=data["invoice"]) if data.get("invoice")
-                    else get_object_or_404(JobWorkChallan, pk=data["challan"]))
+        named = [key for key in ("invoice", "challan", "delivery") if data.get(key)]
+        if len(named) != 1:
+            raise DRFValidationError(["Name an invoice, a challan or a delivery: one of them."])
+        model = {"invoice": Invoice, "challan": JobWorkChallan, "delivery": Delivery}[named[0]]
+        document = get_object_or_404(model, pk=data[named[0]])
         doc_date = data.get("transport_doc_date")
         if doc_date and parse_date(str(doc_date)) is None:
             raise DRFValidationError(["The transport document's date is YYYY-MM-DD."])
@@ -151,6 +152,7 @@ class EwayBillViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
             vehicle_type=data.get("vehicle_type", ewaybill.VehicleType.REGULAR),
             transport_doc_number=data.get("transport_doc_number", ""),
             transport_doc_date=parse_date(str(doc_date)) if doc_date else None,
+            declared_value=data.get("declared_value"),
         )
         return Response(EwayBillSerializer(bill).data, status=201)
 

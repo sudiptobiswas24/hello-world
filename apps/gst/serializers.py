@@ -21,7 +21,7 @@ class EInvoiceSerializer(serializers.ModelSerializer):
 class EwayBillSerializer(serializers.ModelSerializer):
     class Meta:
         model = EwayBill
-        fields = ["id", "invoice", "challan", "mode", "distance_km", "transporter_id",
+        fields = ["id", "invoice", "challan", "delivery", "mode", "distance_km", "transporter_id",
                   "transporter_name", "vehicle_number", "vehicle_type",
                   "transport_doc_number", "transport_doc_date", "payload", "required",
                   "required_because", "number", "generated_at", "valid_until",

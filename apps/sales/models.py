@@ -346,6 +346,13 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         max_length=16, choices=InvoicePolicy.choices, default=InvoicePolicy.ORDERED,
         help_text="Bill the whole order up front, or only what has shipped.",
     )
+    is_job_work = models.BooleanField(
+        default=False,
+        help_text="The customer sends some of the material and pays for the "
+                  "conversion. What they send is listed as supplied items; the "
+                  "price on each line is the conversion charge, billed as a "
+                  "service.",
+    )
     class Meta:
         ordering = ["-order_date", "-id"]
         permissions = [
@@ -368,7 +375,22 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     def save(self, *args, **kwargs):
         if self._state.adding:
             self._apply_customer_defaults()
+        else:
+            before = SalesOrder.objects.filter(pk=self.pk).values(
+                "status", "is_job_work").first()
+            if (before and before["status"] != OrderStatus.DRAFT
+                    and before["is_job_work"] != self.is_job_work):
+                # Whether the customer supplies the material decides who
+                # plans it, who owns what the runs make, and what the
+                # invoice bills. Changed after confirming, all three move.
+                raise ValidationError(
+                    f"{self} is confirmed; whether it is job work cannot change."
+                )
         super().save(*args, **kwargs)
+
+    def supplies(self, item):
+        """Whether the customer sends this item for this order."""
+        return self.is_job_work and self.supplied_items.filter(item=item).exists()
 
     def _apply_customer_defaults(self):
         if not self.customer_id:
@@ -524,6 +546,11 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
+        if self.is_job_work and not self.supplied_items.exists():
+            raise ValidationError(
+                f"{self} is job work and names nothing the customer supplies. List "
+                "what they send, or make it an ordinary sale."
+            )
         # No bypass flag. The old ignore_credit_limit= was reachable by
         # anyone who could confirm an order at all — which is the rep whose
         # discount the limit exists to check — and left no record that
@@ -730,6 +757,41 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             revenue_account=account,
         )
         return invoice
+
+
+class SuppliedItem(AuditModel):
+    """
+    On a job-work order, something the customer sends rather than buys:
+    planning does not buy it, and it comes out of their held stock.
+    """
+
+    order = models.ForeignKey(SalesOrder, on_delete=models.CASCADE,
+                              related_name="supplied_items")
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="+")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["order", "item"], name="one_supplied_item_per_order"),
+        ]
+
+    def __str__(self):
+        return f"{self.item} supplied by {self.order.customer} for {self.order}"
+
+    def _check_open(self):
+        if self.order.status != OrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self.order} is confirmed; what the customer supplies is settled."
+            )
+
+    def save(self, *args, **kwargs):
+        self._check_open()
+        if not self.order.is_job_work:
+            raise ValidationError(f"{self.order} is not job work; the customer supplies nothing.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self._check_open()
+        return super().delete(*args, **kwargs)
 
 
 class SalesOrderLine(TaxedLineMixin, AuditModel):
@@ -1683,6 +1745,15 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     def corrected_line(self):
         return self.credits_line
 
+    def current_hsn(self):
+        # A credit note keeps what its invoice line froze; only a fresh
+        # line asks whether it is conversion.
+        if self.corrected_line() is None:
+            code = _job_work_sac(self)
+            if code is not None:
+                return code
+        return super().current_hsn()
+
     def corrections(self):
         return self.credit_lines.filter(invoice__posted=True)
 
@@ -1721,6 +1792,26 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 "Cannot delete a line on a posted invoice. Issue a credit note instead."
             )
         super().delete(*args, **kwargs)
+
+
+def _job_work_sac(line):
+    """The service code a job-work order's conversion is billed under, or None
+    where the line is not conversion, or GST is not set up."""
+    from apps.accounting.gst import GstSettings
+
+    order_line = line.order_line
+    if order_line is None or not order_line.order.is_job_work:
+        return None
+    settings = GstSettings.active()
+    if settings is None:
+        return None
+    if not settings.job_work_sac:
+        raise ValidationError(
+            f"{order_line.order} is job work: the customer's goods are converted, not "
+            "sold, and the invoice bills a service. Set the SAC for conversion in the "
+            "GST settings first."
+        )
+    return settings.job_work_sac
 
 
 class InvoiceLineTax(RecordedLineTax):

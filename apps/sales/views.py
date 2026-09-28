@@ -15,6 +15,7 @@ from apps.core.audit import AuditableViewSetMixin
 from django.http import HttpResponse
 
 from .models import (
+    SuppliedItem,
     bad_debt_report,
     send_statements,
     CommissionPlan,
@@ -43,6 +44,7 @@ from .models import (
     run_dunning,
 )
 from .serializers import (
+    SuppliedItemSerializer,
     CommissionPlanSerializer,
     CustomerProfileSerializer,
     DeliveryLineSerializer,
@@ -130,6 +132,26 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = SalesOrderLine.objects.all()
     serializer_class = SalesOrderLineSerializer
+
+
+class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """What the customer sends for a job-work order; settled once it is confirmed."""
+
+    queryset = SuppliedItem.objects.select_related("order", "item")
+    serializer_class = SuppliedItemSerializer
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def perform_create(self, serializer):
+        try:
+            serializer.save()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+
+    def perform_destroy(self, instance):
+        try:
+            instance.delete()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
 
 
 class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

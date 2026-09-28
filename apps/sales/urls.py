@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    SuppliedItemViewSet,
     SalesReportViewSet,
     CommissionPlanViewSet,
     CustomerProfileViewSet,
@@ -25,6 +26,7 @@ from .views import (
 router = DefaultRouter()
 router.register("sales-orders", SalesOrderViewSet)
 router.register("sales-order-lines", SalesOrderLineViewSet)
+router.register("supplied-items", SuppliedItemViewSet)
 router.register("invoices", InvoiceViewSet)
 router.register("invoice-lines", InvoiceLineViewSet)
 router.register("invoice-payments", InvoicePaymentViewSet)

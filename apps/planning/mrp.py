@@ -45,6 +45,7 @@ from collections import defaultdict, namedtuple
 from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.db import transaction
 
 from apps.core.models import to_date
@@ -173,10 +174,20 @@ def sales_demand(item, warehouse, on_date):
         SalesOrderLine.objects.filter(
             item=item, order__status=OrderStatus.CONFIRMED, charge__isnull=True
         )
-        .filter(warehouse__in=[warehouse, None])
+        # Q, not warehouse__in=[warehouse, None]: Django drops None from an
+        # IN list, and a confirmed line with no warehouse named was never
+        # planned at all.
+        .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
         .select_related("order", "item", "uom")
     )
     for line in lines:
+        # Job work is made to the order from what the customer sends, so
+        # it is not netted against stock the company made for anybody
+        # else, and a shortage of it is not the company's to buy. Its
+        # runs are raised from the order; `job_work_left_out` says how
+        # many lines are waiting for one.
+        if line.order.is_job_work:
+            continue
         remaining = (
             line.quantity_in_stock_units() - line.quantity_shipped_in_stock_units()
         )
@@ -187,6 +198,27 @@ def sales_demand(item, warehouse, on_date):
             sales_order_line=line,
         ))
     return rows
+
+
+def _job_work_order(order):
+    """The job-work sales order a run is for, or None."""
+    line = order.sales_order_line
+    if line is not None and line.order.is_job_work:
+        return line.order
+    return None
+
+
+def job_work_left_out(item, warehouse):
+    """Confirmed job-work lines for this item that no live run is making."""
+    from apps.sales.models import OrderStatus, SalesOrderLine
+
+    lines = SalesOrderLine.objects.filter(
+        item=item, order__status=OrderStatus.CONFIRMED, order__is_job_work=True,
+        charge__isnull=True,
+    ).filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True)).exclude(
+        work_orders__status__in=[WorkOrderStatus.DRAFT, WorkOrderStatus.RELEASED])
+    return [line for line in lines
+            if line.quantity_in_stock_units() > line.quantity_shipped_in_stock_units()]
 
 
 LIVE = (WorkOrderStatus.DRAFT, WorkOrderStatus.RELEASED)
@@ -229,6 +261,11 @@ def work_order_demand(item, warehouse, on_date):
     rows = []
     for order in live_work_orders(warehouse):
         when = order.scheduled_start or on_date
+        # What the customer sends for their own job work is theirs to
+        # send, not the company's to buy.
+        job = _job_work_order(order)
+        if job is not None and job.supplies(item):
+            continue
         if order.status == WorkOrderStatus.RELEASED:
             for component in order.components.filter(item=item).select_related(
                 "item", "uom"
@@ -314,7 +351,10 @@ def work_order_supply(item, warehouse, on_date):
         if outstanding <= 0:
             continue
         when = order.scheduled_end or on_date
-        if order.item_id == item.pk:
+        # A job-work run's output is the customer's, made for their order,
+        # and covers nobody else's demand. Its by-products land on the
+        # plant's own shelf and are counted.
+        if order.item_id == item.pk and _job_work_order(order) is None:
             rows.append(_supply(
                 when, order.item.to_stock_quantity(outstanding, order.uom),
                 source=SupplySource.WORK_ORDER, document=order, movable=True,
@@ -839,7 +879,7 @@ def _candidates(warehouse, planned_on, horizon_end):
     items = {}
     for line in SalesOrderLine.objects.filter(
         item__isnull=False, order__status=OrderStatus.CONFIRMED, charge__isnull=True
-    ).filter(warehouse__in=[warehouse, None]).select_related("item", "order"):
+    ).filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True)).select_related("item", "order"):
         if line.promised_date() <= horizon_end:
             items[line.item_id] = line.item
     for component in WorkOrderComponent.objects.filter(
@@ -1007,6 +1047,12 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         level = level_of(levels, item)
 
         demands = sales_demand(item, warehouse, planned_on)
+        for line in job_work_left_out(item, warehouse):
+            deferred.append(
+                f"{item.sku}: job-work order {line.order.number} is made from what "
+                f"{line.order.customer} sends and is not planned here; raise its run "
+                "from the order."
+            )
         forecast = forecast_demand(item, warehouse, planned_on, horizon_end)
         if demand_fence is not None:
             close_in = [row for row in forecast if row.date < demand_fence]
