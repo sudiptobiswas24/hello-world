@@ -422,6 +422,44 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         _run(void_scrap, entry, station, supervisor, operator, request.data.get("reason", ""))
         return Response({"id": entry.pk, "voided": True})
 
+    def _clock_row(self, clock):
+        return {"id": clock.pk, "machine": clock.machine.code,
+                "step": clock.operation.name, "run": clock.operation.work_order.number,
+                "started_at": clock.started_at, "stopped_at": clock.stopped_at,
+                "crew": [_person(person) for person in clock.crew.all()],
+                "bookings": [booking.number for booking in clock.bookings.all()]}
+
+    @action(detail=True, methods=["post"], url_path=r"clock/(?P<verb>start|join|stop)")
+    def clock(self, request, code=None, verb=None):
+        """Start a machine's clock on its run, join the crew on it, or stop it."""
+        from .station_clock import join_clock, start_clock, stop_clock
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        machine = self._machine(station, data.get("machine"))
+        if verb == "start":
+            clock = _run(start_clock, station, operator, machine)
+        elif verb == "join":
+            clock = _run(join_clock, station, operator, machine)
+        else:
+            supervisor = (_run(station.identify, data["supervisor_pin"])
+                          if data.get("supervisor_pin") else None)
+            clock = _run(stop_clock, station, operator, machine, data.get("quantity"),
+                         supervisor)
+        return Response(self._clock_row(clock), status=201 if verb == "start" else 200)
+
+    @action(detail=True, methods=["post"], url_path=r"clock/(?P<row>[0-9]+)/void")
+    def void_clock(self, request, code=None, row=None):
+        from .station_clock import MachineClock, void_clock
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        clock = get_object_or_404(MachineClock, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_clock, clock, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": clock.pk, "voided": True})
+
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
         """
