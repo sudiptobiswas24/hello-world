@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
+from . import views
 from .station_views import LoomStationViewSet, StationReportViewSet
 from .views import (
     BomSubstituteViewSet,
@@ -83,6 +84,10 @@ router.register("production-byproducts", ProductionByproductViewSet)
 router.register("time-bookings", TimeBookingViewSet)
 router.register("shifts", ShiftViewSet)
 router.register("downtime-reasons", DowntimeReasonViewSet)
+router.register("scrap-reasons", views.ScrapReasonViewSet)
+router.register("production-scrap", views.ProductionScrapViewSet)
+router.register("operation-reports", views.OperationReportViewSet)
+router.register("run-flow", views.RunFlowViewSet, basename="run-flow")
 router.register("downtime", DowntimeViewSet)
 router.register("operator-yield", OperatorYieldViewSet, basename="operator-yield")
 router.register("lot-trace", LotTraceViewSet, basename="lot-trace")

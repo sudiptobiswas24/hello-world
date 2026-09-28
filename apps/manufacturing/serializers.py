@@ -32,6 +32,7 @@ from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .routing import Routing, RoutingOperation
+from .scrap import OperationReport, ProductionScrap, ScrapReason
 from .shifts import Downtime, DowntimeReason, Shift
 from apps.accounting.models import Tax
 from apps.inventory.models import Item
@@ -782,3 +783,23 @@ class JobWorkLossSerializer(serializers.ModelSerializer):
     class Meta:
         model = JobWorkLoss
         fields = ["id", "line", "loss_date", "quantity", "note", "voided_at"]
+
+
+class ScrapReasonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ScrapReason
+        fields = ["id", "code", "name", "is_active"]
+
+
+class ProductionScrapSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductionScrap
+        fields = ["id", "entry", "reason", "operation", "quantity"]
+
+
+class OperationReportSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OperationReport
+        fields = ["id", "operation", "reported_on", "quantity_good", "machine", "memo",
+                  "voided_at", "voided_reason"]
+        read_only_fields = fields

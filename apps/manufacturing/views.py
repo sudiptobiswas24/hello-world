@@ -32,6 +32,7 @@ from .orders import (
     TimeBooking,
     WorkCentre,
     WorkOrder,
+    WorkOrderOperation,
 )
 from .demand import coverage, genealogy, uncovered
 from .trace import recall
@@ -61,7 +62,12 @@ from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
 from .routing import Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
+from . import scrap
+from .scrap import OperationReport, ProductionScrap, ScrapReason
 from .serializers import (
+    OperationReportSerializer,
+    ProductionScrapSerializer,
+    ScrapReasonSerializer,
     ChangeoverRuleSerializer,
     MachineSerializer,
     SetupFamilySerializer,
@@ -1582,3 +1588,80 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
 <div>Bundles: {escape(bundles)}</div>
 </div></body></html>"""
         return HttpResponse(page, content_type="text/html; charset=utf-8")
+
+
+def _stock_text(value):
+    return format(Decimal(value).normalize(), "f") if value is not None else None
+
+
+class ScrapReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = ScrapReason.objects.all()
+    serializer_class = ScrapReasonSerializer
+
+
+class ProductionScrapViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Why and where an entry's scrap failed. Written while the entry is a draft."""
+
+    queryset = ProductionScrap.objects.select_related("entry", "reason", "operation")
+    serializer_class = ProductionScrapSerializer
+
+    def perform_create(self, serializer):
+        _run(serializer.save)
+
+    def perform_update(self, serializer):
+        _run(serializer.save)
+
+    def perform_destroy(self, instance):
+        _run(instance.delete)
+
+
+class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """What each step of a run passed on, counted before it moved."""
+
+    queryset = OperationReport.objects.select_related("operation__work_order")
+    serializer_class = OperationReportSerializer
+
+    @action(detail=False, methods=["post"])
+    def record(self, request):
+        operation = get_object_or_404(WorkOrderOperation, pk=request.data.get("operation"))
+        machine = None
+        if request.data.get("machine"):
+            machine = get_object_or_404(Machine, pk=request.data.get("machine"))
+        try:
+            quantity = Decimal(str(request.data.get("quantity_good")))
+        except InvalidOperation:
+            raise DRFValidationError(["quantity_good is a number."])
+        counted = _run(scrap.report, operation, quantity,
+                       on_date=request.data.get("reported_on"), machine=machine,
+                       memo=request.data.get("memo") or "")
+        return Response(self.get_serializer(counted).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        counted = self.get_object()
+        _run(counted.void, request.data.get("reason", ""))
+        return Response(self.get_serializer(counted).data)
+
+
+class RunFlowViewSet(viewsets.ViewSet):
+    """GET run-flow/{work order id}/: each step's good, scrap and what waits before it;
+    GET run-flow/scrap/?start=&end=: scrap by item, step and reason."""
+
+    permission_classes = [IsAuthenticated]
+
+    def retrieve(self, request, pk=None):
+        order = get_object_or_404(WorkOrder, pk=pk)
+        return Response([{
+            **row, "good": _stock_text(row["good"]), "scrap": _stock_text(row["scrap"]),
+            "waiting_before": _stock_text(row["waiting_before"]),
+            "scrap_by_reason": {key: _stock_text(value)
+                                for key, value in row["scrap_by_reason"].items()},
+        } for row in scrap.flow(order)])
+
+    @action(detail=False, methods=["get"], url_path="scrap")
+    def scrap_report(self, request):
+        start, end = request.query_params.get("start"), request.query_params.get("end")
+        if not start or not end:
+            raise DRFValidationError(["Give start and end dates."])
+        rows = _run(scrap.scrap_report, start, end)
+        return Response([{**row, "quantity": _stock_text(row["quantity"])} for row in rows])

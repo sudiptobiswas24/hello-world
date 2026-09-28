@@ -127,6 +127,12 @@ class ManufacturingSettings(AuditModel):
                   "variance, because a thousand mis-stitched sacks and a blend "
                   "that ran heavy are different problems with different owners.",
     )
+    scrap_needs_reason = models.BooleanField(
+        default=False,
+        help_text="Every sack written off says why: an entry whose scrap lines do not "
+                  "account for all of its scrap is refused. Off, what no line explains "
+                  "is reported as unexplained.",
+    )
 
     class Meta:
         verbose_name_plural = "manufacturing settings"
@@ -2332,6 +2338,9 @@ class ProductionEntry(AuditModel):
         order.check_output(
             self.stock_quantity() + self.scrapped_stock_quantity()
         )
+        from .scrap import check_entry
+
+        check_entry(self)
 
         self.entry_date = to_date(self.entry_date)
         occurred_at = timezone.now()
