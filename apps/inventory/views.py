@@ -24,6 +24,7 @@ from apps.core.audit import AuditableViewSetMixin
 from .models import (
     AdjustmentReason,
     Item,
+    ItemUnit,
     ItemAttribute,
     ItemAttributeValue,
     ItemTemplate,
@@ -48,6 +49,7 @@ from .models import (
 )
 from .serializers import (
     AdjustmentReasonSerializer,
+    ItemUnitSerializer,
     ItemAttributeSerializer,
     ItemAttributeValueSerializer,
     ItemSerializer,
@@ -78,6 +80,13 @@ def _run(callable_, *args, **kwargs):
 class WarehouseViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Warehouse.objects.all()
     serializer_class = WarehouseSerializer
+
+
+class ItemUnitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Bales, cartons: a unit an item is also counted in, from another chain."""
+
+    queryset = ItemUnit.objects.select_related("item", "uom")
+    serializer_class = ItemUnitSerializer
 
 
 class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

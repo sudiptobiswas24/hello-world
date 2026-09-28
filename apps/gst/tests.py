@@ -27,9 +27,9 @@ from apps.core.models import (
     PartyRoleAssignment,
     UnitOfMeasure,
 )
-from apps.inventory.models import Item
+from apps.inventory.models import Item, ItemUnit
 from apps.purchasing.models import Bill, BillLine
-from apps.sales.models import Invoice, InvoiceLine
+from apps.sales.models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
 
 from .models import UnitQuantityCode
 from .returns import gstr1, gstr1_json, gstr3b, month
@@ -467,6 +467,22 @@ class EdgeTests(GstReturnTestCase):
         row = {"rate": D("18"), "taxable": D("0"), "igst": D("0"), "cgst": D("0"),
                "sgst": D("0"), "cess": D("0")}
         return row | {key: D(value) for key, value in totals.items()}
+
+    def test_the_hsn_summary_counts_in_the_unit_the_quantity_is_in(self):
+        pieces = UnitOfMeasure.objects.create(code="pcs", name="Pieces")
+        UnitQuantityCode.objects.create(uom=pieces, code="PCS")
+        ItemUnit.objects.create(item=self.sack, uom=pieces, factor=D("0.1"))
+        customer = self.party("MH", gstin=gstin("27AABCM1111A1Z"))
+        order = SalesOrder.objects.create(customer=customer, order_date=DAY, currency=self.inr)
+        line = SalesOrderLine.objects.create(order=order, item=self.sack, uom=pieces,
+                                             quantity=D("100"), unit_price=D("12"),
+                                             revenue_account=self.revenue)
+        line.taxes.set(self.pair)
+        order.confirm()
+        invoice = order.create_invoice(self.ar, invoice_date=DAY)
+        invoice.post()
+        rows = {(r["hsn"], r["uqc"]): r["quantity"] for r in gstr1(*SEPTEMBER)["hsn_b2b"]}
+        self.assertEqual(rows, {("63053300", "PCS"): D("100")})
 
     def test_a_large_sale_inside_the_state_stays_in_the_summary(self):
         retail = self.party("MH-UNREG", gst_state="27", gst_registration="unregistered")

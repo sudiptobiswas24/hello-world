@@ -121,10 +121,13 @@ class Document:
 
 
 def _uqc(line):
+    """The code of the unit the line's quantity is in: its order's, else the item's."""
     item = getattr(line, "item", None)
     if item is None:
         return "NA"
-    code = getattr(item.uom, "gst_uqc", None)
+    order_line = getattr(line, "order_line", None)
+    unit = getattr(order_line, "uom", None) or item.uom
+    code = getattr(unit, "gst_uqc", None)
     return code.code if code else "OTH"
 
 

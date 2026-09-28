@@ -414,17 +414,53 @@ class Item(AuditModel):
         """
         return self._replay_valuation(warehouse, as_of=as_of)
 
-    def to_stock_quantity(self, quantity, uom):
+    def to_stock_quantity(self, quantity, uom, on_date=None):
         """
         Restate a document quantity in this item's stocking unit.
 
         The ledger counts in one unit and one only. Ten cases and a
         hundred and twenty eaches are the same stock, and a ledger that
         holds both numbers as written can answer neither question.
+
+        Within one chain of units the conversion is the units' own. Across
+        chains — kilogrammes of a sack counted in pieces, bales of it — it
+        is this item's: see `unit_factor`.
         """
         if uom is None:
             return quantity
-        return uom.convert_to(quantity, self.uom)
+        if uom.root().pk == self.uom.root().pk:
+            return uom.convert_to(quantity, self.uom)
+        return quantity * self.unit_factor(uom, on_date)
+
+    def unit_factor(self, uom, on_date=None):
+        """
+        How many stocking units one `uom` of this item is.
+
+        Across chains there is no general answer — a kilogramme of sacks is
+        a different number of sacks for every sack — so it is the item's
+        own: a conversion typed for it (a bale of 500), or one derived from
+        what the plant specified it as (a sack's weight). Neither known is
+        a refusal, not a guess.
+        """
+        if uom is None or uom.pk == self.uom_id:
+            return Decimal("1")
+        theirs = uom.root()
+        if theirs.pk == self.uom.root().pk:
+            return uom.convert_to(Decimal("1"), self.uom)
+        for row in self.units.select_related("uom"):
+            if row.uom.root().pk == theirs.pk:
+                return uom.convert_to(Decimal("1"), row.uom) * row.factor
+        on_date = on_date or timezone.localdate()
+        for provider in UNIT_PROVIDERS:
+            answer = provider(self, theirs, on_date)
+            if answer is not None:
+                unit, factor = answer
+                return uom.convert_to(Decimal("1"), unit) * factor
+        raise ValidationError(
+            f"{self.sku} is counted in {self.uom}, and {uom} is not the same kind of "
+            f"measure: nothing says how many {self.uom} a {uom} of it is. Give it a "
+            f"unit conversion for {uom}."
+        )
 
     def check_uom(self, uom):
         """
@@ -437,7 +473,68 @@ class Item(AuditModel):
         """
         if uom is None or uom.pk == self.uom_id:
             return
-        uom.convert_to(Decimal("1"), self.uom)
+        self.unit_factor(uom)
+
+
+# Conversions an app derives from its own records, registered when it
+# loads: `fn(item, root_unit, on_date) -> (unit, stock units per unit)`
+# or None. Here so inventory asks without importing whoever answers.
+UNIT_PROVIDERS = []
+
+
+def register_unit_provider(provider):
+    if provider not in UNIT_PROVIDERS:
+        UNIT_PROVIDERS.append(provider)
+
+
+class ItemUnit(AuditModel):
+    """
+    One unit this item is also counted in, from another chain: a bale of
+    500 sacks, a carton of 40.
+
+    Only where nothing derives it. A sack's weight comes from its
+    specification, and a typed copy of it would stay behind when the
+    specification changed.
+    """
+
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="units")
+    uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="+")
+    factor = models.DecimalField(
+        max_digits=18, decimal_places=6,
+        help_text="How many of the item's stocking unit one of this unit is.",
+    )
+
+    class Meta:
+        ordering = ["item", "uom"]
+        constraints = [
+            models.UniqueConstraint(fields=["item", "uom"], name="one_item_unit_per_uom"),
+            models.CheckConstraint(check=Q(factor__gt=0), name="item_unit_factor_positive"),
+        ]
+
+    def __str__(self):
+        return f"1 {self.uom} of {self.item.sku} = {self.factor} {self.item.uom}"
+
+    def save(self, *args, **kwargs):
+        root = self.uom.root()
+        if root.pk == self.item.uom.root().pk:
+            raise ValidationError(
+                f"{self.uom} and {self.item.uom} are one chain already; the units "
+                "convert between themselves."
+            )
+        if self.item.units.exclude(pk=self.pk).filter(
+            uom__in=[unit.pk for unit in UnitOfMeasure.objects.all() if unit.root().pk == root.pk]
+        ).exists():
+            raise ValidationError(
+                f"{self.item.sku} already converts to {root}'s chain; two conversions "
+                "into one chain would disagree."
+            )
+        for provider in UNIT_PROVIDERS:
+            if provider(self.item, root, timezone.localdate()) is not None:
+                raise ValidationError(
+                    f"{self.item.sku} is converted to {self.uom} from its own "
+                    "specification; a typed figure would stay behind when it changed."
+                )
+        super().save(*args, **kwargs)
 
 
 class MovementType(models.TextChoices):

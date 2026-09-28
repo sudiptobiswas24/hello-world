@@ -1896,3 +1896,29 @@ def denier_for(gsm, ends_per_inch, picks_per_inch, shrink_percent, warp_tape_den
         "warp_fabric_denier": warp, "weft_fabric_denier": weft,
         "warp_tape_denier": warp * keep, "weft_tape_denier": weft * keep,
     }
+
+
+def sack_units(item, root, on_date):
+    """
+    A sack's weight, for whoever counts it by weight: the specification in
+    force on the day, at the weight contracted where there is one.
+
+    Registered with inventory when the app loads. Derived each time it is
+    asked, so a changed specification changes the answer; a document that
+    converted keeps the figure it used, on its stock movement.
+    """
+    from apps.core.windows import covers
+
+    specs = [
+        spec for spec in BagSpecification.objects.filter(bag_item=item, is_active=True)
+        .select_related("fabric__fabric_item__uom")
+        if covers(spec.valid_from, spec.valid_to, on_date)
+    ]
+    if len(specs) != 1:
+        return None
+    spec = specs[0]
+    kilogramme = spec.fabric.fabric_item.uom
+    if kilogramme.root().pk != root.pk:
+        return None
+    grams = spec.target_grams if spec.target_grams is not None else spec.bag_grams()
+    return kilogramme, GRAMMES_PER_KG / grams

@@ -3,6 +3,7 @@ from rest_framework import serializers
 from .models import (
     AdjustmentReason,
     Item,
+    ItemUnit,
     ItemAttribute,
     ItemAttributeValue,
     ItemTemplate,
@@ -32,6 +33,12 @@ class WarehouseSerializer(serializers.ModelSerializer):
             "receipt_route", "input_warehouse", "quality_warehouse",
             "allow_negative_stock", "is_active",
         ]
+
+
+class ItemUnitSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ItemUnit
+        fields = ["id", "item", "uom", "factor"]
 
 
 class ItemSerializer(serializers.ModelSerializer):
