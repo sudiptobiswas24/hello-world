@@ -493,6 +493,38 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         _run(void_doff, doff, station, supervisor, operator, request.data.get("reason", ""))
         return Response({"id": doff.pk, "voided": True})
 
+    @action(detail=True, methods=["post"])
+    def coating(self, request, code=None):
+        """Metres off the coater and pairs of discs, coated and uncoated, in grammes."""
+        from .station_coat import record_coating
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        supervisor = (_run(station.identify, data["supervisor_pin"])
+                      if data.get("supervisor_pin") else None)
+        check = _run(record_coating, station, operator,
+                     self._machine(station, data.get("machine")), data.get("metres"),
+                     data.get("samples") or [], supervisor, data.get("reason", ""))
+        return Response({
+            "id": check.pk, "run": check.report.operation.work_order.number,
+            "sacks": _exact(check.report.quantity_good), "mean_gsm": _exact(check.mean_gsm),
+            "limits": [_exact(check.lower_gsm), _exact(check.upper_gsm)],
+            "passed": check.passed,
+        }, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"coating/(?P<row>[0-9]+)/void")
+    def void_coating(self, request, code=None, row=None):
+        from .station_coat import CoatingCheck, void_coating
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        check = get_object_or_404(CoatingCheck, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_coating, check, station, supervisor, operator,
+             request.data.get("reason", ""))
+        return Response({"id": check.pk, "voided": True})
+
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
         """

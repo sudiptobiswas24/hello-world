@@ -1139,6 +1139,12 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         help_text="Weight of the coating per square metre of fabric, typically "
                   "12 to 20. Applied over the same area the fabric covers.",
     )
+    lamination_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("10"),
+        help_text="How far the coating weighed off the coater may sit from its "
+                  "GSM. Over it is polymer given away; under it, a sack that "
+                  "sifts or will not weld.",
+    )
     lamination_waste_percent = models.DecimalField(
         max_digits=6, decimal_places=3, default=Decimal("4"),
         help_text="Of the coating polymer fed in. A coating line's own loss, "
@@ -1337,6 +1343,10 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             models.CheckConstraint(
                 check=Q(bottom_hem_cm__gte=0) & Q(top_hem_cm__gte=0),
                 name="bag_hems_not_negative",
+            ),
+            models.CheckConstraint(
+                check=Q(lamination_tolerance_percent__gte=0),
+                name="bag_coating_tolerance_not_negative",
             ),
             models.CheckConstraint(
                 check=Q(gusset_cm__gte=0) & Q(bopp_micron__gte=0)

@@ -62,7 +62,9 @@ class LoomStation(AuditModel):
     Every station books stoppages, step counts, scrap and machine
     clocks for the machines it serves; what else it weighs depends on
     its kind (rolls at a loom exit, bundles at conversion, doffs of tape
-    at a tape line).
+    at a tape line, coating weight at a coater). A printer's station
+    has nothing of its own to weigh: it counts printed sacks, and books
+    stoppages, spoils and its clock like any other.
     """
 
     kind = models.CharField(max_length=16, choices=LineKind.choices,
