@@ -131,6 +131,16 @@ class RatesTests(QuotingTestCase):
         after = cost(self.sack, Decimal("1000"), DAY + datetime.timedelta(days=1))
         self.assertTrue(close(after.material - before.material, "0.713630", "0.00001"))
 
+    def test_not_on_a_day_before_the_recipe_was_changed(self):
+        fabric = self.sack.fabric
+        type(fabric).objects.filter(pk=fabric.pk).update(
+            created_at=fabric.created_at - datetime.timedelta(days=60))
+        fabric.refresh_from_db()
+        fabric.picks_per_inch = Decimal("10.5")
+        fabric.save()
+        self.refused("cannot be costed on that day", cost, self.sack, Decimal("1"), DAY)
+        self.assertTrue(cost(self.sack, Decimal("1"), timezone.localdate()).material > 0)
+
     def test_every_missing_rate_is_named_at_once(self):
         MaterialRate.objects.filter(item__in=[self.filler, self.thread]).delete()
         StageRate.objects.filter(stage="cutting").delete()

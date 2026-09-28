@@ -29,6 +29,7 @@ also how a loop is broken — regrind goes into the tape and comes off
 every stage, and is worth what the plant says it is worth.
 """
 
+import datetime
 from collections import defaultdict
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -295,6 +296,28 @@ class _Walk:
             self.credit[item] += item.to_stock_quantity(byproduct.quantity * factor, byproduct.uom)
 
 
+# Saving stamps created_at and updated_at a moment apart; a real edit
+# is a later save.
+EDITED_AFTER = datetime.timedelta(seconds=1)
+
+
+def _recipe_changed_after(specification, on_date):
+    """
+    The part of the sack's chain edited after `on_date`, if any.
+
+    Bills are rebuilt in place, so the recipe on an earlier day is not
+    recorded. A chain created since is costed as defined; one edited
+    since would be costed on a recipe it did not have then.
+    """
+    fabric = specification.fabric
+    chain = [specification, fabric, fabric.warp_tape, fabric.weft()]
+    for part in chain:
+        edited = part.updated_at - part.created_at > EDITED_AFTER
+        if edited and timezone.localtime(part.updated_at).date() > on_date:
+            return part
+    return None
+
+
 def _rate(model, on_date, problems, label, **match):
     row = model.in_force(on_date, **match)
     if row is None:
@@ -317,6 +340,13 @@ def compute(specification, on_date):
         raise ValidationError(
             f"{specification.code} ended on {specification.valid_to}; a sack cannot "
             f"be costed on {on_date} to a specification no longer in force."
+        )
+    changed = _recipe_changed_after(specification, on_date)
+    if changed is not None:
+        raise ValidationError(
+            f"{changed} was changed on {timezone.localtime(changed.updated_at):%Y-%m-%d}, "
+            f"after {on_date}. The recipe as it stood then is not kept, so the sack "
+            "cannot be costed on that day; cost it on or after the change."
         )
     policy = QuotePolicy.in_force(on_date)
     walk = _Walk(specification, on_date)
