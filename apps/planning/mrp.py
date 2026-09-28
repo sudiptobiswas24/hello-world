@@ -1215,6 +1215,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
                 extra_supply[by_item.pk].extend(rows)
                 items.setdefault(by_item.pk, by_item)
 
+    _knock_on(run)
     if deferred:
         run.deferred_demand = "\n".join(deferred)
         run.save(update_fields=["deferred_demand", "updated_at"])
@@ -1222,6 +1223,66 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
         run.unforecast = "\n".join(unforecast)
         run.save(update_fields=["unforecast", "updated_at"])
     return run
+
+
+def _forward(start, days, calendar=None):
+    """`days` working days on from `start`."""
+    day, left = start, int(days)
+    while left > 0:
+        day += datetime.timedelta(days=1)
+        if calendar is None or calendar.is_working(day):
+            left -= 1
+    return day
+
+
+def _knock_on(run):
+    """
+    A run cannot start before its components are ready.
+
+    Deepest first, so a late polymer delays the tape, the tape the
+    fabric and the fabric the sack. The run keeps the time it takes and
+    starts when its latest component is ready. The machines are not
+    re-booked for the later dates: the hours stay where they were
+    planned, which is optimistic for the late run and said to be so by
+    its expected date rather than hidden.
+    """
+    orders = {order.pk: order for order in run.orders.select_related("item")}
+    children = defaultdict(list)
+    for row in PlannedDemand.objects.filter(planned_order__run=run, parent__isnull=False):
+        children[row.parent_id].append(orders[row.planned_order_id])
+    for order in sorted(orders.values(), key=lambda row: (-row.level, row.pk)):
+        if order.kind != PlannedOrderKind.MAKE or not children[order.pk]:
+            continue
+        latest = max(children[order.pk],
+                     key=lambda row: (row.expected_on or row.needed_by, row.pk))
+        ready = latest.expected_on or latest.needed_by
+        start = max(order.can_start_on or order.release_on, run.planned_on)
+        if ready <= start:
+            continue
+        takes = max(((order.expected_on or order.needed_by) - start).days, 0)
+        pushed = ready + datetime.timedelta(days=takes)
+        if pushed > (order.expected_on or order.needed_by):
+            order.expected_on, order.held_up_by = pushed, latest
+            order.save(update_fields=["expected_on", "held_up_by", "updated_at"])
+
+
+def late_orders(run):
+    """What the plan says cannot be ready when it is wanted, and who is waiting."""
+    rows = []
+    for order in run.orders.select_related("item", "held_up_by__item", "bottleneck"):
+        behind = order.days_behind()
+        if behind <= 0:
+            continue
+        waiting = [
+            {"sales_order": row.sales_order_line.order.number,
+             "customer": row.sales_order_line.order.customer.name,
+             "wanted_on": row.needed_by}
+            for row in order.demands.select_related("sales_order_line__order__customer")
+            if row.sales_order_line_id
+        ]
+        rows.append({"order": order, "days_behind": behind, "why": order.why_late(),
+                     "waiting": waiting})
+    return sorted(rows, key=lambda row: (-row["days_behind"], row["order"].item.sku))
 
 
 SUPPLY_FIELD = {
@@ -1276,6 +1337,8 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
     bottleneck = None
     overloaded = False
     source = None
+    expected_on = shortage.date
+    can_start_on = None
     if route is not None:
         # A shortage the company can answer out of its own stock is
         # not a shortage to buy. Checked only for a buy: moving a
@@ -1301,6 +1364,8 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
             release_on = placed["start"]
             bottleneck = placed["bottleneck"]
             overloaded = placed["overloaded"]
+            expected_on = placed["expected"]
+            can_start_on = placed.get("can_start")
             if release_on >= shortage.date:
                 # Never less than a day, however fast the machines
                 # are. A run that starts and finishes on the same date
@@ -1318,6 +1383,8 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
                 default=settings.default_make_lead_days,
             )
             release_on = offset(shortage.date, days, calendar)
+            if release_on < run.planned_on:
+                expected_on = _forward(run.planned_on, days, calendar)
     elif kind == PlannedOrderKind.TRANSFER:
         vendor = None
         days = route.lead_days
@@ -1333,6 +1400,9 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
             default=settings.default_buy_lead_days,
         )
         release_on = calendar_offset(shortage.date, days, calendar)
+    if kind != PlannedOrderKind.MAKE and release_on < run.planned_on:
+        # A vendor's or a transfer's days, counted from today.
+        expected_on = run.planned_on + datetime.timedelta(days=int(days))
     order = PlannedOrder.objects.create(
         run=run, item=item, warehouse=warehouse, kind=kind,
         quantity=shortage.quantity, needed_by=shortage.date,
@@ -1340,6 +1410,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         bom=bom, vendor=vendor, from_warehouse=source,
         bottleneck=bottleneck, is_overloaded=overloaded,
         rounded_up_by=shortage.rounded, fenced_from=fenced_from,
+        expected_on=expected_on, can_start_on=can_start_on,
     )
     for number, (row, taken) in enumerate(shortage.pegs, start=1):
         PlannedDemand.objects.create(
@@ -1367,8 +1438,11 @@ def _components(bom, order):
         required = component.item.to_stock_quantity(required, component.uom)
         if required <= 0:
             continue
+        # Wanted when the run can really start: a run the machines
+        # cannot take until next week does not want its tape today.
         rows.append((component.item, _demand(
-            order.release_on, required, DemandSource.PLANNED, parent=order,
+            order.can_start_on or order.release_on, required, DemandSource.PLANNED,
+            parent=order,
         )))
     return rows
 
@@ -1407,7 +1481,7 @@ def _byproducts(bom, order):
         by_item.setdefault(byproduct.item_id, byproduct.item)
     return [
         (item, byproduct_supply(
-            bom, order.quantity, order.item.uom, item, order.needed_by
+            bom, order.quantity, order.item.uom, item, order.expected_on or order.needed_by
         ))
         for item in by_item.values()
     ]

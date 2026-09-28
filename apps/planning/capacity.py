@@ -27,6 +27,15 @@ loom is actually turning, so its minutes are spread evenly across the
 working days of its window. That is an approximation and the only
 honest one available: the alternative is to invent a day.
 
+**Finite: no machine time before today.** A run that cannot be fitted
+between today and the day it is wanted is not booked on days that
+have already gone — that made the hours it really needs look free to
+the next order planned. It is booked forward from today on what the
+machines actually have left, and the day it can really be finished is
+said beside the day it was wanted. Its release date stays the day it
+should have started, which has passed: the lateness is on the order,
+not hidden by it.
+
 **A released run with no dates is reported, not booked.** Booking it
 somewhere would make up the fact the run is missing; ignoring it
 silently would have a planner promise a machine that is not free. So
@@ -120,6 +129,15 @@ class LoadBook:
 
     def booked(self, centre, day):
         return self._booked[(centre.pk, day)]
+
+    def checkpoint(self):
+        """What is booked and what each machine last ran, to go back to."""
+        return dict(self._booked), dict(self._last)
+
+    def rollback(self, mark):
+        booked, last = mark
+        self._booked = defaultdict(lambda: ZERO, booked)
+        self._last = dict(last)
 
     # -- what is already on the machines --------------------------------
 
@@ -248,6 +266,30 @@ class LoadBook:
         return day, False
 
 
+    def take_forwards(self, centre, minutes, start, ceiling):
+        """
+        Walk forward from `start` taking free hours until the work is
+        used up; (first day worked, last day worked, ran out).
+        """
+        remaining = Decimal(minutes)
+        if remaining <= 0:
+            return start, start, False
+        day, first = start, None
+        calendar = self.calendar(centre)
+        while remaining > 0:
+            if day > ceiling:
+                return first or start, day, True
+            if calendar.is_working(day):
+                take = min(self.free(centre, day), remaining)
+                if take > 0:
+                    self.book(centre, day, take)
+                    remaining -= take
+                    first = first or day
+            if remaining > 0:
+                day += datetime.timedelta(days=1)
+        return first or start, day, False
+
+
 def _days_between(start, end):
     day = start
     while day <= end:
@@ -309,6 +351,36 @@ def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item):
     }
 
 
+def schedule_forwards(book, operations, quantity, uom, start, ceiling, item):
+    """
+    Place a whole routing from `start` on, each operation starting when
+    the one before it finishes, and say when the last one ends.
+    """
+    cursor, first, ran_out = start, None, False
+    bottleneck, longest = None, Decimal("-1")
+    spans = []
+    for operation in sorted(operations, key=lambda o: o.sequence):
+        if operation.is_outside:
+            finish = cursor + datetime.timedelta(days=int(operation.outside_lead_days))
+            spans.append({"operation": operation, "work_centre": None, "minutes": ZERO,
+                          "start": cursor, "finish": finish, "outside": True})
+            first = first or cursor
+            cursor = finish
+            continue
+        minutes = book.run_minutes(operation, item, quantity, uom)
+        began, finish, short = book.take_forwards(operation.work_centre, minutes, cursor,
+                                                  ceiling)
+        ran_out = ran_out or short
+        spans.append({"operation": operation, "work_centre": operation.work_centre,
+                      "minutes": minutes, "start": began, "finish": finish})
+        first = first or began
+        if minutes > longest:
+            longest, bottleneck = minutes, operation.work_centre
+        cursor = finish
+    return {"start": first or start, "finish": cursor, "bottleneck": bottleneck,
+            "ran_out": ran_out, "spans": spans}
+
+
 def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
                   queue_days=0):
     """
@@ -330,14 +402,36 @@ def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
     # to reject three per cent books three per cent more loom and
     # promises a date it can keep.
     quantity = bom.start_for(quantity)
-    floor = planned_on - datetime.timedelta(days=MAX_BACKLOG_DAYS)
     # The queue allowance comes off the finish date before anything is
     # scheduled, so it is time the run is given rather than time the
     # machines are asked to find.
     finish_by = needed_by - datetime.timedelta(days=int(queue_days))
-    return schedule_backwards(
-        book, operations, quantity, uom, finish_by, floor, bom.item
+    mark = book.checkpoint()
+    placed = schedule_backwards(
+        book, operations, quantity, uom, finish_by, planned_on, bom.item
     )
+    placed["expected"] = needed_by
+    if not placed["overloaded"]:
+        return placed
+    # It does not fit between today and when it is wanted. Nothing is
+    # booked on days already gone: forward from today, on what the
+    # machines have left, and the day it can really be ready is said.
+    book.rollback(mark)
+    ceiling = planned_on + datetime.timedelta(days=MAX_BACKLOG_DAYS)
+    forward = schedule_forwards(book, operations, quantity, uom, planned_on, ceiling,
+                                bom.item)
+    worked = (forward["finish"] - forward["start"]).days
+    return {
+        # When it should have started to be on time: gone, and said so.
+        "start": finish_by - datetime.timedelta(days=worked),
+        "finish": finish_by,
+        "can_start": forward["start"],
+        "expected": forward["finish"] + datetime.timedelta(days=int(queue_days)),
+        "bottleneck": forward["bottleneck"],
+        "overloaded": True,
+        "beyond_a_year": forward["ran_out"],
+        "spans": forward["spans"],
+    }
 
 
 def load_profile(book, centres, start, end):

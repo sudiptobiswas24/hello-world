@@ -214,6 +214,21 @@ class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         )
 
     @action(detail=True, methods=["get"])
+    def late(self, request, pk=None):
+        """What cannot be ready when it is wanted, by how much, why, and who waits."""
+        from .mrp import late_orders
+
+        run = self.get_object()
+        return Response([{
+            "planned_order": row["order"].pk, "item": row["order"].item.sku,
+            "needed_by": str(row["order"].needed_by),
+            "expected_on": str(row["order"].expected_on),
+            "days_behind": row["days_behind"], "why": row["why"],
+            "waiting": [{**waiting, "wanted_on": str(waiting["wanted_on"])}
+                        for waiting in row["waiting"]],
+        } for row in late_orders(run)])
+
+    @action(detail=True, methods=["get"])
     def orders(self, request, pk=None):
         run = self.get_object()
         return Response(

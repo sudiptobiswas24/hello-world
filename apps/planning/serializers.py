@@ -59,6 +59,7 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
     is_late = serializers.BooleanField(read_only=True)
     days_late = serializers.IntegerField(read_only=True)
     why_late = serializers.CharField(read_only=True)
+    days_behind = serializers.IntegerField(read_only=True)
     explanation = serializers.CharField(read_only=True)
 
     class Meta:
@@ -69,10 +70,11 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
                   "is_overloaded", "stand_in_note",
                   "rounded_up_by", "fenced_from",
                   "status", "work_order", "requisition_line", "firmed_at",
-                  "is_late", "days_late", "why_late", "explanation", "demands"]
+                  "is_late", "days_late", "why_late", "explanation", "demands",
+                  "expected_on", "can_start_on", "held_up_by", "days_behind"]
         read_only_fields = ["status", "work_order", "requisition_line",
                             "transfer", "firmed_at", "bottleneck",
-                            "is_overloaded"]
+                            "is_overloaded", "expected_on", "can_start_on", "held_up_by"]
 
 
 class PlanningActionSerializer(serializers.ModelSerializer):

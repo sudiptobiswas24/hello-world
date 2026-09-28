@@ -386,6 +386,23 @@ class PlannedOrder(AuditModel):
                   "then the earliest the schedule reached, and it is a date "
                   "nobody can keep.",
     )
+    expected_on = models.DateField(
+        null=True, blank=True,
+        help_text="When it can really be ready: the day it is wanted where the "
+                  "machines or the vendor can manage that, otherwise forward from "
+                  "the plan's date on what the machines have left (or the vendor's "
+                  "lead time), and later again where a component holds it up.",
+    )
+    can_start_on = models.DateField(
+        null=True, blank=True,
+        help_text="For a run that could not be fitted in time: the first day the "
+                  "machines can take it. What its components are wanted by.",
+    )
+    held_up_by = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+        help_text="The planned order for a component that is not ready until after "
+                  "this run should start.",
+    )
     stand_in_note = models.CharField(
         max_length=255, blank=True,
         help_text="Said when an approved alternative for this item is already "
@@ -451,13 +468,29 @@ class PlannedOrder(AuditModel):
         not, and a planner handed one number cannot tell which
         conversation to have.
         """
-        if not self.is_late():
-            return None
-        if self.is_overloaded and self.bottleneck_id:
-            return f"{self.bottleneck} has no room before {self.run.planned_on}"
-        if self.kind == PlannedOrderKind.BUY:
-            return f"{self.lead_days} days to buy, and it is wanted sooner"
-        return f"{self.lead_days} days to make, and it is wanted sooner"
+        reasons = []
+        if self.is_late():
+            if self.is_overloaded and self.bottleneck_id:
+                reasons.append(f"{self.bottleneck} has no room before {self.run.planned_on}")
+            elif self.kind == PlannedOrderKind.BUY:
+                reasons.append(f"{self.lead_days} days to buy, and it is wanted sooner")
+            else:
+                reasons.append(f"{self.lead_days} days to make, and it is wanted sooner")
+        # Both can be true, and each has its own answer: a full machine
+        # is capacity, a late component is the run below it.
+        if self.expected_on is not None and \
+                (self.expected_on - self.run.planned_on).days > 365:
+            reasons.append("more than a year of work before it could be ready")
+        if self.held_up_by_id:
+            reasons.append(f"{self.held_up_by.item.sku} is not ready until "
+                           f"{self.held_up_by.expected_on}")
+        return "; ".join(reasons) or None
+
+    def days_behind(self):
+        """How many days after it is wanted it can really be ready."""
+        if self.expected_on is None:
+            return 0
+        return max((self.expected_on - self.needed_by).days, 0)
 
     def days_late(self):
         if not self.is_late():
