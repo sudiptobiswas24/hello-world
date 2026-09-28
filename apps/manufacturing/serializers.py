@@ -570,7 +570,9 @@ class WorkCentreSerializer(serializers.ModelSerializer):
                   "holiday_region",
                   "machine_rate_per_hour", "labour_rate_per_hour",
                   "overhead_rate_per_hour", "conversion_rate_per_hour",
-                  "standard_kwh_per_hour", "is_active"]
+                  "standard_kwh_per_hour", "is_active", "efficiency_percent",
+                  "speed_basis", "tape_ends", "line_speed_m_per_min", "loom_rpm",
+                  "shuttles"]
 
     conversion_rate_per_hour = serializers.SerializerMethodField()
 

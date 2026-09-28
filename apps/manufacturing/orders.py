@@ -165,6 +165,12 @@ class ManufacturingSettings(AuditModel):
         return account
 
 
+class SpeedBasis(models.TextChoices):
+    STATED = "stated", "Stated rate"
+    TAPE_LINE = "tape_line", "Tape line"
+    CIRCULAR_LOOM = "circular_loom", "Circular loom"
+
+
 class WorkCentre(AuditModel):
     """
     A bank of machines, and what a routing names.
@@ -240,10 +246,41 @@ class WorkCentre(AuditModel):
                   "the meters against. Blank where nobody has set one.",
     )
     is_active = models.BooleanField(default=True)
+    efficiency_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("100"),
+        help_text="What the machine really achieves against its rated speed, over "
+                  "a run: breaks, slow starts, speed held below maximum. 600 kg an "
+                  "hour rated at 85 per cent is planned and costed at 510.",
+    )
+    speed_basis = models.CharField(
+        max_length=16, choices=SpeedBasis.choices, default=SpeedBasis.STATED,
+        help_text="Where its speed comes from: the rate stated here, or worked out "
+                  "from the product and the machine's settings.",
+    )
+    tape_ends = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Tape line: tapes wound at once (the take-up's positions).",
+    )
+    line_speed_m_per_min = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Tape line: winding speed, metres a minute.",
+    )
+    loom_rpm = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Circular loom: revolutions a minute.",
+    )
+    shuttles = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="Circular loom: shuttles, each laying one pick a revolution.",
+    )
 
     class Meta:
         ordering = ["code"]
         constraints = [
+            models.CheckConstraint(
+                check=Q(efficiency_percent__gt=0) & Q(efficiency_percent__lte=100),
+                name="work_centre_efficiency_a_percentage",
+            ),
             models.CheckConstraint(
                 check=Q(machine_rate_per_hour__gte=0)
                 & Q(labour_rate_per_hour__gte=0)
@@ -268,6 +305,58 @@ class WorkCentre(AuditModel):
         # divides by it. A pattern nobody can read is a pattern that
         # silently schedules the wrong days.
         parse_working_days(self.working_days)
+
+    def save(self, *args, **kwargs):
+        # In save(): work centres come through the API's serializer too,
+        # and a speed basis without its settings divides by nothing.
+        needs = {
+            SpeedBasis.TAPE_LINE: (("tape_ends", "tapes wound at once"),
+                                   ("line_speed_m_per_min", "a line speed")),
+            SpeedBasis.CIRCULAR_LOOM: (("loom_rpm", "revolutions a minute"),
+                                       ("shuttles", "a number of shuttles")),
+        }.get(self.speed_basis, ())
+        for field, words in needs:
+            value = getattr(self, field)
+            if value is None or value <= 0:
+                raise ValidationError(f"{self.code} is timed as a "
+                                      f"{self.get_speed_basis_display().lower()} and "
+                                      f"needs {words}.")
+        super().save(*args, **kwargs)
+
+    def speed_for(self, bom=None):
+        """
+        (units an hour, their unit) for making what `bom` makes here, at
+        full rated speed; efficiency is applied by whoever asks.
+
+        A tape line winds tapes x denier x metres a minute, and cannot
+        pass more than its extruder's rated output: the lower of the two.
+        A circular loom lays shuttles x revolutions picks a minute; at the
+        fabric's picks a metre that is metres an hour, at its grams a
+        running metre, kilogrammes.
+        """
+        from .woven import DENIER_LENGTH_M, INCHES_PER_METRE, FabricSpecification, TapeSpecification
+
+        stated = (self.capacity_per_hour, self.capacity_uom)
+        if bom is None or self.speed_basis == SpeedBasis.STATED:
+            return stated
+        if self.speed_basis == SpeedBasis.TAPE_LINE:
+            spec = TapeSpecification.objects.filter(bom=bom).first()
+            if spec is None:
+                return stated
+            unit = spec.tape_item.uom
+            grams = (Decimal(self.tape_ends) * spec.denier * self.line_speed_m_per_min
+                     * 60 / DENIER_LENGTH_M)
+            wound = grams / 1000
+            if self.capacity_per_hour is not None and self.capacity_uom is not None:
+                rated = self.capacity_uom.convert_to(self.capacity_per_hour, unit)
+                wound = min(wound, rated)
+            return wound, unit
+        spec = FabricSpecification.objects.filter(bom=bom).first()
+        if spec is None:
+            return stated
+        metres = (self.loom_rpm * Decimal(self.shuttles) * 60
+                  / (spec.picks_per_inch * INCHES_PER_METRE))
+        return metres * spec.grams_per_metre() / 1000, spec.fabric_item.uom
 
     def calendar(self):
         """
@@ -892,7 +981,7 @@ class WorkOrder(AuditModel):
                     f"{operation.work_centre} is not in service, and "
                     f"{operation} would put this run on it."
                 )
-            operation.minutes_for(batch_quantity, self.bom.uom)
+            operation.minutes_for(batch_quantity, self.bom.uom, bom=self.bom)
 
         self.components.all().delete()
         # What the run draws, a phantom blown through to its own
@@ -958,8 +1047,8 @@ class WorkOrder(AuditModel):
                 work_order=self, sequence=operation.sequence,
                 name=operation.name, work_centre=operation.work_centre,
                 setup_minutes=operation.setup_minutes,
-                units_per_hour=operation.rate(self.bom.uom),
-                planned_minutes=operation.minutes_for(batch_quantity, self.bom.uom),
+                units_per_hour=operation.rate(self.bom.uom, self.bom, achieved=False),
+                planned_minutes=operation.minutes_for(batch_quantity, self.bom.uom, bom=self.bom),
             )
 
         on_date = to_date(on_date) or timezone.now().date()
@@ -1403,7 +1492,9 @@ class WorkOrderOperation(AuditModel):
     units_per_hour = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True,
         help_text="Blank for an outside step, which has no rate on our "
-                  "machines. The rate this run was planned at, resolved at release — "
+                  "machines. The machine's rated speed for this run, before its "
+                  "efficiency, which `planned_minutes` allows for and overall "
+                  "equipment effectiveness measures against, resolved at release — "
                   "the operation's own, or the machine's nominal one where the "
                   "operation did not say. Resolved rather than looked up "
                   "again, so a machine re-rated next month does not re-time a "

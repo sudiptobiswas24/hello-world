@@ -843,7 +843,7 @@ def planned_cost(bom, quantity, warehouse, uom=None, on_date=None):
                     batch_quantity, bom.uom
                 )
                 continue
-            minutes = operation.minutes_for(batch_quantity, bom.uom)
+            minutes = operation.minutes_for(batch_quantity, bom.uom, bom=bom)
             conversion += (
                 minutes / Decimal("60")
                 * operation.work_centre.conversion_rate_per_hour()

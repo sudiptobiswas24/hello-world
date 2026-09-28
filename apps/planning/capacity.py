@@ -213,7 +213,7 @@ class LoadBook:
 
     # -- what each machine will have just run ----------------------------
 
-    def run_minutes(self, operation, item, quantity, uom):
+    def run_minutes(self, operation, item, quantity, uom, bom=None):
         """
         Minutes for this operation of `item`, with the changeover from
         what the machine will have run just before — and the machine
@@ -234,7 +234,7 @@ class LoadBook:
             centre, self._last[centre.pk], item, operation.setup_minutes
         )
         self._last[centre.pk] = item
-        return operation.minutes_for(quantity, uom, setup=setup)
+        return operation.minutes_for(quantity, uom, setup=setup, bom=bom)
 
     # -- scheduling ------------------------------------------------------
 
@@ -297,7 +297,7 @@ def _days_between(start, end):
         day += datetime.timedelta(days=1)
 
 
-def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item):
+def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item, bom=None):
     """
     Place a whole routing so that its last operation ends on
     `finish_by`, and say when the first one has to start.
@@ -330,7 +330,7 @@ def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item):
             })
             cursor = start
             continue
-        minutes = book.run_minutes(operation, item, quantity, uom)
+        minutes = book.run_minutes(operation, item, quantity, uom, bom)
         start, ran_out = book.take_backwards(
             operation.work_centre, minutes, cursor, floor
         )
@@ -351,7 +351,7 @@ def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item):
     }
 
 
-def schedule_forwards(book, operations, quantity, uom, start, ceiling, item):
+def schedule_forwards(book, operations, quantity, uom, start, ceiling, item, bom=None):
     """
     Place a whole routing from `start` on, each operation starting when
     the one before it finishes, and say when the last one ends.
@@ -367,7 +367,7 @@ def schedule_forwards(book, operations, quantity, uom, start, ceiling, item):
             first = first or cursor
             cursor = finish
             continue
-        minutes = book.run_minutes(operation, item, quantity, uom)
+        minutes = book.run_minutes(operation, item, quantity, uom, bom)
         began, finish, short = book.take_forwards(operation.work_centre, minutes, cursor,
                                                   ceiling)
         ran_out = ran_out or short
@@ -408,7 +408,7 @@ def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
     finish_by = needed_by - datetime.timedelta(days=int(queue_days))
     mark = book.checkpoint()
     placed = schedule_backwards(
-        book, operations, quantity, uom, finish_by, planned_on, bom.item
+        book, operations, quantity, uom, finish_by, planned_on, bom.item, bom
     )
     placed["expected"] = needed_by
     if not placed["overloaded"]:
@@ -419,7 +419,7 @@ def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
     book.rollback(mark)
     ceiling = planned_on + datetime.timedelta(days=MAX_BACKLOG_DAYS)
     forward = schedule_forwards(book, operations, quantity, uom, planned_on, ceiling,
-                                bom.item)
+                                bom.item, bom)
     worked = (forward["finish"] - forward["start"]).days
     return {
         # When it should have started to be on time: gone, and said so.

@@ -213,7 +213,7 @@ class RoutingOperation(AuditModel):
             return f"{self.sequence}. {self.name} (outside)"
         return f"{self.sequence}. {self.name} on {self.work_centre.code}"
 
-    def rate(self, uom):
+    def rate(self, uom, bom=None, achieved=True):
         """
         Units of `uom` an hour, from this operation or from the machine.
 
@@ -235,11 +235,8 @@ class RoutingOperation(AuditModel):
         if self.units_per_hour is not None:
             rate, rate_uom, source = self.units_per_hour, self.rate_uom, self
         else:
-            rate, rate_uom, source = (
-                self.work_centre.capacity_per_hour,
-                self.work_centre.capacity_uom,
-                self.work_centre,
-            )
+            rate, rate_uom = self.work_centre.speed_for(bom)
+            source = self.work_centre
             if rate is None:
                 raise ValidationError(
                     f"{self} has no rate and {self.work_centre} has no nominal "
@@ -251,6 +248,14 @@ class RoutingOperation(AuditModel):
                 f"{source} is rated at {rate} an hour and does not say what it "
                 f"counts, so it cannot be read against {uom}."
             )
+        # Rated speed is not what a run averages: breaks, slow starts,
+        # speed held back. Planned and costed at what it achieves; asked
+        # for the rated speed (achieved=False), which is what overall
+        # equipment effectiveness measures performance against — judged
+        # against the achieved one, a line at its usual pace would read
+        # as perfect.
+        if achieved:
+            rate = rate * self.work_centre.efficiency_percent / Decimal("100")
         if rate_uom.pk == uom.pk:
             return rate
         try:
@@ -293,7 +298,7 @@ class RoutingOperation(AuditModel):
                 )
         return quantity * self.outside_cost_per_unit
 
-    def minutes_for(self, quantity, uom, setup=None):
+    def minutes_for(self, quantity, uom, setup=None, bom=None):
         """
         Setup plus run time for `quantity` of `uom`.
 
@@ -306,7 +311,7 @@ class RoutingOperation(AuditModel):
         """
         if self.is_outside:
             return Decimal("0")
-        rate = self.rate(uom)
+        rate = self.rate(uom, bom)
         return (self.setup_minutes if setup is None else setup) + (
             Decimal(quantity) / rate * MINUTES_PER_HOUR
         )

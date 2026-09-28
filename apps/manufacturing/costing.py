@@ -238,7 +238,7 @@ class CostVersion(AuditModel):
             if operation.is_outside:
                 total += operation.outside_charge_for(batch, bom.uom)
                 continue
-            minutes = operation.minutes_for(batch, bom.uom)
+            minutes = operation.minutes_for(batch, bom.uom, bom=bom)
             total += (
                 minutes / MINUTES_PER_HOUR
                 * operation.work_centre.conversion_rate_per_hour()

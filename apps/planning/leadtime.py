@@ -134,7 +134,7 @@ def make_run_days(bom, quantity, uom):
         setup = changeover_minutes(
             centre, last_in_line(centre), bom.item, operation.setup_minutes
         )
-        minutes = operation.minutes_for(quantity, uom, setup=setup)
+        minutes = operation.minutes_for(quantity, uom, setup=setup, bom=bom)
         per_centre.setdefault(centre.pk, [centre, Decimal("0")])[1] += minutes
     days = away
     for centre, minutes in per_centre.values():
