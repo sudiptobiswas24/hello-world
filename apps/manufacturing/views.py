@@ -2,6 +2,8 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
+from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
@@ -42,7 +44,8 @@ from .oee import by_operator, by_shift, effectiveness
 from .bom import BomSubstitute
 from .costing import CostVersion, StandardCost, against_actual, explain
 from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
-from . import quoting
+from . import certificates, quoting
+from .certificates import TestCertificate
 from .quoting import CostSheet, MaterialRate, QuotePolicy, StageRate
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
@@ -69,6 +72,7 @@ from .serializers import (
     QuotePolicySerializer,
     QuoteRequestSerializer,
     StageRateSerializer,
+    TestCertificateSerializer,
     BillOfMaterialsSerializer,
     BomByproductSerializer,
     BomComponentSerializer,
@@ -296,6 +300,40 @@ class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                              request_data.validated_data["taxes"])
         return Response({"quotation_line": line.pk, "unit_price": str(line.unit_price)},
                         status=201)
+
+
+class TestCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    Certificates for shipments: POST {delivery} issues one, frozen;
+    void/ withdraws it with a reason; print/ is the page sent to the customer.
+    """
+
+    queryset = TestCertificate.objects.select_related("delivery")
+    serializer_class = TestCertificateSerializer
+    http_method_names = ["get", "post", "head", "options"]
+    action_permission_map = {"void": "manufacturing.change_testcertificate"}
+
+    def create(self, request, *args, **kwargs):
+        from apps.sales.models import Delivery
+
+        delivery = get_object_or_404(Delivery, pk=request.data.get("delivery"))
+        certificate = certificates.issue(delivery)
+        return Response(TestCertificateSerializer(certificate).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        certificate = self.get_object()
+        certificate.void(str(request.data.get("reason", "")))
+        return Response(TestCertificateSerializer(certificate).data)
+
+    @action(detail=True, methods=["get"])
+    def print(self, request, pk=None):
+        from django.template.loader import render_to_string
+
+        certificate = self.get_object()
+        page = render_to_string("manufacturing/test_certificate.html",
+                                {"certificate": certificate, "c": certificate.content})
+        return HttpResponse(page, content_type="text/html; charset=utf-8")
 
 
 class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

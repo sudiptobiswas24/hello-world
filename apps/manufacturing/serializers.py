@@ -19,6 +19,7 @@ from .costing import CostVersion, StandardCost
 from .changeover import ChangeoverRule, SetupFamily
 from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss
 from .machines import Machine
+from .certificates import TestCertificate
 from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageRate
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
@@ -207,6 +208,14 @@ class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
             "weight_tolerance_percent", "target_grams", "ends_per_inch", "picks_per_inch",
             "shrink_percent", "warp_tape_denier",
         ]
+
+
+class TestCertificateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TestCertificate
+        fields = ["id", "number", "delivery", "issued_on", "content", "voided_at",
+                  "voided_reason"]
+        read_only_fields = fields
 
 
 class MaterialRateSerializer(serializers.ModelSerializer):
