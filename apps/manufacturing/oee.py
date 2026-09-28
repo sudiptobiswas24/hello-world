@@ -100,6 +100,8 @@ def _downtime(work_centre, start, end, shift=None, machine=None):
     rows = Downtime.objects.filter(
         work_centre=work_centre,
         shift_date__gte=start, shift_date__lte=end,
+        # A stoppage booked wrong and withdrawn stopped nothing.
+        voided_at__isnull=True,
     ).select_related("reason")
     if machine is not None:
         # This machine's own stoppages AND the bank's. A power cut

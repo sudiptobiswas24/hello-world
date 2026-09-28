@@ -337,6 +337,91 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         _run(void_bags, row, supervisor, request.data.get("reason", ""))
         return Response({"id": row.pk, "voided": True})
 
+    def _machine(self, station, code):
+        machine = station.machines.filter(code=code).first()
+        if machine is None:
+            raise DRFValidationError([f"{station} does not serve {code}."])
+        return machine
+
+    @action(detail=True, methods=["post"])
+    def stoppage(self, request, code=None):
+        """A machine stopped: its code, a reason code, minutes, a note."""
+        from .station_floor import book_stoppage
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        row = _run(book_stoppage, station, operator, self._machine(station, data.get("machine")),
+                   data.get("reason"), data.get("minutes"), data.get("notes", ""))
+        return Response({"id": row.pk, "number": row.number, "minutes": _exact(row.minutes),
+                         "run": row.work_order.number if row.work_order_id else None},
+                        status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"stoppage/(?P<row>[0-9]+)/void")
+    def void_stoppage(self, request, code=None, row=None):
+        from .shifts import Downtime
+        from .station_floor import void_stoppage
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        stoppage = get_object_or_404(Downtime, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_stoppage, stoppage, station, supervisor, operator,
+             request.data.get("reason", ""))
+        return Response({"id": stoppage.pk, "voided": True})
+
+    @action(detail=True, methods=["post"])
+    def count(self, request, code=None):
+        """What a machine's step of its run has made good."""
+        from .station_floor import count_step
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        counted = _run(count_step, station, operator,
+                       self._machine(station, data.get("machine")), data.get("quantity"))
+        return Response({"id": counted.pk, "step": counted.operation.name,
+                         "run": counted.operation.work_order.number,
+                         "quantity": _exact(counted.quantity_good)}, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"count/(?P<row>[0-9]+)/void")
+    def void_count(self, request, code=None, row=None):
+        from .scrap import OperationReport
+        from .station_floor import void_count
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        counted = get_object_or_404(OperationReport, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_count, counted, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": counted.pk, "voided": True})
+
+    @action(detail=True, methods=["post"])
+    def scrap(self, request, code=None):
+        """Output spoiled at a machine's step, for a reason."""
+        from .station_floor import book_scrap
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        entry = _run(book_scrap, station, operator, self._machine(station, data.get("machine")),
+                     data.get("reason"), data.get("quantity"))
+        return Response({"id": entry.pk, "number": entry.number,
+                         "run": entry.work_order.number,
+                         "quantity": _exact(entry.quantity_scrapped)}, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"scrap/(?P<row>[0-9]+)/void")
+    def void_scrap(self, request, code=None, row=None):
+        from .orders import ProductionEntry
+        from .station_floor import void_scrap
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        entry = get_object_or_404(ProductionEntry, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_scrap, entry, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": entry.pk, "voided": True})
+
     @action(detail=True, methods=["get"], url_path=r"label/(?P<roll>[^/]+)")
     def label(self, request, code=None, roll=None):
         """

@@ -222,6 +222,16 @@ class Downtime(AuditModel):
                   "changeover between two runs belongs to neither.",
     )
     notes = models.CharField(max_length=255, blank=True)
+    station = models.ForeignKey(
+        "manufacturing.LoomStation", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="stoppages", editable=False,
+        help_text="Where it was booked, when it was booked on the floor.")
+    booked_by = models.ForeignKey("hr.Employee", null=True, blank=True,
+                                  on_delete=models.PROTECT, related_name="+", editable=False)
+    voided_at = models.DateTimeField(null=True, blank=True, editable=False)
+    voided_by = models.ForeignKey("hr.Employee", null=True, blank=True,
+                                  on_delete=models.PROTECT, related_name="+", editable=False)
+    voided_reason = models.CharField(max_length=255, blank=True, editable=False)
 
     class Meta:
         ordering = ["-shift_date", "work_centre", "id"]
@@ -264,7 +274,7 @@ class Downtime(AuditModel):
         """
         already = Downtime.objects.filter(
             work_centre=self.work_centre, shift_date=self.shift_date,
-            shift=self.shift,
+            shift=self.shift, voided_at__isnull=True,
         )
         if self.pk:
             already = already.exclude(pk=self.pk)
@@ -299,8 +309,20 @@ class Downtime(AuditModel):
             "than the shift it was stopped in."
         )
 
+    def void(self, reason, by=None):
+        """A stoppage booked wrong: kept, and no longer counted."""
+        if self.voided_at is not None:
+            raise ValidationError(f"{self} is already withdrawn.")
+        if not (reason or "").strip():
+            raise ValidationError("Say why the stoppage is withdrawn.")
+        self.voided_at, self.voided_by = timezone.now(), by
+        self.voided_reason = reason.strip()
+        super().save(update_fields=["voided_at", "voided_by", "voided_reason", "updated_at"])
+
     def save(self, *args, **kwargs):
         self.shift_date = to_date(self.shift_date)
+        if self.pk and Downtime.objects.filter(pk=self.pk, voided_at__isnull=False).exists():
+            raise ValidationError(f"{self} was withdrawn; book the stoppage again.")
         if self.shift_id is not None:
             self._check_fits_the_shift()
         if self.machine_id is not None:
