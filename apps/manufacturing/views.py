@@ -1459,6 +1459,20 @@ class LotTraceViewSet(viewsets.ViewSet):
             "not_followed": [_lot_row(lot) for lot in report["not_followed"]],
         })
 
+    @action(detail=True, methods=["get"])
+    def rolls(self, request, pk=None):
+        """A bundle's rolls: the one it was cut from, back to the stock roll under it."""
+        from .conversion import BagCount
+        from .process_rolls import roll_chain
+
+        lot = self._lot(pk)
+        count = BagCount.objects.select_related("mount", "machine").filter(
+            inspection__lot=lot).first()
+        if count is None:
+            raise DRFValidationError([f"{lot.code} is not a bundle counted at a station."])
+        return Response({"lot": _lot_row(lot), "cut_on": count.machine.code,
+                         "rolls": roll_chain(count.mount) if count.mount_id else []})
+
 
 
 class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

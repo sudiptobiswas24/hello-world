@@ -73,6 +73,10 @@ class BagCount(AuditModel):
     voided_by = models.ForeignKey("hr.Employee", null=True, blank=True,
                                   on_delete=models.PROTECT, related_name="+")
     void_reason = models.CharField(max_length=255, blank=True)
+    mount = models.ForeignKey(
+        "manufacturing.RollMount", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="bag_counts", editable=False,
+        help_text="The roll on the machine when the bundle was counted.")
 
     class Meta:
         ordering = ["-counted_at", "-id"]
@@ -215,7 +219,12 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         work_centre=machine.work_centre, machine=machine, memo=f"Counted at {station}",
     )
     entry.post()
+    from .process_rolls import current_mount
+
+    mounted = current_mount(machine)
     return BagCount.objects.create(
+        mount=mounted if mounted is not None and mounted.operation.work_order_id == order.pk
+        else None,
         station=station, machine=machine, work_order=order, operator=operator,
         supervisor=None if passed else supervisor, shift=shift, shift_date=shift_date,
         counted_at=at, bags=bags, target_grams=(line.lower_limit + line.upper_limit) / 2,

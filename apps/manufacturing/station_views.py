@@ -427,6 +427,74 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         _run(void_scrap, entry, station, supervisor, operator, request.data.get("reason", ""))
         return Response({"id": entry.pk, "voided": True})
 
+    @action(detail=True, methods=["post"])
+    def mount(self, request, code=None):
+        """{machine, roll}: the roll going onto a laminator, flexo or BCS."""
+        from .process_rolls import mount_roll
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        mount = _run(mount_roll, station, operator, self._machine(station, data.get("machine")),
+                     data.get("roll", ""))
+        return Response({"id": mount.pk, "roll": mount.roll_code(),
+                         "run": mount.operation.work_order.number,
+                         "issue": mount.issue.number if mount.issue_id else None}, status=201)
+
+    @action(detail=True, methods=["post"])
+    def dismount(self, request, code=None):
+        """{machine, remaining_kg?}: the roll off; what is left goes back."""
+        from .process_rolls import dismount_roll
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        mount = _run(dismount_roll, station, operator,
+                     self._machine(station, data.get("machine")), data.get("remaining_kg"))
+        return Response({"id": mount.pk, "roll": mount.roll_code(),
+                         "returned": mount.returned.number if mount.returned_id else None})
+
+    @action(detail=True, methods=["post"], url_path="roll-off")
+    def roll_off(self, request, code=None):
+        """{machine, gross_kg, core, metres}: a laminated or printed roll, weighed."""
+        from .process_rolls import weigh_roll
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        core = get_object_or_404(CoreType, code=data.get("core"))
+        supervisor = (_run(station.identify, data["supervisor_pin"])
+                      if data.get("supervisor_pin") else None)
+        roll = _run(weigh_roll, station, operator, self._machine(station, data.get("machine")),
+                    data.get("gross_kg"), core, data.get("metres"), supervisor,
+                    data.get("reason", ""))
+        return Response({"id": roll.pk, "code": roll.code, "kind": roll.kind,
+                         "net_kg": _exact(roll.net_kg), "added_gsm": _exact(roll.added_gsm),
+                         "limits": [_exact(roll.lower_gsm), _exact(roll.upper_gsm)],
+                         "passed": roll.passed}, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"mount/(?P<row>[0-9]+)/void")
+    def void_mount(self, request, code=None, row=None):
+        from .process_rolls import RollMount, void_mount
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        mount = get_object_or_404(RollMount, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_mount, mount, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": mount.pk, "voided": True})
+
+    @action(detail=True, methods=["post"], url_path=r"roll-off/(?P<row>[0-9]+)/void")
+    def void_roll_off(self, request, code=None, row=None):
+        from .process_rolls import ProcessRoll, void_roll
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        roll = get_object_or_404(ProcessRoll, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_roll, roll, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": roll.pk, "voided": True})
+
     @action(detail=True, methods=["post"], url_path="run-waste")
     def run_waste(self, request, code=None):
         """Waste off a machine's run, weighed into stock: {machine, kg, item?}."""
