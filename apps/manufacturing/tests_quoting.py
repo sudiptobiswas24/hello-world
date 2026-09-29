@@ -314,3 +314,147 @@ class QuotingApiTests(QuotingTestCase):
                                     {"quotation": quotation.pk}, format="json")
         self.assertEqual(response.status_code, 400)
         self.assertIn("taxes", response.json())
+
+
+class ConversionFromTheWorkCentreTests(QuotingTestCase):
+    """
+    The tape line costs 800 machine + 300 labour + 100 overhead = 1,200
+    an hour and is rated at 400 kg an hour, 80% achieved: 320 kg, so
+    3.75 a kilogramme — what a run of it absorbs. The sack's 0.115370
+    kg of tape then costs 0.4326375 instead of 0.80759 at the typed 7.
+
+    The cutting tables cost 900 an hour and do 600 sacks: 1.50 a sack,
+    whatever the roll weighs. Two passes, 3.00.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from .orders import WorkCentre
+
+        self.extruder = WorkCentre.objects.create(
+            code="EXT", name="Tape line", machine_rate_per_hour=Decimal("800"),
+            labour_rate_per_hour=Decimal("300"), overhead_rate_per_hour=Decimal("100"),
+            efficiency_percent=Decimal("80"))
+        self.tables = WorkCentre.objects.create(code="CUT", name="Cutting",
+                                                machine_rate_per_hour=Decimal("900"))
+
+    def route(self, bom, *steps):
+        from .routing import Routing, RoutingOperation
+
+        self.routes = getattr(self, "routes", 0) + 1
+        routing = Routing.objects.create(code=f"R-{self.routes}", name="Route")
+        for sequence, (centre, per_hour, uom) in enumerate(steps, start=1):
+            RoutingOperation.objects.create(routing=routing, sequence=sequence, name="Step",
+                                            work_centre=centre, setup_minutes=Decimal("30"),
+                                            units_per_hour=Decimal(per_hour), rate_uom=uom)
+        BillOfMaterials.objects.filter(pk=bom.pk).update(routing=routing)
+        bom.refresh_from_db()
+        return routing
+
+    def from_centre(self, stage, centre):
+        StageRate.objects.create(stage=stage, work_centre=centre,
+                                 valid_from=DAY + datetime.timedelta(days=1))
+
+    def test_the_tape_stage_at_what_the_line_absorbs(self):
+        tape = self.sack.fabric.warp_tape
+        self.route(tape.bom, (self.extruder, "400", self.kg))
+        self.from_centre("tape", self.extruder)
+        on = DAY + datetime.timedelta(days=1)
+        sheet = cost(self.sack, Decimal("1000"), on)
+        line = self.line(sheet, "conversion", stage="tape")
+        self.assertEqual(line.rate, Decimal("3.7500"))
+        self.assertTrue(close(line.amount, "0.4326375", "0.000001"))
+        # Nothing else moved: the other stages cost what they did typed.
+        typed = cost(self.sack, Decimal("1000"), DAY)
+        # Each side is two figures stored to six places: within two in the last.
+        self.assertLessEqual(abs((sheet.conversion - line.amount) - (
+            typed.conversion - self.line(typed, "conversion", stage="tape").amount)),
+            Decimal("0.000002"))
+        # The same hour a run is charged: 320 kg take an hour of the line.
+        step = tape.bom.routing.operations.get()
+        self.assertEqual(step.minutes_for(Decimal("320"), self.kg, setup=Decimal("0"),
+                                          bom=tape.bom), Decimal("60"))
+
+    def test_warp_and_weft_each_at_their_own_speed(self):
+        weft_item = Item.objects.create(sku="TAPE-WEFT", name="Weft tape", uom=self.kg)
+        weft = self.tape(code="T-WEFT", tape_item=weft_item)
+        fabric = self.fabric(tape=self.sack.fabric.warp_tape, code="F-WW",
+                             fabric_item=Item.objects.create(sku="FAB-WW", name="Fabric",
+                                                             uom=self.kg), weft_tape=weft)
+        sack = self.bag(code="B-WW", fabric=fabric, bag_item=Item.objects.create(
+            sku="BAG-WW", name="Sack", uom=self.pcs))
+        self.route(fabric.warp_tape.bom, (self.extruder, "400", self.kg))
+        self.route(weft.bom, (self.extruder, "200", self.kg))
+        self.from_centre("tape", self.extruder)
+        line = self.line(cost(sack, Decimal("1000"), DAY + datetime.timedelta(days=1)),
+                         "conversion", stage="tape")
+        # Equal ends and picks of the same tape: half the tape each, at
+        # 3.75 and 7.50, so 5.625 a kilogramme of it - 5.625/7 of what the
+        # same tape costs at the typed 7.
+        self.assertEqual(line.rate, Decimal("5.6250"))
+        typed = self.line(cost(sack, Decimal("1000"), DAY), "conversion", stage="tape")
+        self.assertLessEqual(abs(line.amount - typed.amount * Decimal("5.625") / 7),
+                             Decimal("0.000002"))
+
+    def test_two_passes_on_the_line_cost_two(self):
+        tape = self.sack.fabric.warp_tape
+        self.route(tape.bom, (self.extruder, "400", self.kg), (self.extruder, "400", self.kg))
+        self.from_centre("tape", self.extruder)
+        line = self.line(cost(self.sack, Decimal("1000"), DAY + datetime.timedelta(days=1)),
+                         "conversion", stage="tape")
+        self.assertEqual(line.rate, Decimal("7.5000"))
+
+    def test_a_per_sack_operation_at_its_own_speed(self):
+        from .orders import WorkCentre
+
+        press = WorkCentre.objects.create(code="BALE", name="Baling",
+                                          labour_rate_per_hour=Decimal("300"))
+        self.route(self.sack.bom, (press, "2000", self.pcs))
+        self.from_centre("packing", press)
+        line = self.line(cost(self.sack, Decimal("1000"), DAY + datetime.timedelta(days=1)),
+                         "conversion", stage="packing")
+        self.assertEqual((line.quantity, line.rate, line.amount),
+                         (Decimal("1.000000"), Decimal("0.1500"), Decimal("0.150000")))
+
+    def test_a_sack_stage_at_what_the_tables_do_an_hour(self):
+        self.route(self.sack.bom, (self.tables, "600", self.pcs))
+        self.from_centre("cutting", self.tables)
+        on = DAY + datetime.timedelta(days=1)
+        self.assertTrue(close(self.line(cost(self.sack, Decimal("1000"), on), "conversion",
+                                        stage="cutting").amount, "1.5", "0.000001"))
+        self.route(self.sack.bom, (self.tables, "600", self.pcs), (self.tables, "600", self.pcs))
+        self.assertTrue(close(self.line(cost(self.sack, Decimal("1000"), on), "conversion",
+                                        stage="cutting").amount, "3", "0.000001"))
+
+    def test_refused_where_the_centre_cannot_say(self):
+        on = DAY + datetime.timedelta(days=1)
+        self.from_centre("cutting", self.tables)
+        self.refused("does not pass CUT", cost, self.sack, Decimal("1000"), on)
+        from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
+
+        metres = UnitOfMeasure.objects.create(code="m", name="Metres",
+                                              category=UnitOfMeasureCategory.LENGTH)
+        self.route(self.sack.bom, (self.tables, "600", metres))
+        self.refused("cutting and stitching cannot be costed from CUT", cost, self.sack,
+                     Decimal("1000"), on)
+        self.route(self.sack.bom, (self.extruder, "600", self.pcs))
+        self.refused("does not pass CUT", cost, self.sack, Decimal("1000"), on)
+
+    def test_not_on_a_day_before_the_centre_was_changed(self):
+        from .orders import WorkCentre
+
+        self.route(self.sack.bom, (self.tables, "600", self.pcs))
+        self.from_centre("cutting", self.tables)
+        WorkCentre.objects.filter(pk=self.tables.pk).update(
+            created_at=timezone.now() - datetime.timedelta(days=60))
+        self.refused("CUT was changed after", cost, self.sack, Decimal("1000"),
+                     DAY + datetime.timedelta(days=1))
+        cost(self.sack, Decimal("1000"), timezone.localdate())
+
+    def test_typed_or_from_a_centre_never_both_nor_neither(self):
+        from django.db import IntegrityError, transaction
+
+        for values in ({"rate": Decimal("4"), "work_centre": self.tables}, {}):
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                StageRate.objects.create(stage="cutting", valid_from=DAY
+                                         + datetime.timedelta(days=5), **values)

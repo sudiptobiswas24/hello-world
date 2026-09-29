@@ -22,6 +22,16 @@ whole sack, so the tape line was paid for the liner and the handle.
 written down when it is costed. A rate that changes tomorrow moves the
 next sheet, not one a customer has already been sent.
 
+**Conversion from one source.** A stage's rate may be typed, or it may
+name the work centre that does the stage. Named, the rate is not a
+second opinion: it is the work centre's hourly conversion rate — the
+machine, labour and overhead a time booking absorbs into the run —
+over what that centre achieves an hour on the routing of the bill being
+costed, at the speed the specification itself sets. A quote and the
+run it becomes then charge the same hour the same, and a re-rated line
+or a faster take-up moves both. Run time only: setup is a cost of the
+order, not of the kilogramme, and is left to overhead.
+
 The walk is the bill of materials, level by level, as the standard
 cost roll-up walks it: the sack's own bill, its fabric's, the tapes'.
 Anything outside that chain is priced from the rate sheet, which is
@@ -109,22 +119,75 @@ class MaterialRate(DatedRate):
 class StageRate(DatedRate):
     stage = models.CharField(max_length=16, choices=STAGES)
     rate = models.DecimalField(
-        max_digits=12, decimal_places=4,
+        max_digits=12, decimal_places=4, null=True, blank=True,
         help_text="Per kilogramme the stage makes, or per sack for the per-sack "
-                  "operations (valve, D-cut, handle, liner, packing).",
+                  "operations (valve, D-cut, handle, liner, packing). Blank when "
+                  "the rate comes from the work centre.",
+    )
+    work_centre = models.ForeignKey(
+        "manufacturing.WorkCentre", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="The centre that does this stage. Named, the rate is its hourly "
+                  "conversion rate over what it achieves an hour on the specification "
+                  "being costed — the same hour a run is charged.",
     )
 
     class Meta:
         ordering = ["stage", "-valid_from"]
         constraints = [
             models.UniqueConstraint(fields=["stage", "valid_from"], name="one_stage_rate_a_day"),
-            models.CheckConstraint(check=Q(rate__gte=0), name="stage_rate_not_negative"),
+            models.CheckConstraint(check=Q(rate__isnull=True) | Q(rate__gte=0),
+                                   name="stage_rate_not_negative"),
             models.CheckConstraint(check=Q(stage__in=[code for code, _ in STAGES]),
                                    name="stage_rate_stage_known"),
+            models.CheckConstraint(
+                check=(Q(rate__isnull=False) & Q(work_centre__isnull=True))
+                | (Q(rate__isnull=True) & Q(work_centre__isnull=False)),
+                name="stage_rate_typed_or_from_a_work_centre"),
         ]
 
     def __str__(self):
-        return f"{STAGE_NAMES.get(self.stage, self.stage)} at {self.rate} from {self.valid_from}"
+        figure = self.rate if self.work_centre_id is None else f"{self.work_centre.code}'s rate"
+        return f"{STAGE_NAMES.get(self.stage, self.stage)} at {figure} from {self.valid_from}"
+
+    def per_unit(self, bom, stage_uom, per_bill_unit, on_date):
+        """
+        What one `stage_uom` of this stage costs, made on `bom`.
+
+        Typed, the rate. From a work centre: its hourly conversion rate
+        over what it achieves an hour, for every operation of the bill's
+        routing at that centre (two passes cost two). An operation rated
+        in the stage's own unit is read in it; one rated in what the
+        bill makes — sacks — is read per sack and spread over the
+        `per_bill_unit` of stage a sack takes. Refused, with the reason,
+        where the routing does not pass the centre or reads in neither.
+        """
+        if self.work_centre_id is None:
+            return self.rate
+        centre = self.work_centre
+        name = STAGE_NAMES[self.stage].lower()
+        if (centre.updated_at - centre.created_at > EDITED_AFTER
+                and timezone.localtime(centre.updated_at).date() > on_date):
+            raise ValidationError(
+                f"{centre.code} was changed after {on_date} and its rates then are not "
+                f"kept, so {name} cannot be costed from it on that day")
+        steps = [] if bom.routing_id is None else list(
+            bom.routing.operations.filter(work_centre=centre))
+        if not steps:
+            raise ValidationError(f"{bom} does not pass {centre.code}, which {name} is "
+                                  "costed from")
+        hourly = centre.conversion_rate_per_hour()
+        total = ZERO
+        for step in steps:
+            try:
+                total += hourly / step.rate(stage_uom, bom=bom)
+            except ValidationError:
+                try:
+                    total += hourly / step.rate(bom.uom, bom=bom) / per_bill_unit
+                except ValidationError as error:
+                    raise ValidationError(f"{name} cannot be costed from {centre.code}: "
+                                          f"{' '.join(error.messages)}")
+        return total
 
 
 class QuotePolicy(DatedRate):
@@ -277,6 +340,9 @@ class _Walk:
         self.material = defaultdict(lambda: ZERO)
         self.credit = defaultdict(lambda: ZERO)
         self.stage_kg = defaultdict(lambda: ZERO)
+        # Which bill made each stage's kilogrammes: warp and weft may be
+        # different tapes on different lines at different speeds.
+        self.stage_parts = defaultdict(lambda: defaultdict(lambda: ZERO))
         self.problems = []
 
     def walk(self, bom, output, path=()):
@@ -288,6 +354,7 @@ class _Walk:
             if link is not None and item.pk not in path:
                 sub, stage = link
                 self.stage_kg[stage] += quantity
+                self.stage_parts[stage][(sub, item.uom)] += quantity
                 self.walk(sub, item.uom.convert_to(quantity, sub.uom), path + (item.pk,))
             else:
                 self.material[item] += quantity
@@ -383,28 +450,45 @@ def compute(specification, on_date):
          if component.item_id in roll_items),
         ZERO,
     )
-    stages = [("tape", walk.stage_kg["tape"]), ("weaving", walk.stage_kg["weaving"])]
+    # Each stage as (bill, unit, quantity a sack takes, stage per bill unit).
+    bag = specification.bom
+    kg = specification.fabric.fabric_item.uom
+    stages = [(stage, [(sub, uom, quantity, Decimal("1"))
+                       for (sub, uom), quantity in walk.stage_parts[stage].items()])
+              for stage in ("tape", "weaving")]
+    on_the_roll = [(bag, kg, roll_kg, roll_kg)]
     if specification.is_laminated:
-        stages.append(("lamination", roll_kg))
+        stages.append(("lamination", on_the_roll))
     if specification.print_colours or specification.print_colours_back:
-        stages.append(("printing", roll_kg))
-    stages.append(("cutting", roll_kg))
+        stages.append(("printing", on_the_roll))
+    stages.append(("cutting", on_the_roll))
     for stage, present in (
         ("valve", specification.valve_patch_item_id), ("dcut", specification.dcut_area_sqcm),
         ("handle", specification.handle_item_id), ("liner", specification.liner_item_id),
         ("packing", True),
     ):
         if present:
-            stages.append((stage, Decimal("1")))
-    for stage, quantity in stages:
+            stages.append((stage, [(bag, bag.uom, Decimal("1"), Decimal("1"))]))
+    for stage, parts in stages:
         rate = StageRate.in_force(on_date, stage=stage)
         if rate is None:
             problems.append(f"no rate for {STAGE_NAMES[stage].lower()}")
             continue
+        try:
+            amount = sum((quantity * rate.per_unit(bill, uom, per_bill_unit, on_date)
+                          for bill, uom, quantity, per_bill_unit in parts), ZERO)
+        except ValidationError as error:
+            problems.append(" ".join(error.messages))
+            continue
+        quantity = sum((part[2] for part in parts), ZERO)
         lines.append({
             "kind": LineKind.CONVERSION, "stage": stage, "item": None,
-            "description": STAGE_NAMES[stage], "quantity": quantity, "rate": rate.rate,
-            "amount": quantity * rate.rate, "last_receipt_cost": None,
+            "description": STAGE_NAMES[stage], "quantity": quantity,
+            # Typed, the rate as typed; derived, what the amount works out
+            # at a unit — warp and weft at their own speeds.
+            "rate": rate.rate if rate.work_centre_id is None
+            else (amount / quantity).quantize(Decimal("0.0001")) if quantity else ZERO,
+            "amount": amount, "last_receipt_cost": None,
         })
     if problems:
         raise ValidationError(
