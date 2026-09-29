@@ -995,6 +995,21 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     }
 
     @action(detail=True, methods=["get"])
+    def traveller(self, request, pk=None):
+        """The job card, A4, to print and send round the floor with the run."""
+        from django.template.loader import render_to_string
+
+        from .traveller import traveller
+
+        order = self.get_object()
+        try:
+            card = traveller(order)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        page = render_to_string("manufacturing/traveller.html", {"t": card})
+        return HttpResponse(page, content_type="text/html; charset=utf-8")
+
+    @action(detail=True, methods=["get"])
     def energy(self, request, pk=None):
         """What the meters say this run drew. Read, never posted."""
         found = energy.run_energy(self.get_object())

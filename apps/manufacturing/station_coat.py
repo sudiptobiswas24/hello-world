@@ -77,6 +77,12 @@ class CoatingCheck(AuditModel):
         return f"{self.machine.code} {self.metres} m at {self.mean_gsm} GSM"
 
 
+def coating_limits(spec):
+    """(target, lower, upper) GSM a laminated sack's coating is held to."""
+    margin = spec.lamination_gsm * spec.lamination_tolerance_percent / ONE_HUNDRED
+    return spec.lamination_gsm, spec.lamination_gsm - margin, spec.lamination_gsm + margin
+
+
 def _grammes(pair):
     from .station_floor import _number
 
@@ -114,8 +120,7 @@ def record_coating(station, operator, machine, metres, samples, supervisor=None,
                               f"{len(pairs)} were weighed.")
     values = [(coated - uncoated) * SQ_CM_PER_SQ_M / disc for coated, uncoated in pairs]
     mean = sum(values, ZERO) / len(values)
-    margin = spec.lamination_gsm * spec.lamination_tolerance_percent / ONE_HUNDRED
-    lower, upper = spec.lamination_gsm - margin, spec.lamination_gsm + margin
+    _target, lower, upper = coating_limits(spec)
     passed = lower <= mean <= upper
     reason = " ".join((reason or "").split())
     if not passed:
