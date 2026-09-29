@@ -136,3 +136,4 @@ from .woven import (  # noqa: F401
     TapeSpecification,
     Weave,
 )
+from .complaints import Complaint, ComplaintLot, CorrectiveAction  # noqa: F401
