@@ -76,6 +76,8 @@ from .station_clock import MachineClock  # noqa: F401
 from .station_tape import TapeDoff  # noqa: F401
 from .station_coat import CoatingCheck  # noqa: F401
 from .process_rolls import ProcessRoll, RollMount  # noqa: F401
+from .liners import FilmSpecification, LinerSpecification  # noqa: F401
+from .station_film import FilmRoll  # noqa: F401
 from .station_scale import ScaleReading  # noqa: F401
 from .inward import (  # noqa: F401
     CustomerMaterialReceipt,

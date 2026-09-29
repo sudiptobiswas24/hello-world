@@ -58,7 +58,7 @@ class ScaleReading(AuditModel):
 
     def used_by(self):
         """The roll or doff this reading weighed, if any."""
-        for name in ("fabric_roll", "tape_doff"):
+        for name in ("fabric_roll", "tape_doff", "film_roll", "process_roll"):
             try:
                 return getattr(self, name)
             except models.ObjectDoesNotExist:

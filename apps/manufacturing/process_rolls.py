@@ -42,6 +42,8 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel
 
+from .station_scale import TYPED_REASONS
+
 ZERO = Decimal("0")
 GRAMMES_PER_KG = Decimal("1000")
 CM_PER_M = Decimal("100")
@@ -128,6 +130,16 @@ class ProcessRoll(AuditModel):
     gross_kg = models.DecimalField(max_digits=12, decimal_places=3)
     net_kg = models.DecimalField(max_digits=12, decimal_places=3)
     metres = models.DecimalField(max_digits=12, decimal_places=2)
+    weight_source = models.CharField(
+        max_length=8, default="scale",
+        choices=[("scale", "Scale"), ("manual", "Manual, supervisor-approved")])
+    scale_reading = models.OneToOneField(
+        "manufacturing.ScaleReading", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="process_roll", editable=False)
+    weight_approved_by = models.ForeignKey("hr.Employee", null=True, blank=True,
+                                           on_delete=models.PROTECT, related_name="+")
+    typed_reason = models.CharField(max_length=16, blank=True, choices=TYPED_REASONS)
+    typed_note = models.CharField(max_length=255, blank=True)
     added_gsm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True,
                                     help_text="What the lamination added, measured.")
     expected_gsm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
@@ -149,6 +161,10 @@ class ProcessRoll(AuditModel):
         constraints = [
             models.CheckConstraint(check=Q(net_kg__gt=0) & Q(metres__gt=0),
                                    name="process_roll_is_a_real_roll"),
+            models.CheckConstraint(
+                check=~Q(weight_source="manual")
+                | (Q(weight_approved_by__isnull=False) & ~Q(typed_reason="")),
+                name="process_roll_typed_weight_is_approved"),
         ]
 
     def __str__(self):
@@ -274,12 +290,13 @@ def _expected_added_gsm(spec):
 
 @transaction.atomic
 def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervisor=None,
-               reason="", at=None):
+               reason="", at=None, source="scale", typed_reason="", typed_note=""):
     """A laminated or printed roll off the machine, weighed and numbered."""
     from .conversion import bag_specification_for
     from .machines import Machine
     from .station import LineKind, check_supervisor
     from .station_floor import _context, _number
+    from .station_gauge import typed_fields, weigh_gross
 
     at = at or timezone.now()
     _check_kind(station, (LineKind.COATING, LineKind.PRINTING), "weighs rolls off")
@@ -290,7 +307,9 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
         raise ValidationError(f"Nothing is mounted on {machine.code}; mount the roll first.")
     run = mount.operation.work_order
     spec = bag_specification_for(run.item, shift_date)
-    gross, metres = _number(gross_kg, "The gross weight"), _number(metres, "The metres")
+    gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,
+                                 typed_reason, typed_note)
+    metres = _number(metres, "The metres")
     net = gross - core_type.tare_kg
     if net <= 0:
         raise ValidationError(f"{gross} kg is not more than the {core_type} core.")
@@ -328,8 +347,10 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
             f"{machine.code.replace('-', '').upper()}-{count + 1:02d}")
     roll = ProcessRoll.objects.create(
         code=code, kind=kind, mount=mount, station=station, machine=machine,
-        core_type=core_type, gross_kg=gross, net_kg=net, metres=metres, weighed_by=operator,
-        weighed_at=at, shift=shift, shift_date=shift_date, **values)
+        core_type=core_type, gross_kg=gross, scale_reading=reading,
+        **typed_fields(source, supervisor, typed_reason, typed_note), net_kg=net,
+        metres=metres, weighed_by=operator, weighed_at=at, shift=shift, shift_date=shift_date,
+        **values)
     return ProcessRoll.objects.get(pk=roll.pk)
 
 

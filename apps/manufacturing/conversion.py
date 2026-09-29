@@ -41,7 +41,7 @@ from apps.core.models import AuditModel
 from apps.core.windows import covers
 
 ZERO = Decimal("0")
-WEIGHT_CODE = "BAGWT"
+WEIGHT_CODES = ("BAGWT", "LINERWT")
 
 
 class BagCount(AuditModel):
@@ -114,9 +114,18 @@ def bag_specification_for(item, on_date):
     return specs[0]
 
 
-def bag_code(machine, shift, shift_date):
-    """BG-260601-D-C1-02: day, shift, machine, and the bundle's number on it."""
-    prefix = f"BG-{shift_date:%y%m%d}-{shift.code}-{machine.code.replace('-', '')}-"
+def counted_specification_for(item, on_date):
+    """What a counted bundle is weighed against: its sack's or its liner's specification."""
+    from .liners import LinerSpecification, liner_specification_for
+
+    if LinerSpecification.objects.filter(liner_item=item).exists():
+        return liner_specification_for(item, on_date)
+    return bag_specification_for(item, on_date)
+
+
+def bag_code(machine, shift, shift_date, kind="BG"):
+    """BG-260601-D-C1-02: day, shift, machine, and the bundle's number on it; LN for liners."""
+    prefix = f"{kind}-{shift_date:%y%m%d}-{shift.code}-{machine.code.replace('-', '')}-"
     taken = BagCount.objects.filter(machine=machine, shift=shift,
                                     shift_date=shift_date).count()
     return f"{prefix}{taken + 1:02d}"
@@ -172,12 +181,12 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
             f"{order.item} is not tracked by batch. A bundle checked by weight is a batch; "
             "track the item by batch so the check has something to belong to."
         )
-    spec = bag_specification_for(order.item, shift_date)
+    spec = counted_specification_for(order.item, shift_date)
     plan = spec.inspection_plan
     if plan is None:
         raise ValidationError(f"{spec} has no inspection plan to weigh against.")
     lines = list(plan.lines.select_related("characteristic"))
-    if [line.characteristic.code for line in lines] != [WEIGHT_CODE]:
+    if len(lines) != 1 or lines[0].characteristic.code not in WEIGHT_CODES:
         raise ValidationError(
             f"{plan} asks for more than the bag weight; inspect these bags in quality."
         )
@@ -202,7 +211,10 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         if not reason:
             raise ValidationError("Say why the off-weight bundle is taken.")
 
-    lot = Lot.objects.create(item=order.item, code=bag_code(machine, shift, shift_date),
+    from .liners import LinerSpecification
+
+    kind = "LN" if isinstance(spec, LinerSpecification) else "BG"
+    lot = Lot.objects.create(item=order.item, code=bag_code(machine, shift, shift_date, kind),
                              manufactured_on=shift_date)
     inspection = Inspection.objects.create(
         lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
@@ -255,21 +267,34 @@ def void_bags(count, supervisor, reason):
     return count
 
 
-def bags_converted(employee, up_to):
-    """For payroll: bags each day this person counted, standing, on the plant's own machines."""
+def _counted(employee, up_to, liners):
     days = defaultdict(lambda: ZERO)
     for count in BagCount.objects.filter(
             operator=employee, shift_date__lte=up_to, entry__voided_at__isnull=True,
-            machine__contractor__isnull=True):
+            machine__contractor__isnull=True,
+            work_order__bom__liner_specification__isnull=not liners):
         days[count.shift_date] += Decimal(count.bags)
     return sorted(days.items())
 
 
+def bags_converted(employee, up_to):
+    """For payroll: bags each day this person counted, standing, on the plant's own machines."""
+    return _counted(employee, up_to, liners=False)
+
+
+def liners_sealed(employee, up_to):
+    """For payroll: liners each day this person counted off a cut-and-seal machine."""
+    return _counted(employee, up_to, liners=True)
+
+
 def summary(start, end, station=None):
-    """Bags, bundles and off-weight bundles by machine and by operator, over a window."""
+    """Bags (and liners), bundles and off-weight bundles by machine and operator, over a window."""
+    from .liners import LinerSpecification
+
     counts = BagCount.objects.filter(shift_date__gte=start, shift_date__lte=end,
                                      entry__voided_at__isnull=True).select_related(
-        "machine", "operator__party")
+        "machine", "operator__party", "work_order")
+    liner_boms = set(LinerSpecification.objects.values_list("bom_id", flat=True))
     if station is not None:
         counts = counts.filter(station=station)
 
@@ -278,9 +303,10 @@ def summary(start, end, station=None):
         for count in counts:
             key = key_of(count)
             row = rows.setdefault(key, {"who": label_of(count), "bundles": 0, "bags": 0,
-                                        "conceded": 0, "deviation": ZERO})
+                                        "liners": 0, "conceded": 0, "deviation": ZERO})
             row["bundles"] += 1
-            row["bags"] += count.bags
+            # A liner sealed is not a sack stitched: counted apart.
+            row["liners" if count.work_order.bom_id in liner_boms else "bags"] += count.bags
             row["conceded"] += 0 if count.passed else 1
             row["deviation"] += (count.sample_mean_grams - count.target_grams) / count.target_grams
         for row in rows.values():

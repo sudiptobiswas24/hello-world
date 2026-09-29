@@ -52,6 +52,7 @@ class LineKind(models.TextChoices):
     EXTRUSION = "extrusion", "Tape line"
     PRINTING = "printing", "Printing"
     COATING = "coating", "Coating and lamination"
+    BLOWN_FILM = "blown_film", "Blown film"
 
 
 class LoomStation(AuditModel):

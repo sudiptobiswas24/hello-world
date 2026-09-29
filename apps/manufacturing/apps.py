@@ -13,7 +13,7 @@ class ManufacturingConfig(AppConfig):
         from apps.sales.models import register_material_checker, register_ownership_checker
 
         from .compliance import material_problems
-        from .conversion import bags_converted
+        from .conversion import bags_converted, liners_sealed
         from .inward import ownership_problems
         from .piecework import kilograms_woven, metres_woven
         from .rebatch import sources
@@ -26,3 +26,4 @@ class ManufacturingConfig(AppConfig):
         register_piece_measure("metres_woven", "Metres woven", metres_woven)
         register_piece_measure("kilograms_woven", "Kilograms woven", kilograms_woven)
         register_piece_measure("bags_converted", "Bags cut and stitched", bags_converted)
+        register_piece_measure("liners_sealed", "Liners cut and sealed", liners_sealed)

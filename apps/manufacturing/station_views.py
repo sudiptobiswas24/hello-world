@@ -467,7 +467,9 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                       if data.get("supervisor_pin") else None)
         roll = _run(weigh_roll, station, operator, self._machine(station, data.get("machine")),
                     data.get("gross_kg"), core, data.get("metres"), supervisor,
-                    data.get("reason", ""))
+                    data.get("reason", ""), source=data.get("source", "scale"),
+                    typed_reason=data.get("typed_reason", ""),
+                    typed_note=data.get("typed_note", ""))
         return Response({"id": roll.pk, "code": roll.code, "kind": roll.kind,
                          "net_kg": _exact(roll.net_kg), "added_gsm": _exact(roll.added_gsm),
                          "limits": [_exact(roll.lower_gsm), _exact(roll.upper_gsm)],
@@ -584,6 +586,41 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "inspection": doff.inspection.number or None,
             "awaiting_lab": not doff.inspection.posted,
         }, status=201)
+
+    @action(detail=True, methods=["post"])
+    def film(self, request, code=None):
+        """A roll off the blown-film line: gross kg, core, metres, micron checks."""
+        from .station_film import record_film
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        core = get_object_or_404(CoreType, code=data.get("core"))
+        supervisor = (_run(station.identify, data["supervisor_pin"])
+                      if data.get("supervisor_pin") else None)
+        roll = _run(record_film, station, operator, self._machine(station, data.get("machine")),
+                    data.get("gross_kg"), core, data.get("metres"), data.get("micron") or [],
+                    supervisor, data.get("reason", ""), source=data.get("source", "scale"),
+                    typed_reason=data.get("typed_reason", ""),
+                    typed_note=data.get("typed_note", ""))
+        return Response({
+            "id": roll.pk, "batch": roll.lot.code, "net_kg": _exact(roll.net_kg),
+            "gross_kg": _exact(roll.gross_kg), "source": roll.weight_source,
+            "mean_micron": _exact(roll.mean_micron),
+            "weighed_micron": _exact(roll.weighed_micron),
+            "inspection": roll.inspection.number or None,
+        }, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"film/(?P<row>[0-9]+)/void")
+    def void_film(self, request, code=None, row=None):
+        from .station_film import FilmRoll, void_film
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        roll = get_object_or_404(FilmRoll, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_film, roll, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": roll.pk, "voided": True})
 
     @action(detail=True, methods=["post"], url_path=r"tape/(?P<row>[0-9]+)/void")
     def void_tape(self, request, code=None, row=None):

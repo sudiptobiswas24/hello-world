@@ -37,8 +37,6 @@ from apps.core.models import AuditModel
 
 from .station_scale import TYPED_REASONS
 
-ZERO = Decimal("0")
-
 
 class TapeDoff(AuditModel):
     station = models.ForeignKey("manufacturing.LoomStation", on_delete=models.PROTECT,
@@ -100,14 +98,10 @@ def doff_code(machine, shift, shift_date):
 def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier_readings,
                 supervisor=None, reason="", at=None, instrument=None, source="scale",
                 typed_reason="", typed_note=""):
-    from apps.inventory.models import Lot
-    from apps.quality.models import Disposition, Inspection, Reading
-
     from .machines import Machine
-    from .orders import ProductionEntry
-    from .station import LineKind, check_supervisor, run_on
-    from .station_floor import _context, _number
-    from .station_scale import check_typed_weight, gross_weight
+    from .station import LineKind, run_on
+    from .station_floor import _context
+    from .station_gauge import gauged_batch, typed_fields, weigh_gross
     from .woven import TapeSpecification
 
     at = at or timezone.now()
@@ -115,12 +109,8 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
         raise ValidationError(f"{station} is not a tape line's station.")
     machine = Machine.objects.select_for_update().get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
-    if source == "manual":
-        check_typed_weight(station, operator, supervisor, typed_reason, typed_note)
-    elif source != "scale":
-        raise ValidationError(f"{source!r} is not a weight source.")
-    gross, reading = gross_weight(station, gross_kg, source, at)
-    gross = _number(gross, "The gross weight")
+    gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,
+                                 typed_reason, typed_note)
     try:
         bobbins = int(bobbins)
     except (TypeError, ValueError):
@@ -137,45 +127,14 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
                               "no denier to check against.")
     # A tape specification's plan always has its denier line: it is
     # generated from the specification, never typed.
-    plan = spec.inspection_plan
-    lines = list(plan.lines.select_related("characteristic"))
-    denier = next(line for line in lines if line.derived_from == "denier")
-    values = [_number(value, "A denier reading") for value in denier_readings or []]
-    if len(values) < denier.sample_size:
-        raise ValidationError(f"Check the denier {denier.sample_size} times; "
-                              f"{len(values)} were taken.")
-    mean = sum(values, ZERO) / len(values)
-    passed = denier.passes(mean)
-    reason = " ".join((reason or "").split())
-    if not passed:
-        check_supervisor(station, supervisor, operator)
-        if not reason:
-            raise ValidationError("Say why tape off its denier is taken.")
-    lab_to_finish = len(lines) > 1
-    lot = Lot.objects.create(item=order.item, code=doff_code(machine, shift, shift_date),
-                             manufactured_on=shift_date)
-    inspection = Inspection.objects.create(
-        lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
-        disposition="" if passed or lab_to_finish else Disposition.CONCESSION,
-        decided_by=None if passed else supervisor.party, decision_note=reason,
-    )
-    for number, value in enumerate(values, start=1):
-        Reading.objects.create(inspection=inspection, plan_line=denier, value=value,
-                               sample_reference=f"D{number}", instrument=instrument)
-    if not lab_to_finish:
-        inspection.post()
-    entry = ProductionEntry.objects.create(
-        work_order=order, entry_date=shift_date, warehouse=station.warehouse,
-        quantity_produced=net, uom=order.item.uom, lot=lot, work_centre=machine.work_centre,
-        machine=machine, memo=f"Doffed at {station}"[:255],
-    )
-    entry.post()
+    mean, passed, reason, lot, inspection, entry = gauged_batch(
+        station, operator, machine, order, spec.inspection_plan, "denier", denier_readings,
+        "tape", supervisor, reason, shift_date, doff_code(machine, shift, shift_date), net,
+        f"Doffed at {station}", instrument=instrument)
     return TapeDoff.objects.create(
         station=station, machine=machine, lot=lot, entry=entry, inspection=inspection,
-        gross_kg=gross, weight_source=source, scale_reading=reading,
-        weight_approved_by=supervisor if source == "manual" else None,
-        typed_reason=typed_reason if source == "manual" else "",
-        typed_note=(typed_note or "").strip() if source == "manual" else "",
+        gross_kg=gross, scale_reading=reading,
+        **typed_fields(source, supervisor, typed_reason, typed_note),
         bobbins=bobbins, core_type=core_type, net_kg=net,
         mean_denier=mean.quantize(Decimal("0.01")), weighed_by=operator, weighed_at=at,
         shift=shift, shift_date=shift_date, conceded_by=None if passed else supervisor,
@@ -185,24 +144,6 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
 
 @transaction.atomic
 def void_doff(doff, station, supervisor, operator, reason):
-    from .station import check_supervisor
+    from .station_gauge import void_gauged
 
-    if doff.station_id != station.pk:
-        raise ValidationError(f"{doff} was not weighed at {station}.")
-    if doff.voided_at is not None:
-        raise ValidationError(f"{doff} is already withdrawn.")
-    if not (reason or "").strip():
-        raise ValidationError("Say why the doff is withdrawn.")
-    check_supervisor(station, supervisor, operator)
-    doff.entry.void(memo=f"Withdrawn at {station}: {reason.strip()}"[:255])
-    inspection = doff.inspection
-    if inspection is not None:
-        if inspection.posted:
-            if inspection.voided_at is None:
-                inspection.void(reason.strip())
-        else:
-            inspection.readings.all().delete()
-            doff.inspection = None
-            inspection.delete()
-    doff.voided_at = timezone.now()
-    doff.save(update_fields=["voided_at", "inspection", "updated_at"])
+    return void_gauged(doff, station, supervisor, operator, reason, "doff")

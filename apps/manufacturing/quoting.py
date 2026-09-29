@@ -59,10 +59,12 @@ GRAMMES_PER_KG = Decimal("1000")
 PER_KG_STAGES = [
     ("tape", "Tape extrusion"), ("weaving", "Weaving"), ("lamination", "Lamination"),
     ("printing", "Printing"), ("cutting", "Cutting and stitching"),
+    ("blown_film", "Liner film blowing"),
 ]
 PER_BAG_STAGES = [
     ("valve", "Valve fixing"), ("dcut", "D-cut punching"), ("handle", "Handle attachment"),
     ("liner", "Liner insertion"), ("packing", "Bale packing"),
+    ("sealing", "Liner cutting and sealing"),
 ]
 STAGES = PER_KG_STAGES + PER_BAG_STAGES
 STAGE_NAMES = dict(STAGES)
@@ -337,6 +339,13 @@ class _Walk:
         self.chain = {fabric.fabric_item_id: (fabric.bom, "weaving")}
         for tape in tapes.values():
             self.chain[tape.tape_item_id] = (tape.bom, "tape")
+        # A liner made here is costed down to the polymer it was blown
+        # from, as the fabric is: a rate typed for it would be a second
+        # price for the same film.
+        liner = _liner_for(specification, on_date)
+        if liner is not None:
+            self.chain[liner.liner_item_id] = (liner.bom, "sealing")
+            self.chain[liner.film.film_item_id] = (liner.film.bom, "blown_film")
         self.material = defaultdict(lambda: ZERO)
         self.credit = defaultdict(lambda: ZERO)
         self.stage_kg = defaultdict(lambda: ZERO)
@@ -368,6 +377,15 @@ class _Walk:
 EDITED_AFTER = datetime.timedelta(seconds=1)
 
 
+def _liner_for(specification, on_date):
+    """The liner specification a sack's counted liner is made to on the day, if any."""
+    if not specification.liner_is_counted():
+        return None
+    from .liners import liner_specification_for
+
+    return liner_specification_for(specification.liner_item, on_date)
+
+
 def _recipe_changed_after(specification, on_date):
     """
     The part of the sack's chain edited after `on_date`, if any.
@@ -378,6 +396,9 @@ def _recipe_changed_after(specification, on_date):
     """
     fabric = specification.fabric
     chain = [specification, fabric, fabric.warp_tape, fabric.weft()]
+    liner = _liner_for(specification, on_date)
+    if liner is not None:
+        chain += [liner, liner.film]
     for part in chain:
         edited = part.updated_at - part.created_at > EDITED_AFTER
         if edited and timezone.localtime(part.updated_at).date() > on_date:
@@ -455,7 +476,8 @@ def compute(specification, on_date):
     kg = specification.fabric.fabric_item.uom
     stages = [(stage, [(sub, uom, quantity, Decimal("1"))
                        for (sub, uom), quantity in walk.stage_parts[stage].items()])
-              for stage in ("tape", "weaving")]
+              for stage in ("tape", "weaving", "blown_film", "sealing")
+              if walk.stage_parts[stage] or stage in ("tape", "weaving")]
     on_the_roll = [(bag, kg, roll_kg, roll_kg)]
     if specification.is_laminated:
         stages.append(("lamination", on_the_roll))

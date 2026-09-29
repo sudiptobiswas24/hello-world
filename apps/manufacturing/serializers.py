@@ -31,6 +31,7 @@ from .quoting import CostSheet, CostSheetLine, MaterialRate, QuotePolicy, StageR
 from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
+from .liners import FilmSpecification, LinerSpecification
 from .routing import Routing, RoutingOperation
 from .scrap import OperationReport, ProductionScrap, ScrapReason
 from .rebatch import Rebatch, RebatchLine
@@ -67,6 +68,40 @@ class TapeSpecificationSerializer(serializers.ModelSerializer):
 
     def get_metres_per_kg(self, obj):
         return round(obj.metres_per_kg(), 2)
+
+
+class FilmSpecificationSerializer(serializers.ModelSerializer):
+    grams_per_metre = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FilmSpecification
+        fields = [
+            "id", "code", "name", "film_item", "micron", "lay_flat_width_cm",
+            "base_polymer", "lldpe_item", "lldpe_percent", "masterbatch_item",
+            "masterbatch_percent", "extrusion_waste_percent", "waste_item",
+            "waste_recovered_percent", "micron_tolerance_percent", "routing", "valid_from",
+            "valid_to", "bom", "is_active", "grams_per_metre",
+        ]
+        read_only_fields = ["bom"]
+
+    def get_grams_per_metre(self, obj):
+        return str(obj.grams_per_metre().quantize(Decimal("0.001")))
+
+
+class LinerSpecificationSerializer(serializers.ModelSerializer):
+    liner_grams = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LinerSpecification
+        fields = [
+            "id", "code", "name", "liner_item", "film", "cut_length_cm", "seal_waste_percent",
+            "waste_recovered_percent", "weight_tolerance_percent", "routing", "valid_from",
+            "valid_to", "bom", "is_active", "liner_grams",
+        ]
+        read_only_fields = ["bom"]
+
+    def get_liner_grams(self, obj):
+        return str(obj.liner_grams().quantize(Decimal("0.001")))
 
 
 class FabricSpecificationSerializer(serializers.ModelSerializer):

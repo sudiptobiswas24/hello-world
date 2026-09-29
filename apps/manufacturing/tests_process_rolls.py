@@ -377,3 +377,26 @@ class BundleTraceApiTests(RollsTestCase):
                          ("C-2", [roll.code, self.fabric_lot.code]))
         response = office.get(f"/api/manufacturing/lot-trace/{self.fabric_lot.pk}/rolls/")
         self.assertEqual(response.status_code, 400)
+
+
+class OnTheScaleTests(RollsTestCase):
+    """Weighed as a doff is: the scale's weight, or a typed one a supervisor approves."""
+
+    def test_the_scales_weight_or_an_approved_typed_one(self):
+        from .station_scale import post_reading
+
+        LoomStation.objects.filter(pk=self.kx.pk).update(scale_code="SC-K", scale_bridged=True)
+        self.kx.refresh_from_db()
+        self.mount()
+        reading = post_reading("SC-K", "127.78", True, at=LATER)
+        roll = weigh_roll(self.kx, self.operator, self.k1, None, self.core, "1000", at=LATER)
+        self.assertEqual((roll.gross_kg, roll.weight_source, roll.added_gsm),
+                         (Decimal("127.780"), "scale", Decimal("18.002")))
+        reading.refresh_from_db()
+        self.assertEqual(reading.used_by(), roll)
+        with self.assertRaisesMessage(ValidationError, "A typed weight needs"):
+            self.laminated(source="manual")
+        typed = self.laminated(source="manual", supervisor=self.supervisor,
+                               typed_reason="does_not_fit")
+        self.assertEqual((typed.weight_source, typed.weight_approved_by),
+                         ("manual", self.supervisor))

@@ -116,10 +116,13 @@ from .serializers import (
     RoutingSerializer,
     ShiftSerializer,
     TapeSpecificationSerializer,
+    FilmSpecificationSerializer,
+    LinerSpecificationSerializer,
     TimeBookingSerializer,
     WorkCentreSerializer,
     WorkOrderSerializer,
 )
+from .liners import FilmSpecification, LinerSpecification
 from .woven import BagSpecification, FabricSpecification, TapeSpecification, denier_for
 
 
@@ -191,6 +194,20 @@ def _quantity(request, default="1"):
         return Decimal(str(request.query_params.get("quantity") or default))
     except InvalidOperation:
         raise DRFValidationError(["quantity must be a number."])
+
+
+class FilmSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Blown liner film: its blend, thickness and width; its bill is built from them."""
+
+    queryset = FilmSpecification.objects.select_related("film_item", "bom")
+    serializer_class = FilmSpecificationSerializer
+
+
+class LinerSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """A liner cut from a film; a lined sack carries one and weighs what this says."""
+
+    queryset = LinerSpecification.objects.select_related("liner_item", "film", "bom")
+    serializer_class = LinerSpecificationSerializer
 
 
 class TapeSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

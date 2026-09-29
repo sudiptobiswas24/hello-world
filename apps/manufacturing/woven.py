@@ -1494,8 +1494,22 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         """All of it: waste the plant bought, cut and can partly recover."""
         return self.punched_area_sqm() * self.fabric.gsm() + self.punched_addon_grams()
 
+    def liner_is_counted(self):
+        """A liner made here is counted, one a sack; its weight is its specification's."""
+        return (self.liner_item_id is not None
+                and self.liner_item.uom.category == UnitOfMeasureCategory.COUNT)
+
+    def liner_specification(self):
+        from django.utils import timezone
+
+        from .liners import liner_specification_for
+
+        return liner_specification_for(self.liner_item, self.valid_from or timezone.localdate())
+
     def liner_grams(self):
-        """Typed, or two layers of film at the liner's size and thickness."""
+        """Its specification's, typed, or two layers of film at its size and thickness."""
+        if self.liner_is_counted():
+            return self.liner_specification().liner_grams()
         if self.liner_micron:
             return (
                 2 * (self.liner_width_cm / CM_PER_M) * (self.liner_length_cm / CM_PER_M)
@@ -1647,9 +1661,13 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 self.conversion_waste_percent, "Handle",
             ))
         if self.liner_item is not None:
+            # One liner a sack where the plant counts them; by weight where
+            # the liner is bought as film.
+            counted = self.liner_is_counted()
             rows.append((
-                self.liner_item, self.liner_grams(),
-                self.liner_item.uom, self.conversion_waste_percent, "Inner liner",
+                self.liner_item, BAG_BATCH_PIECES if counted else self.liner_grams(),
+                self.liner_item.uom, self.conversion_waste_percent,
+                f"Inner liner, {self.liner_specification().code}" if counted else "Inner liner",
             ))
         if self.valve_patch_item is not None:
             rows.append((
@@ -1707,7 +1725,7 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
             (self.thread_item, "the thread"),
             (self.reducer_item, "the reducer"),
             (self.solvent_item, "the solvent"),
-            (self.liner_item, "the liner"),
+            (None if self.liner_is_counted() else self.liner_item, "the liner"),
             (self.bopp_film_item, "the BOPP film"),
             (self.valve_patch_item, "the valve"),
             (self.cover_patch_item, "the cover sheets"),
@@ -1913,6 +1931,11 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 raise ValidationError(
                     f"{code}: the {label} need both an item and a quantity."
                 )
+        if self.liner_is_counted() and (self.liner_micron or self.liner_grams_per_bag):
+            raise ValidationError(
+                f"{code}: {self.liner_item.sku} is made here to its own specification, "
+                "which says what it weighs. Take the typed liner weight and film off."
+            )
         if (self.liner_micron or self.liner_grams_per_bag) and self.liner_item_id is None:
             raise ValidationError(
                 f"{code}: the sack has a liner and the specification does not say "

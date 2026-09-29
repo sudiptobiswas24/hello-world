@@ -47,6 +47,8 @@ from .views import (
     RoutingViewSet,
     ShiftViewSet,
     TapeSpecificationViewSet,
+    FilmSpecificationViewSet,
+    LinerSpecificationViewSet,
     TimeBookingViewSet,
     ChangeoverRuleViewSet,
     MachineViewSet,
@@ -57,6 +59,8 @@ from .views import (
 
 router = DefaultRouter()
 router.register("tape-specifications", TapeSpecificationViewSet)
+router.register("film-specifications", FilmSpecificationViewSet)
+router.register("liner-specifications", LinerSpecificationViewSet)
 router.register("fabric-specifications", FabricSpecificationViewSet)
 router.register("bag-specifications", BagSpecificationViewSet)
 router.register("boms", BillOfMaterialsViewSet)
