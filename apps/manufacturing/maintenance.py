@@ -32,6 +32,12 @@ adds none — a second row would count the same hour twice in
 effectiveness. And the stoppage cannot be withdrawn from under a job
 that rests on it.
 
+**Spares are issued to a job**, while it is open: a write-down of the
+store under the maintenance reason, so they leave stock at their cost
+and land in maintenance expense, and are returned by voiding the issue
+— exactly what was taken comes back. A job is not cancelled with spares
+standing against it: they were taken for something, or they go back.
+
 **Reliability is derived**: failures from the breakdown jobs, running
 hours from the time bookings, repair time from the stoppages. Mean time
 between failures is running hours per failure; mean time to repair is
@@ -52,6 +58,7 @@ from apps.core.models import AuditModel, to_date
 ZERO = Decimal("0")
 MINUTES_PER_HOUR = Decimal("60")
 CENTS = Decimal("0.01")
+SPARE_ISSUE = "maintenance spare issue"
 
 
 class MaintenanceSchedule(AuditModel):
@@ -319,7 +326,7 @@ class MaintenanceJob(AuditModel):
     def delete(self, *args, **kwargs):
         if self.done_on is not None:
             raise ValidationError(f"{self} is done; it is as it was done.")
-        if self.is_breakdown or self.labour.exists():
+        if self.is_breakdown or self.labour.exists() or self.spares.exists():
             raise ValidationError(f"{self} is a record of a failure and of work; cancel it.")
         return super().delete(*args, **kwargs)
 
@@ -329,6 +336,11 @@ class MaintenanceJob(AuditModel):
 
     def is_open(self):
         return self.done_on is None and self.cancelled_at is None
+
+    def spares_value(self):
+        """What the spares still standing against it cost, from the issues' own entries."""
+        return sum((issue.value() for issue in self.spares.filter(
+            adjustment__voided_at__isnull=True).select_related("adjustment")), ZERO)
 
     def labour_minutes(self):
         total = self.labour.aggregate(total=Sum("minutes"))["total"] or ZERO
@@ -351,6 +363,8 @@ class MaintenanceJob(AuditModel):
         reason = " ".join((reason or "").split())
         if not reason:
             raise ValidationError("Say why the job is cancelled.")
+        if self.spares.filter(adjustment__voided_at__isnull=True).exists():
+            raise ValidationError(f"{self} has spares issued to it; return them first.")
         self.cancelled_at, self.cancelled_reason = timezone.now(), reason[:255]
         self._close(["cancelled_at", "cancelled_reason"])
 
@@ -522,6 +536,7 @@ def reliability(start, end, machine=None, work_centre=None):
     repair_minutes = sum((job.downtime.minutes for job in repaired), ZERO)
     labour = MaintenanceLabour.objects.filter(job__in=jobs).aggregate(
         total=Sum("minutes"))["total"] or ZERO
+    spares = sum((job.spares_value() for job in jobs), ZERO)
     return {
         "start": start, "end": end,
         "failures": len(jobs),
@@ -530,4 +545,81 @@ def reliability(start, end, machine=None, work_centre=None):
         "mtbf_hours": (run_hours / len(jobs)).quantize(CENTS) if jobs else None,
         "mttr_minutes": (repair_minutes / len(repaired)).quantize(CENTS) if repaired else None,
         "labour_minutes": Decimal(labour).quantize(CENTS),
+        "spares_value": spares,
     }
+
+
+class SpareIssue(AuditModel):
+    """Spare parts out of the store and onto a job, as one stock write-down."""
+
+    job = models.ForeignKey(MaintenanceJob, on_delete=models.PROTECT, related_name="spares")
+    adjustment = models.OneToOneField("inventory.StockAdjustment", on_delete=models.PROTECT,
+                                      related_name="spare_issue")
+    issued_to = models.ForeignKey("hr.Employee", null=True, blank=True,
+                                  on_delete=models.PROTECT, related_name="+")
+
+    class Meta:
+        ordering = ["job", "id"]
+
+    def __str__(self):
+        return f"{self.adjustment} to {self.job}"
+
+    def value(self):
+        """What left the store, positive."""
+        return -self.adjustment.total_value()
+
+    def is_standing(self):
+        return self.adjustment.voided_at is None
+
+
+@transaction.atomic
+def issue_spares(job, warehouse, lines, on_date=None, issued_to=None, reason=None):
+    """
+    `lines` as [(item, quantity)] or [(item, quantity, lot)], in the
+    item's own unit. Written down under the spares reason.
+    """
+    from apps.inventory.adjustments import StockAdjustment, StockAdjustmentLine
+
+    from .orders import ManufacturingSettings
+
+    job = MaintenanceJob.objects.select_for_update().get(pk=job.pk)
+    if not job.is_open():
+        raise ValidationError(f"{job} is not open; spares go to a job being worked on.")
+    reason = reason or ManufacturingSettings.get().spares_reason
+    if reason is None:
+        raise ValidationError("Say which adjustment reason spares are written off under, "
+                              "in the manufacturing settings.")
+    rows = []
+    for row in lines or []:
+        item, quantity, lot = (tuple(row) + (None,))[:3]
+        try:
+            quantity = Decimal(str(quantity))
+        except (ArithmeticError, TypeError, ValueError):
+            raise ValidationError(f"The quantity of {item} is a number.")
+        if not quantity.is_finite() or quantity <= 0:
+            raise ValidationError(f"Issue more than nothing of {item}.")
+        rows.append((item, quantity, lot))
+    if not rows:
+        raise ValidationError("Say which spares are issued.")
+    adjustment = StockAdjustment.objects.create(
+        adjustment_date=to_date(on_date) or timezone.now().date(), warehouse=warehouse,
+        reason=reason, memo=f"Spares for {job}"[:255], raised_by=SPARE_ISSUE,
+    )
+    for item, quantity, lot in rows:
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=item, uom=item.uom,
+                                           quantity=-quantity, lot=lot)
+    adjustment.post()
+    return SpareIssue.objects.create(job=job, adjustment=adjustment, issued_to=issued_to)
+
+
+@transaction.atomic
+def return_spares(issue, on_date=None):
+    """What was issued comes back whole, while the job is still open."""
+    if not issue.is_standing():
+        raise ValidationError(f"{issue} was already returned.")
+    if not issue.job.is_open():
+        raise ValidationError(f"{issue.job} is closed; its spares are as they were used. "
+                              "Put anything left back with a stock adjustment.")
+    issue.adjustment.void(on_date=on_date, memo=f"Spares returned from {issue.job}"[:255],
+                          through=SPARE_ISSUE)
+    return issue

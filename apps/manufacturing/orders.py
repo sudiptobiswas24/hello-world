@@ -133,6 +133,12 @@ class ManufacturingSettings(AuditModel):
                   "account for all of its scrap is refused. Off, what no line explains "
                   "is reported as unexplained.",
     )
+    spares_reason = models.ForeignKey(
+        "inventory.AdjustmentReason", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="What spare parts issued to a maintenance job are written off "
+                  "under, and so which expense account they land in.",
+    )
 
     class Meta:
         verbose_name_plural = "manufacturing settings"

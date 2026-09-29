@@ -734,7 +734,9 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {"complete": "manufacturing.change_maintenancejob",
                              "cancel": "manufacturing.change_maintenancejob",
                              "labour": "manufacturing.change_maintenancejob",
-                             "breakdown": "manufacturing.add_maintenancejob"}
+                             "breakdown": "manufacturing.add_maintenancejob",
+                             "spares": "manufacturing.change_maintenancejob",
+                             "return_spares": "manufacturing.change_maintenancejob"}
 
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
@@ -788,6 +790,40 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                    worked_on=worked_on, minutes=minutes)
         return Response({"id": row.pk, "job": job.pk, "minutes": str(row.minutes),
                          "labour_minutes": str(job.labour_minutes())}, status=201)
+
+    @action(detail=True, methods=["post"])
+    def spares(self, request, pk=None):
+        """{warehouse, lines: [{item, quantity, lot?}], issued_to?}: out of the store."""
+        from apps.hr.models import Employee
+        from apps.inventory.models import Item, Lot, Warehouse
+
+        from .maintenance import issue_spares
+
+        job = self.get_object()
+        data = request.data
+        warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
+        lines = []
+        for row in data.get("lines") or []:
+            item = get_object_or_404(Item, pk=row.get("item"))
+            lot = get_object_or_404(Lot, pk=row["lot"], item=item) if row.get("lot") else None
+            lines.append((item, row.get("quantity"), lot))
+        issued_to = (get_object_or_404(Employee, pk=data["issued_to"])
+                     if data.get("issued_to") else None)
+        issue = _run(issue_spares, job, warehouse, lines, on_date=data.get("on_date"),
+                     issued_to=issued_to)
+        return Response({"id": issue.pk, "adjustment": issue.adjustment.number,
+                         "value": str(issue.value()),
+                         "spares_value": str(job.spares_value())}, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"spares/(?P<issue>[0-9]+)/return")
+    def return_spares(self, request, pk=None, issue=None):
+        from .maintenance import SpareIssue, return_spares
+
+        job = self.get_object()
+        row = get_object_or_404(SpareIssue, pk=issue, job=job)
+        _run(return_spares, row, on_date=request.data.get("on_date"))
+        return Response({"id": row.pk, "returned": True,
+                         "spares_value": str(job.spares_value())})
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):

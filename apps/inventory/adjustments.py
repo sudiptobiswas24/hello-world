@@ -131,6 +131,12 @@ class StockAdjustment(AuditModel):
         related_name="adjustments", editable=False,
         help_text="Set when this adjustment was raised by posting a count sheet.",
     )
+    raised_by = models.CharField(
+        max_length=64, blank=True, editable=False,
+        help_text="The document that raised this, when one did — spares issued to a "
+                  "maintenance job. It is voided through that document, whose own "
+                  "rules decide whether it may be.",
+    )
     from_standard_change = models.BooleanField(
         default=False, editable=False,
         help_text="Set when a change of standard cost raised this. Such an "
@@ -255,7 +261,7 @@ class StockAdjustment(AuditModel):
         return entry
 
     @transaction.atomic
-    def void(self, on_date=None, memo=""):
+    def void(self, on_date=None, memo="", through=""):
         """
         Undo a posted adjustment: reverse the ledger entry and put the
         quantity back.
@@ -268,6 +274,11 @@ class StockAdjustment(AuditModel):
             raise ValidationError("Only a posted adjustment can be voided.")
         if self.is_voided():
             raise ValidationError("This adjustment has already been voided.")
+        if self.raised_by and through != self.raised_by:
+            raise ValidationError(
+                f"{self} was raised by a {self.raised_by}; undo it there, where the "
+                "rules for undoing it are."
+            )
         if self.from_standard_change:
             # Reversing the entry would put the ledger back and leave the
             # standard where it is, so the shelf would still be valued at
