@@ -1,5 +1,10 @@
 from rest_framework.routers import DefaultRouter
 
+from .price_variation_views import (
+    PriceClauseViewSet,
+    PriceIndexViewSet,
+    PriceVariationBillViewSet,
+)
 from .views import (
     ThirdPartyReleaseViewSet,
     SuppliedItemViewSet,
@@ -46,5 +51,8 @@ router.register("sales-reps", SalesRepViewSet)
 router.register("sales-reports", SalesReportViewSet, basename="sales-report")
 router.register("recurring-invoices", RecurringInvoiceViewSet)
 router.register("recurring-invoice-lines", RecurringInvoiceLineViewSet)
+router.register("price-indices", PriceIndexViewSet)
+router.register("price-clauses", PriceClauseViewSet)
+router.register("price-variation-bills", PriceVariationBillViewSet, basename="price-variation-bill")
 
 urlpatterns = router.urls

@@ -3856,3 +3856,10 @@ def generate_due_invoices(as_of=None):
 
 
 from .third_party import ThirdPartyRelease, ThirdPartyReleaseLine  # noqa: E402,F401
+from .price_variation import (  # noqa: E402,F401
+    PriceIndex,
+    PriceIndexValue,
+    PriceVariationBill,
+    PriceVariationClause,
+    PriceVariationLine,
+)
