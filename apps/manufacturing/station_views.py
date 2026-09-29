@@ -513,6 +513,23 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                          "run": entry.work_order.number, "item": row.item.sku,
                          "kg": _exact(row.quantity)}, status=201)
 
+    @action(detail=True, methods=["post"], url_path="run-seconds")
+    def run_seconds(self, request, code=None):
+        """Off-grade sacks off a run, counted into stock as seconds: {machine, pieces, reason}.
+        Withdrawn as waste is, at run-waste/{id}/void/."""
+        from .station_floor import book_seconds
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        entry = _run(book_seconds, station, operator,
+                     self._machine(station, data.get("machine")), data.get("pieces"),
+                     data.get("reason", ""))
+        row = entry.byproducts.get()
+        return Response({"id": entry.pk, "number": entry.number,
+                         "run": entry.work_order.number, "item": row.item.sku,
+                         "pieces": _exact(row.quantity)}, status=201)
+
     @action(detail=True, methods=["post"], url_path=r"run-waste/(?P<row>[0-9]+)/void")
     def void_run_waste(self, request, code=None, row=None):
         from .orders import ProductionEntry

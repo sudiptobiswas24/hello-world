@@ -138,13 +138,35 @@ def book_scrap(station, operator, machine, reason_code, quantity, at=None):
 @transaction.atomic
 def book_waste(station, operator, machine, kg, item_code="", at=None):
     """The waste off a machine's run, weighed into stock as the recipe names it."""
+    return _give_back(station, operator, machine, kg, item_code, at, counted=False)
+
+
+@transaction.atomic
+def book_seconds(station, operator, machine, pieces, reason_code, at=None):
+    """Off-grade sacks off a run, counted into stock as its seconds, with the defect."""
+    from .scrap import ScrapReason
+    from .station import run_on
+    from .woven import BagSpecification
+
+    reason = ScrapReason.objects.filter(code=reason_code, is_active=True).first()
+    if reason is None:
+        raise ValidationError(f"{reason_code} is not a defect in use.")
+    run = run_on(machine)
+    spec = BagSpecification.objects.filter(bom=run.bom).first()
+    if spec is None or spec.seconds_item is None:
+        raise ValidationError(f"{run} has no seconds item: its off-grade sacks are scrap.")
+    return _give_back(station, operator, machine, pieces, spec.seconds_item.sku, at,
+                      counted=True, note=f"Seconds, {reason.code}")
+
+
+def _give_back(station, operator, machine, quantity, item_code, at, counted, note="Waste"):
     from .orders import ProductionByproduct, ProductionEntry
     from .station import run_on
 
     at = at or timezone.now()
     _shift, shift_date = _context(station, operator, machine, at)
     run = run_on(machine)
-    kg = _number(kg, "The waste")
+    kg = _number(quantity, "The seconds" if counted else "The waste")
     given_back = list(run.bom.byproducts.select_related("item__uom"))
     if item_code:
         rows = [row for row in given_back if row.item.sku == item_code]
@@ -158,13 +180,13 @@ def book_waste(station, operator, machine, kg, item_code="", at=None):
             "say which this is." if not item_code else
             f"{item_code} is not what {run.bom} gives back.")
     item = rows[0].item
-    if item.uom.category != "weight":
+    if not counted and item.uom.category != "weight":
         raise ValidationError(f"{item} is counted in {item.uom}; waste is weighed.")
     entry = ProductionEntry.objects.create(
         work_order=run, entry_date=shift_date, warehouse=station.warehouse,
         quantity_produced=ZERO, quantity_scrapped=ZERO, uom=run.uom,
         work_centre=machine.work_centre, machine=machine,
-        memo=f"Waste weighed at {station} by {operator}"[:255],
+        memo=f"{note} {'counted' if counted else 'weighed'} at {station} by {operator}"[:255],
     )
     # Weighed in the item's own unit of weight.
     ProductionByproduct.objects.create(entry=entry, item=item, quantity=kg, uom=item.uom)

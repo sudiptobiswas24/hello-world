@@ -1335,6 +1335,14 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     cutting_waste_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    seconds_item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="What an off-grade sack is sold as: counted, at its own lower value.")
+    seconds_percent = models.DecimalField(
+        max_digits=6, decimal_places=3, default=Decimal("0"),
+        help_text="Of what is fed into conversion, the share that comes out a "
+                  "second rather than a first or offcut. Out of the conversion "
+                  "waste, not on top of it.")
     routing = models.ForeignKey(
         "Routing", null=True, blank=True, on_delete=models.PROTECT,
         related_name="%(class)s_specifications",
@@ -1778,12 +1786,20 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         return rows
 
     def bom_byproducts(self):
+        waste, seconds = _percent(self.conversion_waste_percent), _percent(self.seconds_percent)
+        rows = []
+        if self.seconds_item is not None:
+            # Sacks from the same fabric as the loss the waste allows for:
+            # a thousand firsts are fed 1,000 / (1 - w), s of that seconds.
+            rows.append((self.seconds_item, BAG_BATCH_PIECES * seconds / (1 - waste),
+                         self.seconds_item.uom, ByproductValuation.STANDARD))
         if self.cutting_waste_item is None:
-            return []
-        recovered = self.recovered_waste(
-            self.fabric_grams(), self.conversion_waste_percent
-        ) + self.punched_grams() * _percent(self.waste_recovered_percent)
-        return [(
+            return rows
+        # What becomes a second is not also swept up as offcut.
+        lost = self.fabric_grams() * (waste - seconds) / (1 - waste)
+        recovered = lost * _percent(self.waste_recovered_percent) \
+            + self.punched_grams() * _percent(self.waste_recovered_percent)
+        return rows + [(
             self.cutting_waste_item, recovered, self.cutting_waste_item.uom,
             ByproductValuation.STANDARD,
         )]
@@ -2019,6 +2035,17 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                             (self.uv_retention_min_percent, "UV retention")):
             if value is not None and value <= 0:
                 raise ValidationError(f"{code}: a {what} limit is more than nothing.")
+        if (self.seconds_item_id is None) != (not self.seconds_percent):
+            raise ValidationError(f"{code}: seconds need both the item they are sold as "
+                                  "and the share expected.")
+        if self.seconds_percent and self.seconds_percent >= self.conversion_waste_percent:
+            raise ValidationError(
+                f"{code}: {self.seconds_percent}% seconds out of a {self.conversion_waste_percent}% "
+                "conversion loss leaves nothing for offcut. Seconds come out of the loss.")
+        if self.seconds_item_id is not None and \
+                self.seconds_item.uom.category != UnitOfMeasureCategory.COUNT:
+            raise ValidationError(f"{code}: seconds are counted, and {self.seconds_item.sku} "
+                                  f"is measured in {self.seconds_item.uom}.")
         if self.bond_strength_min_n and not self.is_laminated:
             raise ValidationError(f"{code}: an uncoated sack has no lamination bond to test.")
         if bool(self.uv_retention_min_percent) != bool(self.uv_exposure_hours):
