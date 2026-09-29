@@ -880,6 +880,16 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                   "made — so the specification carries it in like everything "
                   "else.",
     )
+    warp_strength_min_n = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Least tensile strength along the warp, newtons a 5 cm strip.")
+    weft_strength_min_n = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Across the weft.")
+    mesh_tolerance_per_inch = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Given, the lab counts ends and picks an inch against the mesh, "
+                  "give or take this many.")
     inspection_plan = models.OneToOneField(
         "quality.InspectionPlan", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="%(class)s_specification",
@@ -1019,11 +1029,27 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         # mesh makes. The loom's own figure is already checked when the
         # specification saves; this is the promise the goods are sold on.
         margin = self.target_gsm * _percent(self.gsm_tolerance_percent)
-        return [(
+        rows = [(
             "GSM", "Grammes per square metre", ("gsm", "Grammes per square metre"),
             self.target_gsm, self.target_gsm - margin, self.target_gsm + margin,
             3, Evaluation.MEAN, "gsm",
         )]
+        strip = ("N-5cm", "Newtons a 5 cm strip")
+        for code, name, value, source in (
+            ("TENWARP", "Warp tensile", self.warp_strength_min_n, "warp_strength"),
+            ("TENWEFT", "Weft tensile", self.weft_strength_min_n, "weft_strength"),
+        ):
+            if value:
+                rows.append((code, name, strip, None, value, None, 5, Evaluation.MEAN, source))
+        tolerance = self.mesh_tolerance_per_inch
+        if tolerance is not None:
+            for code, name, count, source in (
+                ("EPI", "Ends an inch", self.ends_per_inch, "ends"),
+                ("PPI", "Picks an inch", self.picks_per_inch, "picks"),
+            ):
+                rows.append((code, name, ("per-inch", "An inch"), count, count - tolerance,
+                             count + tolerance, 3, Evaluation.MEAN, source))
+        return rows
 
     def bom_byproducts(self):
         if self.loom_waste_item is None:
@@ -1050,6 +1076,11 @@ class FabricSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_units()
+        for value, what in ((self.warp_strength_min_n, "warp strength"),
+                            (self.weft_strength_min_n, "weft strength"),
+                            (self.mesh_tolerance_per_inch, "mesh tolerance")):
+            if value is not None and value <= 0:
+                raise ValidationError(f"{self.code}: a {what} is more than nothing.")
         deviation = abs(self.gsm_deviation_percent())
         if deviation > self.gsm_tolerance_percent:
             raise ValidationError(
@@ -1261,6 +1292,22 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         related_name="bag_specifications",
         help_text="The artwork it is printed with: whose cylinders a run needs.",
     )
+    # What the lab tests a batch of sacks for, where the customer asks.
+    # Each given becomes a line of the generated plan; blank, no line.
+    seam_strength_min_n = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Least load the bottom seam holds, newtons, on the mean of five.")
+    drop_test_drops = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Drops a filled sack must survive; every one of three tested.")
+    bond_strength_min_n = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Laminated sacks: least peel strength of the coating, newtons a 15 mm strip.")
+    uv_retention_min_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Least share of its strength the fabric keeps after UV exposure.")
+    uv_exposure_hours = models.PositiveIntegerField(
+        null=True, blank=True, help_text="The hours of exposure that share is after.")
     liner_grams_per_bag = models.DecimalField(
         max_digits=8, decimal_places=3, default=Decimal("0"),
         help_text="Typed, where the liner is bought or weighed as a finished "
@@ -1698,11 +1745,37 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         # the goods are sold on and the customer's scale checks.
         weight = self.target_grams if self.target_grams is not None else self.bag_grams()
         margin = weight * _percent(self.weight_tolerance_percent)
-        return [(
+        rows = [(
             "BAGWT", "Finished bag weight", ("g-bag", "Grammes a bag"),
             weight, weight - margin, weight + margin, 10,
             Evaluation.MEAN, "bag_weight",
         )]
+        newtons = ("N", "Newtons")
+        for value, row in (
+            (self.seam_strength_min_n,
+             ("SEAM", "Seam strength", newtons, None, self.seam_strength_min_n, None, 5,
+              Evaluation.MEAN, "seam_strength")),
+            (self.drop_test_drops,
+             ("DROP", "Drops survived, filled", ("drops", "Drops"), None,
+              self.drop_test_drops, None, 3, Evaluation.EVERY, "drop_test")),
+            (self.bond_strength_min_n,
+             ("BOND", "Lamination bond", ("N-15mm", "Newtons a 15 mm strip"), None,
+              self.bond_strength_min_n, None, 5, Evaluation.MEAN, "bond_strength")),
+            (self.uv_retention_min_percent,
+             ("UVRET", f"Strength kept after {self.uv_exposure_hours} h UV",
+              ("%", "Per cent"), None, self.uv_retention_min_percent, None, 3,
+              Evaluation.MEAN, "uv_retention")),
+        ):
+            if value:
+                rows.append(row)
+        # A liner of typed film is gauged on the sack; one made here is
+        # gauged on its own film.
+        if self.liner_micron and not self.liner_is_counted():
+            micron = self.liner_micron * Decimal("0.1")
+            rows.append(("LINERMIC", "Liner thickness", ("micron", "Micron"),
+                         self.liner_micron, self.liner_micron - micron,
+                         self.liner_micron + micron, 5, Evaluation.MEAN, "liner_micron"))
+        return rows
 
     def bom_byproducts(self):
         if self.cutting_waste_item is None:
@@ -1941,6 +2014,16 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{code}: {self.liner_item.sku} is made here to its own specification, "
                 "which says what it weighs. Take the typed liner weight and film off."
             )
+        for value, what in ((self.seam_strength_min_n, "seam strength"),
+                            (self.bond_strength_min_n, "bond strength"),
+                            (self.uv_retention_min_percent, "UV retention")):
+            if value is not None and value <= 0:
+                raise ValidationError(f"{code}: a {what} limit is more than nothing.")
+        if self.bond_strength_min_n and not self.is_laminated:
+            raise ValidationError(f"{code}: an uncoated sack has no lamination bond to test.")
+        if bool(self.uv_retention_min_percent) != bool(self.uv_exposure_hours):
+            raise ValidationError(
+                f"{code}: a UV test needs both the strength kept and the hours it is after.")
         if self.print_design_id is not None:
             colours = self.print_colours + self.print_colours_back
             if self.print_design.colours != colours:

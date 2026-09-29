@@ -68,7 +68,8 @@ class BagCount(AuditModel):
     passed = models.BooleanField(editable=False)
     entry = models.OneToOneField("manufacturing.ProductionEntry", on_delete=models.PROTECT,
                                  related_name="bag_count")
-    inspection = models.OneToOneField("quality.Inspection", on_delete=models.PROTECT,
+    inspection = models.OneToOneField("quality.Inspection", null=True, blank=True,
+                                      on_delete=models.PROTECT,
                                       related_name="bag_count")
     voided_by = models.ForeignKey("hr.Employee", null=True, blank=True,
                                   on_delete=models.PROTECT, related_name="+")
@@ -186,11 +187,14 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
     if plan is None:
         raise ValidationError(f"{spec} has no inspection plan to weigh against.")
     lines = list(plan.lines.select_related("characteristic"))
-    if len(lines) != 1 or lines[0].characteristic.code not in WEIGHT_CODES:
-        raise ValidationError(
-            f"{plan} asks for more than the bag weight; inspect these bags in quality."
-        )
-    (line,) = lines
+    line = next((row for row in lines if row.characteristic.code in WEIGHT_CODES), None)
+    if line is None:
+        raise ValidationError(f"{plan} has no bag weight to weigh against; inspect these "
+                              "bags in quality.")
+    # Seams, drops, bond, UV are the lab's: the weight is read here and
+    # the inspection left open for the lab to finish, the bundle not yet
+    # inspected until it does, as a doff with strength to test is.
+    lab_to_finish = len(lines) > 1
     try:
         values = [Decimal(str(value)) for value in sample_grams]
     except (ArithmeticError, TypeError, ValueError):
@@ -218,13 +222,14 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
                              manufactured_on=shift_date)
     inspection = Inspection.objects.create(
         lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
-        disposition="" if passed else Disposition.CONCESSION,
+        disposition="" if passed or lab_to_finish else Disposition.CONCESSION,
         decided_by=None if passed else supervisor.party, decision_note=reason,
     )
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,
                                sample_reference=f"S{number}", instrument=instrument)
-    inspection.post()
+    if not lab_to_finish:
+        inspection.post()
     entry = ProductionEntry.objects.create(
         work_order=order, entry_date=shift_date, warehouse=station.warehouse,
         quantity_produced=Decimal(bags), uom=order.uom, lot=lot,
@@ -256,14 +261,24 @@ def void_bags(count, supervisor, reason):
     if not reason:
         raise ValidationError("Say why the count is withdrawn.")
     count.entry.void(memo=f"Count voided: {reason}"[:255])
-    count.inspection.void(reason)
+    inspection = count.inspection
+    open_with_the_lab = not inspection.posted
+    if open_with_the_lab:
+        # Still with the lab: taken off its list rather than left open
+        # for a bundle that is no longer there.
+        count.inspection = None
+    else:
+        inspection.void(reason)
     count.voided_by, count.void_reason = supervisor, reason
     count._voiding = True
     try:
-        count.save(update_fields=["voided_by", "void_reason", "updated_at"])
+        count.save(update_fields=["voided_by", "void_reason", "inspection", "updated_at"])
     finally:
         # Left set, the next save of this object would pass the guard too.
         count._voiding = False
+    if open_with_the_lab:
+        inspection.readings.all().delete()
+        inspection.delete()
     return count
 
 

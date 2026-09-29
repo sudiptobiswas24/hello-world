@@ -328,6 +328,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "sample_mean_grams": _exact(count.sample_mean_grams), "passed": count.passed,
             "conceded_by": _person(count.supervisor) if count.supervisor_id else None,
             "inspection": count.inspection.number,
+            "awaiting_lab": not count.inspection.posted,
         }, status=201)
 
     @action(detail=True, methods=["post"], url_path=r"bags/(?P<count>[0-9]+)/void")

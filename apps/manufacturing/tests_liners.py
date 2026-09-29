@@ -477,7 +477,7 @@ class WhichSpecificationTests(LinerTestCase):
         other = Characteristic.objects.get(code="MICRON")
         PlanLine.objects.filter(plan=self.liner_spec.inspection_plan).update(
             characteristic=other)
-        with self.assertRaisesMessage(ValidationError, "asks for more than the bag weight"):
+        with self.assertRaisesMessage(ValidationError, "has no bag weight to weigh against"):
             self.seal()
 
     def test_a_film_changed_after_the_day_cannot_be_costed_on_it(self):

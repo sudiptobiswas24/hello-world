@@ -119,6 +119,7 @@ class FabricSpecificationSerializer(serializers.ModelSerializer):
             "target_gsm", "gsm_tolerance_percent", "weaving_waste_percent",
             "waste_recovered_percent", "loom_waste_item", "bom", "is_active",
             "gsm", "gsm_deviation_percent", "grams_per_metre", "metres_per_kg",
+            "warp_strength_min_n", "weft_strength_min_n", "mesh_tolerance_per_inch",
         ]
         read_only_fields = ["bom"]
 
@@ -174,7 +175,9 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
             "print_colours", "print_colours_back", "ink_grams_per_sqm_per_colour",
             "ink_item", "reducer_item", "reducer_percent", "solvent_item", "solvent_percent",
             "fold_type", "thread_grams_per_bag", "thread_denier", "stitches_per_dm",
-            "thread_item", "liner_item", "print_design",
+            "thread_item", "liner_item", "print_design", "seam_strength_min_n",
+            "drop_test_drops", "bond_strength_min_n", "uv_retention_min_percent",
+            "uv_exposure_hours",
             "liner_grams_per_bag", "conversion_waste_percent",
             "waste_recovered_percent", "cutting_waste_item", "bom", "is_active",
             "gusset_cm", "closure", "bopp_film_item", "bopp_micron", "bopp_faces",
