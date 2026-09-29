@@ -587,6 +587,30 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "awaiting_lab": not doff.inspection.posted,
         }, status=201)
 
+    @action(detail=True, methods=["post"], url_path="load-tape")
+    def load_tape(self, request, code=None):
+        """{machine, doff, kg, side}: tape put on a loom's warp creel or weft."""
+        from .tape_loads import load_tape
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        load = _run(load_tape, station, operator, self._machine(station, data.get("machine")),
+                    data.get("doff", ""), data.get("kg"), data.get("side", ""))
+        return Response({"id": load.pk, "doff": load.lot.code, "kg": _exact(load.kg),
+                         "side": load.side, "run": load.work_order.number}, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"load-tape/(?P<row>[0-9]+)/void")
+    def void_load_tape(self, request, code=None, row=None):
+        from .tape_loads import TapeLoad, void_load
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        load = get_object_or_404(TapeLoad, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_load, load, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": load.pk, "voided": True})
+
     @action(detail=True, methods=["post"])
     def film(self, request, code=None):
         """A roll off the blown-film line: gross kg, core, metres, micron checks."""

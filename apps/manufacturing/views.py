@@ -1491,8 +1491,27 @@ class LotTraceViewSet(viewsets.ViewSet):
             inspection__lot=lot).first()
         if count is None:
             raise DRFValidationError([f"{lot.code} is not a bundle counted at a station."])
-        return Response({"lot": _lot_row(lot), "cut_on": count.machine.code,
-                         "rolls": roll_chain(count.mount) if count.mount_id else []})
+        chain = roll_chain(count.mount) if count.mount_id else []
+        under = Lot.objects.filter(code=chain[-1]["code"]).first() if chain else None
+        return Response({"lot": _lot_row(lot), "cut_on": count.machine.code, "rolls": chain,
+                         "doffs": self._doffs(under) if under is not None else []})
+
+    @staticmethod
+    def _doffs(lot):
+        from .rolls import FabricRoll
+        from .tape_loads import tape_for
+
+        roll = FabricRoll.objects.filter(lot=lot).select_related("entry").first()
+        if roll is None:
+            return []
+        return [{"doff": load.lot.code, "side": load.side, "kg": str(load.kg),
+                 "loaded_at": load.loaded_at} for load in tape_for(roll)]
+
+    @action(detail=True, methods=["get"])
+    def doffs(self, request, pk=None):
+        """A fabric roll's doffs: the tape on its loom while it was woven."""
+        lot = self._lot(pk)
+        return Response({"lot": _lot_row(lot), "doffs": self._doffs(lot)})
 
 
 

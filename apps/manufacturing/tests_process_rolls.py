@@ -375,6 +375,17 @@ class BundleTraceApiTests(RollsTestCase):
         body = office.get(f"/api/manufacturing/lot-trace/{count.inspection.lot_id}/rolls/").json()
         self.assertEqual((body["cut_on"], [row["code"] for row in body["rolls"]]),
                          ("C-2", [roll.code, self.fabric_lot.code]))
+        self.assertEqual(body["doffs"], [])
+        # A doff that was on the loom before the fabric roll came off: the
+        # bundle's trace goes on down to it.
+        from .tape_loads import TapeLoad
+
+        TapeLoad.objects.create(
+            station=self.station, machine=self.l17, work_order=self.run, side="warp",
+            lot=Lot.objects.create(item=self.spec.warp_tape.tape_item, code="D-7"),
+            kg=Decimal("30"), loaded_by=self.operator, loaded_at=at(TODAY, 9))
+        body = office.get(f"/api/manufacturing/lot-trace/{count.inspection.lot_id}/rolls/").json()
+        self.assertEqual([row["doff"] for row in body["doffs"]], ["D-7"])
         response = office.get(f"/api/manufacturing/lot-trace/{self.fabric_lot.pk}/rolls/")
         self.assertEqual(response.status_code, 400)
 
