@@ -16,6 +16,11 @@ signed in by PIN, on the shift that covers the moment:
 - **Scrap** off the machine's step, for a reason: a production entry of
   nothing good and that much spoiled, so it is costed and written off
   like any other scrap, and the flow shows where it happened.
+- **Waste** collected at the machine — loom sweepings, tape-line lumps
+  and purge, cutting trim — weighed and taken into stock as the waste
+  the run's recipe gives back, against the run that made it. Until it
+  is, the recipe's credit and the plan's regrind are figures nobody
+  ever put on a shelf.
 
 A figure booked wrong is withdrawn with a supervisor's PIN (somebody
 else, who approves here) and booked again: stoppages are kept and no
@@ -130,6 +135,78 @@ def book_scrap(station, operator, machine, reason_code, quantity, at=None):
     return entry
 
 
+@transaction.atomic
+def book_waste(station, operator, machine, kg, item_code="", at=None):
+    """The waste off a machine's run, weighed into stock as the recipe names it."""
+    from .orders import ProductionByproduct, ProductionEntry
+    from .station import run_on
+
+    at = at or timezone.now()
+    _shift, shift_date = _context(station, operator, machine, at)
+    run = run_on(machine)
+    kg = _number(kg, "The waste")
+    given_back = list(run.bom.byproducts.select_related("item__uom"))
+    if item_code:
+        rows = [row for row in given_back if row.item.sku == item_code]
+    else:
+        rows = given_back
+    if not given_back:
+        raise ValidationError(f"{run.bom} gives nothing back; its waste is not collected.")
+    if len(rows) != 1:
+        raise ValidationError(
+            f"{run.bom} gives back {', '.join(r.item.sku for r in given_back)}; "
+            "say which this is." if not item_code else
+            f"{item_code} is not what {run.bom} gives back.")
+    item = rows[0].item
+    if item.uom.category != "weight":
+        raise ValidationError(f"{item} is counted in {item.uom}; waste is weighed.")
+    entry = ProductionEntry.objects.create(
+        work_order=run, entry_date=shift_date, warehouse=station.warehouse,
+        quantity_produced=ZERO, quantity_scrapped=ZERO, uom=run.uom,
+        work_centre=machine.work_centre, machine=machine,
+        memo=f"Waste weighed at {station} by {operator}"[:255],
+    )
+    # Weighed in the item's own unit of weight.
+    ProductionByproduct.objects.create(entry=entry, item=item, quantity=kg, uom=item.uom)
+    entry.post()
+    return entry
+
+
+def waste_variance(order):
+    """
+    For each thing a run gives back: what its recipe expected for what
+    the run has made so far, what was weighed, and the difference.
+    """
+    from .orders import ProductionByproduct
+
+    made = order.quantity_produced() + order.quantity_scrapped()
+    scale = order.bom.scale_for(made, order.uom) if made else ZERO
+    rows = []
+    for row in order.bom.byproducts.select_related("item", "uom"):
+        expected = row.item.to_stock_quantity(row.quantity * scale, row.uom)
+        weighed = sum(
+            (line.item.to_stock_quantity(line.quantity, line.uom)
+             for line in ProductionByproduct.objects.filter(
+                 entry__work_order=order, entry__posted=True, entry__voided_at__isnull=True,
+                 item=row.item)),
+            ZERO)
+        rows.append({"item": row.item, "expected": expected, "weighed": weighed,
+                     "difference": weighed - expected})
+    return rows
+
+
+@transaction.atomic
+def void_waste(entry, station, supervisor, operator, reason):
+    if entry.warehouse_id != station.warehouse_id or entry.quantity_produced != 0 or \
+            entry.quantity_scrapped != 0 or not entry.machine_id or \
+            not station.machines.filter(pk=entry.machine_id).exists():
+        raise ValidationError(f"{entry} is not waste weighed at {station}.")
+    if not (reason or "").strip():
+        raise ValidationError("Say why the waste is withdrawn.")
+    _supervised(station, supervisor, operator)
+    entry.void(memo=f"Withdrawn at {station}: {reason.strip()}"[:255])
+
+
 def _supervised(station, supervisor, operator):
     from .station import check_supervisor
 
@@ -156,7 +233,8 @@ def void_count(counted, station, supervisor, operator, reason):
 @transaction.atomic
 def void_scrap(entry, station, supervisor, operator, reason):
     if entry.warehouse_id != station.warehouse_id or entry.quantity_produced != 0 or \
-            not entry.machine_id or not station.machines.filter(pk=entry.machine_id).exists():
+            entry.quantity_scrapped <= 0 or not entry.machine_id or \
+            not station.machines.filter(pk=entry.machine_id).exists():
         raise ValidationError(f"{entry} is not scrap booked at {station}.")
     if not (reason or "").strip():
         raise ValidationError("Say why the scrap is withdrawn.")

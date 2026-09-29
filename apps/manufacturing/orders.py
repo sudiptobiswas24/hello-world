@@ -2326,12 +2326,6 @@ class ProductionEntry(AuditModel):
                 check=Q(quantity_produced__gte=0) & Q(quantity_scrapped__gte=0),
                 name="production_quantities_not_negative",
             ),
-            # An entry that booked nothing and scrapped nothing is a
-            # document saying nothing happened.
-            models.CheckConstraint(
-                check=Q(quantity_produced__gt=0) | Q(quantity_scrapped__gt=0),
-                name="production_entry_books_something",
-            ),
         ]
 
     def __str__(self):
@@ -2428,6 +2422,12 @@ class ProductionEntry(AuditModel):
                 "valued into the company's own."
             )
         byproducts = list(self.byproducts.select_related("item", "uom"))
+        # An entry that made nothing, scrapped nothing and gave nothing
+        # back is a document saying nothing happened. Waste alone is
+        # something: the shift's sweepings off a loom, weighed and taken
+        # into stock against the run that made them.
+        if not (self.quantity_produced > 0 or self.quantity_scrapped > 0 or byproducts):
+            raise ValidationError(f"{self} books nothing: no output, no scrap, no waste.")
         lock_positions(
             [(order.item, self.warehouse)]
             + [(row.item, self.warehouse) for row in byproducts]

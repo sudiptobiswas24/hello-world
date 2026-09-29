@@ -427,6 +427,33 @@ class LoomStationViewSet(viewsets.GenericViewSet):
         _run(void_scrap, entry, station, supervisor, operator, request.data.get("reason", ""))
         return Response({"id": entry.pk, "voided": True})
 
+    @action(detail=True, methods=["post"], url_path="run-waste")
+    def run_waste(self, request, code=None):
+        """Waste off a machine's run, weighed into stock: {machine, kg, item?}."""
+        from .station_floor import book_waste
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        data = request.data
+        entry = _run(book_waste, station, operator, self._machine(station, data.get("machine")),
+                     data.get("kg"), data.get("item", ""))
+        row = entry.byproducts.get()
+        return Response({"id": entry.pk, "number": entry.number,
+                         "run": entry.work_order.number, "item": row.item.sku,
+                         "kg": _exact(row.quantity)}, status=201)
+
+    @action(detail=True, methods=["post"], url_path=r"run-waste/(?P<row>[0-9]+)/void")
+    def void_run_waste(self, request, code=None, row=None):
+        from .orders import ProductionEntry
+        from .station_floor import void_waste
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        entry = get_object_or_404(ProductionEntry, pk=row)
+        supervisor = _run(station.identify, request.data.get("supervisor_pin"))
+        _run(void_waste, entry, station, supervisor, operator, request.data.get("reason", ""))
+        return Response({"id": entry.pk, "voided": True})
+
     def _clock_row(self, clock):
         return {"id": clock.pk, "machine": clock.machine.code,
                 "step": clock.operation.name, "run": clock.operation.work_order.number,

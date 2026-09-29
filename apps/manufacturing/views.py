@@ -1099,6 +1099,15 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     }
 
     @action(detail=True, methods=["get"])
+    def waste(self, request, pk=None):
+        """What the run's recipe expected back as waste, and what was weighed."""
+        from .station_floor import waste_variance
+
+        return Response([{"item": row["item"].sku, "expected": str(row["expected"]),
+                          "weighed": str(row["weighed"]), "difference": str(row["difference"])}
+                         for row in waste_variance(self.get_object())])
+
+    @action(detail=True, methods=["get"])
     def traveller(self, request, pk=None):
         """The job card, A4, to print and send round the floor with the run."""
         from django.template.loader import render_to_string
