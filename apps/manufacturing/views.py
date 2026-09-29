@@ -731,17 +731,85 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "schedule", "work_centre", "downtime"
     )
     serializer_class = MaintenanceJobSerializer
-    action_permission_map = {"complete": "manufacturing.change_maintenancejob"}
+    action_permission_map = {"complete": "manufacturing.change_maintenancejob",
+                             "cancel": "manufacturing.change_maintenancejob",
+                             "labour": "manufacturing.change_maintenancejob",
+                             "breakdown": "manufacturing.add_maintenancejob"}
 
     @action(detail=True, methods=["post"])
     def complete(self, request, pk=None):
+        """{on_date, minutes} for a service; {on_date, cause, action} for a breakdown."""
         job = self.get_object()
         _run(
             job.complete,
             on_date=request.data.get("on_date"),
             minutes=request.data.get("minutes"),
+            cause=request.data.get("cause", ""),
+            action=request.data.get("action", ""),
         )
         return Response(self.get_serializer(job).data)
+
+    @action(detail=False, methods=["post"])
+    def breakdown(self, request):
+        """{downtime, fault, technician?, planned_minutes?}: a repair on a stoppage."""
+        from apps.hr.models import Employee
+
+        from .maintenance import raise_breakdown
+        from .shifts import Downtime
+
+        data = request.data
+        stoppage = get_object_or_404(Downtime, pk=data.get("downtime"))
+        technician = (get_object_or_404(Employee, pk=data["technician"])
+                      if data.get("technician") else None)
+        job = _run(raise_breakdown, stoppage, data.get("fault", ""), technician,
+                   data.get("planned_minutes"))
+        return Response(self.get_serializer(job).data, status=201)
+
+    @action(detail=True, methods=["post"])
+    def labour(self, request, pk=None):
+        """{technician, worked_on, minutes}: a fitter's time on an open job."""
+        from apps.hr.models import Employee
+
+        from .maintenance import MaintenanceLabour
+
+        job = self.get_object()
+        data = request.data
+        technician = get_object_or_404(Employee, pk=data.get("technician"))
+        try:
+            worked_on = parse_date(str(data.get("worked_on") or ""))
+            minutes = Decimal(str(data.get("minutes")))
+        except (ValueError, InvalidOperation):
+            worked_on = minutes = None
+        if worked_on is None or minutes is None or not minutes.is_finite():
+            raise DRFValidationError(["worked_on is a date, YYYY-MM-DD, and minutes a number."])
+        if minutes <= 0:
+            raise DRFValidationError(["A fitter's time on a job is more than nothing."])
+        row = _run(MaintenanceLabour.objects.create, job=job, technician=technician,
+                   worked_on=worked_on, minutes=minutes)
+        return Response({"id": row.pk, "job": job.pk, "minutes": str(row.minutes),
+                         "labour_minutes": str(job.labour_minutes())}, status=201)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        job = self.get_object()
+        _run(job.cancel, request.data.get("reason", ""))
+        return Response(self.get_serializer(job).data)
+
+    @action(detail=False, methods=["get"])
+    def reliability(self, request):
+        """?start&end and machine= or work_centre=: failures, MTBF, MTTR."""
+        from .machines import Machine
+        from .maintenance import reliability
+
+        params = request.query_params
+        machine = (get_object_or_404(Machine, code=params["machine"])
+                   if params.get("machine") else None)
+        centre = (get_object_or_404(WorkCentre, code=params["work_centre"])
+                  if params.get("work_centre") else None)
+        start, end = _window(request)
+        found = _run(reliability, start, end, machine=machine, work_centre=centre)
+        return Response({key: (str(value) if isinstance(value, Decimal) else value)
+                         for key, value in found.items()})
 
 
 class PrintDesignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

@@ -241,9 +241,8 @@ class LoadBook:
         """
         from apps.manufacturing.maintenance import MaintenanceJob
 
-        jobs = MaintenanceJob.objects.filter(
-            done_on__isnull=True
-        ).select_related("work_centre")
+        # Open ones only: done is history, and cancelled never happens.
+        jobs = MaintenanceJob.objects.open().select_related("work_centre")
         for job in jobs:
             if job.planned_minutes <= 0:
                 continue

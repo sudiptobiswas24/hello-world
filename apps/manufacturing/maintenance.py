@@ -23,6 +23,20 @@ says how often; a job is one dated occurrence of it, and only a job
 that has not been done yet is booked against the machine. That keeps
 the load book reading facts — a service on the fourteenth — rather
 than inferring dates from a rule every time somebody asks.
+
+**A breakdown is raised on the stoppage it was.** The operator books
+the stoppage at the machine; maintenance raises a job on it, says what
+failed, books its fitters' time, and closes it with the cause and what
+was done. The stoppage is already the downtime, so closing the job
+adds none — a second row would count the same hour twice in
+effectiveness. And the stoppage cannot be withdrawn from under a job
+that rests on it.
+
+**Reliability is derived**: failures from the breakdown jobs, running
+hours from the time bookings, repair time from the stoppages. Mean time
+between failures is running hours per failure; mean time to repair is
+the stoppage minutes of the repaired ones. No failures is no figure,
+not infinity.
 """
 
 import datetime
@@ -37,6 +51,7 @@ from apps.core.models import AuditModel, to_date
 
 ZERO = Decimal("0")
 MINUTES_PER_HOUR = Decimal("60")
+CENTS = Decimal("0.01")
 
 
 class MaintenanceSchedule(AuditModel):
@@ -191,7 +206,7 @@ class MaintenanceSchedule(AuditModel):
         one schedule take the machine out twice and a planner cannot
         tell which is real.
         """
-        open_already = self.jobs.filter(done_on__isnull=True).first()
+        open_already = self.jobs.open().first()
         if open_already is not None:
             raise ValidationError(
                 f"{open_already} is already on the board for this schedule. "
@@ -204,6 +219,12 @@ class MaintenanceSchedule(AuditModel):
             machine=self.machine, due_on=when,
             planned_minutes=self.duration_minutes,
         )
+
+
+class MaintenanceJobQuerySet(models.QuerySet):
+    def open(self):
+        """On the board: not done and not cancelled. What takes capacity."""
+        return self.filter(done_on__isnull=True, cancelled_at__isnull=True)
 
 
 class MaintenanceJob(AuditModel):
@@ -245,6 +266,17 @@ class MaintenanceJob(AuditModel):
                   "appear in effectiveness alongside every other stoppage.",
     )
     notes = models.CharField(max_length=255, blank=True)
+    is_breakdown = models.BooleanField(default=False, editable=False)
+    fault = models.CharField(max_length=255, blank=True,
+                             help_text="What failed, as reported.")
+    technician = models.ForeignKey("hr.Employee", null=True, blank=True,
+                                   on_delete=models.PROTECT, related_name="+")
+    cause = models.CharField(max_length=255, blank=True, editable=False)
+    action_taken = models.CharField(max_length=255, blank=True, editable=False)
+    cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
+    cancelled_reason = models.CharField(max_length=255, blank=True, editable=False)
+
+    objects = MaintenanceJobQuerySet.as_manager()
 
     class Meta:
         ordering = ["due_on", "work_centre", "id"]
@@ -252,6 +284,16 @@ class MaintenanceJob(AuditModel):
             models.CheckConstraint(
                 check=Q(planned_minutes__gt=0),
                 name="maintenance_job_takes_some_time",
+            ),
+            models.CheckConstraint(
+                check=Q(is_breakdown=False) | (Q(downtime__isnull=False)
+                                               & Q(schedule__isnull=True)),
+                name="breakdown_rests_on_a_stoppage",
+            ),
+            models.UniqueConstraint(
+                fields=["downtime"],
+                condition=Q(downtime__isnull=False, cancelled_at__isnull=True),
+                name="one_standing_job_per_stoppage",
             ),
         ]
 
@@ -264,18 +306,57 @@ class MaintenanceJob(AuditModel):
         self._check_machine()
 
     def save(self, *args, **kwargs):
+        if self.pk and not getattr(self, "_closing", False):
+            stored = type(self).objects.filter(pk=self.pk).values(
+                "done_on", "cancelled_at").first()
+            if stored and stored["done_on"] is not None:
+                raise ValidationError(f"{self} is done; it is as it was done.")
+            if stored and stored["cancelled_at"] is not None:
+                raise ValidationError(f"{self} was cancelled.")
         self._check_machine()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.done_on is not None:
+            raise ValidationError(f"{self} is done; it is as it was done.")
+        if self.is_breakdown or self.labour.exists():
+            raise ValidationError(f"{self} is a record of a failure and of work; cancel it.")
+        return super().delete(*args, **kwargs)
 
     def _check_machine(self):
         if self.machine_id is not None and self.work_centre_id is not None:
             self.machine.check_in(self.work_centre)
 
     def is_open(self):
-        return self.done_on is None
+        return self.done_on is None and self.cancelled_at is None
+
+    def labour_minutes(self):
+        total = self.labour.aggregate(total=Sum("minutes"))["total"] or ZERO
+        return Decimal(total).quantize(CENTS)
+
+    def _close(self, fields):
+        self._closing = True
+        try:
+            self.save(update_fields=[*fields, "updated_at"])
+        finally:
+            self._closing = False
 
     @transaction.atomic
-    def complete(self, on_date=None, minutes=None, reason=None, shift=None):
+    def cancel(self, reason):
+        """Raised in error, or no longer wanted: off the board, and kept."""
+        if self.cancelled_at is not None:
+            raise ValidationError(f"{self} was cancelled.")
+        if self.done_on is not None:
+            raise ValidationError(f"{self} was already done on {self.done_on}.")
+        reason = " ".join((reason or "").split())
+        if not reason:
+            raise ValidationError("Say why the job is cancelled.")
+        self.cancelled_at, self.cancelled_reason = timezone.now(), reason[:255]
+        self._close(["cancelled_at", "cancelled_reason"])
+
+    @transaction.atomic
+    def complete(self, on_date=None, minutes=None, reason=None, shift=None, cause="",
+                 action=""):
         """
         Record that it happened, and put the hours where every other
         stoppage goes.
@@ -284,12 +365,29 @@ class MaintenanceJob(AuditModel):
         service shows up in overall equipment effectiveness beside a
         breakdown and a changeover. Planned downtime is still
         downtime: a machine being serviced is a machine not weaving.
+
+        A breakdown already has its stoppage — it was raised on it — so
+        it is closed on that one, with what caused it and what was done.
         """
+        if self.cancelled_at is not None:
+            raise ValidationError(f"{self} was cancelled.")
         if not self.is_open():
             raise ValidationError(f"{self} was already done on {self.done_on}.")
         from .shifts import Downtime, DowntimeReason
 
         on_date = to_date(on_date) or timezone.now().date()
+        if self.is_breakdown:
+            action = " ".join((action or "").split())
+            if not action:
+                raise ValidationError("Say what was done to put it right.")
+            if minutes is not None:
+                raise ValidationError(
+                    f"The time {self.machine or self.work_centre} was down is the "
+                    f"stoppage's, {self.downtime.minutes} minutes; correct the stoppage.")
+            self.done_on, self.actual_minutes = on_date, self.downtime.minutes
+            self.cause, self.action_taken = " ".join((cause or "").split())[:255], action[:255]
+            self._close(["done_on", "actual_minutes", "cause", "action_taken"])
+            return self.downtime
         minutes = Decimal(minutes) if minutes is not None else self.planned_minutes
         if minutes <= 0:
             raise ValidationError(
@@ -309,9 +407,7 @@ class MaintenanceJob(AuditModel):
         )
         self.done_on = on_date
         self.actual_minutes = minutes
-        self.save(update_fields=[
-            "done_on", "actual_minutes", "downtime", "updated_at",
-        ])
+        self._close(["done_on", "actual_minutes", "downtime"])
         if self.schedule_id:
             self.schedule.last_done_on = on_date
             self.schedule.save(update_fields=["last_done_on", "updated_at"])
@@ -331,8 +427,107 @@ def due_now(as_of=None, work_centre=None):
         schedules = schedules.filter(work_centre=work_centre)
     found = []
     for schedule in schedules.select_related("work_centre"):
-        if schedule.jobs.filter(done_on__isnull=True).exists():
+        if schedule.jobs.open().exists():
             continue
         if schedule.is_due(as_of):
             found.append(schedule)
     return found
+
+
+class MaintenanceLabour(AuditModel):
+    """A fitter's time on a job, while it is open."""
+
+    job = models.ForeignKey(MaintenanceJob, on_delete=models.PROTECT, related_name="labour")
+    technician = models.ForeignKey("hr.Employee", on_delete=models.PROTECT, related_name="+")
+    worked_on = models.DateField()
+    minutes = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        ordering = ["job", "worked_on", "id"]
+        constraints = [
+            models.CheckConstraint(check=Q(minutes__gt=0), name="maintenance_labour_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.technician} {self.minutes} min on {self.job}"
+
+    def _check_open(self):
+        job = MaintenanceJob.objects.get(pk=self.job_id)
+        if job.done_on is not None:
+            raise ValidationError(f"{job} is done; its labour is as booked.")
+        if job.cancelled_at is not None:
+            raise ValidationError(f"{job} was cancelled.")
+
+    def save(self, *args, **kwargs):
+        self._check_open()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self._check_open()
+        return super().delete(*args, **kwargs)
+
+
+@transaction.atomic
+def raise_breakdown(downtime, fault, technician=None, planned_minutes=None):
+    """A job on a stoppage that was a failure."""
+    from .shifts import Downtime
+
+    downtime = Downtime.objects.select_for_update().get(pk=downtime.pk)
+    if downtime.voided_at is not None:
+        raise ValidationError(f"{downtime} was withdrawn; there is nothing to repair.")
+    if downtime.reason.is_planned:
+        raise ValidationError(f"{downtime.reason} is planned; a breakdown is not.")
+    fault = " ".join((fault or "").split())
+    if not fault:
+        raise ValidationError("Say what failed.")
+    standing = MaintenanceJob.objects.filter(downtime=downtime,
+                                             cancelled_at__isnull=True).first()
+    if standing is not None:
+        raise ValidationError(f"{standing} is already raised on {downtime}.")
+    minutes = Decimal(str(planned_minutes)) if planned_minutes is not None else downtime.minutes
+    if minutes <= 0:
+        raise ValidationError("A repair takes some time.")
+    return MaintenanceJob.objects.create(
+        is_breakdown=True, work_centre=downtime.work_centre, machine=downtime.machine,
+        due_on=downtime.shift_date, planned_minutes=minutes, downtime=downtime,
+        fault=fault[:255], technician=technician,
+    )
+
+
+def reliability(start, end, machine=None, work_centre=None):
+    """
+    Failures, mean time between them and mean time to repair, between
+    two dates, for a machine or a bank.
+    """
+    from .orders import TimeBooking
+
+    start, end = to_date(start), to_date(end)
+    jobs = MaintenanceJob.objects.filter(
+        is_breakdown=True, cancelled_at__isnull=True,
+        downtime__shift_date__gte=start, downtime__shift_date__lte=end,
+    ).select_related("downtime")
+    bookings = TimeBooking.objects.filter(posted=True, voided_at__isnull=True,
+                                          booking_date__gte=start, booking_date__lte=end)
+    if machine is not None:
+        jobs = jobs.filter(machine=machine)
+        bookings = bookings.filter(machine=machine)
+    elif work_centre is not None:
+        jobs = jobs.filter(work_centre=work_centre)
+        bookings = bookings.filter(operation__work_centre=work_centre)
+    else:
+        raise ValidationError("Say which machine or which bank.")
+    jobs = list(jobs)
+    repaired = [job for job in jobs if job.done_on is not None]
+    run_hours = (bookings.aggregate(total=Sum("minutes"))["total"] or ZERO) / MINUTES_PER_HOUR
+    repair_minutes = sum((job.downtime.minutes for job in repaired), ZERO)
+    labour = MaintenanceLabour.objects.filter(job__in=jobs).aggregate(
+        total=Sum("minutes"))["total"] or ZERO
+    return {
+        "start": start, "end": end,
+        "failures": len(jobs),
+        "repaired": len(repaired),
+        "run_hours": Decimal(run_hours).quantize(CENTS),
+        "mtbf_hours": (run_hours / len(jobs)).quantize(CENTS) if jobs else None,
+        "mttr_minutes": (repair_minutes / len(repaired)).quantize(CENTS) if repaired else None,
+        "labour_minutes": Decimal(labour).quantize(CENTS),
+    }

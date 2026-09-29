@@ -439,8 +439,15 @@ class MaintenanceJobSerializer(serializers.ModelSerializer):
         model = MaintenanceJob
         fields = ["id", "schedule", "work_centre", "machine", "due_on",
                   "planned_minutes", "done_on", "actual_minutes", "downtime",
-                  "notes"]
-        read_only_fields = ["done_on", "actual_minutes", "downtime"]
+                  "notes", "is_breakdown", "fault", "technician", "cause",
+                  "action_taken", "cancelled_at", "cancelled_reason", "labour_minutes"]
+        read_only_fields = ["done_on", "actual_minutes", "downtime", "is_breakdown", "cause",
+                            "action_taken", "cancelled_at", "cancelled_reason"]
+
+    labour_minutes = serializers.SerializerMethodField()
+
+    def get_labour_minutes(self, obj):
+        return str(obj.labour_minutes())
 
 
 class PrintDesignSerializer(serializers.ModelSerializer):

@@ -315,6 +315,10 @@ class Downtime(AuditModel):
             raise ValidationError(f"{self} is already withdrawn.")
         if not (reason or "").strip():
             raise ValidationError("Say why the stoppage is withdrawn.")
+        job = self.maintenance.filter(cancelled_at__isnull=True).first()
+        if job is not None:
+            raise ValidationError(f"{job} rests on this stoppage; "
+                                  f"{'cancel it first' if job.is_open() else 'it is done'}.")
         self.voided_at, self.voided_by = timezone.now(), by
         self.voided_reason = reason.strip()
         super().save(update_fields=["voided_at", "voided_by", "voided_reason", "updated_at"])

@@ -97,6 +97,7 @@ from .machines import (  # noqa: F401
 )
 from .maintenance import (  # noqa: F401
     MaintenanceJob,
+    MaintenanceLabour,
     MaintenanceSchedule,
     due_now,
 )
