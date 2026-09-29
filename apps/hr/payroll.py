@@ -225,9 +225,50 @@ class EmployeeCompensation(AuditModel):
                 f"from {clash.effective_from}; close that off before opening another."
             )
 
+    def paid_to(self):
+        """
+        The last day a posted pay run paid on this rate, or None.
+
+        Asked of the row as stored: what somebody has since typed into
+        this object is not what was paid on.
+        """
+        stored = EmployeeCompensation.objects.filter(pk=self.pk).first() if self.pk else None
+        if stored is None:
+            return None
+        runs = PayRun.objects.filter(
+            status=PayRunStatus.POSTED, period_end__gte=stored.effective_from,
+            payslips__employee_id=stored.employee_id,
+            payslips__lines__component_id=stored.component_id,
+        )
+        if stored.effective_to is not None:
+            runs = runs.filter(period_start__lte=stored.effective_to)
+        last = runs.order_by("-period_end").values_list("period_end", flat=True).first()
+        return last, stored
+
     def save(self, *args, **kwargs):
+        # Dated, not overwritten - the docstring's promise, kept here: a
+        # rate a posted run paid on keeps its figure and its start, and
+        # is only closed off, not before the last day it was paid on.
+        paid = self.paid_to()
+        if paid is not None and paid[0] is not None:
+            last, stored = paid
+            if (self.amount != stored.amount or self.component_id != stored.component_id
+                    or self.employee_id != stored.employee_id
+                    or to_date(self.effective_from) != stored.effective_from):
+                raise ValidationError(
+                    f"{stored} has been paid on, to {last}. Close it off and give the "
+                    "new rate its own row from when it starts.")
+            if self.effective_to is not None and to_date(self.effective_to) < last:
+                raise ValidationError(
+                    f"{stored} was paid on it to {last}; it cannot end before that.")
         self.clean()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        paid = self.paid_to()
+        if paid is not None and paid[0] is not None:
+            raise ValidationError(f"{paid[1]} has been paid on, to {paid[0]}; it stays.")
+        return super().delete(*args, **kwargs)
 
 
 class PayRunStatus(models.TextChoices):
