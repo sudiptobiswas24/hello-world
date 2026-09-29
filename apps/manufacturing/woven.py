@@ -1256,6 +1256,11 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="An inner LDPE liner, for sacks that must keep moisture out.",
     )
+    print_design = models.ForeignKey(
+        "manufacturing.PrintDesign", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="bag_specifications",
+        help_text="The artwork it is printed with: whose cylinders a run needs.",
+    )
     liner_grams_per_bag = models.DecimalField(
         max_digits=8, decimal_places=3, default=Decimal("0"),
         help_text="Typed, where the liner is bought or weighed as a finished "
@@ -1936,6 +1941,14 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
                 f"{code}: {self.liner_item.sku} is made here to its own specification, "
                 "which says what it weighs. Take the typed liner weight and film off."
             )
+        if self.print_design_id is not None:
+            colours = self.print_colours + self.print_colours_back
+            if self.print_design.colours != colours:
+                raise ValidationError(
+                    f"{code}: printed in {colours} colour(s) with {self.print_design.code}, "
+                    f"which is {self.print_design.colours}. One cylinder a colour: the "
+                    "set and the sack must agree."
+                )
         if (self.liner_micron or self.liner_grams_per_bag) and self.liner_item_id is None:
             raise ValidationError(
                 f"{code}: the sack has a liner and the specification does not say "

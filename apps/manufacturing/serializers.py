@@ -174,7 +174,7 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
             "print_colours", "print_colours_back", "ink_grams_per_sqm_per_colour",
             "ink_item", "reducer_item", "reducer_percent", "solvent_item", "solvent_percent",
             "fold_type", "thread_grams_per_bag", "thread_denier", "stitches_per_dm",
-            "thread_item", "liner_item",
+            "thread_item", "liner_item", "print_design",
             "liner_grams_per_bag", "conversion_waste_percent",
             "waste_recovered_percent", "cutting_waste_item", "bom", "is_active",
             "gusset_cm", "closure", "bopp_film_item", "bopp_micron", "bopp_faces",
@@ -492,8 +492,15 @@ class PrintDesignSerializer(serializers.ModelSerializer):
     class Meta:
         model = PrintDesign
         fields = ["id", "code", "name", "customer", "colours",
-                  "artwork_reference", "approved_on", "approved_by",
-                  "is_active", "notes", "is_approved", "cylinders_short_by"]
+                  "artwork_reference", "approved_on", "approved_by", "engraving_lead_days",
+                  "is_active", "notes", "is_approved", "cylinders_short_by", "ready_on"]
+
+    ready_on = serializers.SerializerMethodField()
+
+    def get_ready_on(self, obj):
+        from django.utils import timezone
+
+        return obj.readiness(timezone.localdate())[0]
 
     def get_cylinders_short_by(self, obj):
         return obj.cylinder_set()["short_by"]
@@ -509,7 +516,7 @@ class ToolSerializer(serializers.ModelSerializer):
         model = Tool
         fields = ["id", "code", "name", "kind", "design", "work_centre",
                   "life_limit", "life_uom", "status", "acquired_on", "notes",
-                  "used", "remaining", "used_percent", "is_worn"]
+                  "used", "remaining", "used_percent", "is_worn", "expected_on"]
 
     def get_used(self, obj):
         return obj.used()

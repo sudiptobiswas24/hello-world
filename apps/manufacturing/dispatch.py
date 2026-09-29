@@ -125,6 +125,7 @@ def build(start_at=None):
     """
     from .changeover import changeover
     from .machines import requirements
+    from .tooling import tooling_ready
     from .orders import WorkOrder, WorkOrderStatus
 
     start_at = timezone.localtime(start_at or timezone.now()).replace(tzinfo=None, second=0,
@@ -160,6 +161,17 @@ def build(start_at=None):
         if order.scheduled_start:
             ready = max(ready, datetime.datetime.combine(order.scheduled_start, day_start))
         started = order.started_quantity()
+        begun = any(_remaining(operation, started)[1] for operation in order.operations.all()
+                    if not operation.is_outside)
+        if not begun:
+            # A printed sack not yet begun waits for its cylinders.
+            tools, why = tooling_ready(order.bom, start_at.date())
+            if tools is None:
+                for operation in order.operations.order_by("sequence"):
+                    held(operation, order, f"{why}; it cannot be printed.")
+                continue
+            if tools > start_at.date():
+                ready = max(ready, datetime.datetime.combine(tools, day_start))
         for operation in order.operations.order_by("sequence"):
             if waiting_on is not None:
                 # A step after a held one cannot be timed; it is listed as

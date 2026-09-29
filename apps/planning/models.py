@@ -403,6 +403,11 @@ class PlannedOrder(AuditModel):
         help_text="The planned order for a component that is not ready until after "
                   "this run should start.",
     )
+    waits_for = models.CharField(
+        max_length=255, blank=True,
+        help_text="What the run cannot start without that is not a machine or a "
+                  "material: a printed sack's cylinders.",
+    )
     stand_in_note = models.CharField(
         max_length=255, blank=True,
         help_text="Said when an approved alternative for this item is already "
@@ -484,6 +489,8 @@ class PlannedOrder(AuditModel):
         if self.held_up_by_id:
             reasons.append(f"{self.held_up_by.item.sku} is not ready until "
                            f"{self.held_up_by.expected_on}")
+        if self.waits_for:
+            reasons.append(self.waits_for)
         return "; ".join(reasons) or None
 
     def days_behind(self):

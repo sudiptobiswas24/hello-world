@@ -72,10 +72,11 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
                   "rounded_up_by", "fenced_from",
                   "status", "work_order", "requisition_line", "firmed_at",
                   "is_late", "days_late", "why_late", "explanation", "demands",
-                  "expected_on", "can_start_on", "held_up_by", "days_behind"]
+                  "expected_on", "can_start_on", "held_up_by", "days_behind", "waits_for"]
         read_only_fields = ["status", "work_order", "requisition_line",
                             "transfer", "firmed_at", "bottleneck",
-                            "is_overloaded", "expected_on", "can_start_on", "held_up_by"]
+                            "is_overloaded", "expected_on", "can_start_on", "held_up_by",
+                            "waits_for"]
 
 
 class PlanningActionSerializer(serializers.ModelSerializer):

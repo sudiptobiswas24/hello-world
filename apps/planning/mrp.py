@@ -1337,6 +1337,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
     source = None
     expected_on = shortage.date
     can_start_on = None
+    waits_for = ""
     if route is not None:
         # A shortage the company can answer out of its own stock is
         # not a shortage to buy. Checked only for a buy: moving a
@@ -1383,6 +1384,17 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
             release_on = offset(shortage.date, days, calendar)
             if release_on < run.planned_on:
                 expected_on = _forward(run.planned_on, days, calendar)
+        # A printed sack cannot start before its cylinders are at the
+        # press, however free the machines are.
+        from apps.manufacturing.tooling import tooling_ready
+
+        ready, why = tooling_ready(bom, run.planned_on)
+        if ready is None:
+            waits_for = f"{why}; it cannot be printed"
+        elif ready > max(release_on, can_start_on or release_on):
+            waits_for = why
+            can_start_on = ready
+            expected_on = max(expected_on, ready + datetime.timedelta(days=int(days)))
     elif kind == PlannedOrderKind.TRANSFER:
         vendor = None
         days = route.lead_days
@@ -1408,7 +1420,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         bom=bom, vendor=vendor, from_warehouse=source,
         bottleneck=bottleneck, is_overloaded=overloaded,
         rounded_up_by=shortage.rounded, fenced_from=fenced_from,
-        expected_on=expected_on, can_start_on=can_start_on,
+        expected_on=expected_on, can_start_on=can_start_on, waits_for=waits_for[:255],
     )
     for number, (row, taken) in enumerate(shortage.pegs, start=1):
         PlannedDemand.objects.create(

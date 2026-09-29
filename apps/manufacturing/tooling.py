@@ -61,6 +61,10 @@ class PrintDesign(AuditModel):
         help_text="Where the approved file lives. A reference rather than the "
                   "file: this module has no business being a document store.",
     )
+    engraving_lead_days = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Days from ordering a cylinder to having it at the press. What a "
+                  "run waits for when its set is short and nothing is on order.")
     approved_on = models.DateField(null=True, blank=True)
     approved_by = models.ForeignKey(
         "core.Party", null=True, blank=True, on_delete=models.PROTECT,
@@ -97,6 +101,36 @@ class PrintDesign(AuditModel):
             "short_by": max(self.colours - len(usable), 0),
         }
 
+    def readiness(self, on_date):
+        """
+        (the first day a full set can be at the press, why not sooner).
+
+        Today where the set is there; the day the last cylinder it
+        needs arrives where they are on order; engraving's lead time
+        from today for any still to be ordered. None where nobody can
+        say: artwork not approved, or cylinders to order and no lead
+        time given.
+        """
+        import datetime
+
+        if not self.is_approved():
+            return None, f"{self.code}'s artwork is not approved"
+        short = self.colours - len(tools_for(self))
+        if short <= 0:
+            return on_date, ""
+        coming = sorted(tool.expected_on for tool in self.tools.filter(
+            status=ToolStatus.ORDERED, expected_on__isnull=False))[:short]
+        dates = list(coming)
+        missing = short - len(coming)
+        if missing:
+            if self.engraving_lead_days is None:
+                return None, (f"{self.code} is {missing} cylinder(s) short with none on "
+                              "order and no engraving lead time")
+            dates.append(on_date + datetime.timedelta(days=self.engraving_lead_days))
+        ready = max([on_date, *dates])
+        return ready, (f"{self.code} has {self.colours - short} of {self.colours} cylinders; "
+                       f"the set is at the press on {ready}")
+
 
 class ToolKind(models.TextChoices):
     CYLINDER = "cylinder", "Printing cylinder"
@@ -110,6 +144,7 @@ class ToolStatus(models.TextChoices):
     AVAILABLE = "available", "Available"
     WORN = "worn", "Worn out"
     SERVICE = "service", "Away for service"
+    ORDERED = "ordered", "On order"
     RETIRED = "retired", "Retired"
 
 
@@ -152,6 +187,8 @@ class Tool(AuditModel):
         max_length=12, choices=ToolStatus.choices, default=ToolStatus.AVAILABLE
     )
     acquired_on = models.DateField(null=True, blank=True)
+    expected_on = models.DateField(
+        null=True, blank=True, help_text="On order: the day it is due at the press.")
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -167,6 +204,11 @@ class Tool(AuditModel):
                 check=Q(life_limit__isnull=True, life_uom__isnull=True)
                 | Q(life_limit__isnull=False, life_uom__isnull=False),
                 name="tool_life_needs_a_unit",
+            ),
+            # On order without a date is a cylinder nobody can plan around.
+            models.CheckConstraint(
+                check=~Q(status="ordered") | Q(expected_on__isnull=False),
+                name="tool_on_order_says_when",
             ),
         ]
 
@@ -310,6 +352,19 @@ class ToolUsage(AuditModel):
 
     def __str__(self):
         return f"{self.quantity} {self.tool.life_uom} on {self.tool}"
+
+
+def tooling_ready(bom, on_date):
+    """
+    (the first day a run of what `bom` makes can be printed, why), for a
+    sack printed to a design; (on_date, '') for anything else.
+    """
+    from .woven import BagSpecification
+
+    sack = BagSpecification.objects.filter(bom=bom).select_related("print_design").first()
+    if sack is None or sack.print_design is None:
+        return on_date, ""
+    return sack.print_design.readiness(on_date)
 
 
 def tools_for(design):
