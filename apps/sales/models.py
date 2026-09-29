@@ -988,6 +988,14 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         self._reclaim_stock()
 
     def save(self, *args, **kwargs):
+        if self.pk:
+            from .call_offs import called_off
+
+            called = called_off(self)
+            if called > self.quantity:
+                raise ValidationError(
+                    f"{self} has {called} called off; it cannot be cut to {self.quantity}. "
+                    "Take the call-offs down first.")
         if self.item_id and self.uom_id:
             # Refuse a unit the item cannot be counted in while the line is
             # still a quote, not when the picker is at the shelf. Purchasing
@@ -4008,6 +4016,7 @@ def generate_due_invoices(as_of=None):
 
 
 from .third_party import ThirdPartyRelease, ThirdPartyReleaseLine  # noqa: E402,F401
+from .call_offs import CallOff  # noqa: E402,F401
 from .price_variation import (  # noqa: E402,F401
     PriceIndex,
     PriceIndexValue,

@@ -235,13 +235,16 @@ def sales_demand(item, warehouse, on_date):
         if line.order.is_job_work:
             continue
         # Met inside its tolerance, or closed short: owed nothing more.
-        remaining = line.quantity_open_in_stock_units()
-        if remaining <= 0:
-            continue
-        rows.append(_demand(
-            line.promised_date(), remaining, DemandSource.SALES,
-            sales_order_line=line,
-        ))
+        # Owed on the days the customer called it off, and the rest on
+        # the line's own date.
+        from apps.sales.call_offs import open_schedule
+
+        unit = line.uom or line.item.uom
+        for day, owed in open_schedule(line):
+            rows.append(_demand(
+                day, line.item.to_stock_quantity(owed, unit), DemandSource.SALES,
+                sales_order_line=line,
+            ))
     return rows
 
 

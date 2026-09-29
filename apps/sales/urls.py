@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
+from .call_off_views import CallOffViewSet
 from .price_variation_views import (
     PriceClauseViewSet,
     PriceIndexViewSet,
@@ -51,6 +52,7 @@ router.register("sales-reps", SalesRepViewSet)
 router.register("sales-reports", SalesReportViewSet, basename="sales-report")
 router.register("recurring-invoices", RecurringInvoiceViewSet)
 router.register("recurring-invoice-lines", RecurringInvoiceLineViewSet)
+router.register("call-offs", CallOffViewSet)
 router.register("price-indices", PriceIndexViewSet)
 router.register("price-clauses", PriceClauseViewSet)
 router.register("price-variation-bills", PriceVariationBillViewSet, basename="price-variation-bill")

@@ -158,6 +158,17 @@ class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(line).data)
 
+    @action(detail=True, methods=["get"])
+    def schedule(self, request, pk=None):
+        """What is still owed, and by when: the call-offs, then the uncalled rest."""
+        from .call_offs import called_off, open_schedule
+
+        line = self.get_object()
+        return Response({
+            "quantity": str(line.quantity), "called_off": str(called_off(line).quantize(Decimal("0.0001"))),
+            "open": [{"due_on": day, "quantity": str(owed)} for day, owed in open_schedule(line)],
+        })
+
 
 class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """What the customer sends for a job-work order; settled once it is confirmed."""
