@@ -394,3 +394,80 @@ class AskedOverTheApiTests(ChangeoverTestCase):
             self.assertEqual(
                 self.client.get(f"/api/manufacturing/{path}/").status_code, 200
             )
+
+
+class PurgedOnTheChangeTests(ChangeoverTestCase):
+    """
+    On an extruder the change also costs polymer run through to clear
+    it. With minutes equal the sequencer takes the lesser purge:
+
+        white → yellow  20 min, 5 kg     white → black  20 min, 15 kg
+        yellow → black  20 min, 5 kg     black → yellow 20 min, 25 kg
+
+    On white, planned black then yellow: 40 minutes, 15 + 25 = 40 kg.
+    Yellow then black: 40 minutes, 5 + 5 = 10 kg; 30 kg saved.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for before, after, kg in (("WHITE", "YELLOW", "5"), ("WHITE", "BLACK", "15"),
+                                  ("YELLOW", "BLACK", "5"), ("BLACK", "YELLOW", "25")):
+            ChangeoverRule.objects.filter(from_family=before, to_family=after).update(
+                minutes=Decimal("20"), purge_kg=Decimal(kg))
+
+    def test_a_change_says_what_it_purges(self):
+        from .changeover import changeover
+
+        self.assertEqual(changeover(self.press, self.items["BLACK"], self.items["YELLOW"], FLAT),
+                         (Decimal("20.00"), Decimal("25.000")))
+        self.assertEqual(changeover(self.press, self.items["WHITE"], self.items["WHITE"], FLAT),
+                         (Decimal("0"), Decimal("0")))
+        self.assertEqual(changeover(self.press, None, self.items["WHITE"], FLAT),
+                         (FLAT, Decimal("0")))
+
+    def test_between_equal_minutes_the_lesser_purge(self):
+        self.book(self.queued("WHITE", 0), day=0)
+        black = self.queued("BLACK", 1)
+        yellow = self.queued("YELLOW", 2)
+        result = sequence(self.press)
+        self.assertEqual([row["operation"].work_order for row in result["proposed"]],
+                         [yellow, black])
+        self.assertEqual((result["saved_minutes"], result["planned_purge_kg"],
+                          result["proposed_purge_kg"], result["saved_purge_kg"]),
+                         (Decimal("0"), Decimal("40.000"), Decimal("10.000"),
+                          Decimal("30.000")))
+        self.assertEqual([row["purge_kg"] for row in result["proposed"]],
+                         [Decimal("5.000"), Decimal("5.000")])
+        self.assertIsNone(result["note"])
+
+    def test_a_purge_is_not_negative(self):
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            ChangeoverRule.objects.create(work_centre=self.press, from_family="WHITE",
+                                          to_family="GREEN", minutes=Decimal("5"),
+                                          purge_kg=Decimal("-1"))
+
+    def test_the_board_carries_it(self):
+        from .dispatch import build
+
+        self.book(self.queued("BLACK", 0), day=0)
+        yellow = self.queued("YELLOW", 1)
+        (row,) = [row for row in build() if row["order"] == yellow]
+        self.assertEqual((row["changeover"], row["purge_kg"]),
+                         (Decimal("20.00"), Decimal("25.000")))
+
+    def test_asked_over_the_api(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(get_user_model().objects.create_superuser("purger"))
+        self.book(self.queued("WHITE", 0), day=0)
+        self.queued("BLACK", 1)
+        yellow = self.queued("YELLOW", 2)
+        body = client.get(f"/api/manufacturing/work-centres/{self.press.pk}/sequence/").json()
+        self.assertEqual((body["planned_purge_kg"], body["proposed_purge_kg"],
+                          body["saved_purge_kg"], body["proposed"][0]["purge_kg"]),
+                         ("40.000", "10.000", "30.000", "5.000"))
+        board = client.get("/api/manufacturing/dispatch/").json()
+        rows = [row for rows in board.values() for row in rows if row["run"] == yellow.number]
+        self.assertEqual([row["purge_kg"] for row in rows], ["25.000"])

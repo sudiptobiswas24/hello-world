@@ -1043,6 +1043,7 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                     "item": row["item"].sku,
                     "family": row["family"],
                     "changeover_minutes": row["changeover_minutes"],
+                    "purge_kg": str(row["purge_kg"]),
                 }
                 for row in sequence
             ]
@@ -1057,6 +1058,9 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "proposed": rows(result["proposed"]),
             "proposed_minutes": result["proposed_minutes"],
             "saved_minutes": result["saved_minutes"],
+            "planned_purge_kg": str(result["planned_purge_kg"]),
+            "proposed_purge_kg": str(result["proposed_purge_kg"]),
+            "saved_purge_kg": str(result["saved_purge_kg"]),
             "moved_later": [
                 op.work_order.number for op in result["moved_later"]
             ],
@@ -1607,7 +1611,8 @@ class DispatchViewSet(viewsets.ViewSet):
             "run": order.number, "item": order.item.sku,
             "operation": row["operation"].name, "sequence": row["operation"].sequence,
             "start": row["start"], "finish": row["finish"],
-            "changeover_minutes": str(row["changeover"]), "late": row["late"],
+            "changeover_minutes": str(row["changeover"]), "purge_kg": str(row["purge_kg"]),
+            "late": row["late"],
             "due": order.scheduled_end, "held": row["held"], "moved_from": row["moved_from"],
         }
 

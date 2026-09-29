@@ -583,7 +583,7 @@ class ChangeoverRuleSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChangeoverRule
         fields = ["id", "work_centre", "from_family", "to_family", "minutes",
-                  "notes"]
+                  "purge_kg", "notes"]
 
 
 class MachineSerializer(serializers.ModelSerializer):

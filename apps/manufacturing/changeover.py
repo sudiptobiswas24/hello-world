@@ -97,6 +97,10 @@ class ChangeoverRule(AuditModel):
     from_family = models.CharField(max_length=32, blank=True)
     to_family = models.CharField(max_length=32, blank=True)
     minutes = models.DecimalField(max_digits=10, decimal_places=2)
+    purge_kg = models.DecimalField(
+        max_digits=10, decimal_places=3, default=Decimal("0"),
+        help_text="Polymer run through to clear the old colour or recipe out of an "
+                  "extruder: material spent on the change, not only minutes.")
     notes = models.CharField(max_length=255, blank=True)
 
     class Meta:
@@ -107,7 +111,8 @@ class ChangeoverRule(AuditModel):
                 name="one_changeover_rule_per_pair",
             ),
             models.CheckConstraint(
-                check=Q(minutes__gte=0), name="changeover_not_negative",
+                check=Q(minutes__gte=0) & Q(purge_kg__gte=0),
+                name="changeover_not_negative",
             ),
             models.CheckConstraint(
                 check=Q(from_family="") | Q(to_family="")
@@ -133,14 +138,15 @@ def family_of(item, work_centre):
     return row.family if row is not None else ""
 
 
-def changeover_minutes(work_centre, previous_item, next_item, flat_setup):
+def changeover(work_centre, previous_item, next_item, flat_setup):
     """
-    Minutes to go from running `previous_item` to `next_item` here.
+    (minutes, purge kg) to go from running `previous_item` to `next_item`.
 
     The flat setup where nothing better is known: a machine whose last
-    run is unknown, an item in no family, a pair no rule covers.
+    run is unknown, an item in no family, a pair no rule covers — and
+    no purge, since nothing says there is one.
     """
-    flat = Decimal(flat_setup or 0)
+    flat = (Decimal(flat_setup or 0), ZERO)
     before = family_of(previous_item, work_centre)
     after = family_of(next_item, work_centre)
     # An unknown last run and an item nobody has put in a family both
@@ -150,9 +156,9 @@ def changeover_minutes(work_centre, previous_item, next_item, flat_setup):
     if not before or not after:
         return flat
     if before == after:
-        return ZERO
+        return ZERO, ZERO
     rules = {
-        (row.from_family, row.to_family): row.minutes
+        (row.from_family, row.to_family): (row.minutes, row.purge_kg)
         for row in ChangeoverRule.objects.filter(
             work_centre=work_centre,
             from_family__in=(before, ""), to_family__in=(after, ""),
@@ -162,6 +168,11 @@ def changeover_minutes(work_centre, previous_item, next_item, flat_setup):
         if key in rules:
             return rules[key]
     return flat
+
+
+def changeover_minutes(work_centre, previous_item, next_item, flat_setup):
+    """Minutes to go from running `previous_item` to `next_item` here."""
+    return changeover(work_centre, previous_item, next_item, flat_setup)[0]
 
 
 # -- the queue on a machine --------------------------------------------
@@ -241,21 +252,21 @@ def _walk(work_centre, current, operations):
     """Each run with the changeover it costs coming after the one before."""
     rows = []
     previous = current
-    total = ZERO
+    total, purged = ZERO, ZERO
     for operation in operations:
         item = operation.work_order.item
-        minutes = changeover_minutes(
-            work_centre, previous, item, operation.setup_minutes
-        )
+        minutes, purge = changeover(work_centre, previous, item, operation.setup_minutes)
         rows.append({
             "operation": operation,
             "item": item,
             "family": family_of(item, work_centre),
             "changeover_minutes": minutes,
+            "purge_kg": purge,
         })
         total += minutes
+        purged += purge
         previous = item
-    return rows, total
+    return rows, total, purged
 
 
 def _due(operation):
@@ -277,11 +288,12 @@ def _nearest_first(work_centre, current, operations):
     previous = current
     while left:
         def cost(op):
-            minutes = changeover_minutes(
+            # Minutes first; between equal minutes, the one that purges less.
+            minutes, purge = changeover(
                 work_centre, previous, op.work_order.item, op.setup_minutes
             )
             due = _due(op)
-            return (minutes, due is None, due or 0, op.pk)
+            return (minutes, purge, due is None, due or 0, op.pk)
 
         chosen = min(left, key=cost)
         left.remove(chosen)
@@ -303,12 +315,14 @@ def sequence(work_centre, machine=None):
         machine.check_in(work_centre)
     current = on_the_machine(work_centre, machine)
     planned = queue_on(work_centre, machine)
-    planned_rows, planned_total = _walk(work_centre, current, planned)
+    planned_rows, planned_total, planned_purge = _walk(work_centre, current, planned)
     candidate = _nearest_first(work_centre, current, planned)
-    proposed_rows, proposed_total = _walk(work_centre, current, candidate)
-    better = proposed_total < planned_total
+    proposed_rows, proposed_total, proposed_purge = _walk(work_centre, current, candidate)
+    # Better is fewer minutes, or as few and less purged.
+    better = (proposed_total, proposed_purge) < (planned_total, planned_purge)
     if not better:
-        proposed_rows, proposed_total = planned_rows, planned_total
+        proposed_rows, proposed_total, proposed_purge = (
+            planned_rows, planned_total, planned_purge)
         candidate = planned
     position = {op.pk: index for index, op in enumerate(planned)}
     moved_later = [
@@ -324,6 +338,9 @@ def sequence(work_centre, machine=None):
         "proposed": proposed_rows,
         "proposed_minutes": proposed_total,
         "saved_minutes": planned_total - proposed_total,
+        "planned_purge_kg": planned_purge,
+        "proposed_purge_kg": proposed_purge,
+        "saved_purge_kg": planned_purge - proposed_purge,
         "moved_later": moved_later,
         "note": None if better else (
             "No order found that changes over less than the one planned."

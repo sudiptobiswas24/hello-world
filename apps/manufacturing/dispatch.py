@@ -123,7 +123,7 @@ def build(start_at=None):
     The schedule, as rows of {operation, machine, start, finish,
     changeover, late}, and nothing written anywhere.
     """
-    from .changeover import changeover_minutes
+    from .changeover import changeover
     from .machines import requirements
     from .orders import WorkOrder, WorkOrderStatus
 
@@ -206,7 +206,7 @@ def build(start_at=None):
                 candidates = pinned or candidates
             best = None
             for resource in candidates:
-                change = ZERO if begun else changeover_minutes(
+                change, purge = (ZERO, ZERO) if begun else changeover(
                     operation.work_centre, resource.last_item, order.item,
                     operation.setup_minutes,
                 )
@@ -215,16 +215,18 @@ def build(start_at=None):
                 began, finish = resource.clock.advance(earliest, max(work, ZERO))
                 key = (finish, resource.code)
                 if best is None or key < best[0]:
-                    best = (key, resource, began, finish, change)
-            _, resource, began, finish, change = best
+                    best = (key, resource, began, finish, change, purge)
+            _, resource, began, finish, change, purge = best
             resource.free_at = finish
             resource.last_item = order.item
             rows.append({"operation": operation, "order": order, "machine": resource.machine,
                          "resource": resource.code, "start": began, "finish": finish,
-                         "changeover": change, "outside": False, "moved_from": moved_from})
+                         "changeover": change, "purge_kg": purge, "outside": False,
+                         "moved_from": moved_from})
             ready = finish
     for row in rows:
         row.setdefault("held", None)
+        row.setdefault("purge_kg", ZERO)
         row.setdefault("moved_from", None)
         if row["held"]:
             row["late"] = None
