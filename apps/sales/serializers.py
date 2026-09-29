@@ -37,13 +37,15 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
     quantity_shipped = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
     quantity_invoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
     quantity_uninvoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+    quantity_open = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
 
     class Meta:
         model = SalesOrderLine
         fields = [
             "id", "order", "item", "uom", "quantity", "unit_price", "discount_percent",
             "revenue_account", "taxes", "quantity_shipped", "quantity_invoiced",
-            "quantity_uninvoiced",
+            "quantity_uninvoiced", "over_delivery_percent", "under_delivery_percent",
+            "quantity_open", "closed_short_at", "closed_short_reason",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
 

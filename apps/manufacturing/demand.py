@@ -67,7 +67,8 @@ def coverage(line):
         # double-count the first case and under-report what is left to
         # make. Erring the other way puts a line on the planner's list
         # that they glance at and dismiss, which is the cheaper mistake.
-        # A line shipped in full is exact, and `uncovered()` drops it.
+        # A line met - in full, inside its tolerance, or closed short -
+        # is exact, and `uncovered()` drops it.
         "uncovered": max(ordered - on_order, Decimal("0")),
         "runs": list(runs),
     }
@@ -101,9 +102,10 @@ def uncovered(sales_order=None, item=None):
         # different answers for one item either side of a change.
         if default_bom_for(line.item, line.promised_date()) is None:
             continue
-        row = coverage(line)
-        if row["shipped"] >= row["ordered"]:
+        # Met inside its tolerance, or closed short: nothing left to make.
+        if line.quantity_open() <= 0:
             continue
+        row = coverage(line)
         if row["uncovered"] > 0:
             rows.append(row)
     return rows

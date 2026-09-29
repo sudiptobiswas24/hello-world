@@ -222,6 +222,16 @@ class CustomerProfile(AuditModel):
         help_text="Goods they send back go back under their inspector's release. Off, "
                   "returned sacks must be inspected again before they go out again.",
     )
+    over_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="How far over the ordered quantity they accept, and are billed for. "
+                  "What a new order line takes; the line may say otherwise.",
+    )
+    under_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="How far short of the ordered quantity still counts as the order "
+                  "met: nothing more is planned or promised against it.",
+    )
 
     class Meta:
         constraints = [
@@ -620,7 +630,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 continue
             if not line.item.track_inventory:
                 continue
-            outstanding = line.quantity_in_stock_units() - line.quantity_shipped_in_stock_units()
+            outstanding = line.quantity_open_in_stock_units()
             if outstanding <= 0:
                 StockReservation.objects.for_source(line).open().update(
                     released_at=timezone.now(), released_reason="Fully shipped"
@@ -641,7 +651,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 continue
             if not line.item.track_inventory:
                 continue
-            outstanding = line.quantity_in_stock_units() - line.quantity_shipped_in_stock_units()
+            outstanding = line.quantity_open_in_stock_units()
             held = line.quantity_reserved()
             if outstanding - held > 0:
                 shortfalls[line] = outstanding - held
@@ -850,6 +860,18 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
     taxes = models.ManyToManyField(Tax, blank=True, related_name="sales_order_lines")
+    over_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="How far over the quantity may ship and be billed. Blank takes the "
+                  "customer's, and is written down then: a term of this order.",
+    )
+    under_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="How far short the line still counts as met. Blank takes the "
+                  "customer's, written down then.",
+    )
+    closed_short_at = models.DateTimeField(null=True, blank=True, editable=False)
+    closed_short_reason = models.CharField(max_length=255, blank=True, editable=False)
 
     def party_for_tax(self):
         return self.order.customer
@@ -863,10 +885,107 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                 | Q(item__isnull=True, charge__isnull=False),
                 name="order_line_is_item_or_charge",
             ),
+            models.CheckConstraint(
+                check=(Q(over_delivery_percent__isnull=True)
+                       | (Q(over_delivery_percent__gte=0) & Q(over_delivery_percent__lte=100)))
+                & (Q(under_delivery_percent__isnull=True)
+                   | (Q(under_delivery_percent__gte=0) & Q(under_delivery_percent__lt=100))),
+                name="order_line_tolerances_sensible",
+            ),
         ]
 
     def __str__(self):
         return f"{self.label()} x{self.quantity}"
+
+    # -- how much is still owed ----------------------------------------
+
+    def _tolerances(self):
+        """(over, under) as terms of this line: its own, or the customer's."""
+        profile = None
+        if self.over_delivery_percent is None or self.under_delivery_percent is None:
+            profile = CustomerProfile.objects.filter(party_id=self.order.customer_id).first()
+        return (
+            self.over_delivery_percent if self.over_delivery_percent is not None
+            else (profile.over_delivery_percent if profile else Decimal("0")),
+            self.under_delivery_percent if self.under_delivery_percent is not None
+            else (profile.under_delivery_percent if profile else Decimal("0")),
+        )
+
+    def most_shippable(self):
+        """The ordered quantity and the overrun the customer takes."""
+        over, _under = self._tolerances()
+        return self.quantity * (1 + over / Decimal("100"))
+
+    def least_accepted(self):
+        """Shipped this far, the line is met."""
+        _over, under = self._tolerances()
+        return self.quantity * (1 - under / Decimal("100"))
+
+    def is_closed_short(self):
+        return self.closed_short_at is not None
+
+    def quantity_open(self):
+        """
+        What is still owed, in the line's unit: nothing once it is met
+        within its tolerance or closed short. The one answer every
+        planner, reservation and backorder asks, so none of them keeps
+        planning the last three per cent of an order the customer has
+        already accepted.
+        """
+        if self.is_charge() or self.is_closed_short():
+            return Decimal("0")
+        shipped = self.quantity_shipped()
+        if shipped >= self.least_accepted():
+            return Decimal("0")
+        return max(self.quantity - shipped, Decimal("0"))
+
+    def quantity_open_in_stock_units(self):
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(self.quantity_open(), self.uom or self.item.uom)
+
+    def invoice_limit(self):
+        """
+        The most this line may bill: what shipped where it closed short,
+        and otherwise the order or the overrun that shipped, whichever is
+        more.
+        """
+        shipped = self.quantity_shipped()
+        if self.is_closed_short():
+            return shipped
+        return max(self.quantity, shipped)
+
+    @transaction.atomic
+    def close_short(self, reason):
+        """The customer wants no more: nothing further is owed, planned or held."""
+        if self.is_charge():
+            raise ValidationError("A charge is not shipped; there is nothing to close.")
+        if self.is_closed_short():
+            raise ValidationError(f"{self} is already closed short.")
+        if self.quantity_open() <= 0:
+            raise ValidationError(f"{self} is already met; there is nothing to close.")
+        shipped, billed = self.quantity_shipped(), self.quantity_invoiced()
+        if billed > shipped:
+            raise ValidationError(
+                f"{self} is billed for {billed} and {shipped} shipped. Credit the "
+                "difference first: closed short, it may bill only what shipped.")
+        reason = " ".join((reason or "").split())
+        if not reason:
+            raise ValidationError("Say why the rest will not be shipped.")
+        self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
+        super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        release_for(self, f"Closed short: {reason}"[:255])
+
+    @transaction.atomic
+    def reopen(self):
+        """Owed again after all, and held again where the stock allows."""
+        if not self.is_closed_short():
+            raise ValidationError(f"{self} is not closed short.")
+        if self.order.status != OrderStatus.CONFIRMED:
+            raise ValidationError(f"{self.order} is {self.order.status}; it cannot owe anything.")
+        self.closed_short_at, self.closed_short_reason = None, ""
+        super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        self._reclaim_stock()
 
     def save(self, *args, **kwargs):
         if self.item_id and self.uom_id:
@@ -896,13 +1015,25 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                     f"No price found for {self.item}: set one on the item, add it to a "
                     "price list, or give the line an explicit unit price."
                 )
+        # The tolerance is a term of this order, written down the day it
+        # was taken: the customer's default changing next year does not
+        # re-open or re-close lines already agreed.
+        if not self.is_charge() and self.order_id:
+            self.over_delivery_percent, self.under_delivery_percent = self._tolerances()
         # Defect: a confirmed line could be edited below what had already
         # shipped or been invoiced, silently breaking the drawdown guards.
+        # Measured against what the line allows shipped, not its bare
+        # quantity: an overrun inside the tolerance is not an edit below it.
         if self.pk:
             previous = SalesOrderLine.objects.filter(pk=self.pk).first()
             if previous is not None:
                 committed = max(self.quantity_shipped(), self.quantity_invoiced())
-                if self.quantity < committed:
+                if not self.is_charge() and self.most_shippable() < committed:
+                    raise ValidationError(
+                        f"{committed} of this line has already been shipped or invoiced; "
+                        f"the quantity, with its tolerance, cannot drop below that."
+                    )
+                if self.is_charge() and self.quantity < committed:
                     raise ValidationError(
                         f"{committed} of this line has already been shipped or invoiced; "
                         f"the quantity cannot drop below that."
@@ -939,9 +1070,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         if self.warehouse_id is None:
             release_for(self, "No warehouse on the line")
             return
-        outstanding = self.quantity_in_stock_units() - self.quantity_shipped_in_stock_units()
+        outstanding = self.quantity_open_in_stock_units()
         if outstanding <= 0:
-            release_for(self, "Fully shipped")
+            release_for(self, "Closed short" if self.is_closed_short() else "Fully shipped")
             return
         StockReservation.objects.claim(self, self.item, self.warehouse, outstanding)
 
@@ -982,7 +1113,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return shipped - returned
 
     def is_fully_shipped(self):
-        return self.quantity_shipped() >= self.quantity
+        """Met: shipped within its tolerance, or closed short."""
+        return self.quantity_open() <= 0
 
     def quantity_in_stock_units(self):
         """This line's quantity in the unit the stock ledger counts in."""
@@ -1015,7 +1147,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return invoiced - credited
 
     def quantity_uninvoiced(self):
-        return self.quantity - self.quantity_invoiced()
+        if self.is_charge():
+            return self.quantity - self.quantity_invoiced()
+        return self.invoice_limit() - self.quantity_invoiced()
 
     def quantity_invoiceable(self):
         """
@@ -1031,7 +1165,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return min(uninvoiced, self.quantity_shipped() - self.quantity_invoiced())
 
     def is_fully_invoiced(self):
-        return self.quantity_invoiced() >= self.quantity
+        if self.is_charge():
+            return self.quantity_invoiced() >= self.quantity
+        return self.quantity_invoiced() >= self.invoice_limit()
 
 
 class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
@@ -1631,10 +1767,14 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 if not line.order_line_id:
                     continue
                 already = line.order_line.quantity_invoiced()
-                if already + line.quantity > line.order_line.quantity:
+                order_line = line.order_line
+                limit = order_line.quantity if order_line.is_charge() else order_line.invoice_limit()
+                if already + line.quantity > limit:
+                    what = ("shipped quantity of a line closed short"
+                            if order_line.is_closed_short() else "ordered quantity")
                     raise ValidationError(
-                        f"Invoicing {line.quantity} of {line.order_line.item} would exceed the "
-                        f"ordered quantity ({line.order_line.quantity}; {already} already invoiced)."
+                        f"Invoicing {line.quantity} of {order_line.item} would exceed the "
+                        f"{what} ({limit}; {already} already invoiced)."
                     )
         if not self.number:
             if self.is_credit_note():
@@ -2476,11 +2616,17 @@ class Delivery(AuditModel):
         if not is_return:
             for line in lines:
                 already_shipped = line.order_line.quantity_shipped()
-                if already_shipped + line.quantity_shipped > line.order_line.quantity:
+                if line.order_line.is_closed_short():
+                    raise ValidationError(
+                        f"{line.order_line} was closed short: "
+                        f"{line.order_line.closed_short_reason}. Reopen it to ship more."
+                    )
+                if already_shipped + line.quantity_shipped > line.order_line.most_shippable():
+                    over, _under = line.order_line._tolerances()
                     raise ValidationError(
                         f"Shipping {line.quantity_shipped} of {line.order_line.item} would "
-                        f"exceed the ordered quantity ({line.order_line.quantity}; "
-                        f"{already_shipped} already shipped)."
+                        f"exceed the ordered quantity ({line.order_line.quantity}, "
+                        f"{over}% over accepted; {already_shipped} already shipped)."
                     )
                 item = line.order_line.item
                 # Nothing was ever on hand to check: the vendor shipped it.
@@ -2720,6 +2866,12 @@ class Delivery(AuditModel):
             update_fields=["number", "delivery_date", "posted", "posted_at",
                            "returned_under_release", "updated_at"]
         )
+        # Met inside its tolerance: what is still held for a line is held
+        # for nobody. Asked once this shipment counts as shipped.
+        if not is_return:
+            for line in lines:
+                if line.order_line.quantity_open() <= 0:
+                    release_for(line.order_line, "Met within tolerance")
 
     def _credit_returned_goods(self):
         """
@@ -2763,7 +2915,7 @@ class Delivery(AuditModel):
         """
         outstanding = {}
         for line in self.lines.all():
-            remaining = line.order_line.quantity - line.order_line.quantity_shipped()
+            remaining = line.order_line.quantity_open()
             if remaining > 0:
                 outstanding[line.order_line] = remaining
         return outstanding

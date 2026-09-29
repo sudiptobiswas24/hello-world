@@ -136,6 +136,27 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = SalesOrderLine.objects.all()
     serializer_class = SalesOrderLineSerializer
+    action_permission_map = {"close_short": "sales.change_salesorder",
+                             "reopen": "sales.change_salesorder"}
+
+    @action(detail=True, methods=["post"], url_path="close-short")
+    def close_short(self, request, pk=None):
+        """{reason}: the customer wants no more of this line."""
+        line = self.get_object()
+        try:
+            line.close_short(request.data.get("reason", ""))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(line).data)
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        line = self.get_object()
+        try:
+            line.reopen()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(line).data)
 
 
 class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

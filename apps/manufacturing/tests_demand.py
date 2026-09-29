@@ -226,10 +226,11 @@ class LinesThatAreNotThePlannersProblemTests(DemandTestCase):
         # drops the line.
         from unittest.mock import patch
 
+        # Patched where every shipped figure comes from - the line's own
+        # count - so what is open, and in stock units, both follow it.
         line = self.sold("4000")
         with patch.object(
-            SalesOrderLine, "quantity_shipped_in_stock_units",
-            return_value=Decimal("4000"),
+            SalesOrderLine, "quantity_shipped", return_value=Decimal("4000"),
         ):
             self.assertEqual(uncovered(), [])
 
@@ -238,8 +239,7 @@ class LinesThatAreNotThePlannersProblemTests(DemandTestCase):
 
         self.sold("4000")
         with patch.object(
-            SalesOrderLine, "quantity_shipped_in_stock_units",
-            return_value=Decimal("1000"),
+            SalesOrderLine, "quantity_shipped", return_value=Decimal("1000"),
         ):
             rows = uncovered()
         # Not netted off: a shipment may have come out of one of these

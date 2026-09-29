@@ -234,9 +234,8 @@ def sales_demand(item, warehouse, on_date):
         # many lines are waiting for one.
         if line.order.is_job_work:
             continue
-        remaining = (
-            line.quantity_in_stock_units() - line.quantity_shipped_in_stock_units()
-        )
+        # Met inside its tolerance, or closed short: owed nothing more.
+        remaining = line.quantity_open_in_stock_units()
         if remaining <= 0:
             continue
         rows.append(_demand(
@@ -263,8 +262,7 @@ def job_work_left_out(item, warehouse):
         charge__isnull=True,
     ).filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True)).exclude(
         work_orders__status__in=[WorkOrderStatus.DRAFT, WorkOrderStatus.RELEASED])
-    return [line for line in lines
-            if line.quantity_in_stock_units() > line.quantity_shipped_in_stock_units()]
+    return [line for line in lines if line.quantity_open_in_stock_units() > 0]
 
 
 LIVE = (WorkOrderStatus.DRAFT, WorkOrderStatus.RELEASED)

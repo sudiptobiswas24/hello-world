@@ -1196,7 +1196,7 @@ class ReorderRule(AuditModel):
             item=self.item, order__status=SalesOrderStatus.CONFIRMED, charge__isnull=True
         ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
         return sum(
-            (max(line.quantity - line.quantity_shipped(), Decimal("0")) for line in lines),
+            (line.quantity_open() for line in lines),
             Decimal("0"),
         )
 
@@ -1558,7 +1558,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
         selected = [
             line for line in (lines if lines is not None else sales_order.lines.all())
-            if not line.is_charge() and line.quantity_shipped() < line.quantity
+            if not line.is_charge() and line.quantity_open() > 0
         ]
         if not selected:
             raise ValidationError("There is nothing left on this order to drop-ship.")
@@ -1570,7 +1570,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             shipping_note=f"Deliver direct to {sales_order.customer}",
         )
         for line in selected:
-            remaining = line.quantity - line.quantity_shipped()
+            remaining = line.quantity_open()
             PurchaseOrderLine.objects.create(
                 order=order, sales_order_line=line, item=line.item, uom=line.uom,
                 quantity=remaining,
