@@ -75,6 +75,10 @@ class LoadBook:
         self._capacity = {}
         self._machine_lists = {}
         self._booked = defaultdict(lambda: ZERO)
+        # Minutes booked on a set of a bank's machines, keyed by the set:
+        # the ones that can take a product the others cannot.
+        self._pooled = defaultdict(lambda: ZERO)
+        self._needs = {}
         self.unscheduled = defaultdict(lambda: ZERO)
         self.maintenance = defaultdict(lambda: ZERO)
         self._last = {}
@@ -120,23 +124,57 @@ class LoadBook:
             self._machine_lists[centre.pk] = centre.machine_list()
         return self._machine_lists[centre.pk]
 
-    def free(self, centre, day):
-        taken = self._booked[(centre.pk, day)]
-        return max(self.capacity_minutes(centre, day) - taken, ZERO)
+    def free(self, centre, day, pool=None):
+        """
+        Minutes left on the bank, and where the work can only go on some
+        of its machines, on those too.
 
-    def book(self, centre, day, minutes):
+        Booked against both: lined sacks on the one BCS that inserts
+        liners cannot exceed that BCS, and everything together cannot
+        exceed the bank. For one such set that is exactly whether a
+        day's work fits; for several overlapping ones (sizes, colours)
+        it is a bound the day must meet, not a proof that it does.
+        """
+        taken = self._booked[(centre.pk, day)]
+        left = max(self.capacity_minutes(centre, day) - taken, ZERO)
+        if pool is None:
+            return left
+        room = sum((machine.minutes_on(day) for machine in pool), ZERO)
+        return min(left, max(room - self._pooled[(_key(pool), day)], ZERO))
+
+    def book(self, centre, day, minutes, pool=None):
         self._booked[(centre.pk, day)] += minutes
+        if pool is not None:
+            self._pooled[(_key(pool), day)] += minutes
 
     def booked(self, centre, day):
         return self._booked[(centre.pk, day)]
 
+    def pool_for(self, centre, bom):
+        """
+        The bank's machines that can make what `bom` makes, where that is
+        not all of them; None where it is, or the bank lists no machines.
+        An empty pool is a product no machine here can take.
+        """
+        from apps.manufacturing.machines import requirements
+
+        machines = self._machines(centre)
+        if not machines or bom is None:
+            return None
+        if bom.pk not in self._needs:
+            self._needs[bom.pk] = requirements(bom)
+        able = tuple(machine for machine in machines
+                     if not machine.refuses(self._needs[bom.pk]))
+        return None if len(able) == len(machines) else able
+
     def checkpoint(self):
         """What is booked and what each machine last ran, to go back to."""
-        return dict(self._booked), dict(self._last)
+        return dict(self._booked), dict(self._pooled), dict(self._last)
 
     def rollback(self, mark):
-        booked, last = mark
+        booked, pooled, last = mark
         self._booked = defaultdict(lambda: ZERO, booked)
+        self._pooled = defaultdict(lambda: ZERO, pooled)
         self._last = dict(last)
 
     # -- what is already on the machines --------------------------------
@@ -160,7 +198,7 @@ class LoadBook:
                 ),
                 work_order__warehouse=self.warehouse,
             )
-            .select_related("work_centre", "work_order")
+            .select_related("work_centre", "work_order__bom", "machine")
         )
         for operation in operations:
             minutes = operation.planned_minutes or ZERO
@@ -182,8 +220,11 @@ class LoadBook:
                 self.unscheduled[operation.work_centre_id] += minutes
                 continue
             share = minutes / len(days)
+            # On the machine it was put on, or on those that can make it.
+            pool = ((operation.machine,) if operation.machine_id
+                    else self.pool_for(operation.work_centre, order.bom))
             for day in days:
-                self.book(operation.work_centre, day, share)
+                self.book(operation.work_centre, day, share, pool)
         self._load_drafts()
 
     def _load_drafts(self):
@@ -221,8 +262,9 @@ class LoadBook:
                 if not days:
                     self.unscheduled[operation.work_centre_id] += minutes
                     continue
+                pool = self.pool_for(operation.work_centre, order.bom)
                 for day in days:
-                    self.book(operation.work_centre, day, minutes / len(days))
+                    self.book(operation.work_centre, day, minutes / len(days), pool)
 
     def _load_maintenance(self):
         """
@@ -246,7 +288,8 @@ class LoadBook:
         for job in jobs:
             if job.planned_minutes <= 0:
                 continue
-            self.book(job.work_centre, job.due_on, job.planned_minutes)
+            self.book(job.work_centre, job.due_on, job.planned_minutes,
+                      (job.machine,) if job.machine_id else None)
             self.maintenance[job.work_centre_id] += job.planned_minutes
 
     # -- what each machine will have just run ----------------------------
@@ -276,7 +319,7 @@ class LoadBook:
 
     # -- scheduling ------------------------------------------------------
 
-    def take_backwards(self, centre, minutes, finish_by, floor):
+    def take_backwards(self, centre, minutes, finish_by, floor, pool=None):
         """
         Walk back from `finish_by` taking free hours until the work is
         used up, and say which day that was.
@@ -295,16 +338,16 @@ class LoadBook:
             if day < floor:
                 return day, True
             if calendar.is_working(day):
-                take = min(self.free(centre, day), remaining)
+                take = min(self.free(centre, day, pool), remaining)
                 if take > 0:
-                    self.book(centre, day, take)
+                    self.book(centre, day, take, pool)
                     remaining -= take
             if remaining > 0:
                 day -= datetime.timedelta(days=1)
         return day, False
 
 
-    def take_forwards(self, centre, minutes, start, ceiling):
+    def take_forwards(self, centre, minutes, start, ceiling, pool=None):
         """
         Walk forward from `start` taking free hours until the work is
         used up; (first day worked, last day worked, ran out).
@@ -318,14 +361,18 @@ class LoadBook:
             if day > ceiling:
                 return first or start, day, True
             if calendar.is_working(day):
-                take = min(self.free(centre, day), remaining)
+                take = min(self.free(centre, day, pool), remaining)
                 if take > 0:
-                    self.book(centre, day, take)
+                    self.book(centre, day, take, pool)
                     remaining -= take
                     first = first or day
             if remaining > 0:
                 day += datetime.timedelta(days=1)
         return first or start, day, False
+
+
+def _key(pool):
+    return frozenset(machine.pk for machine in pool)
 
 
 def _days_between(start, end):
@@ -370,7 +417,8 @@ def schedule_backwards(book, operations, quantity, uom, finish_by, floor, item, 
             continue
         minutes = book.run_minutes(operation, item, quantity, uom, bom)
         start, ran_out = book.take_backwards(
-            operation.work_centre, minutes, cursor, floor
+            operation.work_centre, minutes, cursor, floor,
+            book.pool_for(operation.work_centre, bom),
         )
         overloaded = overloaded or ran_out
         spans.append({
@@ -407,7 +455,8 @@ def schedule_forwards(book, operations, quantity, uom, start, ceiling, item, bom
             continue
         minutes = book.run_minutes(operation, item, quantity, uom, bom)
         began, finish, short = book.take_forwards(operation.work_centre, minutes, cursor,
-                                                  ceiling)
+                                                  ceiling, book.pool_for(operation.work_centre,
+                                                                         bom))
         ran_out = ran_out or short
         spans.append({"operation": operation, "work_centre": operation.work_centre,
                       "minutes": minutes, "start": began, "finish": finish})

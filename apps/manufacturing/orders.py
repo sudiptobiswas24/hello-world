@@ -175,6 +175,7 @@ class SpeedBasis(models.TextChoices):
     STATED = "stated", "Stated rate"
     TAPE_LINE = "tape_line", "Tape line"
     CIRCULAR_LOOM = "circular_loom", "Circular loom"
+    WEB = "web", "Web speed (metres a minute)"
 
 
 class WorkCentre(AuditModel):
@@ -269,7 +270,9 @@ class WorkCentre(AuditModel):
     )
     line_speed_m_per_min = models.DecimalField(
         max_digits=8, decimal_places=2, null=True, blank=True,
-        help_text="Tape line: winding speed, metres a minute.",
+        help_text="Tape line: winding speed. Web: the speed the fabric, film or tube "
+                  "runs through a laminator, press, BCS or blown-film haul-off. "
+                  "Metres a minute, both.",
     )
     loom_rpm = models.DecimalField(
         max_digits=8, decimal_places=2, null=True, blank=True,
@@ -320,6 +323,7 @@ class WorkCentre(AuditModel):
                                    ("line_speed_m_per_min", "a line speed")),
             SpeedBasis.CIRCULAR_LOOM: (("loom_rpm", "revolutions a minute"),
                                        ("shuttles", "a number of shuttles")),
+            SpeedBasis.WEB: (("line_speed_m_per_min", "a web speed"),),
         }.get(self.speed_basis, ())
         for field, words in needs:
             value = getattr(self, field)
@@ -357,12 +361,40 @@ class WorkCentre(AuditModel):
                 rated = self.capacity_uom.convert_to(self.capacity_per_hour, unit)
                 wound = min(wound, rated)
             return wound, unit
+        if self.speed_basis == SpeedBasis.WEB:
+            return self._web_speed(bom, stated)
         spec = FabricSpecification.objects.filter(bom=bom).first()
         if spec is None:
             return stated
         metres = (self.loom_rpm * Decimal(self.shuttles) * 60
                   / (spec.picks_per_inch * INCHES_PER_METRE))
         return metres * spec.grams_per_metre() / 1000, spec.fabric_item.uom
+
+    def _web_speed(self, bom, stated):
+        """
+        A web through the machine at metres a minute: a sack or a liner is
+        one cut length of it, and blown film is its weight a metre -
+        held to the extruder's rated output where the centre states one,
+        as a tape line is.
+        """
+        from .liners import FilmSpecification, LinerSpecification
+        from .woven import BagSpecification, CM_PER_M
+
+        metres = self.line_speed_m_per_min * 60
+        sack = BagSpecification.objects.filter(bom=bom).first()
+        if sack is not None:
+            return metres / (sack.cut_length_cm() / CM_PER_M), bom.uom
+        liner = LinerSpecification.objects.filter(bom=bom).first()
+        if liner is not None:
+            return metres / (liner.cut_length_cm / CM_PER_M), bom.uom
+        film = FilmSpecification.objects.filter(bom=bom).first()
+        if film is None:
+            return stated
+        unit = film.film_item.uom
+        made = metres * film.grams_per_metre() / 1000
+        if self.capacity_per_hour is not None and self.capacity_uom is not None:
+            made = min(made, self.capacity_uom.convert_to(self.capacity_per_hour, unit))
+        return made, unit
 
     def calendar(self):
         """
@@ -1551,6 +1583,11 @@ class WorkOrderOperation(AuditModel):
             )
         if self.machine_id is not None and self.work_centre_id is not None:
             self.machine.check_in(self.work_centre)
+            from .machines import refusal
+
+            reason = refusal(self.machine, self.work_order.bom)
+            if reason:
+                raise ValidationError(f"{self.work_order} cannot go on it: {reason}.")
 
     # -- an outside step ------------------------------------------------
 

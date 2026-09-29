@@ -37,7 +37,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 
 from apps.core.models import AuditModel
 from apps.hr.calendars import WorkingCalendar, parse_working_days
@@ -108,6 +108,26 @@ class Machine(AuditModel):
                   "scale says it can have been.",
     )
     notes = models.CharField(max_length=255, blank=True)
+    # What it can take. Blank is "not a limit on this machine", which
+    # is not the same as "cannot": a laminator has no liner to insert and
+    # is not refused a lined sack for it.
+    min_width_cm = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Narrowest tube, web or sack it takes: a loom's smallest tube, "
+                  "a BCS's narrowest sack.")
+    max_width_cm = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True,
+                                       help_text="Widest.")
+    min_length_cm = models.DecimalField(
+        max_digits=8, decimal_places=2, null=True, blank=True,
+        help_text="Shortest cut length it cuts: a BCS or a cut-and-seal machine.")
+    max_length_cm = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True,
+                                        help_text="Longest.")
+    max_colours = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="A press: colours it prints, front and back together.")
+    inserts_liner = models.BooleanField(
+        null=True, blank=True,
+        help_text="A BCS: yes for the one that puts the liner in, no for the rest. "
+                  "Blank on machines where a liner is not their business.")
 
     class Meta:
         ordering = ["work_centre", "code"]
@@ -130,6 +150,17 @@ class Machine(AuditModel):
                 | Q(capacity_uom__isnull=False),
                 name="machine_rate_says_what_it_counts",
             ),
+            models.CheckConstraint(
+                check=(Q(min_width_cm__isnull=True) | Q(min_width_cm__gt=0))
+                & (Q(max_width_cm__isnull=True) | Q(max_width_cm__gt=0))
+                & (Q(min_length_cm__isnull=True) | Q(min_length_cm__gt=0))
+                & (Q(max_length_cm__isnull=True) | Q(max_length_cm__gt=0))
+                & (Q(min_width_cm__isnull=True) | Q(max_width_cm__isnull=True)
+                   | Q(min_width_cm__lte=F("max_width_cm")))
+                & (Q(min_length_cm__isnull=True) | Q(max_length_cm__isnull=True)
+                   | Q(min_length_cm__lte=F("max_length_cm"))),
+                name="machine_size_range_sensible",
+            ),
         ]
 
     def __str__(self):
@@ -147,7 +178,46 @@ class Machine(AuditModel):
         # code by every fixture and import that sets a plant up.
         if self.working_days:
             parse_working_days(self.working_days)
+        if self.pk:
+            self._check_still_takes_its_work()
         super().save(*args, **kwargs)
+
+    def _check_still_takes_its_work(self):
+        """
+        A machine re-rated below a run put on it keeps the run it can no
+        longer make: refused, naming it, until the run is moved.
+        """
+        from .orders import WorkOrderOperation, WorkOrderStatus
+
+        steps = WorkOrderOperation.objects.filter(
+            machine_id=self.pk, work_order__status=WorkOrderStatus.RELEASED,
+        ).select_related("work_order__bom")
+        for step in steps:
+            reason = refusal(self, step.work_order.bom)
+            if reason:
+                raise ValidationError(f"{step.work_order} is on {self.code}, and {reason}. "
+                                      "Move it first.")
+
+    # -- what it can take -----------------------------------------------
+
+    def refuses(self, needs):
+        """Why this machine cannot take work needing `needs`, or ''."""
+        width, length = needs.get("width_cm"), needs.get("length_cm")
+        for value, low, high, what in (
+            (width, self.min_width_cm, self.max_width_cm, "wide"),
+            (length, self.min_length_cm, self.max_length_cm, "long"),
+        ):
+            if value is None:
+                continue
+            if (low is not None and value < low) or (high is not None and value > high):
+                return (f"{self.code} takes {low or 'any'} to {high or 'any'} cm {what}, "
+                        f"not {value}")
+        colours = needs.get("colours") or 0
+        if self.max_colours is not None and colours > self.max_colours:
+            return f"{self.code} prints {self.max_colours} colours, not {colours}"
+        if needs.get("liner") and self.inserts_liner is False:
+            return f"{self.code} inserts no liner"
+        return ""
 
     # -- what it falls back to ------------------------------------------
 
@@ -220,6 +290,38 @@ class Machine(AuditModel):
                 "another bank reads as capacity taken off a line that was "
                 "standing idle."
             )
+
+
+def requirements(bom):
+    """
+    What a machine must take to make what `bom` makes: from the
+    specification it was built from, never typed beside it.
+    """
+    from .liners import FilmSpecification, LinerSpecification
+    from .woven import BagSpecification, FabricSpecification
+
+    if bom is None:
+        return {}
+    sack = BagSpecification.objects.filter(bom=bom).first()
+    if sack is not None:
+        return {"width_cm": sack.bag_width_cm, "length_cm": sack.cut_length_cm(),
+                "colours": sack.print_colours + sack.print_colours_back,
+                "liner": sack.liner_item_id is not None}
+    fabric = FabricSpecification.objects.filter(bom=bom).first()
+    if fabric is not None:
+        return {"width_cm": fabric.lay_flat_width_cm}
+    liner = LinerSpecification.objects.filter(bom=bom).first()
+    if liner is not None:
+        return {"width_cm": liner.film.lay_flat_width_cm, "length_cm": liner.cut_length_cm}
+    film = FilmSpecification.objects.filter(bom=bom).first()
+    if film is not None:
+        return {"width_cm": film.lay_flat_width_cm}
+    return {}
+
+
+def refusal(machine, bom):
+    """Why `machine` cannot make what `bom` makes, or ''."""
+    return machine.refuses(requirements(bom))
 
 
 def machines_in(work_centre, active_only=True):

@@ -591,7 +591,9 @@ class MachineSerializer(serializers.ModelSerializer):
         model = Machine
         fields = ["id", "work_centre", "code", "name", "capacity_per_hour",
                   "capacity_uom", "available_hours_per_day", "working_days",
-                  "hours_per_day", "days_pattern", "is_active", "notes"]
+                  "hours_per_day", "days_pattern", "is_active", "notes",
+                  "min_width_cm", "max_width_cm", "min_length_cm", "max_length_cm",
+                  "max_colours", "inserts_liner"]
 
     hours_per_day = serializers.SerializerMethodField()
     days_pattern = serializers.SerializerMethodField()

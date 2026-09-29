@@ -300,6 +300,13 @@ def run_on(machine):
             f"({', '.join(run.number for run in candidates)}). Assign the "
             "loom on one of them so a roll knows which it belongs to."
         )
+    from .machines import refusal
+
+    # A run left to the bank may still be one this machine cannot make:
+    # a lined sack on a BCS that inserts none is booked nowhere.
+    reason = refusal(machine, candidates[0].bom)
+    if reason:
+        raise ValidationError(f"{candidates[0]} cannot be made here: {reason}.")
     return candidates[0]
 
 

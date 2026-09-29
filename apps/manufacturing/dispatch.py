@@ -124,6 +124,7 @@ def build(start_at=None):
     changeover, late}, and nothing written anywhere.
     """
     from .changeover import changeover_minutes
+    from .machines import requirements
     from .orders import WorkOrder, WorkOrderStatus
 
     start_at = timezone.localtime(start_at or timezone.now()).replace(tzinfo=None, second=0,
@@ -155,6 +156,7 @@ def build(start_at=None):
     for order in orders:
         ready = start_at
         waiting_on = None
+        needs = requirements(order.bom)
         if order.scheduled_start:
             ready = max(ready, datetime.datetime.combine(order.scheduled_start, day_start))
         started = order.started_quantity()
@@ -177,6 +179,16 @@ def build(start_at=None):
             if minutes <= 0 and begun:
                 continue
             candidates = pool(operation.work_centre)
+            reasons = [resource.machine.refuses(needs) for resource in candidates
+                       if resource.machine is not None]
+            able = [resource for resource in candidates
+                    if resource.machine is None or not resource.machine.refuses(needs)]
+            if not able:
+                held(operation, order, f"No machine at {operation.work_centre.code} can take "
+                                       f"it: {'; '.join(reasons)}.")
+                waiting_on = operation.sequence
+                continue
+            candidates = able
             moved_from = None
             if operation.machine_id:
                 # Started there, or put there by the dispatcher: it stays.
