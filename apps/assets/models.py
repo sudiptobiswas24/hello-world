@@ -270,7 +270,7 @@ class FixedAsset(AuditModel):
     @transaction.atomic
     def depreciate(self, through=None):
         """Charge every month due up to `through`. Returns the entries made."""
-        through = to_date(through) or timezone.now().date()
+        through = to_date(through) or timezone.localdate()
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service is depreciated.")
 
@@ -327,7 +327,7 @@ class FixedAsset(AuditModel):
                 f"{self} was not capitalised from a bill, so there is nothing "
                 "to undo — delete the draft instead."
             )
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         self.capitalisation_entry.create_reversal(
             entry_date=on_date, memo=memo or f"Un-capitalised {self}"
         )
@@ -357,7 +357,7 @@ class FixedAsset(AuditModel):
         a receivable, and a disposal nobody invoices leaves the whole
         book value as a loss.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if self.status == AssetStatus.DISPOSED:
             raise ValidationError("This asset has already been disposed of.")
         if self.status != AssetStatus.IN_SERVICE:
@@ -445,7 +445,7 @@ def asset_register(as_of=None, category=None):
     list assets that did not exist yet, so a register "as at last March"
     was today's register with March written on it.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     assets = FixedAsset.objects.select_related("category").exclude(
         status__in=(AssetStatus.DRAFT, AssetStatus.CANCELLED)
     ).filter(acquisition_date__lte=as_of)

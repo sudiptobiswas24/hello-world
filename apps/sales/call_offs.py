@@ -30,6 +30,11 @@ from apps.core.models import AuditModel
 ZERO = Decimal("0")
 
 
+def plain(value):
+    """100, not 100.0000: a sum comes back at the column's scale on PostgreSQL."""
+    return format(Decimal(value).normalize(), "f")
+
+
 class CallOff(AuditModel):
     line = models.ForeignKey("sales.SalesOrderLine", on_delete=models.CASCADE,
                              related_name="call_offs")
@@ -55,9 +60,10 @@ class CallOff(AuditModel):
             total=Sum("quantity"))["total"] or ZERO
         if others + self.quantity > self.line.quantity:
             raise ValidationError(
-                f"{self.line} is for {self.line.quantity}; {others} is called off already, "
-                f"so {self.quantity} more is {others + self.quantity - self.line.quantity} "
-                "over. Raise the line first.")
+                f"{self.line} is for {plain(self.line.quantity)}; {plain(others)} is called "
+                f"off already, so {plain(self.quantity)} more is "
+                f"{plain(others + self.quantity - self.line.quantity)} over. "
+                "Raise the line first.")
         super().save(*args, **kwargs)
 
 

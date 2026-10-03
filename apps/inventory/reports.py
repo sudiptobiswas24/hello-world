@@ -269,7 +269,7 @@ def _surviving_receipts(item, warehouse, as_of):
         movements = movements.filter(occurred_at__date__lte=as_of)
     for movement in movements.order_by("occurred_at", "id"):
         if movement.quantity > 0:
-            layers.append([movement.occurred_at.date(), movement.quantity])
+            layers.append([to_date(movement.occurred_at), movement.quantity])
         elif movement.quantity < 0:
             leaving = -movement.quantity
             while leaving > 0 and layers:

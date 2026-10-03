@@ -233,7 +233,7 @@ class OutsideMovement(AuditModel):
                     f"Some of {self} has already gone back to the vendor. "
                     "Void that return first."
                 )
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         # A movement at no value writes no entry — `_post_entry` drops
         # zero rows — so there may be nothing to reverse, and the void
         # is still a real void of the quantity.

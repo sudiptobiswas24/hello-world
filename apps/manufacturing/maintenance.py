@@ -177,7 +177,7 @@ class MaintenanceSchedule(AuditModel):
         """
         if self.every_days is None:
             return None
-        as_of = to_date(as_of) or timezone.now().date()
+        as_of = to_date(as_of) or timezone.localdate()
         if self.last_done_on is None:
             return as_of
         return self.last_done_on + datetime.timedelta(days=self.every_days)
@@ -197,7 +197,7 @@ class MaintenanceSchedule(AuditModel):
         that has run flat out for six weeks needs its shuttle changed
         early.
         """
-        as_of = to_date(as_of) or timezone.now().date()
+        as_of = to_date(as_of) or timezone.localdate()
         by_date = self.due_on(as_of)
         if by_date is not None and by_date <= as_of:
             return True
@@ -219,7 +219,7 @@ class MaintenanceSchedule(AuditModel):
                 f"{open_already} is already on the board for this schedule. "
                 "Two open jobs would take the machine out twice."
             )
-        as_of = to_date(as_of) or timezone.now().date()
+        as_of = to_date(as_of) or timezone.localdate()
         when = to_date(due_on) or self.due_on(as_of) or as_of
         return MaintenanceJob.objects.create(
             schedule=self, work_centre=self.work_centre,
@@ -389,7 +389,7 @@ class MaintenanceJob(AuditModel):
             raise ValidationError(f"{self} was already done on {self.done_on}.")
         from .shifts import Downtime, DowntimeReason
 
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if self.is_breakdown:
             action = " ".join((action or "").split())
             if not action:
@@ -602,7 +602,7 @@ def issue_spares(job, warehouse, lines, on_date=None, issued_to=None, reason=Non
     if not rows:
         raise ValidationError("Say which spares are issued.")
     adjustment = StockAdjustment.objects.create(
-        adjustment_date=to_date(on_date) or timezone.now().date(), warehouse=warehouse,
+        adjustment_date=to_date(on_date) or timezone.localdate(), warehouse=warehouse,
         reason=reason, memo=f"Spares for {job}"[:255], raised_by=SPARE_ISSUE,
     )
     for item, quantity, lot in rows:

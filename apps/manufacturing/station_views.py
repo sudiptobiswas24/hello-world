@@ -162,7 +162,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             raise DRFValidationError([f"{station} does not weigh for {machine}."])
         order = _run(run_on, loom)
         shift = Shift.covering(timezone.now())
-        on_date = shift.shift_date_for(timezone.now()) if shift else timezone.now().date()
+        on_date = shift.shift_date_for(timezone.now()) if shift else timezone.localdate()
         spec = specification_for(order.item, on_date)
         tape = latest_tape_lot(order)
         previous = FabricRoll.objects.filter(

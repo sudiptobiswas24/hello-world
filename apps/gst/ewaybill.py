@@ -48,7 +48,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.gst import STATES
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, to_date
 
 from . import particulars as p
 
@@ -160,7 +160,7 @@ class EwayBill(AuditModel):
         number = str(number or "").strip()
         if not _NUMBER.match(number):
             raise ValidationError("An e-way bill number is twelve digits.")
-        if generated_at is None or generated_at.date() < _document_date(self.document()):
+        if generated_at is None or to_date(generated_at) < _document_date(self.document()):
             raise ValidationError(
                 f"An e-way bill cannot be generated before {self.document().number}, dated "
                 f"{_document_date(self.document())}."

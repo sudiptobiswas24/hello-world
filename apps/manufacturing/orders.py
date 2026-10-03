@@ -1014,7 +1014,7 @@ class WorkOrder(AuditModel):
         # The recipe in force for output due when this run's output is
         # due — the planner's date where there is one, today otherwise.
         # Asked here, where the other recipe can still be chosen.
-        due = self.scheduled_end or to_date(on_date) or timezone.now().date()
+        due = self.scheduled_end or to_date(on_date) or timezone.localdate()
         if not self.bom.is_effective_on(due):
             raise ValidationError(
                 f"{self.bom} is the recipe for output due "
@@ -1145,7 +1145,7 @@ class WorkOrder(AuditModel):
                 planned_minutes=operation.minutes_for(batch_quantity, self.bom.uom, bom=self.bom),
             )
 
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "manufacturing.work_order", on_date,
@@ -1283,7 +1283,7 @@ class WorkOrder(AuditModel):
                 f"{self} is {self.get_status_display().lower()}; only a released "
                 "order can be closed."
             )
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         balance = round_money(self.unaccounted())
         time_overrun = round_money(self.conversion_variance())
         vendor_overrun = round_money(self.outside_variance())
@@ -1391,7 +1391,7 @@ class WorkOrder(AuditModel):
         if self.status != WorkOrderStatus.CLOSED:
             raise ValidationError(f"{self} is not closed.")
         if self.close_entry_id is not None:
-            on_date = to_date(on_date) or timezone.now().date()
+            on_date = to_date(on_date) or timezone.localdate()
             self.reopened_entry = self.close_entry.create_reversal(
                 entry_date=on_date,
                 memo=memo or f"Reopening {self.number}",
@@ -2125,7 +2125,7 @@ class MaterialIssue(AuditModel):
                 "first, or the store would be crediting stock back against an "
                 "issue that no longer exists."
             )
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"
         lines = list(self.lines.select_related("item", "uom", "lot"))
@@ -2615,7 +2615,7 @@ class ProductionEntry(AuditModel):
         if self.is_voided():
             raise ValidationError(f"{self} is already voided.")
         _check_order_is_open_for(self.work_order, "void this entry")
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"
         byproducts = list(self.byproducts.select_related("item", "uom"))
@@ -3038,7 +3038,7 @@ class TimeBooking(AuditModel):
         if self.is_voided():
             raise ValidationError(f"{self} is already voided.")
         _check_order_is_open_for(self.work_order, "void this booking")
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=memo or f"Void of {self.number}"

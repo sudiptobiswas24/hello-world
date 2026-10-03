@@ -13,7 +13,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, tag
 from rest_framework.test import APIClient
 
 from apps.inventory.models import Item
@@ -161,6 +161,8 @@ class CoatingApiTests(CoatingTestCase):
         self.assertEqual([row["item"] for row in response.json()["coating"]], [self.ldpe.pk])
 
 
+# Slow: it unwinds every later migration and replays them.
+@tag("migration")
 class SinglePolymerMigrates(TransactionTestCase):
     before = [("manufacturing", "0032_fold_thread_colours_solvents")]
     after = [("manufacturing", "0033_coating_blend")]

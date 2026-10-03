@@ -91,7 +91,8 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     kg = _number(kg, "The kilos loaded")
     on_hand = lot.on_hand_at(station.warehouse)
     if kg > on_hand:
-        raise ValidationError(f"{lot} has {on_hand} kg in {station.warehouse}, not {kg}.")
+        raise ValidationError(f"{lot} has {format(on_hand.normalize(), 'f')} kg in "
+                              f"{station.warehouse}, not {format(kg.normalize(), 'f')}.")
     issue = None
     if not run.backflush:
         issue = MaterialIssue.objects.create(

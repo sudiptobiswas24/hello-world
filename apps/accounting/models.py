@@ -220,7 +220,7 @@ class JournalEntry(AuditModel):
         if not self.posted:
             raise ValidationError("Only a posted journal entry can be reversed.")
         reversal = JournalEntry.objects.create(
-            date=entry_date or timezone.now().date(),
+            date=entry_date or timezone.localdate(),
             reference=self.reference,
             memo=memo or f"Reversal of JE-{self.pk}",
             reverses=self,

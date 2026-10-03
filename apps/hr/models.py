@@ -155,7 +155,7 @@ class Employee(AuditModel):
         ).first()
         if person is None or person.employment_status != EmploymentStatus.ACTIVE:
             return None
-        if not person.is_employed_on(on_date or timezone.now().date()):
+        if not person.is_employed_on(on_date or timezone.localdate()):
             return None
         return person
 
@@ -386,7 +386,7 @@ class LeavePolicy(AuditModel):
             # leave policy actually does. Accruing by the day instead
             # would be a different rule wearing the same name, and it puts
             # a fraction of a day on every balance somebody reads.
-            as_of = to_date(as_of) or timezone.now().date()
+            as_of = to_date(as_of) or timezone.localdate()
             months = completed_months(start, end)
             if months:
                 earned_months = completed_months(start, min(as_of, end))
@@ -702,7 +702,7 @@ class LeaveRequest(AuditModel):
         """
         if self.status in (LeaveStatus.CANCELLED, LeaveStatus.REJECTED):
             raise ValidationError("This leave request is already closed.")
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if self.status == LeaveStatus.APPROVED and self.end_date < on_date:
             raise ValidationError(
                 f"This leave ended on {self.end_date}; it has been taken and cannot be "

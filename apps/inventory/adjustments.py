@@ -290,7 +290,7 @@ class StockAdjustment(AuditModel):
                 "standard back instead; that posts its own revaluation."
             )
 
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         occurred_at = timezone.now()
         label = memo or f"Void of stock adjustment {self.number}"
         lock_positions(

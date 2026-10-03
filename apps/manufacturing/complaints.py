@@ -163,7 +163,7 @@ class Complaint(AuditModel):
             if action.kind != ActionKind.CONTAINMENT and action.verified_on is None:
                 raise ValidationError(f"{action} has not been checked for whether it worked.")
         self.status, self.root_cause = ComplaintStatus.CLOSED, root_cause
-        self.decided_on, self.decided_by = to_date(on_date) or timezone.now().date(), by
+        self.decided_on, self.decided_by = to_date(on_date) or timezone.localdate(), by
         self._decide(["status", "root_cause", "decided_on", "decided_by"])
 
     @transaction.atomic
@@ -174,7 +174,7 @@ class Complaint(AuditModel):
         if not reason:
             raise ValidationError("Say why the complaint is not ours.")
         self.status, self.rejection_reason = ComplaintStatus.REJECTED, reason[:255]
-        self.decided_on, self.decided_by = to_date(on_date) or timezone.now().date(), by
+        self.decided_on, self.decided_by = to_date(on_date) or timezone.localdate(), by
         self._decide(["status", "rejection_reason", "decided_on", "decided_by"])
 
     @transaction.atomic
@@ -270,7 +270,7 @@ class CorrectiveAction(AuditModel):
         note = _text(note)
         if not note:
             raise ValidationError("Say what was done.")
-        self.done_on, self.done_note = to_date(on_date) or timezone.now().date(), note[:255]
+        self.done_on, self.done_note = to_date(on_date) or timezone.localdate(), note[:255]
         self.save(update_fields=["done_on", "done_note", "updated_at"])
 
     def verify(self, by, on_date=None):
@@ -285,7 +285,7 @@ class CorrectiveAction(AuditModel):
         if by.pk == self.owner_id:
             raise ValidationError("Whether it worked is checked by somebody other than "
                                   "its owner.")
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if on_date < self.done_on:
             raise ValidationError("It is checked after it was done.")
         self.verified_on, self.verified_by = on_date, by
@@ -294,7 +294,7 @@ class CorrectiveAction(AuditModel):
 
 def overdue_actions(on_date=None):
     """Actions not done by their date, on complaints still open."""
-    on_date = to_date(on_date) or timezone.now().date()
+    on_date = to_date(on_date) or timezone.localdate()
     return list(CorrectiveAction.objects.filter(
         done_on__isnull=True, due_on__lt=on_date, complaint__status=ComplaintStatus.OPEN,
     ).select_related("complaint", "owner__party").order_by("due_on", "id"))

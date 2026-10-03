@@ -865,7 +865,7 @@ def set_standard_cost(item, new_cost, warehouse=None, on_date=None, reason=None)
     if new_cost <= 0:
         raise ValidationError("A standard cost must be positive.")
 
-    on_date = to_date(on_date) or timezone.now().date()
+    on_date = to_date(on_date) or timezone.localdate()
     old_cost = item.standard_cost or Decimal("0")
     warehouses = (
         [warehouse] if warehouse is not None

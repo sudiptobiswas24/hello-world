@@ -81,7 +81,7 @@ class Lot(AuditModel):
     def has_expired(self, on_date=None):
         if self.expires_on is None:
             return False
-        return self.expires_on < (to_date(on_date) or timezone.now().date())
+        return self.expires_on < (to_date(on_date) or timezone.localdate())
 
     def on_hand_at(self, warehouse=None):
         movements = self.movements.all()
@@ -144,7 +144,7 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
     quantity = Decimal(quantity)
     if quantity <= 0:
         raise ValidationError("Nothing to allocate.")
-    on_date = to_date(on_date) or timezone.now().date()
+    on_date = to_date(on_date) or timezone.localdate()
 
     taken = []
     remaining = quantity

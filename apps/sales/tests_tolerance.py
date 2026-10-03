@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, tag
 
 from apps.planning.mrp import sales_demand
 
@@ -240,6 +240,8 @@ class CloseShortApiTests(ToleranceTestCase):
                          (200, "10.0000"))
 
 
+# Slow: it unwinds every later migration and replays them.
+@tag("migration")
 class LinesAlreadyTakenMigrate(TransactionTestCase):
     """Lines on the books before tolerances existed were taken exact."""
 

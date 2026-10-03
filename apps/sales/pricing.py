@@ -31,7 +31,7 @@ def applicable_price_lists(customer=None, currency=None, on_date=None):
     """The price lists that could apply, most specific first."""
     from .models import PriceList
 
-    on_date = on_date or timezone.now().date()
+    on_date = on_date or timezone.localdate()
     candidates = []
 
     if customer is not None:

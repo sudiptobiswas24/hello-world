@@ -122,6 +122,18 @@ Go through it before running anything.
 - `round()` of a small negative Decimal is `-0.00`; add `+ 0`.
 - A `DecimalField` in a raw `Response` becomes a float; send `str()`.
 
+**Dates and the database the plant runs**
+- The plant's day is `timezone.localdate()` or `to_date(moment)`, never
+  `timezone.now().date()`: in Kolkata, UTC is still yesterday until
+  05:30. A suite on UTC cannot see it; `audit_invariants` checks it.
+- PostgreSQL returns a sum at the column's scale (`100.0000`), SQLite
+  as `100`. A message showing a quantity formats it
+  (`format(x.normalize(), "f")`).
+- Before calling a release done, also run the suite with
+  `DATABASE_URL=postgres://...` and with `DJANGO_TIME_ZONE=Asia/Kolkata`.
+  The four `@tag("migration")` tests take minutes each on PostgreSQL;
+  `--exclude-tag migration` runs the rest in about five minutes.
+
 **Migrations**
 - Redirect `makemigrations` to a file and read it; never pipe it into
   `head`. Check every change names the model you meant (mistake 8).

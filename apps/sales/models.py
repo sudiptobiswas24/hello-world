@@ -684,7 +684,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
         invoice = Invoice.objects.create(
             customer=self.customer,
-            invoice_date=invoice_date or timezone.now().date(),
+            invoice_date=invoice_date or timezone.localdate(),
             reference=self.reference,
             sales_order=self,
             receivable_account=receivable_account,
@@ -776,7 +776,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
         invoice = Invoice.objects.create(
             customer=self.customer,
-            invoice_date=invoice_date or timezone.now().date(),
+            invoice_date=invoice_date or timezone.localdate(),
             reference=self.reference,
             sales_order=self,
             receivable_account=receivable_account,
@@ -994,12 +994,13 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     def save(self, *args, **kwargs):
         if self.pk:
-            from .call_offs import called_off
+            from .call_offs import called_off, plain
 
             called = called_off(self)
             if called > self.quantity:
                 raise ValidationError(
-                    f"{self} has {called} called off; it cannot be cut to {self.quantity}. "
+                    f"{self} has {plain(called)} called off; it cannot be cut to "
+                    f"{plain(self.quantity)}. "
                     "Take the call-offs down first.")
         if self.item_id and self.uom_id:
             # Refuse a unit the item cannot be counted in while the line is
@@ -1355,7 +1356,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         if self.settlement_discount_amount:
             return False
-        return (to_date(as_of) or timezone.now().date()) <= deadline
+        return (to_date(as_of) or timezone.localdate()) <= deadline
 
     @transaction.atomic
     def apply_settlement_discount(self, on_date=None, force=False):
@@ -1366,7 +1367,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         who pays the discounted amount leaves a small balance outstanding
         forever, and dunning chases them for it.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not force and not self.discount_is_available(on_date):
             raise ValidationError(
                 "No settlement discount is available on this invoice at that date."
@@ -1417,7 +1418,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         Dr Bad debt expense / Cr Accounts receivable.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not self.posted:
             raise ValidationError("Only a posted invoice can be written off.")
         if self.is_credit_note():
@@ -1478,7 +1479,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("That write-off has already been recovered.")
 
         entry = write_off.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.now().date(),
+            entry_date=to_date(on_date) or timezone.localdate(),
             memo=f"Bad debt recovered {self.number}",
         )
         write_off.recovered_entry = entry
@@ -1522,7 +1523,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         payment first would block the final invoice on a slow payer for
         no accounting reason.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not self.posted:
             raise ValidationError("Only a posted invoice can draw down a deposit.")
         if self.is_down_payment or self.is_credit_note():
@@ -1647,7 +1648,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         if not self.posted or self.amount_due() <= 0:
             return Decimal("0")
-        return amount_overdue(self.installments(), to_date(as_of) or timezone.now().date())
+        return amount_overdue(self.installments(), to_date(as_of) or timezone.localdate())
 
     def is_overdue(self, as_of=None):
         if not self.posted or self.amount_due() <= 0:
@@ -1656,7 +1657,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     def days_overdue(self, as_of=None):
         """Days since the *earliest* installment that is still unpaid."""
-        as_of = to_date(as_of) or timezone.now().date()
+        as_of = to_date(as_of) or timezone.localdate()
         if not self.is_overdue(as_of):
             return 0
         oldest = oldest_overdue(self.installments(), as_of)
@@ -1881,7 +1882,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         credit_note = Invoice.objects.create(
             customer=self.customer,
-            invoice_date=timezone.now().date(),
+            invoice_date=timezone.localdate(),
             reference=self.reference,
             receivable_account=self.receivable_account,
             currency=self.currency,
@@ -2322,7 +2323,7 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
     view of the ledger at a date, and storing one would create a second
     copy of the truth that goes stale the moment anything settles.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     since = to_date(since)
     currency = _statement_currency(customer, currency)
 
@@ -2468,7 +2469,7 @@ def send_statements(as_of=None, since=None, customers=None, send=True):
     rather than swallowed, the same as dunning, because a customer who is
     silently never sent a statement is a customer who never pays.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     if customers is None:
         customers = Party.objects.filter(
             role_assignments__role=PartyRole.CUSTOMER
@@ -2504,7 +2505,7 @@ def ar_aging(as_of=None):
     annotated in SQL, so this is fine for reporting over thousands of
     invoices but would need an annotated query at much larger volumes.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
 
     invoices = (
@@ -2961,7 +2962,7 @@ class Delivery(AuditModel):
 
         backorder = Delivery.objects.create(
             sales_order=self.sales_order,
-            delivery_date=delivery_date or timezone.now().date(),
+            delivery_date=delivery_date or timezone.localdate(),
             reference=self.reference,
             shipping_address=self.shipping_address,
             backorder_of=self,
@@ -2996,7 +2997,7 @@ class Delivery(AuditModel):
 
         customer_return = Delivery.objects.create(
             sales_order=self.sales_order,
-            delivery_date=timezone.now().date(),
+            delivery_date=timezone.localdate(),
             reference=self.reference,
             shipping_address=self.shipping_address,
             # Carried across, or the reversal moves stock the original
@@ -3255,7 +3256,7 @@ def run_dunning(as_of=None, send=True):
     has reached — jumping from nothing to the 60-day notice shouldn't also
     send the 7-day one.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     levels = list(DunningLevel.objects.filter(is_active=True).order_by("-days_overdue"))
     if not levels:
         return []
@@ -3528,7 +3529,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
     def has_expired(self, as_of=None):
         if not self.valid_until:
             return False
-        return (to_date(as_of) or timezone.now().date()) > self.valid_until
+        return (to_date(as_of) or timezone.localdate()) > self.valid_until
 
     def base_number(self):
         """The number without its revision suffix."""
@@ -3567,7 +3568,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
 
         revision = Quotation.objects.create(
             customer=self.customer,
-            quotation_date=quotation_date or timezone.now().date(),
+            quotation_date=quotation_date or timezone.localdate(),
             valid_until=valid_until if valid_until is not None else self.valid_until,
             reference=self.reference,
             currency=self.currency,
@@ -3640,7 +3641,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         self._assign_number()
         order = SalesOrder.objects.create(
             customer=self.customer,
-            order_date=order_date or timezone.now().date(),
+            order_date=order_date or timezone.localdate(),
             reference=self.reference,
             currency=self.currency,
             payment_terms=self.payment_terms,
@@ -4018,7 +4019,7 @@ def generate_due_invoices(as_of=None):
     period rather than issuing a single lump: each period genuinely
     happened and should be billed separately.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     issued = []
     for schedule in RecurringInvoice.objects.filter(is_active=True).prefetch_related("lines"):
         if not schedule.lines.exists():

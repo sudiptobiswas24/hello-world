@@ -270,7 +270,7 @@ def bill_variation(order, start, end, receivable_account, invoice_date=None):
     if not rows:
         raise ValidationError(f"Nothing dispatched on {order} between {start} and {end} "
                               "under a price clause is left to vary.")
-    invoice_date = to_date(invoice_date) or timezone.now().date()
+    invoice_date = to_date(invoice_date) or timezone.localdate()
     bill = PriceVariationBill.objects.create(
         order=order, start=to_date(start), end=to_date(end),
         number=DocumentSequence.next_for("sales.price_variation", invoice_date,

@@ -53,8 +53,12 @@ def to_date(value):
     DateField, so a model attribute can still be a string before any
     refresh — which breaks date arithmetic in posting logic.
     """
-    if value is None or isinstance(value, datetime.datetime):
-        return value.date() if value is not None else None
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        # The day it was at the plant, not in Greenwich: 01:00 in Kolkata
+        # is still the previous day in UTC.
+        return timezone.localtime(value).date() if timezone.is_aware(value) else value.date()
     if isinstance(value, datetime.date):
         return value
     return datetime.date.fromisoformat(str(value))
@@ -104,7 +108,7 @@ class Currency(AuditModel):
         """
         if self.is_base:
             return Decimal("1")
-        on_date = on_date or timezone.now().date()
+        on_date = on_date or timezone.localdate()
         rate = self.rates.filter(valid_from__lte=on_date).order_by("-valid_from").first()
         if rate is None:
             raise ValidationError(f"No exchange rate for {self.code} effective on {on_date}.")
@@ -649,12 +653,12 @@ class DocumentSequence(AuditModel):
 
     def peek(self, on_date=None):
         """The number that would be issued next, without consuming it."""
-        year = (to_date(on_date) or timezone.now().date()).year
+        year = (to_date(on_date) or timezone.localdate()).year
         number = 1 if (self.reset_yearly and self.current_year != year) else self.next_number
         return self._format(number, year)
 
     def next_value(self, on_date=None):
-        year = (to_date(on_date) or timezone.now().date()).year
+        year = (to_date(on_date) or timezone.localdate()).year
         with transaction.atomic():
             sequence = DocumentSequence.objects.select_for_update().get(pk=self.pk)
             if sequence.reset_yearly and sequence.current_year != year:

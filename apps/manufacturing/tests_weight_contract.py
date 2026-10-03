@@ -27,7 +27,7 @@ from django.contrib.auth.models import Permission, User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, tag
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -253,6 +253,8 @@ class SolveApiTests(ContractTestCase):
         self.assertTrue(close(str(response.json()["gsm"]), "91.134"))
 
 
+# Slow: it unwinds every later migration and replays them.
+@tag("migration")
 class ExistingFabricsKeepTheirWeight(TransactionTestCase):
     """The migration must not reweigh a fabric whose sacks were costed on it."""
 

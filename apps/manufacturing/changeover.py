@@ -42,7 +42,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, to_date
 
 ZERO = Decimal("0")
 
@@ -220,9 +220,9 @@ def queue_on(work_centre, machine=None):
         operations.distinct(),
         key=lambda op: (
             op.work_order.scheduled_start is None,
-            op.work_order.scheduled_start or op.work_order.created_at.date(),
+            op.work_order.scheduled_start or to_date(op.work_order.created_at),
             op.work_order.scheduled_end is None,
-            op.work_order.scheduled_end or op.work_order.created_at.date(),
+            op.work_order.scheduled_end or to_date(op.work_order.created_at),
             op.pk,
         ),
     )

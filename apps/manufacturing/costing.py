@@ -285,7 +285,7 @@ class CostVersion(AuditModel):
                 f"{self} holds no costs, so publishing it would set every "
                 "standard to nothing."
             )
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
 
         postings = []
         changes = []

@@ -514,7 +514,7 @@ class PayRun(AuditModel):
                 "payment before voiding the payroll that owed it."
             )
         self.voided_entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.now().date(),
+            entry_date=to_date(on_date) or timezone.localdate(),
             memo=memo or f"Void of payroll {self.number}",
         )
         self.status = PayRunStatus.VOIDED

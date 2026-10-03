@@ -23,7 +23,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, tag
 from rest_framework.test import APIClient
 
 from apps.inventory.models import Item
@@ -202,6 +202,8 @@ class FoldApiTests(FinishingTestCase):
         self.assertIn("warp tape at 164 denier", warnings[1])
 
 
+# Slow: it unwinds every later migration and replays them.
+@tag("migration")
 class PrintedFacesMigrate(TransactionTestCase):
     """Colours on two faces become the same colours on the back; ink is unchanged."""
 

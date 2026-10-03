@@ -88,6 +88,7 @@ class Command(BaseCommand):
         findings += self.mutable_posted_documents(labels, sources)
         findings += self.unconstrained_numbers(labels)
         findings += self.unsigned_money(labels)
+        findings += self.greenwich_dates(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -200,6 +201,40 @@ class Command(BaseCommand):
                     f"{key} writes stock movements and never holds a position — "
                     "two documents can read the same shelf and both post.",
                 ))
+        return findings
+
+    # Files whose matches are not moments in UTC, with the reason.
+    LOCAL_ALREADY = {
+        "manufacturing/dispatch.py": "build() turns start_at into naive plant time first",
+        "core/audit_invariants.py": "the check's own description",
+    }
+
+    GREENWICH = re.compile(r"\bnow\(\)\.date\(\)|\b\w+_at\.date\(\)")
+
+    def greenwich_dates(self, labels, sources):
+        """
+        A date taken from a moment in UTC rather than at the plant.
+
+        `timezone.now().date()` and `posted_at.date()` read the day in
+        Greenwich: in Kolkata everything between midnight and 05:30 lands
+        on the day before. A test suite running on UTC cannot see it, so
+        it is checked here. The plant's day is `timezone.localdate()`, or
+        `to_date()` of the moment.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                if f"{label}/{path.name}" in self.LOCAL_ALREADY:
+                    continue
+                for number, line in enumerate(text.splitlines(), 1):
+                    if self.GREENWICH.search(line):
+                        findings.append((
+                            "greenwich date",
+                            f"{label}/{path.name}:{number} takes the UTC day of a moment; "
+                            "use timezone.localdate() or to_date().",
+                        ))
         return findings
 
     def unread_settings(self, code):

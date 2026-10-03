@@ -125,7 +125,7 @@ class VendorPrice(AuditModel):
             raise ValidationError("valid_to cannot be before valid_from.")
 
     def covers(self, on_date=None):
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if self.valid_from and on_date < self.valid_from:
             return False
         if self.valid_to and on_date > self.valid_to:
@@ -295,7 +295,7 @@ class RequestForQuotation(AuditModel):
                 "who quoted the whole requirement, or split the RFQ."
             )
 
-        order_date = to_date(order_date) or timezone.now().date()
+        order_date = to_date(order_date) or timezone.localdate()
         order = PurchaseOrder.objects.create(
             vendor=invitation.vendor, order_date=order_date,
             reference=self.number, currency=self.currency,
@@ -564,7 +564,7 @@ class PurchaseRequisition(AuditModel):
 
         order = PurchaseOrder.objects.create(
             vendor=vendor,
-            order_date=to_date(order_date) or timezone.now().date(),
+            order_date=to_date(order_date) or timezone.localdate(),
             reference=self.number,
         )
         for line in selected:
@@ -817,7 +817,7 @@ class BlanketOrder(AuditModel):
         agreement, not from today's vendor price: the whole point of
         committing to a volume is that the price is fixed for it.
         """
-        order_date = to_date(order_date) or timezone.now().date()
+        order_date = to_date(order_date) or timezone.localdate()
         if self.status != BlanketStatus.CONFIRMED:
             raise ValidationError("Only a confirmed agreement can be released against.")
         if not self.covers(order_date):
@@ -986,7 +986,7 @@ class Budget(AuditModel):
     def for_account(cls, account, on_date):
         if account is None:
             return None
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         return cls.objects.filter(
             account=account, is_active=True,
             start_date__lte=on_date, end_date__gte=on_date,
@@ -1511,7 +1511,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
         bill = Bill.objects.create(
             vendor=self.vendor,
-            bill_date=bill_date or timezone.now().date(),
+            bill_date=bill_date or timezone.localdate(),
             reference=reference,
             purchase_order=self,
             payable_account=payable_account,
@@ -1563,7 +1563,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         if not selected:
             raise ValidationError("There is nothing left on this order to drop-ship.")
 
-        order_date = to_date(order_date) or timezone.now().date()
+        order_date = to_date(order_date) or timezone.localdate()
         order = cls.objects.create(
             vendor=vendor, order_date=order_date,
             reference=sales_order.number, drop_ship_for=sales_order,
@@ -1702,7 +1702,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
         bill = Bill.objects.create(
             vendor=self.vendor,
-            bill_date=bill_date or timezone.now().date(),
+            bill_date=bill_date or timezone.localdate(),
             purchase_order=self,
             payable_account=payable_account,
             currency=self.currency,
@@ -2324,7 +2324,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         and still add up to what is owed; requiring payment first would
         block the real bill on the company's own slow payment run.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not self.posted:
             raise ValidationError("Only a posted bill can draw down a prepayment.")
         if self.is_prepayment or self.is_debit_note():
@@ -2403,7 +2403,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         if self.settlement_discount_amount:
             return False
-        return (to_date(as_of) or timezone.now().date()) <= deadline
+        return (to_date(as_of) or timezone.localdate()) <= deadline
 
     @transaction.atomic
     def take_settlement_discount(self, on_date=None, force=False):
@@ -2418,7 +2418,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         Dr Accounts payable / Cr settlement discount received.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not force and not self.discount_is_available(on_date):
             raise ValidationError(
                 "No settlement discount is available on this bill at that date."
@@ -2549,7 +2549,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         if not self.posted or self.amount_due() <= 0:
             return Decimal("0")
-        return amount_overdue(self.installments(), to_date(as_of) or timezone.now().date())
+        return amount_overdue(self.installments(), to_date(as_of) or timezone.localdate())
 
     def is_overdue(self, as_of=None):
         if not self.posted or self.amount_due() <= 0:
@@ -2558,7 +2558,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     def days_overdue(self, as_of=None):
         """Days since the *earliest* installment that is still unpaid."""
-        as_of = to_date(as_of) or timezone.now().date()
+        as_of = to_date(as_of) or timezone.localdate()
         if not self.is_overdue(as_of):
             return 0
         oldest = oldest_overdue(self.installments(), as_of)
@@ -3029,7 +3029,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         debit_note = Bill.objects.create(
             vendor=self.vendor,
-            bill_date=timezone.now().date(),
+            bill_date=timezone.localdate(),
             reference=self.reference,
             currency=self.currency,
             payment_terms=self.payment_terms,
@@ -3145,7 +3145,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         was nothing on that bill to absorb it, so this moves it: Dr
         inventory / Cr the expense it landed in.
         """
-        on_date = to_date(on_date) or timezone.now().date()
+        on_date = to_date(on_date) or timezone.localdate()
         if not self.bill.posted:
             raise ValidationError("Only a posted bill can be allocated.")
         if not (self.is_charge() and self.charge.capitalise_into_inventory):
@@ -3695,7 +3695,7 @@ def draw_consignment(item, from_warehouse, to_warehouse, quantity, payable_accou
     the stock appears without a liability or the liability without the
     stock.
     """
-    on_date = to_date(on_date) or timezone.now().date()
+    on_date = to_date(on_date) or timezone.localdate()
     vendor = from_warehouse.consignment_vendor
     if vendor is None:
         raise ValidationError(f"{from_warehouse} does not hold consignment stock.")
@@ -3783,7 +3783,7 @@ def reorder_suggestions(warehouse=None, on_date=None):
     Everything that has fallen to its reorder point, with what to buy and
     from whom.
     """
-    on_date = to_date(on_date) or timezone.now().date()
+    on_date = to_date(on_date) or timezone.localdate()
     rules = ReorderRule.objects.filter(is_active=True).select_related("item", "warehouse")
     if warehouse is not None:
         rules = rules.filter(warehouse=warehouse)
@@ -3826,7 +3826,7 @@ def raise_reorder_requisition(requested_by, warehouse=None, on_date=None, rows=N
     product changed, should cost a conversation and not a delivery — and
     the approval step already exists.
     """
-    on_date = to_date(on_date) or timezone.now().date()
+    on_date = to_date(on_date) or timezone.localdate()
     rows = rows if rows is not None else reorder_suggestions(warehouse, on_date)
     if not rows:
         raise ValidationError("Nothing has fallen to its reorder point.")
@@ -4003,7 +4003,7 @@ def ap_aging(as_of=None):
     of ar_aging(), and the thing a company looks at before deciding what
     it can afford to pay this week.
     """
-    as_of = to_date(as_of) or timezone.now().date()
+    as_of = to_date(as_of) or timezone.localdate()
     buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
 
     bills = Bill.objects.filter(posted=True, debits__isnull=True).prefetch_related(
@@ -4049,7 +4049,7 @@ def payment_run(due_by=None, vendor=None):
     someone makes from a list rather than from whichever bill happens to
     be on top of the pile.
     """
-    due_by = to_date(due_by) or timezone.now().date()
+    due_by = to_date(due_by) or timezone.localdate()
     bills = Bill.objects.filter(posted=True, debits__isnull=True).select_related(
         "vendor", "currency"
     ).prefetch_related("lines__taxes", "payment_allocations__payment", "debit_notes__lines__taxes")
@@ -4593,7 +4593,7 @@ class GoodsReceipt(AuditModel):
         for line, quantity in selected:
             ReceiptInspection.objects.create(
                 receipt_line=line, quantity=quantity, accepted=False,
-                inspected_on=timezone.now().date(), note=note,
+                inspected_on=timezone.localdate(), note=note,
             )
         return self.create_return(
             quantities={line: quantity for line, quantity in selected},
@@ -4784,7 +4784,7 @@ class GoodsReceipt(AuditModel):
 
         return_receipt = GoodsReceipt.objects.create(
             purchase_order=self.purchase_order,
-            receipt_date=timezone.now().date(),
+            receipt_date=timezone.localdate(),
             reference=self.reference,
             reverses=self,
         )
@@ -4974,7 +4974,7 @@ class GoodsReceiptLine(AuditModel):
             )
 
         transfer = StockTransfer.objects.create(
-            transfer_date=to_date(occurred_at) or timezone.now().date(),
+            transfer_date=to_date(occurred_at) or timezone.localdate(),
             from_warehouse=origin, to_warehouse=destination,
             reference=self.receipt.number,
             memo=f"Put away from {origin.code} for {self.receipt.number}",
@@ -5117,7 +5117,7 @@ class LandedCostApplication(AuditModel):
         if self.is_released():
             raise ValidationError("This allocation has already been released.")
         entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.now().date(),
+            entry_date=to_date(on_date) or timezone.localdate(),
             memo=f"Landed cost released from {self.receipt_line.order_line.item}",
         )
         StockMovement.objects.create(
