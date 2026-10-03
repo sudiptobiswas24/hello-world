@@ -1,0 +1,195 @@
+# Running the ERP at the plant
+
+For whoever installs and looks after the server. It assumes someone who
+can use a Linux command line, not a Django developer.
+
+## What runs
+
+One server, four containers, started together by `docker compose`:
+
+| container | what it is | keeps its data in |
+|---|---|---|
+| `db` | PostgreSQL 16 | the `pgdata` volume |
+| `web` | the application (gunicorn, 3 workers) | nothing; it is rebuilt from the code |
+| `proxy` | Caddy: HTTPS, and the only thing listening on ports 80/443 | the `caddy_data` volume (certificates) |
+| `backup` | a nightly `pg_dump` | `./backups` next to this file |
+
+The database is the whole of the business state. Nothing is uploaded
+or stored on disk anywhere else, so a database backup is a complete
+backup.
+
+## The server
+
+- Linux (Ubuntu 24.04 LTS is what this was written against), 4 cores,
+  8 GB memory, SSD. A plant of this size fits comfortably.
+- Docker Engine with the compose plugin: <https://docs.docker.com/engine/install/ubuntu/>.
+- A fixed address on the plant network, so the tablets on the floor can
+  find it.
+- A UPS. PostgreSQL survives a power cut; a disk that dies mid-write
+  sometimes does not.
+
+## First installation
+
+```sh
+git clone https://github.com/sudiptobiswas24/hello-world.git erp
+cd erp
+cp .env.example .env
+openssl rand -hex 32     # run twice: one for POSTGRES_PASSWORD, one for DJANGO_SECRET_KEY
+nano .env                # fill in every line; see below
+docker compose up -d --build
+docker compose logs -f web   # wait for "Listening at: http://0.0.0.0:8000"
+```
+
+The first start builds the database from nothing and takes about five
+minutes. Later starts take seconds.
+
+Then make the first user, who can make all the others:
+
+```sh
+docker compose run --rm web python manage.py createsuperuser
+```
+
+### What goes in `.env`
+
+| setting | what to put |
+|---|---|
+| `POSTGRES_PASSWORD` | output of `openssl rand -hex 32`. Hex only: it goes inside a URL. |
+| `DJANGO_SECRET_KEY` | another `openssl rand -hex 32`. Signs every login. The server refuses to start without one. |
+| `ERP_SITE` | what people type in the browser: `erp.deccanpolysacks.in`, or `erp.plant.local`, or `192.168.1.10`. |
+| `ERP_TLS` | empty for a public domain name; `tls internal` for a name or address on the plant network. |
+| `DJANGO_ALLOWED_HOSTS` | the same name(s) as `ERP_SITE`, comma-separated. Anything else is refused. |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | the same, with `https://` in front. Without it, every form submission is refused. |
+| `DJANGO_TIME_ZONE` | `Asia/Kolkata`. Shifts start at 08:00 plant time; get this wrong and every shift is read 5½ hours off. |
+| `DJANGO_HTTPS` | `true`. See "Plain HTTP" below before changing it. |
+| `BACKUP_AT`, `BACKUP_KEEP_DAYS` | when the nightly backup runs (plant time) and how many days of them to keep. |
+
+### HTTPS on the plant network
+
+Passwords and the operators' PINs cross the network, so it runs over
+HTTPS even inside the plant.
+
+- **A public domain name** pointed at the server, with ports 80 and 443
+  reachable from the internet: leave `ERP_TLS` empty and Caddy gets and
+  renews a real certificate by itself.
+- **A name or address only on the plant network**: set
+  `ERP_TLS=tls internal`. Caddy makes its own certificate authority.
+  Each PC and tablet must trust it once, or the browser will warn on every
+  visit:
+
+  ```sh
+  docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt ./plant-root.crt
+  ```
+
+  Install `plant-root.crt` as a trusted root certificate on each device
+  (Windows: double-click, "Install certificate", "Local machine",
+  "Trusted Root Certification Authorities". Android: Settings, Security,
+  "Install a certificate", "CA certificate").
+
+### Plain HTTP
+
+`DJANGO_HTTPS=false` makes the application work without HTTPS. Use it
+only if installing the certificate on every device is truly not
+possible, and know what it means: anyone on the plant network can read
+every password and PIN as it is typed. It is never the default.
+
+## Users and what they may do
+
+On every start the `web` container refreshes the role groups defined
+in `apps/core/management/commands/setup_roles.py`. Give each person a login
+in the admin (`/admin/`, "Users") and put them in the groups that match
+their job. The roles keep apart the people who prepare a document and
+the people who post it; that separation is the point, so resist giving
+everyone everything.
+
+Floor operators do not need logins. They identify themselves at the
+station screens (`/station/<station code>/`) with their employee PIN.
+
+## Backups
+
+Every night at `BACKUP_AT` the `backup` container writes
+`backups/erp_YYYY-MM-DD_HHMM.dump`, and deletes those older than
+`BACKUP_KEEP_DAYS`. Check that it is working:
+
+```sh
+ls -lh backups/
+docker compose logs backup | tail
+```
+
+For a backup right now (before an update, before an import):
+
+```sh
+docker compose run --rm backup now
+```
+
+**These backups sit on the same disk as the database.** They protect
+against a bad import or a mistaken deletion. They do not protect against
+the disk failing, fire or theft. Copy `backups/` off the machine every
+day: to another computer, a NAS, or cloud storage with `rclone`. Which one
+is the plant's choice. Having none is the one choice that is wrong.
+
+### Restoring
+
+Restoring replaces everything with the backup, and everything entered
+since then is lost.
+
+```sh
+docker compose stop web
+docker compose run --rm backup restore /backups/erp_2026-10-03_0200.dump
+docker compose start web
+```
+
+It asks for `yes` before it touches anything, and refuses a file that is
+not a readable backup.
+
+### Proving a backup restores
+
+A backup that has never been restored is a hope, not a backup. Once a
+month, restore the latest into a scratch database and look at it:
+
+```sh
+docker compose exec db createdb -U erp erp_check
+docker compose exec -T db pg_restore -U erp -d erp_check --no-owner < backups/<newest file>.dump
+docker compose exec db psql -U erp -d erp_check -c "select count(*) from accounting_journalentry"
+docker compose exec db dropdb -U erp erp_check
+```
+
+## Updating to a new version
+
+```sh
+docker compose run --rm backup now
+git pull
+docker compose up -d --build
+docker compose logs -f web
+```
+
+Database changes apply by themselves when `web` starts. If anything
+looks wrong afterwards, restore the backup you just took, check out the
+previous version (`git checkout <previous tag>`), and rebuild.
+
+## Day to day
+
+| to | run |
+|---|---|
+| see whether everything is up | `docker compose ps` |
+| read the application's log | `docker compose logs --tail 200 web` |
+| restart the application | `docker compose restart web` |
+| run a command (MRP, an import) | `docker compose run --rm web python manage.py <command>` |
+| open a database prompt | `docker compose exec db psql -U erp` |
+
+## What it does not do
+
+- It sends no email. Nothing is configured to.
+- It files nothing with the GST portal. GSTR-1, GSTR-3B and ITC-04 are
+  prepared for review and filing by whoever files today. E-invoice and
+  e-way bill payloads are produced for upload; the system does not
+  connect to the IRP or the e-way bill portal.
+
+## Security notes
+
+`python manage.py check --deploy` reports two warnings, both left on
+purpose:
+
+- `SECURE_HSTS_INCLUDE_SUBDOMAINS` is off. Turning it on would force
+  HTTPS on every other site under the company's domain, which may not
+  all have it.
+- `SECURE_HSTS_PRELOAD` is off. Preloading is very hard to undo.

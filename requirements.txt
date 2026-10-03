@@ -1,3 +1,6 @@
 Django==5.2.17
 djangorestframework==3.18.1
 reportlab==5.0.1
+psycopg[binary]==3.3.6
+gunicorn==26.2.0
+whitenoise==6.12.0

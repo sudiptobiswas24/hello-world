@@ -12,6 +12,9 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 import os
 from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,15 +24,29 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get(
-    "DJANGO_SECRET_KEY",
-    "django-insecure-!9b4h^4ur4@@q_&9k-)e2^yo+ge*%436b)7olcl5ydq%#4+0=1",
-)
+def _env_list(name):
+    return [value.strip() for value in os.environ.get(name, "").split(",") if value.strip()]
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() == "true"
 
-ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "").split(",") if h]
+# DJANGO_ENV=production is the plant's server. There the defaults are the
+# safe ones and a missing secret stops it starting; anywhere else is a
+# developer's machine, where `manage.py test` must work with nothing set.
+PRODUCTION = os.environ.get("DJANGO_ENV", "development").lower() == "production"
+
+DEV_SECRET_KEY = "django-insecure-!9b4h^4ur4@@q_&9k-)e2^yo+ge*%436b)7olcl5ydq%#4+0=1"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or DEV_SECRET_KEY
+if PRODUCTION and SECRET_KEY == DEV_SECRET_KEY:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY is not set. Every session and password reset is signed with "
+        "it; the server will not start on the published development key."
+    )
+
+DEBUG = os.environ.get("DJANGO_DEBUG", "false" if PRODUCTION else "true").lower() == "true"
+
+ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS")
+if PRODUCTION and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured("DJANGO_ALLOWED_HOSTS is not set: name the server's host names.")
+CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 
 # Application definition
@@ -88,12 +105,31 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+def _database(url):
+    """
+    postgres://user:password@host:5432/name, or nothing for the local
+    SQLite file. SQLite is for one person on one laptop: several
+    stations writing at once queue behind its single lock.
+    """
+    if not url:
+        return {"ENGINE": "django.db.backends.sqlite3", "NAME": BASE_DIR / "db.sqlite3"}
+    parts = urlparse(url)
+    if parts.scheme not in ("postgres", "postgresql"):
+        raise ImproperlyConfigured(f"DATABASE_URL must be postgres://..., not {parts.scheme}.")
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": unquote(parts.path.lstrip("/")),
+        "USER": unquote(parts.username or ""),
+        "PASSWORD": unquote(parts.password or ""),
+        "HOST": parts.hostname or "",
+        "PORT": str(parts.port or ""),
+        "CONN_MAX_AGE": int(os.environ.get("DATABASE_CONN_MAX_AGE", "60")),
+        "CONN_HEALTH_CHECKS": True,
+        "ATOMIC_REQUESTS": False,
     }
-}
+
+
+DATABASES = {"default": _database(os.environ.get("DATABASE_URL", ""))}
 
 
 # Password validation
@@ -120,7 +156,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 
-TIME_ZONE = "UTC"
+# The plant's own clock: shifts start at 08:00 there, not in Greenwich.
+# Set DJANGO_TIME_ZONE=Asia/Kolkata in production.
+TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", "UTC")
 
 USE_I18N = True
 
@@ -131,6 +169,39 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = "static/"
+STATIC_ROOT = Path(os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles"))
+
+if PRODUCTION:
+    # Behind the reverse proxy, which terminates TLS. DJANGO_HTTPS=false is
+    # for a plant that serves plain HTTP on its own network: the cookies
+    # must then go without the secure flag or nobody can log in, and every
+    # password and PIN crosses that network readable. A deliberate choice,
+    # never a default.
+    if os.environ.get("DJANGO_HTTPS", "true").lower() == "true":
+        SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+        SECURE_SSL_REDIRECT = True
+        SESSION_COOKIE_SECURE = True
+        CSRF_COOKIE_SECURE = True
+        SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", "3600"))
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"
+
+    # The admin's and the API's own stylesheets, served by the application
+    # itself: one container, no separate web server to keep in step.
+    MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
+    STORAGES = {
+        "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+    }
+
+    # To the container's output, where `docker compose logs` finds it.
+    LOGGING = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"}},
+        "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+        "root": {"handlers": ["console"], "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO")},
+    }
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
