@@ -50,6 +50,7 @@ from .views import (
     FilmSpecificationViewSet,
     AlternateRoutingViewSet,
     CrewAssignmentViewSet,
+    OrderProfitabilityViewSet,
     LinerSpecificationViewSet,
     TimeBookingViewSet,
     ChangeoverRuleViewSet,
@@ -79,6 +80,8 @@ router.register("routings", RoutingViewSet)
 router.register("routing-operations", RoutingOperationViewSet)
 router.register("alternate-routings", AlternateRoutingViewSet)
 router.register("crew-assignments", CrewAssignmentViewSet)
+router.register("order-profitability", OrderProfitabilityViewSet,
+                basename="order-profitability")
 router.register("machines", MachineViewSet)
 router.register("setup-families", SetupFamilyViewSet)
 router.register("changeover-rules", ChangeoverRuleViewSet)

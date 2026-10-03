@@ -872,6 +872,11 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     )
     closed_short_at = models.DateTimeField(null=True, blank=True, editable=False)
     closed_short_reason = models.CharField(max_length=255, blank=True, editable=False)
+    quotation_line = models.ForeignKey(
+        "sales.QuotationLine", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="order_lines", editable=False,
+        help_text="The quotation line this was accepted from: where its quoted cost is.",
+    )
 
     def party_for_tax(self):
         return self.order.customer
@@ -1109,6 +1114,18 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         reading of a promise nobody dated.
         """
         return self.delivery_date or self.order.order_date
+
+    def revenue_in_base(self):
+        """
+        What this line has billed, less what has been credited, in the
+        base currency at each document's own posted rate: the rate is a
+        fact of the posting, never today's.
+        """
+        total = Decimal("0")
+        for row in self.invoice_lines.filter(invoice__posted=True).select_related("invoice"):
+            amount = row.net_amount() * (row.invoice.exchange_rate or Decimal("1"))
+            total += -amount if row.invoice.is_credit_note() else amount
+        return total.quantize(Decimal("0.01"))
 
     def quantity_shipped(self):
         """Net quantity shipped: posted deliveries minus posted customer returns."""
@@ -3637,7 +3654,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
                 description=line.description, uom=line.uom,
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
-                revenue_account=line.revenue_account,
+                revenue_account=line.revenue_account, quotation_line=line,
             )
             order_line.taxes.set(line.taxes.all())
         # Accepting creates and confirms in one step, so an order that

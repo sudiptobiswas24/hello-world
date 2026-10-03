@@ -458,3 +458,33 @@ class ConversionFromTheWorkCentreTests(QuotingTestCase):
             with self.assertRaises(IntegrityError), transaction.atomic():
                 StageRate.objects.create(stage="cutting", valid_from=DAY
                                          + datetime.timedelta(days=5), **values)
+
+
+class QuotedAgainstTheOrderTests(QuoteTests):
+    """The sheet a line was quoted on is the line's, through acceptance."""
+
+    def test_an_accepted_line_carries_its_quote(self):
+        from apps.sales.models import SalesOrderLine
+
+        from .profitability import quoted
+
+        quote_line = quote(self.sheet, self.quotation, [])
+        self.quotation.mark_sent()
+        self.quotation.accept(order_date=DAY)
+        line = SalesOrderLine.objects.get(quotation_line=quote_line)
+        found = quoted(line)
+        sheet = CostSheet.objects.get(pk=self.sheet.pk)
+        self.assertEqual((found["sheet"], found["price"], found["cost"]),
+                         (sheet, Decimal("15.37"), sheet.cost))
+        self.assertEqual(found["direct"], sheet.material + sheet.conversion - sheet.credit)
+
+    def test_a_line_not_quoted_so_has_none(self):
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        from .profitability import quoted
+
+        sale = SalesOrder.objects.create(customer=self.customer, order_date=DAY)
+        line = SalesOrderLine.objects.create(order=sale, item=self.bag_item,
+                                             uom=self.bag_item.uom, quantity=Decimal("10"),
+                                             unit_price=Decimal("15"))
+        self.assertIsNone(quoted(line))

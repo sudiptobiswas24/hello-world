@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.permissions import ActionPermission
 from apps.inventory.models import Lot, Warehouse
+from apps.sales.models import SalesOrderLine
 
 from .bom import (
     BillOfMaterials,
@@ -197,6 +198,46 @@ def _quantity(request, default="1"):
         return Decimal(str(request.query_params.get("quantity") or default))
     except InvalidOperation:
         raise DRFValidationError(["quantity must be a number."])
+
+
+class OrderProfitabilityViewSet(viewsets.ViewSet):
+    """?order= : each line's quote, actual cost, revenue and margin."""
+
+    # Computed, not listed: here so the permission check has a model to ask about.
+    queryset = SalesOrderLine.objects.none()
+
+    def list(self, request):
+        from .profitability import line_profitability
+
+        order = request.query_params.get("order")
+        if not order:
+            raise DRFValidationError(["Name the sales order: ?order=<id>."])
+
+        def text(value, places="0.0001"):
+            return None if value is None else str(Decimal(value).quantize(Decimal(places)))
+
+        def figures(row):
+            return None if row is None else {key: text(row[key]) for key in (
+                "material", "conversion", "credit", "direct")}
+
+        rows = []
+        for line in SalesOrderLine.objects.filter(order_id=order, item__isnull=False):
+            found = line_profitability(line)
+            quote = found["quoted"]
+            rows.append({
+                "line": line.pk, "item": line.item.sku,
+                "quoted": None if quote is None else {
+                    **figures(quote), "overhead": text(quote["overhead"]),
+                    "cost": text(quote["cost"]), "price": text(quote["price"], "0.01")},
+                "actual": figures(found["actual"]), "runs": found["runs"],
+                "final": found["final"], "made": text(found["made"]),
+                "shipped": text(found["shipped"]), "revenue": text(found["revenue"], "0.01"),
+                "realised_price": text(found["realised_price"]),
+                "cost_of_shipped": text(found["cost_of_shipped"], "0.01"),
+                "margin": text(found["margin"], "0.01"),
+                "margin_percent": text(found["margin_percent"], "0.01"),
+            })
+        return Response(rows)
 
 
 class CrewAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
