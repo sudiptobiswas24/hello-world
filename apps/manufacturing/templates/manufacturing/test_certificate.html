@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test certificate {{ certificate.number }}</title>
+<style>
+  @page { size: A4; margin: 14mm; }
+  :root { --ink: #16181A; --muted: #4A4F55; --line: #D5D0C4; --warn: #7A4100; --fail: #8A1C1C; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif; font-size: 13px; }
+  .page { max-width: 190mm; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  h1 { margin: 0; font-size: 22px; }
+  h2 { margin: 0; font-size: 15px; }
+  .muted { color: var(--muted); }
+  .head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+    border-bottom: 2px solid var(--ink); padding-bottom: 10px; }
+  .void { border: 2px solid var(--fail); color: var(--fail); padding: 6px 10px; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 11px; letter-spacing: .04em; color: var(--muted);
+    border-bottom: 1px solid var(--line); padding: 4px 6px; }
+  td { border-bottom: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .fail { color: var(--fail); font-weight: 600; }
+  .note { color: var(--warn); font-weight: 600; }
+  section { display: flex; flex-direction: column; gap: 6px; }
+  .from { margin-left: 14px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <div>
+      <div class="muted">Test certificate</div>
+      <h1 class="mono">{{ certificate.number }}</h1>
+      <div class="muted">Issued {{ certificate.issued_on|date:"d M Y" }}</div>
+    </div>
+    <div>
+      <div><strong>{{ c.customer }}</strong></div>
+      <div class="muted">Delivery <span class="mono">{{ c.delivery }}</span> of {{ c.delivery_date }}</div>
+      <div class="muted">Order <span class="mono">{{ c.order }}</span>{% if c.customer_reference %} · your ref. {{ c.customer_reference }}{% endif %}</div>
+    </div>
+  </div>
+  {% if certificate.voided_at %}<div class="void">Withdrawn: {{ certificate.voided_reason }}</div>{% endif %}
+
+  {% for line in c.lines %}
+  <section>
+    <h2>{{ line.item_name }} <span class="muted mono">{{ line.item }}</span> — {{ line.quantity }} {{ line.uom }}</h2>
+    {% if line.specification %}
+    <div class="muted">Specified: {{ line.specification.construction }},
+      {{ line.specification.width_cm }} × {{ line.specification.length_cm }} cm{% if line.specification.gusset_cm != "0" %}, gussets {{ line.specification.gusset_cm }} cm{% endif %},
+      {{ line.specification.weight_g }} g {% if line.specification.contracted %}contracted{% else %}computed{% endif %}
+      ± {{ line.specification.weight_tolerance_percent }}%</div>
+    {% endif %}
+    {% for batch in line.batches %}
+      {% include "manufacturing/test_certificate_batch.html" with batch=batch %}
+      {% for source in batch.made_from %}
+      <div class="from">{% include "manufacturing/test_certificate_batch.html" with batch=source %}</div>
+      {% endfor %}
+    {% empty %}
+      <div class="note">No batches were recorded against this line.</div>
+    {% endfor %}
+  </section>
+  {% endfor %}
+  <div class="muted">Every figure is a reading from a posted inspection, judged against the limits in force when it was taken.</div>
+</div>
+</body>
+</html>
