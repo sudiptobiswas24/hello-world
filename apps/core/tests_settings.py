@@ -27,6 +27,8 @@ print(json.dumps({
     "secure_cookie": getattr(s, "SESSION_COOKIE_SECURE", False),
     "whitenoise": "whitenoise.middleware.WhiteNoiseMiddleware" in s.MIDDLEWARE,
     "time_zone": s.TIME_ZONE,
+    "email": s.EMAIL_BACKEND if hasattr(s, "EMAIL_BACKEND") else "default",
+    "email_host": getattr(s, "EMAIL_HOST", None), "email_port": getattr(s, "EMAIL_PORT", None),
 }))
 """
 
@@ -88,6 +90,14 @@ class ThePlantsServerTests(SimpleTestCase):
     def test_plain_http_only_when_asked(self):
         found = self.production(DJANGO_HTTPS="false")
         self.assertEqual((found["redirect"], found["secure_cookie"]), (False, False))
+
+    def test_refuses_to_email_with_no_mail_server_named(self):
+        self.assertEqual(self.production()["email"], "apps.core.mail.NotConfiguredBackend")
+
+    def test_emails_through_the_mail_server_it_is_given(self):
+        found = self.production(EMAIL_HOST="smtp.example.in", EMAIL_PORT="465")
+        self.assertEqual((found["email"], found["email_host"], found["email_port"]),
+                         ("default", "smtp.example.in", 465))
 
     def test_the_plants_clock(self):
         self.assertEqual(self.production(DJANGO_TIME_ZONE="Asia/Kolkata")["time_zone"],

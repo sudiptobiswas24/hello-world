@@ -10,6 +10,7 @@ that looked like a feature.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
@@ -202,7 +203,7 @@ class RuleValidationTests(ReorderTestCase):
 
     def test_one_rule_per_item_and_warehouse(self):
         self.rule()
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             self.rule()
 
     def test_an_inactive_rule_suggests_nothing(self):

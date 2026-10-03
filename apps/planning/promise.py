@@ -259,9 +259,13 @@ def _soonest_run(item, warehouse, bom, quantity, planned_on, settings,
                     f"{bom} has no routing and no default make lead time is "
                     f"set, so nothing can say when {item} could be ready."
                 )
+            from .mrp import _forward
+
+            # In the plant's working days, as the plan counts this same
+            # default: a promise the plan will not keep is worse than none.
             return {
                 "item": item, "quantity": quantity,
-                "date": floor + datetime.timedelta(days=int(days)),
+                "date": _forward(floor, days, calendar),
                 "source": "run", "bottleneck": None,
                 "note": "no routing, so the stated default make time",
             }
@@ -301,7 +305,6 @@ def _material_ready(item, bom, quantity, warehouse, planned_on, settings):
 
     ready = planned_on
     scale = bom.scale_for(bom.start_for(quantity), item.uom)
-    calendar = plant_calendar(settings)
     for component in bom.components.select_related("item", "uom").all():
         wanted = component.item.to_stock_quantity(
             component.gross_quantity() * scale, component.uom

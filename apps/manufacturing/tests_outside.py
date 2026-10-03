@@ -222,7 +222,7 @@ class NobodyBooksOurTimeAgainstAVendorTests(OutsideTestCase):
         order = self.released()
         step = order.operations.get(is_outside=True)
         step.machine = Machine.objects.create(work_centre=self.loom, code="L-1")
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(ValidationError, 'Coat is done by a vendor. There is no loom of ours to put it'):
             step.save()
 
 

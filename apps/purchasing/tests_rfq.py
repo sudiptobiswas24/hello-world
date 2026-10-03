@@ -12,6 +12,7 @@ keeps changing, which loses the comparison that was the point.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
@@ -82,7 +83,7 @@ class RfqLifecycleTests(RfqTestCase):
 
     def test_a_vendor_is_invited_once(self):
         rfq = self.rfq(issue=False)
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             RfqInvitation.objects.create(rfq=rfq, vendor=self.vendor)
 
     def test_cancelling(self):

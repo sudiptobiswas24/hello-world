@@ -167,6 +167,30 @@ class InvoiceEmailTests(SalesDocumentTestCase):
         self.assertEqual(len(mail.outbox), 0)
 
 
+@override_settings(EMAIL_BACKEND="apps.core.mail.NotConfiguredBackend")
+class NoMailServerTests(SalesDocumentTestCase):
+    """A server nobody has given a mail server says so, and records nothing as sent."""
+
+    def test_sending_an_invoice_is_refused_in_a_sentence(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        invoice = self.make_invoice()
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("clerk"))
+        response = client.post(f"/api/sales/invoices/{invoice.pk}/send/")
+        invoice.refresh_from_db()
+        self.assertEqual((response.status_code, invoice.sent_at), (400, None))
+        self.assertIn("Email is not set up on this server", response.content.decode())
+
+    def test_nor_is_a_reminder_left_behind(self):
+        DunningLevel.objects.create(name="Gentle reminder", days_overdue=7)
+        invoice = self.make_invoice()
+        with self.assertRaisesMessage(ValidationError, "Email is not set up"):
+            run_dunning(as_of=datetime.date(2026, 4, 10))
+        self.assertFalse(invoice.dunning_notices.exists())
+
+
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
 class DunningTests(SalesDocumentTestCase):
     def setUp(self):
@@ -187,6 +211,21 @@ class DunningTests(SalesDocumentTestCase):
         self.assertEqual(notices[0].level, self.gentle)
         self.assertEqual(notices[0].invoice, invoice)
         self.assertEqual(len(mail.outbox), 1)
+
+    def test_a_reminder_that_never_went_is_not_counted_as_sent(self):
+        # Found in review: the notice was written before the email went,
+        # outside any transaction. A mail server that refused left a
+        # notice behind, and the next run, seeing that level "sent",
+        # never chased the customer at it again.
+        from unittest.mock import patch
+
+        invoice = self.make_invoice()
+        with patch("django.core.mail.EmailMessage.send", side_effect=OSError("refused")):
+            with self.assertRaises(OSError):
+                run_dunning(as_of=datetime.date(2026, 4, 10))
+        self.assertFalse(invoice.dunning_notices.exists())
+        notices = run_dunning(as_of=datetime.date(2026, 4, 10))
+        self.assertEqual(([n.level for n in notices], len(mail.outbox)), ([self.gentle], 1))
 
     def test_the_same_level_is_never_sent_twice(self):
         self.make_invoice()

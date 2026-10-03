@@ -11,6 +11,7 @@ plain error stay invisible.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
@@ -163,7 +164,7 @@ class MatchingTests(ReconciliationTestCase):
         )
         line = self.line(second, "1000", on=datetime.date(2026, 2, 5))
 
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             line.match(payment)
 
     def test_a_line_can_be_unmatched(self):

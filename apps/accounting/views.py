@@ -3,6 +3,8 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
+
+from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
@@ -161,7 +163,9 @@ class FinancialStatementViewSet(viewsets.ViewSet):
     on request can record a year of trading and answer nothing about it.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
+
+    required_permission = "accounting.view_journalentry"
 
     def list(self, request):
         return Response({

@@ -98,7 +98,7 @@ class OrderLineImmutabilityTests(AuditTestCase):
     def test_a_received_line_cannot_be_removed(self):
         order = self.make_order("10", "5")
         self.receive(order, "4")
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(ValidationError, 'This line has been received or billed and can no longer be r'):
             order.lines.first().delete()
 
 

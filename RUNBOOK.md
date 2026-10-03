@@ -101,8 +101,42 @@ their job. The roles keep apart the people who prepare a document and
 the people who post it; that separation is the point, so resist giving
 everyone everything.
 
-Floor operators do not need logins. They identify themselves at the
-station screens (`/station/<station code>/`) with their employee PIN.
+| role | for | cannot |
+|---|---|---|
+| Production Supervisor | work orders, issues, production, downtime, crews, maintenance jobs | change specifications, bills, routings or costing; see pay or the ledger |
+| Station | the shared login on a station tablet | anything but the station |
+| Production Planner | forecasts, MRP, planned orders, releasing work orders, changeover rules | record production; see pay or the ledger |
+| Quality Inspector | inspections, readings, calibrations, coating checks, test certificates, incoming inspection | set the plans and limits the readings are judged against |
+| Quality Manager | all of quality, complaints and corrective actions, third-party releases | |
+| GST Officer | GSTR-1, GSTR-3B, ITC-04, e-invoice and e-way bill payloads | book or change an invoice or a bill |
+| Bookkeeper, Controller | the ledger; the Controller posts and closes | |
+| Sales Rep, AR Manager | orders and invoices; the AR Manager posts and collects | |
+| Purchasing Clerk, AP Manager | orders and bills; the AP Manager approves, posts and pays | |
+| Warehouse Staff | receipts and deliveries | |
+| HR Admin | employees and leave | |
+| Employee Self Service | leave requests and purchase requisitions | read anyone's pay, or the ledger. They do see everyone's leave requests: limiting a person to their own is not built yet |
+
+A login alone reads nothing: every screen needs the role that shows it.
+
+Floor operators do not need logins of their own. A station tablet is
+logged in once with a user in the Station role, and each operator then
+identifies themselves at the station screen (`/station/<station code>/`)
+with their employee PIN.
+
+## Email
+
+Invoices, quotations, customer statements and payment reminders go by
+email. Until a mail server is named, sending is refused with a message
+saying so, and nothing is recorded as sent. To turn it on, add to
+`.env` and run `docker compose up -d`:
+
+```
+EMAIL_HOST=smtp.gmail.com        # or the company's mail provider
+EMAIL_PORT=587
+EMAIL_HOST_USER=accounts@deccanpolysacks.in
+EMAIL_HOST_PASSWORD=<an app password, not the mailbox password>
+DEFAULT_FROM_EMAIL=accounts@deccanpolysacks.in
+```
 
 ## Backups
 
@@ -178,7 +212,7 @@ previous version (`git checkout <previous tag>`), and rebuild.
 
 ## What it does not do
 
-- It sends no email. Nothing is configured to.
+- It sends no email until a mail server is set up (see "Email").
 - It files nothing with the GST portal. GSTR-1, GSTR-3B and ITC-04 are
   prepared for review and filing by whoever files today. E-invoice and
   e-way bill payloads are produced for upload; the system does not

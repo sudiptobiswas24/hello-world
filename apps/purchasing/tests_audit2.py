@@ -9,6 +9,7 @@ of a flow that had been built and tested only forwards.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 
@@ -310,7 +311,7 @@ class MechanicalAuditTests(PurchasingLifecycleTestCase):
         order = PurchaseOrder.objects.create(
             vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
         )
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "po_line_quantity_positive"):
             PurchaseOrderLine.objects.create(
                 order=order, item=self.item, uom=self.uom,
                 quantity=Decimal("-5"), unit_price=Decimal("5"),
@@ -330,7 +331,7 @@ class MechanicalAuditTests(PurchasingLifecycleTestCase):
         receipt = GoodsReceipt.objects.create(
             purchase_order=order, receipt_date=datetime.date(2026, 1, 5)
         )
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "received_quantity_positive"):
             GoodsReceiptLine.objects.create(
                 receipt=receipt, order_line=line, warehouse=self.warehouse,
                 quantity_received=Decimal("-3"),

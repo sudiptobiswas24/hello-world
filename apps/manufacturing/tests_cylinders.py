@@ -10,6 +10,7 @@ or the artwork not approved, nobody can say when it can be printed.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
@@ -91,7 +92,7 @@ class WhenTheSetIsThereTests(CylinderTestCase):
         self.assertEqual(tooling_ready(self.bag_spec.bom, TODAY), (TODAY, ""))
 
     def test_on_order_says_when(self):
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "tool_on_order_says_when"):
             Tool.objects.create(code="CYL-9", name="Cylinder", kind=ToolKind.CYLINDER,
                                 design=self.design, status=ToolStatus.ORDERED)
 

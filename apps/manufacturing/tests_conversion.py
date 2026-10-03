@@ -538,9 +538,18 @@ class AMeasurementExplainsPolymerNotLoomTimeTests(ConversionTestCase):
 
     def test_the_run_says_all_three_and_what_explains_the_material(self):
         order = self.heavy_and_slow()
+        from django.contrib.auth.models import Permission
+
         client = APIClient()
-        client.force_authenticate(User.objects.create_user("planner"))
-        body = client.get(f"/api/manufacturing/work-orders/{order.pk}/variance/").json()
+        planner = User.objects.create_user("planner")
+        client.force_authenticate(planner)
+        url = f"/api/manufacturing/work-orders/{order.pk}/variance/"
+        self.assertEqual(client.get(url).status_code, 403)
+        planner.user_permissions.add(Permission.objects.get(
+            content_type__app_label="manufacturing", codename="view_workorder"))
+        planner = User.objects.get(pk=planner.pk)  # permissions are cached on the instance
+        client.force_authenticate(planner)
+        body = client.get(url).json()
 
         self.assertAlmostEqual(Decimal(body["machine_time"]), Decimal("1060.00"), places=2)
         self.assertAlmostEqual(

@@ -1,5 +1,5 @@
 from django.contrib.auth.models import Group, Permission
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 CRUD = ("add", "change", "delete", "view")
@@ -9,11 +9,41 @@ def crud(app_label, model, actions=CRUD):
     return [f"{app_label}.{action}_{model}" for action in actions]
 
 
+def view(app_label, *models):
+    return [f"{app_label}.view_{model}" for model in models]
+
+
+def full(app_label, *models):
+    return [name for model in models for name in crud(app_label, model)]
+
+
+# What every office role reads to do anything at all: the units, the
+# currencies, the parties, the items and where they are kept. Reading
+# took no permission until the review; now it does, and a rep who cannot
+# see an item cannot put it on an order.
+REFERENCE = [
+    *view("core", "currency", "exchangerate", "unitofmeasure", "country", "party",
+          "address", "contact", "paymentterms", "paymenttermsline", "company"),
+    *view("inventory", "item", "itemunit", "warehouse", "lot"),
+    *view("accounting", "account", "tax", "taxgroup", "fiscalposition", "partytaxprofile"),
+]
+
+# What anyone on the floor or planning it reads: how things are made.
+HOW_IT_IS_MADE = [
+    *view("manufacturing", "bagspecification", "fabricspecification", "tapespecification",
+          "filmspecification", "linerspecification", "bagcoatingline", "billofmaterials",
+          "bomcomponent", "bombyproduct", "bomsubstitute", "routing", "routingoperation",
+          "alternaterouting", "workcentre", "machine", "shift", "tool", "printdesign",
+          "coretype", "scrapreason", "downtimereason", "setupfamily", "changeoverrule"),
+]
+
+
 # Roles are built around segregation of duties: the people who prepare
 # documents are not automatically the people who can post them to the
 # ledger or to stock.
 ROLES = {
     "Bookkeeper": [
+        *REFERENCE,
         *crud("assets", "fixedasset", actions=("view",)),
         *crud("assets", "depreciationentry", actions=("view",)),
         # deliberately NOT assets.dispose_fixedasset: writing an asset off
@@ -28,6 +58,7 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        *REFERENCE,
         *crud("accounting", "account"),
         *crud("accounting", "journalentry"),
         *crud("accounting", "journalline"),
@@ -62,6 +93,7 @@ ROLES = {
         "sales.write_off_invoice",
     ],
     "Sales Rep": [
+        *REFERENCE,
         *crud("sales", "salesorder"),
         *crud("sales", "salesorderline"),
         *crud("sales", "invoice"),
@@ -82,6 +114,7 @@ ROLES = {
         # deliberately NOT sales.post_invoice
     ],
     "AR Manager": [
+        *REFERENCE,
         *crud("sales", "salesorder"),
         *crud("sales", "salesorderline"),
         *crud("sales", "invoice"),
@@ -108,6 +141,7 @@ ROLES = {
         "accounting.post_payment",
     ],
     "Purchasing Clerk": [
+        *REFERENCE,
         *crud("purchasing", "purchaseorder"),
         *crud("purchasing", "purchaseorderline"),
         *crud("purchasing", "bill"),
@@ -137,6 +171,7 @@ ROLES = {
         # whoever raises the bill must not also be able to pay it.
     ],
     "AP Manager": [
+        *REFERENCE,
         *crud("purchasing", "purchaseorder"),
         *crud("purchasing", "purchaseorderline"),
         *crud("purchasing", "bill"),
@@ -164,6 +199,7 @@ ROLES = {
         "accounting.post_payment",
     ],
     "Warehouse Staff": [
+        *REFERENCE,
         *crud("inventory", "warehouse", actions=("view",)),
         *crud("inventory", "item", actions=("view",)),
         *crud("inventory", "stockmovement", actions=("add", "view")),
@@ -174,8 +210,111 @@ ROLES = {
         *crud("sales", "delivery"),
         *crud("sales", "deliveryline"),
         "sales.post_delivery",
+        # What to receive against and what to ship.
+        *view("purchasing", "purchaseorder", "purchaseorderline"),
+        *view("sales", "salesorder", "salesorderline"),
+        *view("inventory", "stockmovement", "stockposition", "storagebin"),
+    ],
+    # -- the plant ------------------------------------------------------
+    "Production Supervisor": [
+        *REFERENCE,
+        *HOW_IT_IS_MADE,
+        *view("inventory", "stockmovement", "stockposition", "storagebin"),
+        *view("hr", "employee"),
+        *crud("manufacturing", "workorder", actions=("add", "change", "view")),
+        *full("manufacturing", "workorderoperation", "workordercomponent",
+              "workordersubstitute", "materialissue", "materialissueline",
+              "productionentry", "productionscrap", "productionbyproduct", "timebooking",
+              "downtime", "operationreport", "rebatch", "rebatchline", "bale", "baleline",
+              "bagcount", "tapecount", "tapedoff", "tapeload", "fabricroll", "filmroll",
+              "processroll", "rollmount", "loomwaste", "machineclock", "crewassignment",
+              "meterreading", "spareissue", "toolusage"),
+        *crud("manufacturing", "maintenancejob", actions=("add", "change", "view")),
+        *crud("manufacturing", "scalereading", actions=("add", "view")),
+        *view("manufacturing", "loomstation", "stationattempt", "maintenanceschedule",
+              "energymeter", "coatingcheck", "testcertificate", "complaint"),
+        "manufacturing.weigh_at_station",
+        # deliberately NOT the specifications, bills, routings or rates: the
+        # floor makes what was specified, and a supervisor who could change
+        # the bill could make any variance disappear. Nor costing.
+    ],
+    # The shared login on a station tablet. Operators say who they are
+    # with their PIN; the login itself can do nothing else.
+    "Station": [
+        "manufacturing.weigh_at_station",
+        "manufacturing.view_loomstation",
+        *crud("manufacturing", "scalereading", actions=("add", "view")),
+    ],
+    "Production Planner": [
+        *REFERENCE,
+        *HOW_IT_IS_MADE,
+        *full("planning", "forecast", "masterscheduleentry", "planneddemand",
+              "plannedorder", "planningaction", "planningrun", "transferroute"),
+        *crud("planning", "planningsettings", actions=("change", "view")),
+        *crud("manufacturing", "workorder", actions=("add", "change", "view")),
+        *crud("manufacturing", "workorderoperation", actions=("change", "view")),
+        *full("manufacturing", "changeoverrule", "setupfamily", "alternaterouting"),
+        *crud("manufacturing", "tool", actions=("change", "view")),
+        *view("manufacturing", "crewassignment", "maintenancejob", "maintenanceschedule",
+              "productionentry", "downtime"),
+        *view("inventory", "stockmovement", "stockposition", "stockreservation"),
+        *view("sales", "salesorder", "salesorderline", "calloff", "quotation"),
+        *view("purchasing", "purchaseorder", "purchaseorderline", "vendorprice"),
+        *crud("purchasing", "purchaserequisition", actions=("add", "view")),
+        *crud("purchasing", "purchaserequisitionline", actions=("add", "view")),
+        # deliberately NOT production entries or material issues: the plan
+        # says what should happen, the floor records what did.
+    ],
+    "Quality Inspector": [
+        *REFERENCE,
+        *HOW_IT_IS_MADE,
+        *crud("quality", "inspection", actions=("add", "change", "view")),
+        *crud("quality", "reading", actions=("add", "change", "view")),
+        *crud("quality", "calibration", actions=("add", "view")),
+        *view("quality", "instrument", "characteristic", "inspectionplan", "planline"),
+        *crud("manufacturing", "coatingcheck", actions=("add", "view")),
+        *crud("manufacturing", "testcertificate", actions=("add", "view")),
+        *crud("purchasing", "receiptinspection", actions=("add", "change", "view")),
+        *view("manufacturing", "workorder", "bagcount", "fabricroll", "processroll",
+              "productionentry", "complaint", "correctiveaction"),
+        *view("purchasing", "goodsreceipt", "goodsreceiptline"),
+        *view("sales", "thirdpartyrelease", "delivery"),
+        *view("inventory", "stockmovement"),
+        # deliberately NOT the plans, the limits or the instruments: whoever
+        # takes the reading does not also set the pass mark.
+    ],
+    "Quality Manager": [
+        *REFERENCE,
+        *HOW_IT_IS_MADE,
+        *full("quality", "inspection", "reading", "calibration", "instrument",
+              "characteristic", "inspectionplan", "planline"),
+        *crud("quality", "qualitysettings", actions=("change", "view")),
+        *full("manufacturing", "complaint", "complaintlot", "correctiveaction",
+              "coatingcheck", "testcertificate"),
+        *full("purchasing", "receiptinspection"),
+        *full("sales", "thirdpartyrelease", "thirdpartyreleaseline"),
+        *view("manufacturing", "workorder", "bagcount", "fabricroll", "processroll",
+              "productionentry"),
+        *view("purchasing", "goodsreceipt", "goodsreceiptline"),
+        *view("sales", "delivery", "deliveryline", "salesorder"),
+        *view("inventory", "stockmovement"),
+    ],
+    "GST Officer": [
+        *REFERENCE,
+        "gst.compile_returns",
+        *crud("gst", "einvoice", actions=("add", "change", "view")),
+        *crud("gst", "ewaybill", actions=("add", "change", "view")),
+        *full("gst", "unitquantitycode"),
+        *view("accounting", "gstsettings", "journalentry", "journalline"),
+        *view("sales", "invoice", "invoiceline", "invoicelinetax", "delivery"),
+        *view("purchasing", "bill", "billline", "billlinetax"),
+        *view("manufacturing", "jobworkchallan", "jobworkline", "jobworkloss"),
+        # deliberately NOT posting or editing an invoice or a bill: the
+        # person who files the return reports what was booked, and does
+        # not book it.
     ],
     "HR Admin": [
+        *REFERENCE,
         *crud("hr", "department"),
         *crud("hr", "employee"),
         *crud("hr", "leaverequest"),
@@ -198,6 +337,7 @@ class Command(BaseCommand):
     @transaction.atomic
     def handle(self, *args, **options):
         verbosity = options["verbosity"]
+        missing = []
         for role_name, permission_names in ROLES.items():
             group, created = Group.objects.get_or_create(name=role_name)
             permissions = []
@@ -210,8 +350,13 @@ class Command(BaseCommand):
                         )
                     )
                 except Permission.DoesNotExist:
-                    self.stderr.write(f"  missing permission: {name}")
+                    missing.append(f"{role_name}: {name}")
             group.permissions.set(permissions)
             if verbosity:
                 verb = "created" if created else "updated"
                 self.stdout.write(f"{verb} {role_name} ({len(permissions)} permissions)")
+        if missing:
+            # A misspelt permission used to be printed and passed over, and
+            # the role went out a right short. Nothing is saved instead.
+            raise CommandError("No such permission, so no roles were changed:\n  "
+                               + "\n  ".join(missing))

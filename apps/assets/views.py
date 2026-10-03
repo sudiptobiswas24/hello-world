@@ -65,7 +65,15 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = FixedAsset.objects.select_related("category").all()
     serializer_class = FixedAssetSerializer
-    action_permission_map = {"dispose": "assets.dispose_fixedasset"}
+    # Depreciating, capitalising and undoing it all post to the ledger:
+    # they take the right to post, not merely the right to add an asset.
+    action_permission_map = {
+        "dispose": "assets.dispose_fixedasset",
+        "depreciate": "accounting.post_journalentry",
+        "depreciate_all": "accounting.post_journalentry",
+        "place_in_service": "accounting.post_journalentry",
+        "uncapitalise": "accounting.post_journalentry",
+    }
 
     def perform_update(self, serializer):
         _run(serializer.save)

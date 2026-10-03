@@ -203,6 +203,19 @@ class WhenCouldWeMakeItTests(PromiseTestCase):
         with self.assertRaisesMessage(ValidationError, "could be ready"):
             self.promise("1000")
 
+    def test_the_default_is_counted_in_the_plants_working_days(self):
+        # Found by review: the plan counts this default in working days,
+        # the promise counted calendar days, so across a shut day the
+        # rep promised a date the plan would not keep. Two working days
+        # from today, with tomorrow shut, is the day after next.
+        self.fabric_bom.routing = None
+        self.fabric_bom.save()
+        shut = (TODAY + datetime.timedelta(days=1)).isoweekday()
+        self.settings.working_days = "".join(str(d) for d in range(1, 8) if d != shut)
+        self.settings.save()
+        self.stock(self.tape, "5000")
+        self.assertEqual(self.promise("1000")["date"], TODAY + datetime.timedelta(days=3))
+
 
 class AQuotationReservesNothingTests(PromiseTestCase):
     def test_two_enquiries_the_same_morning_get_the_same_answer(self):

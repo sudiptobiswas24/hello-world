@@ -10,6 +10,7 @@ gross margin quietly improves every time the company posts a parcel.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Account, AccountType, ChargeType, Tax, TaxGroup
@@ -59,7 +60,7 @@ class ChargeBasicsTests(ChargeLineTestCase):
 
     def test_a_line_is_an_item_or_a_charge_never_both(self):
         order = self.make_order("10", "100")
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "order_line_is_item_or_charge"):
             SalesOrderLine.objects.create(
                 order=order, item=self.item, charge=self.freight, uom=self.uom,
                 quantity=Decimal("1"), unit_price=Decimal("50"),

@@ -4,6 +4,8 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
+
+from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
@@ -38,7 +40,11 @@ from .serializers import (
 class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PurchaseOrder.objects.prefetch_related("lines")
     serializer_class = PurchaseOrderSerializer
-    action_permission_map = {"create_bill": "purchasing.add_bill"}
+    action_permission_map = {
+        "create_bill": "purchasing.add_bill",
+        "confirm": "purchasing.change_purchaseorder",
+        "cancel": "purchasing.change_purchaseorder",
+    }
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
@@ -194,7 +200,11 @@ class PurchasingReportViewSet(viewsets.ViewSet):
     documents, and none of them reachable.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
+
+    required_permission = "purchasing.view_purchaseorder"
+
+    action_permission_map = {"draw": "purchasing.post_bill", "raise_reorder": "purchasing.add_purchaserequisition"}
 
     def list(self, request):
         return Response({

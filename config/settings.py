@@ -203,6 +203,20 @@ if PRODUCTION:
         "root": {"handlers": ["console"], "level": os.environ.get("DJANGO_LOG_LEVEL", "INFO")},
     }
 
+# Invoices, quotations, statements and dunning reminders go by email.
+# With no mail server named, production refuses to send rather than
+# reaching for one that is not there; a developer's machine keeps
+# Django's default, and tests capture mail in memory either way.
+if os.environ.get("EMAIL_HOST"):
+    EMAIL_HOST = os.environ["EMAIL_HOST"]
+    EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+    EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+    EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+    EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
+    DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER)
+elif PRODUCTION:
+    EMAIL_BACKEND = "apps.core.mail.NotConfiguredBackend"
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -210,11 +224,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # No anonymous writes: audit stamping (created_by/updated_by) requires a
 # real authenticated user on every request, not AnonymousUser.
-# DjangoModelPermissions enforces add/change/delete per model; ActionPermission
+# ModelPermissions enforces view/add/change/delete per model; ActionPermission
 # adds segregation of duties on posting actions (see apps/core/permissions.py).
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
-        "rest_framework.permissions.DjangoModelPermissions",
+        "apps.core.permissions.ModelPermissions",
         "apps.core.permissions.ActionPermission",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [

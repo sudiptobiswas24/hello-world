@@ -1,4 +1,22 @@
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import BasePermission, DjangoModelPermissions
+
+
+class ModelPermissions(DjangoModelPermissions):
+    """
+    DjangoModelPermissions, with reading guarded too.
+
+    DRF's own class asks nothing of a GET beyond being logged in, so an
+    operator whose only role was Employee Self Service could list every
+    payslip, every employee and the whole general ledger. Found in
+    review, not by any test: every test that read did so as a superuser.
+    Reading now takes the model's view permission, as adding takes add.
+    """
+
+    perms_map = {
+        **DjangoModelPermissions.perms_map,
+        "GET": ["%(app_label)s.view_%(model_name)s"],
+        "HEAD": ["%(app_label)s.view_%(model_name)s"],
+    }
 
 
 class ActionPermission(BasePermission):
@@ -23,3 +41,20 @@ class ActionPermission(BasePermission):
         if not required:
             return True
         return bool(request.user and request.user.has_perm(required))
+
+
+class RequiredPermission(BasePermission):
+    """
+    For a view with no model behind it - a report, a board - that says
+    what reading it takes in `required_permission`.
+
+    Closed by default: a view that forgets to say refuses everybody,
+    which somebody notices the same day, rather than serving everybody,
+    which nobody notices at all. Six report endpoints were open to any
+    login this way, the profit and loss and balance sheet among them.
+    """
+
+    def has_permission(self, request, view):
+        needed = getattr(view, "required_permission", None)
+        return bool(needed and request.user and request.user.has_perm(needed))
+

@@ -10,6 +10,7 @@ a tube laid flat is two thicknesses. At 87 GSM that is 104.4 kg, and
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from apps.inventory.models import Lot, TrackingMode
@@ -132,7 +133,7 @@ class WhatARollWeighsTests(RollTestCase):
         self.assertEqual(roll.implied_gsm(), Decimal("87.0000"))
 
     def test_a_roll_with_no_length_is_refused(self):
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "fabric_roll_is_a_real_roll"):
             self.roll(code="R-0", length="0")
 
 

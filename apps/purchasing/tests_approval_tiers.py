@@ -10,6 +10,7 @@ of that pair are different questions, and only the first was asked.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
@@ -135,7 +136,7 @@ class TierAuthorityTests(TierTestCase):
 
     def test_a_group_appears_once_per_policy(self):
         self.tiers()
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             ApprovalTier.objects.create(
                 policy=self.policy, group=self.managers, up_to_amount=Decimal("99")
             )

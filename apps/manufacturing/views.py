@@ -13,7 +13,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
-from apps.core.permissions import ActionPermission
+from apps.core.permissions import ActionPermission, RequiredPermission
 from apps.inventory.models import Lot, Warehouse
 from apps.sales.models import SalesOrderLine
 
@@ -1202,6 +1202,7 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ).prefetch_related("components")
     serializer_class = WorkOrderSerializer
     action_permission_map = {
+        "choose_routing": "manufacturing.change_workorder",
         "release": "manufacturing.change_workorder",
         "close": "manufacturing.change_workorder",
         "reopen": "manufacturing.change_workorder",
@@ -1717,7 +1718,9 @@ class DispatchViewSet(viewsets.ViewSet):
     committing it writes each operation's machine and planned times.
     """
 
-    permission_classes = [IsAuthenticated, ActionPermission]
+    permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
+
+    required_permission = "manufacturing.view_workorder"
     action_permission_map = {"commit": "manufacturing.change_workorderoperation"}
 
     @staticmethod
@@ -1930,7 +1933,9 @@ class RunFlowViewSet(viewsets.ViewSet):
     """GET run-flow/{work order id}/: each step's good, scrap and what waits before it;
     GET run-flow/scrap/?start=&end=: scrap by item, step and reason."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
+
+    required_permission = "manufacturing.view_workorder"
 
     def retrieve(self, request, pk=None):
         order = get_object_or_404(WorkOrder, pk=pk)

@@ -17,6 +17,8 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
+
+from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
@@ -360,7 +362,8 @@ class StockReportViewSet(viewsets.ViewSet):
     # and a report is not a model. Reading one is allowed to anybody who
     # may see stock at all; what they must not do is change it, and there
     # is nothing here that can.
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
+    required_permission = "inventory.view_stockmovement"
 
     def list(self, request):
         return Response({

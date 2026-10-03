@@ -11,6 +11,7 @@ get the tax treatment wrong.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Account, AccountType, ChargeType, Tax, TaxGroup, TaxScope
@@ -74,7 +75,7 @@ class PurchaseChargeBasicsTests(PurchaseChargeTestCase):
 
     def test_a_line_is_an_item_or_a_charge_never_both(self):
         order = self.make_order("10", "5")
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "po_line_is_item_or_charge"):
             PurchaseOrderLine.objects.create(
                 order=order, item=self.item, charge=self.freight, uom=self.uom,
                 quantity=Decimal("1"), unit_price=Decimal("30"),

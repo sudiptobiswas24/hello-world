@@ -14,6 +14,7 @@ percentage is of what comes off the machine. Not a hundred and twenty.
 
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from apps.inventory.models import Item
@@ -90,7 +91,7 @@ class TheArithmeticIsOfTheGrossTests(YieldTestCase):
 
     def test_everything_rejected_is_refused_by_the_database(self):
         """A hundred per cent is a division by zero wearing a hat."""
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "bom_reject_under_one_hundred"):
             self.reject("100")
 
 

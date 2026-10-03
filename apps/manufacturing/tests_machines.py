@@ -12,6 +12,7 @@ shed's effectiveness down.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from . import oee
@@ -170,7 +171,7 @@ class WhatAMachineFallsBackToTests(MachineTestCase):
         self.assertEqual(machine.rate_per_hour(), (None, None))
 
     def test_a_rate_must_say_what_it_counts(self):
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "machine_rate_says_what_it_counts"):
             Machine.objects.create(
                 work_centre=self.loom, code="L-09",
                 capacity_per_hour=Decimal("150"),

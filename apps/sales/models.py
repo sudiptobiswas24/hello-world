@@ -2766,7 +2766,6 @@ class Delivery(AuditModel):
             # already holds per stocking unit — quantity and cost have to
             # end up in the same unit, and that unit is the stocking one.
             shipped = item.to_stock_quantity(line.quantity_shipped, line.order_line.uom)
-            quantity = shipped if is_return else -shipped
             # A return reverses at the cost the original shipment used, so the
             # two entries cancel exactly instead of drifting with the average.
             occurred_at = timezone.now()
@@ -3287,22 +3286,26 @@ def run_dunning(as_of=None, send=True):
             undeliverable.append(invoice)
             continue
 
-        notice = DunningNotice.objects.create(
-            invoice=invoice, level=due_level, days_overdue=days,
-            # What is actually late, not the whole balance. On a 50/50
-            # term, chasing a customer for a balance that is not due for
-            # another month is how you lose the argument about the half
-            # that is.
-            amount_due=invoice.amount_overdue(as_of),
-        )
-        if send:
-            from django.core.mail import EmailMessage
+        # The notice and its email stand or fall together: a notice for a
+        # reminder the mail server refused would count the level as done,
+        # and the customer would never be chased at it.
+        with transaction.atomic():
+            notice = DunningNotice.objects.create(
+                invoice=invoice, level=due_level, days_overdue=days,
+                # What is actually late, not the whole balance. On a 50/50
+                # term, chasing a customer for a balance that is not due for
+                # another month is how you lose the argument about the half
+                # that is.
+                amount_due=invoice.amount_overdue(as_of),
+            )
+            if send:
+                from django.core.mail import EmailMessage
 
-            subject, body = due_level.render(invoice, days)
-            EmailMessage(subject=subject, body=body, to=[recipient]).send()
-            notice.sent_to = recipient
-            notice.sent_at = timezone.now()
-            notice.save(update_fields=["sent_to", "sent_at", "updated_at"])
+                subject, body = due_level.render(invoice, days)
+                EmailMessage(subject=subject, body=body, to=[recipient]).send()
+                notice.sent_to = recipient
+                notice.sent_at = timezone.now()
+                notice.save(update_fields=["sent_to", "sent_at", "updated_at"])
         notices.append(notice)
 
     if undeliverable:

@@ -9,6 +9,7 @@ paying to store it twice.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from apps.inventory.models import MovementType, StockMovement, Warehouse
@@ -140,7 +141,7 @@ class WhatATransferMustSayTests(TransferTestCase):
             )
 
     def test_a_route_to_itself_is_refused(self):
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "a_route_goes_somewhere_else"):
             TransferRoute.objects.create(
                 from_warehouse=self.plant, to_warehouse=self.plant, lead_days=1
             )

@@ -8,6 +8,8 @@ from decimal import Decimal, InvalidOperation
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
+
+from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
 from apps.accounting.models import Account
@@ -76,6 +78,8 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "create_invoice": "sales.add_invoice",
         "approve": "sales.approve_order",
+        "confirm": "sales.change_salesorder",
+        "cancel": "sales.change_salesorder",
     }
 
     @action(detail=True, methods=["post"])
@@ -476,6 +480,9 @@ class QuotationLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = DunningLevel.objects.all()
     serializer_class = DunningLevelSerializer
+    # A run writes to every overdue customer; setting the levels up is not
+    # the right to do that.
+    action_permission_map = {"run": "sales.post_invoice"}
 
     @action(detail=False, methods=["post"])
     def run(self, request):
@@ -545,7 +552,11 @@ class RecurringInvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class SalesReportViewSet(viewsets.ViewSet):
     """Bad debt and the statement run, neither of which was reachable."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
+
+    required_permission = "sales.view_invoice"
+
+    action_permission_map = {"statements": "sales.post_invoice"}
 
     def list(self, request):
         return Response({"bad-debt": "bad-debt/", "statements": "statements/"})

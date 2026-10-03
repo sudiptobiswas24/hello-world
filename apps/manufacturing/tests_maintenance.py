@@ -9,6 +9,7 @@ through a service the plant fully intended to do.
 import datetime
 from decimal import Decimal
 
+from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 
 from .maintenance import MaintenanceJob, MaintenanceSchedule, due_now
@@ -61,7 +62,7 @@ class MaintenanceTestCase(RunTestCase):
 
 class TwoClocksTests(MaintenanceTestCase):
     def test_a_schedule_needs_at_least_one_clock(self):
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(IntegrityError, "maintenance_has_a_clock"):
             MaintenanceSchedule.objects.create(
                 work_centre=self.loom, name="Nothing",
                 duration_minutes=Decimal("60"),

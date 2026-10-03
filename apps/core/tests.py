@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
@@ -37,7 +38,7 @@ class UnitOfMeasureConversionTests(TestCase):
         kg = UnitOfMeasure.objects.create(code="kg", name="Kilogram", category="weight")
         case = UnitOfMeasure.objects.create(code="case", name="Case", base_unit=each)
         case.base_unit = kg
-        with self.assertRaises(Exception):
+        with self.assertRaisesMessage(ValidationError, 'base_unit must be in the same category as this unit.'):
             case.full_clean()
 
 
@@ -54,5 +55,5 @@ class PartyRoleTests(TestCase):
     def test_duplicate_role_assignment_is_rejected(self):
         party = Party.objects.create(code="P-0002", name="Beta LLC")
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.VENDOR)
-        with self.assertRaises(Exception):
+        with self.assertRaises(IntegrityError):
             PartyRoleAssignment.objects.create(party=party, role=PartyRole.VENDOR)

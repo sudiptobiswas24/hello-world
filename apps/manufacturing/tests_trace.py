@@ -212,8 +212,19 @@ class WhoHoldsItTests(TraceTestCase):
 class LotTraceApiTests(TraceTestCase):
     def setUp(self):
         super().setUp()
+        from django.contrib.auth.models import Permission
+
         self.client = APIClient()
-        self.client.force_authenticate(User.objects.create_user("qa"))
+        qa = User.objects.create_user("qa")
+        qa.user_permissions.add(Permission.objects.get(
+            content_type__app_label="inventory", codename="view_lot"))
+        self.client.force_authenticate(qa)
+
+    def test_not_for_someone_who_cannot_see_batches(self):
+        # A login alone read every batch's customers before review.
+        self.client.force_authenticate(User.objects.create_user("anyone"))
+        self.assertEqual(self.client.get(
+            f"/api/manufacturing/lot-trace/{self.polymer_lot.pk}/recall/").status_code, 403)
 
     def test_both_directions(self):
         run = self.a_run()

@@ -133,7 +133,6 @@ class Command(BaseCommand):
                     continue
                 if "migrations" in path.parts:
                     continue
-                own_body = strip_imports(text)
                 for match in re.finditer(r"^def ([a-z][a-z0-9_]*)\(", text, re.M):
                     name = match.group(1)
                     if name.startswith("_"):
