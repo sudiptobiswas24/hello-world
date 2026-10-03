@@ -214,13 +214,18 @@ class FlexoTests(RollsTestCase):
         px = LoomStation.objects.create(code="PX-1", name="Flexo", warehouse=self.plant,
                                         kind=LineKind.PRINTING)
         px.machines.set([p1])
+        # Printed 1 + 1, so a press has something to print on it.
+        from .woven import BagSpecification
+
+        BagSpecification.objects.filter(pk=self.lam_spec.pk).update(print_colours=1,
+                                                                    print_colours_back=1)
         self.mount()
         laminated = self.laminated()
         mount_roll(px, self.operator, p1, laminated.code, at=at(TODAY, 11, 30))
         printed = weigh_roll(px, self.operator, p1, "127.9", self.core, "998",
-                             at=at(TODAY, 12))
+                             at=at(TODAY, 12), registration_mm="0.5", delta_e="1.2")
         self.assertEqual((printed.kind, printed.added_gsm, printed.passed, printed.code[:3]),
-                         (RollKind.PRINTED, None, None, "PR-"))
+                         (RollKind.PRINTED, None, True, "PR-"))
         mount = mount_roll(self.cv, self.operator, self.c2, printed.code, at=at(TODAY, 12, 30))
         self.assertEqual([step["code"] for step in roll_chain(mount)],
                          [printed.code, laminated.code, self.fabric_lot.code])
@@ -411,3 +416,83 @@ class OnTheScaleTests(RollsTestCase):
                                typed_reason="does_not_fit")
         self.assertEqual((typed.weight_source, typed.weight_approved_by),
                          ("manual", self.supervisor))
+
+
+class PrintCheckTests(RollsTestCase):
+    """
+    Printed 2 + 2 with Ultratech's D-ULT, held to 1.00 mm of register and
+    a shade within 2.00 of the proof. 0.5 mm and 1.2 is in; 2.00 exactly
+    is in; 1.4 mm is out, a supervisor's to take; D-AMB on the press is
+    refused whoever asks.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Party
+
+        from .tooling import PrintDesign
+        from .woven import BagSpecification
+
+        self.press = WorkCentre.objects.create(code="FLEXO", name="Flexo")
+        self.p1 = Machine.objects.create(work_centre=self.press, code="P-1")
+        WorkOrderOperation.objects.bulk_create([WorkOrderOperation(
+            work_order=self.lam_run, sequence=15, name="Print", work_centre=self.press,
+            units_per_hour=Decimal("3000"), planned_minutes=Decimal("100"))])
+        self.px = LoomStation.objects.create(code="PX-1", name="Flexo", warehouse=self.plant,
+                                             kind=LineKind.PRINTING)
+        self.px.machines.set([self.p1])
+        self.px.supervisors.add(self.supervisor)
+        customer = Party.objects.create(code="ULT", name="Ultratech")
+        self.design = PrintDesign.objects.create(code="D-ULT", name="Ultratech",
+                                                 customer=customer, colours=4)
+        BagSpecification.objects.filter(pk=self.lam_spec.pk).update(
+            print_colours=2, print_colours_back=2, print_design=self.design)
+        self.mount()
+        mount_roll(self.px, self.operator, self.p1, self.laminated().code,
+                   at=at(TODAY, 11, 30))
+
+    def printed(self, registration="0.5", shade="1.2", design="D-ULT", **extra):
+        return weigh_roll(self.px, self.operator, self.p1, "127.9", self.core, "998",
+                          at=at(TODAY, 12), registration_mm=registration, delta_e=shade,
+                          design_code=design, **extra)
+
+    def test_in_register_on_shade_on_the_right_artwork(self):
+        roll = self.printed()
+        self.assertEqual((roll.registration_mm, roll.delta_e, roll.design, roll.passed),
+                         (Decimal("0.50"), Decimal("1.20"), self.design, True))
+        self.assertTrue(self.printed(registration="1.00", shade="2.00").passed)
+
+    def test_out_of_register_or_off_shade_is_a_supervisors(self):
+        with self.assertRaisesMessage(ValidationError, "needs a supervisor's PIN"):
+            self.printed(registration="1.4")
+        with self.assertRaisesMessage(ValidationError, "needs a supervisor's PIN"):
+            self.printed(shade="2.01")
+        with self.assertRaisesMessage(ValidationError, "Say why a roll off its print"):
+            self.printed(registration="1.4", supervisor=self.supervisor)
+        roll = self.printed(registration="1.4", supervisor=self.supervisor,
+                            reason="Customer accepted the proof")
+        self.assertEqual((roll.passed, roll.conceded_by), (False, self.supervisor))
+
+    def test_the_wrong_artwork_is_refused_outright(self):
+        with self.assertRaisesMessage(ValidationError, "D-AMB is on the press; "):
+            self.printed(design="D-AMB", supervisor=self.supervisor, reason="Rush")
+        with self.assertRaisesMessage(ValidationError, "No design is on the press"):
+            self.printed(design="")
+
+    def test_what_a_reading_must_be(self):
+        with self.assertRaisesMessage(ValidationError, "The registration error is a number"):
+            self.printed(registration="wide")
+        with self.assertRaisesMessage(ValidationError, "The shade is a number, nought or more"):
+            self.printed(shade="-1")
+        with self.assertRaisesMessage(ValidationError, "The shade is a number"):
+            self.printed(shade=None)
+        with self.assertRaisesMessage(ValidationError, "The shade is a number, nought or more"):
+            self.printed(shade="NaN")
+
+    def test_an_unprinted_sack_has_nothing_to_check(self):
+        from .woven import BagSpecification
+
+        BagSpecification.objects.filter(pk=self.lam_spec.pk).update(
+            print_colours=0, print_colours_back=0, print_design=None)
+        with self.assertRaisesMessage(ValidationError, "is not printed"):
+            self.printed()

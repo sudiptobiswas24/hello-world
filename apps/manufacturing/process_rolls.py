@@ -140,6 +140,14 @@ class ProcessRoll(AuditModel):
                                            on_delete=models.PROTECT, related_name="+")
     typed_reason = models.CharField(max_length=16, blank=True, choices=TYPED_REASONS)
     typed_note = models.CharField(max_length=255, blank=True)
+    registration_mm = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="Off the press: how far out of register the colours are, the worst seen.")
+    delta_e = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True,
+                                  help_text="Off the press: shade against the approved proof.")
+    design = models.ForeignKey("manufacturing.PrintDesign", null=True, blank=True,
+                               on_delete=models.PROTECT, related_name="+",
+                               help_text="The artwork confirmed on the press.")
     added_gsm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True,
                                     help_text="What the lamination added, measured.")
     expected_gsm = models.DecimalField(max_digits=10, decimal_places=3, null=True, blank=True)
@@ -281,6 +289,38 @@ def dismount_roll(station, operator, machine, remaining_kg=None, at=None):
     return mount
 
 
+def _print_check(spec, registration_mm, delta_e, design_code):
+    """
+    A roll off the press against the sack's print: the right artwork, in
+    register and on shade. Wrong artwork is refused outright — no
+    supervisor makes another customer's print this one's — while
+    register and shade outside tolerance are a supervisor's to take.
+    """
+    if not (spec.print_colours or spec.print_colours_back):
+        raise ValidationError(f"{spec} is not printed; there is no print to check.")
+    values = {}
+    design = spec.print_design
+    if design is not None:
+        on_press = (design_code or "").strip()
+        if on_press != design.code:
+            raise ValidationError(f"{on_press or 'No design'} is on the press; {spec} is "
+                                  f"printed with {design.code}.")
+        values["design"] = design
+    readings = []
+    for value, what in ((registration_mm, "The registration error"), (delta_e, "The shade")):
+        try:
+            number = Decimal(str(value))
+        except (ArithmeticError, TypeError, ValueError):
+            raise ValidationError(f"{what} is a number.")
+        if not number.is_finite() or number < 0:
+            raise ValidationError(f"{what} is a number, nought or more.")
+        readings.append(number)
+    values["registration_mm"], values["delta_e"] = readings
+    values["passed"] = (readings[0] <= spec.registration_tolerance_mm
+                        and readings[1] <= spec.max_delta_e)
+    return values
+
+
 def _expected_added_gsm(spec):
     """What lamination adds to a square metre of fabric: coating, and any film."""
     area = spec.fabric_area_sqm()
@@ -290,7 +330,8 @@ def _expected_added_gsm(spec):
 
 @transaction.atomic
 def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervisor=None,
-               reason="", at=None, source="scale", typed_reason="", typed_note=""):
+               reason="", at=None, source="scale", typed_reason="", typed_note="",
+               registration_mm=None, delta_e=None, design_code=""):
     """A laminated or printed roll off the machine, weighed and numbered."""
     from .conversion import bag_specification_for
     from .machines import Machine
@@ -316,7 +357,10 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
     values = {}
     if station.kind == LineKind.PRINTING:
         kind = RollKind.PRINTED
+        values = _print_check(spec, registration_mm, delta_e, design_code)
+        off = "its print"
     else:
+        off = "its lamination weight"
         if not spec.is_laminated:
             raise ValidationError(f"{spec} is not laminated; there is no lamination to weigh.")
         kind = (RollKind.BOPP if spec.bopp_film_item_id
@@ -334,13 +378,13 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
                   "lower_gsm": (expected - margin).quantize(Decimal("0.001")),
                   "upper_gsm": (expected + margin).quantize(Decimal("0.001"))}
         values["passed"] = values["lower_gsm"] <= values["added_gsm"] <= values["upper_gsm"]
-        reason = " ".join((reason or "").split())
-        if not values["passed"]:
-            check_supervisor(station, supervisor, operator)
-            if not reason:
-                raise ValidationError("Say why a roll off its lamination weight is taken.")
-            values["conceded_by"] = supervisor
-            values["reason"] = reason[:255]
+    reason = " ".join((reason or "").split())
+    if not values["passed"]:
+        check_supervisor(station, supervisor, operator)
+        if not reason:
+            raise ValidationError(f"Say why a roll off {off} is taken.")
+        values["conceded_by"] = supervisor
+        values["reason"] = reason[:255]
     count = ProcessRoll.objects.filter(machine=machine, shift=shift,
                                        shift_date=shift_date).count()
     code = (f"{PREFIX[kind]}-{shift_date:%y%m%d}-{shift.code[:1].upper()}-"

@@ -1335,6 +1335,12 @@ class BagSpecification(SpecificationMixin, SpecificationWindow, AuditModel):
     cutting_waste_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
+    registration_tolerance_mm = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("1.00"),
+        help_text="Printed: how far out of register a roll off the press may be.")
+    max_delta_e = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("2.00"),
+        help_text="Printed: the most a roll's shade may differ from the approved proof.")
     seconds_item = models.ForeignKey(
         Item, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="What an off-grade sack is sold as: counted, at its own lower value.")

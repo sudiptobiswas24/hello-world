@@ -470,7 +470,9 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                     data.get("gross_kg"), core, data.get("metres"), supervisor,
                     data.get("reason", ""), source=data.get("source", "scale"),
                     typed_reason=data.get("typed_reason", ""),
-                    typed_note=data.get("typed_note", ""))
+                    typed_note=data.get("typed_note", ""),
+                    registration_mm=data.get("registration_mm"), delta_e=data.get("delta_e"),
+                    design_code=data.get("design", ""))
         return Response({"id": roll.pk, "code": roll.code, "kind": roll.kind,
                          "net_kg": _exact(roll.net_kg), "added_gsm": _exact(roll.added_gsm),
                          "limits": [_exact(roll.lower_gsm), _exact(roll.upper_gsm)],
