@@ -118,6 +118,17 @@ def _remaining(operation, started_quantity):
     return max((operation.planned_minutes or ZERO) - booked, ZERO), booked > 0
 
 
+def _crewed_machines(centre, day):
+    """The most machines any one shift's crew can run at this bank that day, or None."""
+    from .manning import manned_machines
+    from .shifts import Shift
+
+    if centre.operators_per_machine is None:
+        return None
+    return max((manned_machines(centre, shift, day)
+                for shift in Shift.objects.filter(is_active=True)), default=0)
+
+
 def build(start_at=None):
     """
     The schedule, as rows of {operation, machine, start, finish,
@@ -133,12 +144,20 @@ def build(start_at=None):
     day_start = _day_start()
     resources = {}
 
+    crew_short = {}
+
     def pool(centre):
         if centre.pk not in resources:
             machines = centre.machine_list()
+            crewed = _crewed_machines(centre, start_at.date())
+            if crewed is not None and crewed < len(machines):
+                # No more machines on the board than the crew can run.
+                machines = machines[:crewed]
+                if not crewed:
+                    crew_short[centre.pk] = True
             resources[centre.pk] = [
                 Resource(centre, machine, day_start, start_at) for machine in machines
-            ] or ([] if centre.runs_on_machines()
+            ] or ([] if centre.runs_on_machines() or crew_short.get(centre.pk)
                   else [Resource(centre, None, day_start, start_at)])
         return resources[centre.pk]
 
@@ -193,8 +212,11 @@ def build(start_at=None):
                 continue
             candidates = pool(operation.work_centre)
             if not candidates:
-                held(operation, order, f"Every machine at {operation.work_centre.code} is "
-                                       "out of service.")
+                code = operation.work_centre.code
+                held(operation, order,
+                     f"Nobody is crewed to run {code}." if crew_short.get(
+                         operation.work_centre_id)
+                     else f"Every machine at {code} is out of service.")
                 waiting_on = operation.sequence
                 continue
             reasons = [resource.machine.refuses(needs) for resource in candidates

@@ -32,6 +32,7 @@ from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .liners import FilmSpecification, LinerSpecification
+from .manning import CrewAssignment
 from .routing import AlternateRouting, Routing, RoutingOperation
 from .scrap import OperationReport, ProductionScrap, ScrapReason
 from .rebatch import Rebatch, RebatchLine
@@ -577,6 +578,12 @@ class RoutingOperationSerializer(serializers.ModelSerializer):
                   "setup_minutes", "units_per_hour", "rate_uom", "notes"]
 
 
+class CrewAssignmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CrewAssignment
+        fields = ["id", "employee", "work_centre", "shift", "valid_from", "valid_to"]
+
+
 class AlternateRoutingSerializer(serializers.ModelSerializer):
     class Meta:
         model = AlternateRouting
@@ -633,7 +640,7 @@ class WorkCentreSerializer(serializers.ModelSerializer):
                   "machine_rate_per_hour", "labour_rate_per_hour",
                   "overhead_rate_per_hour", "conversion_rate_per_hour",
                   "standard_kwh_per_hour", "is_active", "efficiency_percent",
-                  "speed_basis", "tape_ends", "line_speed_m_per_min", "loom_rpm",
+                  "operators_per_machine", "speed_basis", "tape_ends", "line_speed_m_per_min", "loom_rpm",
                   "shuttles"]
 
     conversion_rate_per_hour = serializers.SerializerMethodField()

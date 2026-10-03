@@ -60,6 +60,7 @@ from .inward import (
 from .quoting import CostSheet, MaterialRate, QuotePolicy, StageRate
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
+from .manning import CrewAssignment
 from .routing import AlternateRouting, Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from . import scrap
@@ -118,6 +119,7 @@ from .serializers import (
     TapeSpecificationSerializer,
     FilmSpecificationSerializer,
     AlternateRoutingSerializer,
+    CrewAssignmentSerializer,
     LinerSpecificationSerializer,
     TimeBookingSerializer,
     WorkCentreSerializer,
@@ -195,6 +197,19 @@ def _quantity(request, default="1"):
         return Decimal(str(request.query_params.get("quantity") or default))
     except InvalidOperation:
         raise DRFValidationError(["quantity must be a number."])
+
+
+class CrewAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Who is on which bank's shift; ?work_centre= to see one bank's."""
+
+    queryset = CrewAssignment.objects.select_related("employee__party", "work_centre",
+                                                     "shift")
+    serializer_class = CrewAssignmentSerializer
+
+    def get_queryset(self):
+        rows = super().get_queryset()
+        centre = self.request.query_params.get("work_centre")
+        return rows.filter(work_centre_id=centre) if centre else rows
 
 
 class AlternateRoutingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1003,6 +1018,26 @@ class MachineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkCentre.objects.all()
     serializer_class = WorkCentreSerializer
+
+    @action(detail=True, methods=["get"])
+    def crew(self, request, pk=None):
+        """?date= : each shift's heads, the machines they can run, and the bank's minutes."""
+        from .manning import heads, manned_machines
+        from .shifts import Shift
+
+        centre = self.get_object()
+        day = parse_date(request.query_params.get("date") or "")
+        if day is None:
+            raise DRFValidationError(["Give the date as YYYY-MM-DD."])
+        return Response({
+            "work_centre": centre.code,
+            "operators_per_machine": (str(centre.operators_per_machine)
+                                      if centre.operators_per_machine is not None else None),
+            "shifts": [{"shift": shift.code, "heads": str(heads(centre, shift, day)),
+                        "machines_crewed": manned_machines(centre, shift, day)}
+                       for shift in Shift.objects.filter(is_active=True)],
+            "minutes": str(centre.minutes_on(day)),
+        })
 
     @action(detail=True, methods=["get"])
     def effectiveness(self, request, pk=None):

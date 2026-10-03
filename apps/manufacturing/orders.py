@@ -40,6 +40,7 @@ spells work in progress; this project has already posted one document
 backwards by bending it.
 """
 
+import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -253,6 +254,11 @@ class WorkCentre(AuditModel):
                   "the meters against. Blank where nobody has set one.",
     )
     is_active = models.BooleanField(default=True)
+    operators_per_machine = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="People a machine here takes: 0.25 where a weaver minds four looms, "
+                  "2 on a BCS. Given, the bank runs only as many machines as its crew "
+                  "present can; blank, its crew is not a limit.")
     efficiency_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal("100"),
         help_text="What the machine really achieves against its rated speed, over "
@@ -289,6 +295,10 @@ class WorkCentre(AuditModel):
             models.CheckConstraint(
                 check=Q(efficiency_percent__gt=0) & Q(efficiency_percent__lte=100),
                 name="work_centre_efficiency_a_percentage",
+            ),
+            models.CheckConstraint(
+                check=Q(operators_per_machine__isnull=True) | Q(operators_per_machine__gt=0),
+                name="work_centre_crew_per_machine_positive",
             ),
             models.CheckConstraint(
                 check=Q(machine_rate_per_hour__gte=0)
@@ -441,12 +451,18 @@ class WorkCentre(AuditModel):
         continuous looms, and a plan that says it is will promise a
         date on the strength of a loom that is switched off.
         """
+        from .manning import manned_minutes
+
         machines = self.machine_list()
         if machines or self.runs_on_machines():
-            return sum((m.minutes_on(day) for m in machines), Decimal("0"))
-        if not self.calendar().is_working(day):
-            return Decimal("0")
-        return Decimal(self.available_hours_per_day) * Decimal("60")
+            minutes = sum((m.minutes_on(day) for m in machines), Decimal("0"))
+        elif not self.calendar().is_working(day):
+            minutes = Decimal("0")
+        else:
+            minutes = Decimal(self.available_hours_per_day) * Decimal("60")
+        # No more than the crew present can run.
+        crewed = manned_minutes(self, day)
+        return minutes if crewed is None else min(minutes, crewed)
 
     def minutes_available(self, start, end):
         """Minutes across a window, counting only the days it runs."""
@@ -455,6 +471,13 @@ class WorkCentre(AuditModel):
                 f"A window from {start} to {end} runs backwards, and the "
                 "hours it reports would too."
             )
+        if self.operators_per_machine is not None:
+            # Crewed day by day: who is on leave changes with the day.
+            day, total = start, Decimal("0")
+            while day <= end:
+                total += self.minutes_on(day)
+                day += datetime.timedelta(days=1)
+            return total
         machines = self.machine_list()
         if machines or self.runs_on_machines():
             return sum(

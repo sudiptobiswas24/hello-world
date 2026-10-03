@@ -75,6 +75,7 @@ class LoadBook:
         self._capacity = {}
         self._machine_lists = {}
         self._listed = {}
+        self._manned = {}
         self._booked = defaultdict(lambda: ZERO)
         # Minutes booked on a set of a bank's machines, keyed by the set:
         # the ones that can take a product the others cannot.
@@ -111,14 +112,28 @@ class LoadBook:
         """
         machines = self._machines(centre)
         if machines or self._on_machines(centre):
-            return sum((m.minutes_on(day) for m in machines), ZERO)
-        if not self.calendar(centre).is_working(day):
-            return ZERO
-        if centre.pk not in self._capacity:
-            self._capacity[centre.pk] = (
-                Decimal(centre.available_hours_per_day) * MINUTES_PER_HOUR
-            )
-        return self._capacity[centre.pk]
+            minutes = sum((m.minutes_on(day) for m in machines), ZERO)
+        elif not self.calendar(centre).is_working(day):
+            minutes = ZERO
+        else:
+            if centre.pk not in self._capacity:
+                self._capacity[centre.pk] = (
+                    Decimal(centre.available_hours_per_day) * MINUTES_PER_HOUR
+                )
+            minutes = self._capacity[centre.pk]
+        crewed = self._crewed(centre, day)
+        return minutes if crewed is None else min(minutes, crewed)
+
+    def _crewed(self, centre, day):
+        """What the bank's crew can run that day, or None where it is not crewed."""
+        from apps.manufacturing.manning import manned_minutes
+
+        if centre.operators_per_machine is None:
+            return None
+        key = (centre.pk, day)
+        if key not in self._manned:
+            self._manned[key] = manned_minutes(centre, day)
+        return self._manned[key]
 
     def _on_machines(self, centre):
         if centre.pk not in self._listed:
