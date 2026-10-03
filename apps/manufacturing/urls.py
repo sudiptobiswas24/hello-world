@@ -48,6 +48,7 @@ from .views import (
     ShiftViewSet,
     TapeSpecificationViewSet,
     FilmSpecificationViewSet,
+    AlternateRoutingViewSet,
     LinerSpecificationViewSet,
     TimeBookingViewSet,
     ChangeoverRuleViewSet,
@@ -75,6 +76,7 @@ router.register("tools", ToolViewSet)
 router.register("tool-usage", ToolUsageViewSet)
 router.register("routings", RoutingViewSet)
 router.register("routing-operations", RoutingOperationViewSet)
+router.register("alternate-routings", AlternateRoutingViewSet)
 router.register("machines", MachineViewSet)
 router.register("setup-families", SetupFamilyViewSet)
 router.register("changeover-rules", ChangeoverRuleViewSet)

@@ -158,6 +158,9 @@ def _hours_a_day(centre):
     machines = centre.machine_list()
     if machines:
         return sum((m.hours_per_day() for m in machines), Decimal("0"))
+    if centre.runs_on_machines():
+        raise ValidationError(f"Every machine at {centre.code} is out of service, so "
+                              "nothing there can say how long the work takes.")
     return Decimal(centre.available_hours_per_day)
 
 

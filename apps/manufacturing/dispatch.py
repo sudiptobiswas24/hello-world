@@ -138,7 +138,8 @@ def build(start_at=None):
             machines = centre.machine_list()
             resources[centre.pk] = [
                 Resource(centre, machine, day_start, start_at) for machine in machines
-            ] or [Resource(centre, None, day_start, start_at)]
+            ] or ([] if centre.runs_on_machines()
+                  else [Resource(centre, None, day_start, start_at)])
         return resources[centre.pk]
 
     orders = sorted(
@@ -191,6 +192,11 @@ def build(start_at=None):
             if minutes <= 0 and begun:
                 continue
             candidates = pool(operation.work_centre)
+            if not candidates:
+                held(operation, order, f"Every machine at {operation.work_centre.code} is "
+                                       "out of service.")
+                waiting_on = operation.sequence
+                continue
             reasons = [resource.machine.refuses(needs) for resource in candidates
                        if resource.machine is not None]
             able = [resource for resource in candidates

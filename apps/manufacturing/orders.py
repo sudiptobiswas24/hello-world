@@ -421,6 +421,16 @@ class WorkCentre(AuditModel):
 
         return machines_in(self)
 
+    def runs_on_machines(self):
+        """
+        Whether this bank is its machines rather than its own hours.
+
+        A bank that lists machines and has every one out of service has
+        no hours at all; falling back to its own figure, as a bank with
+        none listed does, planned work onto a line that was stopped.
+        """
+        return self.machines.exists()
+
     def minutes_on(self, day):
         """
         Minutes this centre has on one day, before anything is booked.
@@ -432,7 +442,7 @@ class WorkCentre(AuditModel):
         date on the strength of a loom that is switched off.
         """
         machines = self.machine_list()
-        if machines:
+        if machines or self.runs_on_machines():
             return sum((m.minutes_on(day) for m in machines), Decimal("0"))
         if not self.calendar().is_working(day):
             return Decimal("0")
@@ -446,7 +456,7 @@ class WorkCentre(AuditModel):
                 "hours it reports would too."
             )
         machines = self.machine_list()
-        if machines:
+        if machines or self.runs_on_machines():
             return sum(
                 (m.minutes_available(start, end) for m in machines),
                 Decimal("0"),
@@ -921,6 +931,27 @@ class WorkOrder(AuditModel):
     # -- the forward path -----------------------------------------------
 
     @transaction.atomic
+    def _check_routing(self, routing):
+        from .routing import routings_for
+
+        if routing not in routings_for(self.bom):
+            raise ValidationError(
+                f"{routing} is not a way {self.bom} is made: neither its own routing nor "
+                "one of its alternates.")
+
+    def choose_routing(self, routing):
+        """A draft run put on one of its bill's alternates, or back on its own."""
+        if self.status != WorkOrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self} is {self.get_status_display().lower()}; its routing was frozen "
+                "at release. Cancel it and raise the run again to make it another way.")
+        if not routing.is_active:
+            raise ValidationError(f"{routing} has been retired.")
+        self._check_routing(routing)
+        self.routing = routing
+        self.save(update_fields=["routing", "updated_at"])
+        return self
+
     def release(self, on_date=None):
         """
         Freeze the arithmetic and let material be drawn against it.
@@ -995,15 +1026,17 @@ class WorkOrder(AuditModel):
         if self.uom_id != self.bom.uom_id:
             batch_quantity = self.uom.convert_to(started, self.bom.uom)
         operations = []
-        if self.bom.routing_id is not None:
-            if not self.bom.routing.is_active:
+        # The bill's own routing unless the planner chose one of its
+        # alternates on the draft.
+        routing = self.routing or self.bom.routing
+        if routing is not None:
+            if not routing.is_active:
                 raise ValidationError(
-                    f"{self.bom.routing} has been retired. Releasing against it "
+                    f"{routing} has been retired. Releasing against it "
                     "would plan this run at times the plant no longer keeps."
                 )
-            operations = list(
-                self.bom.routing.operations.select_related("work_centre")
-            )
+            self._check_routing(routing)
+            operations = list(routing.operations.select_related("work_centre"))
         for operation in operations:
             if operation.is_outside:
                 # No machine of ours to be out of service. The charge is
@@ -1061,7 +1094,7 @@ class WorkOrder(AuditModel):
                         quantity_per=row.quantity_per, priority=row.priority,
                     )
 
-        self.routing = self.bom.routing
+        self.routing = routing
         # Frozen with everything else. A plant that turns backflushing
         # on halfway through a run would have the first half issued by
         # hand and the second half drawn automatically, and the two

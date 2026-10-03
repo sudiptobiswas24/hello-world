@@ -317,6 +317,55 @@ class RoutingOperation(AuditModel):
         )
 
 
+class AlternateRouting(AuditModel):
+    """
+    Another way to make what a bill makes: the BCS is the bill's own
+    routing, hand stitching or the contractor its alternates, in the
+    order a planner would reach for them.
+
+    On its own row, not on the bill: a computed bill refuses to be
+    edited, and its specification names one routing. The alternates are
+    the planner's, and the bill rebuilding itself leaves them be.
+    """
+
+    bom = models.ForeignKey("manufacturing.BillOfMaterials", on_delete=models.CASCADE,
+                            related_name="alternate_routings")
+    routing = models.ForeignKey(Routing, on_delete=models.PROTECT, related_name="+")
+    priority = models.PositiveSmallIntegerField(
+        help_text="1 is tried first after the bill's own routing.")
+    notes = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["bom", "priority"]
+        constraints = [
+            models.UniqueConstraint(fields=["bom", "routing"], name="one_alternate_per_routing"),
+            models.UniqueConstraint(fields=["bom", "priority"], name="one_alternate_per_priority"),
+            models.CheckConstraint(check=Q(priority__gt=0), name="alternate_priority_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.bom}: {self.routing} ({self.priority})"
+
+    def save(self, *args, **kwargs):
+        if self.routing_id == self.bom.routing_id:
+            raise ValidationError(f"{self.routing} is {self.bom}'s own routing, not an "
+                                  "alternate to it.")
+        if not self.routing.is_active:
+            raise ValidationError(f"{self.routing} has been retired.")
+        super().save(*args, **kwargs)
+
+
+def routings_for(bom):
+    """The bill's own routing, then its active alternates by priority."""
+    if bom is None or bom.routing_id is None:
+        return []
+    rows = [bom.routing]
+    for row in bom.alternate_routings.select_related("routing").order_by("priority"):
+        if row.routing.is_active:
+            rows.append(row.routing)
+    return rows
+
+
 def capacity_report(work_centre, start, end):
     """
     What a machine is being asked to do in a window against what it can.

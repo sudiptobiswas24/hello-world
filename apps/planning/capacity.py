@@ -74,6 +74,7 @@ class LoadBook:
         self._calendars = {}
         self._capacity = {}
         self._machine_lists = {}
+        self._listed = {}
         self._booked = defaultdict(lambda: ZERO)
         # Minutes booked on a set of a bank's machines, keyed by the set:
         # the ones that can take a product the others cannot.
@@ -109,7 +110,7 @@ class LoadBook:
         machines can be on different patterns.
         """
         machines = self._machines(centre)
-        if machines:
+        if machines or self._on_machines(centre):
             return sum((m.minutes_on(day) for m in machines), ZERO)
         if not self.calendar(centre).is_working(day):
             return ZERO
@@ -118,6 +119,11 @@ class LoadBook:
                 Decimal(centre.available_hours_per_day) * MINUTES_PER_HOUR
             )
         return self._capacity[centre.pk]
+
+    def _on_machines(self, centre):
+        if centre.pk not in self._listed:
+            self._listed[centre.pk] = centre.runs_on_machines()
+        return self._listed[centre.pk]
 
     def _machines(self, centre):
         if centre.pk not in self._machine_lists:
@@ -160,6 +166,8 @@ class LoadBook:
 
         machines = self._machines(centre)
         if not machines or bom is None:
+            # None listed, the bank is its own one machine; listed and none
+            # in service, there is no time to pool and capacity says so.
             return None
         if bom.pk not in self._needs:
             self._needs[bom.pk] = requirements(bom)
@@ -472,15 +480,44 @@ def schedule_make(book, bom, quantity, uom, needed_by, planned_on,
                   queue_days=0):
     """
     When a run of `quantity` has to start to be finished by
-    `needed_by`, given what the machines already have on them.
+    `needed_by`, given what the machines already have on them — and
+    which way it is made.
+
+    The bill's own routing while it can be on time; otherwise the first
+    alternate that can; and where none can, the one ready soonest. Each
+    is tried on the book and taken back before the next, so only the
+    routing chosen keeps its hours.
 
     Falls back to nothing when the bill of materials has no routing:
     without operations there is no machine to be busy, and the caller's
     stated default is the honest answer.
     """
-    if bom is None or bom.routing_id is None:
+    from apps.manufacturing.routing import routings_for
+
+    best = None
+    for routing in routings_for(bom):
+        mark = book.checkpoint()
+        placed = _schedule_on(book, bom, routing, quantity, uom, needed_by, planned_on,
+                              queue_days)
+        if placed is None:
+            continue
+        placed["routing"] = routing
+        if not placed["overloaded"]:
+            return placed
+        book.rollback(mark)
+        if best is None or placed["expected"] < best["expected"]:
+            best = placed
+    if best is None:
         return None
-    operations = list(bom.routing.operations.select_related("work_centre"))
+    # None on time: the soonest, booked again for real.
+    placed = _schedule_on(book, bom, best["routing"], quantity, uom, needed_by, planned_on,
+                          queue_days)
+    placed["routing"] = best["routing"]
+    return placed
+
+
+def _schedule_on(book, bom, routing, quantity, uom, needed_by, planned_on, queue_days):
+    operations = list(routing.operations.select_related("work_centre"))
     if not operations:
         return None
     # The quantity is what must be DELIVERED; the machines are asked

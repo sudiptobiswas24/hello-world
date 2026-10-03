@@ -1341,6 +1341,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
     expected_on = shortage.date
     can_start_on = None
     waits_for = ""
+    routing = None
     if route is not None:
         # A shortage the company can answer out of its own stock is
         # not a shortage to buy. Checked only for a buy: moving a
@@ -1364,6 +1365,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         )
         if placed is not None:
             release_on = placed["start"]
+            routing = placed["routing"]
             bottleneck = placed["bottleneck"]
             overloaded = placed["overloaded"]
             expected_on = placed["expected"]
@@ -1424,6 +1426,7 @@ def _write(run, item, warehouse, kind, bom, shortage, level, settings, rule,
         bottleneck=bottleneck, is_overloaded=overloaded,
         rounded_up_by=shortage.rounded, fenced_from=fenced_from,
         expected_on=expected_on, can_start_on=can_start_on, waits_for=waits_for[:255],
+        routing=routing,
     )
     for number, (row, taken) in enumerate(shortage.pegs, start=1):
         PlannedDemand.objects.create(

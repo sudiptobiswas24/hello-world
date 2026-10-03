@@ -116,9 +116,11 @@ from .tooling import (  # noqa: F401
     wearing_out,
 )
 from .routing import (  # noqa: F401
+    AlternateRouting,
     Routing,
     RoutingOperation,
     capacity_report,
+    routings_for,
 )
 from .orders import (  # noqa: F401
     IssueDirection,

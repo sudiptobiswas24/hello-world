@@ -32,7 +32,7 @@ from .maintenance import MaintenanceJob, MaintenanceSchedule
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage
 from .liners import FilmSpecification, LinerSpecification
-from .routing import Routing, RoutingOperation
+from .routing import AlternateRouting, Routing, RoutingOperation
 from .scrap import OperationReport, ProductionScrap, ScrapReason
 from .rebatch import Rebatch, RebatchLine
 from .shifts import Downtime, DowntimeReason, Shift
@@ -575,6 +575,12 @@ class RoutingOperationSerializer(serializers.ModelSerializer):
         fields = ["id", "routing", "sequence", "name", "work_centre",
                   "is_outside", "outside_lead_days", "outside_cost_per_unit",
                   "setup_minutes", "units_per_hour", "rate_uom", "notes"]
+
+
+class AlternateRoutingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AlternateRouting
+        fields = ["id", "bom", "routing", "priority", "notes"]
 
 
 class RoutingSerializer(serializers.ModelSerializer):

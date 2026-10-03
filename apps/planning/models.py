@@ -403,6 +403,12 @@ class PlannedOrder(AuditModel):
         help_text="The planned order for a component that is not ready until after "
                   "this run should start.",
     )
+    routing = models.ForeignKey(
+        "manufacturing.Routing", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Which way the run was planned: the bill's own routing, or the "
+                  "alternate that could be on time when it could not.",
+    )
     waits_for = models.CharField(
         max_length=255, blank=True,
         help_text="What the run cannot start without that is not a machine or a "
@@ -679,7 +685,7 @@ class PlannedOrder(AuditModel):
             quantity_ordered=self.quantity,
             uom=self.item.uom,
             warehouse=self.warehouse,
-            routing=self.bom.routing,
+            routing=self.routing or self.bom.routing,
             scheduled_start=self.release_on,
             scheduled_end=self.needed_by,
             # Only when one customer line asked for it. A run covering

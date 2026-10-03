@@ -60,7 +60,7 @@ from .inward import (
 from .quoting import CostSheet, MaterialRate, QuotePolicy, StageRate
 from .rolls import FabricRoll
 from .tooling import PrintDesign, Tool, ToolUsage, wearing_out
-from .routing import Routing, RoutingOperation, capacity_report
+from .routing import AlternateRouting, Routing, RoutingOperation, capacity_report
 from .shifts import Downtime, DowntimeReason, Shift
 from . import scrap
 from .scrap import OperationReport, ProductionScrap, ScrapReason
@@ -117,6 +117,7 @@ from .serializers import (
     ShiftSerializer,
     TapeSpecificationSerializer,
     FilmSpecificationSerializer,
+    AlternateRoutingSerializer,
     LinerSpecificationSerializer,
     TimeBookingSerializer,
     WorkCentreSerializer,
@@ -194,6 +195,18 @@ def _quantity(request, default="1"):
         return Decimal(str(request.query_params.get("quantity") or default))
     except InvalidOperation:
         raise DRFValidationError(["quantity must be a number."])
+
+
+class AlternateRoutingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Other ways a bill is made, tried in priority after its own routing."""
+
+    queryset = AlternateRouting.objects.select_related("bom", "routing")
+    serializer_class = AlternateRoutingSerializer
+
+    def get_queryset(self):
+        rows = super().get_queryset()
+        bom = self.request.query_params.get("bom")
+        return rows.filter(bom_id=bom) if bom else rows
 
 
 class FilmSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1164,6 +1177,14 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def release(self, request, pk=None):
         order = self.get_object()
         _run(order.release, on_date=request.data.get("on_date"))
+        return self._reply(order)
+
+    @action(detail=True, methods=["post"], url_path="choose-routing")
+    def choose_routing(self, request, pk=None):
+        """{routing}: a draft run made one of its bill's other ways."""
+        order = self.get_object()
+        routing = get_object_or_404(Routing, pk=request.data.get("routing"))
+        _run(order.choose_routing, routing)
         return self._reply(order)
 
     @action(detail=True, methods=["post"])
