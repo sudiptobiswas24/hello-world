@@ -47,6 +47,7 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
             "quantity_uninvoiced", "over_delivery_percent", "under_delivery_percent",
             "quantity_open", "closed_short_at", "closed_short_reason",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+            "charge", "description", "warehouse", "delivery_date",
         ]
 
 
@@ -66,6 +67,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
             "third_party_inspection",
+            "invoice_policy",
         ]
         read_only_fields = ["number", "status"]
 
@@ -90,6 +92,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
             "quantity", "unit_price",
             "discount_percent", "revenue_account", "taxes",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+            "charge",
         ]
 
 
@@ -128,7 +131,9 @@ class InvoicePaymentSerializer(serializers.ModelSerializer):
 class DeliveryLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = DeliveryLine
-        fields = ["id", "delivery", "order_line", "warehouse", "quantity_shipped"]
+        fields = ["id", "delivery", "order_line", "warehouse", "quantity_shipped",
+            "bin", "lot",
+        ]
 
 
 class BackorderMixin(serializers.Serializer):
@@ -171,7 +176,9 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         model = CustomerProfile
         fields = ["id", "party", "price_list", "credit_limit", "virgin_only",
                   "max_filler_percent", "min_uv_percent", "third_party_inspection",
-                  "release_covers_returns"]
+                  "release_covers_returns",
+            "over_delivery_percent", "under_delivery_percent",
+        ]
 
 
 class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
@@ -181,6 +188,7 @@ class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSeriali
             "id", "quotation", "item", "uom", "quantity", "unit_price",
             "discount_percent", "revenue_account", "taxes",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
+            "charge", "description",
         ]
 
 

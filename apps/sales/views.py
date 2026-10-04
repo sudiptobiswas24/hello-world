@@ -12,6 +12,8 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
+from apps.core.api import flag
+
 from apps.accounting.models import Account
 from apps.core.audit import AuditableViewSetMixin
 
@@ -350,14 +352,14 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         {"credit_invoices": false} is passed (a replacement, not a refund).
         """
         delivery = self.get_object()
-        credit = request.data.get("credit_invoices", True)
+        credit = flag(request.data, "credit_invoices", True)
         try:
-            returned = delivery.create_return(credit_invoices=bool(credit))
+            returned = delivery.create_return(credit_invoices=credit)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         payload = self.get_serializer(returned).data
         payload["credit_notes"] = [
-            {"id": note.pk, "number": note.number, "total": note.total()}
+            {"id": note.pk, "number": note.number, "total": str(note.total())}
             for note in returned.credit_notes_created
         ]
         return Response(payload)
@@ -492,7 +494,7 @@ class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         notices = run_dunning(
             as_of=request.data.get("as_of"),
-            send=bool(request.data.get("send", True)),
+            send=flag(request.data, "send", True),
         )
         return Response(DunningNoticeSerializer(notices, many=True).data)
 

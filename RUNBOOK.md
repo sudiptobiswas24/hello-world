@@ -112,7 +112,7 @@ everyone everything.
 | Bookkeeper, Controller | the ledger; the Controller posts and closes | |
 | Sales Rep, AR Manager | orders and invoices; the AR Manager posts and collects | |
 | Purchasing Clerk, AP Manager | orders and bills; the AP Manager approves, posts and pays | |
-| Warehouse Staff | receipts and deliveries | |
+| Warehouse Staff | receipts and deliveries, naming each new batch as it comes in | |
 | HR Admin | employees and leave | |
 | Employee Self Service | leave requests and purchase requisitions | read anyone's pay, or the ledger. They do see everyone's leave requests: limiting a person to their own is not built yet |
 

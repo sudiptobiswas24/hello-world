@@ -24,3 +24,27 @@ def exception_handler(exc, context):
             exc.messages if hasattr(exc, "messages") else [str(exc)]
         )
     return drf_exception_handler(exc, context)
+
+
+TRUE = {"true", "1", "yes", "on"}
+FALSE = {"false", "0", "no", "off"}
+
+
+def flag(data, name, default):
+    """
+    A yes-or-no from a request, however it was said.
+
+    bool("false") is True: a replacement posted from a form as
+    credit_invoices=false credited the invoice anyway. A JSON boolean, or
+    a word a form would send, or the default when absent; anything else is
+    refused rather than guessed at.
+    """
+    value = data.get(name, default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in TRUE:
+        return True
+    if text in FALSE:
+        return False
+    raise DRFValidationError(f"{name} must be true or false, not {value!r}.")

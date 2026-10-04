@@ -12,6 +12,7 @@ from apps.core.audit import AuditableViewSetMixin
 
 from .models import (
     Bill,
+    BillPayment,
     BillLine,
     GoodsReceipt,
     GoodsReceiptLine,
@@ -28,6 +29,7 @@ from .models import (
     vendor_performance,
 )
 from .serializers import (
+    BillPaymentSerializer,
     BillLineSerializer,
     BillSerializer,
     GoodsReceiptLineSerializer,
@@ -66,10 +68,15 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def create_bill(self, request, pk=None):
+        from apps.accounting.models import Account
+
         order = self.get_object()
+        account_id = request.data.get("payable_account")
+        if not account_id:
+            raise DRFValidationError("payable_account is required.")
         try:
             bill = order.create_bill(
-                request.data["payable_account"],
+                get_object_or_404(Account, pk=account_id),
                 bill_date=request.data.get("bill_date"),
                 reference=request.data.get("reference", ""),
             )
@@ -108,6 +115,19 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(debit_note).data)
+
+
+class BillPaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    Which bill a payment settles. Only the admin could say before review,
+    while the sales side had always had its mirror over the API.
+    """
+
+    queryset = BillPayment.objects.select_related("bill", "payment")
+    serializer_class = BillPaymentSerializer
+
+    def perform_create(self, serializer):
+        _run(super().perform_create, serializer)
 
 
 class BillLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -233,8 +253,17 @@ class PurchasingReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="billed-not-held")
     def billed_not_held_report(self, request):
+        # Each field named, not the row passed through: the row carries
+        # the order, the vendor and the line, and passing it through
+        # crashed on the first one (every test had asked with none).
         return Response([
-            {**row, "item": str(row.get("item", ""))} for row in billed_not_held()
+            {
+                "order": row["order"].number, "order_id": row["order"].pk,
+                "vendor": str(row["vendor"]), "line_id": row["line"].pk,
+                "item": str(row["item"]) if row["item"] else "",
+                "quantity": str(row["quantity"]), "value": str(row["value"]),
+            }
+            for row in billed_not_held()
         ])
 
     @action(detail=False, methods=["get"])
@@ -270,7 +299,12 @@ class PurchasingReportViewSet(viewsets.ViewSet):
         """
         rows = payment_run(due_by=request.query_params.get("due_by"))
         return Response([
-            {**row, "vendor": str(row.get("vendor", "")), "bill": str(row.get("bill", ""))}
+            {
+                "vendor": str(row["vendor"]), "vendor_id": row["vendor"].pk,
+                "currency": row["currency"].code if row["currency"] else None,
+                "total": str(row["total"]),
+                "bills": [_bill_row(entry) for entry in row["bills"]],
+            }
             for row in rows
         ])
 
@@ -343,16 +377,23 @@ class PurchasingReportViewSet(viewsets.ViewSet):
         return Response({"requisition": str(requisition)})
 
 
+def _bill_row(entry):
+    bill = entry["bill"]
+    return {
+        "id": bill.pk, "number": bill.number, "reference": bill.reference,
+        "vendor": str(bill.vendor), "due_date": entry["due_date"],
+        "days_overdue": entry["days_overdue"], "amount_due": str(entry["amount_due"]),
+    }
+
+
 def _serialise_aging(report):
-    if isinstance(report, dict):
-        return {
-            key: [
-                {**row, "vendor": str(row.get("vendor", "")), "bill": str(row.get("bill", ""))}
-                for row in value
-            ] if isinstance(value, list) else value
-            for key, value in report.items()
-        }
-    return [
-        {**row, "vendor": str(row.get("vendor", "")), "bill": str(row.get("bill", ""))}
-        for row in report
-    ]
+    """
+    ap_aging()'s buckets, each with its bills. This once flattened rows of
+    an older shape, and crashed on the first outstanding bill: every test
+    had asked it with nothing owed.
+    """
+    return {
+        key: {"count": bucket["count"], "total": str(bucket["total"]),
+              "bills": [_bill_row(entry) for entry in bucket["bills"]]}
+        for key, bucket in report.items()
+    }

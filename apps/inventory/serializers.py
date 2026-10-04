@@ -32,6 +32,7 @@ class WarehouseSerializer(serializers.ModelSerializer):
             "is_quarantine", "is_transit", "requires_bins",
             "receipt_route", "input_warehouse", "quality_warehouse",
             "allow_negative_stock", "is_active",
+            "held_for",
         ]
 
 
@@ -48,6 +49,7 @@ class ItemSerializer(serializers.ModelSerializer):
             "id", "sku", "name", "description", "item_type", "uom",
             "track_inventory", "tracking", "costing_method", "standard_cost",
             "sale_price", "inventory_account", "cogs_account", "is_active",
+            "hsn_code",
         ]
         # A standard cost cannot be assigned: changing it revalues the
         # stock on hand, which is a posting. set_standard_cost() does it.

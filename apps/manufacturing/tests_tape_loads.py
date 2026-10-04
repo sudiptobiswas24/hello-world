@@ -131,6 +131,23 @@ class TracedOverTheApiTests(TapeLoadTestCase):
         self.assertEqual([(row["doff"], row["side"]) for row in body["doffs"]],
                          [("D-1", "warp")])
 
+    def test_a_roll_booked_in_the_office_says_why_it_has_none(self):
+        # Found crawling every endpoint over each test's data: a roll with
+        # no time on a loom crashed the trace. There is no moment to read
+        # the creel at, which is an answer, not a server error.
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        from .rolls import FabricRoll
+
+        roll = self.weigh()
+        FabricRoll.objects.filter(pk=roll.pk).update(weighed_at=None)
+        office = APIClient()
+        office.force_authenticate(User.objects.create_superuser("planner"))
+        response = office.get(f"/api/manufacturing/lot-trace/{roll.lot_id}/doffs/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("was not weighed at a loom", response.content.decode())
+
 
 class TheEdgesTests(TapeLoadTestCase):
     """Found by mutation: each guard here once survived being removed."""

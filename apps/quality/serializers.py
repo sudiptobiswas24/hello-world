@@ -33,7 +33,9 @@ class InspectionPlanSerializer(serializers.ModelSerializer):
     class Meta:
         model = InspectionPlan
         fields = ["id", "item", "name", "is_mandatory", "is_computed",
-                  "is_active", "notes", "lines"]
+                  "is_active", "notes", "lines",
+            "valid_from", "valid_to",
+        ]
         read_only_fields = ["is_computed"]
 
 

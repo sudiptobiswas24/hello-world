@@ -210,6 +210,8 @@ ROLES = {
         *crud("sales", "delivery"),
         *crud("sales", "deliveryline"),
         "sales.post_delivery",
+        # A new batch is named as it comes in.
+        *crud("inventory", "lot", actions=("add", "change", "view")),
         # What to receive against and what to ship.
         *view("purchasing", "purchaseorder", "purchaseorderline"),
         *view("sales", "salesorder", "salesorderline"),

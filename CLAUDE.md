@@ -134,6 +134,18 @@ Go through it before running anything.
   The four `@tag("migration")` tests take minutes each on PostgreSQL;
   `--exclude-tag migration` runs the rest in about five minutes.
 
+**The API**
+- A test that calls the API as a superuser proves nothing about who
+  may. Reading took no permission at all until review found it; test
+  as a person in the role (`apps/core/tests_roles.py`).
+- Drive a new document's actions through the API in a test, not only
+  its model methods: three report endpoints crashed on their first row
+  and `create_bill` on its first call, all with green model tests.
+- DRF drops a field its serializer does not list, without a word.
+  `audit_invariants` checks every model field is settable or listed as
+  set by the system.
+- `bool("false")` is True. Read a yes-or-no with `apps.core.api.flag`.
+
 **Migrations**
 - Redirect `makemigrations` to a file and read it; never pipe it into
   `head`. Check every change names the model you meant (mistake 8).

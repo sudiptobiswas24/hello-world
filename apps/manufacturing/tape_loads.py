@@ -140,6 +140,11 @@ def tape_for(roll):
     """
     from .rolls import FabricRoll
 
+    if roll.weighed_at is None or roll.machine_id is None:
+        # Booked in the office, not weighed off a loom: there is no moment
+        # on a machine to read the creel at.
+        raise ValidationError(f"{roll} was not weighed at a loom, so nothing records which "
+                              "doffs were on the creel when it was woven.")
     run = roll.entry.work_order
     before = FabricRoll.objects.filter(
         machine=roll.machine, entry__work_order=run, entry__voided_at__isnull=True,

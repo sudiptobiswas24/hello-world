@@ -41,6 +41,14 @@ def before(days):
 class PriceVariationTestCase(SalesTestCase):
     def setUp(self):
         super().setUp()
+        # The clock held at noon on T. T is read once, at import; a run
+        # that crossed midnight had the code date a return the next day
+        # and these tests failed for the hour after it (found running the
+        # suite in reverse, which happened to straddle midnight).
+        from unittest.mock import patch
+
+        noon = timezone.make_aware(datetime.datetime.combine(T, datetime.time(12)))
+        self.enterContext(patch.object(timezone, "now", return_value=noon))
         from apps.inventory.models import MovementType, StockMovement
 
         StockMovement.objects.create(item=self.item, warehouse=self.warehouse,

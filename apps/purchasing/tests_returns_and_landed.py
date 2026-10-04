@@ -143,6 +143,23 @@ class ReturnDebitsTheBillTests(ReturnTestCase):
         self.assertEqual(bill.amount_due(), Decimal("50"))
         self.assertEqual(len(billed_not_held(vendor=self.vendor)), 1)
 
+    def test_and_the_report_says_so_over_the_api(self):
+        # Found crawling every endpoint over each test's data: the report
+        # crashed on its first row, having only been asked with none.
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        order, receipt, bill = self.billed("10", "5")
+        receipt.create_return(debit_bills=False)
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("buyer"))
+        response = client.get("/api/purchasing/purchasing-reports/billed-not-held/")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        (row,) = response.json()
+        self.assertEqual((row["order"], row["vendor"], Decimal(row["quantity"]),
+                          Decimal(row["value"])),
+                         (order.number, str(self.vendor), Decimal("10"), Decimal("50.00")))
+
     def test_returning_unbilled_goods_debits_nothing(self):
         order = self.make_order("10", "5")
         receipt = self.receive(order, "10")

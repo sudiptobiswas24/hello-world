@@ -89,6 +89,7 @@ class Command(BaseCommand):
         findings += self.unconstrained_numbers(labels)
         findings += self.unsigned_money(labels)
         findings += self.greenwich_dates(labels, sources)
+        findings += self.unsettable_fields(labels)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -200,6 +201,73 @@ class Command(BaseCommand):
                     f"{key} writes stock movements and never holds a position — "
                     "two documents can read the same shelf and both post.",
                 ))
+        return findings
+
+    # Fields the API deliberately does not take, with the reason. Anything
+    # else a model lets a person set and a serializer leaves out is dropped
+    # by DRF without a word.
+    SET_BY_THE_SYSTEM = {
+        "inventory.Item.template": "variants are generated from their template",
+        "manufacturing.FabricRoll.station": "the station that weighed it says so",
+        "manufacturing.FabricRoll.weighed_by": "the operator's PIN at the station",
+        "manufacturing.FabricRoll.weighed_at": "the station's clock",
+        "manufacturing.FabricRoll.woven_by": "the weaver's PIN at the station",
+        "manufacturing.FabricRoll.shift": "derived from the moment it was weighed",
+        "manufacturing.FabricRoll.shift_date": "derived from the moment it was weighed",
+        "manufacturing.FabricRoll.core_type": "the station's tare, chosen there",
+        "manufacturing.FabricRoll.weight_source": "the station records how it weighed",
+        "manufacturing.FabricRoll.approved_by": "a supervisor's PIN at the station",
+        "manufacturing.FabricRoll.override_reason": "given with that PIN at the station",
+        "manufacturing.FabricRoll.override_note": "given with that PIN at the station",
+        "purchasing.BillLine.debits_line": "set by the debit note that corrects it",
+        "purchasing.GoodsReceiptLine.reverses_line": "set by the return",
+        "sales.DeliveryLine.reverses_line": "set by the return",
+        "purchasing.PurchaseOrderLine.requisition_line": "set when a requisition is ordered",
+        "purchasing.PurchaseOrderLine.sales_order_line": "set by drop-shipping a sale",
+        "purchasing.PurchaseOrderLine.blanket_line": "set when a blanket order is called off",
+    }
+
+    def unsettable_fields(self, labels):
+        """
+        A field a person may set on the model that the API drops.
+
+        DRF ignores a field its serializer does not list, without a word.
+        A leave request made over the API never named its allowance, and
+        nobody's balance went down; a receipt could not name the lot it
+        took in. Found by review, 26 models at once.
+        """
+        from django.urls import get_resolver
+
+        serializers = {}
+
+        def walk(patterns):
+            for pattern in patterns:
+                if hasattr(pattern, "url_patterns"):
+                    walk(pattern.url_patterns)
+                    continue
+                view = getattr(pattern.callback, "cls", None)
+                actions = getattr(pattern.callback, "actions", None) or {}
+                serializer = getattr(view, "serializer_class", None) if view else None
+                if serializer is not None and "post" in actions:
+                    serializers[serializer] = True
+
+        walk(get_resolver().url_patterns)
+        findings = []
+        skip = {"id", "created_at", "updated_at", "created_by", "updated_by"}
+        for serializer in serializers:
+            model = getattr(getattr(serializer, "Meta", None), "model", None)
+            if model is None or model._meta.app_label not in labels:
+                continue
+            declared = set(serializer().fields)
+            for field in model._meta.fields:
+                key = f"{model._meta.label}.{field.name}"
+                if (field.editable and not field.primary_key and field.name not in skip
+                        and field.name not in declared and key not in self.SET_BY_THE_SYSTEM):
+                    findings.append((
+                        "unsettable field",
+                        f"{key} can be set on the model but {serializer.__name__} drops it "
+                        "without a word.",
+                    ))
         return findings
 
     # Files whose matches are not moments in UTC, with the reason.

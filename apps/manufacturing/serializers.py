@@ -61,6 +61,7 @@ class TapeSpecificationSerializer(serializers.ModelSerializer):
             "denier_tolerance_percent", "min_tenacity_gpd", "elongation_min_percent",
             "elongation_max_percent",
             "bom", "is_active", "virgin_percent", "metres_per_kg",
+            "valid_from", "valid_to", "routing",
         ]
         read_only_fields = ["bom"]
 
@@ -121,6 +122,7 @@ class FabricSpecificationSerializer(serializers.ModelSerializer):
             "waste_recovered_percent", "loom_waste_item", "bom", "is_active",
             "gsm", "gsm_deviation_percent", "grams_per_metre", "metres_per_kg",
             "warp_strength_min_n", "weft_strength_min_n", "mesh_tolerance_per_inch",
+            "valid_from", "valid_to", "routing",
         ]
         read_only_fields = ["bom"]
 
@@ -191,6 +193,7 @@ class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializ
             "liner_width_cm", "liner_length_cm", "target_grams", "weight_tolerance_percent",
             "cut_length_cm", "fabric_area_sqm", "fabric_grams", "bag_grams",
             "fabric_metres_per_bag", "construction",
+            "valid_from", "valid_to", "lamination_tolerance_percent", "routing",
         ]
         read_only_fields = ["bom"]
 
@@ -338,7 +341,9 @@ class EnergyTariffSerializer(serializers.ModelSerializer):
 class StageRateSerializer(serializers.ModelSerializer):
     class Meta:
         model = StageRate
-        fields = ["id", "stage", "rate", "valid_from", "note"]
+        fields = ["id", "stage", "rate", "valid_from", "note",
+            "work_centre",
+        ]
 
 
 class QuotePolicySerializer(serializers.ModelSerializer):
@@ -426,7 +431,9 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
         fields = ["id", "item", "version", "name", "quantity_produced", "uom",
                   "is_computed", "is_default", "is_active", "is_rework",
                   "backflush", "expected_reject_percent", "notes",
-                  "components", "byproducts"]
+                  "components", "byproducts",
+            "routing", "valid_from", "valid_to", "is_phantom",
+        ]
         read_only_fields = ["is_computed"]
 
 
@@ -618,7 +625,9 @@ class MachineSerializer(serializers.ModelSerializer):
                   "capacity_uom", "available_hours_per_day", "working_days",
                   "hours_per_day", "days_pattern", "is_active", "notes",
                   "min_width_cm", "max_width_cm", "min_length_cm", "max_length_cm",
-                  "max_colours", "inserts_liner"]
+                  "max_colours", "inserts_liner",
+            "contractor",
+        ]
 
     hours_per_day = serializers.SerializerMethodField()
     days_pattern = serializers.SerializerMethodField()
@@ -751,7 +760,9 @@ class MaterialIssueSerializer(serializers.ModelSerializer):
         model = MaterialIssue
         fields = ["id", "number", "work_order", "direction", "issue_date",
                   "warehouse", "memo", "posted", "posted_at", "posted_value",
-                  "journal_entry", "voided_entry", "voided_at", "lines"]
+                  "journal_entry", "voided_entry", "voided_at", "lines",
+            "contractor",
+        ]
         read_only_fields = ["number", "posted", "posted_at", "posted_value",
                             "journal_entry", "voided_entry", "voided_at"]
 

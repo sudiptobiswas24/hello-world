@@ -112,4 +112,5 @@ class CompanySerializer(serializers.ModelSerializer):
         fields = [
             "id", "name", "legal_name", "tax_id", "email", "phone", "website",
             "base_currency", "address", "fiscal_year_start_month",
+            "tax_rounding", "default_inventory_account", "default_cogs_account", "grni_account", "settlement_discount_account", "bad_debt_account", "default_purchase_expense_account", "fx_gain_account", "fx_loss_account", "vendor_prepayment_account", "settlement_discount_received_account", "purchase_price_variance_account", "purchase_price_tolerance_percent", "net_pay_account", "customer_deposit_account",
         ]

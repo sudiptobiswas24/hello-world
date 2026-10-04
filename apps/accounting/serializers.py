@@ -65,6 +65,7 @@ class TaxSerializer(serializers.ModelSerializer):
             "id", "code", "name", "group", "computation", "rate", "price_included",
             "include_base_amount", "sequence", "scope", "collected_account",
             "paid_account", "is_active",
+            "gst_head",
         ]
 
 
@@ -85,7 +86,9 @@ class FiscalPositionSerializer(serializers.ModelSerializer):
 class PartyTaxProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = PartyTaxProfile
-        fields = ["id", "party", "fiscal_position", "tax_exempt", "exemption_reference"]
+        fields = ["id", "party", "fiscal_position", "tax_exempt", "exemption_reference",
+            "gstin", "gst_state", "gst_registration",
+        ]
 
 
 class PaymentSerializer(serializers.ModelSerializer):

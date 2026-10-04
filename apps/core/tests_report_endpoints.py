@@ -99,6 +99,44 @@ class PurchasingReportEndpointTests(ReportEndpointTestCase):
         )
         PartyRoleAssignment.objects.create(party=self.vendor, role=PartyRole.VENDOR)
 
+    def owed(self):
+        from apps.purchasing.models import Bill, BillLine
+
+        payable = Account.objects.create(code="2100", name="AP",
+                                          account_type=AccountType.LIABILITY)
+        expense = Account.objects.create(code="6000", name="Spares",
+                                          account_type=AccountType.EXPENSE)
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 1),
+                                   payable_account=payable, currency=self.usd)
+        BillLine.objects.create(bill=bill, description="Bearings", quantity=Decimal("2"),
+                                unit_price=Decimal("150"), expense_account=expense)
+        bill.post()
+        return bill
+
+    def test_the_aging_with_something_in_it(self):
+        # Found crawling every endpoint over a month's data: with any bill
+        # outstanding both reports crashed. The tests asked them with
+        # nothing owed, and an empty list serialises whatever its shape.
+        bill = self.owed()
+        response = self.client.get("/api/purchasing/purchasing-reports/aging/",
+                                   {"as_of": "2026-03-15"})
+        self.assertEqual(response.status_code, 200)
+        # Due 1 January, 73 days before 15 March.
+        (row,) = response.json()["61-90"]["bills"]
+        self.assertEqual((row["id"], row["number"], row["vendor"], row["days_overdue"],
+                          Decimal(row["amount_due"])),
+                         (bill.pk, bill.number, str(self.vendor), 73, Decimal("300.00")))
+
+    def test_the_payment_run_with_something_in_it(self):
+        bill = self.owed()
+        response = self.client.get("/api/purchasing/purchasing-reports/payment-run/",
+                                   {"due_by": "2026-03-15"})
+        self.assertEqual(response.status_code, 200)
+        (row,) = response.json()
+        self.assertEqual((row["vendor"], row["currency"], Decimal(row["total"]),
+                          [entry["number"] for entry in row["bills"]]),
+                         (str(self.vendor), "USD", Decimal("300.00"), [bill.number]))
+
     def test_the_aging_can_be_asked_for(self):
         self.assertEqual(
             self.client.get("/api/purchasing/purchasing-reports/aging/").status_code,
