@@ -92,6 +92,57 @@ class ADisposalChargesWhatWasDueTests(AssetTestCase):
         self.assertEqual(self.balance(self.disposal), Decimal("7000"))
 
 
+class ADisposalTakesBackMonthsAfterItTests(AssetTestCase):
+    """
+    Depreciation run to December, then the lathe recorded as sold on 15
+    June. The disposal took off all twelve months as accumulated, so the
+    loss read nothing and the profit and loss carried seven months of
+    depreciation on a machine that was gone. Those charges are reversed
+    on their own dates; the disposal then sees five months and a loss of
+    7,000.
+    """
+
+    def test_months_after_the_disposal_are_reversed(self):
+        asset = self.asset()
+        asset.depreciate(through=datetime.date(2026, 12, 31))
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        self.assertEqual(
+            (asset.accumulated(), self.balance(self.depreciation), self.balance(self.disposal),
+             self.balance(self.accumulated),
+             asset.depreciation_entries.filter(reversal__isnull=False).count()),
+            (Decimal("5000.00"), Decimal("5000.00"), Decimal("7000.00"), Decimal("0"), 7),
+        )
+
+    def test_each_reversal_lands_in_the_month_it_undoes(self):
+        asset = self.asset()
+        asset.depreciate(through=datetime.date(2026, 8, 31))
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        self.assertEqual(
+            [(e.period_end, e.reversal.date) for e in
+             asset.depreciation_entries.filter(reversal__isnull=False)],
+            [(JUN_30, JUN_30), (datetime.date(2026, 7, 31), datetime.date(2026, 7, 31)),
+             (datetime.date(2026, 8, 31), datetime.date(2026, 8, 31))],
+        )
+
+    def test_a_disposal_on_the_last_day_takes_back_that_month_too(self):
+        """
+        A disposal charges up to the month before it, never its own month,
+        whatever day it falls on. A June charge already run is reversed on
+        30 June just as it would be on the 15th.
+        """
+        asset = self.asset()
+        asset.depreciate(through=JUN_30)
+        asset.dispose(on_date=JUN_30)
+        self.assertEqual((asset.accumulated(), self.balance(self.disposal)),
+                         (Decimal("5000.00"), Decimal("7000.00")))
+
+    def test_the_register_before_the_disposal_still_shows_what_was_charged(self):
+        asset = self.asset()
+        asset.depreciate(through=datetime.date(2026, 12, 31))
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        self.assertEqual(asset.accumulated(as_of=MAR_31), Decimal("3000.00"))
+
+
 class CapitalisingAndUndoingItTests(CapitalisationFixture):
     def test_a_foreign_machine_goes_on_at_base_currency(self):
         """€10,000 billed at 1.2 is 12,000 on the asset account."""

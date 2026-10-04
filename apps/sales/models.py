@@ -730,7 +730,11 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return self.invoices.filter(is_down_payment=True, posted=True)
 
     def deposit_total(self):
-        return sum((deposit.total() for deposit in self.deposits()), Decimal("0"))
+        """Taken up front and not since credited back."""
+        return sum(
+            (deposit.total() - deposit.deposit_refunded() for deposit in self.deposits()),
+            Decimal("0"),
+        )
 
     @transaction.atomic
     def create_down_payment_invoice(
@@ -1503,10 +1507,21 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             (application.amount for application in self.applications.all()), Decimal("0")
         )
 
+    def deposit_refunded(self):
+        """On a down-payment invoice, how much of it has been credited back."""
+        return sum(
+            (note.total() for note in self.credit_notes.filter(posted=True)), Decimal("0")
+        )
+
     def deposit_unapplied(self):
+        """
+        What is still held. Less what was credited back, or a deposit
+        returned to the customer was drawn down again on the final
+        invoice: the money back and a discount of the same amount.
+        """
         if not self.is_down_payment:
             return Decimal("0")
-        return self.total() - self.deposit_applied()
+        return self.total() - self.deposit_applied() - self.deposit_refunded()
 
     @transaction.atomic
     def apply_deposit(self, deposit, amount=None, on_date=None):
@@ -1553,8 +1568,14 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if account is None:
             raise ValidationError("The company has no customer deposit account configured.")
 
-        rate = self.exchange_rate or Decimal("1")
-        base_amount = round_money(amount * rate)
+        # At the rate the deposit was taken at, which is what the deposit
+        # account holds it at. At the invoice's rate a deposit taken at 80
+        # and drawn down at 83 left the difference on the deposit account
+        # for good. What is left on the receivable is the invoice settled
+        # at a different rate than it was billed at: a realised exchange
+        # difference, the same as a payment at a moved rate.
+        deposit_rate = deposit.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * deposit_rate)
         memo = f"Down payment {deposit.number} applied to {self.number}"
         entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
         JournalLine.objects.create(
@@ -1566,6 +1587,12 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             credit=base_amount, description=memo,
         )
         entry.post()
+        post_settlement_fx(
+            party=self.customer, control_account=self.receivable_account, amount=amount,
+            document_rate=self.exchange_rate, payment_rate=deposit_rate, date=on_date,
+            reference=self.number, memo=f"Exchange difference on {memo[0].lower()}{memo[1:]}",
+            is_receivable=True,
+        )
 
         return DepositApplication.objects.create(
             invoice=self, deposit=deposit, amount=amount, date=on_date, journal_entry=entry
@@ -1819,6 +1846,9 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         original_lines = list(original.lines.all())
         if len(credited) != len(original_lines):
             return False
+        if self.total() != original.total():
+            # A deposit is credited by amount: one line, at what is left.
+            return False
         return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
     @transaction.atomic
@@ -1907,6 +1937,8 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("Only a posted invoice can be credited.")
         if self.is_credit_note():
             raise ValidationError("Cannot issue a credit note against a credit note.")
+        if self.is_down_payment:
+            return self._credit_deposit(memo, quantities)
 
         if quantities is None:
             selected = [(line, line.quantity) for line in self.lines.all()]
@@ -1949,6 +1981,53 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 revenue_account=line.revenue_account,
             )
             credit_line.taxes.set(line.taxes.all())
+        credit_note.post(memo=memo)
+        return credit_note
+
+    def _credit_deposit(self, memo, quantities):
+        """
+        Give back what is left of a down payment.
+
+        By amount, not quantity: the deposit is one line of one, and part
+        of it may already have been drawn down against a final invoice.
+        Crediting the whole of it then took back money the final invoice
+        had already counted, and the deposit account went into debit.
+        """
+        if quantities is not None:
+            raise ValidationError(
+                "A down payment is credited by amount: whatever is left of it once "
+                "the final invoices have drawn it down."
+            )
+        left = self.deposit_unapplied()
+        if left <= 0:
+            drawn = ", ".join(a.invoice.number for a in self.applications.all())
+            if not drawn:
+                raise ValidationError(f"{self.number} has already been credited back in full.")
+            raise ValidationError(
+                f"{self.number} has already been drawn down in full against {drawn}; "
+                "credit those invoices instead."
+            )
+        (line,) = self.lines.all()
+        credit_note = Invoice.objects.create(
+            customer=self.customer,
+            invoice_date=timezone.localdate(),
+            reference=self.reference,
+            receivable_account=self.receivable_account,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+            credits=self,
+        )
+        InvoiceLine.objects.create(
+            invoice=credit_note,
+            credits_line=line,
+            description=f"Down payment {self.number} returned",
+            quantity=Decimal("1"),
+            unit_price=left,
+            revenue_account=line.revenue_account,
+        )
         credit_note.post(memo=memo)
         return credit_note
 

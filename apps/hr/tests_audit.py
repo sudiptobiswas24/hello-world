@@ -167,6 +167,69 @@ class AVoidedPaymentOwesTheMoneyAgainTests(AuditTestCase):
         self.assertIn("settles nothing", str(caught.exception))
 
 
+class OnlyWagesPaidSettleAPayslipTests(AuditTestCase):
+    """
+    `pay()` asked only whether the amount matched. A draft payment, money
+    received, a payment to somebody else, one booked against payables,
+    and one payment for two people's wages all marked the slip paid,
+    while net pay payable went on saying the wages were owed. The slip
+    and the control account must be asked the same question.
+    """
+
+    def payment(self, person, slip, **overrides):
+        fields = {
+            "party": person.party, "direction": PaymentDirection.DISBURSEMENT,
+            "payment_date": datetime.date(2026, 6, 30), "amount": slip.net(),
+            "currency": self.usd, "bank_account": self.bank,
+            "counterpart_account": self.net_pay,
+        }
+        fields.update(overrides)
+        post = fields.pop("post", True)
+        payment = Payment.objects.create(**fields)
+        if post:
+            payment.post()
+        return payment
+
+    def refused(self, code, message, **overrides):
+        person = self.employee(code)
+        slip = self.payroll(person).payslips.get()
+        with self.assertRaisesMessage(ValidationError, message):
+            slip.pay(self.payment(person, slip, **overrides))
+        self.assertFalse(slip.is_paid())
+
+    def test_a_draft_payment_settles_nothing(self):
+        self.refused("W1", "not been posted", post=False)
+
+    def test_money_received_does_not_pay_wages(self):
+        self.refused("W2", "money paid out", direction=PaymentDirection.RECEIPT)
+
+    def test_a_payment_against_another_account_does_not_clear_net_pay(self):
+        payables = Account.objects.create(code="2100", name="AP",
+                                          account_type=AccountType.LIABILITY)
+        self.refused("W3", "net pay payable", counterpart_account=payables)
+
+    def test_a_payment_to_somebody_else_does_not_pay_this_person(self):
+        other = self.employee("W4X")
+        self.refused("W4", "was made to", party=other.party)
+
+    def test_one_payment_does_not_pay_two_slips(self):
+        person = self.employee("W5")
+        june = self.payroll(person).payslips.get()
+        july = PayRun.objects.create(
+            period_start=datetime.date(2026, 7, 1), period_end=datetime.date(2026, 7, 31),
+            pay_date=datetime.date(2026, 7, 31),
+        )
+        july.calculate(employees=[person])
+        july.post()
+        july = july.payslips.get()
+        payment = self.payment(person, june)
+        june.pay(payment)
+        with self.assertRaisesMessage(ValidationError, "already settles"):
+            july.pay(payment)
+        self.assertEqual((self.balance(self.net_pay), july.is_paid()),
+                         (Decimal("-4000.00"), False))
+
+
 class APayrollThatPaysNothingTests(AuditTestCase):
     """
     A run with payslips but no lines posted an entry with no lines,

@@ -213,8 +213,13 @@ class FixedAsset(AuditModel):
         return round_money(self.depreciable_base() / self.life_months)
 
     def accumulated(self, as_of=None):
-        """Depreciation charged, through `as_of` when given."""
-        entries = self.depreciation_entries.all()
+        """
+        Depreciation charged, through `as_of` when given.
+
+        A reversed charge is left out at every date: it is reversed on
+        its own month end, so there is no date at which it stood.
+        """
+        entries = self.depreciation_entries.filter(reversal__isnull=True)
         if as_of is not None:
             entries = entries.filter(period_end__lte=to_date(as_of))
         return sum((entry.amount for entry in entries), Decimal("0"))
@@ -364,6 +369,20 @@ class FixedAsset(AuditModel):
             raise ValidationError("Only an asset in service can be disposed of.")
         month_before = on_date.replace(day=1) - datetime.timedelta(days=1)
         self.depreciate(through=month_before)
+        # Charges run past the disposal — the month-end job ran before the
+        # sale was recorded. Left alone they were taken off as accumulated
+        # depreciation, so the loss read nothing and the profit and loss
+        # carried months of a machine that was gone. Each is reversed on
+        # its own month end, so every month reads as it should have.
+        for charge in self.depreciation_entries.filter(
+            period_end__gt=month_before, reversal__isnull=True
+        ):
+            charge.reversal = charge.journal_entry.create_reversal(
+                entry_date=charge.period_end,
+                memo=f"Depreciation {self.number} to {charge.period_end:%b %Y} reversed: "
+                     f"disposed of on {on_date}",
+            )
+            charge.save(update_fields=["reversal", "updated_at"])
 
         account = self.category.disposal_account
         if account is None:
@@ -419,6 +438,12 @@ class DepreciationEntry(AuditModel):
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     journal_entry = models.ForeignKey(
         JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    reversal = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Set when the asset was disposed of before this month: the entry "
+                  "that took the charge back.",
     )
 
     class Meta:

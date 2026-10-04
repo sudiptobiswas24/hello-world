@@ -1654,7 +1654,11 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return self.bills.filter(is_prepayment=True, posted=True)
 
     def prepayment_total(self):
-        return sum((bill.total() for bill in self.prepayments()), Decimal("0"))
+        """Paid up front and not since debited back."""
+        return sum(
+            (bill.total() - bill.prepayment_refunded() for bill in self.prepayments()),
+            Decimal("0"),
+        )
 
     @transaction.atomic
     def create_prepayment_bill(
@@ -2305,10 +2309,22 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             (application.amount for application in self.applications.all()), Decimal("0")
         )
 
+    def prepayment_refunded(self):
+        """On a prepayment bill, how much of it the vendor has debited back."""
+        return sum(
+            (note.total() for note in self.debit_notes.filter(posted=True)), Decimal("0")
+        )
+
     def prepayment_unapplied(self):
+        """
+        What is still held. Less what was debited back, or a prepayment
+        the vendor returned was drawn down again on the bill and the
+        vendor was short-paid by it — the mirror of sales' deposits,
+        where the same hole was found first.
+        """
         if not self.is_prepayment:
             return Decimal("0")
-        return self.total() - self.prepayment_applied()
+        return self.total() - self.prepayment_applied() - self.prepayment_refunded()
 
     @transaction.atomic
     def apply_prepayment(self, prepayment, amount=None, on_date=None):
@@ -2354,8 +2370,11 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if account is None:
             raise ValidationError("The company has no vendor prepayment account configured.")
 
-        rate = self.exchange_rate or Decimal("1")
-        base_amount = round_money(amount * rate)
+        # At the rate the prepayment was made at, which is what the
+        # prepayment account holds it at; what that leaves on payables is
+        # the bill settled at a moved rate. As sales' deposits.
+        prepayment_rate = prepayment.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * prepayment_rate)
         memo = f"Prepayment {prepayment.number} applied to {self.number}"
         entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
         JournalLine.objects.create(
@@ -2367,6 +2386,12 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             credit=base_amount, description=memo,
         )
         entry.post()
+        post_settlement_fx(
+            party=self.vendor, control_account=self.payable_account, amount=amount,
+            document_rate=self.exchange_rate, payment_rate=prepayment_rate, date=on_date,
+            reference=self.number, memo=f"Exchange difference on {memo[0].lower()}{memo[1:]}",
+            is_receivable=False,
+        )
 
         return PrepaymentApplication.objects.create(
             bill=self, prepayment=prepayment, amount=amount, date=on_date, journal_entry=entry
@@ -2992,6 +3017,9 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         original_lines = list(original.lines.all())
         if len(debited) != len(original_lines):
             return False
+        if self.total() != original.total():
+            # A prepayment is debited by amount: one line, at what is left.
+            return False
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
     @transaction.atomic
@@ -3010,6 +3038,8 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("Only a posted bill can be corrected with a debit note.")
         if self.debits_id:
             raise ValidationError("Cannot issue a debit note against a debit note.")
+        if self.is_prepayment:
+            return self._debit_prepayment(memo, quantities)
 
         if quantities is None:
             selected = [(line, line.quantity_debitable()) for line in self.lines.all()]
@@ -3059,6 +3089,47 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     "accrued_doc", "accrued_base", "updated_at",
                 ])
             note_line.taxes.set(line.taxes.all())
+        debit_note.post(memo=memo)
+        return debit_note
+
+    def _debit_prepayment(self, memo, quantities):
+        """
+        Take back what is left of a prepayment, by amount. The mirror of
+        sales' `_credit_deposit`, and for the same reason: part of it may
+        already have been drawn down against a bill.
+        """
+        if quantities is not None:
+            raise ValidationError(
+                "A prepayment is debited by amount: whatever is left of it once the "
+                "bills have drawn it down."
+            )
+        left = self.prepayment_unapplied()
+        if left <= 0:
+            drawn = ", ".join(a.bill.number for a in self.applications.all())
+            if not drawn:
+                raise ValidationError(f"{self.number} has already been debited back in full.")
+            raise ValidationError(
+                f"{self.number} has already been drawn down in full against {drawn}; "
+                "debit those bills instead."
+            )
+        (line,) = self.lines.all()
+        debit_note = Bill.objects.create(
+            vendor=self.vendor,
+            bill_date=timezone.localdate(),
+            reference=self.reference,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            payable_account=self.payable_account,
+            debits=self,
+        )
+        BillLine.objects.create(
+            bill=debit_note,
+            debits_line=line,
+            description=f"Prepayment {self.number} returned",
+            quantity=Decimal("1"),
+            unit_price=left,
+            expense_account=line.expense_account,
+        )
         debit_note.post(memo=memo)
         return debit_note
 

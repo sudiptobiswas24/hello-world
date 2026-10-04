@@ -14,7 +14,7 @@ class AssetCategorySerializer(serializers.ModelSerializer):
 class DepreciationEntrySerializer(serializers.ModelSerializer):
     class Meta:
         model = DepreciationEntry
-        fields = ["id", "asset", "period_end", "amount", "journal_entry"]
+        fields = ["id", "asset", "period_end", "amount", "journal_entry", "reversal"]
         read_only_fields = fields
 
 

@@ -120,6 +120,13 @@ Go through it before running anything.
 - A frozen record is computed from its frozen figures; the test must be
   too.
 - `round()` of a small negative Decimal is `-0.00`; add `+ 0`.
+- Something held and drawn down later (a deposit, a prepayment) leaves
+  its account at the rate it came in at; the gap to the document it
+  settles is exchange. And what is "left" on it is less what has been
+  credited back as well as what was drawn: both holes were in sales
+  first and copied to purchasing (mistake 5, again).
+- A settlement checks what it settles with, not only the amount: posted,
+  direction, party, control account, not already used.
 - Never round a per-unit cost and multiply it back up. A component's
   share of a sack rounded to the paisa lost 2.90 on 1,000 sacks; a
   four-place unit cost lost 0.16 on 4,000 kg of tape. Total first,

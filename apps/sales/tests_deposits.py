@@ -266,3 +266,128 @@ class DepositReportingTests(SalesTestCase):
         order.create_down_payment_invoice(self.ar, amount=Decimal("1000")).post()
         invoice = self.bill(order)
         self.assertEqual(invoice.settlement_status(), SettlementStatus.PAID)
+
+
+class ADepositIsReturnedOnlyOnceTests(SalesTestCase):
+    """
+    A deposit credited back to the customer used to stay available: the
+    final invoice drew it down again, so the customer had the money back
+    and a discount of the same amount, and the deposit account went
+    into debit. Crediting a deposit that had already been drawn down did
+    the same from the other side.
+    """
+
+    def test_a_credited_deposit_is_not_drawn_down_again(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        note = deposit.create_credit_note()
+        invoice = self.bill(order)
+
+        self.assertEqual(
+            (note.total(), deposit.deposit_unapplied(), invoice.amount_deposited(),
+             invoice.amount_due(), self.balance(self.deposits), self.balance(self.ar)),
+            (Decimal("300.00"), Decimal("0.00"), Decimal("0"), Decimal("1000.00"),
+             Decimal("0"), Decimal("1000.00")),
+        )
+
+    def test_crediting_a_part_used_deposit_returns_only_what_is_left(self):
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        self.allocate(self.receipt("300"), deposit, "300")
+        self.ship(order, "2")
+        invoice = self.bill(order)
+        note = deposit.create_credit_note()
+
+        self.assertEqual(
+            (invoice.amount_deposited(), note.total(), note.refund_due(),
+             self.balance(self.deposits)),
+            (Decimal("200.00"), Decimal("100.00"), Decimal("100.00"), Decimal("0")),
+        )
+
+    def test_an_unpaid_part_used_deposit_leaves_owed_what_was_delivered(self):
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        self.ship(order, "2")
+        self.bill(order)
+        note = deposit.create_credit_note()
+
+        self.assertEqual(
+            (note.refund_due(), deposit.amount_due(), outstanding_balance(self.customer),
+             self.balance(self.ar), self.balance(self.deposits)),
+            (Decimal("0.00"), Decimal("200.00"), Decimal("200.00"), Decimal("200.00"),
+             Decimal("0")),
+        )
+
+    def test_a_deposit_drawn_down_in_full_cannot_be_credited(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        self.bill(order)
+        with self.assertRaisesMessage(ValidationError, "already been drawn down"):
+            deposit.create_credit_note()
+        self.assertEqual(self.balance(self.deposits), Decimal("0"))
+
+    def test_a_deposit_is_credited_by_amount_not_quantity(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        with self.assertRaisesMessage(ValidationError, "whatever is left"):
+            deposit.create_credit_note(quantities={deposit.lines.get(): Decimal("0.5")})
+
+    def test_a_credited_deposit_makes_room_for_another(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal("1000"))
+        deposit.post()
+        deposit.create_credit_note()
+        again = order.create_down_payment_invoice(self.ar, amount=Decimal("400"))
+        self.assertEqual(again.total(), Decimal("400.00"))
+
+
+class AForeignDepositClearsTests(SalesTestCase):
+    """
+    300 EUR taken at 80 and drawn down against an invoice billed at 83.
+    The deposit account was debited at the invoice's rate, 24,900 against
+    the 24,000 credited, and kept the 900 for good. Released at the rate
+    it was taken at, the 900 is what it is: a realised exchange loss on
+    the part of the invoice the deposit settled.
+    """
+
+    def test_the_deposit_account_clears_and_the_difference_is_exchange(self):
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company, Currency, ExchangeRate
+
+        from .models import SalesOrder, SalesOrderLine
+
+        loss = Account.objects.create(code="7100", name="FX loss",
+                                      account_type=AccountType.EXPENSE)
+        gain = Account.objects.create(code="7000", name="FX gain",
+                                      account_type=AccountType.INCOME)
+        company = Company.get()
+        company.fx_loss_account, company.fx_gain_account = loss, gain
+        company.save()
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("80"),
+                                    valid_from=datetime.date(2026, 1, 1))
+        order = SalesOrder.objects.create(customer=self.customer, currency=eur,
+                                          order_date=datetime.date(2026, 3, 1))
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                      quantity=Decimal("10"), unit_price=Decimal("100"),
+                                      revenue_account=self.revenue)
+        order.confirm()
+        deposit = order.create_down_payment_invoice(
+            self.ar, percent=30, invoice_date=datetime.date(2026, 3, 1))
+        deposit.post()
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("83"),
+                                    valid_from=datetime.date(2026, 3, 5))
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 6))
+        invoice.post()
+
+        self.assertEqual(
+            (invoice.amount_deposited(), invoice.amount_due(), self.balance(self.deposits),
+             self.balance(self.ar), self.balance(loss), self.balance(gain)),
+            (Decimal("300.00"), Decimal("700.00"), Decimal("0"), Decimal("82100.00"),
+             Decimal("900.00"), Decimal("0")),
+        )

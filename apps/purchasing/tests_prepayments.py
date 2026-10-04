@@ -272,3 +272,113 @@ class PrepaymentReportingTests(PrepaymentTestCase):
         bill = order.create_bill(self.payable)
         bill.post()
         self.assertEqual(bill.settlement_status(), SettlementStatus.PAID)
+
+
+class APrepaymentIsReturnedOnlyOnceTests(PrepaymentTestCase):
+    """
+    The mirror of sales' deposits, with the same holes copied across: a
+    prepayment the vendor had debited back stayed available and the
+    bill drew it down again, so the vendor was short-paid by it; and a
+    prepayment already drawn down could be debited in full.
+    """
+
+    def bill_received(self, order):
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+        return bill
+
+    def test_a_debited_prepayment_is_not_drawn_down_again(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        note = prepayment.create_debit_note()
+        self.receive(order, "10")
+        bill = self.bill_received(order)
+
+        self.assertEqual(
+            (note.total(), prepayment.prepayment_unapplied(), bill.amount_prepaid(),
+             bill.amount_due(), self.balance(self.prepaid), self.balance(self.payable)),
+            (Decimal("15.00"), Decimal("0.00"), Decimal("0"), Decimal("50.00"),
+             Decimal("0"), Decimal("-50.00")),
+        )
+
+    def test_debiting_a_part_used_prepayment_returns_only_what_is_left(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        self.pay(prepayment, "15")
+        self.receive(order, "2")
+        bill = self.bill_received(order)
+        note = prepayment.create_debit_note()
+
+        self.assertEqual(
+            (bill.amount_prepaid(), note.total(), note.refund_due(), self.balance(self.prepaid)),
+            (Decimal("10.00"), Decimal("5.00"), Decimal("5.00"), Decimal("0")),
+        )
+
+    def test_a_prepayment_drawn_down_in_full_cannot_be_debited(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        self.receive(order, "10")
+        self.bill_received(order)
+        with self.assertRaisesMessage(ValidationError, "already been drawn down"):
+            prepayment.create_debit_note()
+        self.assertEqual(self.balance(self.prepaid), Decimal("0"))
+
+    def test_a_prepayment_is_debited_by_amount_not_quantity(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        with self.assertRaisesMessage(ValidationError, "whatever is left"):
+            prepayment.create_debit_note(quantities={prepayment.lines.get(): Decimal("0.5")})
+
+    def test_a_debited_prepayment_makes_room_for_another(self):
+        order = self.make_order("10", "5")
+        prepayment = order.create_prepayment_bill(self.payable, amount=Decimal("50"))
+        prepayment.post()
+        prepayment.create_debit_note()
+        again = order.create_prepayment_bill(self.payable, amount=Decimal("20"))
+        self.assertEqual(again.total(), Decimal("20.00"))
+
+
+class AForeignPrepaymentClearsTests(PrepaymentTestCase):
+    """
+    15 EUR prepaid at 80, drawn down against a bill at 83: the prepayment
+    account was credited at the bill's rate and left 45 in credit. At
+    the rate it was paid at it clears, and the 45 is a realised gain —
+    the company had paid for that part of the goods when euros were
+    cheaper.
+    """
+
+    def test_the_prepayment_account_clears_and_the_difference_is_exchange(self):
+        from apps.core.models import Currency, ExchangeRate
+
+        from .models import PurchaseOrder, PurchaseOrderLine
+
+        gain = Account.objects.create(code="7000", name="FX gain",
+                                      account_type=AccountType.INCOME)
+        loss = Account.objects.create(code="7100", name="FX loss",
+                                      account_type=AccountType.EXPENSE)
+        company = Company.get()
+        company.fx_gain_account, company.fx_loss_account = gain, loss
+        company.save()
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("80"),
+                                    valid_from=datetime.date(2025, 1, 1))
+        order = PurchaseOrder.objects.create(vendor=self.vendor, currency=eur,
+                                             order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                         quantity=Decimal("10"), unit_price=Decimal("5"))
+        order.confirm()
+        prepayment = order.create_prepayment_bill(
+            self.payable, percent=30, bill_date=datetime.date(2026, 1, 2))
+        prepayment.post()
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("83"),
+                                    valid_from=datetime.date(2026, 1, 4))
+        self.receive(order, "10")
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+
+        self.assertEqual(
+            (bill.amount_prepaid(), bill.amount_due(), self.balance(self.prepaid),
+             self.balance(self.payable), self.balance(gain), self.balance(loss)),
+            (Decimal("15.00"), Decimal("35.00"), Decimal("0"), Decimal("-4105.00"),
+             Decimal("-45.00"), Decimal("0")),
+        )

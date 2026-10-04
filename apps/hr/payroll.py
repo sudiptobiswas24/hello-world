@@ -35,7 +35,12 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.accounting.models import JournalEntry, JournalLine, round_money
+from apps.accounting.models import (
+    JournalEntry,
+    JournalLine,
+    PaymentDirection,
+    round_money,
+)
 from apps.core.models import AuditModel, Company, DocumentSequence, to_date
 
 from .calendars import working_days
@@ -837,6 +842,28 @@ class Payslip(AuditModel):
             raise ValidationError(f"{self.employee} has already been paid for this run.")
         if payment.is_voided():
             raise ValidationError("That payment has been voided; it settles nothing.")
+        # Each of these used to mark the slip paid while net pay payable
+        # went on saying the wages were owed: the slip and the control
+        # account have to be asked the same question.
+        if not payment.posted:
+            raise ValidationError("That payment has not been posted; nothing has left the bank.")
+        if payment.direction != PaymentDirection.DISBURSEMENT:
+            raise ValidationError("Wages are settled by money paid out, not money received.")
+        if payment.counterpart_account_id != _net_pay_account().pk:
+            raise ValidationError(
+                f"That payment was booked against {payment.counterpart_account}, not net pay "
+                "payable, so it does not clear what this slip owes."
+            )
+        if payment.party_id != self.employee.party_id:
+            raise ValidationError(
+                f"That payment was made to {payment.party}, not {self.employee}."
+            )
+        base = Company.get().base_currency_id
+        if payment.currency_id not in (None, base):
+            raise ValidationError("Net pay is owed in the base currency; pay it in that currency.")
+        other = payment.payslips.exclude(pk=self.pk).first()
+        if other is not None:
+            raise ValidationError(f"That payment already settles {other}.")
         expected = self.net()
         if round_money(payment.amount) != expected:
             raise ValidationError(
