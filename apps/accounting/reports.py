@@ -17,9 +17,11 @@ raw balance alongside, because the arithmetic that has to add up is the
 raw one.
 """
 
+import datetime
 from collections import defaultdict
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.db.models import Sum
 
 from apps.core.models import Company, to_date
@@ -48,6 +50,22 @@ def _movements(start=None, end=None, accounts=None):
     }
 
 
+class _Windows(dict):
+    """
+    Every account's totals over a window, summed once per report.
+
+    Each total reads every posted line in the window. The balance sheet
+    asked for the same two windows seven times, half a second over five
+    years of ledger; asked once each, it is two passes.
+    """
+
+    def totals(self, start=None, end=None):
+        key = (to_date(start), to_date(end))
+        if key not in self:
+            self[key] = _movements(start=key[0], end=key[1])
+        return self[key]
+
+
 def natural_balance(account_type, balance):
     """The figure a reader expects, given which side the account sits."""
     return balance if account_type in DEBIT_TYPES else -balance
@@ -64,9 +82,21 @@ def trial_balance(as_of=None, start=None, include_zero=False):
     as_of = to_date(as_of)
     start = to_date(start)
 
-    opening = _movements(end=start) if start else {}
+    if start and as_of and start > as_of:
+        raise ValidationError(f"The period starts on {start}, after it ends on {as_of}.")
+    # Opening is what stood before the window opened: the first day's
+    # entries are movement. Counted in both, opening + debits - credits
+    # fell short of the closing balance by exactly that day's business.
+    opening = _movements(end=start - datetime.timedelta(days=1)) if start else {}
     movement = _movements(start=start, end=as_of)
-    closing = _movements(end=as_of)
+    # The closing balance is the opening plus the window, which the two
+    # sums already hold: a third pass over the ledger added nothing.
+    closing = {
+        account: (open_debit + move_debit, open_credit + move_credit)
+        for account in opening.keys() | movement.keys()
+        for (open_debit, open_credit) in [opening.get(account, (Decimal("0"),) * 2)]
+        for (move_debit, move_credit) in [movement.get(account, (Decimal("0"),) * 2)]
+    }
 
     rows = []
     for account in Account.objects.all().order_by("code"):
@@ -103,10 +133,10 @@ def trial_balance(as_of=None, start=None, include_zero=False):
     }
 
 
-def _grouped(types, start, end):
+def _grouped(types, start, end, windows=None):
     """Accounts of these types with a balance, rolled up under their parents."""
     accounts = Account.objects.filter(account_type__in=types).order_by("code")
-    balances = _movements(start=start, end=end, accounts=accounts)
+    balances = (windows if windows is not None else _Windows()).totals(start, end)
 
     rows, total = [], Decimal("0")
     for account in accounts:
@@ -125,7 +155,7 @@ def _grouped(types, start, end):
     return rows, total
 
 
-def profit_and_loss(start=None, end=None):
+def profit_and_loss(start=None, end=None, windows=None):
     """
     Income less expenses for a period.
 
@@ -134,8 +164,9 @@ def profit_and_loss(start=None, end=None):
     balance sheet.
     """
     start, end = to_date(start), to_date(end)
-    income, income_total = _grouped([AccountType.INCOME], start, end)
-    expense, expense_total = _grouped([AccountType.EXPENSE], start, end)
+    windows = windows if windows is not None else _Windows()
+    income, income_total = _grouped([AccountType.INCOME], start, end, windows)
+    expense, expense_total = _grouped([AccountType.EXPENSE], start, end, windows)
 
     return {
         "start": start,
@@ -148,7 +179,7 @@ def profit_and_loss(start=None, end=None):
     }
 
 
-def retained_earnings(as_of=None, since=None):
+def retained_earnings(as_of=None, since=None, windows=None):
     """
     Accumulated profit, derived rather than posted.
 
@@ -157,7 +188,7 @@ def retained_earnings(as_of=None, since=None):
     to forget, to run twice, or to disagree with the accounts it came
     from — and reopening a prior year cannot silently invalidate it.
     """
-    result = profit_and_loss(start=since, end=as_of)
+    result = profit_and_loss(start=since, end=as_of, windows=windows)
     return result["net_profit"]
 
 
@@ -178,17 +209,16 @@ def balance_sheet(as_of=None, year_start=None):
     if year_start is None:
         company = Company.get()
         if as_of and company.fiscal_year_start_month:
-            import datetime
-
             year = as_of.year if as_of.month >= company.fiscal_year_start_month else as_of.year - 1
             year_start = datetime.date(year, company.fiscal_year_start_month, 1)
 
-    assets, asset_total = _grouped([AccountType.ASSET], None, as_of)
-    liabilities, liability_total = _grouped([AccountType.LIABILITY], None, as_of)
-    equity, equity_total = _grouped([AccountType.EQUITY], None, as_of)
+    windows = _Windows()
+    assets, asset_total = _grouped([AccountType.ASSET], None, as_of, windows)
+    liabilities, liability_total = _grouped([AccountType.LIABILITY], None, as_of, windows)
+    equity, equity_total = _grouped([AccountType.EQUITY], None, as_of, windows)
 
-    this_year = retained_earnings(as_of=as_of, since=year_start)
-    brought_forward = retained_earnings(as_of=as_of) - this_year
+    this_year = retained_earnings(as_of=as_of, since=year_start, windows=windows)
+    brought_forward = retained_earnings(as_of=as_of, windows=windows) - this_year
 
     equity_with_earnings = equity_total + brought_forward + this_year
 

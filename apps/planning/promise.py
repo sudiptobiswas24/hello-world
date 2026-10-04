@@ -34,6 +34,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from .capacity import LoadBook, schedule_make
 from .leadtime import buy_lead_days, calendar_offset, plant_calendar
@@ -89,7 +90,7 @@ def available_to_promise(item, warehouse, planned_on=None, horizon_days=90):
     running total carries the deficit forward and only the figure
     reported to a rep is floored at nought.
     """
-    planned_on = planned_on or datetime.date.today()
+    planned_on = planned_on or timezone.localdate()
     horizon_end = planned_on + datetime.timedelta(days=horizon_days)
     opening, demands, supplies = _ladder(
         item, warehouse, planned_on, horizon_end
@@ -179,7 +180,7 @@ def capable_to_promise(item, warehouse, quantity, planned_on=None,
     from .mrp import _make_or_buy, safety_stock
 
     settings = settings or PlanningSettings.get()
-    planned_on = planned_on or datetime.date.today()
+    planned_on = planned_on or timezone.localdate()
     horizon_days = settings.horizon_days if horizon_days is None else horizon_days
     quantity = Decimal(quantity)
 

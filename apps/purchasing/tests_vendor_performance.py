@@ -103,6 +103,15 @@ class OnTimeTests(PerformanceTestCase):
 
         self.assertEqual(self.row_for()["quantity_received"], Decimal("0"))
 
+    def test_goods_sent_back_late_do_not_make_the_delivery_late(self):
+        order = self.order(expected=datetime.date(2026, 1, 20))
+        receipt = self.receive_on(order, "100", datetime.date(2026, 1, 20))
+        receipt.create_return({receipt.lines.get(): Decimal("40")})
+
+        row = self.row_for()
+        self.assertEqual((row["quantity_received"], row["on_time_rate"], row["average_days_late"]),
+                         (Decimal("60"), Decimal("100.00"), Decimal("0")))
+
 
 class FillRateTests(PerformanceTestCase):
     def test_a_short_delivery_shows_as_a_fill_rate(self):
@@ -144,6 +153,34 @@ class PriceVarianceTests(PerformanceTestCase):
         )
         company.save()
         bill.post()
+
+        self.assertEqual(self.row_for()["price_variance"], Decimal("20.00"))
+
+    def test_a_debit_note_is_not_billing_at_a_price(self):
+        """What the vendor credits back is not a second purchase at the
+        billed price; counting it would double the variance."""
+        order = self.order("100", "5")
+        receipt = self.receive_on(order, "100", datetime.date(2026, 1, 20))
+        bill = Bill.objects.create(
+            vendor=self.vendor, bill_date=datetime.date(2026, 1, 25),
+            purchase_order=order, payable_account=self.payable, currency=self.usd,
+        )
+        BillLine.objects.create(
+            bill=bill, order_line=self.line, item=self.item,
+            quantity=Decimal("100"), unit_price=Decimal("5.20"),
+            expense_account=self.expense,
+        )
+        company = Company.get()
+        company.purchase_price_tolerance_percent = Decimal("10")
+        from apps.accounting.models import Account, AccountType
+
+        company.purchase_price_variance_account = Account.objects.create(
+            code="5900", name="PPV", account_type=AccountType.EXPENSE
+        )
+        company.save()
+        bill.post()
+        returned = receipt.create_return({receipt.lines.get(): Decimal("30")})
+        self.assertEqual(len(returned.debit_notes_created), 1)
 
         self.assertEqual(self.row_for()["price_variance"], Decimal("20.00"))
 

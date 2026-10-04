@@ -67,6 +67,10 @@ class UnitOfMeasureViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["code", "name", "legal_name", "email", "phone", "tax_id"]
+    filter_fields = ["is_active", "role_assignments__role"]
+    ordering_fields = ["code", "name"]
+
     queryset = Party.objects.prefetch_related("role_assignments", "addresses", "contacts", "tags")
     serializer_class = PartySerializer
 

@@ -19,7 +19,10 @@ from apps.core.audit import AuditableViewSetMixin
 
 from django.http import HttpResponse
 
+from django.db.models import Prefetch
+
 from .models import (
+    INVOICE_FIGURES,
     SuppliedItem,
     ThirdPartyRelease,
     ThirdPartyReleaseLine,
@@ -74,8 +77,24 @@ from .serializers import (
 )
 
 
+def _order_lines():
+    """Order lines with what their shipped and invoiced quantities read."""
+    return SalesOrderLine.objects.select_related("item", "uom").prefetch_related(
+        "taxes",
+        Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery")),
+        Prefetch("invoice_lines", queryset=InvoiceLine.objects.select_related("invoice")),
+    )
+
+
 class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = SalesOrder.objects.prefetch_related("lines")
+    search_fields = ["number", "reference", "customer__code", "customer__name"]
+    filter_fields = ["customer", "status", "sales_rep"]
+    date_field = "order_date"
+    ordering_fields = ["order_date", "number"]
+
+    queryset = SalesOrder.objects.select_related(
+        "customer__tax_profile", "currency", "payment_terms"
+    ).prefetch_related(Prefetch("lines", queryset=_order_lines()), "supplied_items")
     serializer_class = SalesOrderSerializer
     action_permission_map = {
         "create_invoice": "sales.add_invoice",
@@ -171,7 +190,7 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = SalesOrderLine.objects.all()
+    queryset = _order_lines().select_related("order__customer__tax_profile")
     serializer_class = SalesOrderLineSerializer
     action_permission_map = {"close_short": "sales.change_salesorder",
                              "reopen": "sales.change_salesorder"}
@@ -228,7 +247,14 @@ class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Invoice.objects.prefetch_related("lines")
+    search_fields = ["number", "reference", "customer__code", "customer__name", "sales_order__number"]
+    filter_fields = ["customer", "posted", "credits", "is_down_payment", "sales_order"]
+    date_field = "invoice_date"
+    ordering_fields = ["invoice_date", "due_date", "number"]
+
+    queryset = Invoice.objects.select_related(
+        "customer__tax_profile", "currency", "payment_terms", "credits"
+    ).prefetch_related(*INVOICE_FIGURES)
     serializer_class = InvoiceSerializer
     action_permission_map = {
         "post_invoice": "sales.post_invoice",
@@ -332,7 +358,9 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class InvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = InvoiceLine.objects.all()
+    queryset = InvoiceLine.objects.select_related(
+        "invoice__customer__tax_profile", "item", "credits_line"
+    ).prefetch_related("taxes", "recorded_taxes__tax")
     serializer_class = InvoiceLineSerializer
 
 
@@ -348,6 +376,11 @@ class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name"]
+    filter_fields = ["sales_order", "posted", "reverses"]
+    date_field = "delivery_date"
+    ordering_fields = ["delivery_date", "number"]
+
     queryset = Delivery.objects.prefetch_related("lines")
     serializer_class = DeliverySerializer
     action_permission_map = {
@@ -442,6 +475,11 @@ class CustomerProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["number", "reference", "customer__code", "customer__name"]
+    filter_fields = ["customer", "status"]
+    date_field = "quotation_date"
+    ordering_fields = ["quotation_date", "valid_until", "number"]
+
     queryset = Quotation.objects.prefetch_related("lines")
     serializer_class = QuotationSerializer
     action_permission_map = {"accept": "sales.add_salesorder"}

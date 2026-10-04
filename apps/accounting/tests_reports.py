@@ -144,6 +144,29 @@ class TrialBalanceTests(ReportTestCase):
         self.assertEqual(rows[self.bank]["credit"], Decimal("250"))
         self.assertEqual(rows[self.bank]["balance"], Decimal("99750"))
 
+    def test_an_entry_on_the_first_day_is_movement_not_opening(self):
+        """Opening is what stood before the window. Counting the first
+        day's entries in both left opening + debits - credits short of
+        the closing balance by exactly that day's business."""
+        self.capitalise(on=datetime.date(2026, 1, 1))
+        self.spend("250", on=datetime.date(2026, 2, 1))
+
+        result = trial_balance(
+            start=datetime.date(2026, 2, 1), as_of=datetime.date(2026, 2, 28)
+        )
+        rows = {row["account"]: row for row in result["rows"]}
+
+        self.assertEqual((rows[self.bank]["opening"], rows[self.bank]["credit"],
+                          rows[self.bank]["balance"]),
+                         (Decimal("100000"), Decimal("250"), Decimal("99750")))
+        for row in result["rows"]:
+            self.assertEqual(row["opening"] + row["debit"] - row["credit"], row["balance"],
+                             row["account"])
+
+    def test_a_period_that_ends_before_it_starts_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "after it ends"):
+            trial_balance(start=datetime.date(2026, 3, 1), as_of=datetime.date(2026, 2, 1))
+
     def test_unposted_entries_are_not_counted(self):
         self.capitalise()
         JournalEntry.objects.create(date=datetime.date(2026, 2, 1), memo="draft")

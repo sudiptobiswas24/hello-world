@@ -167,6 +167,7 @@ class JournalEntry(AuditModel):
     class Meta:
         verbose_name_plural = "journal entries"
         ordering = ["-date", "-id"]
+        indexes = [models.Index(fields=["date", "id"], name="journal_entry_by_date")]
         permissions = [("post_journalentry", "Can post and reverse journal entries")]
 
     def __str__(self):
@@ -714,6 +715,7 @@ class Payment(AuditModel):
 
     class Meta:
         ordering = ["-payment_date", "-id"]
+        indexes = [models.Index(fields=["payment_date", "id"], name="payment_by_date")]
         permissions = [("post_payment", "Can post and void payments")]
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="payment_amount_positive"),

@@ -45,6 +45,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 ZERO = Decimal("0")
 THOUSANDTH = Decimal("0.001")
@@ -161,7 +162,7 @@ def _backtest(history):
 
 def propose(item, warehouse, as_of=None, months_ahead=6, with_trend=False):
     """What history says the coming months will ship. Writes nothing."""
-    as_of = as_of or datetime.date.today()
+    as_of = as_of or timezone.localdate()
     if not 1 <= months_ahead <= 24:
         raise ValidationError("Propose between 1 and 24 months ahead.")
     last = _add_months(_month_start(as_of), -1)

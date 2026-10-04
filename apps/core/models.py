@@ -1,4 +1,5 @@
 import calendar
+import contextvars
 import datetime
 from decimal import Decimal
 
@@ -45,6 +46,15 @@ class AuditModel(TimeStampedModel):
 
     class Meta:
         abstract = True
+
+
+def prefetched(instance, relation):
+    """Whether `relation` was prefetched on `instance`, so reading it costs nothing."""
+    return relation in getattr(instance, "_prefetched_objects_cache", {})
+
+
+# Per-request memo for Company.get(): None outside a request.
+_COMPANY = contextvars.ContextVar("company_for_this_request", default=None)
 
 
 def lock_rows(*instances, refresh=True):
@@ -907,10 +917,28 @@ class Company(AuditModel):
             self.created_by_id = existing.created_by_id
             kwargs.pop("force_insert", None)
         super().save(*args, **kwargs)
+        held = _COMPANY.get()
+        if held is not None:
+            held.pop("company", None)
 
     @classmethod
     def get(cls):
-        return cls.objects.first() or cls.objects.create(name="My Company")
+        """
+        The company, read once per request.
+
+        Asked for per line of every document a report walks: the payment
+        run asked 8,944 times for one answer. Held only for the request
+        (apps.core.middleware), never across them: with several server
+        processes a cache that outlived the request would keep serving a
+        setting another process had already changed.
+        """
+        held = _COMPANY.get()
+        if held is not None and "company" in held:
+            return held["company"]
+        company = cls.objects.first() or cls.objects.create(name="My Company")
+        if held is not None:
+            held["company"] = company
+        return company
 
     def currency(self):
         """The currency this company reports in, from whichever field holds it."""

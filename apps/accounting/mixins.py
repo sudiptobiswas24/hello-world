@@ -266,6 +266,13 @@ class PostedLineMixin(models.Model):
                   "its return reports, whatever the item says later.",
     )
 
+    posted_net = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The line's amount before tax when it posted. With the taxes "
+                  "it recorded, what reports sum instead of working every line "
+                  "out again.",
+    )
+
     class Meta:
         abstract = True
 
@@ -415,8 +422,8 @@ class PostedTaxDocumentMixin(models.Model):
                     tax=tax, rate=tax.rate, gst_head=tax.gst_head,
                     taxable=line.net_amount(), amount=amount,
                 )
-            hsn = line.current_hsn()
-            if hsn != line.hsn_code:
-                type(line).objects.filter(pk=line.pk).update(hsn_code=hsn)
-                line.hsn_code = hsn
+            line.hsn_code = line.current_hsn()
+            line.posted_net = line.net_amount()
+            type(line).objects.filter(pk=line.pk).update(
+                hsn_code=line.hsn_code, posted_net=line.posted_net)
         self.taxes_recorded = True

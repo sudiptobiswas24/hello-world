@@ -18,10 +18,10 @@ to the one before it, or to nobody — which is "not yet inspected",
 which is no. A stored flag would have had to remember to do that.
 """
 
-import datetime
 
 from django.core.exceptions import ValidationError
 from django.db.models import Q
+from django.utils import timezone
 
 from .models import Disposition, Inspection, InspectionPlan, ReleaseStatus
 
@@ -36,7 +36,7 @@ def plan_for(item, on_date=None):
     one answers, because overlapping windows are refused where a plan is
     saved.
     """
-    on_date = on_date or datetime.date.today()
+    on_date = on_date or timezone.localdate()
     return item.inspection_plans.filter(
         Q(valid_from__isnull=True) | Q(valid_from__lte=on_date),
         Q(valid_to__isnull=True) | Q(valid_to__gte=on_date),

@@ -92,6 +92,10 @@ class ItemUnitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["sku", "name", "hsn_code"]
+    filter_fields = ["item_type", "is_active", "tracking"]
+    ordering_fields = ["sku", "name"]
+
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
     action_permission_map = {"set_standard_cost": "inventory.change_item"}
@@ -172,12 +176,20 @@ class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     here was stock out of nothing, at any cost, with no ledger entry and
     none of the rules a receipt or an adjustment asks.
     """
+    search_fields = ["item__sku", "item__name", "lot__code", "reference"]
+    filter_fields = ["item", "warehouse", "movement_type", "lot"]
+    date_field = "occurred_at"
+    ordering_fields = ["occurred_at"]
 
     queryset = StockMovement.objects.select_related("item", "warehouse", "lot", "bin")
     serializer_class = StockMovementSerializer
 
 
 class LotViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["code", "item__sku", "item__name", "supplier_reference"]
+    filter_fields = ["item", "is_active"]
+    ordering_fields = ["code", "expires_on"]
+
     queryset = Lot.objects.select_related("item")
     serializer_class = LotSerializer
 

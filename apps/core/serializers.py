@@ -103,7 +103,7 @@ class PartySerializer(serializers.ModelSerializer):
         ]
 
     def get_roles(self, obj):
-        return list(obj.role_assignments.values_list("role", flat=True))
+        return [row.role for row in obj.role_assignments.all()]
 
 
 class CompanySerializer(serializers.ModelSerializer):

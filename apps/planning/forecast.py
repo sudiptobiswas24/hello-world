@@ -36,6 +36,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from apps.core.models import AuditModel
 from apps.inventory.models import Item, Warehouse
@@ -189,7 +190,7 @@ def coverage(item, warehouse, planned_on=None, horizon_days=180):
     are consistently short is the plant that keeps running out. Neither
     shows up anywhere else.
     """
-    planned_on = planned_on or datetime.date.today()
+    planned_on = planned_on or timezone.localdate()
     horizon_end = planned_on + datetime.timedelta(days=horizon_days)
     rows = []
     for forecast in Forecast.objects.filter(

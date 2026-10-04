@@ -51,6 +51,7 @@ from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.db import transaction
+from django.utils import timezone
 
 from apps.core.models import to_date
 from apps.inventory.tracking import TrackingMode, lots_at
@@ -1043,7 +1044,7 @@ def plan(warehouse, planned_on=None, horizon_days=None, settings=None):
     # date arrives as a string and from a shell where it arrives as a
     # datetime, and a string that survives to the arithmetic gives a
     # horizon nobody can read.
-    planned_on = to_date(planned_on) or datetime.date.today()
+    planned_on = to_date(planned_on) or timezone.localdate()
     horizon_days = settings.horizon_days if horizon_days is None else horizon_days
     horizon_end = planned_on + datetime.timedelta(days=horizon_days)
 

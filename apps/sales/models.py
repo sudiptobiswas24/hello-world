@@ -33,6 +33,7 @@ from apps.core.models import (
     PaymentTerms,
     UnitOfMeasure,
     lock_rows,
+    prefetched,
     serialised,
     to_date,
 )
@@ -385,6 +386,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
     class Meta:
         ordering = ["-order_date", "-id"]
+        indexes = [models.Index(fields=["order_date", "id"], name="sales_order_by_date")]
         permissions = [
             ("approve_order", "Can approve orders that breach the discount policy"),
         ]
@@ -1138,6 +1140,15 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     def quantity_shipped(self):
         """Net quantity shipped: posted deliveries minus posted customer returns."""
+        if prefetched(self, "delivery_lines"):
+            # A list of orders asks this of every line; with the lines and
+            # their deliveries already read it is arithmetic, not two
+            # queries a line.
+            return sum(
+                (row.quantity_shipped if row.delivery.reverses_id is None else -row.quantity_shipped
+                 for row in self.delivery_lines.all() if row.delivery.posted),
+                Decimal("0"),
+            )
         shipped = self.delivery_lines.filter(
             delivery__posted=True, delivery__reverses__isnull=True
         ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
@@ -1172,6 +1183,12 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
 
     def quantity_invoiced(self):
         """Net quantity invoiced: posted invoices minus posted credit notes."""
+        if prefetched(self, "invoice_lines"):
+            return sum(
+                (row.quantity if row.invoice.credits_id is None else -row.quantity
+                 for row in self.invoice_lines.all() if row.invoice.posted),
+                Decimal("0"),
+            )
         invoiced = self.invoice_lines.filter(
             invoice__posted=True, invoice__credits__isnull=True
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
@@ -1264,6 +1281,12 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
     )
+    posted_total = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The total when it posted, in its own currency. A fact of the "
+                  "posting, which cannot change; reports use it to pass over what "
+                  "is already settled without working every total out again.",
+    )
     is_down_payment = models.BooleanField(
         default=False, editable=False,
         help_text="Money taken up front against an order, held as a liability "
@@ -1276,6 +1299,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     class Meta:
         ordering = ["-invoice_date", "-id"]
+        indexes = [models.Index(fields=["invoice_date", "id"], name="invoice_by_date")]
         permissions = [
             ("post_invoice", "Can post invoices and issue credit notes"),
             ("write_off_invoice", "Can write a receivable off to bad debt"),
@@ -1906,11 +1930,12 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
+        self.posted_total = self.total()
         super(Invoice, self).save(
             update_fields=[
                 "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
                 "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
-                "place_of_supply", "updated_at",
+                "place_of_supply", "posted_total", "updated_at",
             ]
         )
 
@@ -2086,6 +2111,21 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         )
         credit_note.post(memo=memo)
         return credit_note
+
+
+# Everything an invoice's own figures read — totals, tax, paid, credited,
+# deposited, voided payments, due dates — for lists and reports that walk
+# many. The invoice list asked 1,686 queries a page without it.
+INVOICE_FIGURES = (
+    "lines__taxes",
+    "lines__recorded_taxes__tax",
+    "payment_allocations__payment__journal_entry__reversed_by",
+    "credit_notes__lines__taxes",
+    "credit_notes__lines__recorded_taxes__tax",
+    "deposit_applications",
+    "applications",
+    "payment_terms__lines",
+)
 
 
 class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
@@ -2423,12 +2463,37 @@ def outstanding_balance(customer):
     cash owed back to them on credit notes. Signed, as vendor_balance is:
     a customer who has been over-credited reads negative.
     """
-    invoices = Invoice.objects.filter(
+    invoices = not_paid_in_full(Invoice.objects.filter(
         customer=customer, posted=True, credits__isnull=True
-    ).prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes")
+    )).prefetch_related(*INVOICE_FIGURES)
     owed = sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
-    notes = Invoice.objects.filter(customer=customer, posted=True, credits__isnull=False)
+    notes = Invoice.objects.filter(
+        customer=customer, posted=True, credits__isnull=False
+    ).prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES))
     return owed - sum((note.refund_due() for note in notes), Decimal("0"))
+
+
+def not_paid_in_full(invoices):
+    """
+    `invoices` less those payments that still stand have already covered.
+
+    The mirror of purchasing's: what is due is the total less payments
+    and every other reduction, all non-negative, so an invoice whose
+    standing payments reach its posted total cannot be due. Asked in the
+    database so a report passes over the settled majority unbuilt; AR
+    aging did not answer inside a minute over a year without it.
+    """
+    from django.db.models import DecimalField, Exists, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    standing = InvoicePayment.objects.filter(
+        invoice=OuterRef("pk"), payment__voided_entry__isnull=True
+    ).exclude(Exists(JournalEntry.objects.filter(reverses=OuterRef("payment__journal_entry"))))
+    paid = standing.values("invoice").annotate(total=models.Sum("amount")).values("total")
+    return invoices.annotate(
+        standing_paid=Coalesce(Subquery(paid), Value(Decimal("0")),
+                               output_field=DecimalField(max_digits=18, decimal_places=2))
+    ).exclude(posted_total__isnull=False, standing_paid__gte=models.F("posted_total"))
 
 
 def committed_balance(customer):
@@ -2440,7 +2505,9 @@ def committed_balance(customer):
     uninvoiced = Decimal("0")
     orders = SalesOrder.objects.filter(
         customer=customer, status=OrderStatus.CONFIRMED
-    ).prefetch_related("lines__taxes")
+    ).prefetch_related(models.Prefetch("lines", queryset=SalesOrderLine.objects.prefetch_related(
+        "taxes", models.Prefetch("invoice_lines",
+                                 queryset=InvoiceLine.objects.select_related("invoice")))))
     for order in orders:
         for line in order.lines.all():
             remaining = line.quantity_uninvoiced()
@@ -2455,7 +2522,7 @@ def committed_balance(customer):
     # money from them up front, which is backwards.
     deposits = Invoice.objects.filter(
         customer=customer, posted=True, is_down_payment=True
-    ).prefetch_related("lines__taxes", "applications", "credit_notes__lines__taxes")
+    ).prefetch_related(*INVOICE_FIGURES)
     outstanding_deposits = sum(
         (deposit.deposit_unapplied() for deposit in deposits), Decimal("0")
     )
@@ -2703,8 +2770,9 @@ def ar_aging(as_of=None):
     buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
 
     invoices = (
-        Invoice.objects.filter(posted=True, credits__isnull=True)
-        .prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes")
+        not_paid_in_full(Invoice.objects.filter(posted=True, credits__isnull=True))
+        .select_related("customer", "currency", "payment_terms")
+        .prefetch_related(*INVOICE_FIGURES)
     )
     for invoice in invoices:
         if invoice.amount_due() <= 0:
@@ -2782,6 +2850,7 @@ class Delivery(AuditModel):
     class Meta:
         verbose_name_plural = "deliveries"
         ordering = ["-delivery_date", "-id"]
+        indexes = [models.Index(fields=["delivery_date", "id"], name="delivery_by_date")]
         permissions = [("post_delivery", "Can post deliveries and customer returns")]
         constraints = [
             models.UniqueConstraint(
@@ -3502,9 +3571,9 @@ def run_dunning(as_of=None, send=True):
     notices = []
     undeliverable = []
     invoices = (
-        Invoice.objects.filter(posted=True, credits__isnull=True)
-        .prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes",
-                          "dunning_notices")
+        not_paid_in_full(Invoice.objects.filter(posted=True, credits__isnull=True))
+        .select_related("customer", "currency", "payment_terms")
+        .prefetch_related(*INVOICE_FIGURES, "dunning_notices")
     )
     for invoice in invoices:
         days = invoice.days_overdue(as_of)
@@ -3571,16 +3640,62 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
     # A deposit returned is no more a sale than the deposit was.
     invoices = Invoice.objects.filter(posted=True, is_down_payment=False).exclude(
         credits__is_down_payment=True
-    ).prefetch_related(
-        "lines__taxes", "lines__item", "lines__recorded_taxes__tax"
-    ).select_related("customer")
+    )
     if date_from:
         invoices = invoices.filter(invoice_date__gte=date_from)
     if date_to:
         invoices = invoices.filter(invoice_date__lte=date_to)
 
+    if group_by not in ("customer", "item", "month"):
+        raise ValueError(f"Unsupported grouping: {group_by}")
+
     totals = defaultdict(lambda: {"net": Decimal("0"), "tax": Decimal("0"), "quantity": Decimal("0")})
-    for invoice in invoices:
+
+    # A line that recorded its net and its taxes when it posted is summed
+    # in the database: over a year of invoices, building every line to
+    # ask it took 3 seconds. Only lines posted before it recorded them
+    # are worked out as before, until record_posted_totals fills them.
+    recorded = InvoiceLine.objects.filter(
+        invoice__in=invoices, invoice__taxes_recorded=True, posted_net__isnull=False)
+    by = {"customer": ["invoice__customer"],
+          "item": ["item", "charge", "description"],
+          "month": ["invoice__invoice_date"]}[group_by]
+    customers = items = charges = {}
+    if group_by == "customer":
+        customers = Party.objects.in_bulk(set(recorded.values_list("invoice__customer", flat=True)))
+    elif group_by == "item":
+        items = Item.objects.in_bulk(set(recorded.exclude(item=None).values_list("item", flat=True)))
+        charges = ChargeType.objects.in_bulk(
+            set(recorded.exclude(charge=None).values_list("charge", flat=True)))
+
+    def key_for(row):
+        if group_by == "customer":
+            return str(customers[row["invoice__customer"]])
+        if group_by == "item":
+            if row["item"]:
+                return str(items[row["item"]])
+            if row["charge"]:
+                return str(charges[row["charge"]])
+            return row["description"] or "—"
+        return row["invoice__invoice_date"].strftime("%Y-%m")
+
+    for sign, lines in ((Decimal("1"), recorded.filter(invoice__credits__isnull=True)),
+                        (Decimal("-1"), recorded.filter(invoice__credits__isnull=False))):
+        for row in lines.order_by().values(*by).annotate(
+                net=models.Sum("posted_net"), quantity=models.Sum("quantity")):
+            bucket = totals[key_for(row)]
+            bucket["net"] += sign * row["net"]
+            bucket["quantity"] += sign * row["quantity"]
+        taxes = InvoiceLineTax.objects.filter(line__in=lines).order_by().values(
+            *[f"line__{field}" for field in by]).annotate(tax=models.Sum("amount"))
+        for row in taxes:
+            totals[key_for({field: row[f"line__{field}"] for field in by})]["tax"] += sign * row["tax"]
+
+    unrecorded = invoices.filter(
+        models.Q(taxes_recorded=False) | models.Q(lines__posted_net__isnull=True)).distinct()
+    for invoice in unrecorded.prefetch_related(
+            "lines__taxes", "lines__item", "lines__charge", "lines__recorded_taxes__tax"
+    ).select_related("customer"):
         # A credit note reduces revenue, so its lines count negative.
         sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
         # Document-level tax rounding puts a line's tax somewhere other
@@ -3588,6 +3703,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
         # allocation or this report drifts from the invoice by pennies.
         line_taxes = invoice.line_tax_amounts()
         for line in invoice.lines.all():
+            if invoice.taxes_recorded and line.posted_net is not None:
+                continue  # summed above
             if group_by == "customer":
                 key = str(invoice.customer)
             elif group_by == "item":
@@ -3600,10 +3717,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
                     key = str(line.charge)
                 else:
                     key = line.description or "—"
-            elif group_by == "month":
-                key = invoice.invoice_date.strftime("%Y-%m")
             else:
-                raise ValueError(f"Unsupported grouping: {group_by}")
+                key = invoice.invoice_date.strftime("%Y-%m")
             bucket = totals[key]
             bucket["net"] += sign * line.net_amount()
             bucket["tax"] += sign * sum(
@@ -3619,7 +3734,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
             "gross": amounts["net"] + amounts["tax"],
             "quantity": amounts["quantity"],
         }
-        for key, amounts in sorted(totals.items(), key=lambda pair: -pair[1]["net"])
+        # By key among equals: the rows are gathered in no fixed order.
+        for key, amounts in sorted(totals.items(), key=lambda pair: (-pair[1]["net"], pair[0]))
     ]
 
 
@@ -3681,6 +3797,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
 
     class Meta:
         ordering = ["-quotation_date", "-id"]
+        indexes = [models.Index(fields=["quotation_date", "id"], name="quotation_by_date")]
         constraints = [
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="unique_quotation_number"

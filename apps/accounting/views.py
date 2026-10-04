@@ -38,11 +38,20 @@ from .serializers import (
 
 
 class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["code", "name"]
+    filter_fields = ["account_type", "is_active", "parent"]
+    ordering_fields = ["code", "name"]
+
     queryset = Account.objects.all()
     serializer_class = AccountSerializer
 
 
 class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["reference", "memo"]
+    filter_fields = ["posted"]
+    date_field = "date"
+    ordering_fields = ["date"]
+
     queryset = JournalEntry.objects.prefetch_related("lines")
     serializer_class = JournalEntrySerializer
     action_permission_map = {
@@ -70,7 +79,14 @@ class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class JournalLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = JournalLine.objects.all()
+    # ?account=…&entry__posted=true&from=…&to=… is an account's ledger,
+    # newest first: the entry date index answers a page of it without
+    # sorting every line the account ever had.
+    filter_fields = ["account", "party", "entry", "entry__posted"]
+    date_field = "entry__date"
+
+    queryset = JournalLine.objects.select_related("entry", "account").order_by(
+        "-entry__date", "-entry_id", "-id")
     serializer_class = JournalLineSerializer
 
 
@@ -130,6 +146,11 @@ class PartyTaxProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["number", "reference", "memo", "party__code", "party__name"]
+    filter_fields = ["party", "direction", "posted", "bank_account"]
+    date_field = "payment_date"
+    ordering_fields = ["payment_date", "number", "amount"]
+
     queryset = Payment.objects.select_related("party", "bank_account", "counterpart_account")
     serializer_class = PaymentSerializer
     action_permission_map = {

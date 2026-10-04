@@ -85,22 +85,51 @@ def uncovered(sales_order=None, item=None):
     and a line shipped in full has nothing left to make, which is the
     one case where netting the shipment off is exact.
     """
-    from apps.sales.models import OrderStatus, SalesOrderLine
+    from django.db.models import Prefetch
 
-    from .bom import default_bom_for
+    from apps.sales.models import DeliveryLine, OrderStatus, SalesOrderLine
+
+    from .bom import BillOfMaterials, default_bom_for
 
     lines = SalesOrderLine.objects.filter(item__isnull=False).exclude(
         order__status=OrderStatus.CANCELLED
-    ).select_related("item", "uom", "order")
+    ).select_related("item", "uom", "order").prefetch_related(
+        Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery"))
+    )
     if sales_order is not None:
         lines = lines.filter(order=sales_order)
     if item is not None:
         lines = lines.filter(item=item)
+    # Lines with nothing left to make, passed over in the database: closed
+    # short, or shipped at least what was ordered. A year of order lines is
+    # mostly these. A line shipped inside its tolerance still comes through
+    # and is judged by quantity_open() as before.
+    from django.db.models import DecimalField, F, OuterRef, Subquery, Sum, Value
+    from django.db.models.functions import Coalesce
+
+    def shipped(returns):
+        moved = DeliveryLine.objects.filter(
+            order_line=OuterRef("pk"), delivery__posted=True,
+            delivery__reverses__isnull=not returns,
+        ).values("order_line").annotate(total=Sum("quantity_shipped")).values("total")
+        return Coalesce(Subquery(moved), Value(Decimal("0")),
+                        output_field=DecimalField(max_digits=18, decimal_places=4))
+
+    lines = lines.filter(closed_short_at__isnull=True).annotate(
+        net_shipped=shipped(False) - shipped(True)
+    ).exclude(net_shipped__gte=F("quantity"))
+    lines = list(lines)
+    boms = {}
+    for bom in BillOfMaterials.objects.filter(
+        item_id__in={line.item_id for line in lines}, is_default=True, is_active=True
+    ):
+        boms.setdefault(bom.item_id, []).append(bom)
     rows = []
     for line in lines:
         # Made or bought for the day this line is due, which can be
         # different answers for one item either side of a change.
-        if default_bom_for(line.item, line.promised_date()) is None:
+        if default_bom_for(line.item, line.promised_date(),
+                           among=boms.get(line.item_id, [])) is None:
             continue
         # Met inside its tolerance, or closed short: nothing left to make.
         if line.quantity_open() <= 0:

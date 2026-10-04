@@ -80,6 +80,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "apps.core.middleware.RequestMemo",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -126,6 +127,12 @@ def _database(url):
         "CONN_MAX_AGE": int(os.environ.get("DATABASE_CONN_MAX_AGE", "60")),
         "CONN_HEALTH_CHECKS": True,
         "ATOMIC_REQUESTS": False,
+        # PostgreSQL compiles any plan it guesses costs over 100,000 to
+        # machine code first. For a report that answers in 100 ms that was
+        # half the time (AR aging: 53 ms of 107), and AP aging went from
+        # 0.43 to 0.30 seconds without it. It pays off on analytical
+        # queries that run for minutes, which this application has none of.
+        "OPTIONS": {"options": "-c jit=off"},
     }
 
 
@@ -243,4 +250,15 @@ REST_FRAMEWORK = {
     # ValidationError. Without this a caller who broke a rule got a 500
     # instead of the sentence the model wrote for them.
     "EXCEPTION_HANDLER": "apps.core.api.exception_handler",
+    # Lists in pages of 50; the body stays a list, the count is in the
+    # X-Total-Count header (apps/core/api.py).
+    "DEFAULT_PAGINATION_CLASS": "apps.core.api.HeaderPagination",
+    "PAGE_SIZE": 50,
+    # ?search=, ?<field>=, ?from=&to= and ?ordering= on a list, each over
+    # only the fields its view names (apps/core/api.py).
+    "DEFAULT_FILTER_BACKENDS": [
+        "apps.core.api.Search",
+        "apps.core.api.FieldFilter",
+        "apps.core.api.Ordering",
+    ],
 }

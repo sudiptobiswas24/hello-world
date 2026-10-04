@@ -359,6 +359,20 @@ class AgingTests(ReportTestCase):
         self.assertEqual(buckets["0-30"], Decimal("20.0000"))
         self.assertEqual(buckets["180+"], Decimal("10.0000"))
 
+    def test_an_issue_larger_than_the_oldest_arrival_eats_into_the_next(self):
+        self.stock("50", "5", on=datetime.date(2026, 1, 1))
+        self.stock("50", "5", on=datetime.date(2026, 2, 20))
+        self.issue("70", on=datetime.date(2026, 2, 25))
+        row = stock_aging(as_of=datetime.date(2026, 3, 1))["rows"][0]
+        self.assertEqual((row["quantity"], row["oldest_days"]), (Decimal("30.0000"), 9))
+
+    def test_what_happened_after_the_date_asked_is_not_counted(self):
+        self.stock("100", "5", on=datetime.date(2026, 1, 1))
+        self.issue("30", on=datetime.date(2026, 3, 10))
+        self.stock("40", "5", on=datetime.date(2026, 3, 11))
+        row = stock_aging(as_of=datetime.date(2026, 3, 1))["rows"][0]
+        self.assertEqual((row["quantity"], row["oldest_days"]), (Decimal("100.0000"), 59))
+
     def test_a_value_only_movement_does_not_look_like_an_arrival(self):
         # Landed cost changes what stock is worth, not when it got here.
         self.stock("100", "5", on=datetime.date(2026, 1, 1))

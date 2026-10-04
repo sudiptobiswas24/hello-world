@@ -74,7 +74,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
     supplied_items = serializers.SerializerMethodField()
 
     def get_supplied_items(self, obj):
-        return list(obj.supplied_items.values_list("item_id", flat=True))
+        return [row.item_id for row in obj.supplied_items.all()]
 
 
 class SuppliedItemSerializer(serializers.ModelSerializer):

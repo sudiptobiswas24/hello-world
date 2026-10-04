@@ -33,13 +33,13 @@ without remembering where it has been will walk forever, so `explode()`
 carries its path and refuses to re-enter an item it is already inside.
 """
 
-import datetime
 from collections import namedtuple
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
+from django.utils import timezone
 
 from apps.core.models import AuditModel
 from apps.core import windows
@@ -607,15 +607,25 @@ Requirement = namedtuple(
 )
 
 
-def default_bom_for(item, on_date=None):
+def default_bom_for(item, on_date=None, among=None):
     """
     The BOM an explosion uses when it reaches this item unqualified, for
     output due on `on_date` (today when not given).
 
     At most one answers: overlapping default windows are refused where
     they are saved.
+
+    `among`: this item's default, active BOMs, already read. A report
+    over every order line asked the database once a line, ten thousand
+    times for three hundred items; it reads them once and passes them.
     """
-    on_date = on_date or datetime.date.today()
+    on_date = on_date or timezone.localdate()
+    if among is not None:
+        return next((
+            bom for bom in among
+            if (bom.valid_from is None or bom.valid_from <= on_date)
+            and (bom.valid_to is None or bom.valid_to >= on_date)
+        ), None)
     return item.boms.filter(
         Q(valid_from__isnull=True) | Q(valid_from__lte=on_date),
         Q(valid_to__isnull=True) | Q(valid_to__gte=on_date),

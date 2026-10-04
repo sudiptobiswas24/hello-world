@@ -131,7 +131,16 @@ def usable_snapshot(item, warehouse, method, as_of=None):
         found.filter(warehouse__isnull=True) if warehouse is None
         else found.filter(warehouse=warehouse)
     )
-    snapshot = found.first()
+    from .costing import preloaded_fold
+
+    known, fold = preloaded_fold(item, warehouse, as_of)
+    if known:
+        return fold
+    return usable_from(found.first(), as_of)
+
+
+def usable_from(snapshot, as_of):
+    """`snapshot`, if a replay to `as_of` may start from it."""
     if snapshot is None:
         return None
     if as_of is not None:

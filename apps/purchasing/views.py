@@ -10,7 +10,10 @@ from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
+from django.db.models import Prefetch
+
 from .models import (
+    BILL_FIGURES,
     Bill,
     BillPayment,
     BillLine,
@@ -27,6 +30,7 @@ from .models import (
     reorder_suggestions,
     vendor_balance,
     vendor_performance,
+    with_line_figures,
 )
 from .serializers import (
     BillPaymentSerializer,
@@ -39,8 +43,23 @@ from .serializers import (
 )
 
 
+def _order_lines():
+    """Order lines with what their received and billed quantities read."""
+    return with_line_figures(
+        PurchaseOrderLine.objects.select_related("item", "uom").prefetch_related(
+            "taxes", "components")
+    )
+
+
 class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = PurchaseOrder.objects.prefetch_related("lines")
+    search_fields = ["number", "reference", "vendor__code", "vendor__name"]
+    filter_fields = ["vendor", "status"]
+    date_field = "order_date"
+    ordering_fields = ["order_date", "number"]
+
+    queryset = PurchaseOrder.objects.select_related(
+        "vendor__tax_profile", "currency"
+    ).prefetch_related(Prefetch("lines", queryset=_order_lines()))
     serializer_class = PurchaseOrderSerializer
     action_permission_map = {
         "create_bill": "purchasing.add_bill",
@@ -120,12 +139,19 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = PurchaseOrderLine.objects.all()
+    queryset = _order_lines().select_related("order__vendor__tax_profile")
     serializer_class = PurchaseOrderLineSerializer
 
 
 class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Bill.objects.prefetch_related("lines")
+    search_fields = ["number", "reference", "vendor__code", "vendor__name", "purchase_order__number"]
+    filter_fields = ["vendor", "posted", "debits", "is_prepayment", "purchase_order"]
+    date_field = "bill_date"
+    ordering_fields = ["bill_date", "due_date", "number"]
+
+    queryset = Bill.objects.select_related(
+        "vendor__tax_profile", "currency", "payment_terms", "debits"
+    ).prefetch_related(*BILL_FIGURES)
     serializer_class = BillSerializer
     action_permission_map = {
         "post_bill": "purchasing.post_bill",
@@ -165,11 +191,18 @@ class BillPaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class BillLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = BillLine.objects.all()
+    queryset = BillLine.objects.select_related(
+        "bill__vendor__tax_profile", "item", "debits_line"
+    ).prefetch_related("taxes", "recorded_taxes__tax")
     serializer_class = BillLineSerializer
 
 
 class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["number", "reference", "purchase_order__number", "purchase_order__vendor__code", "purchase_order__vendor__name"]
+    filter_fields = ["purchase_order", "posted", "reverses"]
+    date_field = "receipt_date"
+    ordering_fields = ["receipt_date", "number"]
+
     queryset = GoodsReceipt.objects.prefetch_related("lines")
     serializer_class = GoodsReceiptSerializer
     action_permission_map = {

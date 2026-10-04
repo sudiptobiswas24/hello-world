@@ -37,6 +37,7 @@ from apps.core.models import (
     PaymentTerms,
     UnitOfMeasure,
     lock_rows,
+    prefetched,
     serialised,
     to_date,
 )
@@ -1337,6 +1338,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
     class Meta:
         ordering = ["-order_date", "-id"]
+        indexes = [models.Index(fields=["order_date", "id"], name="purchase_order_by_date")]
         permissions = [
             ("approve_purchaseorder", "Can approve orders that breach the spend policy"),
         ]
@@ -2090,6 +2092,13 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
     def quantity_received(self):
         """Net quantity received so far: posted receipts minus posted returns."""
+        if prefetched(self, "receipt_lines"):
+            return sum(
+                (row.quantity_received if row.receipt.reverses_id is None
+                 else -row.quantity_received
+                 for row in self.receipt_lines.all() if row.receipt.posted),
+                Decimal("0"),
+            )
         received = self.receipt_lines.filter(
             receipt__posted=True, receipt__reverses__isnull=True
         ).aggregate(total=models.Sum("quantity_received"))["total"] or Decimal("0")
@@ -2103,6 +2112,12 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
     def quantity_billed(self):
         """Net quantity billed: posted bills minus posted debit notes."""
+        if prefetched(self, "bill_lines"):
+            return sum(
+                (row.quantity if row.bill.debits_id is None else -row.quantity
+                 for row in self.bill_lines.all() if row.bill.posted),
+                Decimal("0"),
+            )
         billed = self.bill_lines.filter(
             bill__posted=True, bill__debits__isnull=True
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
@@ -2228,6 +2243,12 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    posted_total = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The total when it posted, in its own currency. A fact of the "
+                  "posting, which cannot change; reports use it to pass over what "
+                  "is already settled without working every total out again.",
+    )
     is_prepayment = models.BooleanField(
         default=False, editable=False,
         help_text="Money paid to the vendor up front, held as an asset until the "
@@ -2244,6 +2265,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     class Meta:
         ordering = ["-bill_date", "-id"]
+        indexes = [models.Index(fields=["bill_date", "id"], name="bill_by_date")]
         permissions = [("post_bill", "Can post bills and issue debit notes")]
         constraints = [
             models.UniqueConstraint(
@@ -2844,10 +2866,11 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
+        self.posted_total = self.total()
         super(Bill, self).save(update_fields=[
             "number", "bill_date", "due_date", "exchange_rate", "journal_entry",
             "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
-            "place_of_supply", "updated_at",
+            "place_of_supply", "posted_total", "updated_at",
         ])
 
         if not self.is_debit_note():
@@ -3183,6 +3206,21 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         )
         debit_note.post(memo=memo)
         return debit_note
+
+
+# Everything a bill's own figures read — total, tax, paid, debited,
+# prepaid, voided payments, due dates — so a report walking a year of
+# bills asks once per kind, not once per bill. The payment run took 68
+# seconds and 44,872 queries without it.
+BILL_FIGURES = (
+    "lines__taxes",
+    "lines__recorded_taxes__tax",
+    "payment_allocations__payment__journal_entry__reversed_by",
+    "debit_notes__lines__taxes",
+    "debit_notes__lines__recorded_taxes__tax",
+    "prepayment_applications",
+    "payment_terms__lines",
+)
 
 
 class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
@@ -3977,8 +4015,74 @@ def raise_reorder_requisition(requested_by, warehouse=None, on_date=None, rows=N
     return requisition
 
 
+def not_paid_in_full(bills):
+    """
+    `bills` less those payments that still stand have already covered.
+
+    Asked in the database so that a report over a year passes over the
+    settled majority without building them: what is due is the total less
+    payments and every other reduction, all of them non-negative, so a
+    bill whose standing payments reach its posted total cannot be due.
+    Bills posted before totals were recorded are kept and worked out.
+    """
+    from django.db.models import DecimalField, Exists, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    standing = BillPayment.objects.filter(
+        bill=OuterRef("pk"), payment__voided_entry__isnull=True
+    ).exclude(Exists(JournalEntry.objects.filter(reverses=OuterRef("payment__journal_entry"))))
+    paid = standing.values("bill").annotate(total=models.Sum("amount")).values("total")
+    return bills.annotate(
+        standing_paid=Coalesce(Subquery(paid), Value(Decimal("0")),
+                               output_field=DecimalField(max_digits=18, decimal_places=2))
+    ).exclude(posted_total__isnull=False, standing_paid__gte=models.F("posted_total"))
+
+
+def _billed_beyond_received(lines):
+    """
+    Only the lines billed for more than they now hold.
+
+    Net billed and net received are each summed in one grouped pass, the
+    way quantity_billed() and quantity_received() sum them, and compared
+    here. A correlated sum per line took 1.2 seconds over a year's lines
+    with every index in use: the cost was asking 6,000 times, not how.
+    """
+    def net(model, document, quantity, reversal):
+        signed = models.Case(
+            models.When(**{f"{document}__{reversal}__isnull": True}, then=models.F(quantity)),
+            default=-models.F(quantity),
+        )
+        rows = model.objects.filter(**{f"{document}__posted": True}).values(
+            "order_line").annotate(total=models.Sum(signed))
+        return {row["order_line"]: row["total"] for row in rows}
+
+    billed = net(BillLine, "bill", "quantity", "debits")
+    received = net(GoodsReceiptLine, "receipt", "quantity_received", "reverses")
+    over = [line for line, quantity in billed.items()
+            if line is not None and quantity > received.get(line, Decimal("0"))]
+    return lines.filter(pk__in=over)
+
+
+def with_line_figures(lines):
+    """
+    Order lines with the receipts and bills their figures read, so a
+    report over a year of lines asks once rather than four times a line:
+    billed-not-held took 44 seconds and 24,001 queries without it.
+    """
+    from django.db.models import Prefetch
+
+    return lines.prefetch_related(
+        Prefetch("receipt_lines", queryset=GoodsReceiptLine.objects.select_related("receipt")),
+        Prefetch("bill_lines", queryset=BillLine.objects.select_related("bill")),
+    )
+
+
 def _receipt_dates(order_line):
     """[(receipt_date, quantity)] for real receipts, returns excluded."""
+    if prefetched(order_line, "receipt_lines"):
+        return [(to_date(line.receipt.receipt_date), line.quantity_received)
+                for line in order_line.receipt_lines.all()
+                if line.receipt.posted and line.receipt.reverses_id is None]
     return [
         (to_date(line.receipt.receipt_date), line.quantity_received)
         for line in order_line.receipt_lines.filter(
@@ -4005,9 +4109,8 @@ def vendor_performance(start=None, end=None, vendor=None):
     flatter them.
     """
     start, end = to_date(start), to_date(end)
-    lines = PurchaseOrderLine.objects.select_related("order__vendor", "item").exclude(
-        order__status=OrderStatus.CANCELLED
-    ).filter(charge__isnull=True)
+    lines = PurchaseOrderLine.objects.exclude(order__status=OrderStatus.CANCELLED).filter(
+        charge__isnull=True)
     if vendor is not None:
         lines = lines.filter(order__vendor=vendor)
     if start:
@@ -4015,11 +4118,26 @@ def vendor_performance(start=None, end=None, vendor=None):
     if end:
         lines = lines.filter(order__order_date__lte=end)
 
+    # Plain rows, not model instances: over a year of lines, building the
+    # objects was 3.3 of the report's 3.4 seconds. Each sum below is the
+    # one quantity_received() and _receipt_dates() take.
+    receipts = defaultdict(list)
+    for row in GoodsReceiptLine.objects.filter(
+            order_line__in=lines, receipt__posted=True).values_list(
+            "order_line", "receipt__receipt_date", "receipt__reverses", "quantity_received"):
+        receipts[row[0]].append(row[1:])
+    bills = defaultdict(list)
+    for row in BillLine.objects.filter(
+            order_line__in=lines, bill__posted=True, bill__debits__isnull=True).values_list(
+            "order_line", "unit_price", "quantity"):
+        bills[row[0]].append(row[1:])
+    vendors = Party.objects.in_bulk(set(lines.values_list("order__vendor", flat=True)))
+
     rows = {}
-    for line in lines:
-        party = line.order.vendor
-        row = rows.setdefault(party.pk, {
-            "vendor": party,
+    for pk, vendor_id, quantity, unit_price, expected_date in lines.order_by("pk").values_list(
+            "pk", "order__vendor", "quantity", "unit_price", "expected_date"):
+        row = rows.setdefault(vendor_id, {
+            "vendor": vendors[vendor_id],
             "order_lines": 0,
             "quantity_ordered": Decimal("0"),
             "quantity_received": Decimal("0"),
@@ -4030,28 +4148,27 @@ def vendor_performance(start=None, end=None, vendor=None):
             "open_lines": 0,
         })
         row["order_lines"] += 1
-        row["quantity_ordered"] += line.quantity
-        received = line.quantity_received()
+        row["quantity_ordered"] += quantity
+        received = sum((-moved if returned else moved
+                        for _, returned, moved in receipts[pk]), Decimal("0"))
         row["quantity_received"] += received
-        if received < line.quantity:
+        if received < quantity:
             row["open_lines"] += 1
 
-        if line.expected_date:
-            for receipt_date, quantity in _receipt_dates(line):
-                row["dated_quantity"] += quantity
-                late = (receipt_date - to_date(line.expected_date)).days
+        if expected_date:
+            for receipt_date, returned, moved in receipts[pk]:
+                if returned:
+                    continue
+                row["dated_quantity"] += moved
+                late = (to_date(receipt_date) - to_date(expected_date)).days
                 if late <= 0:
-                    row["on_time_quantity"] += quantity
+                    row["on_time_quantity"] += moved
                 else:
-                    row["late_days_weighted"] += Decimal(late) * quantity
+                    row["late_days_weighted"] += Decimal(late) * moved
 
-        for bill_line in line.bill_lines.filter(
-            bill__posted=True, bill__debits__isnull=True
-        ):
+        for billed_price, billed_quantity in bills[pk]:
             row["price_variance"] += round_money(
-                (bill_line.unit_price - (line.unit_price or Decimal("0")))
-                * bill_line.quantity
-            )
+                (billed_price - (unit_price or Decimal("0"))) * billed_quantity)
 
     results = []
     for row in rows.values():
@@ -4086,7 +4203,8 @@ def billed_not_held(vendor=None):
     agreed to pay for, that went back to the vendor and was never
     credited? Each row is a debit note waiting to be raised.
     """
-    lines = PurchaseOrderLine.objects.select_related("order__vendor", "item")
+    lines = with_line_figures(_billed_beyond_received(
+        PurchaseOrderLine.objects.select_related("order__vendor", "item")))
     if vendor is not None:
         lines = lines.filter(order__vendor=vendor)
 
@@ -4114,14 +4232,14 @@ def vendor_balance(vendor):
     Signed, so a vendor who has been overpaid reads negative rather than
     silently as zero.
     """
-    bills = Bill.objects.filter(
+    bills = not_paid_in_full(Bill.objects.filter(
         vendor=vendor, posted=True, debits__isnull=True
-    ).prefetch_related("lines__taxes", "payment_allocations__payment", "debit_notes__lines__taxes")
+    )).prefetch_related(*BILL_FIGURES)
     owed = sum((bill.amount_due() for bill in bills), Decimal("0"))
 
     notes = Bill.objects.filter(
         vendor=vendor, posted=True, debits__isnull=False
-    ).prefetch_related("lines__taxes", "payment_allocations__payment", "debits__lines__taxes")
+    ).prefetch_related(*BILL_FIGURES, *(f"debits__{f}" for f in BILL_FIGURES))
     refundable = sum((note.refund_due() for note in notes), Decimal("0"))
     return owed - refundable
 
@@ -4138,9 +4256,8 @@ def ap_aging(as_of=None):
     as_of = to_date(as_of) or timezone.localdate()
     buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
 
-    bills = Bill.objects.filter(posted=True, debits__isnull=True).prefetch_related(
-        "lines__taxes", "payment_allocations", "debit_notes__lines__taxes"
-    )
+    bills = not_paid_in_full(Bill.objects.filter(posted=True, debits__isnull=True)).select_related(
+        "vendor", "currency").prefetch_related(*BILL_FIGURES)
     for bill in bills:
         if bill.amount_due() <= 0:
             continue
@@ -4182,9 +4299,9 @@ def payment_run(due_by=None, vendor=None):
     be on top of the pile.
     """
     due_by = to_date(due_by) or timezone.localdate()
-    bills = Bill.objects.filter(posted=True, debits__isnull=True).select_related(
+    bills = not_paid_in_full(Bill.objects.filter(posted=True, debits__isnull=True)).select_related(
         "vendor", "currency"
-    ).prefetch_related("lines__taxes", "payment_allocations__payment", "debit_notes__lines__taxes")
+    ).prefetch_related(*BILL_FIGURES)
     if vendor is not None:
         bills = bills.filter(vendor=vendor)
 
@@ -4255,6 +4372,7 @@ class GoodsReceipt(AuditModel):
 
     class Meta:
         ordering = ["-receipt_date", "-id"]
+        indexes = [models.Index(fields=["receipt_date", "id"], name="receipt_by_date")]
         permissions = [("post_goodsreceipt", "Can post goods receipts and returns")]
         constraints = [
             models.UniqueConstraint(

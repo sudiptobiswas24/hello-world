@@ -38,10 +38,14 @@ to each other here for that reason, and every outbound path in every
 module asks this module rather than doing its own arithmetic.
 """
 
+import contextvars
+from collections import defaultdict
+from contextlib import contextmanager
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 
 
 class CostingMethod(models.TextChoices):
@@ -51,7 +55,77 @@ class CostingMethod(models.TextChoices):
     SPECIFIC = "specific", "Specific identification"
 
 
+_PRELOADED = contextvars.ContextVar("preloaded_positions", default=None)
+
+
+@contextmanager
+def preloaded(items, warehouses, as_of=None):
+    """
+    Read every position a report walks in two queries, not two a position.
+
+    A stock report asked each item and warehouse for its fold and then
+    for the movements since it: 600 queries for 300 items, nearly two
+    seconds. Inside this block the folds come from one query and the
+    movements after each fold from another, and the replays — unchanged —
+    walk those. Only the positions named, only at this `as_of`; anything
+    else asks the database as before.
+    """
+    from .models import StockMovement
+    from .snapshots import StockValuationSnapshot, usable_from
+
+    items = [item for item in items]
+    warehouses = [warehouse for warehouse in warehouses]
+    item_ids = {item.pk for item in items}
+    warehouse_ids = {warehouse.pk for warehouse in warehouses}
+    folds = {}
+    for snapshot in StockValuationSnapshot.objects.filter(
+        item_id__in=item_ids, warehouse_id__in=warehouse_ids
+    ):
+        folds[(snapshot.item_id, snapshot.warehouse_id, snapshot.method)] = snapshot
+
+    wanted = Q(pk__in=[])
+    methods = {item.pk: item.costing_method for item in items}
+    usable = {}
+    for item_id in item_ids:
+        for warehouse_id in warehouse_ids:
+            fold = usable_from(folds.get((item_id, warehouse_id, methods[item_id])), as_of)
+            usable[(item_id, warehouse_id)] = fold
+            here = Q(item_id=item_id, warehouse_id=warehouse_id)
+            if fold is not None:
+                here &= Q(occurred_at__gt=fold.boundary_at) | Q(
+                    occurred_at=fold.boundary_at, id__gt=fold.boundary_id)
+            wanted |= here
+    rows = StockMovement.objects.filter(wanted)
+    if as_of is not None:
+        rows = rows.filter(occurred_at__date__lte=as_of)
+    movements = defaultdict(list)
+    for movement in rows.order_by("occurred_at", "id"):
+        movements[(movement.item_id, movement.warehouse_id)].append(movement)
+
+    token = _PRELOADED.set({"as_of": as_of, "folds": usable, "movements": movements})
+    try:
+        yield
+    finally:
+        _PRELOADED.reset(token)
+
+
+def preloaded_fold(item, warehouse, as_of):
+    """(True, fold) when this position was read in advance, else (False, None)."""
+    held = _PRELOADED.get()
+    if held is None or warehouse is None or held["as_of"] != as_of:
+        return False, None
+    key = (item.pk, warehouse.pk)
+    if key not in held["folds"]:
+        return False, None
+    return True, held["folds"][key]
+
+
 def _movements(item, warehouse=None, before_id=None, as_of=None, after=None):
+    held = _PRELOADED.get()
+    if (held is not None and warehouse is not None and before_id is None
+            and held["as_of"] == as_of and (item.pk, warehouse.pk) in held["folds"]
+            and held["folds"][(item.pk, warehouse.pk)] == after):
+        return held["movements"].get((item.pk, warehouse.pk), [])
     movements = item.movements.all()
     if warehouse is not None:
         movements = movements.filter(warehouse=warehouse)

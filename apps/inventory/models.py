@@ -657,7 +657,15 @@ class StockMovement(AuditModel):
     notes = models.TextField(blank=True)
 
     class Meta:
-        ordering = ["-occurred_at"]
+        ordering = ["-occurred_at", "-id"]
+        indexes = [
+            # The newest first, for the list.
+            models.Index(fields=["occurred_at", "id"], name="movement_by_time"),
+            # One item on one shelf in the order it happened: what every
+            # valuation, cost of removal and replay since a fold reads.
+            models.Index(fields=["item", "warehouse", "occurred_at", "id"],
+                         name="movement_replay"),
+        ]
 
     def __str__(self):
         return f"{self.movement_type} {self.quantity} {self.item.sku} @ {self.warehouse.code}"
