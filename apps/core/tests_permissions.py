@@ -59,6 +59,7 @@ class PostingPermissionTests(TestCase):
         controller = User.objects.create_user("controller", password="x")
         grant(
             controller,
+            "accounting.view_journalentry",
             "accounting.add_journalentry",
             "accounting.change_journalentry",
             "accounting.post_journalentry",
@@ -143,3 +144,59 @@ class SetupRolesCommandTests(TestCase):
         self.assertIn("add_invoice", rep_codenames)
         self.assertNotIn("post_invoice", rep_codenames)
         self.assertIn("post_invoice", manager_codenames)
+
+
+class AnActionTakesWhatItNamesTests(TestCase):
+    """
+    Posting took the right to add as well as the right to post: DRF maps
+    every POST to add_. A poster who may not prepare could not post, and
+    paying a payslip took add_payslip, which nobody can mean.
+    """
+
+    def setUp(self):
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.revenue = Account.objects.create(
+            code="4000", name="Revenue", account_type=AccountType.INCOME)
+        entry = JournalEntry.objects.create(date="2026-01-01", memo="Test")
+        JournalLine.objects.create(entry=entry, account=self.cash, debit=Decimal("100"))
+        JournalLine.objects.create(entry=entry, account=self.revenue, credit=Decimal("100"))
+        self.entry = entry
+
+    def poster(self, *permissions):
+        user = User.objects.create_user(f"poster-{User.objects.count()}")
+        grant(user, *permissions)
+        client = APIClient()
+        client.force_authenticate(user)
+        return client.post(f"/api/accounting/journal-entries/{self.entry.pk}/post_entry/")
+
+    def test_seeing_it_and_posting_is_enough(self):
+        response = self.poster("accounting.view_journalentry", "accounting.post_journalentry")
+        self.assertEqual(response.status_code, 200, response.content[:200])
+
+    def test_posting_what_one_cannot_see_is_not(self):
+        response = self.poster("accounting.post_journalentry", "accounting.add_journalentry")
+        self.assertEqual(response.status_code, 403)
+
+    def test_seeing_it_alone_is_not(self):
+        response = self.poster("accounting.view_journalentry", "accounting.add_journalentry")
+        self.assertEqual(response.status_code, 403)
+
+
+class ModelPermissionsAloneTests(TestCase):
+    """Without ActionPermission beside it, the mapped right is still asked."""
+
+    def test_the_mapped_permission_is_required(self):
+        from types import SimpleNamespace
+
+        from apps.core.permissions import ModelPermissions
+
+        user = User.objects.create_user("viewer")
+        grant(user, "accounting.view_journalentry")
+        view = SimpleNamespace(action="post_entry", queryset=JournalEntry.objects.all(),
+                               action_permission_map={"post_entry": "accounting.post_journalentry"})
+        request = SimpleNamespace(user=user, method="POST")
+        self.assertFalse(ModelPermissions().has_permission(request, view))
+        grant(user, "accounting.post_journalentry")
+        user = User.objects.get(pk=user.pk)
+        self.assertTrue(ModelPermissions().has_permission(SimpleNamespace(user=user, method="POST"),
+                                                         view))

@@ -114,6 +114,7 @@ everyone everything.
 | Purchasing Clerk, AP Manager | orders and bills; the AP Manager approves, posts and pays | |
 | Warehouse Staff | receipts and deliveries, naming each new batch as it comes in | |
 | HR Admin | employees and leave | |
+| Payroll Officer | pay components (PF, ESI, PT rules), what each person is paid, working out each month's payroll | post it to the ledger or pay it: the Controller does both, and pays PF, ESI and tax over |
 | Employee Self Service | leave requests and purchase requisitions | read anyone's pay, or the ledger. They do see everyone's leave requests: limiting a person to their own is not built yet |
 
 A login alone reads nothing: every screen needs the role that shows it.

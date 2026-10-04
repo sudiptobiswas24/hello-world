@@ -10,20 +10,32 @@ it. payslips/ reads a run's slips with their lines, and {id}/pay/
 {payment} settles one against a payment made.
 """
 
+import copy
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
 from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
+from apps.core.permissions import RequiredPermission
 
 from .models import Employee
-from .payroll import EmployeeCompensation, PayComponent, PayRun, Payslip
+from .payroll import (
+    EmployeeCompensation,
+    PayComponent,
+    PayComponentSlab,
+    PayRun,
+    Payslip,
+    StatutoryRemittance,
+    statutory_liabilities,
+)
 
 
 def _run(callable_, *args, **kwargs):
@@ -38,7 +50,34 @@ class PayComponentSerializer(serializers.ModelSerializer):
         model = PayComponent
         fields = ["id", "code", "name", "kind", "basis", "expense_account",
                   "liability_account", "measure", "is_taxable", "reduces_for_unpaid_leave",
-                  "sequence", "is_active"]
+                  "sequence", "is_active", "base_components", "base_ceiling",
+                  "coverage_components", "coverage_ceiling", "coverage_period_months",
+                  "rounding", "remit_by_day"]
+
+    def validate(self, attrs):
+        # ModelSerializer does not run model.clean(); save() does, and its
+        # ValidationError would otherwise reach the client as a 500.
+        instance = copy.copy(self.instance) if self.instance is not None else PayComponent()
+        for name, value in attrs.items():
+            if name not in ("base_components", "coverage_components"):
+                setattr(instance, name, value)
+        try:
+            instance.clean()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return attrs
+
+
+class SlabSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PayComponentSlab
+        fields = ["id", "component", "above", "up_to", "month", "amount"]
+
+
+class RemittanceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StatutoryRemittance
+        fields = ["id", "payment", "liability_account", "period", "amount"]
 
 
 class CompensationSerializer(serializers.ModelSerializer):
@@ -171,3 +210,52 @@ class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
         payment = get_object_or_404(Payment, pk=request.data.get("payment"))
         _run(slip.pay, payment)
         return Response(_slip(slip))
+
+
+class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = PayComponentSlab.objects.select_related("component")
+    serializer_class = SlabSerializer
+
+    def perform_create(self, serializer):
+        try:
+            super().perform_create(serializer)
+        except IntegrityError as exc:
+            raise DRFValidationError(["Those slab figures do not make a band."]) from exc
+
+    def perform_update(self, serializer):
+        try:
+            super().perform_update(serializer)
+        except IntegrityError as exc:
+            raise DRFValidationError(["Those slab figures do not make a band."]) from exc
+
+
+class RemittanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Money paid over to PF, ESI or the tax office, against a month. Not edited."""
+
+    queryset = StatutoryRemittance.objects.select_related("payment", "liability_account")
+    serializer_class = RemittanceSerializer
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def perform_create(self, serializer):
+        _run(super().perform_create, serializer)
+
+
+class StatutoryLiabilitiesView(viewsets.ViewSet):
+    """GET ?as_of=: what payroll owes over, by account and month, and when it was due."""
+
+    permission_classes = [IsAuthenticated, RequiredPermission]
+    required_permission = "hr.view_statutoryremittance"
+
+    def list(self, request):
+        as_of = request.query_params.get("as_of")
+        if as_of and parse_date(as_of) is None:
+            raise DRFValidationError(["as_of is a date, YYYY-MM-DD."])
+        rows = statutory_liabilities(parse_date(as_of) if as_of else None)
+        return Response([{
+            "account": row["account"].pk, "account_code": row["account"].code,
+            "account_name": row["account"].name, "period": row["period"].isoformat(),
+            "deducted": str(row["deducted"]), "remitted": str(row["remitted"]),
+            "outstanding": str(row["outstanding"]),
+            "due_date": row["due_date"].isoformat() if row["due_date"] else None,
+            "overdue": row["overdue"],
+        } for row in rows])

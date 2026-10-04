@@ -77,6 +77,12 @@ ROLES = {
         *crud("accounting", "partytaxprofile"),
         *crud("accounting", "payment"),
         "accounting.post_payment",
+        # Payroll: posts what the Payroll Officer worked out, pays it, and
+        # pays PF, ESI and tax over.
+        *view("hr", "employee", "paycomponent", "paycomponentslab", "employeecompensation",
+              "payrun", "payslip", "payslipline"),
+        "hr.post_payrun",
+        *crud("hr", "statutoryremittance", actions=("add", "delete", "view")),
         *crud("assets", "assetcategory"),
         *crud("assets", "fixedasset"),
         *crud("assets", "depreciationentry", actions=("view",)),
@@ -321,6 +327,15 @@ ROLES = {
         *crud("hr", "employee"),
         *crud("hr", "leaverequest"),
         "hr.decide_leaverequest",
+    ],
+    "Payroll Officer": [
+        *REFERENCE,
+        *view("hr", "department", "employee", "leaverequest", "payslip", "payslipline",
+              "statutoryremittance"),
+        *full("hr", "paycomponent", "paycomponentslab", "employeecompensation"),
+        *crud("hr", "payrun", actions=("add", "change", "view")),
+        # deliberately NOT hr.post_payrun: whoever works the payroll out
+        # does not also put it in the ledger and pay it.
     ],
     "Employee Self Service": [
         *crud("purchasing", "purchaserequisition", actions=("add", "change", "view")),

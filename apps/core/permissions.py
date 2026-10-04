@@ -18,6 +18,29 @@ class ModelPermissions(DjangoModelPermissions):
         "HEAD": ["%(app_label)s.view_%(model_name)s"],
     }
 
+    def has_permission(self, request, view):
+        """
+        An action that names its permission takes that, and the right to
+        see what it acts on — not the right to add one.
+
+        DRF maps every POST to `add_`, so posting a pay run took
+        `hr.add_payrun` on top of `hr.post_payrun`, and paying a payslip
+        took `hr.add_payslip`, which means nothing: nobody adds payslips.
+        A role that only posts could not, and the cure was to let the
+        poster prepare too, which is the separation the roles exist for.
+        """
+        action = getattr(view, "action", None)
+        required = getattr(view, "action_permission_map", {}).get(action)
+        if not required:
+            return super().has_permission(request, view)
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        model = self._queryset(view).model
+        return user.has_perms([
+            *self.get_required_permissions("GET", model), required,
+        ])
+
 
 class ActionPermission(BasePermission):
     """

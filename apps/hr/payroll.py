@@ -28,11 +28,11 @@ track of somebody's wages.
 """
 
 import datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
-from django.db.models import Q, Sum
+from django.db.models import F, Q, Sum
 from django.utils import timezone
 
 from apps.accounting.models import (
@@ -55,9 +55,16 @@ class ComponentKind(models.TextChoices):
 
 class ComponentBasis(models.TextChoices):
     FIXED = "fixed", "Fixed amount"
-    PERCENT_OF_GROSS = "percent", "Percentage of taxable gross"
+    PERCENT_OF_GROSS = "percent", "Percentage of its base (taxable gross unless named)"
     PER_HOUR = "per_hour", "Rate per hour"
     PER_UNIT = "per_unit", "Rate per unit produced"
+    SLAB = "slab", "Amount from a slab of its base"
+
+
+class Rounding(models.TextChoices):
+    PAISA = "paisa", "To the paisa"
+    RUPEE = "rupee", "To the nearest rupee"
+    RUPEE_UP = "rupee_up", "Up to the next rupee"
 
 
 # What piece work can be counted in, registered by the modules that record
@@ -122,13 +129,66 @@ class PayComponent(AuditModel):
     )
     is_active = models.BooleanField(default=True)
 
+    # Statutory contributions are not a percentage of everything paid.
+    # Provident fund is 12% of basic and the allowances paid to all, on
+    # wages capped at 15,000; ESI applies only to those earning up to
+    # 21,000, decided once for each six-month contribution period, and
+    # rounds up to the rupee; professional tax is a slab, with a
+    # different figure in February. Taken of the whole taxable gross, PF
+    # on a loom operator with overtime came out 876 a month too high.
+    # The rules are set here per component; the rates stay data.
+    base_components = models.ManyToManyField(
+        "self", symmetrical=False, blank=True, related_name="+",
+        help_text="What a percentage or slab is taken of: these components' amounts on "
+                  "the slip. Empty means the taxable gross so far.",
+    )
+    base_ceiling = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="The base is capped here: 15,000 for provident fund.",
+    )
+    coverage_components = models.ManyToManyField(
+        "self", symmetrical=False, blank=True, related_name="+",
+        help_text="What decides whether it applies at all. Empty means the base. ESI "
+                  "leaves overtime out of deciding, and charges on it all the same.",
+    )
+    coverage_ceiling = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Applies only while what decides coverage is at or under this: "
+                  "21,000 for ESI.",
+    )
+    coverage_period_months = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Coverage is decided by the first slip in each block of this many "
+                  "months from April, and holds for the block: 6 for ESI.",
+    )
+    rounding = models.CharField(max_length=8, choices=Rounding.choices,
+                                default=Rounding.PAISA)
+    remit_by_day = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Day of the following month what is owed must be paid over: 15 for "
+                  "PF and ESI, 7 for TDS.",
+    )
+
     class Meta:
         ordering = ["sequence", "code"]
 
     def __str__(self):
         return f"{self.code} - {self.name}"
 
+    def round(self, amount):
+        if self.rounding == Rounding.RUPEE:
+            return amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        if self.rounding == Rounding.RUPEE_UP:
+            return amount.quantize(Decimal("1"), rounding=ROUND_CEILING)
+        return round_money(amount)
+
     def clean(self):
+        if self.coverage_period_months not in (1, 2, 3, 4, 6, 12):
+            raise ValidationError(
+                f"{self.code}: a coverage period divides the year: 1, 2, 3, 4, 6 or 12 months."
+            )
+        if self.remit_by_day is not None and not 1 <= self.remit_by_day <= 28:
+            raise ValidationError(f"{self.code}: pay it over by a day from 1 to 28.")
         if self.basis == ComponentBasis.PER_UNIT:
             if self.kind != ComponentKind.EARNING:
                 raise ValidationError(f"{self.code}: piece work is something earned.")
@@ -160,6 +220,44 @@ class PayComponent(AuditModel):
     def save(self, *args, **kwargs):
         self.clean()
         super().save(*args, **kwargs)
+
+    def slab_for(self, base, month):
+        """The slab amount for `base` in `month`; one for that month wins."""
+        rows = [slab for slab in self.slabs.all()
+                if slab.above < base and (slab.up_to is None or base <= slab.up_to)]
+        dated = [slab for slab in rows if slab.month == month]
+        general = [slab for slab in rows if slab.month is None]
+        chosen = (dated or general or [None])[0]
+        return chosen.amount if chosen is not None else Decimal("0")
+
+
+class PayComponentSlab(AuditModel):
+    """
+    One band of a slab component: over `above` and up to `up_to`, this
+    amount; in `month` only, when it is set. Professional tax is the
+    usual case — Maharashtra's 200 a month is 300 in February.
+    """
+
+    component = models.ForeignKey(PayComponent, on_delete=models.CASCADE, related_name="slabs")
+    above = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
+    up_to = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    month = models.PositiveSmallIntegerField(null=True, blank=True)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ["component", "month", "above"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gte=0), name="slab_amount_not_negative"),
+            models.CheckConstraint(check=Q(above__gte=0), name="slab_above_not_negative"),
+            models.CheckConstraint(check=Q(up_to__isnull=True) | Q(up_to__gt=F("above")),
+                                   name="slab_up_to_above_its_floor"),
+            models.CheckConstraint(check=Q(month__isnull=True) | Q(month__gte=1, month__lte=12),
+                                   name="slab_month_is_a_month"),
+        ]
+
+    def __str__(self):
+        top = self.up_to if self.up_to is not None else "and over"
+        return f"{self.component.code} {self.above}-{top}: {self.amount}"
 
 
 class EmployeeCompensation(AuditModel):
@@ -436,10 +534,19 @@ class PayRun(AuditModel):
                 # Where it landed is a fact from here on, not something a
                 # later reader recomputes: a department can be moved to a
                 # different cost centre and this entry must not follow it.
-                if line.posted_account_id != getattr(account, "pk", None):
+                # And what it is owed into: the liabilities report reads this,
+                # not the component, whose account can be changed later.
+                owed_into = None if line.kind == ComponentKind.EARNING else (
+                    account if line.kind == ComponentKind.DEDUCTION
+                    else line.component.liability_account
+                )
+                if (line.posted_account_id != getattr(account, "pk", None)
+                        or line.posted_liability_account_id != getattr(owed_into, "pk", None)):
                     line.posted_account = account
+                    line.posted_liability_account = owed_into
                     super(PayslipLine, line).save(
-                        update_fields=["posted_account", "updated_at"]
+                        update_fields=["posted_account", "posted_liability_account",
+                                       "updated_at"]
                     )
                 if line.kind == ComponentKind.EARNING:
                     add(debits, account, line.amount)
@@ -712,6 +819,7 @@ class Payslip(AuditModel):
         ).select_related("component").order_by("component__sequence", "component__code")
 
         running_taxable = Decimal("0")
+        computed = {}
         pieces_done = set()
         for row in rows:
             component = row.component
@@ -724,10 +832,11 @@ class Payslip(AuditModel):
                 pieces_done.add(component.pk)
                 amount, quantity, row = self.piece_work(component)
             else:
-                amount = self._amount_for(row, proportion, running_taxable, hours)
-            amount = round_money(amount)
+                amount = self._amount_for(row, proportion, running_taxable, hours, computed)
+            amount = component.round(amount)
             if amount <= 0:
                 continue
+            computed[component.pk] = computed.get(component.pk, Decimal("0")) + amount
             PayslipLine.objects.create(
                 payslip=self,
                 component=component,
@@ -804,10 +913,71 @@ class Payslip(AuditModel):
 
         return approved_hours(self.employee, self.run.period_start, self.run.period_end)
 
-    def _amount_for(self, row, proportion, running_taxable, hours):
+    def _sum_of(self, component, named, computed, running_taxable):
+        """What `named` components came to on this slip; the taxable gross if none."""
+        if not named:
+            return running_taxable
+        late = [other.code for other in named if other.sequence >= component.sequence]
+        if late:
+            raise ValidationError(
+                f"{component.code} is taken of {', '.join(late)}, which come after it on "
+                "the slip; give them a lower sequence."
+            )
+        return sum((computed.get(other.pk, Decimal("0")) for other in named), Decimal("0"))
+
+    def _block_start(self, months):
+        """The first day of the contribution period this run falls in, counted from April."""
+        end = self.run.period_end
+        since_april = (end.month - 4) % 12
+        start_offset = since_april - since_april % months
+        year = end.year if end.month >= 4 else end.year - 1
+        month = 4 + start_offset
+        return datetime.date(year + (month - 1) // 12, (month - 1) % 12 + 1, 1)
+
+    def _is_covered(self, component, computed, running_taxable):
+        """
+        Whether a component with a coverage ceiling applies to this
+        person in this run. Decided by the first posted slip in the
+        contribution period, when there is one: ESI covers somebody for
+        the whole period they were covered at the start of, and a rise in
+        July does not end it until October.
+        """
+        if component.coverage_ceiling is None:
+            return True
+        deciding = list(component.coverage_components.all()) or list(
+            component.base_components.all())
+        start = self._block_start(component.coverage_period_months)
+        first = Payslip.objects.filter(
+            employee=self.employee, run__status=PayRunStatus.POSTED,
+            run__period_end__gte=start, run__period_end__lt=self.run.period_end,
+        ).exclude(pk=self.pk).order_by("run__period_end").first()
+        if first is not None:
+            lines = first.lines.all()
+            if deciding:
+                wanted = {other.pk for other in deciding}
+                wages = sum((line.amount for line in lines if line.component_id in wanted),
+                            Decimal("0"))
+            else:
+                wages = sum((line.amount for line in lines
+                             if line.kind == ComponentKind.EARNING and line.is_taxable),
+                            Decimal("0"))
+        else:
+            wages = self._sum_of(component, deciding, computed, running_taxable)
+        return wages <= component.coverage_ceiling
+
+    def _amount_for(self, row, proportion, running_taxable, hours, computed=None):
         component = row.component
-        if component.basis == ComponentBasis.PERCENT_OF_GROSS:
-            return running_taxable * row.amount / Decimal("100")
+        if component.basis in (ComponentBasis.PERCENT_OF_GROSS, ComponentBasis.SLAB):
+            computed = computed or {}
+            if not self._is_covered(component, computed, running_taxable):
+                return Decimal("0")
+            base = self._sum_of(component, list(component.base_components.all()),
+                                computed, running_taxable)
+            if component.base_ceiling is not None:
+                base = min(base, component.base_ceiling)
+            if component.basis == ComponentBasis.SLAB:
+                return component.slab_for(base, self.run.period_end.month)
+            return base * row.amount / Decimal("100")
         if component.basis == ComponentBasis.PER_HOUR:
             worked = Decimal(hours) if hours is not None else self.worked_hours()
             if not worked:
@@ -899,6 +1069,12 @@ class PayslipLine(AuditModel):
         help_text="Where this line actually landed when the run posted, frozen so a "
                   "reversal gives it back to the same place.",
     )
+    posted_liability_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="On a deduction or employer contribution, what it was owed into when "
+                  "the run posted: what the liabilities report counts it against.",
+    )
 
     class Meta:
         ordering = ["component__sequence", "component__code"]
@@ -930,3 +1106,132 @@ class PayslipLine(AuditModel):
         if department is not None and department.cost_centre_id:
             return department.cost_centre
         return self.component.expense_account
+
+
+def _month_of(day):
+    day = to_date(day)
+    return datetime.date(day.year, day.month, 1)
+
+
+def _deducted(account, period):
+    """What posted runs for `period` owe into `account`."""
+    period = _month_of(period)
+    following = (period + datetime.timedelta(days=32)).replace(day=1)
+    return PayslipLine.objects.filter(
+        posted_liability_account=account, payslip__run__status=PayRunStatus.POSTED,
+        payslip__run__period_end__gte=period, payslip__run__period_end__lt=following,
+    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+
+
+class StatutoryRemittance(AuditModel):
+    """
+    Money paid over to the PF, ESI or tax authority, against one month's
+    liability on one account.
+
+    A payment against PF payable said that something was paid, never for
+    which month, so nobody could say whether June was settled or what
+    was due by the 15th. Recorded against the month, with the same
+    questions asked of the payment as a payslip asks: posted, paid out,
+    booked against this account, and not spent twice.
+    """
+
+    payment = models.ForeignKey(
+        "accounting.Payment", on_delete=models.PROTECT, related_name="remittances"
+    )
+    liability_account = models.ForeignKey(
+        "accounting.Account", on_delete=models.PROTECT, related_name="+"
+    )
+    period = models.DateField(help_text="The month the deductions were made for.")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ["-period", "liability_account", "id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="remittance_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.liability_account.code} {self.period:%b %Y} {self.amount}"
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValidationError(
+                "A remittance is not edited. Delete it and record what was paid."
+            )
+        self.period = _month_of(self.period)
+        self.amount = round_money(Decimal(self.amount))
+        payment = self.payment
+        if not payment.posted:
+            raise ValidationError("That payment has not been posted; nothing has left the bank.")
+        if payment.is_voided():
+            raise ValidationError("That payment has been voided; it pays nothing over.")
+        if payment.direction != PaymentDirection.DISBURSEMENT:
+            raise ValidationError("A remittance is money paid out, not money received.")
+        if payment.counterpart_account_id != self.liability_account_id:
+            raise ValidationError(
+                f"That payment was booked against {payment.counterpart_account}, not "
+                f"{self.liability_account}, so it does not clear this liability."
+            )
+        base = Company.get().base_currency_id
+        if payment.currency_id not in (None, base):
+            raise ValidationError("Statutory dues are paid in the base currency.")
+        used = payment.remittances.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+        if used + self.amount > payment.amount:
+            raise ValidationError(
+                f"That payment is {payment.amount} and {used} of it is already accounted "
+                f"for; {self.amount} more would pay over money that never left the bank."
+            )
+        owed = _deducted(self.liability_account, self.period) - remitted(
+            self.liability_account, self.period)
+        if self.amount > owed:
+            raise ValidationError(
+                f"{self.liability_account} owes {owed} for {self.period:%B %Y}; "
+                f"{self.amount} is more than was deducted. Check the month."
+            )
+        super().save(*args, **kwargs)
+
+
+def remitted(account, period):
+    """Paid over against `account` for `period`, by payments that still stand."""
+    rows = StatutoryRemittance.objects.filter(
+        liability_account=account, period=_month_of(period)
+    ).select_related("payment")
+    return sum((row.amount for row in rows if not row.payment.is_voided()), Decimal("0"))
+
+
+def statutory_liabilities(as_of=None):
+    """
+    Per liability account and month: what payroll deducted and the
+    company owes on top, what has been paid over, what is left, and by
+    when it was due.
+
+    Read from the posted lines, each against the account it was owed
+    into when its run posted, and from remittances whose payments still
+    stand: a voided run owes nothing and a bounced payment paid nothing.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    lines = PayslipLine.objects.filter(
+        posted_liability_account__isnull=False, payslip__run__status=PayRunStatus.POSTED,
+        payslip__run__period_end__lte=as_of,
+    ).select_related("posted_liability_account", "component", "payslip__run")
+    rows, due_days = {}, {}
+    for line in lines:
+        key = (line.posted_liability_account, _month_of(line.payslip.run.period_end))
+        rows[key] = rows.get(key, Decimal("0")) + line.amount
+        day = line.component.remit_by_day
+        if day is not None:
+            due_days[key] = min(due_days.get(key, day), day)
+    result = []
+    for (account, period), deducted in sorted(rows.items(),
+                                              key=lambda item: (item[0][1], item[0][0].code)):
+        paid = remitted(account, period)
+        following = (period + datetime.timedelta(days=32)).replace(day=1)
+        due = following.replace(day=due_days[(account, period)]) \
+            if (account, period) in due_days else None
+        outstanding = deducted - paid
+        result.append({
+            "account": account, "period": period, "deducted": deducted, "remitted": paid,
+            "outstanding": outstanding, "due_date": due,
+            "overdue": bool(due and outstanding > 0 and as_of > due),
+        })
+    return result

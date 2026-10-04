@@ -5,6 +5,9 @@ from .payroll_views import (
     PayComponentViewSet,
     PayRunViewSet,
     PayslipViewSet,
+    RemittanceViewSet,
+    SlabViewSet,
+    StatutoryLiabilitiesView,
 )
 from .views import DepartmentViewSet, EmployeeViewSet, LeaveRequestViewSet
 
@@ -16,5 +19,8 @@ router.register("pay-components", PayComponentViewSet)
 router.register("compensation", CompensationViewSet)
 router.register("pay-runs", PayRunViewSet)
 router.register("payslips", PayslipViewSet)
+router.register("pay-component-slabs", SlabViewSet)
+router.register("statutory-remittances", RemittanceViewSet)
+router.register("statutory-liabilities", StatutoryLiabilitiesView, basename="statutory-liabilities")
 
 urlpatterns = router.urls
