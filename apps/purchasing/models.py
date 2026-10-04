@@ -4233,6 +4233,7 @@ class GoodsReceipt(AuditModel):
 
         valued = []
         received = {}
+        price_differences = {}
         for line in lines:
             if line.order_line.work_order_operation_id:
                 self._post_outside_step(line, is_return)
@@ -4300,6 +4301,18 @@ class GoodsReceipt(AuditModel):
             )
             if not is_return and line.landed_warehouse_id != landed.pk:
                 line.landed_warehouse = landed
+            item = line.order_line.item
+            if is_return and item.track_inventory and item.costing_method != "standard":
+                # What leaving takes off the shelf, asked before the
+                # movement is written, as every outbound path asks. The
+                # ledger is credited at what the goods cost; when the shelf
+                # averages something else the difference is a gain or a
+                # loss on the price, and booking it keeps the two equal.
+                removing = item.cost_of_removing(
+                    landed, item.to_stock_quantity(line.quantity_received, line.order_line.uom),
+                    lot=line.lot)
+                price_differences[item] = (price_differences.get(item, Decimal("0"))
+                                           + line.quantity_received * unit_cost - removing)
             movement = StockMovement.objects.create(
                 item=line.order_line.item,
                 warehouse=landed,
@@ -4351,6 +4364,8 @@ class GoodsReceipt(AuditModel):
             reverse=is_return,
             quantities=received,
         )
+        if price_differences:
+            self._post_return_price_difference(price_differences)
 
         self.posted = True
         self.posted_at = timezone.now()
@@ -4637,18 +4652,39 @@ class GoodsReceipt(AuditModel):
         )
 
     def _restore_components(self, line):
-        """Put the components back where they were when a return reverses
-        a subcontract receipt, and return their per-unit cost."""
+        """
+        Put the components back where they were when a return reverses
+        a subcontract receipt, and return their cost per finished unit.
+
+        At what they were consumed at, which the receipt recorded: putting
+        them back at whatever they average today restored a different
+        value from the one that went into the assembly (CLAUDE.md,
+        mistake 4).
+        """
         order = self.purchase_order
         warehouse = order.subcontract_warehouse
-        per_unit = Decimal("0")
+        original = line.reverses_line
+        share = (line.quantity_received / original.quantity_received
+                 if original is not None and original.quantity_received else Decimal("1"))
+        restored = Decimal("0")
         for component in line.order_line.components.select_related("item"):
             if not component.item.track_inventory:
                 continue
-            quantity = round_money(component.quantity_per * line.quantity_received)
-            cost = component.item.average_cost_at(warehouse) or (
-                component.item.average_cost()
-            ) or (component.item.standard_cost or Decimal("0"))
+            consumed = StockMovement.objects.filter(
+                item=component.item, warehouse=warehouse,
+                movement_type=MovementType.ISSUE,
+                reference=self.reverses.number,
+                notes__startswith="Consumed by subcontractor",
+            ).first()
+            if consumed is not None:
+                quantity = round_money(-consumed.quantity * share)
+                cost = consumed.unit_cost or Decimal("0")
+            else:
+                # A receipt from before consumption was recorded this way.
+                quantity = round_money(component.quantity_per * line.quantity_received)
+                cost = component.item.average_cost_at(warehouse) or (
+                    component.item.average_cost()
+                ) or (component.item.standard_cost or Decimal("0"))
             StockMovement.objects.create(
                 item=component.item, warehouse=warehouse,
                 movement_type=MovementType.RECEIPT, uom=component.item.uom,
@@ -4657,8 +4693,8 @@ class GoodsReceipt(AuditModel):
                 occurred_at=timezone.now(),
                 notes=f"Components returned with {self.number}",
             )
-            per_unit += round_money(component.quantity_per * cost)
-        return per_unit
+            restored += quantity * cost
+        return restored / line.quantity_received
 
     def _consume_components(self, line):
         """
@@ -4672,12 +4708,15 @@ class GoodsReceipt(AuditModel):
                 "components have nowhere to be consumed from."
             )
         warehouse = order.subcontract_warehouse
-        per_unit = Decimal("0")
+        consumed = Decimal("0")
         for component in line.order_line.components.select_related("item"):
             if not component.item.track_inventory:
                 continue
             used = round_money(component.quantity_per * line.quantity_received)
-            cost = component.item.removal_unit_cost(warehouse, used)
+            # What the replay will take off, exactly: the rule every
+            # outbound path follows (inventory/costing.py).
+            taking = component.item.cost_of_removing(warehouse, used) if used else Decimal("0")
+            cost = (taking / used).quantize(Decimal("0.0001")) if used else Decimal("0")
             on_hand = component.item.on_hand_at(warehouse)
             if used > on_hand:
                 raise ValidationError(
@@ -4692,8 +4731,12 @@ class GoodsReceipt(AuditModel):
                 occurred_at=timezone.now(),
                 notes=f"Consumed by subcontractor for {self.number}",
             )
-            per_unit += round_money(component.quantity_per * cost)
-        return per_unit
+            consumed += taking
+        # Per finished unit at full precision. Each component's share was
+        # rounded to the paisa and multiplied back up: 1,000 sacks came in
+        # 2.90 short of what went into them, and the shelf never agreed
+        # with the ledger again.
+        return consumed / line.quantity_received
 
     def _debit_returned_goods(self):
         """
@@ -4749,6 +4792,44 @@ class GoodsReceipt(AuditModel):
         ]
 
     @transaction.atomic
+    def _post_return_price_difference(self, differences):
+        """
+        Inventory and the price variance account, for what the vendor is
+        owed back less what the shelf gave up. Written here rather than
+        through post_inventory_entry, which knows a receipt's GRNI and
+        inventory and has no argument meaning "the shelf and the price
+        disagree on a return" (CLAUDE.md, mistake 6).
+        """
+        rows = {}
+        for item, difference in differences.items():
+            amount = round_money(difference)
+            if amount:
+                account = inventory_account_for(item)
+                rows[account] = rows.get(account, Decimal("0")) + amount
+        rows = {account: amount for account, amount in rows.items() if amount}
+        if not rows:
+            return None
+        variance = Company.get().purchase_price_variance_account
+        if variance is None:
+            raise ValidationError(
+                "These goods go back at a price other than what the shelf holds them at, "
+                "and the company has no purchase price variance account to take the "
+                "difference. Set one, then post the return.")
+        memo = f"Price difference returning goods to vendor for {self.purchase_order}"
+        entry = JournalEntry.objects.create(date=self.receipt_date,
+                                            reference=self.reference or self.number, memo=memo)
+        for account, amount in rows.items():
+            # Credited at cost, the shelf gave up less: inventory is put
+            # back and the vendor's refund is a gain. The other way round,
+            # a loss.
+            gain, loss = (amount, Decimal("0")) if amount > 0 else (Decimal("0"), -amount)
+            JournalLine.objects.create(entry=entry, account=account, debit=gain, credit=loss,
+                                       description=memo[:255])
+            JournalLine.objects.create(entry=entry, account=variance, debit=loss, credit=gain,
+                                       description=memo[:255])
+        entry.post()
+        return entry
+
     def create_return(self, quantities=None, debit_bills=True):
         """
         Send goods back. By default all of them; pass `quantities` as

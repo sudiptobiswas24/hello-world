@@ -258,7 +258,13 @@ class SendingItBackTests(ForeignTestCase):
         self.assertEqual(self.balance(self.grni), Decimal("0"))
         self.assertEqual(self.balance(self.payable), Decimal("-32.50"))
         self.assertEqual(self.balance(self.fx_loss), Decimal("0"))
-        self.assertEqual(self.balance(self.inventory), Decimal("32.50"))
+        # The five left on the shelf are worth 31.25: 62.50 for ten at an
+        # average of 6.25, less the five sent back. This said 32.50, the
+        # inventory account credited at the 30.00 the five cost, which left
+        # the account 1.25 above the shelf for good; the test was holding
+        # the defect in place. The 1.25 is the price lost on the return.
+        self.assertEqual(self.balance(self.inventory), Decimal("31.25"))
+        self.assertEqual(self.balance(self.ppv), Decimal("1.25"))
 
 
 class APriceRevisedAfterTheGoodsCameTests(ForeignTestCase):

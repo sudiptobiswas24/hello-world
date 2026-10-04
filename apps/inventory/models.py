@@ -616,8 +616,11 @@ class StockMovement(AuditModel):
         help_text="In the item's stocking unit. Positive for inbound movements "
                   "(receipt, transfer_in), negative for outbound.",
     )
+    # Eight places, not four. Output costed at 93.84634 a kilo stored as
+    # 93.8463, and 4,000 kg of tape went on the shelf 0.16 below what the
+    # ledger booked for it - a few paise every run, never reconciling.
     unit_cost = models.DecimalField(
-        max_digits=18, decimal_places=4, null=True, blank=True,
+        max_digits=24, decimal_places=8, null=True, blank=True,
         help_text="Cost per unit for this movement; set from the purchase price inbound, "
                   "from the weighted average outbound.",
     )

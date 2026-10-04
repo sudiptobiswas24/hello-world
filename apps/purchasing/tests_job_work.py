@@ -301,3 +301,103 @@ class ABillIsNamedWhileTheOrderIsStillADraftTests(JobWorkTestCase):
         with self.assertRaises(ValidationError) as caught:
             self.job_work()
         self.assertIn("rounds to nothing", str(caught.exception))
+
+
+class WhatWentInComesOutTests(JobWorkTestCase):
+    """
+    113.06 kg of fabric at 92.00, 7.39 of ink at 620.00 and 1.23 of thread
+    at 146.00 go into a thousand sacks: 15,162.90, and the job worker's
+    1,400.00 on top. The sacks are worth 16,562.90, 16.5629 each.
+
+    Found tracing stock against the ledger across every test: each
+    component's share of a sack was rounded to the paisa first, so the
+    thousand sacks came in at 16.56 and 2.90 went nowhere.
+    """
+
+    def gap(self):
+        from apps.inventory.reports import reconcile_to_ledger
+
+        return reconcile_to_ledger()["difference"]
+
+    def test_the_sacks_are_worth_what_went_into_them(self):
+        before = self.gap()
+        order, line = self.job_work(quantity="1000", confirm=True)
+        order.issue_components(self.warehouse)
+        self.receive(order, "1000")
+        self.assertEqual(self.sack.valuation_at(self.warehouse)[1], Decimal("16562.90"))
+        self.assertEqual(self.gap(), before)
+
+    def test_and_sent_back_they_return_what_was_used(self):
+        before = self.gap()
+        fabric_held = self.fabric.valuation_at(self.warehouse)[1]
+        order, line = self.job_work(quantity="1000", confirm=True)
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "1000")
+        # Fabric has gone up since: today's average is no longer 92.00, so
+        # restoring at today's average would put back the wrong value.
+        from django.utils import timezone
+
+        from apps.inventory.models import MovementType, StockMovement
+
+        StockMovement.objects.create(item=self.fabric, warehouse=self.warehouse,
+                                     movement_type=MovementType.RECEIPT, uom=self.fabric.uom,
+                                     quantity=Decimal("20000"), unit_cost=Decimal("110"),
+                                     occurred_at=timezone.now())
+        fabric_held += Decimal("2200000")
+        before += Decimal("2200000")  # that fabric is stock with no posting behind it
+        receipt.create_return(debit_bills=False)
+        # The fabric is back on the job worker's floor at the 92.00 it was
+        # used at, whatever the shelf averages by then, and nothing has
+        # leaked between the shelf and the ledger.
+        self.assertEqual(self.fabric.valuation_at(self.subcontractor)[1], Decimal("10401.52"))
+        self.assertEqual(self.sack.on_hand_at(self.warehouse), Decimal("0"))
+        self.assertEqual(self.fabric.valuation_at(self.warehouse)[1] + Decimal("10401.52"),
+                         fabric_held)
+        self.assertEqual(self.gap(), before)
+
+
+    def variance_account(self):
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company
+
+        company = Company.get()
+        company.purchase_price_variance_account = Account.objects.create(
+            code="5150", name="Price variance", account_type=AccountType.EXPENSE)
+        company.save()
+        return company.purchase_price_variance_account
+
+    def test_part_sent_back_returns_its_share(self):
+        before = self.gap()
+        self.variance_account()
+        order, line = self.job_work(quantity="1000", confirm=True)
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "1000")
+        receipt.create_return({receipt.lines.get(): "400"}, debit_bills=False)
+        # 40 per cent of the 113.06 kg used, at the 92.00 it was used at.
+        self.assertEqual(self.fabric.valuation_at(self.subcontractor)[1], Decimal("4160.24"))
+        self.assertEqual(self.sack.on_hand_at(self.warehouse), Decimal("600"))
+        self.assertEqual(self.gap(), before)
+
+    def test_sacks_that_average_otherwise_go_back_at_the_shelfs_cost(self):
+        from django.db.models import Sum
+        from django.utils import timezone
+
+        from apps.accounting.models import JournalLine
+        from apps.inventory.models import MovementType, StockMovement
+
+        variance = self.variance_account()
+        StockMovement.objects.create(item=self.sack, warehouse=self.warehouse,
+                                     movement_type=MovementType.RECEIPT, uom=self.sack.uom,
+                                     quantity=Decimal("500"), unit_cost=Decimal("20"),
+                                     occurred_at=timezone.now())
+        before = self.gap()
+        order, line = self.job_work(quantity="1000", confirm=True)
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "1000")
+        receipt.create_return(debit_bills=False)
+        # 1,500 sacks averaging 17.7086: the thousand take 17,708.60 off
+        # the shelf against the 16,562.90 they came in at.
+        lost = JournalLine.objects.filter(account=variance, entry__posted=True).aggregate(
+            d=Sum("debit"), c=Sum("credit"))
+        self.assertEqual((lost["d"] or 0) - (lost["c"] or 0), Decimal("1145.70"))
+        self.assertEqual(self.gap(), before)

@@ -120,6 +120,14 @@ Go through it before running anything.
 - A frozen record is computed from its frozen figures; the test must be
   too.
 - `round()` of a small negative Decimal is `-0.00`; add `+ 0`.
+- Never round a per-unit cost and multiply it back up. A component's
+  share of a sack rounded to the paisa lost 2.90 on 1,000 sacks; a
+  four-place unit cost lost 0.16 on 4,000 kg of tape. Total first,
+  divide last; `StockMovement.unit_cost` keeps eight places.
+- Every outbound stock path asks `cost_of_removing()` and books what it
+  says. The return to vendor credited the price it paid instead, and the
+  shelf and the ledger parted for good. Where the two differ, the
+  difference is a price variance, posted.
 - A `DecimalField` in a raw `Response` becomes a float; send `str()`.
 
 **Dates and the database the plant runs**

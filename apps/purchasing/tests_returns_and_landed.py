@@ -106,6 +106,39 @@ class PartialReturnTests(ReturnTestCase):
             returned.create_return()
 
 
+class ReturnedAtTheShelfsCostTests(ReturnTestCase):
+    """
+    500 on the shelf at 4.00, then 20 bought at 5.00: 520 averaging
+    4.0385. Sending the 20 back takes 80.77 off the shelf, which is what
+    the replay removes; the vendor owes back the 100.00 they were paid.
+    The 19.23 between is a gain on the price, not stock that is not there.
+
+    Found tracing stock against the ledger across every test: the return
+    credited inventory at the 100.00 it cost, the shelf gave up 80.77, and
+    the two parted by 19.23 for good. cost_of_removing() is the rule every
+    outbound path follows, and the return to vendor did not ask it.
+    """
+
+    def test_the_shelf_and_the_ledger_still_agree(self):
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.receive(self.make_order("500", "4"), "500")
+        order = self.make_order("20", "5")
+        receipt = self.receive(order, "20")
+        receipt.create_return(debit_bills=False)
+        report = reconcile_to_ledger()
+        self.assertEqual((report["total_stock_value"], report["difference"]),
+                         (Decimal("2019.23"), Decimal("0.00")))
+        self.assertEqual(self.balance(self.ppv), Decimal("-19.23"))
+        self.assertEqual(self.balance(self.grni), Decimal("-2000.00"))
+
+    def test_a_return_at_the_average_posts_no_variance(self):
+        self.receive(self.make_order("500", "4"), "500")
+        receipt = self.receive(self.make_order("20", "4"), "20")
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(self.balance(self.ppv), Decimal("0"))
+
+
 class ReturnDebitsTheBillTests(ReturnTestCase):
     def billed(self, quantity="10", price="5"):
         order = self.make_order(quantity, price)

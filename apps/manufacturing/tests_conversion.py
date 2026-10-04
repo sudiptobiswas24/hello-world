@@ -263,6 +263,18 @@ class ClosingTellsTheTwoOverrunsApartTests(ConversionTestCase):
         ).post()
         return order
 
+    def test_the_shelf_takes_what_the_ledger_booked(self):
+        # Found tracing stock against the ledger across every test: the
+        # tape cost 93.84634 a kilo and the movement stored 93.8463, so
+        # 4,000 kg went on the shelf 0.16 below the 381,323.51 booked -
+        # every run, never reconciling. Unit cost now keeps eight places.
+        from apps.inventory.reports import reconcile_to_ledger
+
+        before = reconcile_to_ledger()["difference"]
+        order = self.run_it("1423.33")
+        order.close(TODAY)
+        self.assertEqual(reconcile_to_ledger()["difference"], before)
+
     def test_a_loom_that_ran_over(self):
         # 1,600 minutes booked against 1,423.33 earned, at ₹6 a minute.
         order = self.run_it("1600")

@@ -180,6 +180,12 @@ class APurchaseTests(LifecycleTestCase):
 
         self.payable = Account.objects.create(code="2100", name="AP",
                                               account_type=AccountType.LIABILITY)
+        from apps.core.models import Company
+
+        company = Company.get()
+        company.purchase_price_variance_account = Account.objects.create(
+            code="5150", name="Price variance", account_type=AccountType.EXPENSE)
+        company.save()
 
     def order_and_receive(self):
         clerk = self.as_("Purchasing Clerk")
