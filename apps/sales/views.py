@@ -248,7 +248,8 @@ class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "customer__code", "customer__name", "sales_order__number"]
-    filter_fields = ["customer", "posted", "credits", "is_down_payment", "sales_order"]
+    filter_fields = ["customer", "posted", "credits", "credits__isnull", "is_down_payment",
+                     "sales_order"]
     date_field = "invoice_date"
     ordering_fields = ["invoice_date", "due_date", "number"]
 

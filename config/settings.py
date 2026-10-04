@@ -48,6 +48,10 @@ if PRODUCTION and not ALLOWED_HOSTS:
     raise ImproperlyConfigured("DJANGO_ALLOWED_HOSTS is not set: name the server's host names.")
 CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
+# Signing in from the address bar lands on the office application; the
+# station screens pass their own ?next=.
+LOGIN_REDIRECT_URL = "/app/"
+
 
 # Application definition
 
@@ -70,6 +74,7 @@ INSTALLED_APPS = [
     "apps.planning",
     "apps.assets",
     "apps.gst",
+    "apps.web",
 ]
 
 MIDDLEWARE = [
@@ -204,6 +209,14 @@ if PRODUCTION:
         "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
         "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
+    # Files whose names carry a hash of their content may be kept by a
+    # browser for good: Django's (name.0123456789ab.css) and the office
+    # application's (web/assets/name-AbCd_123.js). Matched against the
+    # address; a pattern here replaces WhiteNoise's own test, so it names
+    # Django's form too. The application's page (apps/web) is never cached.
+    WHITENOISE_IMMUTABLE_FILE_TEST = (
+        r"(\.[0-9a-f]{12}\.[^/]+$)|(/web/assets/[^/]+-[A-Za-z0-9_-]{8}\.[a-z0-9]+$)"
+    )
 
     # To the container's output, where `docker compose logs` finds it.
     LOGGING = {

@@ -1,3 +1,4 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
@@ -7,6 +8,7 @@ from .views import (
     CountryViewSet,
     CurrencyViewSet,
     ExchangeRateViewSet,
+    MeView,
     PartyBankAccountViewSet,
     PartyRoleAssignmentViewSet,
     PartyTagViewSet,
@@ -29,4 +31,4 @@ router.register("units-of-measure", UnitOfMeasureViewSet)
 router.register("payment-terms", PaymentTermsViewSet)
 router.register("company", CompanyViewSet)
 
-urlpatterns = router.urls
+urlpatterns = [path("me/", MeView.as_view(), name="me"), *router.urls]

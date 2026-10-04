@@ -145,7 +145,8 @@ class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "vendor__code", "vendor__name", "purchase_order__number"]
-    filter_fields = ["vendor", "posted", "debits", "is_prepayment", "purchase_order"]
+    filter_fields = ["vendor", "posted", "debits", "debits__isnull", "is_prepayment",
+                     "purchase_order"]
     date_field = "bill_date"
     ordering_fields = ["bill_date", "due_date", "number"]
 

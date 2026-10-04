@@ -660,8 +660,39 @@ python manage.py runserver
   leave request with `POST /api/hr/leave-requests/{id}/approve/` or
   `/reject/` (body: `decided_by: <employee id>`), or `/cancel/`.
 
+## Office application
+
+The screens people use at a desk live in `frontend/` (React, TypeScript,
+Vite) and are served by Django at `/app/`, from the same address as the
+API, so the session that signed someone in is the one every API call
+carries. Nothing in the browser decides what anyone may do: it offers
+what `/api/core/me/` says their roles allow, and the server checks every
+request again.
+
+```bash
+cd frontend
+npm ci
+npm run build        # into apps/web/static/web, served at /app/
+npm test             # the client, formatting and palette tests
+```
+
+While working on the screens, run Django on port 8000 and Vite beside it:
+
+```bash
+python manage.py runserver          # one terminal
+cd frontend && npm run dev          # another; open http://localhost:5173/app/
+```
+
+Vite passes `/api`, `/accounts` and `/station` through to Django, so
+signing in and the CSRF check behave as they do on the server. The
+Docker image builds the application itself; nothing built is committed.
+
 ## Tests
 
 ```bash
 python manage.py test
 ```
+
+The browser tests (`apps/web/tests_browser.py`, the station's) need the
+office application built and a Chromium: set
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE`, or they are skipped and say so.

@@ -53,6 +53,8 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
 
 class SalesOrderSerializer(serializers.ModelSerializer):
     lines = SalesOrderLineSerializer(many=True, read_only=True)
+    # Named, so a list can say who without asking for every customer.
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_status = serializers.CharField(read_only=True)
     delivery_status = serializers.CharField(read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
@@ -62,7 +64,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = SalesOrder
         fields = [
-            "id", "number", "customer", "order_date", "reference", "status", "currency",
+            "id", "number", "customer", "customer_name", "order_date", "reference", "status", "currency",
             "payment_terms", "billing_address", "shipping_address", "sales_rep",
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
@@ -98,6 +100,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
 
 class InvoiceSerializer(serializers.ModelSerializer):
     lines = InvoiceLineSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
@@ -109,7 +112,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Invoice
         fields = [
-            "id", "number", "customer", "invoice_date", "due_date", "reference",
+            "id", "number", "customer", "customer_name", "invoice_date", "due_date", "reference",
             "sales_order", "receivable_account", "currency", "exchange_rate",
             "payment_terms", "billing_address", "shipping_address", "sales_rep",
             "credits", "journal_entry", "posted", "posted_at",

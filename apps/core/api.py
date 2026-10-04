@@ -115,8 +115,8 @@ class FieldFilter(BaseFilterBackend):
     list, for the fields its view names and no others.
 
     A view lists `filter_fields` (matched exactly; a yes-or-no field read
-    with `flag`) and a `date_field` that `from` and `to` bound, both ends
-    included. A value the field cannot hold is a 400 naming it, not a
+    with `flag`; a name ending `__isnull` asks whether there is one) and a
+    `date_field` that `from` and `to` bound, both ends included. A value the field cannot hold is a 400 naming it, not a
     500 from the database.
     """
 
@@ -126,8 +126,13 @@ class FieldFilter(BaseFilterBackend):
             for name in getattr(view, "filter_fields", ()):
                 if name not in params:
                     continue
-                field = _field_at(queryset.model, name)
                 value = params[name]
+                if name.endswith("__isnull"):
+                    # ?credits__isnull=false: those that have one.
+                    _field_at(queryset.model, name.removesuffix("__isnull"))
+                    queryset = queryset.filter(**{name: flag(params, name, None)})
+                    continue
+                field = _field_at(queryset.model, name)
                 if field.get_internal_type() == "BooleanField":
                     value = flag(params, name, None)
                 elif field.is_relation and value == "":

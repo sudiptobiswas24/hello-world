@@ -7,3 +7,6 @@ db.sqlite3
 staticfiles/
 backups/
 imports/
+
+# The office application, built by `npm run build` in frontend/ or by the image.
+apps/web/static/web/

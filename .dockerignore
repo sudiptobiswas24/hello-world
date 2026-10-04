@@ -8,3 +8,5 @@ backups
 imports
 .env
 *.log
+frontend/node_modules
+apps/web/static/web

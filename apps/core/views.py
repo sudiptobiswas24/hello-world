@@ -2,7 +2,9 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .audit import AuditableViewSetMixin
 from .models import (
@@ -108,3 +110,28 @@ class PaymentTermsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class CompanyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Company.objects.all()
     serializer_class = CompanySerializer
+
+
+class MeView(APIView):
+    """
+    Who is signed in, and what they may do: what the office application
+    reads to decide which screens and buttons to offer.
+
+    Offering is all it decides. Every request is still checked against
+    the same permissions by the view that answers it; a screen hidden
+    here is a convenience, never the lock.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        return Response({
+            "id": user.pk,
+            "username": user.get_username(),
+            "name": user.get_full_name() or user.get_username(),
+            "is_superuser": user.is_superuser,
+            "roles": sorted(user.groups.values_list("name", flat=True)),
+            "permissions": sorted(user.get_all_permissions()),
+            "company": Company.get().name,
+        })

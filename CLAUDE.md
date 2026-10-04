@@ -212,6 +212,21 @@ Go through it before running anything.
 - Prove it on PostgreSQL with `apps/e2e/tests_races.py`'s `race()`;
   SQLite serialises writers by accident and proves nothing.
 
+**The office application (`frontend/`)**
+- Every call goes through `src/api/client.ts`: it sends the CSRF token,
+  reads the page count from `X-Total-Count`, and turns every failure into
+  one `ApiError`. A screen never calls `fetch` itself.
+- Money and quantities arrive as exact strings. Never `Number()` or
+  `parseFloat` them; show them with `src/lib/format.ts`.
+- A screen is added to `src/app/registry.ts` with the permission the
+  server checks to read it, or it is unreachable. Hiding is not
+  security: the API refuses whatever the page offered by mistake.
+- A list field a view declares (`search_fields`, `filter_fields`,
+  `date_field`, `ordering_fields`) must exist; `apps/web/tests.py`
+  checks them all.
+- Build before the browser tests (`npm run build`), or they skip and the
+  count looks right.
+
 **Committing**
 - Suite, `audit_invariants`, `makemigrations --check`, then commit.
   Never in one command (mistake 9).
