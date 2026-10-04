@@ -15,6 +15,7 @@ from .models import (
     PaymentTerms,
     PaymentTermsLine,
     DocumentSequence,
+    DocumentSequenceYear,
     UnitOfMeasure,
 )
 
@@ -113,11 +114,18 @@ class PaymentTermsAdmin(AuditableAdminMixin, admin.ModelAdmin):
     inlines = [PaymentTermsLineInline]
 
 
+class DocumentSequenceYearInline(admin.TabularInline):
+    model = DocumentSequenceYear
+    extra = 0
+    readonly_fields = ("year", "next_number")
+    can_delete = False
+
+
 @admin.register(DocumentSequence)
 class DocumentSequenceAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("code", "name", "prefix", "padding", "next_number", "include_year",
                     "reset_yearly", "peek")
-    readonly_fields = ("current_year",)
+    inlines = [DocumentSequenceYearInline]
 
 
 @admin.register(Company)

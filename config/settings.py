@@ -135,6 +135,10 @@ DATABASES = {"default": _database(os.environ.get("DATABASE_URL", ""))}
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
 
+# Counts and limits password guesses: the login page, the admin and the
+# API's basic authentication all come through here (apps/core/auth.py).
+AUTHENTICATION_BACKENDS = ["apps.core.auth.LockoutModelBackend"]
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",

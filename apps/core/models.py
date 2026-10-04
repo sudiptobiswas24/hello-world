@@ -687,7 +687,6 @@ class DocumentSequence(AuditModel):
     next_number = models.PositiveIntegerField(default=1)
     include_year = models.BooleanField(default=True)
     reset_yearly = models.BooleanField(default=True)
-    current_year = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ["code"]
@@ -713,23 +712,68 @@ class DocumentSequence(AuditModel):
     def peek(self, on_date=None):
         """The number that would be issued next, without consuming it."""
         year = (to_date(on_date) or timezone.localdate()).year
-        number = 1 if (self.reset_yearly and self.current_year != year) else self.next_number
-        return self._format(number, year)
+        if not self.reset_yearly:
+            return self._format(self.next_number, year)
+        counter = self.years.filter(year=year).first()
+        return self._format(counter.next_number if counter else 1, year)
 
     def next_value(self, on_date=None):
+        """
+        The next number for the document's own year.
+
+        One counter per year, not one that resets whenever the year
+        changes: that reset in both directions, so a late 2025 invoice
+        entered after a 2026 one started 2025 again at 1, and posting
+        failed on a number already used.
+        """
         year = (to_date(on_date) or timezone.localdate()).year
         with transaction.atomic():
             sequence = DocumentSequence.objects.select_for_update().get(pk=self.pk)
-            if sequence.reset_yearly and sequence.current_year != year:
-                sequence.current_year = year
-                sequence.next_number = 1
-            number = sequence.next_number
-            sequence.next_number = number + 1
-            super(DocumentSequence, sequence).save(
-                update_fields=["next_number", "current_year", "updated_at"]
-            )
+            if sequence.reset_yearly:
+                # Under the sequence's lock, so two first numbers of a year
+                # cannot both create the year's counter.
+                counter, _ = DocumentSequenceYear.objects.get_or_create(
+                    sequence=sequence, year=year
+                )
+                number = counter.next_number
+                counter.next_number = number + 1
+                counter.save(update_fields=["next_number"])
+            else:
+                number = sequence.next_number
+                sequence.next_number = number + 1
+                super(DocumentSequence, sequence).save(update_fields=["next_number", "updated_at"])
         self.refresh_from_db()
         return self._format(number, year)
+
+
+class LoginFailure(models.Model):
+    """One wrong password, kept long enough to count (apps.core.auth)."""
+
+    username = models.CharField(max_length=150, db_index=True)
+    at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ["-at"]
+
+    def __str__(self):
+        return f"{self.username} {self.at:%Y-%m-%d %H:%M}"
+
+
+class DocumentSequenceYear(models.Model):
+    """The next number of one sequence in one year."""
+
+    sequence = models.ForeignKey(DocumentSequence, on_delete=models.CASCADE, related_name="years")
+    year = models.PositiveIntegerField()
+    next_number = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        ordering = ["sequence", "year"]
+        constraints = [
+            models.UniqueConstraint(fields=["sequence", "year"], name="one_counter_per_year"),
+        ]
+
+    def __str__(self):
+        return f"{self.sequence.code} {self.year}: next {self.next_number}"
 
 
 class Company(AuditModel):

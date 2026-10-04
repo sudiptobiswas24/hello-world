@@ -166,7 +166,13 @@ class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         })
 
 
-class StockMovementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Read only. A movement is what a posted document did; one written
+    here was stock out of nothing, at any cost, with no ledger entry and
+    none of the rules a receipt or an adjustment asks.
+    """
+
     queryset = StockMovement.objects.select_related("item", "warehouse", "lot", "bin")
     serializer_class = StockMovementSerializer
 

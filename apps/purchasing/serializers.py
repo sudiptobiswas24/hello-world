@@ -51,6 +51,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
             "currency", "bill_policy", "lines",
             "shipping_note", "drop_ship_for", "subcontract_warehouse",
         ]
+        # Status moves by confirm/cancel, which ask what they ask. Written
+        # here, a clerk confirmed past the approval tiers. Sales always had
+        # it read-only.
+        read_only_fields = ["number", "status"]
 
 
 class BillLineSerializer(serializers.ModelSerializer):

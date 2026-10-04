@@ -208,7 +208,7 @@ ROLES = {
         *REFERENCE,
         *crud("inventory", "warehouse", actions=("view",)),
         *crud("inventory", "item", actions=("view",)),
-        *crud("inventory", "stockmovement", actions=("add", "view")),
+        *view("inventory", "stockmovement"),
         *crud("purchasing", "goodsreceipt"),
         *crud("purchasing", "goodsreceiptline"),
         *crud("purchasing", "receiptinspection", actions=("view",)),
