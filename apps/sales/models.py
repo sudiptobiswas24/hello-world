@@ -32,6 +32,8 @@ from apps.core.models import (
     PartyRole,
     PaymentTerms,
     UnitOfMeasure,
+    lock_rows,
+    serialised,
     to_date,
 )
 from apps.inventory.models import (
@@ -539,6 +541,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             raise ValidationError("A cancelled order cannot be approved.")
         return True
 
+    @serialised("status")
     def cancel(self):
         """Cancel an order that hasn't been acted on yet."""
         if self.status == OrderStatus.CANCELLED:
@@ -577,7 +580,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             return FulfilmentStatus.FULL
         return FulfilmentStatus.PARTIAL
 
-    @transaction.atomic
+    @serialised("status")
     def confirm(self):
         if self.status == OrderStatus.CONFIRMED:
             raise ValidationError("This order is already confirmed.")
@@ -965,7 +968,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             return shipped
         return max(self.quantity, shipped)
 
-    @transaction.atomic
+    @serialised("closed_short_at")
     def close_short(self, reason):
         """The customer wants no more: nothing further is owed, planned or held."""
         if self.is_charge():
@@ -986,7 +989,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
         release_for(self, f"Closed short: {reason}"[:255])
 
-    @transaction.atomic
+    @serialised("closed_short_at")
     def reopen(self):
         """Owed again after all, and held again where the stock allows."""
         if not self.is_closed_short():
@@ -1410,7 +1413,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         )
         return entry
 
-    @transaction.atomic
+    @serialised("posted", "written_off_amount")
     def write_off(self, amount=None, on_date=None, reason=""):
         """
         Charge an uncollectable receivable to bad debt expense.
@@ -1468,7 +1471,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
         return entry
 
-    @transaction.atomic
+    @serialised("written_off_amount")
     def recover_write_off(self, write_off, on_date=None):
         """
         Undo a write-off because the customer paid after all.
@@ -1534,6 +1537,9 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         no accounting reason.
         """
         on_date = to_date(on_date) or timezone.localdate()
+        # Both: what is left on the deposit and what is due on the invoice
+        # are each read here, and another drawdown could spend either.
+        lock_rows(self, deposit)
         if not self.posted:
             raise ValidationError("Only a posted invoice can draw down a deposit.")
         if self.is_down_payment or self.is_credit_note():
@@ -1833,12 +1839,17 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
+        # What the order has already been billed, and taken up front, is
+        # read below and decided on; two invoices for one order posting
+        # at once must not both see the same room.
+        lock_rows(self.sales_order)
         if self.is_down_payment:
             self._check_deposit_shape()
+            self._check_deposit_room()
 
         self.invoice_date = to_date(self.invoice_date)
         if not self.is_credit_note() and self.total() <= 0:
@@ -1910,7 +1921,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if apply_deposits:
             self.apply_available_deposits(on_date=self.invoice_date)
 
-    @transaction.atomic
+    @serialised("posted")
     def create_credit_note(self, memo="", quantities=None):
         """
         Credit this invoice. By default the whole thing; pass
@@ -1925,7 +1936,11 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return self._credit_deposit(memo, quantities)
 
         if quantities is None:
-            selected = [(line, line.quantity) for line in self.lines.all()]
+            # What is still creditable, not the whole line: crediting an
+            # invoice in full twice took it back twice, and receivables to
+            # minus the invoice. Purchasing's debit note always asked.
+            selected = [(line, line.quantity_creditable()) for line in self.lines.all()]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
         else:
             selected = [(line, quantity) for line, quantity in quantities.items() if quantity > 0]
             for line, quantity in selected:
@@ -2004,6 +2019,25 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError(
                 "A down payment is credited to the customer deposit account, which is what "
                 "the final invoice draws it down from."
+            )
+
+    def _check_deposit_room(self):
+        """
+        Down payments on an order cannot exceed it, asked at posting.
+
+        Asked only when a draft was made, two drafts — 700 and then 400
+        on a 1,000 order — each passed, because neither was posted when
+        the other was checked, and both then posted.
+        """
+        order = self.sales_order
+        if order is None:
+            return
+        taken = order.deposit_total()
+        order_total = order.total()
+        if taken + self.total() > order_total:
+            raise ValidationError(
+                f"Down payments of {taken} are already on {order}; taking {self.total()} "
+                f"more would exceed the order total of {order_total}."
             )
 
     def _credit_deposit(self, memo, quantities):
@@ -2244,6 +2278,10 @@ class InvoicePayment(AuditModel):
 
     @transaction.atomic
     def save(self, *args, **kwargs):
+        # What is left on the payment and due on the invoice are read in
+        # clean(); two allocations at once must not both spend them.
+        lock_rows(self.payment if self.payment_id else None,
+                  self.invoice if self.invoice_id else None)
         self.full_clean()
         # Re-posting rather than adjusting: an allocation can be re-pointed
         # or re-sized after the fact, and the exchange difference it caused
@@ -2779,10 +2817,13 @@ class Delivery(AuditModel):
             )
         super().delete(*args, **kwargs)
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         if self.posted:
             raise ValidationError("This delivery is already posted.")
+        # What each line has already shipped is read and decided on; two
+        # deliveries against one order must not both see the same room.
+        lock_rows(self.sales_order)
         lines = list(self.lines.all())
         if not lines:
             raise ValidationError("Cannot post a delivery with no lines.")
@@ -3135,7 +3176,7 @@ class Delivery(AuditModel):
             )
         return backorder
 
-    @transaction.atomic
+    @serialised("posted")
     def create_return(self, credit_invoices=True, quantities=None):
         """
         Take goods back: reverse the stock movement and, unless this is a

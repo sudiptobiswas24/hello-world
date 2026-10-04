@@ -31,7 +31,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, serialised
 from apps.inventory.models import Item, Warehouse
 
 from .forecast import Forecast, coverage, forecast_demand  # noqa: F401
@@ -614,7 +614,7 @@ class PlannedOrder(AuditModel):
                 "and firm from that."
             )
 
-    @transaction.atomic
+    @serialised("status", "transfer", "work_order", "requisition_line")
     def firm(self, requested_by=None):
         """
         Turn the suggestion into the document that can actually be
@@ -732,6 +732,7 @@ class PlannedOrder(AuditModel):
         )
         return self.requisition_line
 
+    @serialised("status", "transfer", "work_order", "requisition_line")
     def cancel(self):
         """
         Say no to a suggestion without waiting for the next run to

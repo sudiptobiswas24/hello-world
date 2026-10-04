@@ -35,7 +35,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 
 class Instrument(AuditModel):
@@ -142,7 +142,7 @@ class Calibration(AuditModel):
             # Left set, the next save of this object would pass the guard too.
             self._writing = False
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
@@ -164,7 +164,7 @@ class Calibration(AuditModel):
         self.posted, self.posted_at = True, timezone.now()
         self._write(["number", "calibrated_on", "due_on", "posted", "posted_at"])
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, reason):
         from .models import Reading
 

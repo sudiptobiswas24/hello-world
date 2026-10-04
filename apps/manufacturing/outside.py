@@ -39,7 +39,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 
 class OutsideMovement(AuditModel):
@@ -134,7 +134,7 @@ class OutsideMovement(AuditModel):
             )
         super().save(*args, **kwargs)
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=""):
         from .orders import (
             ManufacturingSettings,
@@ -207,7 +207,7 @@ class OutsideMovement(AuditModel):
         ])
         return self.journal_entry
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, on_date=None, memo=""):
         """
         Undo a movement entered in error. Written in the same sitting as

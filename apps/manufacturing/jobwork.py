@@ -42,7 +42,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 INPUTS_DAYS = 365
@@ -100,7 +100,7 @@ class JobWorkChallan(AuditModel):
             raise ValidationError(f"{self} is issued. Void it; it cannot be deleted.")
         return super().delete(*args, **kwargs)
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         """Issue the challan: numbered, the job worker's registration frozen."""
         from .orders import WorkOrderStatus
@@ -146,7 +146,7 @@ class JobWorkChallan(AuditModel):
             "posted", "posted_at", "updated_at",
         ])
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self):
         """
         Withdraw a challan issued in error. Only while what is still out
@@ -279,7 +279,7 @@ class JobWorkLoss(AuditModel):
     def delete(self, *args, **kwargs):
         raise ValidationError("A recorded loss is a fact; void it rather than delete it.")
 
-    @transaction.atomic
+    @serialised("voided_at")
     def void(self):
         """Withdraw a loss recorded in error; the goods count as still out again."""
         if self.voided_at is not None:

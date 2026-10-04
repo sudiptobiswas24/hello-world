@@ -201,6 +201,17 @@ Go through it before running anything.
   the unmutated tests pass under it first, or a missing seed row reads
   as a kill.
 
+**Two people at once**
+- Every method that reads a document's state and then changes it is
+  `@serialised("the", "state", "fields")` (`apps.core.models`): it locks
+  the row and re-reads those fields. Ten of eleven money paths let two
+  simultaneous clicks both through until this existed.
+- A decision that reads other rows (what is left on a payment, due on an
+  invoice, open on an order) takes `lock_rows(...)` on them first.
+  It re-reads them too: an object read before the lock is stale.
+- Prove it on PostgreSQL with `apps/e2e/tests_races.py`'s `race()`;
+  SQLite serialises writers by accident and proves nothing.
+
 **Committing**
 - Suite, `audit_invariants`, `makemigrations --check`, then commit.
   Never in one command (mistake 9).

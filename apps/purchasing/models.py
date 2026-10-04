@@ -36,6 +36,8 @@ from apps.core.models import (
     PartyRole,
     PaymentTerms,
     UnitOfMeasure,
+    lock_rows,
+    serialised,
     to_date,
 )
 from apps.inventory.models import (
@@ -200,6 +202,7 @@ class RequestForQuotation(AuditModel):
         self.status = RfqStatus.SENT
         self.save(update_fields=["number", "status", "updated_at"])
 
+    @serialised("status")
     def cancel(self):
         if self.status == RfqStatus.AWARDED:
             raise ValidationError("This RFQ has been awarded; cancel the purchase order.")
@@ -273,7 +276,7 @@ class RequestForQuotation(AuditModel):
             )
         return totals
 
-    @transaction.atomic
+    @serialised("status")
     def award(self, invitation, order_date=None, record_prices=False):
         """
         Give the business to one vendor, at the prices they quoted.
@@ -485,7 +488,7 @@ class PurchaseRequisition(AuditModel):
     def estimated_total(self):
         return sum((line.estimated_value() for line in self.lines.all()), Decimal("0"))
 
-    @transaction.atomic
+    @serialised("status")
     def submit(self):
         if self.status != RequisitionStatus.DRAFT:
             raise ValidationError(
@@ -501,6 +504,7 @@ class PurchaseRequisition(AuditModel):
         self.status = RequisitionStatus.SUBMITTED
         self.save(update_fields=["number", "status", "updated_at"])
 
+    @serialised("status")
     def _decide(self, status, by, note):
         if self.status != RequisitionStatus.SUBMITTED:
             raise ValidationError("Only a submitted requisition can be decided.")
@@ -525,6 +529,7 @@ class PurchaseRequisition(AuditModel):
             raise ValidationError("Say why the requisition was rejected.")
         self._decide(RequisitionStatus.REJECTED, by, note)
 
+    @serialised("status")
     def cancel(self):
         if self.status == RequisitionStatus.ORDERED:
             raise ValidationError(
@@ -542,7 +547,7 @@ class PurchaseRequisition(AuditModel):
             for line in self.lines.all()
         }
 
-    @transaction.atomic
+    @serialised("status")
     def create_order(self, vendor, order_date=None, lines=None):
         """
         Turn the approved request into an order with a chosen vendor.
@@ -784,7 +789,7 @@ class BlanketOrder(AuditModel):
         on_date = to_date(on_date)
         return self.start_date <= on_date <= self.end_date
 
-    @transaction.atomic
+    @serialised("status")
     def confirm(self):
         if self.status != BlanketStatus.DRAFT:
             raise ValidationError(f"This agreement is already {self.get_status_display().lower()}.")
@@ -798,6 +803,7 @@ class BlanketOrder(AuditModel):
         self.status = BlanketStatus.CONFIRMED
         self.save(update_fields=["number", "status", "updated_at"])
 
+    @serialised("status")
     def close(self):
         """
         End the agreement early. Releases already made stand — they are
@@ -1425,7 +1431,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                    "tier grants") + "."
             )
 
-    @transaction.atomic
+    @serialised("status")
     def confirm(self):
         """
         Commit to the order. Until this happens it is a shopping list, and
@@ -1450,6 +1456,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         self.status = OrderStatus.CONFIRMED
         self.save(update_fields=["number", "status", "updated_at"])
 
+    @serialised("status")
     def cancel(self):
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("This order is already cancelled.")
@@ -1553,6 +1560,9 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         """
         from apps.sales.models import OrderStatus as SalesOrderStatus
 
+        # What is left to drop-ship is read below; two at once must not
+        # both order the same remainder.
+        lock_rows(sales_order)
         if sales_order.status != SalesOrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed sales order can be drop-shipped.")
         _require_vendor_role(vendor)
@@ -1592,8 +1602,16 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         and writing it off on despatch would hide both facts. A transfer
         keeps the value on the books where it belongs.
         """
+        lock_rows(self)
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can issue components.")
+        # Nothing asked whether they had gone already: a second call sent
+        # every component out again.
+        if StockMovement.objects.filter(
+            reference=self.number, movement_type=MovementType.TRANSFER_IN,
+            warehouse=self.subcontract_warehouse_id,
+        ).exists():
+            raise ValidationError(f"The components for {self} have already been issued.")
         if self.subcontract_warehouse_id is None:
             raise ValidationError(
                 "Set a subcontract warehouse before issuing components; the stock has to "
@@ -2338,6 +2356,9 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         block the real bill on the company's own slow payment run.
         """
         on_date = to_date(on_date) or timezone.localdate()
+        # What is left on the prepayment and due on the bill are each read
+        # here, and another drawdown could spend either.
+        lock_rows(self, prepayment)
         if not self.posted:
             raise ValidationError("Only a posted bill can draw down a prepayment.")
         if self.is_prepayment or self.is_debit_note():
@@ -2766,12 +2787,16 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             )
         return entry
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
+        # What the order has been billed, and paid up front, is decided on
+        # below; two bills for one order must not both see the same room.
+        lock_rows(self.purchase_order)
         if self.is_prepayment:
             self._check_prepayment_shape()
+            self._check_prepayment_room()
 
         self.bill_date = to_date(self.bill_date)
         if not self.is_debit_note() and self.total() <= 0:
@@ -3009,7 +3034,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
-    @transaction.atomic
+    @serialised("posted")
     def create_debit_note(self, memo="", quantities=None, accruals=None):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
@@ -3103,6 +3128,19 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError(
                 "A prepayment is debited to the vendor prepayment account, which is what "
                 "the bill draws it down from."
+            )
+
+    def _check_prepayment_room(self):
+        """Prepayments cannot exceed the order, asked at posting as sales asks of deposits."""
+        order = self.purchase_order
+        if order is None:
+            return
+        taken = order.prepayment_total()
+        order_total = order.total()
+        if taken + self.total() > order_total:
+            raise ValidationError(
+                f"Prepayments of {taken} are already on {order}; paying {self.total()} more "
+                f"would exceed the order total of {order_total}."
             )
 
     def _debit_prepayment(self, memo, quantities):
@@ -3736,6 +3774,10 @@ class BillPayment(AuditModel):
 
     @transaction.atomic
     def save(self, *args, **kwargs):
+        # What is left on the payment and due on the bill are read in
+        # clean(); two allocations at once must not both spend them.
+        lock_rows(self.payment if self.payment_id else None,
+                  self.bill if self.bill_id else None)
         self.full_clean()
         # Re-posting rather than adjusting: an allocation can be re-pointed
         # or re-sized after the fact, and the exchange difference it caused
@@ -4246,10 +4288,13 @@ class GoodsReceipt(AuditModel):
             raise ValidationError("Posted goods receipts cannot be deleted. Create a return instead.")
         super().delete(*args, **kwargs)
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         if self.posted:
             raise ValidationError("This goods receipt is already posted.")
+        # What each line has received is read and decided on; two receipts
+        # against one order must not both see the same room.
+        lock_rows(self.purchase_order)
         lines = list(self.lines.all())
         if not lines:
             raise ValidationError("Cannot post a goods receipt with no lines.")
@@ -4683,7 +4728,7 @@ class GoodsReceipt(AuditModel):
             moved.append((item, quantity))
         return moved
 
-    @transaction.atomic
+    @serialised("posted")
     def reject(self, quantities=None, note="", debit_bills=True):
         """
         Send failed goods back to the vendor.
@@ -4920,6 +4965,7 @@ class GoodsReceipt(AuditModel):
         entry.post()
         return entry
 
+    @serialised("posted")
     def create_return(self, quantities=None, debit_bills=True):
         """
         Send goods back. By default all of them; pass `quantities` as

@@ -225,3 +225,13 @@ class SubcontractReceiptTests(SubcontractTestCase):
         self.receive(order, "10")
 
         self.assertEqual(self.item.average_cost_at(self.warehouse), Decimal("5.0000"))
+
+
+class ComponentsGoOutOnceTests(SubcontractTestCase):
+    """Nothing asked whether they had gone: a second call sent them all again."""
+
+    def test_a_second_issue_is_refused(self):
+        order = self.subcontract_order()
+        order.issue_components(self.warehouse)
+        with self.assertRaisesMessage(ValidationError, "already been issued"):
+            order.issue_components(self.warehouse)

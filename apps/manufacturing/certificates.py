@@ -32,7 +32,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence
+from apps.core.models import AuditModel, DocumentSequence, serialised
 
 MAX_DEPTH = 4
 
@@ -68,7 +68,7 @@ class TestCertificate(AuditModel):
     def delete(self, *args, **kwargs):
         raise ValidationError("A certificate is what the customer was sent; void it.")
 
-    @transaction.atomic
+    @serialised("voided_at")
     def void(self, reason):
         if self.voided_at is not None:
             raise ValidationError(f"{self} is already void.")

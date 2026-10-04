@@ -31,7 +31,7 @@ from apps.accounting.models import (
     JournalLine,
     round_money,
 )
-from apps.core.models import AuditModel, DocumentSequence, Party, to_date
+from apps.core.models import AuditModel, DocumentSequence, Party, serialised, to_date
 
 
 class DepreciationMethod(models.TextChoices):
@@ -236,7 +236,7 @@ class FixedAsset(AuditModel):
     def remaining_to_depreciate(self):
         return max(self.depreciable_base() - self.accumulated(), Decimal("0"))
 
-    @transaction.atomic
+    @serialised("status")
     def place_in_service(self, on_date=None):
         if self.status != AssetStatus.DRAFT:
             raise ValidationError(f"This asset is already {self.get_status_display().lower()}.")
@@ -278,7 +278,7 @@ class FixedAsset(AuditModel):
             cursor = last + datetime.timedelta(days=1)
         return periods
 
-    @transaction.atomic
+    @serialised("status")
     def depreciate(self, through=None):
         """Charge every month due up to `through`. Returns the entries made."""
         through = to_date(through) or timezone.localdate()
@@ -315,7 +315,7 @@ class FixedAsset(AuditModel):
             ))
         return made
 
-    @transaction.atomic
+    @serialised("status")
     def uncapitalise(self, on_date=None, memo=""):
         """
         Undo capitalising a bill line into this asset, before it has
@@ -348,7 +348,7 @@ class FixedAsset(AuditModel):
         self.status = AssetStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
 
-    @transaction.atomic
+    @serialised("status")
     def dispose(self, on_date=None, proceeds=Decimal("0"), memo=""):
         """
         Take the asset off the books at its remaining value.

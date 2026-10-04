@@ -6,7 +6,15 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Country, Currency, DocumentSequence, Party, to_date
+from apps.core.models import (
+    AuditModel,
+    Country,
+    Currency,
+    DocumentSequence,
+    Party,
+    serialised,
+    to_date,
+)
 
 CENTS = Decimal("0.01")
 
@@ -193,7 +201,7 @@ class JournalEntry(AuditModel):
         debit = self.total_debit()
         return debit > 0 and debit == self.total_credit()
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         if self.posted:
             raise ValidationError("This journal entry is already posted.")
@@ -215,10 +223,17 @@ class JournalEntry(AuditModel):
         self.posted_at = timezone.now()
         super(JournalEntry, self).save(update_fields=["posted", "posted_at", "updated_at"])
 
-    @transaction.atomic
+    @serialised("posted")
     def create_reversal(self, entry_date=None, memo=""):
         if not self.posted:
             raise ValidationError("Only a posted journal entry can be reversed.")
+        # Nothing asked before: reversing an entry twice through the API
+        # took it back twice, and a second click was all it needed.
+        if self.reversed_by.exists():
+            raise ValidationError(
+                f"JE-{self.pk} has already been reversed by "
+                f"{', '.join(f'JE-{r.pk}' for r in self.reversed_by.all())}."
+            )
         reversal = JournalEntry.objects.create(
             date=entry_date or timezone.localdate(),
             reference=self.reference,
@@ -736,7 +751,7 @@ class Payment(AuditModel):
             return Decimal("1")
         return self.currency.rate_on(self.payment_date)
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         if self.posted:
             raise ValidationError("This payment is already posted.")
@@ -779,8 +794,7 @@ class Payment(AuditModel):
             ]
         )
 
-    @transaction.atomic
-    @transaction.atomic
+    @serialised("posted", "voided_entry")
     def void(self, memo=""):
         """
         Reverse a posted payment — a bounced cheque, a recalled transfer.
@@ -941,7 +955,7 @@ class BankStatement(AuditModel):
             and not report["unresolved_lines"]
         )
 
-    @transaction.atomic
+    @serialised("closed")
     def close(self):
         """
         Sign the statement off. Refused while anything is unexplained,
@@ -1052,6 +1066,7 @@ class BankStatementLine(AuditModel):
             raise ValidationError("This statement is closed. Reopen it to make changes.")
         super().delete(*args, **kwargs)
 
+    @serialised("payment", "journal_entry")
     def match(self, payment):
         """Say this line is that payment."""
         if self.is_resolved():
@@ -1077,7 +1092,7 @@ class BankStatementLine(AuditModel):
         self.payment = None
         self.save(update_fields=["payment", "updated_at"])
 
-    @transaction.atomic
+    @serialised("payment", "journal_entry")
     def post_to(self, account, party=None, memo=""):
         """
         Explain a line that is not a payment at all — a bank charge,

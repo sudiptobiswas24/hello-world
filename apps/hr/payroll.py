@@ -41,7 +41,14 @@ from apps.accounting.models import (
     PaymentDirection,
     round_money,
 )
-from apps.core.models import AuditModel, Company, DocumentSequence, to_date
+from apps.core.models import (
+    AuditModel,
+    Company,
+    DocumentSequence,
+    lock_rows,
+    serialised,
+    to_date,
+)
 
 from .calendars import working_days
 from .models import Employee, LeaveRequest, LeaveStatus
@@ -448,7 +455,7 @@ class PayRun(AuditModel):
 
     # -- calculation -----------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def calculate(self, employees=None, hours=None):
         """
         Work out every payslip in this run, replacing whatever was there.
@@ -495,7 +502,7 @@ class PayRun(AuditModel):
 
     # -- posting ---------------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def post(self, memo=""):
         if self.status == PayRunStatus.POSTED:
             raise ValidationError("This pay run is already posted.")
@@ -606,7 +613,7 @@ class PayRun(AuditModel):
                 "period. Void it, or narrow this run."
             )
 
-    @transaction.atomic
+    @serialised("status", "voided_entry")
     def void(self, on_date=None, memo=""):
         """
         Reverse a posted run.
@@ -996,7 +1003,7 @@ class Payslip(AuditModel):
             return Decimal("0")
         return amount
 
-    @transaction.atomic
+    @serialised("payment")
     def pay(self, payment):
         """
         Settle this slip's net against a payment, clearing the control
@@ -1006,6 +1013,8 @@ class Payslip(AuditModel):
         liability and never clears it leaves a balance that grows by a
         month's wages every month and that nobody can explain.
         """
+        # The payment too: another slip could be settling with it now.
+        lock_rows(payment)
         if not self.run.posted:
             raise ValidationError("A pay run must be posted before it can be paid.")
         if self.is_paid():
@@ -1153,6 +1162,7 @@ class StatutoryRemittance(AuditModel):
     def __str__(self):
         return f"{self.liability_account.code} {self.period:%b %Y} {self.amount}"
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self.pk:
             raise ValidationError(
@@ -1161,6 +1171,9 @@ class StatutoryRemittance(AuditModel):
         self.period = _month_of(self.period)
         self.amount = round_money(Decimal(self.amount))
         payment = self.payment
+        # What is left on the payment and owed on the account for the month
+        # are both read below; another remittance could spend either.
+        lock_rows(payment, self.liability_account)
         if not payment.posted:
             raise ValidationError("That payment has not been posted; nothing has left the bank.")
         if payment.is_voided():

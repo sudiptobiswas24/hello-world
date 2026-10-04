@@ -583,3 +583,19 @@ class ADraftCreditNoteGivesNothingBackTests(SalesTestCase):
                                    revenue_account=self.deposits)
         self.assertEqual((deposit.amount_credited(), deposit.deposit_unapplied()),
                          (Decimal("0"), Decimal("300.00")))
+
+
+class DownPaymentsStayWithinTheOrderTests(SalesTestCase):
+    """
+    Drafts were checked against posted deposits only: 700 and then 400 on
+    a 1,000 order each passed when drafted, and both then posted.
+    """
+
+    def test_the_second_draft_is_refused_when_it_posts(self):
+        order = self.make_order("10", "100")
+        first = order.create_down_payment_invoice(self.ar, amount=Decimal("700"))
+        second = order.create_down_payment_invoice(self.ar, amount=Decimal("400"))
+        first.post()
+        with self.assertRaisesMessage(ValidationError, "exceed the order total"):
+            second.post()
+        self.assertEqual(self.balance(self.deposits), Decimal("-700.00"))

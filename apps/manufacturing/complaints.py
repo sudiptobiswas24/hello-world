@@ -30,7 +30,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -144,7 +144,7 @@ class Complaint(AuditModel):
 
     # -- deciding -----------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def close(self, root_cause, by, on_date=None):
         if not self.is_open():
             raise ValidationError(f"{self} is {self.status}.")
@@ -166,7 +166,7 @@ class Complaint(AuditModel):
         self.decided_on, self.decided_by = to_date(on_date) or timezone.localdate(), by
         self._decide(["status", "root_cause", "decided_on", "decided_by"])
 
-    @transaction.atomic
+    @serialised("status")
     def reject(self, reason, by, on_date=None):
         if not self.is_open():
             raise ValidationError(f"{self} is {self.status}.")
@@ -177,7 +177,7 @@ class Complaint(AuditModel):
         self.decided_on, self.decided_by = to_date(on_date) or timezone.localdate(), by
         self._decide(["status", "rejection_reason", "decided_on", "decided_by"])
 
-    @transaction.atomic
+    @serialised("status")
     def reopen(self, reason):
         if self.is_open():
             raise ValidationError(f"{self} is open.")
@@ -264,6 +264,7 @@ class CorrectiveAction(AuditModel):
             raise ValidationError(f"{complaint} is {complaint.status}; reopen it to change it.")
         return super().delete(*args, **kwargs)
 
+    @serialised("done_on")
     def done(self, note, on_date=None):
         if self.done_on is not None:
             raise ValidationError(f"{self} was done on {self.done_on}.")
@@ -273,6 +274,7 @@ class CorrectiveAction(AuditModel):
         self.done_on, self.done_note = to_date(on_date) or timezone.localdate(), note[:255]
         self.save(update_fields=["done_on", "done_note", "updated_at"])
 
+    @serialised("done_on", "verified_on")
     def verify(self, by, on_date=None):
         """It was checked afterwards and it worked — by somebody who did not do it."""
         if self.kind == ActionKind.CONTAINMENT:

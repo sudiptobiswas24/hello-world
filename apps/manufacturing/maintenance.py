@@ -53,7 +53,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, serialised, to_date
 
 ZERO = Decimal("0")
 MINUTES_PER_HOUR = Decimal("60")
@@ -353,7 +353,7 @@ class MaintenanceJob(AuditModel):
         finally:
             self._closing = False
 
-    @transaction.atomic
+    @serialised("cancelled_at", "done_on")
     def cancel(self, reason):
         """Raised in error, or no longer wanted: off the board, and kept."""
         if self.cancelled_at is not None:
@@ -368,7 +368,7 @@ class MaintenanceJob(AuditModel):
         self.cancelled_at, self.cancelled_reason = timezone.now(), reason[:255]
         self._close(["cancelled_at", "cancelled_reason"])
 
-    @transaction.atomic
+    @serialised("cancelled_at", "done_on")
     def complete(self, on_date=None, minutes=None, reason=None, shift=None, cause="",
                  action=""):
         """

@@ -46,7 +46,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -102,7 +102,7 @@ class Rebatch(AuditModel):
     def made(self):
         return self.lines.filter(side=RebatchSide.OUT).select_related("lot")
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         from apps.inventory.locking import lock_positions
         from apps.inventory.models import MovementType, StockMovement
@@ -187,7 +187,7 @@ class Rebatch(AuditModel):
         self.posted, self.posted_at = True, timezone.now()
         self._write(["number", "rebatched_on", "reason", "posted", "posted_at"])
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, reason):
         from apps.inventory.locking import lock_positions
         from apps.inventory.models import MovementType, StockMovement

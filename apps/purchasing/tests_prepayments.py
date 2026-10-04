@@ -509,3 +509,14 @@ class ADraftDebitNoteGivesNothingBackTests(PrepaymentTestCase):
                                 expense_account=self.prepaid)
         self.assertEqual((prepayment.amount_debited(), prepayment.prepayment_unapplied()),
                          (Decimal("0"), Decimal("15.00")))
+
+
+class PrepaymentsStayWithinTheOrderTests(PrepaymentTestCase):
+    def test_the_second_draft_is_refused_when_it_posts(self):
+        order = self.make_order("10", "5")
+        first = order.create_prepayment_bill(self.payable, amount=Decimal("35"))
+        second = order.create_prepayment_bill(self.payable, amount=Decimal("20"))
+        first.post()
+        with self.assertRaisesMessage(ValidationError, "exceed the order total"):
+            second.post()
+        self.assertEqual(self.balance(self.prepaid), Decimal("35.00"))

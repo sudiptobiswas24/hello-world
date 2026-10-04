@@ -27,10 +27,10 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
-from .models import Item, MovementType, StockMovement, Warehouse
 from .locking import lock_position, lock_positions
+from .models import Item, MovementType, StockMovement, Warehouse
 from .valuation import inventory_account_for
 
 
@@ -164,7 +164,7 @@ class StockAdjustment(AuditModel):
             (line.value() for line in self.lines.all()), Decimal("0")
         ).quantize(Decimal("0.01"))
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=""):
         if self.posted:
             raise ValidationError("This adjustment is already posted.")
@@ -260,7 +260,7 @@ class StockAdjustment(AuditModel):
         entry.post()
         return entry
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, on_date=None, memo="", through=""):
         """
         Undo a posted adjustment: reverse the ledger entry and put the
@@ -631,7 +631,7 @@ class StockCount(AuditModel):
             system_quantity=_system_quantity(item, self.warehouse, lot, storage_bin),
         )
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=""):
         """
         Turn the variances into one adjustment and post it.

@@ -38,7 +38,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, serialised
 from apps.core.windows import covers
 
 ONE_HUNDRED = Decimal("100")
@@ -201,6 +201,7 @@ class VoidedMeasurement(models.Model):
     class Meta:
         abstract = True
 
+    @serialised("voided_at")
     def void(self, supervisor, operator, station, at=None):
         if self.voided_at is not None:
             raise ValidationError("This figure is already withdrawn.")

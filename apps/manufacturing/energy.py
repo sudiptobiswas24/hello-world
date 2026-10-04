@@ -38,7 +38,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, serialised
 
 from .quoting import DatedRate
 
@@ -205,7 +205,7 @@ class MeterReading(AuditModel):
     def delete(self, *args, **kwargs):
         raise ValidationError("A reading is what the dial said. Void it.")
 
-    @transaction.atomic
+    @serialised("voided_at")
     def void(self, reason):
         if self.voided_at is not None:
             raise ValidationError(f"{self} is already void.")

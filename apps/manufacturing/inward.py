@@ -35,7 +35,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 from apps.inventory.availability import check_available
 
 ZERO = Decimal("0")
@@ -153,7 +153,7 @@ class CustomerMaterialReceipt(_Posted):
                                     name="one_receipt_per_customer_challan"),
         ]
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         from apps.inventory.locking import lock_positions
 
@@ -189,7 +189,7 @@ class CustomerMaterialReceipt(_Posted):
         self.their_challan = self.their_challan.strip()
         self._write(["number", "received_on", "their_challan", "posted", "posted_at"])
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, reason):
         """Withdraw a receipt entered in error, while all of it is still on the shelf."""
         from apps.inventory.locking import lock_positions
@@ -257,7 +257,7 @@ class CustomerMaterialReturn(_Posted):
                                     name="customer_material_return_number_unique"),
         ]
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         from apps.inventory.locking import lock_positions
 
@@ -305,7 +305,7 @@ class CustomerMaterialReturn(_Posted):
         self.posted, self.posted_at = True, timezone.now()
         self._write(["number", "returned_on", "posted", "posted_at"])
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, reason):
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not a standing return.")

@@ -25,10 +25,10 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
-from .models import Item, MovementType, StockMovement, Warehouse
 from .locking import lock_position, lock_positions
+from .models import Item, MovementType, StockMovement, Warehouse
 
 
 class TransferStatus(models.TextChoices):
@@ -117,7 +117,7 @@ class StockTransfer(AuditModel):
             )
         return self._move_out(TransferStatus.IN_TRANSIT, occurred_at)
 
-    @transaction.atomic
+    @serialised("status")
     def post(self, occurred_at=None):
         """Move the stock straight from one shelf to the other."""
         if self.is_two_step():
@@ -208,7 +208,7 @@ class StockTransfer(AuditModel):
 
     # -- the inbound half -------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def receive(self, quantities=None, occurred_at=None):
         """
         Land the stock at its destination.
@@ -272,7 +272,7 @@ class StockTransfer(AuditModel):
 
     # -- the reverse path -------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def cancel(self, occurred_at=None, memo=""):
         """
         Undo the transfer, putting every unit back where it came from.

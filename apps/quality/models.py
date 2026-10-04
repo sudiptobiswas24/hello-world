@@ -45,7 +45,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.core import windows
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 from apps.inventory.models import Item, Lot
 
 
@@ -626,7 +626,7 @@ class Inspection(AuditModel):
             and self.decided_by_id == self.inspected_by_id
         )
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
@@ -701,6 +701,7 @@ class Inspection(AuditModel):
         ])
         return self
 
+    @serialised("posted", "voided_at")
     def void(self, reason=""):
         """
         Undo a posting.

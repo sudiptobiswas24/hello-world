@@ -39,7 +39,7 @@ from django.db import models
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 MINUTES_PER_HOUR = Decimal("60")
 
@@ -309,6 +309,7 @@ class Downtime(AuditModel):
             "than the shift it was stopped in."
         )
 
+    @serialised("voided_at")
     def void(self, reason, by=None):
         """A stoppage booked wrong: kept, and no longer counted."""
         if self.voided_at is not None:

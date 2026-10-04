@@ -26,7 +26,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, serialised, to_date
 
 from .calendars import parse_working_days
 from .models import Employee, LeaveRequest, LeaveStatus
@@ -146,7 +146,7 @@ class Timesheet(AuditModel):
 
     # -- the decision, and its reverse ----------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def submit(self):
         if self.status != TimesheetStatus.DRAFT:
             raise ValidationError("Only a draft timesheet can be submitted.")
@@ -163,7 +163,7 @@ class Timesheet(AuditModel):
         if by.pk == self.employee_id:
             raise ValidationError(f"{self.employee} cannot approve their own hours.")
 
-    @transaction.atomic
+    @serialised("status")
     def approve(self, by):
         if self.status != TimesheetStatus.SUBMITTED:
             raise ValidationError("Only a submitted timesheet can be approved.")
@@ -174,7 +174,7 @@ class Timesheet(AuditModel):
         super().save(update_fields=["status", "decided_by", "decided_at", "updated_at"])
         return self
 
-    @transaction.atomic
+    @serialised("status")
     def reject(self, by, note=""):
         if self.status != TimesheetStatus.SUBMITTED:
             raise ValidationError("Only a submitted timesheet can be rejected.")

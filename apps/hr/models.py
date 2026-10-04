@@ -25,7 +25,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Party, PartyRole, to_date
+from apps.core.models import AuditModel, Party, PartyRole, lock_rows, serialised, to_date
 
 from .calendars import (  # noqa: F401
     DEFAULT_WORKING_DAYS,
@@ -614,10 +614,13 @@ class LeaveRequest(AuditModel):
                 f"{self.employee} cannot decide their own leave."
             )
 
-    @transaction.atomic
+    @serialised("status")
     def approve(self, by, note=""):
         if self.status != LeaveStatus.PENDING:
             raise ValidationError("Only a pending leave request can be approved.")
+        # The balance is read below; two of this person's requests approved
+        # at once must not both find the same days left.
+        lock_rows(self.employee)
         self.check_approver(by)
         self._check_balance()
         # Freeze what it cost. The working pattern and the public holiday
@@ -650,7 +653,7 @@ class LeaveRequest(AuditModel):
                 f"in {self.start_date.year} and this request is {wanted}."
             )
 
-    @transaction.atomic
+    @serialised("status")
     def withdraw_approval(self, by=None, note=""):
         """
         Put an approved request back in the queue.
@@ -674,7 +677,7 @@ class LeaveRequest(AuditModel):
         ])
         return self
 
-    @transaction.atomic
+    @serialised("status")
     def reject(self, by, reason=None):
         if self.status != LeaveStatus.PENDING:
             raise ValidationError("Only a pending leave request can be rejected.")
@@ -689,7 +692,7 @@ class LeaveRequest(AuditModel):
         ])
         return self
 
-    @transaction.atomic
+    @serialised("status")
     def cancel(self, on_date=None):
         """
         Give the days back.

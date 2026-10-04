@@ -47,6 +47,65 @@ class AuditModel(TimeStampedModel):
         abstract = True
 
 
+def lock_rows(*instances, refresh=True):
+    """
+    Hold these rows until the transaction ends, in one fixed order, and
+    re-read them.
+
+    For a decision that reads two documents and writes a third: an
+    allocation reads what is left on the payment and what is due on the
+    invoice. Ordered by model and key, so two transactions that need the
+    same rows take them in the same sequence instead of each holding
+    one and waiting for the other.
+
+    Re-read, because the object in hand was read before the lock: a
+    material issue waiting on its work order while the order closed
+    still held "released", and posted into a closed run.
+    """
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("lock_rows() outside a transaction locks nothing.")
+    for instance in sorted((i for i in instances if i is not None and i.pk is not None),
+                           key=lambda i: (i._meta.label_lower, i.pk)):
+        list(type(instance)._base_manager.select_for_update()
+             .filter(pk=instance.pk).values_list("pk", flat=True))
+        if refresh:
+            instance.refresh_from_db()
+
+
+def serialised(*state):
+    """
+    Make a method that changes a document's state one at a time per
+    document.
+
+    Every posting path reads the document's state, decides, and writes.
+    Two people pressing Post on the same invoice at the same moment both
+    read "not posted", both decide yes, and both post: receivables went
+    to 2,000 for a 1,000 invoice, a payment voided twice took the bank
+    below where it started, and a payslip was paid by two payments.
+    No single-threaded test can see it; found on PostgreSQL with two
+    threads held at the decision.
+
+    This takes the row lock first, then re-reads `state` — the fields
+    the method decides on — from what is committed, so the second caller
+    waits for the first and then sees what it did. Only those fields are
+    re-read: anything else the caller set and has not saved stays as the
+    caller left it.
+    """
+    import functools
+
+    def wrap(method):
+        @functools.wraps(method)
+        def inner(self, *args, **kwargs):
+            with transaction.atomic():
+                if self.pk is not None:
+                    lock_rows(self, refresh=False)
+                    if state:
+                        self.refresh_from_db(fields=list(state))
+                return method(self, *args, **kwargs)
+        return inner
+    return wrap
+
+
 def to_date(value):
     """
     Normalise a date-ish value. Django allows assigning an ISO string to a

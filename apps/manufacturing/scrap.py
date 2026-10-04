@@ -40,7 +40,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -144,7 +144,7 @@ class OperationReport(AuditModel):
         order = self.operation.work_order
         return order.item.to_stock_quantity(self.quantity_good, order.uom)
 
-    @transaction.atomic
+    @serialised("voided_at")
     def void(self, reason):
         # What was counted is what is stored, not whatever this object has
         # been given since.

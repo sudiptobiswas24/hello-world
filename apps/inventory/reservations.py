@@ -29,7 +29,7 @@ from django.db import models, transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, serialised
 
 from .locking import lock_position
 from .models import Item, Warehouse
@@ -176,7 +176,7 @@ class StockReservation(AuditModel):
         super().save(update_fields=fields)
         return drawn
 
-    @transaction.atomic
+    @serialised("released_at")
     def release(self, reason=""):
         """Give the claim back. Cancelling an order frees its stock."""
         if not self.is_open():

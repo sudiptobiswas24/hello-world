@@ -39,7 +39,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, serialised, to_date
 
 ZERO = Decimal("0")
 RATE = Decimal("0.000001")
@@ -255,7 +255,7 @@ class CostVersion(AuditModel):
 
     # -- publishing it ---------------------------------------------------
 
-    @transaction.atomic
+    @serialised("published_on")
     def publish(self, on_date=None, by=None, memo=""):
         """
         Make this version the standard, and post what that does to the

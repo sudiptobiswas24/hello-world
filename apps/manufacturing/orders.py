@@ -49,14 +49,20 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import (
+    AuditModel,
+    DocumentSequence,
+    lock_rows,
+    serialised,
+    to_date,
+)
 from apps.hr.calendars import WorkingCalendar, parse_working_days
 from apps.inventory.availability import check_available
 from apps.inventory.costing import cost_of_removing
-from apps.quality.release import check_released
 from apps.inventory.locking import lock_positions
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
 from apps.inventory.valuation import inventory_account_for
+from apps.quality.release import check_released
 
 from .bom import (
     BillOfMaterials,
@@ -354,7 +360,12 @@ class WorkCentre(AuditModel):
         fabric's picks a metre that is metres an hour, at its grams a
         running metre, kilogrammes.
         """
-        from .woven import DENIER_LENGTH_M, INCHES_PER_METRE, FabricSpecification, TapeSpecification
+        from .woven import (
+            DENIER_LENGTH_M,
+            INCHES_PER_METRE,
+            FabricSpecification,
+            TapeSpecification,
+        )
 
         stated = (self.capacity_per_hour, self.capacity_uom)
         if bom is None or self.speed_basis == SpeedBasis.STATED:
@@ -388,7 +399,7 @@ class WorkCentre(AuditModel):
         as a tape line is.
         """
         from .liners import FilmSpecification, LinerSpecification
-        from .woven import BagSpecification, CM_PER_M
+        from .woven import CM_PER_M, BagSpecification
 
         metres = self.line_speed_m_per_min * 60
         sack = BagSpecification.objects.filter(bom=bom).first()
@@ -962,6 +973,7 @@ class WorkOrder(AuditModel):
                 f"{routing} is not a way {self.bom} is made: neither its own routing nor "
                 "one of its alternates.")
 
+    @serialised("status")
     def choose_routing(self, routing):
         """A draft run put on one of its bill's alternates, or back on its own."""
         if self.status != WorkOrderStatus.DRAFT:
@@ -975,6 +987,7 @@ class WorkOrder(AuditModel):
         self.save(update_fields=["routing", "updated_at"])
         return self
 
+    @serialised("status")
     def release(self, on_date=None):
         """
         Freeze the arithmetic and let material be drawn against it.
@@ -1267,7 +1280,7 @@ class WorkOrder(AuditModel):
                 rows.append((component, wanted))
         return rows
 
-    @transaction.atomic
+    @serialised("status")
     def close(self, on_date=None, memo=""):
         """
         Stop the run and send what is left in work in progress to
@@ -1340,7 +1353,7 @@ class WorkOrder(AuditModel):
 
     # -- and back again --------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def cancel(self):
         """
         Abandon an order nothing has been drawn against.
@@ -1379,7 +1392,7 @@ class WorkOrder(AuditModel):
         super().save(update_fields=["status", "updated_at"])
         return self
 
-    @transaction.atomic
+    @serialised("status", "close_entry")
     def reopen(self, on_date=None, memo=""):
         """
         Undo a close, by reversing it rather than by editing it.
@@ -2050,8 +2063,11 @@ class MaterialIssue(AuditModel):
     def is_voided(self):
         return self.voided_at is not None
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=""):
+        # Whether the order is still open is decided on below; closing it
+        # at the same moment must wait, or this lands in WIP after the close.
+        lock_rows(self.work_order)
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
         lines = list(self.lines.select_related("item", "uom", "lot"))
@@ -2105,7 +2121,7 @@ class MaterialIssue(AuditModel):
         ])
         return self.journal_entry
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, on_date=None, memo=""):
         """Undo a posting that should not have happened at all."""
         if not self.posted:
@@ -2494,8 +2510,11 @@ class ProductionEntry(AuditModel):
         issue.post(memo=label)
         return issue
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=""):
+        # Whether the order is still open is decided on below; closing it
+        # at the same moment must wait, or this lands in WIP after the close.
+        lock_rows(self.work_order)
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
         order = self.work_order
@@ -2599,7 +2618,7 @@ class ProductionEntry(AuditModel):
         ])
         return self.journal_entry
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, on_date=None, memo=""):
         """
         Take the output back off the shelf and put the cost back into
@@ -2973,8 +2992,11 @@ class TimeBooking(AuditModel):
                     "typed employee number."
                 )
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self, memo=""):
+        # Whether the order is still open is decided on below; closing it
+        # at the same moment must wait, or this lands in WIP after the close.
+        lock_rows(self.work_order)
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
         if self.operation.work_order_id != self.work_order_id:
@@ -3030,7 +3052,7 @@ class TimeBooking(AuditModel):
         ])
         return self.journal_entry
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, on_date=None, memo=""):
         """Take the hours and their cost back off the run."""
         if not self.posted:
