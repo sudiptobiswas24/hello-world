@@ -241,8 +241,16 @@ class CreditNoteSettlementTests(SettlementTestCase):
         InvoicePayment.objects.create(invoice=invoice, payment=payment, amount=Decimal("40"))
         self.assertEqual(invoice.amount_due(), Decimal("60.00"))
 
-        invoice.create_credit_note()
-        self.assertEqual(invoice.amount_due(), Decimal("-40.00"))
+        note = invoice.create_credit_note()
+        # The 40 paid is owed back, and it lives on the note, as purchasing
+        # keeps it on a debit note. This read minus forty on the invoice,
+        # which a refund - allocated to the note - never cleared: the
+        # invoice said minus forty for ever and the ledger said nothing.
+        from .models import outstanding_balance
+
+        self.assertEqual((invoice.amount_due(), note.refund_due()),
+                         (Decimal("0.00"), Decimal("40.00")))
+        self.assertEqual(outstanding_balance(invoice.customer), Decimal("-40.00"))
 
     def test_credit_notes_are_excluded_from_aging(self):
         invoice = self.make_invoice("100")

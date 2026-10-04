@@ -246,8 +246,12 @@ class PaymentDirectionTests(SalesGuardTestCase):
             )
 
     def test_a_credit_note_is_refunded_with_a_disbursement(self):
+        # Paid first. This test refunded a customer who had paid nothing,
+        # and passed: the mirror of a defect purchasing never had.
         order = self.make_order("10", "10")
         invoice = self.bill(order)
+        InvoicePayment.objects.create(invoice=invoice, payment=self.make_payment("100"),
+                                      amount=Decimal("100"))
         credit_note = invoice.create_credit_note()
         refund = self.make_payment("100", direction=PaymentDirection.DISBURSEMENT)
 
@@ -256,6 +260,51 @@ class PaymentDirectionTests(SalesGuardTestCase):
         )
         self.assertEqual(allocation.amount, Decimal("100"))
         self.assertEqual(credit_note.amount_paid(), Decimal("100"))
+
+    def test_nobody_is_refunded_what_they_never_paid(self):
+        # Found by checking every test's receivables against the ledger:
+        # crediting an unpaid invoice and then refunding the note paid the
+        # customer 100.00 they had never paid, and the receivable account
+        # said they owed it while every document said nothing was owed.
+        order = self.make_order("10", "10")
+        invoice = self.bill(order)
+        credit_note = invoice.create_credit_note()
+        self.assertEqual((invoice.amount_due(), credit_note.amount_due()),
+                         (Decimal("0"), Decimal("0")))
+        refund = self.make_payment("100", direction=PaymentDirection.DISBURSEMENT)
+        with self.assertRaises(ValidationError):
+            InvoicePayment.objects.create(invoice=credit_note, payment=refund,
+                                          amount=Decimal("100"))
+
+    def test_a_note_first_clears_what_is_unpaid_then_owes_the_rest(self):
+        from .models import outstanding_balance
+
+        order = self.make_order("10", "10")
+        invoice = self.bill(order)
+        InvoicePayment.objects.create(invoice=invoice, payment=self.make_payment("40"),
+                                      amount=Decimal("40"))
+        credit_note = invoice.create_credit_note()
+        # 60 of the note clears what was unpaid; the 40 paid is owed back,
+        # on the note, not as an invoice reading minus forty.
+        self.assertEqual((invoice.amount_due(), credit_note.amount_due()),
+                         (Decimal("0"), Decimal("40")))
+        self.assertEqual(outstanding_balance(self.customer), Decimal("-40"))
+        refund = self.make_payment("50", direction=PaymentDirection.DISBURSEMENT)
+        with self.assertRaises(ValidationError):
+            InvoicePayment.objects.create(invoice=credit_note, payment=refund,
+                                          amount=Decimal("50"))
+        InvoicePayment.objects.create(invoice=credit_note, payment=refund,
+                                      amount=Decimal("40"))
+        self.assertEqual((credit_note.amount_due(), outstanding_balance(self.customer)),
+                         (Decimal("0"), Decimal("0")))
+
+    def test_a_partial_credit_on_an_unpaid_invoice_leaves_the_rest_due(self):
+        order = self.make_order("10", "10")
+        invoice = self.bill(order)
+        line = invoice.lines.first()
+        credit_note = invoice.create_credit_note(quantities={line: Decimal("3")})
+        self.assertEqual((invoice.amount_due(), credit_note.amount_due()),
+                         (Decimal("70"), Decimal("0")))
 
     def test_a_disbursement_still_cannot_settle_an_ordinary_invoice(self):
         order = self.make_order("10", "10")

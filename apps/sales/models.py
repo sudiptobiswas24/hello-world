@@ -1601,13 +1601,56 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             (note.total() for note in self.credit_notes.filter(posted=True)), Decimal("0")
         )
 
-    def amount_due(self):
+    def _settled_otherwise(self):
+        """Paid, discounted, written off or met from a deposit: not credited."""
         return (
-            self.total() - self.amount_paid() - self.amount_credited()
-            - (self.settlement_discount_amount or Decimal("0"))
-            - self.amount_written_off()
-            - self.amount_deposited()
+            self.amount_paid()
+            + (self.settlement_discount_amount or Decimal("0"))
+            + self.amount_written_off()
+            + self.amount_deposited()
         )
+
+    def amount_absorbed(self):
+        """
+        On a credit note: how much of it went to clearing what was still
+        unpaid on its invoice, rather than becoming cash owed back.
+
+        Oldest note first, as purchasing absorbs debit notes: a later note
+        cannot take an earlier one's place against the invoice.
+        """
+        if not self.is_credit_note():
+            return Decimal("0")
+        invoice = self.credits
+        capacity = max(invoice.total() - invoice._settled_otherwise(), Decimal("0"))
+        used = Decimal("0")
+        for note in invoice.credit_notes.filter(posted=True).order_by("invoice_date", "pk"):
+            share = min(note.total(), max(capacity - used, Decimal("0")))
+            if note.pk == self.pk:
+                return share
+            used += share
+        return Decimal("0")
+
+    def refund_due(self):
+        """
+        On a credit note: cash owed back to the customer, over and above
+        clearing the invoice - only ever what they had paid. Without it a
+        note on an unpaid invoice could be refunded in full, paying the
+        customer money they never paid; purchasing always had its mirror.
+        """
+        if not self.is_credit_note():
+            return Decimal("0")
+        return self.total() - self.amount_absorbed() - self.amount_paid()
+
+    def amount_due(self):
+        if self.is_credit_note():
+            return self.refund_due()
+        # A credit note can take the invoice to nothing but not below it:
+        # past that the customer has paid, so what is left is cash owed back,
+        # and it lives on the note. An invoice reading minus forty says the
+        # customer owes a negative amount, which is not a thing.
+        settled = self._settled_otherwise()
+        offset = min(self.amount_credited(), max(self.total() - settled, Decimal("0")))
+        return self.total() - settled - offset
 
     def settlement_status(self):
         if not self.posted:
@@ -2230,11 +2273,17 @@ def bad_debt_report(start=None, end=None):
 
 
 def outstanding_balance(customer):
-    """What this customer currently owes across all posted invoices."""
+    """
+    What this customer currently owes across all posted invoices, less
+    cash owed back to them on credit notes. Signed, as vendor_balance is:
+    a customer who has been over-credited reads negative.
+    """
     invoices = Invoice.objects.filter(
         customer=customer, posted=True, credits__isnull=True
     ).prefetch_related("lines__taxes", "payment_allocations__payment", "credit_notes__lines__taxes")
-    return sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
+    owed = sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
+    notes = Invoice.objects.filter(customer=customer, posted=True, credits__isnull=False)
+    return owed - sum((note.refund_due() for note in notes), Decimal("0"))
 
 
 def committed_balance(customer):
@@ -2980,19 +3029,39 @@ class Delivery(AuditModel):
         return backorder
 
     @transaction.atomic
-    def create_return(self, credit_invoices=True):
+    def create_return(self, credit_invoices=True, quantities=None):
         """
         Take goods back: reverse the stock movement and, unless this is a
         replacement rather than a refund, credit whatever was invoiced for
         them. The credit notes raised are attached to the returned delivery
         as `credit_notes_created`.
+
+        All of what is left by default; `quantities` as {delivery_line:
+        quantity} takes back part, and a delivery can be returned in as
+        many parts as it went out in. Whole-and-once was the rule until
+        review: twenty torn bags out of fifty could not be recorded, while
+        purchasing had always returned part of a receipt.
         """
         if not self.posted:
             raise ValidationError("Only a posted delivery can be returned.")
         if self.is_return():
             raise ValidationError("Cannot return a return.")
-        if self.reversed_by.exists():
-            raise ValidationError("This delivery has already been returned.")
+        if quantities is None:
+            selected = [(line, line.quantity_returnable()) for line in self.lines.all()]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
+        else:
+            selected = [(line, Decimal(str(quantity))) for line, quantity in quantities.items()
+                        if Decimal(str(quantity)) > 0]
+            for line, quantity in selected:
+                if line.delivery_id != self.pk:
+                    raise ValidationError("That line belongs to a different delivery.")
+                if quantity > line.quantity_returnable():
+                    raise ValidationError(
+                        f"Only {format(line.quantity_returnable().normalize(), 'f')} of "
+                        f"{line.order_line.label()} is left to take back; cannot take "
+                        f"back {format(quantity.normalize(), 'f')}.")
+        if not selected:
+            raise ValidationError("There is nothing left on this delivery to take back.")
 
         customer_return = Delivery.objects.create(
             sales_order=self.sales_order,
@@ -3004,7 +3073,7 @@ class Delivery(AuditModel):
             is_drop_ship=self.is_drop_ship,
             reverses=self,
         )
-        for line in self.lines.all():
+        for line, quantity in selected:
             DeliveryLine.objects.create(
                 delivery=customer_return,
                 order_line=line.order_line,
@@ -3017,12 +3086,14 @@ class Delivery(AuditModel):
                 warehouse=line.warehouse,
                 lot=line.lot,
                 bin=line.bin,
-                quantity_shipped=line.quantity_shipped,
+                quantity_shipped=quantity,
                 unit_cost=line.unit_cost,
             )
         customer_return.post()
+        # Credited for what came back on this return, not for everything
+        # the delivery carried.
         customer_return.credit_notes_created = (
-            self._credit_returned_goods() if credit_invoices else []
+            customer_return._credit_returned_goods() if credit_invoices else []
         )
         return customer_return
 
@@ -3084,6 +3155,14 @@ class DeliveryLine(AuditModel):
             for row in self.allocations.select_related("lot", "bin")
         ]
 
+    def quantity_returned(self):
+        """Taken back so far on posted returns of this line."""
+        return self.return_lines.filter(delivery__posted=True).aggregate(
+            total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+
+    def quantity_returnable(self):
+        return self.quantity_shipped - self.quantity_returned()
+
     def return_plan(self, quantity):
         """
         Where returned goods go back to.
@@ -3101,11 +3180,23 @@ class DeliveryLine(AuditModel):
         original = self.reverses_line
         if original is None:
             return [(self.lot, self.bin, quantity)]
+        # What earlier returns of this line already took home, batch by
+        # batch: a second return began again at the first batch and could
+        # send more into it than ever left it.
+        home = defaultdict(Decimal)
+        for earlier in original.return_lines.filter(delivery__posted=True).exclude(pk=self.pk):
+            for allocation in earlier.allocations.all():
+                home[(allocation.lot_id, allocation.bin_id)] += allocation.quantity
         plan, remaining = [], quantity
         for allocation in original.allocations.select_related("lot", "bin"):
             if remaining <= 0:
                 break
-            taken = min(allocation.quantity, remaining)
+            key = (allocation.lot_id, allocation.bin_id)
+            left = allocation.quantity - min(home[key], allocation.quantity)
+            home[key] -= allocation.quantity - left
+            if left <= 0:
+                continue
+            taken = min(left, remaining)
             plan.append((allocation.lot, allocation.bin, taken))
             remaining -= taken
         if remaining > 0:

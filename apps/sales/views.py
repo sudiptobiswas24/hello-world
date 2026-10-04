@@ -350,11 +350,24 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         Take goods back. Credits the invoices that billed them unless
         {"credit_invoices": false} is passed (a replacement, not a refund).
+        {"quantities": {"<delivery_line_id>": "20"}} takes back part.
         """
         delivery = self.get_object()
         credit = flag(request.data, "credit_invoices", True)
+        quantities = None
+        requested = request.data.get("quantities")
+        if requested:
+            # {"<delivery_line_id>": "20"}: part of it back.
+            lines = {str(line.pk): line for line in delivery.lines.all()}
+            try:
+                quantities = {lines[str(line_id)]: Decimal(str(quantity))
+                              for line_id, quantity in requested.items()}
+            except KeyError as exc:
+                raise DRFValidationError(f"Line {exc} is not on this delivery.")
+            except (InvalidOperation, TypeError, AttributeError):
+                raise DRFValidationError("Quantities must be numbers, by delivery line.")
         try:
-            returned = delivery.create_return(credit_invoices=credit)
+            returned = delivery.create_return(credit_invoices=credit, quantities=quantities)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         payload = self.get_serializer(returned).data
