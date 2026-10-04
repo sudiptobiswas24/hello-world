@@ -252,6 +252,11 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.core.api.exception_handler",
     # Lists in pages of 50; the body stays a list, the count is in the
     # X-Total-Count header (apps/core/api.py).
+    # Every Decimal as its exact string, never a float (apps/core/renderers.py).
+    "DEFAULT_RENDERER_CLASSES": [
+        "apps.core.renderers.ExactJSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",
+    ],
     "DEFAULT_PAGINATION_CLASS": "apps.core.api.HeaderPagination",
     "PAGE_SIZE": 50,
     # ?search=, ?<field>=, ?from=&to= and ?ordering= on a list, each over

@@ -216,3 +216,4 @@ class Search(SearchFilter):
         related = model._meta.get_field(head).related_model
         return Q(**{f"{head}__in": related._default_manager.filter(
             self._matches(related, rest, term)).values("pk")})
+
