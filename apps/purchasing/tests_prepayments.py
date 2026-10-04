@@ -382,3 +382,130 @@ class AForeignPrepaymentClearsTests(PrepaymentTestCase):
             (Decimal("15.00"), Decimal("35.00"), Decimal("0"), Decimal("-4105.00"),
              Decimal("-45.00"), Decimal("0")),
         )
+
+
+class PrepaymentFxFixture(PrepaymentTestCase):
+    def foreign_order(self, price="5", quantity="10", held="80", billed="83"):
+        from apps.core.models import Currency, ExchangeRate
+
+        from .models import PurchaseOrder, PurchaseOrderLine
+
+        self.gain = Account.objects.create(code="7000", name="FX gain",
+                                           account_type=AccountType.INCOME)
+        self.loss = Account.objects.create(code="7100", name="FX loss",
+                                           account_type=AccountType.EXPENSE)
+        company = Company.get()
+        company.fx_gain_account, company.fx_loss_account = self.gain, self.loss
+        company.save()
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal(held),
+                                    valid_from=datetime.date(2025, 1, 1))
+        ExchangeRate.objects.create(currency=eur, rate=Decimal(billed),
+                                    valid_from=datetime.date(2026, 1, 4))
+        order = PurchaseOrder.objects.create(vendor=self.vendor, currency=eur,
+                                             order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                         quantity=Decimal(quantity), unit_price=Decimal(price))
+        order.confirm()
+        return order
+
+
+class ThePrepaymentKeepsItsExchangeEntryTests(PrepaymentFxFixture):
+    def test_the_drawdown_records_the_gain_it_posted(self):
+        order = self.foreign_order()
+        order.create_prepayment_bill(self.payable, percent=30,
+                                     bill_date=datetime.date(2026, 1, 2)).post()
+        self.receive(order, "10")
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+        application = bill.prepayment_applications.get()
+        self.assertEqual(
+            sorted((line.account.code, line.debit, line.credit)
+                   for line in application.fx_entry.lines.all()),
+            [("2000", Decimal("45.00"), Decimal("0.00")),
+             ("7000", Decimal("0.00"), Decimal("45.00"))],
+        )
+
+
+class NoPaisaLeftOnThePayableTests(PrepaymentFxFixture):
+    """The mirror of sales: 100.01 EUR at 80.111111, billed at 83.333333."""
+
+    def test_a_fully_drawn_bill_leaves_the_payable_at_the_prepayment(self):
+        order = self.foreign_order(price="100.01", quantity="1",
+                                   held="80.111111", billed="83.333333")
+        order.create_prepayment_bill(self.payable, amount=Decimal("100.01"),
+                                     bill_date=datetime.date(2026, 1, 2)).post()
+        self.receive(order, "1")
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+        self.assertEqual(
+            (bill.amount_due(), self.balance(self.payable), self.balance(self.gain),
+             self.balance(self.prepaid)),
+            (Decimal("0.00"), Decimal("-8011.91"), Decimal("-322.26"), Decimal("0")),
+        )
+
+
+class APrepaymentIsOneLineOfMoneyHeldTests(PrepaymentTestCase):
+    def draft(self):
+        return self.make_order("10", "5").create_prepayment_bill(self.payable, percent=30)
+
+    def test_a_second_line_is_refused(self):
+        from .models import BillLine
+
+        prepayment = self.draft()
+        BillLine.objects.create(bill=prepayment, description="Bank charge",
+                                quantity=Decimal("1"), unit_price=Decimal("5"),
+                                expense_account=self.expense)
+        with self.assertRaisesMessage(ValidationError, "single line"):
+            prepayment.post()
+
+    def test_tax_is_refused(self):
+        from apps.accounting.models import Tax
+
+        payable = Account.objects.create(code="2300", name="Tax",
+                                          account_type=AccountType.LIABILITY)
+        tax = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
+                                 collected_account=payable, paid_account=payable)
+        prepayment = self.draft()
+        prepayment.lines.get().taxes.add(tax)
+        with self.assertRaisesMessage(ValidationError, "Tax on a prepayment"):
+            prepayment.post()
+
+    def test_another_account_is_refused(self):
+        prepayment = self.draft()
+        line = prepayment.lines.get()
+        line.expense_account = self.expense
+        line.save()
+        with self.assertRaisesMessage(ValidationError, "vendor prepayment account"):
+            prepayment.post()
+
+
+class OnlyACompleteReturnReversesThePrepaymentTests(PrepaymentTestCase):
+    def test_a_prepayment_debited_untouched_reverses_it(self):
+        prepayment = self.prepay(self.make_order("10", "5"))
+        note = prepayment.create_debit_note()
+        self.assertEqual(note.journal_entry.reverses, prepayment.journal_entry)
+
+    def test_what_is_left_of_a_part_used_one_does_not(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        self.receive(order, "2")
+        order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10)).post()
+        note = prepayment.create_debit_note()
+        self.assertIsNone(note.journal_entry.reverses)
+
+
+class ADraftDebitNoteGivesNothingBackTests(PrepaymentTestCase):
+    """Only a posted note has done anything; a draft is a proposal."""
+
+    def test_a_draft_note_leaves_the_prepayment_held(self):
+        from .models import BillLine
+
+        prepayment = self.prepay(self.make_order("10", "5"))
+        draft = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 20),
+                                    payable_account=self.payable, debits=prepayment)
+        BillLine.objects.create(bill=draft, debits_line=prepayment.lines.get(),
+                                quantity=Decimal("1"), unit_price=Decimal("15"),
+                                expense_account=self.prepaid)
+        self.assertEqual((prepayment.amount_debited(), prepayment.prepayment_unapplied()),
+                         (Decimal("0"), Decimal("15.00")))

@@ -44,6 +44,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = PurchaseOrderSerializer
     action_permission_map = {
         "create_bill": "purchasing.add_bill",
+        "prepayment": "purchasing.add_bill",
         "confirm": "purchasing.change_purchaseorder",
         "cancel": "purchasing.change_purchaseorder",
     }
@@ -83,6 +84,39 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(BillSerializer(bill).data)
+
+    @action(detail=True, methods=["post"])
+    def prepayment(self, request, pk=None):
+        """
+        {payable_account, amount | percent, bill_date?, description?}: a
+        draft prepayment bill, the vendor asking for money up front.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from apps.accounting.models import Account
+
+        order = self.get_object()
+        account_id = request.data.get("payable_account")
+        if not account_id:
+            raise DRFValidationError("payable_account is required.")
+        figures = {}
+        for name in ("amount", "percent"):
+            value = request.data.get(name)
+            if value not in (None, ""):
+                try:
+                    figures[name] = Decimal(str(value))
+                except InvalidOperation:
+                    raise DRFValidationError(f"{name} must be a number.")
+        try:
+            bill = order.create_prepayment_bill(
+                get_object_or_404(Account, pk=account_id),
+                bill_date=request.data.get("bill_date"),
+                description=request.data.get("description", ""),
+                **figures,
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(BillSerializer(bill).data, status=201)
 
 
 class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

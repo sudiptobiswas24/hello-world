@@ -60,6 +60,7 @@ from apps.accounting.settlement import (
     amount_overdue,
     installment_schedule,
     oldest_overdue,
+    post_drawdown,
     post_settlement_fx,
 )
 
@@ -732,7 +733,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     def deposit_total(self):
         """Taken up front and not since credited back."""
         return sum(
-            (deposit.total() - deposit.deposit_refunded() for deposit in self.deposits()),
+            (deposit.total() - deposit.amount_credited() for deposit in self.deposits()),
             Decimal("0"),
         )
 
@@ -1507,12 +1508,6 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             (application.amount for application in self.applications.all()), Decimal("0")
         )
 
-    def deposit_refunded(self):
-        """On a down-payment invoice, how much of it has been credited back."""
-        return sum(
-            (note.total() for note in self.credit_notes.filter(posted=True)), Decimal("0")
-        )
-
     def deposit_unapplied(self):
         """
         What is still held. Less what was credited back, or a deposit
@@ -1521,7 +1516,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         if not self.is_down_payment:
             return Decimal("0")
-        return self.total() - self.deposit_applied() - self.deposit_refunded()
+        return self.total() - self.deposit_applied() - self.amount_credited()
 
     @transaction.atomic
     def apply_deposit(self, deposit, amount=None, on_date=None):
@@ -1553,14 +1548,15 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 "against the other would silently write off the difference."
             )
 
-        available = min(deposit.deposit_unapplied(), self.amount_due())
+        left = deposit.deposit_unapplied()
+        available = min(left, self.amount_due())
         amount = round_money(Decimal(amount)) if amount is not None else available
         if amount <= 0:
             raise ValidationError("There is nothing left to draw down.")
         if amount > available:
             raise ValidationError(
                 f"Only {available} can be drawn down here "
-                f"({deposit.deposit_unapplied()} left on the deposit, "
+                f"({left} left on the deposit, "
                 f"{self.amount_due()} due on the invoice)."
             )
 
@@ -1568,34 +1564,17 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if account is None:
             raise ValidationError("The company has no customer deposit account configured.")
 
-        # At the rate the deposit was taken at, which is what the deposit
-        # account holds it at. At the invoice's rate a deposit taken at 80
-        # and drawn down at 83 left the difference on the deposit account
-        # for good. What is left on the receivable is the invoice settled
-        # at a different rate than it was billed at: a realised exchange
-        # difference, the same as a payment at a moved rate.
-        deposit_rate = deposit.exchange_rate or Decimal("1")
-        base_amount = round_money(amount * deposit_rate)
-        memo = f"Down payment {deposit.number} applied to {self.number}"
-        entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
-        JournalLine.objects.create(
-            entry=entry, account=account, party=self.customer,
-            debit=base_amount, description=memo,
-        )
-        JournalLine.objects.create(
-            entry=entry, account=self.receivable_account, party=self.customer,
-            credit=base_amount, description=memo,
-        )
-        entry.post()
-        post_settlement_fx(
-            party=self.customer, control_account=self.receivable_account, amount=amount,
-            document_rate=self.exchange_rate, payment_rate=deposit_rate, date=on_date,
-            reference=self.number, memo=f"Exchange difference on {memo[0].lower()}{memo[1:]}",
+        entry, fx_entry = post_drawdown(
+            party=self.customer, held_account=account,
+            control_account=self.receivable_account, amount=amount,
+            held_rate=deposit.exchange_rate, document_rate=self.exchange_rate,
+            date=on_date, reference=self.number,
+            memo=f"Down payment {deposit.number} applied to {self.number}",
             is_receivable=True,
         )
-
         return DepositApplication.objects.create(
-            invoice=self, deposit=deposit, amount=amount, date=on_date, journal_entry=entry
+            invoice=self, deposit=deposit, amount=amount, date=on_date,
+            journal_entry=entry, fx_entry=fx_entry,
         )
 
     def apply_available_deposits(self, on_date=None):
@@ -1624,8 +1603,10 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     def amount_credited(self):
         """Value of posted credit notes issued against this invoice."""
+        # Filtered here rather than in the query, so a caller's prefetch of
+        # credit_notes is used instead of bypassed.
         return sum(
-            (note.total() for note in self.credit_notes.filter(posted=True)), Decimal("0")
+            (note.total() for note in self.credit_notes.all() if note.posted), Decimal("0")
         )
 
     def _settled_otherwise(self):
@@ -1843,11 +1824,12 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             if not line.credits_line_id:
                 return False
             credited[line.credits_line_id] += line.quantity
+        if original.is_down_payment:
+            # Credited by amount, one line of one at what is left: in full
+            # only when nothing had been drawn down.
+            return self.total() == original.total()
         original_lines = list(original.lines.all())
         if len(credited) != len(original_lines):
-            return False
-        if self.total() != original.total():
-            # A deposit is credited by amount: one line, at what is left.
             return False
         return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
@@ -1855,6 +1837,8 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
+        if self.is_down_payment:
+            self._check_deposit_shape()
 
         self.invoice_date = to_date(self.invoice_date)
         if not self.is_credit_note() and self.total() <= 0:
@@ -1984,6 +1968,44 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         credit_note.post(memo=memo)
         return credit_note
 
+    def _check_deposit_shape(self):
+        """
+        A down payment is one line of money held on the deposit account,
+        and nothing else.
+
+        Asked at posting, the first point every line and its taxes are
+        known. A draft could be given more through the API: a second
+        line booked revenue on a document every report leaves out as not
+        a sale, and crediting it back assumed one line and failed. Tax on
+        an advance (owed on services, such as job work) is not handled
+        here; it is refused rather than half-booked.
+        """
+        lines = list(self.lines.all())
+        if len(lines) != 1:
+            raise ValidationError(
+                f"A down payment is a single line of money held; this one has {len(lines)}. "
+                "Bill anything else on its own invoice."
+            )
+        (line,) = lines
+        if line.item_id or line.charge_id or line.order_line_id:
+            raise ValidationError(
+                "A down payment line is money held, not goods or a charge."
+            )
+        if line.quantity != 1 or line.discount_percent:
+            raise ValidationError(
+                "A down payment line is one of its amount, with no discount."
+            )
+        if line.taxes.exists():
+            raise ValidationError(
+                "Tax on a down payment is not supported; post it without tax."
+            )
+        account = Company.get().customer_deposit_account
+        if account is None or line.revenue_account_id != account.pk:
+            raise ValidationError(
+                "A down payment is credited to the customer deposit account, which is what "
+                "the final invoice draws it down from."
+            )
+
     def _credit_deposit(self, memo, quantities):
         """
         Give back what is left of a down payment.
@@ -2007,7 +2029,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"{self.number} has already been drawn down in full against {drawn}; "
                 "credit those invoices instead."
             )
-        (line,) = self.lines.all()
+        line = self.lines.get()  # One, by _check_deposit_shape().
         credit_note = Invoice.objects.create(
             customer=self.customer,
             invoice_date=timezone.localdate(),
@@ -2278,6 +2300,12 @@ class DepositApplication(AuditModel):
     journal_entry = models.ForeignKey(
         JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
     )
+    fx_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Realised exchange difference posted when the deposit, taken at one "
+                  "rate, was drawn down against an invoice billed at another.",
+    )
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -2389,7 +2417,7 @@ def committed_balance(customer):
     # money from them up front, which is backwards.
     deposits = Invoice.objects.filter(
         customer=customer, posted=True, is_down_payment=True
-    ).prefetch_related("lines__taxes", "applications")
+    ).prefetch_related("lines__taxes", "applications", "credit_notes__lines__taxes")
     outstanding_deposits = sum(
         (deposit.deposit_unapplied() for deposit in deposits), Decimal("0")
     )
@@ -3499,7 +3527,10 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
     # A down payment credits a liability, not revenue — counting it here
     # would book the sale twice, once on the deposit and once on the
     # invoice that draws it down.
-    invoices = Invoice.objects.filter(posted=True, is_down_payment=False).prefetch_related(
+    # A deposit returned is no more a sale than the deposit was.
+    invoices = Invoice.objects.filter(posted=True, is_down_payment=False).exclude(
+        credits__is_down_payment=True
+    ).prefetch_related(
         "lines__taxes", "lines__item", "lines__recorded_taxes__tax"
     ).select_related("customer")
     if date_from:
@@ -3997,7 +4028,9 @@ def commission_report(date_from=None, date_to=None):
         # basis; the commission falls due on the invoice that draws it down.
         invoices = Invoice.objects.filter(
             posted=True, sales_rep=rep.party, is_down_payment=False
-        ).prefetch_related("lines__taxes", "payment_allocations__payment")
+        ).exclude(credits__is_down_payment=True).prefetch_related(
+            "lines__taxes", "payment_allocations__payment"
+        )
 
         basis_amount = Decimal("0")
         if rep.plan.basis == CommissionBasis.INVOICED:

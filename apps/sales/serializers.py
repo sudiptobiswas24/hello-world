@@ -115,10 +115,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "credits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
+            "is_down_payment",
         ]
         read_only_fields = [
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
-            "posted", "posted_at", "sent_at",
+            "posted", "posted_at", "sent_at", "is_down_payment",
         ]
 
 

@@ -199,3 +199,30 @@ class CapitalisingAndUndoingItTests(CapitalisationFixture):
         asset = self.asset(in_service=False)
         with self.assertRaisesMessage(ValidationError, "delete the draft"):
             asset.uncapitalise()
+
+
+class ADisposalAfterAMonthWasClosedTests(AssetTestCase):
+    """
+    Charged to September, September closed, then the lathe recorded as
+    sold on 20 August. Reversing September's charge on 30 September was
+    refused by the close, and with it the whole disposal: the asset had
+    no way off the books. It is reversed on the disposal date instead;
+    August's, still open, on its own month end.
+    """
+
+    def test_the_closed_month_is_reversed_on_the_disposal_date(self):
+        from apps.accounting.models import AccountingPeriod
+
+        asset = self.asset()
+        asset.depreciate(through=datetime.date(2026, 9, 30))
+        AccountingPeriod.objects.create(name="Sep 2026", start_date=datetime.date(2026, 9, 1),
+                                        end_date=datetime.date(2026, 9, 30), closed=True)
+        asset.dispose(on_date=datetime.date(2026, 8, 20))
+        self.assertEqual(
+            ([(e.period_end, e.reversal.date) for e in
+              asset.depreciation_entries.filter(reversal__isnull=False)],
+             asset.accumulated(), self.balance(self.disposal), self.balance(self.depreciation)),
+            ([(datetime.date(2026, 8, 31), datetime.date(2026, 8, 31)),
+              (datetime.date(2026, 9, 30), datetime.date(2026, 8, 20))],
+             Decimal("7000.00"), Decimal("5000.00"), Decimal("7000.00")),
+        )

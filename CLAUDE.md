@@ -124,7 +124,11 @@ Go through it before running anything.
   its account at the rate it came in at; the gap to the document it
   settles is exchange. And what is "left" on it is less what has been
   credited back as well as what was drawn: both holes were in sales
-  first and copied to purchasing (mistake 5, again).
+  first and copied to purchasing (mistake 5, again). The money side is
+  now one function, `settlement.post_drawdown`; use it.
+- An exchange difference is the base each side booked, each rounded,
+  subtracted — not the rate difference times the amount, rounded. The
+  second can leave a paisa nothing explains.
 - A settlement checks what it settles with, not only the amount: posted,
   direction, party, control account, not already used.
 - Never round a per-unit cost and multiply it back up. A component's

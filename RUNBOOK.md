@@ -217,6 +217,10 @@ previous version (`git checkout <previous tag>`), and rebuild.
   prepared for review and filing by whoever files today. E-invoice and
   e-way bill payloads are produced for upload; the system does not
   connect to the IRP or the e-way bill portal.
+- It takes advances (down payments from customers, prepayments to
+  vendors) without GST. That is right for goods. An advance for a
+  service, such as job work, owes GST when it is received; until that
+  is built, raise the tax on a separate invoice.
 
 ## Security notes
 

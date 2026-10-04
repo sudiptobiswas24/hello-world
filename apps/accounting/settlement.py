@@ -59,6 +59,17 @@ def post_settlement_fx(
     base currency than you had to pay, which is a gain.
     """
     difference = settlement_difference(amount, document_rate, payment_rate)
+    return _post_exchange_difference(
+        party=party, control_account=control_account, difference=difference,
+        date=date, reference=reference, memo=memo, is_receivable=is_receivable,
+    )
+
+
+def _post_exchange_difference(
+    *, party, control_account, difference, date, reference, memo, is_receivable,
+    doing="Settling this at a different rate than it was booked at",
+):
+    """`difference`: base booked on the document less base cleared off it."""
     if not difference:
         return None
 
@@ -68,9 +79,8 @@ def post_settlement_fx(
     if account is None:
         side = "gain" if is_gain else "loss"
         raise ValidationError(
-            f"Settling this at a different rate than it was booked at leaves "
-            f"{abs(difference)} on {control_account.code}, which is a realised exchange "
-            f"{side}, and the company has no FX {side} account configured."
+            f"{doing} leaves {abs(difference)} on {control_account.code}, which is a "
+            f"realised exchange {side}, and the company has no FX {side} account configured."
         )
 
     size = abs(difference)
@@ -89,6 +99,57 @@ def post_settlement_fx(
     )
     entry.post()
     return entry
+
+
+@transaction.atomic
+def post_drawdown(
+    *, party, held_account, control_account, amount, held_rate, document_rate,
+    date, reference, memo, is_receivable,
+):
+    """
+    Draw money held up front — a customer's deposit, a prepayment to a
+    vendor — down against the document it pays for. Returns the entry
+    and the exchange entry, or None for the second when there is none.
+
+    Shared by Sales and Purchasing: the two were written apart, the same
+    holes were found in both, and they were fixed twice.
+
+    The held account is cleared at the rate the money came in at, which
+    is what it holds it at; at the document's rate a deposit taken at 80
+    and drawn at 83 stayed on the deposit account for good. What that
+    leaves on the control account is the document settled at a moved
+    rate: a realised exchange difference.
+
+    The difference is the base the document booked for this amount less
+    the base cleared, each rounded on its own. Rounding the difference
+    of the rates instead can leave a paisa on the control account that
+    no document explains.
+    """
+    held_base = round_money(Decimal(amount) * (held_rate or Decimal("1")))
+    booked_base = round_money(Decimal(amount) * (document_rate or Decimal("1")))
+
+    entry = JournalEntry.objects.create(date=date, reference=reference, memo=memo)
+    # A receivable: Dr the deposit held / Cr what the customer owes.
+    # A payable: Dr what is owed the vendor / Cr the prepayment held.
+    debit, credit = (
+        (held_account, control_account) if is_receivable else (control_account, held_account)
+    )
+    JournalLine.objects.create(
+        entry=entry, account=debit, party=party, debit=held_base, description=memo,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=credit, party=party, credit=held_base, description=memo,
+    )
+    entry.post()
+
+    fx_entry = _post_exchange_difference(
+        party=party, control_account=control_account, difference=booked_base - held_base,
+        date=date, reference=reference,
+        memo=f"Exchange difference on {memo[0].lower()}{memo[1:]}",
+        is_receivable=is_receivable,
+        doing=f"{memo}, at the rate it was taken at rather than the document's,",
+    )
+    return entry, fx_entry
 
 
 def installment_schedule(*, terms, document_date, total, settled):

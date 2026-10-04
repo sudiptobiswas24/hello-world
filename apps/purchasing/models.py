@@ -51,6 +51,7 @@ from apps.accounting.settlement import (
     amount_overdue,
     installment_schedule,
     oldest_overdue,
+    post_drawdown,
     post_settlement_fx,
 )
 from apps.inventory.valuation import (
@@ -1656,7 +1657,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
     def prepayment_total(self):
         """Paid up front and not since debited back."""
         return sum(
-            (bill.total() - bill.prepayment_refunded() for bill in self.prepayments()),
+            (bill.total() - bill.amount_debited() for bill in self.prepayments()),
             Decimal("0"),
         )
 
@@ -2292,8 +2293,10 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     def amount_debited(self):
         """Value of posted debit notes issued against this bill."""
+        # Filtered here rather than in the query, so a caller's prefetch of
+        # debit_notes is used instead of bypassed.
         return sum(
-            (note.total() for note in self.debit_notes.filter(posted=True)), Decimal("0")
+            (note.total() for note in self.debit_notes.all() if note.posted), Decimal("0")
         )
 
     def amount_prepaid(self):
@@ -2309,12 +2312,6 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             (application.amount for application in self.applications.all()), Decimal("0")
         )
 
-    def prepayment_refunded(self):
-        """On a prepayment bill, how much of it the vendor has debited back."""
-        return sum(
-            (note.total() for note in self.debit_notes.filter(posted=True)), Decimal("0")
-        )
-
     def prepayment_unapplied(self):
         """
         What is still held. Less what was debited back, or a prepayment
@@ -2324,7 +2321,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         if not self.is_prepayment:
             return Decimal("0")
-        return self.total() - self.prepayment_applied() - self.prepayment_refunded()
+        return self.total() - self.prepayment_applied() - self.amount_debited()
 
     @transaction.atomic
     def apply_prepayment(self, prepayment, amount=None, on_date=None):
@@ -2355,14 +2352,15 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 "down against the other would silently write off the difference."
             )
 
-        available = min(prepayment.prepayment_unapplied(), self.amount_due())
+        left = prepayment.prepayment_unapplied()
+        available = min(left, self.amount_due())
         amount = round_money(Decimal(amount)) if amount is not None else available
         if amount <= 0:
             raise ValidationError("There is nothing left to draw down.")
         if amount > available:
             raise ValidationError(
                 f"Only {available} can be drawn down here "
-                f"({prepayment.prepayment_unapplied()} left on the prepayment, "
+                f"({left} left on the prepayment, "
                 f"{self.amount_due()} due on the bill)."
             )
 
@@ -2370,31 +2368,17 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if account is None:
             raise ValidationError("The company has no vendor prepayment account configured.")
 
-        # At the rate the prepayment was made at, which is what the
-        # prepayment account holds it at; what that leaves on payables is
-        # the bill settled at a moved rate. As sales' deposits.
-        prepayment_rate = prepayment.exchange_rate or Decimal("1")
-        base_amount = round_money(amount * prepayment_rate)
-        memo = f"Prepayment {prepayment.number} applied to {self.number}"
-        entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
-        JournalLine.objects.create(
-            entry=entry, account=self.payable_account, party=self.vendor,
-            debit=base_amount, description=memo,
-        )
-        JournalLine.objects.create(
-            entry=entry, account=account, party=self.vendor,
-            credit=base_amount, description=memo,
-        )
-        entry.post()
-        post_settlement_fx(
-            party=self.vendor, control_account=self.payable_account, amount=amount,
-            document_rate=self.exchange_rate, payment_rate=prepayment_rate, date=on_date,
-            reference=self.number, memo=f"Exchange difference on {memo[0].lower()}{memo[1:]}",
+        entry, fx_entry = post_drawdown(
+            party=self.vendor, held_account=account,
+            control_account=self.payable_account, amount=amount,
+            held_rate=prepayment.exchange_rate, document_rate=self.exchange_rate,
+            date=on_date, reference=self.number,
+            memo=f"Prepayment {prepayment.number} applied to {self.number}",
             is_receivable=False,
         )
-
         return PrepaymentApplication.objects.create(
-            bill=self, prepayment=prepayment, amount=amount, date=on_date, journal_entry=entry
+            bill=self, prepayment=prepayment, amount=amount, date=on_date,
+            journal_entry=entry, fx_entry=fx_entry,
         )
 
     def apply_available_prepayments(self, on_date=None):
@@ -2786,6 +2770,8 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
+        if self.is_prepayment:
+            self._check_prepayment_shape()
 
         self.bill_date = to_date(self.bill_date)
         if not self.is_debit_note() and self.total() <= 0:
@@ -3014,11 +3000,12 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             if not line.debits_line_id:
                 return False
             debited[line.debits_line_id] += line.quantity
+        if original.is_prepayment:
+            # Debited by amount, one line of one at what is left: in full
+            # only when nothing had been drawn down.
+            return self.total() == original.total()
         original_lines = list(original.lines.all())
         if len(debited) != len(original_lines):
-            return False
-        if self.total() != original.total():
-            # A prepayment is debited by amount: one line, at what is left.
             return False
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
@@ -3092,6 +3079,32 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         debit_note.post(memo=memo)
         return debit_note
 
+    def _check_prepayment_shape(self):
+        """
+        A prepayment is one line of money held on the vendor prepayment
+        account, and nothing else. Asked at posting, as sales asks of a
+        down payment, for the same reasons.
+        """
+        lines = list(self.lines.all())
+        if len(lines) != 1:
+            raise ValidationError(
+                f"A prepayment is a single line of money held; this one has {len(lines)}. "
+                "Bill anything else on its own bill."
+            )
+        (line,) = lines
+        if line.item_id or line.charge_id or line.order_line_id:
+            raise ValidationError("A prepayment line is money held, not goods or a charge.")
+        if line.quantity != 1 or line.discount_percent:
+            raise ValidationError("A prepayment line is one of its amount, with no discount.")
+        if line.taxes.exists():
+            raise ValidationError("Tax on a prepayment is not supported; post it without tax.")
+        account = Company.get().vendor_prepayment_account
+        if account is None or line.expense_account_id != account.pk:
+            raise ValidationError(
+                "A prepayment is debited to the vendor prepayment account, which is what "
+                "the bill draws it down from."
+            )
+
     def _debit_prepayment(self, memo, quantities):
         """
         Take back what is left of a prepayment, by amount. The mirror of
@@ -3112,7 +3125,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"{self.number} has already been drawn down in full against {drawn}; "
                 "debit those bills instead."
             )
-        (line,) = self.lines.all()
+        line = self.lines.get()  # One, by _check_prepayment_shape().
         debit_note = Bill.objects.create(
             vendor=self.vendor,
             bill_date=timezone.localdate(),
@@ -3607,6 +3620,12 @@ class PrepaymentApplication(AuditModel):
     date = models.DateField()
     journal_entry = models.ForeignKey(
         JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    fx_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Realised exchange difference posted when the prepayment, made at one "
+                  "rate, was drawn down against a bill at another.",
     )
 
     class Meta:

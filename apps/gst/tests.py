@@ -358,6 +358,9 @@ class RefusalTests(GstReturnTestCase):
         customer = self.party("MH", gstin=gstin("27AABCM1111A1Z"))
         deposits = Account.objects.create(code="2300", name="Deposits",
                                           account_type=AccountType.LIABILITY)
+        company = Company.get()
+        company.customer_deposit_account = deposits
+        company.save()
         deposit = Invoice.objects.create(customer=customer, invoice_date=DAY,
                                          receivable_account=self.ar, is_down_payment=True)
         InvoiceLine.objects.create(invoice=deposit, description="Advance", quantity=D("1"),
@@ -384,6 +387,9 @@ class RefusalTests(GstReturnTestCase):
         vendor = self.party("V", role=PartyRole.VENDOR, gstin=gstin("27AABCV1111A1Z"))
         prepaid = Account.objects.create(code="1400", name="Prepaid",
                                          account_type=AccountType.ASSET)
+        company = Company.get()
+        company.vendor_prepayment_account = prepaid
+        company.save()
         prepayment = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap,
                                          is_prepayment=True)
         BillLine.objects.create(bill=prepayment, description="Advance", quantity=D("1"),

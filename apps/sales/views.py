@@ -79,6 +79,7 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = SalesOrderSerializer
     action_permission_map = {
         "create_invoice": "sales.add_invoice",
+        "down_payment": "sales.add_invoice",
         "approve": "sales.approve_order",
         "confirm": "sales.change_salesorder",
         "cancel": "sales.change_salesorder",
@@ -137,6 +138,36 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(InvoiceSerializer(invoice).data)
+
+    @action(detail=True, methods=["post"])
+    def down_payment(self, request, pk=None):
+        """
+        {receivable_account, amount | percent, invoice_date?, description?}:
+        a draft down-payment invoice. The model had it; nothing outside
+        code could reach it, so a screen could not take an advance.
+        """
+        order = self.get_object()
+        account_id = request.data.get("receivable_account")
+        if not account_id:
+            raise DRFValidationError("receivable_account is required.")
+        figures = {}
+        for name in ("amount", "percent"):
+            value = request.data.get(name)
+            if value not in (None, ""):
+                try:
+                    figures[name] = Decimal(str(value))
+                except InvalidOperation:
+                    raise DRFValidationError(f"{name} must be a number.")
+        try:
+            invoice = order.create_down_payment_invoice(
+                get_object_or_404(Account, pk=account_id),
+                invoice_date=request.data.get("invoice_date"),
+                description=request.data.get("description", ""),
+                **figures,
+            )
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(InvoiceSerializer(invoice).data, status=201)
 
 
 class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

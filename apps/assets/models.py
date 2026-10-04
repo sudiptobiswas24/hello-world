@@ -24,7 +24,13 @@ from django.db import models, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
-from apps.accounting.models import Account, JournalEntry, JournalLine, round_money
+from apps.accounting.models import (
+    Account,
+    AccountingPeriod,
+    JournalEntry,
+    JournalLine,
+    round_money,
+)
 from apps.core.models import AuditModel, DocumentSequence, Party, to_date
 
 
@@ -373,12 +379,19 @@ class FixedAsset(AuditModel):
         # sale was recorded. Left alone they were taken off as accumulated
         # depreciation, so the loss read nothing and the profit and loss
         # carried months of a machine that was gone. Each is reversed on
-        # its own month end, so every month reads as it should have.
+        # its own month end, so every month reads as it should have —
+        # unless that month has since been closed, when it is reversed on
+        # the disposal date instead, which is open or this entry would not
+        # post either. Refusing would leave the asset on the books with no
+        # way off them short of reopening a signed-off month.
         for charge in self.depreciation_entries.filter(
             period_end__gt=month_before, reversal__isnull=True
         ):
+            reversed_on = charge.period_end
+            if AccountingPeriod.blocking(reversed_on) is not None:
+                reversed_on = on_date
             charge.reversal = charge.journal_entry.create_reversal(
-                entry_date=charge.period_end,
+                entry_date=reversed_on,
                 memo=f"Depreciation {self.number} to {charge.period_end:%b %Y} reversed: "
                      f"disposed of on {on_date}",
             )

@@ -107,10 +107,11 @@ class BillSerializer(serializers.ModelSerializer):
             "amount_debited",
             "amount_due",
             "settlement_status",
+            "is_prepayment",
         ]
         read_only_fields = [
             "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
-            "exchange_rate",
+            "exchange_rate", "is_prepayment",
         ]
 
 

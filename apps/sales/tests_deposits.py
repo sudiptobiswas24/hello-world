@@ -13,6 +13,7 @@ from django.core.exceptions import ValidationError
 
 from .models import (
     DepositApplication,
+    Invoice,
     InvoicePolicy,
     SettlementStatus,
     committed_balance,
@@ -391,3 +392,194 @@ class AForeignDepositClearsTests(SalesTestCase):
             (Decimal("300.00"), Decimal("700.00"), Decimal("0"), Decimal("82100.00"),
              Decimal("900.00"), Decimal("0")),
         )
+        # The exchange entry is a fact of the drawdown, kept on it.
+        application = invoice.deposit_applications.get()
+        self.assertEqual(
+            sorted((line.account.code, line.debit, line.credit)
+                   for line in application.fx_entry.lines.all()),
+            [("1100", Decimal("0.00"), Decimal("900.00")),
+             ("7100", Decimal("900.00"), Decimal("0.00"))],
+        )
+
+
+class FxFixture(SalesTestCase):
+    def foreign_order(self, price="100", held="80", billed="83"):
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company, Currency, ExchangeRate
+
+        from .models import SalesOrder, SalesOrderLine
+
+        self.loss = Account.objects.create(code="7100", name="FX loss",
+                                           account_type=AccountType.EXPENSE)
+        self.gain = Account.objects.create(code="7000", name="FX gain",
+                                           account_type=AccountType.INCOME)
+        company = Company.get()
+        company.fx_loss_account, company.fx_gain_account = self.loss, self.gain
+        company.save()
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal(held),
+                                    valid_from=datetime.date(2026, 1, 1))
+        ExchangeRate.objects.create(currency=eur, rate=Decimal(billed),
+                                    valid_from=datetime.date(2026, 3, 5))
+        order = SalesOrder.objects.create(customer=self.customer, currency=eur,
+                                          order_date=datetime.date(2026, 3, 1))
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                      quantity=Decimal("1"), unit_price=Decimal(price),
+                                      revenue_account=self.revenue)
+        order.confirm()
+        return order
+
+
+class NoPaisaLeftOnTheReceivableTests(FxFixture):
+    """
+    100.01 EUR taken at 80.111111 and drawn down in full against an
+    invoice at 83.333333. Rounding the difference of the rates gave
+    322.25 of exchange against an invoice booked at 8,334.17 and cleared
+    at 8,011.91, so the customer's account kept a paisa that no document
+    explained. Each side rounded on its own, the difference is 322.26.
+    """
+
+    def test_a_fully_drawn_invoice_leaves_the_receivable_at_the_deposit(self):
+        order = self.foreign_order(price="100.01", held="80.111111", billed="83.333333")
+        deposit = order.create_down_payment_invoice(
+            self.ar, amount=Decimal("100.01"), invoice_date=datetime.date(2026, 3, 1))
+        deposit.post()
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 6))
+        invoice.post()
+
+        self.assertEqual(
+            (invoice.amount_due(), self.balance(self.ar), self.balance(self.loss),
+             self.balance(self.deposits)),
+            (Decimal("0.00"), Decimal("8011.91"), Decimal("322.26"), Decimal("0")),
+        )
+
+
+class NoExchangeAccountTests(FxFixture):
+    def test_the_refusal_says_it_is_the_deposit(self):
+        from apps.core.models import Company
+
+        order = self.foreign_order()
+        company = Company.get()
+        company.fx_loss_account = None
+        company.save()
+        deposit = order.create_down_payment_invoice(
+            self.ar, percent=30, invoice_date=datetime.date(2026, 3, 1))
+        deposit.post()
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 6))
+        with self.assertRaisesMessage(ValidationError, "applied to"):
+            invoice.post()
+        self.assertFalse(Invoice.objects.get(pk=invoice.pk).posted)
+
+
+class AReturnedDepositIsNotASaleTests(SalesTestCase):
+    """
+    The deposit was left out of revenue and commission as not a sale;
+    the credit note returning it was not, and read as a sale of minus
+    the deposit, clawing back commission the rep had never been paid.
+    """
+
+    def test_revenue_does_not_go_negative(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        deposit.create_credit_note()
+        self.assertEqual(revenue_report(), [])
+
+    def test_no_commission_is_clawed_back(self):
+        from .models import CommissionBasis, CommissionPlan, SalesRep
+
+        plan = CommissionPlan.objects.create(
+            code="P1", name="Flat", percent=Decimal("10"), basis=CommissionBasis.INVOICED
+        )
+        SalesRep.objects.create(party=self.rep, plan=plan)
+        order = self.make_order("10", "100", rep=self.rep)
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        deposit.create_credit_note()
+        self.assertEqual(commission_report(), [])
+
+
+class ADownPaymentIsOneLineOfMoneyHeldTests(SalesTestCase):
+    """
+    A draft down payment could be given more lines, a tax or another
+    account. A second line booked revenue on a document every report
+    leaves out; crediting one with two lines crashed.
+    """
+
+    def draft(self):
+        return self.make_order("10", "100").create_down_payment_invoice(self.ar, percent=30)
+
+    def test_a_second_line_is_refused(self):
+        from .models import InvoiceLine
+
+        deposit = self.draft()
+        InvoiceLine.objects.create(invoice=deposit, description="Bank charge",
+                                   quantity=Decimal("1"), unit_price=Decimal("5"),
+                                   revenue_account=self.revenue)
+        with self.assertRaisesMessage(ValidationError, "single line"):
+            deposit.post()
+
+    def test_tax_is_refused(self):
+        from apps.accounting.models import Account, AccountType, Tax
+
+        payable = Account.objects.create(code="2100", name="Tax",
+                                          account_type=AccountType.LIABILITY)
+        tax = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
+                                 collected_account=payable, paid_account=payable)
+        deposit = self.draft()
+        deposit.lines.get().taxes.add(tax)
+        with self.assertRaisesMessage(ValidationError, "Tax on a down payment"):
+            deposit.post()
+
+    def test_another_account_is_refused(self):
+        deposit = self.draft()
+        line = deposit.lines.get()
+        line.revenue_account = self.revenue
+        line.save()
+        with self.assertRaisesMessage(ValidationError, "customer deposit account"):
+            deposit.post()
+
+    def test_a_discount_is_refused(self):
+        deposit = self.draft()
+        line = deposit.lines.get()
+        line.discount_percent = Decimal("10")
+        line.save()
+        with self.assertRaisesMessage(ValidationError, "no discount"):
+            deposit.post()
+
+
+class OnlyACompleteReturnReversesTheDepositTests(SalesTestCase):
+    def test_a_deposit_credited_untouched_reverses_it(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        note = deposit.create_credit_note()
+        self.assertEqual(note.journal_entry.reverses, deposit.journal_entry)
+
+    def test_what_is_left_of_a_part_used_one_does_not(self):
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        self.ship(order, "2")
+        self.bill(order)
+        note = deposit.create_credit_note()
+        self.assertIsNone(note.journal_entry.reverses)
+
+
+class ADraftCreditNoteGivesNothingBackTests(SalesTestCase):
+    """Only a posted note has done anything; a draft is a proposal."""
+
+    def test_a_draft_note_leaves_the_deposit_held(self):
+        from .models import InvoiceLine
+
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        draft = Invoice.objects.create(customer=self.customer, receivable_account=self.ar,
+                                       invoice_date=datetime.date(2026, 3, 20),
+                                       currency=self.usd, credits=deposit)
+        InvoiceLine.objects.create(invoice=draft, credits_line=deposit.lines.get(),
+                                   quantity=Decimal("1"), unit_price=Decimal("300"),
+                                   revenue_account=self.deposits)
+        self.assertEqual((deposit.amount_credited(), deposit.deposit_unapplied()),
+                         (Decimal("0"), Decimal("300.00")))
