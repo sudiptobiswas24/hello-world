@@ -1,7 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -33,6 +33,7 @@ from .orders import (
     TimeBooking,
     WorkCentre,
     WorkOrder,
+    WorkOrderComponent,
     WorkOrderOperation,
 )
 from .demand import coverage, genealogy, uncovered
@@ -124,6 +125,7 @@ from .serializers import (
     LinerSpecificationSerializer,
     TimeBookingSerializer,
     WorkCentreSerializer,
+    WorkOrderListSerializer,
     WorkOrderSerializer,
 )
 from .liners import FilmSpecification, LinerSpecification
@@ -1197,10 +1199,18 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["number", "item__sku", "item__name"]
+    filter_fields = ["status", "item", "work_centre", "warehouse", "sales_order_line"]
+    date_field = "scheduled_start"
+    ordering_fields = ["scheduled_start", "number"]
+
     queryset = WorkOrder.objects.select_related(
         "item", "bom", "warehouse", "work_centre"
-    ).prefetch_related("components")
+    ).prefetch_related(Prefetch("components", queryset=WorkOrderComponent.objects.select_related("item")))
     serializer_class = WorkOrderSerializer
+
+    def get_serializer_class(self):
+        return WorkOrderListSerializer if self.action == "list" else WorkOrderSerializer
     action_permission_map = {
         "choose_routing": "manufacturing.change_workorder",
         "release": "manufacturing.change_workorder",
@@ -1727,7 +1737,7 @@ class DispatchViewSet(viewsets.ViewSet):
     def _row(row):
         order = row["order"]
         return {
-            "run": order.number, "item": order.item.sku,
+            "work_order": order.pk, "run": order.number, "item": order.item.sku,
             "operation": row["operation"].name, "sequence": row["operation"].sequence,
             "start": row["start"], "finish": row["finish"],
             "changeover_minutes": str(row["changeover"]), "purge_kg": str(row["purge_kg"]),

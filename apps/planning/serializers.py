@@ -56,6 +56,11 @@ class PlannedDemandSerializer(serializers.ModelSerializer):
 
 
 class PlannedOrderSerializer(serializers.ModelSerializer):
+    # Named, so the planner's list reads without a call per row.
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
+    work_order_number = serializers.CharField(source="work_order.number", read_only=True, default="")
     demands = PlannedDemandSerializer(many=True, read_only=True)
     is_late = serializers.BooleanField(read_only=True)
     days_late = serializers.IntegerField(read_only=True)
@@ -65,7 +70,8 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PlannedOrder
-        fields = ["id", "run", "item", "warehouse", "kind", "quantity",
+        fields = ["id", "run", "item", "item_sku", "item_name", "vendor_name", "work_order_number",
+                  "warehouse", "kind", "quantity",
                   "needed_by", "release_on", "lead_days", "level", "bom",
                   "vendor", "from_warehouse", "transfer", "bottleneck",
                   "is_overloaded", "stand_in_note",
@@ -81,17 +87,20 @@ class PlannedOrderSerializer(serializers.ModelSerializer):
 
 
 class PlanningActionSerializer(serializers.ModelSerializer):
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
     sentence = serializers.CharField(read_only=True)
 
     class Meta:
         model = PlanningAction
-        fields = ["id", "run", "item", "warehouse", "action", "source",
+        fields = ["id", "run", "item", "item_sku", "item_name", "warehouse", "action", "source",
                   "quantity", "scheduled_on", "wanted_on", "days",
                   "work_order", "purchase_order_line", "requisition_line",
                   "because", "inside_fence", "sentence"]
 
 
 class PlanningRunSerializer(serializers.ModelSerializer):
+    warehouse_code = serializers.CharField(source="warehouse.code", read_only=True)
     is_complete = serializers.BooleanField(read_only=True)
     late = serializers.SerializerMethodField()
     lapsed = serializers.SerializerMethodField()
@@ -102,7 +111,7 @@ class PlanningRunSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PlanningRun
-        fields = ["id", "warehouse", "planned_on", "horizon_end", "ran_at",
+        fields = ["id", "warehouse", "warehouse_code", "planned_on", "horizon_end", "ran_at",
                   "cut_links", "deferred_demand", "fence_ends", "unforecast",
                   "notes", "is_complete",
                   "late", "lapsed", "expedites", "defers", "cancels",
@@ -118,17 +127,19 @@ class PlanningRunSerializer(serializers.ModelSerializer):
         """What was firmed into a document somebody has since cancelled."""
         return [order.pk for order in run.lapsed()]
 
+    # Counted by the viewset's query where it asked; one run read on its
+    # own still counts for itself.
     def get_expedites(self, run):
-        return run.expedites().count()
+        return run.expedite_count if hasattr(run, "expedite_count") else run.expedites().count()
 
     def get_defers(self, run):
-        return run.defers().count()
+        return run.defer_count if hasattr(run, "defer_count") else run.defers().count()
 
     def get_cancels(self, run):
-        return run.cancels().count()
+        return run.cancel_count if hasattr(run, "cancel_count") else run.cancels().count()
 
     def get_overloaded(self, run):
-        return [order.pk for order in run.overloaded()]
+        return [order.pk for order in run.orders.all() if order.is_overloaded]
 
 
 class MasterScheduleEntrySerializer(serializers.ModelSerializer):

@@ -527,7 +527,7 @@ class PlannedOrder(AuditModel):
                 f"for {self.needed_by}, the first day the plan may change"
             )
         if self.rounded_up_by > self.WORTH_SAYING:
-            parts.append(f"{self.rounded_up_by} added by rounding the order up")
+            parts.append(f"{format(self.rounded_up_by.normalize(), 'f')} added by rounding the order up")
         return "; ".join(parts) or "nothing recorded"
 
     # -- firming --------------------------------------------------------
@@ -922,30 +922,32 @@ class PlannedDemand(AuditModel):
         return f"{self.quantity} for {self.describe()}"
 
     def describe(self):
+        # As people write it: 1000, not 1000.0000.
+        quantity = format(self.quantity.normalize(), "f")
         if self.source == DemandSource.SALES and self.sales_order_line_id:
             line = self.sales_order_line
             return (
-                f"{self.quantity} for {line.order.number or 'a draft order'} "
+                f"{quantity} for {line.order.number or 'a draft order'} "
                 f"due {self.needed_by}"
             )
         if self.source == DemandSource.WORK_ORDER and self.work_order_id:
-            return f"{self.quantity} for {self.work_order} due {self.needed_by}"
+            return f"{quantity} for {self.work_order} due {self.needed_by}"
         if self.source == DemandSource.PLANNED and self.parent_id:
-            return f"{self.quantity} for planned {self.parent} due {self.needed_by}"
+            return f"{quantity} for planned {self.parent} due {self.needed_by}"
         if self.source == DemandSource.FORECAST and self.forecast_id:
             forecast = self.forecast
             return (
-                f"{self.quantity} forecast for "
+                f"{quantity} forecast for "
                 f"{forecast.starts_on}–{forecast.ends_on}, not yet ordered"
             )
         if self.source == DemandSource.SAFETY:
-            return f"{self.quantity} to hold safety stock"
+            return f"{quantity} to hold safety stock"
         if self.source == DemandSource.PHANTOM:
             return (
-                f"{self.quantity} through a phantom made in another run, "
+                f"{quantity} through a phantom made in another run, "
                 f"due {self.needed_by}"
             )
-        return f"{self.quantity} due {self.needed_by}"
+        return f"{quantity} due {self.needed_by}"
 
 
 from .mps import MasterScheduleEntry  # noqa: E402,F401

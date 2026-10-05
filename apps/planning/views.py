@@ -9,11 +9,13 @@ hundred stored plans would rightly stop using it.
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Count, Prefetch, Q
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from apps.core.api import whole_number
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party, to_date
 from apps.inventory.models import Warehouse
@@ -22,6 +24,7 @@ from .levels import low_level_codes
 from .forecast import Forecast, coverage
 from .models import (
     PlannedDemand,
+    RescheduleAction,
     PlannedOrder,
     PlanningAction,
     PlanningRun,
@@ -150,8 +153,20 @@ class PlanningSettingsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    filter_fields = ["warehouse"]
+    date_field = "planned_on"
+    ordering_fields = ["planned_on", "ran_at"]
+
+    # What each run's summary reads, read once for the page: firmed
+    # orders look at the document they became, and the counts of what to
+    # move are asked of the database rather than three times a run.
     queryset = PlanningRun.objects.select_related("warehouse").prefetch_related(
-        "orders"
+        Prefetch("orders", queryset=PlannedOrder.objects.select_related(
+            "work_order", "transfer", "requisition_line__requisition")),
+    ).annotate(
+        expedite_count=Count("actions", filter=Q(actions__action=RescheduleAction.EXPEDITE), distinct=True),
+        defer_count=Count("actions", filter=Q(actions__action=RescheduleAction.DEFER), distinct=True),
+        cancel_count=Count("actions", filter=Q(actions__action=RescheduleAction.CANCEL), distinct=True),
     )
     serializer_class = PlanningRunSerializer
     action_permission_map = {"plan": "planning.add_planningrun"}
@@ -163,11 +178,10 @@ class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         )
         if warehouse is None:
             raise DRFValidationError(["Name a warehouse to plan."])
-        horizon = request.data.get("horizon_days")
         run = _run(
             plan, warehouse,
             planned_on=request.data.get("planned_on") or None,
-            horizon_days=int(horizon) if horizon not in (None, "") else None,
+            horizon_days=whole_number(request.data, "horizon_days", least=1),
         )
         return Response(PlanningRunSerializer(run).data)
 
@@ -243,10 +257,17 @@ class PlanningRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PlannedOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    search_fields = ["item__sku", "item__name"]
+    filter_fields = ["run", "status", "kind", "warehouse", "item"]
+    date_field = "needed_by"
+    ordering_fields = ["needed_by", "release_on", "level"]
+
     queryset = PlannedOrder.objects.select_related(
-        "run", "item", "warehouse", "vendor", "bom", "work_order",
+        "run", "item__uom", "warehouse", "vendor", "bom", "work_order", "bottleneck",
         "requisition_line",
-    ).prefetch_related("demands")
+    ).prefetch_related(Prefetch("demands", queryset=PlannedDemand.objects.select_related(
+        # What explanation() names: the order, run or forecast each need is for.
+        "parent__item__uom", "sales_order_line__order", "work_order__item", "forecast")))
     serializer_class = PlannedOrderSerializer
     action_permission_map = {
         "firm": "planning.change_plannedorder",
@@ -274,6 +295,10 @@ class PlanningActionViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet
     Orders that exist and are dated wrong. Read-only: an action is a
     message, and the person who owns that order decides.
     """
+
+    search_fields = ["item__sku", "item__name"]
+    filter_fields = ["run", "action", "item", "warehouse"]
+    ordering_fields = ["scheduled_on", "wanted_on"]
 
     queryset = PlanningAction.objects.select_related(
         "run", "item", "warehouse", "work_order", "purchase_order_line",

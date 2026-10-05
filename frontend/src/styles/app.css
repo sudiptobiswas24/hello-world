@@ -539,3 +539,10 @@ tfoot th, tfoot td { font-weight: 600; border-top: 2px solid var(--line-strong);
 .ship-from label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--ink-2); }
 .ship-from select { height: 32px; }
 .btn.btn-quiet { border-color: transparent; background: transparent; }
+
+/* Production: a late row, sentences a plan says, actions in a row. */
+tr.late td { background: var(--bad-soft); }
+small.bad, .bad { color: var(--bad); }
+.sentences { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
+.row-actions { display: inline-flex; gap: 6px; }
+.sheet.machine h2 { font-size: 15px; }

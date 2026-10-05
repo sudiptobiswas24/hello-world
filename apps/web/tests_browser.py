@@ -31,8 +31,11 @@ PASSWORD = "plant-ledger-42"
 
 @unittest.skipIf(sync_playwright is None, "Playwright is not installed")
 @unittest.skipIf(not finders.find("web/index.html"), "The office application is not built (npm run build)")
-class BrowserTestCase(SalesTestCase, StaticLiveServerTestCase):
-    """A browser on the running server, and people to sign in as."""
+class BrowserMixin:
+    """
+    A browser on the running server, and people to sign in as. Put in
+    front of whichever fixture a test needs, then StaticLiveServerTestCase.
+    """
 
     @classmethod
     def _databases_support_transactions(cls):
@@ -105,6 +108,10 @@ class BrowserTestCase(SalesTestCase, StaticLiveServerTestCase):
 
     def rows(self):
         return self.page.locator("tbody tr:not(.skeleton)")
+
+
+class BrowserTestCase(BrowserMixin, SalesTestCase, StaticLiveServerTestCase):
+    """The browser over the sales fixture: a customer, an item, a shelf."""
 
 
 class OfficeApplicationTests(BrowserTestCase):

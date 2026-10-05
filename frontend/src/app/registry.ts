@@ -116,6 +116,31 @@ export const MODULES: Module[] = [
     ],
   },
   {
+    key: "production",
+    label: "Production",
+    icon: "production",
+    screens: [
+      {
+        path: "plan", label: "Plan", permission: "planning.view_planningrun",
+        keywords: "mrp planning run shortage", load: () => import("../modules/production/Plan"),
+        detail: () => import("../modules/production/RunForm"),
+      },
+      {
+        path: "planned", label: "Planned orders", permission: "planning.view_plannedorder",
+        keywords: "suggestion firm", load: () => import("../modules/production/PlannedOrders"),
+      },
+      {
+        path: "work-orders", label: "Work orders", permission: "manufacturing.view_workorder",
+        keywords: "run job production", load: () => import("../modules/production/WorkOrders"),
+        detail: () => import("../modules/production/WorkOrderForm"),
+      },
+      {
+        path: "schedule", label: "Machine schedule", permission: "manufacturing.view_workorder",
+        keywords: "dispatch loom extruder queue", load: () => import("../modules/production/Schedule"),
+      },
+    ],
+  },
+  {
     key: "stores",
     label: "Stores",
     icon: "stock",

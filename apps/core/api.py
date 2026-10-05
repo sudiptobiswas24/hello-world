@@ -116,6 +116,24 @@ def refused_by_database(error):
     return {"non_field_errors": [f"Refused: that breaks {rule}."]}
 
 
+def whole_number(data, name, default=None, least=0):
+    """
+    A count of days, weeks or lines from a request: `default` when not
+    given, refused in words when it is not a whole number at least `least`.
+    int() of what a form sent was a 500 on the first typo.
+    """
+    value = data.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        number = int(str(value).strip())
+    except ValueError:
+        raise DRFValidationError({name: [f"{value!r} is not a whole number."]}) from None
+    if number < least:
+        raise DRFValidationError({name: [f"It must be at least {least}."]})
+    return number
+
+
 def quantities_by_line(requested, lines, document):
     """
     {"<line id>": "3"} from a request, as {line: Decimal}: part of a

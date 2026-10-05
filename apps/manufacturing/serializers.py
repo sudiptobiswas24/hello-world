@@ -683,17 +683,41 @@ class WorkOrderOperationSerializer(serializers.ModelSerializer):
 
 class WorkOrderComponentSerializer(serializers.ModelSerializer):
     quantity_issued = serializers.SerializerMethodField()
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
 
     class Meta:
         model = WorkOrderComponent
-        fields = ["id", "work_order", "item", "quantity_required", "uom",
+        fields = ["id", "work_order", "item", "item_sku", "item_name", "quantity_required", "uom",
                   "waste_percent", "line_number", "quantity_issued"]
 
     def get_quantity_issued(self, obj):
         return round(obj.quantity_issued(), 4)
 
 
+class WorkOrderListSerializer(serializers.ModelSerializer):
+    """
+    A run as a list shows it: what, how many, where, when, and its state.
+    What it booked and cost is for the run's own page; working that out
+    for fifty rows was fifty runs' worth of time bookings and ledger.
+    """
+
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    work_centre_code = serializers.CharField(source="work_centre.code", read_only=True, default="")
+
+    class Meta:
+        model = WorkOrder
+        fields = ["id", "number", "item", "item_sku", "item_name", "quantity_ordered", "uom",
+                  "warehouse", "work_centre", "work_centre_code", "scheduled_start", "scheduled_end",
+                  "status", "released_at", "closed_at", "sales_order_line"]
+        read_only_fields = fields
+
+
 class WorkOrderSerializer(serializers.ModelSerializer):
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    work_centre_code = serializers.CharField(source="work_centre.code", read_only=True, default="")
     components = WorkOrderComponentSerializer(many=True, read_only=True)
     operations = WorkOrderOperationSerializer(many=True, read_only=True)
     planned_minutes = serializers.SerializerMethodField()
@@ -706,7 +730,7 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = WorkOrder
-        fields = ["id", "number", "item", "bom", "quantity_ordered",
+        fields = ["id", "number", "item", "item_sku", "item_name", "work_centre_code", "bom", "quantity_ordered",
                   "quantity_to_start", "uom",
                   "warehouse", "work_centre", "scheduled_start", "scheduled_end",
                   "status", "over_production_percent", "planned_unit_cost",
