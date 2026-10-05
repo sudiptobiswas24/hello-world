@@ -1,0 +1,210 @@
+"""
+An order from first line to money in the bank, worked in a browser by
+the three people who do it here: the rep takes it, the store ships it,
+accounts bill it and bank the cheque. Each step is read back from the
+database, not just from the screen.
+
+Then the refusals a screen must show rather than swallow.
+"""
+
+import re
+from decimal import Decimal
+
+try:
+    from playwright.sync_api import expect
+except ImportError:  # pragma: no cover - the base class skips, saying why
+    expect = None
+
+from apps.accounting.models import Payment
+from apps.core.models import Company, Party, PartyRole
+from apps.sales.models import Delivery, Invoice, SalesOrder
+
+from .tests_browser import BrowserTestCase
+
+
+class SalesInTheBrowserTests(BrowserTestCase):
+    def setUp(self):
+        super().setUp()
+        company = Company.get()
+        company.default_revenue_account = self.revenue
+        company.default_receivable_account = self.ar
+        company.default_bank_account = self.bank
+        company.save()
+
+    def url(self, path):
+        return f"{self.live_server_url}/app{path}"
+
+    def toast(self, page, text):
+        expect(page.locator(".toast", has_text=text).first).to_be_visible()
+
+    def take_order(self, page, quantity):
+        page.goto(self.url("/sales/orders/new"))
+        page.get_by_role("combobox", name="Customer").fill("Acm")
+        page.get_by_role("option", name=re.compile("Acme")).click()
+        page.get_by_role("button", name="Create", exact=True).click()
+        page.wait_for_url(re.compile(r"/sales/orders/\d+$"))
+        page.get_by_role("combobox", name="Item to add").fill("WDG")
+        page.get_by_role("option", name=re.compile("WDG-1")).click()
+        page.get_by_label("Quantity to add").fill(quantity)
+        page.get_by_role("button", name="Add line").click()
+        expect(page.locator(".lines tbody tr", has_text="Widget")).to_have_count(1)
+        page.get_by_role("button", name="Confirm", exact=True).click()
+        expect(page.locator(".pill", has_text="confirmed")).to_be_visible()
+        return SalesOrder.objects.get(pk=int(page.url.rsplit("/", 1)[1]))
+
+    def test_an_order_from_first_line_to_money_in_the_bank(self):
+        on_hand = self.item.on_hand_at(self.warehouse)
+
+        # The rep takes the order. They may not ship it.
+        rep = self.sign_in(self.person("Sales Rep"), "/app/sales/orders")
+        order = self.take_order(rep, "10")
+        self.assertEqual(order.status, "confirmed")
+        line = order.lines.get()
+        self.assertEqual((line.quantity, line.unit_price), (Decimal("10"), Decimal("10")))
+        expect(rep.get_by_role("button", name="Ship", exact=True)).to_have_count(0)
+
+        # The store ships it: one warehouse, so it is not asked which.
+        store = self.new_page()
+        self.sign_in(self.person("Warehouse Staff"), f"/app/sales/orders/{order.pk}", page=store)
+        store.get_by_role("button", name="Ship", exact=True).click()
+        store.wait_for_url(re.compile(r"/sales/deliveries/\d+$"))
+        delivery = Delivery.objects.get(pk=int(store.url.rsplit("/", 1)[1]))
+        self.assertFalse(delivery.posted)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand)  # a draft moves nothing
+        store.get_by_role("button", name="Ship", exact=True).click()
+        expect(store.locator(".pill", has_text="Shipped")).to_be_visible()
+        delivery.refresh_from_db()
+        self.assertTrue(delivery.posted)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand - Decimal("10"))
+        expect(store.get_by_role("button", name="Invoice", exact=True)).to_have_count(0)
+
+        # Accounts bill it, and bank the cheque against it.
+        accounts = self.new_page()
+        self.sign_in(self.person("AR Manager"), f"/app/sales/orders/{order.pk}", page=accounts)
+        accounts.get_by_role("button", name="Invoice", exact=True).click()
+        accounts.wait_for_url(re.compile(r"/sales/invoices/\d+$"))
+        invoice = Invoice.objects.get(pk=int(accounts.url.rsplit("/", 1)[1]))
+        accounts.get_by_role("button", name="Post", exact=True).click()
+        self.toast(accounts, "posted")
+        invoice.refresh_from_db()
+        self.assertTrue(invoice.posted)
+        self.assertEqual(invoice.amount_due(), Decimal("100.00"))
+        self.assertEqual(self.balance(self.revenue), Decimal("-100.00"))
+
+        accounts.get_by_role("link", name="Receive payment").click()
+        accounts.get_by_label("Amount").fill("100")
+        accounts.get_by_label("Reference").fill("CHQ 000123")
+        accounts.get_by_role("button", name="Record and post").click()
+        accounts.wait_for_url(re.compile(r"/sales/receipts/\d+\?invoice="))
+        payment = Payment.objects.get(reference="CHQ 000123")
+        self.assertTrue(payment.posted)
+        self.assertEqual((payment.party, payment.amount), (self.customer, Decimal("100.00")))
+        self.assertEqual(self.balance(self.bank), Decimal("100.00"))
+
+        row = accounts.locator("tr.highlight")
+        expect(row).to_contain_text(invoice.number)
+        row.get_by_role("button", name="Apply").click()
+        expect(accounts.get_by_text("All applied")).to_be_visible()
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.amount_due(), Decimal("0.00"))
+        self.assertEqual(self.balance(self.ar), Decimal("0.00"))
+        self.assertEqual(self.problems, [])
+
+    def test_a_shipment_the_shelf_cannot_cover_is_refused_in_words_and_stays_a_draft(self):
+        rep = self.sign_in(self.person("Sales Rep"), "/app/sales/orders")
+        order = self.take_order(rep, "600")  # 500 on the shelf
+        store = self.new_page()
+        self.sign_in(self.person("Warehouse Staff"), f"/app/sales/orders/{order.pk}", page=store)
+        store.get_by_role("button", name="Ship", exact=True).click()
+        store.wait_for_url(re.compile(r"/sales/deliveries/\d+$"))
+        store.get_by_role("button", name="Ship", exact=True).click()
+        expect(store.locator(".toast-bad")).to_be_visible()
+        expect(store.locator(".pill", has_text="Draft")).to_be_visible()
+        self.assertFalse(Delivery.objects.get(sales_order=order).posted)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("500"))
+
+    def test_with_two_warehouses_the_store_is_asked_which(self):
+        from apps.inventory.models import Warehouse
+
+        Warehouse.objects.create(code="WH2", name="Godown")
+        Warehouse.objects.create(code="QC", name="Inspection", is_quarantine=True)
+        rep = self.sign_in(self.person("Sales Rep"), "/app/sales/orders")
+        order = self.take_order(rep, "5")
+        store = self.new_page()
+        self.sign_in(self.person("Warehouse Staff"), f"/app/sales/orders/{order.pk}", page=store)
+        store.get_by_role("button", name="Ship", exact=True).click()
+        choice = store.get_by_label("Ship from")
+        # Quarantine never ships, so it is not offered.
+        expect(choice.locator("option")).to_have_count(3)  # the prompt, WH1, WH2
+        expect(store.get_by_role("button", name="Draft delivery")).to_be_disabled()
+        choice.select_option(label="WH1 · Main")
+        store.get_by_role("button", name="Draft delivery").click()
+        store.wait_for_url(re.compile(r"/sales/deliveries/\d+$"))
+        self.assertEqual(Delivery.objects.get(sales_order=order).lines.get().warehouse, self.warehouse)
+
+    def test_a_second_ship_while_one_waits_is_refused_and_nothing_doubles(self):
+        rep = self.sign_in(self.person("Sales Rep"), "/app/sales/orders")
+        order = self.take_order(rep, "10")
+        order.create_delivery(warehouse=self.warehouse)
+        store = self.new_page()
+        self.sign_in(self.person("Warehouse Staff"), f"/app/sales/orders/{order.pk}", page=store)
+        store.get_by_role("button", name="Ship", exact=True).click()
+        expect(store.locator(".toast-bad", has_text="already waiting")).to_be_visible()
+        self.assertEqual(order.deliveries.count(), 1)
+
+    def test_a_new_customer_is_one_a_rep_can_sell_to_at_once(self):
+        rep = self.sign_in(self.person("Sales Rep"), "/app/sales/customers/new")
+        rep.get_by_label("Code", exact=True).fill("C-77")
+        rep.get_by_label("Name", exact=True).fill("Kisan Feeds")
+        rep.get_by_role("button", name="Add customer").click()
+        rep.wait_for_url(re.compile(r"/sales/customers/\d+$"))
+        party = Party.objects.get(code="C-77")
+        self.assertTrue(party.role_assignments.filter(role=PartyRole.CUSTOMER).exists())
+        rep.goto(self.url("/sales/orders/new"))
+        rep.get_by_role("combobox", name="Customer").fill("Kisan")
+        expect(rep.get_by_role("option", name=re.compile("Kisan Feeds"))).to_be_visible()
+
+    def test_a_duplicate_code_is_said_beside_the_field(self):
+        rep = self.sign_in(self.person("Sales Rep"), "/app/sales/customers/new")
+        rep.get_by_label("Code", exact=True).fill("C-1")  # Acme's
+        rep.get_by_label("Name", exact=True).fill("Someone else")
+        rep.get_by_role("button", name="Add customer").click()
+        expect(rep.locator(".field.invalid .field-error")).to_contain_text("code")
+        self.assertEqual(Party.objects.filter(code="C-1").count(), 1)
+        self.assertTrue(rep.url.endswith("/sales/customers/new"))
+
+    def test_every_role_opens_what_it_reads_without_being_refused(self):
+        """A screen asks only for what the person may read: a related list or
+        panel the server refuses is a fault even when the page looks fine."""
+        from django.contrib.auth.models import Permission
+
+        order = self.make_order(quantity="10", price="100")
+        delivery = self.ship(order, "10")
+        invoice = self.bill(order)
+        payment = self.receipt("100")
+        self.allocate(payment, invoice, "100")
+        screens = [
+            ("sales.view_salesorder", f"/sales/orders/{order.pk}", order.number),
+            ("sales.view_delivery", f"/sales/deliveries/{delivery.pk}", delivery.number),
+            ("sales.view_invoice", f"/sales/invoices/{invoice.pk}", invoice.number),
+            ("accounting.view_payment", f"/sales/receipts/{payment.pk}", payment.number),
+            ("core.view_party", f"/sales/customers/{self.customer.pk}", self.customer.name),
+        ]
+        for role in ["Sales Rep", "Warehouse Staff", "AR Manager", "AP Manager"]:
+            with self.subTest(role=role):
+                person = self.person(role)
+                held = {f"{app}.{code}" for app, code in Permission.objects.filter(
+                    group__user=person).values_list("content_type__app_label", "codename")}
+                page = self.new_page()
+                self.sign_in(person, "/app/", page=page)
+                opened = 0
+                for permission, path, heading in screens:
+                    if permission not in held:
+                        continue
+                    page.goto(self.url(path))
+                    expect(page.locator(".doc-head, .doc").first).to_contain_text(heading)
+                    page.wait_for_load_state("networkidle")
+                    opened += 1
+                self.assertGreater(opened, 0)
+                self.assertEqual(self.problems, [], role)
+

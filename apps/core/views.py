@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -16,6 +17,7 @@ from .models import (
     ExchangeRate,
     Party,
     PartyBankAccount,
+    PartyRole,
     PartyRoleAssignment,
     PartyTag,
     PaymentTerms,
@@ -75,6 +77,21 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Party.objects.prefetch_related("role_assignments", "addresses", "contacts", "tags")
     serializer_class = PartySerializer
+
+    # Given with a new party, the role it is made in, made with it or not
+    # at all: a customer saved without its role would be in no customer
+    # list. Trading roles only; making someone an employee is not a
+    # clerk's to do from a sales screen.
+    TRADING_ROLES = {PartyRole.CUSTOMER, PartyRole.VENDOR}
+
+    def perform_create(self, serializer):
+        role = self.request.data.get("role")
+        if role is not None and role not in self.TRADING_ROLES:
+            raise DRFValidationError({"role": [f"A new party can be made a customer or a vendor here, not {role!r}."]})
+        with transaction.atomic():
+            party = serializer.save()
+            if role is not None:
+                PartyRoleAssignment.objects.create(party=party, role=role)
 
 
 class PartyRoleAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

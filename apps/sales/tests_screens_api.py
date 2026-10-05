@@ -1,0 +1,430 @@
+"""
+What the sales screens ask the server, asked as the people who use them.
+
+Each endpoint here exists for a screen: Ship on an order, the "to ship"
+and "still owed" lists, the names a list shows without a second call,
+and a customer made in one step with its role. The refusals come first.
+"""
+
+import datetime
+from decimal import Decimal
+
+from django.contrib.auth.models import Group, User
+from django.core.management import call_command
+from rest_framework.test import APIClient
+
+from apps.core.models import Party, PartyRole, PartyRoleAssignment
+from apps.sales.models import Delivery, SalesOrder, SalesOrderLine
+from apps.sales.tests_base import SalesTestCase
+
+DAY = datetime.date(2026, 3, 5)
+
+
+class ScreensTestCase(SalesTestCase):
+    def setUp(self):
+        super().setUp()
+        call_command("setup_roles", verbosity=0)
+
+    def as_(self, role):
+        user, _ = User.objects.get_or_create(username=role.replace(" ", "_"))
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def ship_order(self, order, **body):
+        return self.as_("Warehouse Staff").post(
+            f"/api/sales/sales-orders/{order.pk}/ship/", body, format="json")
+
+
+class ShipRefusalTests(ScreensTestCase):
+    def test_a_draft_order_is_not_shipped(self):
+        order = SalesOrder.objects.create(customer=self.customer, order_date=DAY, currency=self.usd)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("5"),
+                                      unit_price=Decimal("10"), revenue_account=self.revenue)
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("confirmed", str(response.json()))
+        self.assertEqual(Delivery.objects.count(), 0)
+
+    def test_a_line_from_no_warehouse_is_refused_by_the_field(self):
+        order = self.make_order()
+        response = self.ship_order(order)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("warehouse", response.json())
+        self.assertEqual(Delivery.objects.count(), 0)
+
+    def test_an_unknown_warehouse_is_not_found(self):
+        order = self.make_order()
+        response = self.ship_order(order, warehouse=999999)
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertEqual(Delivery.objects.count(), 0)
+
+    def test_one_draft_waits_at_a_time(self):
+        order = self.make_order()
+        self.assertEqual(self.ship_order(order, warehouse=self.warehouse.pk).status_code, 201)
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("already waiting", str(response.json()))
+        self.assertEqual(order.deliveries.count(), 1)
+
+    def test_nothing_left_is_said_so(self):
+        order = self.make_order()
+        self.ship(order, "10")
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("Nothing is left", str(response.json()))
+
+    def test_a_rep_who_may_not_ship_is_refused(self):
+        order = self.make_order()
+        response = self.as_("Sales Rep").post(
+            f"/api/sales/sales-orders/{order.pk}/ship/", {"warehouse": self.warehouse.pk}, format="json")
+        self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(Delivery.objects.count(), 0)
+
+
+class DatesInWordsTests(ScreensTestCase):
+    """A mistyped date is refused in a sentence beside nothing broken; it was
+    a server error on every action that read one."""
+
+    def test_to_date(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.core.models import to_date
+
+        self.assertEqual(to_date("2026-03-31"), datetime.date(2026, 3, 31))
+        self.assertIsNone(to_date(""))
+        self.assertIsNone(to_date("  "))
+        for typed in ["31/03/2026", "2026-02-30", "tomorrow"]:
+            with self.subTest(typed=typed), self.assertRaisesMessage(ValidationError, "is not a date"):
+                to_date(typed)
+
+    def test_a_shipment_on_no_such_day(self):
+        order = self.make_order()
+        response = self.ship_order(order, warehouse=self.warehouse.pk, delivery_date="31/03/2026")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("is not a date", str(response.json()))
+        self.assertEqual(Delivery.objects.count(), 0)
+
+    def test_an_empty_date_box_means_today(self):
+        from django.utils import timezone
+
+        response = self.ship_order(self.make_order(), warehouse=self.warehouse.pk, delivery_date="")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["delivery_date"], timezone.localdate().isoformat())
+
+    def test_an_invoice_on_no_such_day(self):
+        from apps.core.models import Company
+
+        company = Company.get()
+        company.default_receivable_account = self.ar
+        company.save()
+        order = self.make_order()
+        response = self.as_("AR Manager").post(f"/api/sales/sales-orders/{order.pk}/create_invoice/",
+                                               {"invoice_date": "2026-02-30"}, format="json")
+        # Read by the model's date field rather than to_date: Django's own
+        # sentence, but a refusal either way, and no invoice.
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("invalid date", str(response.json()))
+        self.assertFalse(order.invoices.exists())
+
+    def test_a_list_filtered_from_no_such_day(self):
+        response = self.as_("AR Manager").get("/api/sales/invoices/", {"from": "yesterday"})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("is not a date", str(response.json()))
+        self.assertNotIn("['", str(response.json()))
+
+
+class ShipTests(ScreensTestCase):
+    def test_drafts_what_is_owed_and_moves_nothing(self):
+        order = self.make_order(quantity="10")
+        on_hand = self.item.on_hand_at(self.warehouse)
+        response = self.ship_order(order, warehouse=self.warehouse.pk, delivery_date="2026-03-06")
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertFalse(body["posted"])
+        self.assertEqual(body["delivery_date"], "2026-03-06")
+        self.assertEqual(body["order_number"], order.number)
+        self.assertEqual(body["customer_name"], self.customer.name)
+        [line] = body["lines"]
+        self.assertEqual(Decimal(line["quantity_shipped"]), Decimal("10"))
+        self.assertEqual(line["warehouse"], self.warehouse.pk)
+        self.assertTrue(line["description"])
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand)
+
+    def test_after_part_shipped_drafts_the_rest(self):
+        order = self.make_order(quantity="10")
+        self.ship(order, "4")
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(Decimal(response.json()["lines"][0]["quantity_shipped"]), Decimal("6"))
+
+    def test_the_lines_own_warehouse_wins(self):
+        from apps.inventory.models import Warehouse
+
+        other = Warehouse.objects.create(code="WH2", name="Godown")
+        order = self.make_order()
+        order.lines.update(warehouse=other)
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.json()["lines"][0]["warehouse"], other.pk)
+        response = self.ship_order(self.make_order())  # none given, none named
+        self.assertEqual(response.status_code, 400)
+
+    def test_charges_and_closed_lines_are_not_drafted(self):
+        from apps.accounting.models import ChargeType
+
+        order = self.make_order(quantity="10")
+        order.status = "draft"
+        order.save()
+        freight = ChargeType.objects.create(code="FRT", name="Freight", revenue_account=self.revenue)
+        SalesOrderLine.objects.create(order=order, charge=freight, quantity=Decimal("1"),
+                                      unit_price=Decimal("50"), revenue_account=self.revenue)
+        closing = SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                                quantity=Decimal("3"), unit_price=Decimal("10"),
+                                                revenue_account=self.revenue)
+        order.confirm()
+        closing.close_short("Customer cancelled the rest")
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual([Decimal(line["quantity_shipped"]) for line in response.json()["lines"]],
+                         [Decimal("10")])
+
+    def test_an_unposted_return_is_not_a_shipment_waiting(self):
+        order = self.make_order(quantity="10")
+        delivery = self.ship(order, "10")
+        Delivery.objects.create(sales_order=order, reverses=delivery, delivery_date=DAY)
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        # Refused because all ten went, not because a draft is waiting.
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Nothing is left", str(response.json()))
+
+    def test_what_came_back_is_owed_again(self):
+        order = self.make_order(quantity="10")
+        delivery = self.ship(order, "10")
+        delivery.create_return(credit_invoices=False, quantities={delivery.lines.get(): Decimal("4")})
+        response = self.ship_order(order, warehouse=self.warehouse.pk)
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(Decimal(response.json()["lines"][0]["quantity_shipped"]), Decimal("4"))
+
+    def test_the_draft_posts(self):
+        order = self.make_order(quantity="10")
+        delivery_id = self.ship_order(order, warehouse=self.warehouse.pk).json()["id"]
+        on_hand = self.item.on_hand_at(self.warehouse)
+        response = self.as_("Warehouse Staff").post(f"/api/sales/deliveries/{delivery_id}/post_delivery/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand - Decimal("10"))
+        self.assertEqual(order.lines.get().quantity_open(), Decimal("0"))
+
+
+class ToShipTests(ScreensTestCase):
+    def ids(self, **params):
+        response = self.as_("Warehouse Staff").get("/api/sales/sales-orders/", {"to_ship": "true", **params})
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row["id"] for row in response.json()}, int(response["X-Total-Count"])
+
+    def test_only_confirmed_orders_with_goods_owed(self):
+        owed = self.make_order(quantity="10")
+        part = self.make_order(quantity="10")
+        self.ship(part, "3")
+        done = self.make_order(quantity="10")
+        self.ship(done, "10")
+        draft = SalesOrder.objects.create(customer=self.customer, order_date=DAY, currency=self.usd)
+        SalesOrderLine.objects.create(order=draft, item=self.item, uom=self.uom, quantity=Decimal("5"),
+                                      unit_price=Decimal("10"), revenue_account=self.revenue)
+        ids, total = self.ids()
+        self.assertEqual(ids, {owed.pk, part.pk})
+        self.assertEqual(total, 2)
+
+    def test_false_lists_every_order(self):
+        self.make_order()
+        done = self.make_order()
+        self.ship(done, "10")
+        response = self.as_("Warehouse Staff").get("/api/sales/sales-orders/", {"to_ship": "false"})
+        self.assertEqual(len(response.json()), 2)
+
+    def test_a_word_that_is_not_yes_or_no_is_refused(self):
+        response = self.as_("Warehouse Staff").get("/api/sales/sales-orders/", {"to_ship": "maybe"})
+        self.assertEqual(response.status_code, 400, response.content)
+
+
+class StillOwedTests(ScreensTestCase):
+    def ids(self, **params):
+        response = self.as_("AR Manager").get("/api/sales/invoices/", {"open": "true", **params})
+        self.assertEqual(response.status_code, 200, response.content)
+        return {row["id"] for row in response.json()}
+
+    def test_what_is_owed_and_nothing_else(self):
+        unpaid = self.bill(self.make_order(quantity="10", price="100"))
+        part = self.bill(self.make_order(quantity="10", price="100"))
+        self.allocate(self.receipt("400"), part, "400")
+        paid = self.bill(self.make_order(quantity="10", price="100"))
+        self.allocate(self.receipt("1000"), paid, "1000")
+        credited = self.bill(self.make_order(quantity="10", price="100"))
+        note = credited.create_credit_note(memo="Wrong goods")
+        draft = self.make_order(quantity="10", price="100").create_invoice(self.ar, invoice_date=DAY)
+
+        self.assertEqual(self.ids(), {unpaid.pk, part.pk})
+        self.assertNotIn(note.pk, self.ids())
+        self.assertNotIn(draft.pk, self.ids())
+        part.refresh_from_db()
+        self.assertEqual(part.amount_due(), Decimal("600.00"))
+
+    def test_a_written_off_invoice_is_owed_no_longer(self):
+        invoice = self.bill(self.make_order(quantity="10", price="100"))
+        invoice.write_off(reason="Customer gone")
+        self.assertEqual(self.ids(), set())
+
+    def test_a_void_payment_makes_it_owed_again(self):
+        invoice = self.bill(self.make_order(quantity="10", price="100"))
+        payment = self.receipt("1000")
+        self.allocate(payment, invoice, "1000")
+        self.assertEqual(self.ids(), set())
+        response = self.as_("AR Manager").post(f"/api/accounting/payments/{payment.pk}/void/",
+                                               {"memo": "Cheque bounced"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(response.json()["voided"])
+        self.assertEqual(self.ids(), {invoice.pk})
+
+    def test_with_the_customer_filter(self):
+        from apps.core.models import Party as P
+
+        other = P.objects.create(code="C-2", name="Other", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.CUSTOMER)
+        mine = self.bill(self.make_order())
+        self.assertEqual(self.ids(customer=self.customer.pk), {mine.pk})
+        self.assertEqual(self.ids(customer=other.pk), set())
+
+
+class StillOwedAgreesWithAmountDueTests(ScreensTestCase):
+    """
+    still_owed() decides in SQL what amount_due() decides in Python. Every
+    way an invoice is settled, alone and together, so the two cannot part
+    without this failing.
+    """
+
+    def test_every_way_of_settling(self):
+        from apps.sales.models import Invoice, still_owed
+
+        def invoice():
+            return self.bill(self.make_order(quantity="10", price="100"))  # 1,000.00
+
+        owed, settled = {}, {}
+        owed["unpaid"] = invoice()
+        owed["part paid"] = invoice()
+        self.allocate(self.receipt("400"), owed["part paid"], "400")
+        settled["paid"] = invoice()
+        self.allocate(self.receipt("1000"), settled["paid"], "1000")
+        settled["paid less discount"] = invoice()
+        self.allocate(self.receipt("980"), settled["paid less discount"], "980")
+        settled["paid less discount"].apply_settlement_discount(force=True)
+        settled["credited"] = invoice()
+        settled["credited"].create_credit_note(memo="Wrong goods")
+        # The credit only takes it to nothing: 600 paid, 1,000 credited.
+        settled["part paid then credited"] = invoice()
+        self.allocate(self.receipt("600"), settled["part paid then credited"], "600")
+        settled["part paid then credited"].create_credit_note(memo="Returned")
+        owed["part credited"] = invoice()
+        owed["part credited"].create_credit_note(quantities={owed["part credited"].lines.get(): Decimal("3")})
+        settled["written off"] = invoice()
+        settled["written off"].write_off(reason="Gone")
+        owed["part written off"] = invoice()
+        owed["part written off"].write_off(amount=Decimal("200"), reason="Disputed")
+        owed["paid by a bounced cheque"] = invoice()
+        bounced = self.receipt("1000")
+        self.allocate(bounced, owed["paid by a bounced cheque"], "1000")
+        bounced.void(memo="Bounced")
+        order = self.make_order(quantity="10", price="100")
+        order.create_down_payment_invoice(self.ar, percent=30).post()
+        owed["part met from a deposit"] = self.bill(order)
+        order = self.make_order(quantity="10", price="100")
+        order.create_down_payment_invoice(self.ar, percent=100).post()
+        settled["met from a deposit"] = self.bill(order)
+        order = self.make_order(quantity="10", price="100")
+        order.create_down_payment_invoice(self.ar, percent=50).post()
+        settled["deposit and cash"] = self.bill(order)
+        self.allocate(self.receipt("500"), settled["deposit and cash"], "500")
+
+        answer = set(still_owed(Invoice.objects.all()))
+        for name, document in owed.items():
+            self.assertIn(document.pk, answer, f"{name}: due {document.amount_due()}")
+        for name, document in settled.items():
+            self.assertNotIn(document.pk, answer, f"{name}: due {document.amount_due()}")
+        # And over everything, the deposit invoices and notes included.
+        everything = Invoice.objects.all()
+        self.assertEqual(answer, {each.pk for each in everything
+                                  if each.posted and not each.credits_id and each.amount_due() > 0})
+        self.assertEqual(owed["part credited"].amount_due(), Decimal("700.00"))
+        self.assertEqual(owed["part met from a deposit"].amount_due(), Decimal("700.00"))
+
+
+class NamesOnListsTests(ScreensTestCase):
+    def test_a_receipt_names_its_payer_and_what_it_paid(self):
+        invoice = self.bill(self.make_order())
+        payment = self.receipt("250")
+        self.allocate(payment, invoice, "250")
+        client = self.as_("AR Manager")
+        [row] = client.get("/api/accounting/payments/", {"direction": "receipt"}).json()
+        self.assertEqual(row["party_name"], self.customer.name)
+        self.assertFalse(row["voided"])
+        [applied] = client.get("/api/sales/invoice-payments/", {"payment": payment.pk}).json()
+        self.assertEqual(applied["invoice_number"], invoice.number)
+        self.assertEqual(Decimal(applied["amount"]), Decimal("250"))
+        self.assertEqual(client.get("/api/sales/invoice-payments/", {"invoice": invoice.pk + 1000}).json(), [])
+
+    def test_a_line_added_with_only_an_item_is_called_by_the_item(self):
+        order = SalesOrder.objects.create(customer=self.customer, order_date=DAY, currency=self.usd)
+        client = self.as_("Sales Rep")
+        response = client.post("/api/sales/sales-order-lines/", {
+            "order": order.pk, "item": self.item.pk, "uom": self.uom.pk, "quantity": "3"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["description"], "")
+        self.assertEqual(response.json()["label"], "WDG-1 - Widget")
+        [line] = client.get(f"/api/sales/sales-orders/{order.pk}/").json()["lines"]
+        self.assertEqual(line["label"], "WDG-1 - Widget")
+
+    def test_the_lists_do_not_ask_once_per_row(self):
+        for _ in range(3):
+            self.ship(self.make_order(quantity="10"), "2")
+        client = self.as_("Warehouse Staff")
+        self.queries_for(client, "/api/sales/deliveries/")  # warm the permission cache
+        before = self.queries_for(client, "/api/sales/deliveries/")
+        for _ in range(3):
+            self.ship(self.make_order(quantity="10"), "2")
+        self.assertEqual(self.queries_for(client, "/api/sales/deliveries/"), before)
+
+    def queries_for(self, client, url):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(client.get(url).status_code, 200)
+        return len(queries)
+
+
+class CustomerWithItsRoleTests(ScreensTestCase):
+    def create(self, **body):
+        return self.as_("Sales Rep").post("/api/core/parties/", {"code": "C-9", "name": "Kisan Feeds", **body},
+                                          format="json")
+
+    def test_a_role_that_is_not_trading_is_refused_and_nothing_is_made(self):
+        response = self.create(role=PartyRole.EMPLOYEE)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("role", response.json())
+        self.assertFalse(Party.objects.filter(code="C-9").exists())
+
+    def test_a_new_customer_is_in_the_customer_list(self):
+        response = self.create(role=PartyRole.CUSTOMER)
+        self.assertEqual(response.status_code, 201, response.content)
+        party = Party.objects.get(code="C-9")
+        self.assertTrue(party.role_assignments.filter(role=PartyRole.CUSTOMER).exists())
+        listed = self.as_("Sales Rep").get("/api/core/parties/", {"role_assignments__role": "customer"}).json()
+        self.assertIn(party.pk, [row["id"] for row in listed])
+
+    def test_a_refused_party_leaves_no_role_behind(self):
+        response = self.create(role=PartyRole.CUSTOMER, code="")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(PartyRoleAssignment.objects.filter(party__name="Kisan Feeds").count(), 0)
+
+    def test_without_a_role_none_is_given(self):
+        self.assertEqual(self.create().status_code, 201)
+        self.assertFalse(Party.objects.get(code="C-9").role_assignments.exists())

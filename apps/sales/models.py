@@ -665,6 +665,40 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return shortfalls
 
     @transaction.atomic
+    def create_delivery(self, delivery_date=None, warehouse=None):
+        """
+        What is still owed on this order, as a draft delivery to cut down to
+        what is on the lorry and post. One waiting at a time: a second
+        draft for the same goods would ship them twice on paper.
+
+        Each line ships from the warehouse it names, else `warehouse`;
+        a line with neither is refused by name rather than guessed at.
+        """
+        lock_rows(self)
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can be shipped.")
+        waiting = self.deliveries.filter(posted=False, reverses__isnull=True).first()
+        if waiting is not None:
+            raise ValidationError(
+                f"Delivery {waiting.number or 'draft'} for this order is already waiting to "
+                "ship. Post it, or delete it, first.")
+        owed = [(line, line.quantity_open()) for line in self.lines.select_related("item")]
+        owed = [(line, quantity) for line, quantity in owed if quantity > 0]
+        if not owed:
+            raise ValidationError("Nothing is left to ship on this order.")
+        for line, _ in owed:
+            if not line.warehouse_id and warehouse is None:
+                raise ValidationError({"warehouse": [
+                    f"Say which warehouse {line.label()} ships from: the line names none."]})
+        delivery = Delivery.objects.create(
+            sales_order=self, delivery_date=to_date(delivery_date) or timezone.localdate())
+        for line, quantity in owed:
+            DeliveryLine.objects.create(delivery=delivery, order_line=line,
+                                        warehouse=line.warehouse or warehouse,
+                                        quantity_shipped=quantity)
+        return delivery
+
+    @transaction.atomic
     def create_invoice(self, receivable_account, invoice_date=None):
         """
         Draft an invoice for whatever is still uninvoiced on this order,
@@ -2503,6 +2537,81 @@ def not_paid_in_full(invoices):
         standing_paid=Coalesce(Subquery(paid), Value(Decimal("0")),
                                output_field=DecimalField(max_digits=18, decimal_places=2))
     ).exclude(posted_total__isnull=False, standing_paid__gte=models.F("posted_total"))
+
+
+def still_owed(invoices):
+    """
+    The pks of `invoices` that still owe money: posted invoices, not
+    credit notes, whose amount_due() is above nothing.
+
+    Decided in the database. amount_due() is the total less what was
+    settled otherwise (paid by payments that stand, discounted, written
+    off, met from a deposit) less what was credited, the credit taken
+    only down to nothing; so it is above nothing exactly when the total
+    is more than all of those together. The total is posted_total, the
+    figure the invoice was posted at and cannot move from. An invoice
+    with none recorded is asked amount_due() itself.
+
+    Asked one invoice at a time this took 1.3 ms each: a second on a
+    thousand open invoices, and every thousand more another second.
+    tests_screens_api holds the two answers to each other.
+    """
+    from django.db.models import DecimalField, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    money = DecimalField(max_digits=18, decimal_places=2)
+
+    def total_of(queryset, field):
+        return Coalesce(Subquery(queryset.annotate(total=models.Sum(field)).values("total")),
+                        Value(Decimal("0")), output_field=money)
+
+    credited = Invoice.objects.filter(credits=OuterRef("pk"), posted=True).values("credits")
+    deposited = DepositApplication.objects.filter(invoice=OuterRef("pk")).values("invoice")
+    candidates = not_paid_in_full(invoices.filter(posted=True, credits__isnull=True)).annotate(
+        credited_total=total_of(credited, "posted_total"),
+        deposited_total=total_of(deposited, "amount"),
+    )
+    owed = candidates.filter(posted_total__isnull=False, posted_total__gt=(
+        models.F("standing_paid") + models.F("credited_total") + models.F("deposited_total")
+        + Coalesce(models.F("written_off_amount"), Value(Decimal("0")), output_field=money)
+        + Coalesce(models.F("settlement_discount_amount"), Value(Decimal("0")), output_field=money)
+    ))
+    unrecorded = invoices.filter(posted=True, credits__isnull=True, posted_total__isnull=True)
+    return list(owed.values_list("pk", flat=True)) + [
+        invoice.pk for invoice in unrecorded.prefetch_related(*INVOICE_FIGURES)
+        if invoice.amount_due() > 0]
+
+
+def not_shipped_in_full(lines):
+    """
+    Order lines that may still owe goods: not charges, not closed short,
+    and less shipped (posted deliveries, less posted returns) than ordered.
+    A line met inside its tolerance still passes; quantity_open() decides
+    it. Narrows what the database hands back to the few that matter.
+    """
+    from django.db.models import DecimalField, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    def shipped(returns):
+        moved = DeliveryLine.objects.filter(
+            order_line=OuterRef("pk"), delivery__posted=True,
+            delivery__reverses__isnull=not returns,
+        ).values("order_line").annotate(total=models.Sum("quantity_shipped")).values("total")
+        return Coalesce(Subquery(moved), Value(Decimal("0")),
+                        output_field=DecimalField(max_digits=18, decimal_places=4))
+
+    return lines.filter(closed_short_at__isnull=True, charge__isnull=True).annotate(
+        net_shipped=shipped(False) - shipped(True)
+    ).exclude(net_shipped__gte=models.F("quantity"))
+
+
+def orders_to_ship(orders):
+    """The pks of confirmed `orders` with goods still owed (quantity_open)."""
+    lines = not_shipped_in_full(SalesOrderLine.objects.filter(
+        order__in=orders.filter(status=OrderStatus.CONFIRMED)))
+    return sorted({line.order_id for line in lines.prefetch_related(
+        models.Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery")))
+        if line.quantity_open() > 0})
 
 
 def committed_balance(customer):

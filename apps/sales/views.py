@@ -16,6 +16,7 @@ from apps.core.api import flag
 
 from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
+from apps.inventory.models import Warehouse
 
 from django.http import HttpResponse
 
@@ -50,8 +51,10 @@ from .models import (
     commission_report,
     generate_due_invoices,
     outstanding_balance,
+    orders_to_ship,
     revenue_report,
     run_dunning,
+    still_owed,
 )
 from .serializers import (
     SuppliedItemSerializer,
@@ -79,7 +82,7 @@ from .serializers import (
 
 def _order_lines():
     """Order lines with what their shipped and invoiced quantities read."""
-    return SalesOrderLine.objects.select_related("item", "uom").prefetch_related(
+    return SalesOrderLine.objects.select_related("item", "uom", "charge").prefetch_related(
         "taxes",
         Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery")),
         Prefetch("invoice_lines", queryset=InvoiceLine.objects.select_related("invoice")),
@@ -97,12 +100,31 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ).prefetch_related(Prefetch("lines", queryset=_order_lines()), "supplied_items")
     serializer_class = SalesOrderSerializer
     action_permission_map = {
+        "ship": "sales.add_delivery",
         "create_invoice": "sales.add_invoice",
         "down_payment": "sales.add_invoice",
         "approve": "sales.approve_order",
         "confirm": "sales.change_salesorder",
         "cancel": "sales.change_salesorder",
     }
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # ?to_ship=true: confirmed, with goods still owed.
+        if flag(self.request.query_params, "to_ship", False):
+            queryset = queryset.filter(pk__in=orders_to_ship(queryset))
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def ship(self, request, pk=None):
+        """{delivery_date?, warehouse?}: a draft delivery of what is still owed."""
+        order = self.get_object()
+        warehouse = request.data.get("warehouse")
+        delivery = order.create_delivery(
+            delivery_date=request.data.get("delivery_date"),
+            warehouse=get_object_or_404(Warehouse, pk=warehouse) if warehouse else None,
+        )
+        return Response(DeliverySerializer(delivery).data, status=201)
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
@@ -251,8 +273,16 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Invoice.objects.select_related(
         "customer__tax_profile", "currency", "payment_terms", "credits"
-    ).prefetch_related(*INVOICE_FIGURES)
+    ).prefetch_related(*INVOICE_FIGURES, "lines__item", "lines__charge")
     serializer_class = InvoiceSerializer
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # ?open=true: posted invoices that still owe money, as amount_due()
+        # reckons it.
+        if flag(self.request.query_params, "open", False):
+            queryset = queryset.filter(pk__in=still_owed(queryset))
+        return queryset
     action_permission_map = {
         "post_invoice": "sales.post_invoice",
         "credit_note": "sales.post_invoice",
@@ -362,6 +392,8 @@ class InvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    filter_fields = ["invoice", "payment"]
+
     queryset = InvoicePayment.objects.select_related("invoice", "payment")
     serializer_class = InvoicePaymentSerializer
 
@@ -374,11 +406,12 @@ class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name"]
-    filter_fields = ["sales_order", "posted", "reverses"]
+    filter_fields = ["sales_order", "posted", "reverses", "reverses__isnull"]
     date_field = "delivery_date"
     ordering_fields = ["delivery_date", "number"]
 
-    queryset = Delivery.objects.prefetch_related("lines")
+    queryset = Delivery.objects.select_related("sales_order__customer").prefetch_related(
+        Prefetch("lines", queryset=DeliveryLine.objects.select_related("order_line__item")))
     serializer_class = DeliverySerializer
     action_permission_map = {
         "post_delivery": "sales.post_delivery",
@@ -477,7 +510,8 @@ class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "quotation_date"
     ordering_fields = ["quotation_date", "valid_until", "number"]
 
-    queryset = Quotation.objects.prefetch_related("lines")
+    queryset = Quotation.objects.select_related("customer").prefetch_related(
+        "lines__item", "lines__charge", "lines__taxes")
     serializer_class = QuotationSerializer
     action_permission_map = {"accept": "sales.add_salesorder"}
 

@@ -34,6 +34,8 @@ class MoneyLineSerializerMixin(serializers.Serializer):
 
 
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    # What the line is called: its description, else its charge or item.
+    label = serializers.CharField(read_only=True)
     quantity_shipped = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
     quantity_invoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
     quantity_uninvoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
@@ -47,7 +49,7 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
             "quantity_uninvoiced", "over_delivery_percent", "under_delivery_percent",
             "quantity_open", "closed_short_at", "closed_short_reason",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
-            "charge", "description", "warehouse", "delivery_date",
+            "charge", "description", "warehouse", "delivery_date", "label",
         ]
 
 
@@ -87,6 +89,8 @@ class SuppliedItemSerializer(serializers.ModelSerializer):
 
 
 class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    # What the line is called: its description, else its charge or item.
+    label = serializers.CharField(read_only=True)
     class Meta:
         model = InvoiceLine
         fields = [
@@ -94,7 +98,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
             "quantity", "unit_price",
             "discount_percent", "revenue_account", "taxes",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
-            "charge",
+            "charge", "label",
         ]
         # Left out, the charge's account or the company's default revenue
         # account (InvoiceLine.save).
@@ -132,17 +136,27 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
 
 class InvoicePaymentSerializer(serializers.ModelSerializer):
+    invoice_number = serializers.CharField(source="invoice.number", read_only=True)
+    payment_number = serializers.CharField(source="payment.number", read_only=True)
+
     class Meta:
         model = InvoicePayment
-        fields = ["id", "invoice", "payment", "amount"]
+        fields = ["id", "invoice", "invoice_number", "payment", "payment_number", "amount"]
 
 
 class DeliveryLineSerializer(serializers.ModelSerializer):
+    # What the line is, as the order line says it: a delivery line names
+    # only the order line, and a screen needs to say "50 kg sacks".
+    description = serializers.SerializerMethodField()
+
     class Meta:
         model = DeliveryLine
-        fields = ["id", "delivery", "order_line", "warehouse", "quantity_shipped",
+        fields = ["id", "delivery", "order_line", "description", "warehouse", "quantity_shipped",
             "bin", "lot",
         ]
+
+    def get_description(self, obj):
+        return obj.order_line.description or obj.order_line.label()
 
 
 class BackorderMixin(serializers.Serializer):
@@ -151,12 +165,14 @@ class BackorderMixin(serializers.Serializer):
 
 class DeliverySerializer(serializers.ModelSerializer):
     lines = DeliveryLineSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="sales_order.customer.name", read_only=True)
+    order_number = serializers.CharField(source="sales_order.number", read_only=True)
 
     class Meta:
         model = Delivery
         fields = [
-            "id", "number", "sales_order", "delivery_date", "reference",
-            "shipping_address", "reverses", "backorder_of", "posted", "posted_at", "lines",
+            "id", "number", "sales_order", "order_number", "customer_name", "delivery_date",
+            "reference", "shipping_address", "reverses", "backorder_of", "posted", "posted_at", "lines",
             "returned_under_release",
         ]
         read_only_fields = ["number", "reverses", "backorder_of", "posted", "posted_at",
@@ -191,18 +207,21 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
 
 class QuotationLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    # What the line is called: its description, else its charge or item.
+    label = serializers.CharField(read_only=True)
     class Meta:
         model = QuotationLine
         fields = [
             "id", "quotation", "item", "uom", "quantity", "unit_price",
             "discount_percent", "revenue_account", "taxes",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
-            "charge", "description",
+            "charge", "description", "label",
         ]
 
 
 class QuotationSerializer(serializers.ModelSerializer):
     lines = QuotationLineSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
@@ -210,8 +229,8 @@ class QuotationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Quotation
         fields = [
-            "id", "number", "customer", "quotation_date", "valid_until", "reference",
-            "status", "currency", "payment_terms", "billing_address", "shipping_address",
+            "id", "number", "customer", "customer_name", "quotation_date", "valid_until",
+            "reference", "status", "currency", "payment_terms", "billing_address", "shipping_address",
             "sales_rep", "sales_order", "sent_at", "revision", "revision_of",
             "lines", "subtotal", "tax_total", "total",
         ]

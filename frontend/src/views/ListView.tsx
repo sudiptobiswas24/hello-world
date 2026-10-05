@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 
 import { ApiError, list, type Page, type Query } from "../api/client";
 import { count, date, money, quantity } from "../lib/format";
+import { useAccess } from "../auth/me";
 import { ErrorPanel } from "../shell/ErrorPanel";
 
 export type Kind = "text" | "money" | "quantity" | "date" | "status";
@@ -36,6 +37,8 @@ export interface ListViewProps<T> {
   fixed?: Record<string, string>;
   /** "8 invoices" from the count. */
   noun: [string, string];
+  /** A "New" button for whoever holds the permission. */
+  create?: { href: string; permission: string };
 }
 
 const SIZES = [50, 100, 200];
@@ -70,7 +73,8 @@ function cell<T>(column: Column<T>, row: T): ReactNode {
  * ahead so paging forward is immediate.
  */
 export function ListView<T>(props: ListViewProps<T>) {
-  const { title, endpoint, columns, facets = [], rowKey, rowHref, searchHint, fixed, noun } = props;
+  const { title, endpoint, columns, facets = [], rowKey, rowHref, searchHint, fixed, noun, create } = props;
+  const { can } = useAccess();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -183,6 +187,9 @@ export function ListView<T>(props: ListViewProps<T>) {
     <section className="list" aria-busy={result.isFetching}>
       <header className="list-head">
         <h1>{title}</h1>
+        {create && can(create.permission) && (
+          <Link className="btn primary" to={create.href}>New</Link>
+        )}
         <div className="search">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
           <input

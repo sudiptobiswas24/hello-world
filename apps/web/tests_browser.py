@@ -31,7 +31,9 @@ PASSWORD = "plant-ledger-42"
 
 @unittest.skipIf(sync_playwright is None, "Playwright is not installed")
 @unittest.skipIf(not finders.find("web/index.html"), "The office application is not built (npm run build)")
-class OfficeApplicationTests(SalesTestCase, StaticLiveServerTestCase):
+class BrowserTestCase(SalesTestCase, StaticLiveServerTestCase):
+    """A browser on the running server, and people to sign in as."""
+
     @classmethod
     def _databases_support_transactions(cls):
         # The live server's thread shares the in-memory database and
@@ -61,20 +63,23 @@ class OfficeApplicationTests(SalesTestCase, StaticLiveServerTestCase):
     def setUp(self):
         super().setUp()
         call_command("setup_roles", verbosity=0)
-        self.bolt = Party.objects.create(code="C-2", name="Bolt Traders", default_currency=self.usd)
-        PartyRoleAssignment.objects.create(party=self.bolt, role=PartyRole.CUSTOMER)
-        self.invoices = [
-            self.invoice(self.customer, datetime.date(2026, 3, 1), "1250.50"),
-            self.invoice(self.bolt, datetime.date(2026, 4, 1), "200"),
-            self.invoice(self.customer, datetime.date(2026, 5, 1), "75"),
-            self.invoice(self.bolt, datetime.date(2026, 5, 2), "80", post=False),
-        ]
-        self.context = self.browser.new_context(viewport={"width": 1366, "height": 860})
-        self.addCleanup(self.context.close)
-        self.page = self.context.new_page()
         self.problems = []
-        self.page.on("console", lambda message: message.type == "error" and self.problems.append(message.text))
-        self.page.on("pageerror", lambda error: self.problems.append(str(error)))
+        self.page = self.new_page()
+
+    def new_page(self):
+        """A browser of its own: a second person signs in beside the first."""
+        context = self.browser.new_context(viewport={"width": 1366, "height": 860})
+        self.addCleanup(context.close)
+        self.context = context
+        page = context.new_page()
+        page.on("console", lambda message: message.type == "error" and self.problems.append(message.text))
+        page.on("pageerror", lambda error: self.problems.append(str(error)))
+        page.on("response", lambda response: response.status in (403, 404) and self.problems.append(
+            f"{response.status} {response.url}"))
+        # A question nobody expected (leave and lose your changes?) is a
+        # fault; a test that means to answer one says so with expect_event.
+        page.on("dialog", lambda dialog: (self.problems.append(f"dialog: {dialog.message}"), dialog.dismiss()))
+        return page
 
     def invoice(self, customer, day, price, post=True):
         invoice = Invoice.objects.create(customer=customer, invoice_date=day,
@@ -90,8 +95,8 @@ class OfficeApplicationTests(SalesTestCase, StaticLiveServerTestCase):
         user.groups.add(Group.objects.get(name=role))
         return user
 
-    def sign_in(self, user, path="/app/"):
-        page = self.page
+    def sign_in(self, user, path="/app/", page=None):
+        page = page or self.page
         page.goto(f"{self.live_server_url}{path}")
         page.fill("#id_username", user.username)
         page.fill("#id_password", PASSWORD)
@@ -100,6 +105,19 @@ class OfficeApplicationTests(SalesTestCase, StaticLiveServerTestCase):
 
     def rows(self):
         return self.page.locator("tbody tr:not(.skeleton)")
+
+
+class OfficeApplicationTests(BrowserTestCase):
+    def setUp(self):
+        super().setUp()
+        self.bolt = Party.objects.create(code="C-2", name="Bolt Traders", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=self.bolt, role=PartyRole.CUSTOMER)
+        self.invoices = [
+            self.invoice(self.customer, datetime.date(2026, 3, 1), "1250.50"),
+            self.invoice(self.bolt, datetime.date(2026, 4, 1), "200"),
+            self.invoice(self.customer, datetime.date(2026, 5, 1), "75"),
+            self.invoice(self.bolt, datetime.date(2026, 5, 2), "80", post=False),
+        ]
 
     def test_sign_in_returns_to_the_screen_asked_for(self):
         page = self.sign_in(self.person("AR Manager"), "/app/sales/invoices")
@@ -145,7 +163,8 @@ class OfficeApplicationTests(SalesTestCase, StaticLiveServerTestCase):
         """The store dispatches against orders, so it reads orders and
         customers; what was billed is not its business."""
         page = self.sign_in(self.person("Warehouse Staff"))
-        expect(page.get_by_role("link", name="Sales orders")).to_be_visible()
+        expect(page.get_by_role("link", name="Orders", exact=True)).to_be_visible()
+        expect(page.get_by_role("link", name="Deliveries", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="Customers")).to_be_visible()
         expect(page.get_by_role("link", name="Invoices")).to_have_count(0)
 

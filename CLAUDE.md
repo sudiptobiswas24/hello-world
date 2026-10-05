@@ -226,6 +226,15 @@ Go through it before running anything.
   checks them all.
 - Build before the browser tests (`npm run build`), or they skip and the
   count looks right.
+- A panel that reads a second endpoint asks only if the person may read
+  it (`RelatedList` takes the permission). An order page asked a rep for
+  deliveries on every open; the browser tests now fail on any 403 or 404.
+- Anything a handler decides after a save reads a ref, not state: state
+  lags a render. The leave guard asked "lose your changes?" straight after
+  Create, and a "no" left a filled form one click from a duplicate order.
+- Drive each flow in the browser as the people who do it. The model and
+  API tests were green while a line added from the screen had no name and
+  Ship could never be answered which warehouse.
 
 **Committing**
 - Suite, `audit_invariants`, `makemigrations --check`, then commit.

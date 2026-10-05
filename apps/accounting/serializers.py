@@ -92,12 +92,22 @@ class PartyTaxProfileSerializer(serializers.ModelSerializer):
 
 
 class PaymentSerializer(serializers.ModelSerializer):
+    party_name = serializers.CharField(source="party.name", read_only=True)
+    # A payment whose entry was reversed, by void() or by hand: the
+    # invoices it paid are owed again.
+    voided = serializers.SerializerMethodField()
+
+    def get_voided(self, obj):
+        if obj.voided_entry_id:
+            return True
+        return bool(obj.journal_entry_id) and len(obj.journal_entry.reversed_by.all()) > 0
+
     class Meta:
         model = Payment
         fields = [
-            "id", "number", "party", "direction", "payment_date", "amount", "currency",
+            "id", "number", "party", "party_name", "direction", "payment_date", "amount", "currency",
             "exchange_rate", "bank_account", "counterpart_account", "reference", "memo",
-            "journal_entry", "posted", "posted_at",
+            "journal_entry", "posted", "posted_at", "voided",
         ]
         read_only_fields = ["number", "exchange_rate", "journal_entry", "posted", "posted_at"]
         # Left out, the company's defaults (Payment.save).

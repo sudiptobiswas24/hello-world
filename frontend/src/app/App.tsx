@@ -7,6 +7,7 @@ import { AccessProvider } from "../auth/me";
 import { ErrorPanel } from "../shell/ErrorPanel";
 import { RouteError } from "../shell/RouteError";
 import { Shell } from "../shell/Shell";
+import { ToastProvider } from "../shell/Toasts";
 import { MODULES } from "./registry";
 
 const queryClient = new QueryClient({
@@ -31,10 +32,15 @@ const routes: RouteObject[] = [
         children: [
           { index: true, lazy: async () => ({ Component: (await import("../modules/home/Home")).default }) },
           ...MODULES.flatMap((module) =>
-            module.screens.map((screen) => ({
-              path: `${module.key}/${screen.path}`,
-              lazy: async () => ({ Component: (await screen.load()).default }),
-            })),
+            module.screens.flatMap((screen) => {
+              const detail = screen.detail;
+              return [
+                { path: `${module.key}/${screen.path}`, lazy: async () => ({ Component: (await screen.load()).default }) },
+                ...(detail
+                  ? [{ path: `${module.key}/${screen.path}/:id`, lazy: async () => ({ Component: (await detail()).default }) }]
+                  : []),
+              ];
+            }),
           ),
           {
             path: "*",
@@ -65,7 +71,9 @@ function BootFailed({ error }: { error: unknown }) {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <Boot />
+      <ToastProvider>
+        <Boot />
+      </ToastProvider>
     </QueryClientProvider>
   );
 }

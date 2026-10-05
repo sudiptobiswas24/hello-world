@@ -26,11 +26,13 @@ const columns: Column<Order>[] = [
 export default function Orders() {
   return (
     <ListView<Order>
-      title="Sales orders"
+      title="Orders"
       noun={["order", "orders"]}
       endpoint="/api/sales/sales-orders/"
       columns={columns}
       rowKey={(row) => row.id}
+      rowHref={(row) => `/sales/orders/${row.id}`}
+      create={{ href: "/sales/orders/new", permission: "sales.add_salesorder" }}
       searchHint="Number, customer, reference"
       facets={[
         { label: "Drafts", params: { status: "draft" } },

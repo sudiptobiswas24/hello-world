@@ -22,6 +22,11 @@ function useOnline(): boolean {
   return online;
 }
 
+function singular(label: string): string {
+  const special: Record<string, string> = { "Money received": "receipt", Deliveries: "delivery" };
+  return special[label] ?? label.toLowerCase().replace(/s$/, "");
+}
+
 function initials(name: string): string {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "?";
 }
@@ -40,7 +45,7 @@ export function Shell() {
 
   const modules = useMemo(
     () =>
-      MODULES.map((module) => ({ ...module, screens: module.screens.filter((screen) => can(screen.permission)) }))
+      MODULES.map((module) => ({ ...module, screens: module.screens.filter((screen) => can(screen.permission) && !screen.hidden) }))
         .filter((module) => module.screens.length > 0),
     [can],
   );
@@ -48,15 +53,15 @@ export function Shell() {
     () => [
       { label: "Home", hint: "Start", href: "/" },
       ...modules.flatMap((module) =>
-        module.screens.map((screen) => ({
-          label: screen.label,
-          hint: module.label,
-          href: screenUrl(module, screen),
-          keywords: screen.keywords,
-        })),
+        module.screens.flatMap((screen) => [
+          { label: screen.label, hint: module.label, href: screenUrl(module, screen), keywords: screen.keywords },
+          ...(screen.detail && screen.create && can(screen.create)
+            ? [{ label: `New ${singular(screen.label)}`, hint: module.label, href: `${screenUrl(module, screen)}/new`, keywords: `create add ${screen.keywords ?? ""}` }]
+            : []),
+        ]),
       ),
     ],
-    [modules],
+    [modules, can],
   );
   const current = modules.find((module) => location.pathname.startsWith(`/${module.key}/`));
 

@@ -87,7 +87,7 @@ def uncovered(sales_order=None, item=None):
     """
     from django.db.models import Prefetch
 
-    from apps.sales.models import DeliveryLine, OrderStatus, SalesOrderLine
+    from apps.sales.models import DeliveryLine, OrderStatus, SalesOrderLine, not_shipped_in_full
 
     from .bom import BillOfMaterials, default_bom_for
 
@@ -104,20 +104,7 @@ def uncovered(sales_order=None, item=None):
     # short, or shipped at least what was ordered. A year of order lines is
     # mostly these. A line shipped inside its tolerance still comes through
     # and is judged by quantity_open() as before.
-    from django.db.models import DecimalField, F, OuterRef, Subquery, Sum, Value
-    from django.db.models.functions import Coalesce
-
-    def shipped(returns):
-        moved = DeliveryLine.objects.filter(
-            order_line=OuterRef("pk"), delivery__posted=True,
-            delivery__reverses__isnull=not returns,
-        ).values("order_line").annotate(total=Sum("quantity_shipped")).values("total")
-        return Coalesce(Subquery(moved), Value(Decimal("0")),
-                        output_field=DecimalField(max_digits=18, decimal_places=4))
-
-    lines = lines.filter(closed_short_at__isnull=True).annotate(
-        net_shipped=shipped(False) - shipped(True)
-    ).exclude(net_shipped__gte=F("quantity"))
+    lines = not_shipped_in_full(lines)
     lines = list(lines)
     boms = {}
     for bom in BillOfMaterials.objects.filter(

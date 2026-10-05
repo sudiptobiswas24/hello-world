@@ -130,7 +130,16 @@ def to_date(value):
         return timezone.localtime(value).date() if timezone.is_aware(value) else value.date()
     if isinstance(value, datetime.date):
         return value
-    return datetime.date.fromisoformat(str(value))
+    text = str(value).strip()
+    if not text:
+        # What a form sends for a date box left empty: not given.
+        return None
+    try:
+        return datetime.date.fromisoformat(text)
+    except ValueError:
+        # Refused in words, not a server error: forty-two API actions read
+        # a date through here, and a mistyped one was a 500 on each.
+        raise ValidationError(f"{value!r} is not a date. Write it as 2026-03-31.") from None
 
 
 class Country(TimeStampedModel):

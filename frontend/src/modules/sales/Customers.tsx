@@ -35,6 +35,8 @@ export default function Customers() {
       fixed={FIXED}
       columns={columns}
       rowKey={(row) => row.id}
+      rowHref={(row) => `/sales/customers/${row.id}`}
+      create={{ href: "/sales/customers/new", permission: "core.add_party" }}
       searchHint="Code, name, GSTIN, phone, email"
       facets={[
         { label: "Active", params: { is_active: "true" } },

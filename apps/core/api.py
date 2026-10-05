@@ -156,7 +156,8 @@ class FieldFilter(BaseFilterBackend):
                         day = to_date(params[param])
                         queryset = queryset.filter(**{f"{date_field}__{lookup}": day})
         except (ValueError, TypeError, DjangoValidationError) as error:
-            raise DRFValidationError(f"Cannot filter by that: {error}")
+            said = " ".join(getattr(error, "messages", None) or [str(error)])
+            raise DRFValidationError(f"Cannot filter by that: {said}")
         return queryset
 
 

@@ -54,6 +54,8 @@ export default function Invoices() {
       endpoint="/api/sales/invoices/"
       columns={columns}
       rowKey={(row) => row.id}
+      rowHref={(row) => `/sales/invoices/${row.id}`}
+      create={{ href: "/sales/invoices/new", permission: "sales.add_invoice" }}
       searchHint="Number, customer, reference, order"
       facets={[
         { label: "Drafts", params: { posted: "false" } },
