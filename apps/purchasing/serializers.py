@@ -117,6 +117,8 @@ class BillSerializer(serializers.ModelSerializer):
             "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
             "exchange_rate", "is_prepayment",
         ]
+        # Left out, the company's default payable account (Bill.save).
+        extra_kwargs = {"payable_account": {"required": False}}
 
 
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):

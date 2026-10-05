@@ -24,11 +24,19 @@ from apps.core.models import to_date
 
 
 def exception_handler(exc, context):
-    """Map a model-level refusal onto the DRF error it always meant."""
+    """
+    Map a model-level refusal onto the DRF error it always meant. A
+    refusal about one field stays about that field, so a form can show it
+    beside the box; the rest is a list of sentences.
+    """
     if isinstance(exc, DjangoValidationError):
-        exc = DRFValidationError(
-            exc.messages if hasattr(exc, "messages") else [str(exc)]
-        )
+        if hasattr(exc, "error_dict"):
+            exc = DRFValidationError({
+                ("non_field_errors" if field == "__all__" else field): messages
+                for field, messages in exc.message_dict.items()
+            })
+        else:
+            exc = DRFValidationError(exc.messages if hasattr(exc, "messages") else [str(exc)])
     return drf_exception_handler(exc, context)
 
 

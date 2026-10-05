@@ -5,6 +5,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
+from apps.accounting.defaults import chosen_or_default
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
@@ -88,15 +89,11 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def create_bill(self, request, pk=None):
-        from apps.accounting.models import Account
-
         order = self.get_object()
-        account_id = request.data.get("payable_account")
-        if not account_id:
-            raise DRFValidationError("payable_account is required.")
+        account = chosen_or_default(request.data, "payable_account", "payable")
         try:
             bill = order.create_bill(
-                get_object_or_404(Account, pk=account_id),
+                account,
                 bill_date=request.data.get("bill_date"),
                 reference=request.data.get("reference", ""),
             )
@@ -107,17 +104,13 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def prepayment(self, request, pk=None):
         """
-        {payable_account, amount | percent, bill_date?, description?}: a
+        {payable_account?, amount | percent, bill_date?, description?}: a
         draft prepayment bill, the vendor asking for money up front.
         """
         from decimal import Decimal, InvalidOperation
 
-        from apps.accounting.models import Account
-
         order = self.get_object()
-        account_id = request.data.get("payable_account")
-        if not account_id:
-            raise DRFValidationError("payable_account is required.")
+        account = chosen_or_default(request.data, "payable_account", "payable")
         figures = {}
         for name in ("amount", "percent"):
             value = request.data.get(name)
@@ -128,7 +121,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                     raise DRFValidationError(f"{name} must be a number.")
         try:
             bill = order.create_prepayment_bill(
-                get_object_or_404(Account, pk=account_id),
+                account,
                 bill_date=request.data.get("bill_date"),
                 description=request.data.get("description", ""),
                 **figures,

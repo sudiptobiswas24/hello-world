@@ -738,6 +738,16 @@ class Payment(AuditModel):
             raise ValidationError("This payment is posted and immutable. Void it instead.")
         if self._state.adding and not self.currency_id and self.party_id:
             self.currency = self.party.default_currency
+        if self._state.adding:
+            from .defaults import default_account
+
+            if not self.bank_account_id:
+                self.bank_account = default_account("bank", "bank_account")
+            if not self.counterpart_account_id:
+                # Money in settles what a customer owes; money out, what is
+                # owed to a vendor.
+                purpose = "receivable" if self.is_receipt() else "payable"
+                self.counterpart_account = default_account(purpose, "counterpart_account")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

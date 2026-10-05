@@ -14,7 +14,7 @@ from rest_framework.response import Response
 
 from apps.core.api import flag
 
-from apps.accounting.models import Account
+from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
 
 from django.http import HttpResponse
@@ -146,12 +146,10 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def create_invoice(self, request, pk=None):
         order = self.get_object()
-        account_id = request.data.get("receivable_account")
-        if not account_id:
-            raise DRFValidationError("receivable_account is required.")
+        account = chosen_or_default(request.data, "receivable_account", "receivable")
         try:
             invoice = order.create_invoice(
-                receivable_account=get_object_or_404(Account, pk=account_id),
+                receivable_account=account,
                 invoice_date=request.data.get("invoice_date"),
             )
         except DjangoValidationError as exc:
@@ -161,14 +159,12 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def down_payment(self, request, pk=None):
         """
-        {receivable_account, amount | percent, invoice_date?, description?}:
+        {receivable_account?, amount | percent, invoice_date?, description?}:
         a draft down-payment invoice. The model had it; nothing outside
         code could reach it, so a screen could not take an advance.
         """
         order = self.get_object()
-        account_id = request.data.get("receivable_account")
-        if not account_id:
-            raise DRFValidationError("receivable_account is required.")
+        account = chosen_or_default(request.data, "receivable_account", "receivable")
         figures = {}
         for name in ("amount", "percent"):
             value = request.data.get(name)
@@ -179,7 +175,7 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                     raise DRFValidationError(f"{name} must be a number.")
         try:
             invoice = order.create_down_payment_invoice(
-                get_object_or_404(Account, pk=account_id),
+                account,
                 invoice_date=request.data.get("invoice_date"),
                 description=request.data.get("description", ""),
                 **figures,

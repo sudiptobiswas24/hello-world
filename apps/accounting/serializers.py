@@ -100,3 +100,6 @@ class PaymentSerializer(serializers.ModelSerializer):
             "journal_entry", "posted", "posted_at",
         ]
         read_only_fields = ["number", "exchange_rate", "journal_entry", "posted", "posted_at"]
+        # Left out, the company's defaults (Payment.save).
+        extra_kwargs = {"bank_account": {"required": False},
+                        "counterpart_account": {"required": False}}

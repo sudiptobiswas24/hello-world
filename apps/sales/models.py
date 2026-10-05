@@ -51,6 +51,7 @@ from apps.inventory.models import (
 from apps.inventory.valuation import post_inventory_entry
 from apps.quality.release import check_released
 
+from apps.accounting.defaults import default_account
 from apps.accounting.mixins import (
     PostedLineMixin,
     PostedTaxDocumentMixin,
@@ -1765,6 +1766,8 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             )
         if self._state.adding:
             self._apply_customer_defaults()
+            if not self.receivable_account_id:
+                self.receivable_account = default_account("receivable", "receivable_account")
         super().save(*args, **kwargs)
 
     def _apply_customer_defaults(self):
@@ -2196,6 +2199,12 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "Cannot modify a line on a posted invoice. Issue a credit note instead."
             )
+        # An order line may leave it blank; a sale cannot post without one,
+        # and invoicing such a line was a database error rather than a
+        # sentence. Here, where every invoice line is made.
+        if not self.revenue_account_id:
+            self.revenue_account = (self.charge.account_for(is_sale=True) if self.charge_id
+                                    else default_account("revenue", "revenue_account"))
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

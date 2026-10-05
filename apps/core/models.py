@@ -836,6 +836,24 @@ class Company(AuditModel):
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Expense account for receivables judged uncollectable.",
     )
+    default_revenue_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where a sale is credited when its line names no revenue account.",
+    )
+    default_receivable_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="What customers owe is booked to this, when an invoice or a receipt names "
+                  "no account of its own.",
+    )
+    default_payable_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="What is owed to vendors is booked to this, when a bill or a payment out "
+                  "names no account of its own.",
+    )
+    default_bank_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The bank a payment goes through when it names none.",
+    )
     default_purchase_expense_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a non-stocked purchase lands when its line names no account.",

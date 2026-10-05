@@ -96,6 +96,9 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
             "charge",
         ]
+        # Left out, the charge's account or the company's default revenue
+        # account (InvoiceLine.save).
+        extra_kwargs = {"revenue_account": {"required": False}}
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
@@ -124,6 +127,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
             "posted", "posted_at", "sent_at", "is_down_payment",
         ]
+        # Left out, the company's default receivable account (Invoice.save).
+        extra_kwargs = {"receivable_account": {"required": False}}
 
 
 class InvoicePaymentSerializer(serializers.ModelSerializer):
