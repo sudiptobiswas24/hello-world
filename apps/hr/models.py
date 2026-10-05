@@ -499,6 +499,7 @@ class LeaveRequest(AuditModel):
         permissions = [
             ("decide_leaverequest", "Can approve or reject leave requests"),
             ("view_every_leaverequest", "Can read everyone's leave requests, not only their own and their reports'"),
+            ("decide_unmanaged_leaverequest", "Can decide leave for someone with no manager"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -621,7 +622,7 @@ class LeaveRequest(AuditModel):
 
     # -- the decision, and its reverse ----------------------------------
 
-    def check_approver(self, by):
+    def check_approver(self, by, as_hr=False):
         """
         Who may decide this.
 
@@ -640,20 +641,26 @@ class LeaveRequest(AuditModel):
             )
         # Their manager, a manager above, or their department's: anyone
         # else's yes was recorded as a decision nobody with the standing
-        # to make it had made.
+        # to make it had made. Someone with none of those is decided by
+        # HR (as_hr, the view's hr.decide_unmanaged_leaverequest), or
+        # nobody could ever decide their leave; HR does not overrule a
+        # manager who exists.
+        if as_hr and self.employee.manager_id is None and not (
+                self.employee.department_id and self.employee.department.manager_id):
+            return
         if self.employee_id not in by.reports():
             raise ValidationError(
                 f"{by} does not manage {self.employee}: their manager, a manager above "
                 "them, or their department's manager decides their leave.")
 
     @serialised("status")
-    def approve(self, by, note=""):
+    def approve(self, by, note="", as_hr=False):
         if self.status != LeaveStatus.PENDING:
             raise ValidationError("Only a pending leave request can be approved.")
         # The balance is read below; two of this person's requests approved
         # at once must not both find the same days left.
         lock_rows(self.employee)
-        self.check_approver(by)
+        self.check_approver(by, as_hr)
         self._check_balance()
         # Freeze what it cost. The working pattern and the public holiday
         # list both change, and what an approved holiday cost does not.
@@ -686,7 +693,7 @@ class LeaveRequest(AuditModel):
             )
 
     @serialised("status")
-    def withdraw_approval(self, by, note=""):
+    def withdraw_approval(self, by, note="", as_hr=False):
         """
         Put an approved request back in the queue.
 
@@ -700,7 +707,7 @@ class LeaveRequest(AuditModel):
             raise ValidationError("Only an approved leave request can be sent back.")
         # Whoever may give the decision may take it back; `by` was taken
         # and never asked, so anyone could undo a manager's yes.
-        self.check_approver(by)
+        self.check_approver(by, as_hr)
         self.status = LeaveStatus.PENDING
         self.decided_by = None
         self.decided_at = None
@@ -713,10 +720,10 @@ class LeaveRequest(AuditModel):
         return self
 
     @serialised("status")
-    def reject(self, by, reason=None):
+    def reject(self, by, reason=None, as_hr=False):
         if self.status != LeaveStatus.PENDING:
             raise ValidationError("Only a pending leave request can be rejected.")
-        self.check_approver(by)
+        self.check_approver(by, as_hr)
         self.status = LeaveStatus.REJECTED
         self.decided_by = by
         self.decided_at = timezone.now()

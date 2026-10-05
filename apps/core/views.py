@@ -132,6 +132,16 @@ class CompanyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = CompanySerializer
 
 
+# What other modules add to /me/: hr says which employee the login is.
+# Registered by them (their apps.py), so core imports none of them.
+ME_EXTRAS = []
+
+
+def register_me_extra(provider):
+    if provider not in ME_EXTRAS:
+        ME_EXTRAS.append(provider)
+
+
 class MeView(APIView):
     """
     Who is signed in, and what they may do: what the office application
@@ -146,7 +156,7 @@ class MeView(APIView):
 
     def get(self, request):
         user = request.user
-        return Response({
+        answer = {
             "id": user.pk,
             "username": user.get_username(),
             "name": user.get_full_name() or user.get_username(),
@@ -154,4 +164,7 @@ class MeView(APIView):
             "roles": sorted(user.groups.values_list("name", flat=True)),
             "permissions": sorted(user.get_all_permissions()),
             "company": Company.get().name,
-        })
+        }
+        for provider in ME_EXTRAS:
+            answer.update(provider(user))
+        return Response(answer)

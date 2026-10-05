@@ -326,12 +326,15 @@ ROLES = {
         *crud("hr", "department"),
         *crud("hr", "employee"),
         *crud("hr", "leaverequest"),
+        *view("hr", "leavepolicy"),
         "hr.decide_leaverequest",
         "hr.view_every_leaverequest",
+        # For someone nobody manages; never over a manager who exists.
+        "hr.decide_unmanaged_leaverequest",
     ],
     "Payroll Officer": [
         *REFERENCE,
-        *view("hr", "department", "employee", "leaverequest", "payslip", "payslipline",
+        *view("hr", "department", "employee", "leaverequest", "leavepolicy", "payslip", "payslipline",
               "statutoryremittance"),
         # Unpaid leave is pay: payroll reads everyone's.
         "hr.view_every_leaverequest",
@@ -343,7 +346,7 @@ ROLES = {
     # Decides their own team's leave: the model refuses anyone they do
     # not manage, and the list shows only their reports'.
     "Line Manager": [
-        *view("hr", "department", "employee", "leaverequest"),
+        *view("hr", "department", "employee", "leaverequest", "leavepolicy"),
         "hr.decide_leaverequest",
     ],
     "Employee Self Service": [
@@ -352,6 +355,7 @@ ROLES = {
         # deliberately NOT decide_purchaserequisition: nobody approves
         # their own request.
         *crud("hr", "leaverequest", actions=("add", "view")),
+        *view("hr", "leavepolicy"),
         # deliberately NOT hr.decide_leaverequest
     ],
 }

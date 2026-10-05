@@ -11,6 +11,9 @@ export interface Me {
   roles: string[];
   permissions: string[];
   company: string;
+  /** The employee this login is (hr), or null: what "my leave" means. */
+  employee?: number | null;
+  employee_name?: string;
 }
 
 interface Access {

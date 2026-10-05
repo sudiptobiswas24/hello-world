@@ -2420,6 +2420,12 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         help_text="Money paid to the vendor up front, held as an asset until the "
                   "goods arrive.",
     )
+    is_opening_balance = models.BooleanField(
+        default=False, editable=False,
+        help_text="Brought in at go-live (import_csv open_bills): what the old "
+                  "system's bill still had owing. Its credit was claimed there; no "
+                  "return here counts it.",
+    )
     settlement_discount_amount = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
         help_text="Early-settlement discount taken against this bill.",

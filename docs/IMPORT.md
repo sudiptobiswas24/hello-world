@@ -1,22 +1,30 @@
 # Bringing the old system's records in
 
 Once, at go-live, from CSV files saved out of the old system or a
-spreadsheet (UTF-8; a spreadsheet's byte-order mark is fine). Six kinds,
-brought in in this order, because each needs the one before:
+spreadsheet (UTF-8; a spreadsheet's byte-order mark is fine). Seven
+kinds, brought in in this order, because each needs the one before:
 
 | Order | Kind | What it makes |
 |---|---|---|
 | 1 | `parties` | Customers, vendors, with GST details, credit limit, billing address |
-| 2 | `items` | Items with their unit, HSN and costing |
-| 3 | `opening_stock` | One posted stock adjustment a warehouse |
-| 4 | `open_invoices` | Posted invoices still owed, one per old invoice |
-| 5 | `open_bills` | Posted bills still owing, one per old bill |
-| 6 | `opening_balances` | One posted journal entry for every other balance |
+| 2 | `employees` | Employees with department and manager, and their logins and roles |
+| 3 | `items` | Items with their unit, HSN and costing |
+| 4 | `opening_stock` | One posted stock adjustment a warehouse |
+| 5 | `open_invoices` | Posted invoices still owed, one per old invoice |
+| 6 | `open_bills` | Posted bills still owing, one per old bill |
+| 7 | `opening_balances` | One posted journal entry for every other balance |
 
 ```bash
-python manage.py import_csv parties parties.csv            # dry run
-python manage.py import_csv parties parties.csv --commit   # keep it
+python manage.py import_csv parties parties.csv --template   # a blank file to fill in
+python manage.py import_csv parties parties.csv              # dry run
+python manage.py import_csv parties parties.csv --commit     # keep it
+python manage.py go_live_check                               # then: is it ready?
 ```
+
+`--template` writes a file holding only the header row, the columns in
+order; it never writes over a file that exists. With Docker, run each
+as `docker compose run --rm web python manage.py ...` with the files in
+`imports/`, which the container sees as `/app/imports/`.
 
 **A dry run is the default.** It checks every row through the same
 rules as a record typed in, lists every problem as `row N, column:
@@ -60,6 +68,22 @@ code), `gst_registration` (`regular`, `composition`, `sez`,
 `state`, `postal_code`, `country` (two-letter code).
 
 A code already in the system is refused, not updated.
+
+### employees
+
+`employee_number*`, `name*`, `hire_date*`, `party_code` (default the
+employee number; a party that exists is given the employee role),
+`department` (code, made beforehand in the admin), `manager` (the
+manager's employee number, in this file or already in), `job_title`,
+`email`, `username` (the login: made if new, linked if it exists and
+is no one else's), `roles` (role names separated by `;`, such as
+`Line Manager;Employee Self Service`; needs `username`).
+
+With `--commit`, `--passwords-out <file>` is required: each new login's
+first password is written there, readable only by whoever ran the
+import, and never shown on the screen. Hand each out, have it changed at
+the first sign-in, and delete the file. Someone with no manager and no
+department manager has their leave decided by HR.
 
 ### items
 

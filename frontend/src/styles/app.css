@@ -559,3 +559,7 @@ small.bad, .bad { color: var(--bad); }
 .statement-section td.code { width: 7rem; }
 .statement-section tfoot th, .statement-section tfoot td { border-top: 1px solid var(--line); font-weight: 600; }
 .statement-foot th { text-align: left; font-weight: 500; }
+
+/* ---------- leave ---------- */
+form.refuse { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+form.refuse input { min-width: 260px; }

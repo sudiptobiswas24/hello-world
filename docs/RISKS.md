@@ -14,25 +14,32 @@ can prove.
 
 1. **No real person has used it yet.** Every flow was driven by tests
    written by the people who built it, in a browser, as each role. The
-   screens open without error for all 16 roles (`apps/web/tests_browser_sweep.py`),
+   screens open without error for all 17 roles (`apps/web/tests_browser_sweep.py`),
    but whether the plant's own clerks can find their way, and whether
    the words on the screens are the plant's words, is unknown.
-   *Do:* a pilot with two or three people per desk on a copy of real
-   data, for a fortnight, before anything is switched off.
+   *Do:* the pilot in docs/PILOT.md: a fortnight, two or three people
+   per desk, the same day's work in both systems, three numbers compared
+   every evening, and the pass conditions written down before it starts.
 2. **The import has never seen the plant's own files.** `import_csv`
    (docs/IMPORT.md) brings in parties, items, opening stock, open
    invoices and bills and the other opening balances, dry run first,
    each file whole or not at all. It was tested on files written for the
    tests. The old system's exports will have their own column names,
-   date shapes and oddities. *Do:* a dry run of every file on a copy of
-   the database, weeks before go-live, and reconcile the opening-balance
-   account to the old system's equity. It adds and never updates, and
-   brings in no history and no open orders.
-3. **The Docker image has never been built here.** Docker Hub was not
-   reachable from this environment, so `Dockerfile` and
-   `docker-compose.yml` are unverified. *Do:* build and start them once
-   on the server, then restore a backup into them (RUNBOOK.md, "Proving a
-   backup restores") before go-live.
+   date shapes and oddities. *Do:* fill the blank files `import_csv
+   <kind> <file> --template` writes, dry-run every one on a copy of the
+   database weeks before go-live, then `go_live_check`, and reconcile the
+   opening-balance account to the old system's equity. It adds and never
+   updates, and brings in no history and no open orders.
+3. **The Docker deployment has run once, here, not on the plant's
+   server.** On 2026-10-05 the image was built from this `Dockerfile`
+   (with only this build environment's proxy certificate added), the
+   stack started from `docker-compose.yml` on an empty database (about
+   five minutes of migrations, 502 from Caddy meanwhile), the office
+   application signed in over HTTPS through Caddy, and a backup was
+   taken, restored into a scratch database, and restored over the live
+   one, which dropped what was made after it. The plant's server, its
+   network name and its certificate are still untried. *Do:* the same
+   on the server, following RUNBOOK.md, before the pilot.
 4. **Speed was measured on made-up data.** The perf databases hold a
    year and five years of generated documents; every search, list and
    ledger answered in under 1.1 s there. Real data has different
@@ -50,15 +57,19 @@ can prove.
    the employee's manager (or one above, or their department's) decides.
    Nothing else is scoped to the person yet. *Likely to matter:* once
    more than one team shares a role.
-7. **Login lockout is per user name.** Ten wrong passwords in fifteen
-   minutes lock that name, from anywhere: a person who knows a
-   colleague's user name can lock them out. There is no per-address
-   throttle. *Do:* put the server behind a proxy that rate-limits
-   `/accounts/login/` by address.
-8. **GST is compiled, not filed, and periods before go-live must not be
-   compiled here.** Opening invoices are dated in periods the old system
-   filed; compiled here they would read as supplies with no tax.
-   **Filing:** GSTR-1, GSTR-3B and ITC-04 are
+7. **Sign-in guessing is limited by name and address together.** Ten
+   wrong in fifteen minutes lock that name from that address only, so a
+   colleague cannot lock someone out from their own desk; fifty from one
+   address lock the address; a hundred at one name from anywhere lock
+   the name, which takes a script, not a grudge. The address is read
+   through Caddy (`DJANGO_TRUSTED_PROXIES=1`); add a proxy in front of
+   Caddy without raising it and every sign-in shares the proxy's address.
+8. **GST is compiled, not filed.** Opening invoices and bills from the
+   import are marked and left out of every return and e-invoice: the old
+   system reported them. A credit note for goods the old system invoiced
+   cannot be raised here with its GST, since the opening invoice is one
+   line of money with none; raise it as the old system would have and
+   report it by hand. **Filing:** GSTR-1, GSTR-3B and ITC-04 are
    built; e-invoice and e-way bill payloads are built. Nothing is sent
    to the GST portal or NIC: someone uploads them. A payload the portal
    rejects is found out there, not here.
@@ -92,9 +103,10 @@ can prove.
     account and currency.** A receipt recorded against revenue (a cash
     sale) cannot be applied to an invoice; record it against the
     receivable.
-17. **Leave is decided only by a manager, as themselves.** Someone with
-    no manager and no department manager cannot have leave decided until
-    HR sets one. A new "Line Manager" role decides leave and reads only
+17. **Leave is decided only by a manager, as themselves**, on the Leave
+    screen (People). Someone with no manager and no department manager
+    has their leave decided by HR (`hr.decide_unmanaged_leaverequest`,
+    held by HR Admin); HR never overrules a manager who exists. A new "Line Manager" role decides leave and reads only
     their reports'; HR Admin and Payroll Officer read everyone's. An
     administrator may still name the decider, and the audit trail records
     who did. Logins must be linked to employees (the employee record's

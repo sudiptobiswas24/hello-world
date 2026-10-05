@@ -41,13 +41,36 @@ docker compose logs -f web   # wait for "Listening at: http://0.0.0.0:8000"
 ```
 
 The first start builds the database from nothing and takes about five
-minutes. Later starts take seconds.
+minutes. Later starts take seconds; after a restore, about twenty.
+Until `web` is listening the browser shows **502 Bad Gateway**: that is
+Caddy saying the application is not up yet, not a fault. Wait.
+
+The build fetches the base images from Docker Hub, which limits how
+often an address may fetch without signing in. If it answers `429 Too
+Many Requests`, run `docker login` with a free Docker Hub account and
+build again.
 
 Then make the first user, who can make all the others:
 
 ```sh
 docker compose run --rm web python manage.py createsuperuser
 ```
+
+### Before people use it
+
+Bring the old system's records in (docs/IMPORT.md: put the files in
+`imports/`), then ask whether it is ready:
+
+```sh
+docker compose run --rm web python manage.py import_csv parties /app/imports/parties.csv
+docker compose run --rm web python manage.py go_live_check
+```
+
+`go_live_check` lists what is missing: accounts not set, roles not made,
+logins with no role or no employee, a ledger that does not balance,
+stock that does not agree with it. It fails while anything would break
+the first day. Run it again on the morning of go-live. docs/PILOT.md is
+the fortnight before that.
 
 ### What goes in `.env`
 
@@ -61,6 +84,7 @@ docker compose run --rm web python manage.py createsuperuser
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | the same, with `https://` in front. Without it, every form submission is refused. |
 | `DJANGO_TIME_ZONE` | `Asia/Kolkata`. Shifts start at 08:00 plant time; get this wrong and every shift is read 5½ hours off. |
 | `DJANGO_HTTPS` | `true`. See "Plain HTTP" below before changing it. |
+| `DJANGO_TRUSTED_PROXIES` | set to `1` by docker-compose.yml for the Caddy in front. Only change it if another proxy is added in front of Caddy (then `2`): the sign-in lock reads each caller's address through them. |
 | `BACKUP_AT`, `BACKUP_KEEP_DAYS` | when the nightly backup runs (plant time) and how many days of them to keep. |
 
 ### HTTPS on the plant network

@@ -9,12 +9,13 @@ from .payroll_views import (
     SlabViewSet,
     StatutoryLiabilitiesView,
 )
-from .views import DepartmentViewSet, EmployeeViewSet, LeaveRequestViewSet
+from .views import DepartmentViewSet, EmployeeViewSet, LeavePolicyViewSet, LeaveRequestViewSet
 
 router = DefaultRouter()
 router.register("departments", DepartmentViewSet)
 router.register("employees", EmployeeViewSet)
 router.register("leave-requests", LeaveRequestViewSet)
+router.register("leave-policies", LeavePolicyViewSet)
 router.register("pay-components", PayComponentViewSet)
 router.register("compensation", CompensationViewSet)
 router.register("pay-runs", PayRunViewSet)

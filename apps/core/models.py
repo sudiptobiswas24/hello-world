@@ -778,6 +778,7 @@ class LoginFailure(models.Model):
     """One wrong password, kept long enough to count (apps.core.auth)."""
 
     username = models.CharField(max_length=150, db_index=True)
+    address = models.GenericIPAddressField(null=True, blank=True, db_index=True)
     at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:

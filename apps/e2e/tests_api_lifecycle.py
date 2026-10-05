@@ -347,6 +347,19 @@ class LeaveOverTheApiTests(LifecycleTestCase):
                                        format="json").status_code, 404)
         self.assertEqual(stranger.get("/api/hr/leave-requests/").json(), [])
 
+    def test_hr_decides_through_the_api_only_for_someone_nobody_manages(self):
+        loner = self.employee("W-9", manager=None)
+        own = self.as_person("Employee Self Service", loner)
+        leave = self.ok(own.post("/api/hr/leave-requests/", {
+            "employee": loner.pk, "policy": self.policy.pk, "leave_type": "vacation",
+            "start_date": "2026-11-02", "end_date": "2026-11-02"}, format="json"), 201)
+        hr = self.as_person("HR Admin", self.employee("HR-9", manager=None))
+        decided = self.ok(hr.post(f"/api/hr/leave-requests/{leave['id']}/approve/", {}, format="json"))
+        self.assertEqual(decided["status"], "approved")
+        _own, managed = self.apply()  # the weaver, who reports to the boss
+        refused = hr.post(f"/api/hr/leave-requests/{managed['id']}/approve/", {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+
     def test_leave_is_asked_for_oneself_and_read_by_whom_it_concerns(self):
         own, leave = self.apply()
         colleague = self.employee("W-2")

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Department, Employee, LeaveRequest
+from .models import Department, Employee, LeavePolicy, LeaveRequest
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -12,6 +12,8 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 
 class EmployeeSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="party.name", read_only=True)
+
     class Meta:
         model = Employee
         fields = [
@@ -24,11 +26,22 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "hire_date",
             "termination_date",
             "employment_status",
-            "working_days", "holiday_region", "user",
+            "working_days", "holiday_region", "user", "name",
         ]
 
 
+class LeavePolicySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LeavePolicy
+        fields = ["id", "code", "name", "leave_type", "annual_days"]
+
+
 class LeaveRequestSerializer(serializers.ModelSerializer):
+    # Names, so a list says whose and who decided without asking again.
+    employee_name = serializers.CharField(source="employee.party.name", read_only=True)
+    decided_by_name = serializers.CharField(source="decided_by.party.name", read_only=True, default="")
+    policy_name = serializers.CharField(source="policy.name", read_only=True, default="")
+
     class Meta:
         model = LeaveRequest
         fields = [
@@ -48,5 +61,6 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             "reason",
             "decided_by",
             "decided_at",
+            "employee_name", "decided_by_name", "policy_name",
         ]
         read_only_fields = ["status", "decided_by", "decided_at", "days_taken"]

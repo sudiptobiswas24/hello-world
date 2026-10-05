@@ -186,6 +186,12 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = "static/"
+
+# How many reverse proxies stand in front of the application: 1 behind the
+# Caddy in docker-compose.yml. The login lock reads the caller's address
+# from the entry the outermost of them added to X-Forwarded-For; with
+# none, the header is the caller's own and is ignored.
+TRUSTED_PROXIES = int(os.environ.get("DJANGO_TRUSTED_PROXIES", "0"))
 STATIC_ROOT = Path(os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles"))
 
 if PRODUCTION:

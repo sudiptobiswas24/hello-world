@@ -36,6 +36,8 @@ services:
       DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
       DJANGO_TIME_ZONE: ${DJANGO_TIME_ZONE:-Asia/Kolkata}
       DJANGO_HTTPS: ${DJANGO_HTTPS:-true}
+      # The Caddy below: the login lock reads the caller's address from it.
+      DJANGO_TRUSTED_PROXIES: "1"
       TZ: ${DJANGO_TIME_ZONE:-Asia/Kolkata}
       EMAIL_HOST: ${EMAIL_HOST:-}
       EMAIL_PORT: ${EMAIL_PORT:-587}

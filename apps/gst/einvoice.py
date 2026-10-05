@@ -240,6 +240,10 @@ def build(invoice):
 
     if not invoice.posted:
         raise ValidationError(f"{invoice} is not posted; there is nothing to register.")
+    if invoice.is_opening_balance or (invoice.credits_id and invoice.credits.is_opening_balance):
+        raise ValidationError(
+            f"{invoice.number} is an opening balance from the old system, which registered "
+            "the supply; it is not registered again.")
     if not invoice.taxes_recorded:
         raise ValidationError(f"{invoice.number} posted before taxes were recorded.")
     required, reason = needs_irn(invoice)

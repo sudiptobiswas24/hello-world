@@ -17,7 +17,7 @@ from unittest import mock
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -126,7 +126,12 @@ class GuessingStopsTests(TestCase):
         for _ in range(10):
             client.credentials(HTTP_AUTHORIZATION="Basic YWNjb3VudHM6d3Jvbmc=")  # accounts:wrong
             client.get("/api/core/currencies/")
-        self.assertIsNone(authenticate(username="accounts", password="right-horse-battery"))
+        # Counted against the address the guesses came from (the test
+        # client's), so it is from there that the right one is refused.
+        from django.test import RequestFactory
+
+        there = RequestFactory().get("/", REMOTE_ADDR="127.0.0.1")
+        self.assertIsNone(authenticate(there, username="accounts", password="right-horse-battery"))
 
     def test_an_unknown_name_is_counted_like_a_known_one(self):
         """Or the lock itself would say which names exist."""
@@ -135,3 +140,62 @@ class GuessingStopsTests(TestCase):
         from apps.core.models import LoginFailure
 
         self.assertEqual(LoginFailure.objects.filter(username="nobody").count(), 10)
+
+
+# A hundred and fifty failed sign-ins, each hashed: the fast hasher keeps
+# it to seconds. What is counted is the same whatever the hash costs.
+@override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
+class AGrudgeCannotLockAColleagueOutTests(TestCase):
+    """
+    Locked by name alone, ten wrong guesses at a colleague's user name
+    from any desk kept them out of the system. The lock is now the name
+    from that address; an address trying many names, and a name tried
+    from many addresses, lock at limits of their own.
+    """
+
+    def setUp(self):
+        from django.test import RequestFactory
+
+        self.user = User.objects.create_user("accounts", password="right-horse-battery")
+        self.factory = RequestFactory()
+
+    def attempt(self, address, password="wrong", username="accounts", **headers):
+        request = self.factory.post("/accounts/login/", REMOTE_ADDR=address, **headers)
+        return authenticate(request, username=username, password=password)
+
+    def test_ten_wrong_from_one_desk_do_not_lock_the_owner_at_theirs(self):
+        for _ in range(10):
+            self.attempt("10.0.0.66")
+        self.assertIsNone(self.attempt("10.0.0.66", password="right-horse-battery"))
+        self.assertEqual(self.attempt("10.0.0.12", password="right-horse-battery"), self.user)
+
+    def test_one_address_trying_name_after_name_is_locked(self):
+        for number in range(50):
+            self.attempt("10.0.0.66", username=f"guess-{number}")
+        # Never tried this name from there, and still refused.
+        self.assertIsNone(self.attempt("10.0.0.66", password="right-horse-battery"))
+        self.assertEqual(self.attempt("10.0.0.12", password="right-horse-battery"), self.user)
+
+    def test_one_name_tried_from_many_addresses_is_locked_everywhere(self):
+        for number in range(100):
+            self.attempt(f"10.0.{number // 5}.{number % 5 + 1}")
+        self.assertIsNone(self.attempt("10.9.9.9", password="right-horse-battery"))
+        later = timezone.now() + datetime.timedelta(minutes=16)
+        with mock.patch("django.utils.timezone.now", return_value=later):
+            self.assertEqual(self.attempt("10.9.9.9", password="right-horse-battery"), self.user)
+
+    def test_behind_the_proxy_the_address_is_the_one_the_proxy_saw(self):
+        with override_settings(TRUSTED_PROXIES=1):
+            # The caller wrote the first entry; the proxy added the last.
+            for spoof in range(10):
+                self.attempt("172.18.0.5", HTTP_X_FORWARDED_FOR=f"1.1.1.{spoof}, 10.0.0.66")
+            self.assertIsNone(self.attempt("172.18.0.5", password="right-horse-battery",
+                                           HTTP_X_FORWARDED_FOR="10.0.0.66"))
+            self.assertEqual(self.attempt("172.18.0.5", password="right-horse-battery",
+                                          HTTP_X_FORWARDED_FOR="10.0.0.12"), self.user)
+
+    def test_without_a_trusted_proxy_the_header_is_ignored(self):
+        for spoof in range(10):
+            self.attempt("10.0.0.66", HTTP_X_FORWARDED_FOR=f"1.1.1.{spoof}")
+        self.assertIsNone(self.attempt("10.0.0.66", password="right-horse-battery",
+                                       HTTP_X_FORWARDED_FOR="9.9.9.9"))

@@ -1425,6 +1425,12 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         help_text="Money taken up front against an order, held as a liability "
                   "until the goods are delivered.",
     )
+    is_opening_balance = models.BooleanField(
+        default=False, editable=False,
+        help_text="Brought in at go-live (import_csv open_invoices): what the old "
+                  "system's invoice still had owing. A supply that system already "
+                  "reported, so no GST return or e-invoice here counts it.",
+    )
     written_off_amount = models.DecimalField(
         max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
         help_text="Receivable judged uncollectable and charged to bad debt.",

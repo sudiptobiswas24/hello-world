@@ -7,16 +7,28 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
-from apps.core.api import record_or_404
+from apps.core.api import record_or_404, whole_number
 from apps.core.audit import AuditableViewSetMixin
 
-from .models import Department, Employee, LeaveRequest, leave_summary
+from .models import Department, Employee, LeavePolicy, LeaveRequest, leave_summary
 
 
 def _employee_of(user):
     """The employee a login belongs to, or None."""
     return Employee.objects.filter(user=user).first() if user.is_authenticated else None
-from .serializers import DepartmentSerializer, EmployeeSerializer, LeaveRequestSerializer
+
+
+def me_as_employee(user):
+    """For /api/core/me/: the employee this login is, so a screen can say "mine"."""
+    employee = _employee_of(user)
+    return {"employee": employee.pk if employee else None,
+            "employee_name": employee.party.name if employee else ""}
+from .serializers import (
+    DepartmentSerializer,
+    EmployeeSerializer,
+    LeavePolicySerializer,
+    LeaveRequestSerializer,
+)
 
 
 class DepartmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -24,15 +36,24 @@ class DepartmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = DepartmentSerializer
 
 
+class LeavePolicyViewSet(viewsets.ReadOnlyModelViewSet):
+    """The allowances a leave request may draw on: read here, kept in the admin."""
+
+    queryset = LeavePolicy.objects.order_by("code")
+    serializer_class = LeavePolicySerializer
+
+
 class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Employee.objects.all()
+    queryset = Employee.objects.select_related("party")
     serializer_class = EmployeeSerializer
 
     @action(detail=True, methods=["get"], url_path="leave")
     def leave(self, request, pk=None):
         """Every allowance this person has, and where each stands."""
         employee = self.get_object()
-        year = int(request.query_params.get("year") or timezone.now().year)
+        # The plant's year, and a typed one refused in words: int() of
+        # "2026a" was a 500, and timezone.now() is UTC's day.
+        year = whole_number(request.query_params, "year", default=timezone.localdate().year, least=2000)
         return Response([
             {
                 "policy": row["policy"].code,
@@ -47,7 +68,11 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = LeaveRequest.objects.all()
+    search_fields = ["employee__party__name", "employee__employee_number", "reason"]
+    filter_fields = ["status", "employee", "leave_type", "policy"]
+    date_field = "start_date"
+    ordering_fields = ["start_date", "end_date", "status"]
+    queryset = LeaveRequest.objects.select_related("employee__party", "decided_by__party", "policy")
     serializer_class = LeaveRequestSerializer
     action_permission_map = {
         "approve": "hr.decide_leaverequest",
@@ -80,6 +105,10 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                     "Your login is not linked to an employee: HR links it on your record."]})
         super().perform_create(serializer)
 
+    @staticmethod
+    def _as_hr(request):
+        return request.user.has_perm("hr.decide_unmanaged_leaverequest")
+
     def _decider(self, request):
         """
         The signed-in person, as the employee they are. An administrator
@@ -101,7 +130,7 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def approve(self, request, pk=None):
         leave_request = self.get_object()
         try:
-            leave_request.approve(by=self._decider(request))
+            leave_request.approve(by=self._decider(request), as_hr=self._as_hr(request))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(leave_request).data)
@@ -110,7 +139,8 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def reject(self, request, pk=None):
         leave_request = self.get_object()
         try:
-            leave_request.reject(by=self._decider(request), reason=request.data.get("reason"))
+            leave_request.reject(by=self._decider(request), reason=request.data.get("reason"),
+                                 as_hr=self._as_hr(request))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(leave_request).data)

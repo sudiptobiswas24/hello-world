@@ -5,8 +5,11 @@ db.sqlite3
 *.log
 .env
 staticfiles/
-backups/
-imports/
+# The server's backups and the files waiting to be imported, next to
+# docker-compose.yml. Anchored: unanchored, imports/ also hid the
+# importer's own code in apps/imports/.
+/backups/
+/imports/
 
 # The office application, built by `npm run build` in frontend/ or by the image.
 apps/web/static/web/

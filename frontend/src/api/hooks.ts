@@ -17,11 +17,13 @@ export function useRecord<T>(endpoint: string, id: string | number | undefined) 
  * A short master list read whole and kept: taxes, warehouses, currencies,
  * payment terms. Not for anything that grows with the business.
  */
-export function useReference<T>(endpoint: string, query?: Query) {
+export function useReference<T>(endpoint: string, query?: Query, enabled = true) {
   return useQuery<T[], ApiError>({
     queryKey: ["reference", endpoint, query],
     queryFn: async ({ signal }) => (await list<T>(endpoint, { page_size: 500, ...query }, signal)).rows,
     staleTime: 10 * 60_000,
+    // Asked only of someone who may read it: a 403 on every open is a fault.
+    enabled,
   });
 }
 

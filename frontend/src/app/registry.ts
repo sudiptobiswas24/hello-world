@@ -185,9 +185,14 @@ export const MODULES: Module[] = [
   },
   {
     key: "payroll",
-    label: "Payroll",
+    label: "People",
     icon: "people",
     screens: [
+      {
+        path: "leave", label: "Leave", permission: "hr.view_leaverequest", create: "hr.add_leaverequest",
+        keywords: "holiday absence time off vacation sick", load: () => import("../modules/payroll/LeaveList"),
+        detail: () => import("../modules/payroll/LeaveForm"),
+      },
       {
         path: "runs", label: "Pay runs", permission: "hr.view_payrun", create: "hr.add_payrun",
         keywords: "salary wages payslip", load: () => import("../modules/payroll/PayRuns"),

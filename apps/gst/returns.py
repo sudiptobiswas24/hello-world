@@ -199,9 +199,12 @@ def _refuse_unrecorded(queryset, what):
 def _invoices(start, end, state):
     # Down payments carry no GST — none is due on an advance for goods —
     # and neither do the credit notes that give one back.
+    # Nor do opening balances brought in at go-live: the old system
+    # reported those supplies, in returns already filed.
     queryset = Invoice.objects.filter(
-        posted=True, is_down_payment=False, invoice_date__gte=start, invoice_date__lte=end,
-    ).exclude(credits__is_down_payment=True)
+        posted=True, is_down_payment=False, is_opening_balance=False,
+        invoice_date__gte=start, invoice_date__lte=end,
+    ).exclude(credits__is_down_payment=True).exclude(credits__is_opening_balance=True)
     _refuse_unrecorded(queryset, "invoices and credit notes")
     queryset = queryset.select_related("credits").prefetch_related(
         "lines__recorded_taxes__tax", "lines__item__uom__gst_uqc",
@@ -217,8 +220,9 @@ def _bills(start, end, state):
     # neither is the debit note that gives one back. Counted, its lines
     # carry no tax and read as exempt purchases, netted out of table 5.
     queryset = Bill.objects.filter(
-        posted=True, is_prepayment=False, bill_date__gte=start, bill_date__lte=end,
-    ).exclude(debits__is_prepayment=True)
+        posted=True, is_prepayment=False, is_opening_balance=False,
+        bill_date__gte=start, bill_date__lte=end,
+    ).exclude(debits__is_prepayment=True).exclude(debits__is_opening_balance=True)
     _refuse_unrecorded(queryset, "bills and debit notes")
     queryset = queryset.prefetch_related("lines__recorded_taxes__tax").order_by("bill_date", "number")
     return [_document(bill, bill.bill_date, state, bill.is_debit_note()) for bill in queryset]

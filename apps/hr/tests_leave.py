@@ -525,3 +525,24 @@ class OnlyTheirManagersDecideTests(LeaveTestCase):
         booking.refresh_from_db()
         self.assertEqual(booking.status, LeaveStatus.APPROVED)
 
+
+
+class HrDecidesForSomeoneNobodyManagesTests(LeaveTestCase):
+    """Someone with no manager could never have leave decided. HR fills the gap, and only the gap."""
+
+    def booking(self, person):
+        return self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
+
+    def test_hr_decides_for_someone_with_no_manager_and_no_department_manager(self):
+        hr = self.employee("HR-1", manager=None)
+        loner = self.booking(self.employee("L-1", manager=None))
+        with self.assertRaisesMessage(ValidationError, "does not manage"):
+            loner.approve(by=hr)
+        loner.approve(by=hr, as_hr=True)
+        self.assertEqual((loner.status, loner.decided_by), (LeaveStatus.APPROVED, hr))
+
+    def test_hr_does_not_overrule_a_manager_who_exists(self):
+        hr = self.employee("HR-2", manager=None)
+        managed = self.booking(self.employee("L-2"))  # reports to self.boss
+        with self.assertRaisesMessage(ValidationError, "does not manage"):
+            managed.approve(by=hr, as_hr=True)
