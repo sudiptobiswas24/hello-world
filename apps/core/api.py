@@ -12,8 +12,21 @@ One handler rather than a try/except at every write, because the rules
 live in save() and there is no list of the places that call it.
 """
 
+import logging
+import re
+from decimal import Decimal
+
+from django.apps import apps as django_apps
+from django.core.exceptions import FieldDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q
+from django.db import IntegrityError
+from django.db.models import (
+    CheckConstraint,
+    ProtectedError,
+    Q,
+    RestrictedError,
+    UniqueConstraint,
+)
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.filters import BaseFilterBackend, OrderingFilter, SearchFilter
 from rest_framework.pagination import PageNumberPagination
@@ -21,6 +34,8 @@ from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
 from apps.core.models import to_date
+
+logger = logging.getLogger(__name__)
 
 
 def exception_handler(exc, context):
@@ -37,7 +52,100 @@ def exception_handler(exc, context):
             })
         else:
             exc = DRFValidationError(exc.messages if hasattr(exc, "messages") else [str(exc)])
+    elif isinstance(exc, (ProtectedError, RestrictedError)):
+        # Deleting what other records still point at: a customer with
+        # invoices, a warehouse with stock movements.
+        users = sorted({f"{type(row)._meta.verbose_name_plural}" for row in exc.protected_objects
+                        } if isinstance(exc, ProtectedError) else {
+                        f"{type(row)._meta.verbose_name_plural}" for row in exc.restricted_objects})
+        exc = DRFValidationError({"non_field_errors": [
+            f"Still used by {', '.join(users) or 'other records'}, so it cannot be deleted. "
+            "Archive it instead, where it can be archived."]})
+    elif isinstance(exc, IntegrityError):
+        # A rule the database holds that nothing in Python asked first: a
+        # serializer never runs check constraints. Refused in words, beside
+        # the field where the rule is about one, rather than a 500. Logged,
+        # because a posting of our own breaking one is a bug to find.
+        logger.warning("The database refused a write: %s", exc)
+        exc = DRFValidationError(refused_by_database(exc))
     return drf_exception_handler(exc, context)
+
+
+COMPARISONS = {"gt": "more than", "gte": "at least", "lt": "less than", "lte": "at most"}
+
+
+def _constraint(name):
+    for model in django_apps.get_models():
+        for constraint in model._meta.constraints:
+            if constraint.name == name:
+                return model, constraint
+    return None, None
+
+
+def _label(model, field_name):
+    try:
+        return str(model._meta.get_field(field_name).verbose_name)
+    except FieldDoesNotExist:
+        return field_name.replace("_", " ")
+
+
+def refused_by_database(error):
+    """{field: [sentence]} for a constraint the database enforced."""
+    text = str(error)
+    # PostgreSQL: Key (code)=(C-1) already exists. SQLite: UNIQUE
+    # constraint failed: core_party.code.
+    unique = re.search(r"Key \((\w+)(?:, [^)]*)?\)=", text) or re.search(
+        r"UNIQUE constraint failed: \w+\.(\w+)", text)
+    if unique:
+        field = unique.group(1)
+        return {field: [f"Another record already has this {field.replace('_', ' ')}."]}
+    named = re.search(r'constraint(?: failed)?:? "?(\w+)"?', text)
+    model, constraint = _constraint(named.group(1)) if named else (None, None)
+    if isinstance(constraint, CheckConstraint):
+        check = getattr(constraint, "condition", None) or getattr(constraint, "check", None)
+        if isinstance(check, Q) and not check.negated and len(check.children) == 1 \
+                and isinstance(check.children[0], tuple):
+            path, value = check.children[0]
+            field, _, lookup = path.partition("__")
+            if lookup in COMPARISONS and isinstance(value, (int, Decimal)):
+                label = _label(model, field)
+                return {field: [f"{label[:1].upper()}{label[1:]} must be {COMPARISONS[lookup]} {value}."]}
+    if isinstance(constraint, UniqueConstraint):
+        return {"non_field_errors": ["Another record already has these details."]}
+    rule = named.group(1).replace("_", " ") if named else "a rule of the database"
+    return {"non_field_errors": [f"Refused: that breaks {rule}."]}
+
+
+def quantities_by_line(requested, lines, document):
+    """
+    {"<line id>": "3"} from a request, as {line: Decimal}: part of a
+    document to credit, debit or send back. None when nothing was asked,
+    which means all of it.
+
+    One reading for every correction that can be partial. Purchasing's
+    debit note and goods return took none at all while the sales mirrors
+    did, so a screen offering part sent back the whole.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    if not requested:
+        return None
+    if not isinstance(requested, dict):
+        raise DRFValidationError({"quantities": ['Give them by line: {"<line id>": "3"}.']})
+    by_id = {str(line.pk): line for line in lines}
+    chosen = {}
+    for line_id, quantity in requested.items():
+        line = by_id.get(str(line_id))
+        if line is None:
+            raise DRFValidationError({"quantities": [f"Line {line_id} is not on this {document}."]})
+        try:
+            value = Decimal(str(quantity).strip())
+        except (InvalidOperation, ValueError):
+            value = None
+        if value is None or not value.is_finite():
+            raise DRFValidationError({"quantities": [f"{quantity!r} is not a quantity."]})
+        chosen[line] = value
+    return chosen
 
 
 TRUE = {"true", "1", "yes", "on"}

@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 /**
  * One box on a form: its label, the box, and what the server said is
@@ -47,6 +47,65 @@ export function DecimalInput({ value, onChange, places = 4, allowNegative = fals
       onChange={(event) => {
         const next = event.target.value.replace(/,/g, "");
         if (pattern.test(next)) onChange(next);
+      }}
+    />
+  );
+}
+
+/** A stored decimal shown without its padding: "10.0000" reads 10. */
+export function trimDecimal(value: string): string {
+  return value.includes(".") ? value.replace(/\.?0+$/, "") : value;
+}
+
+/**
+ * A figure changed where it stands and saved when the box is left, if it
+ * changed: compared with what was saved, not with what is shown, or a
+ * figure the person retyped to the same value would never commit.
+ */
+export function CommitDecimal({ value, onCommit, places = 4, label }: {
+  value: string; onCommit: (value: string) => void; places?: number; label: string;
+}) {
+  const [typed, setTyped] = useState<string | null>(null);
+  const saved = trimDecimal(value);
+  return (
+    <DecimalInput
+      className="cell-input"
+      aria-label={label}
+      places={places}
+      value={typed ?? saved}
+      onChange={setTyped}
+      onBlur={() => {
+        if (typed !== null && typed !== saved) onCommit(typed);
+        setTyped(null);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+        if (event.key === "Escape") setTyped(null);
+      }}
+    />
+  );
+}
+
+/** The same for words: a batch number typed where the line stands. */
+export function CommitText({ value, onCommit, label, placeholder }: {
+  value: string; onCommit: (value: string) => void; label: string; placeholder?: string;
+}) {
+  const [typed, setTyped] = useState<string | null>(null);
+  return (
+    <input
+      className="cell-input text"
+      aria-label={label}
+      placeholder={placeholder}
+      autoComplete="off"
+      value={typed ?? value}
+      onChange={(event) => setTyped(event.target.value)}
+      onBlur={() => {
+        if (typed !== null && typed.trim() !== value) onCommit(typed.trim());
+        setTyped(null);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+        if (event.key === "Escape") setTyped(null);
       }}
     />
   );

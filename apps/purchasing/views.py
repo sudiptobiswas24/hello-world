@@ -6,6 +6,8 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
 from apps.accounting.defaults import chosen_or_default
+from apps.core.api import flag, quantities_by_line
+from apps.inventory.models import Warehouse
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
@@ -24,8 +26,10 @@ from .models import (
     PurchaseOrderLine,
     ap_aging,
     billed_not_held,
+    bills_still_owed,
     consignment_on_hand,
     draw_consignment,
+    orders_to_receive,
     payment_run,
     raise_reorder_requisition,
     reorder_suggestions,
@@ -47,7 +51,7 @@ from .serializers import (
 def _order_lines():
     """Order lines with what their received and billed quantities read."""
     return with_line_figures(
-        PurchaseOrderLine.objects.select_related("item", "uom").prefetch_related(
+        PurchaseOrderLine.objects.select_related("item", "uom", "charge").prefetch_related(
             "taxes", "components")
     )
 
@@ -63,17 +67,62 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ).prefetch_related(Prefetch("lines", queryset=_order_lines()))
     serializer_class = PurchaseOrderSerializer
     action_permission_map = {
+        "receive": "purchasing.add_goodsreceipt",
+        "approve": "purchasing.approve_purchaseorder",
         "create_bill": "purchasing.add_bill",
         "prepayment": "purchasing.add_bill",
         "confirm": "purchasing.change_purchaseorder",
         "cancel": "purchasing.change_purchaseorder",
     }
 
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # ?to_receive=true: confirmed, with goods still to come.
+        if flag(self.request.query_params, "to_receive", False):
+            queryset = queryset.filter(pk__in=orders_to_receive(queryset))
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def receive(self, request, pk=None):
+        """{receipt_date?, warehouse?}: a draft receipt of what is still to come."""
+        order = self.get_object()
+        warehouse = request.data.get("warehouse")
+        receipt = order.create_receipt(
+            receipt_date=request.data.get("receipt_date"),
+            warehouse=get_object_or_404(Warehouse, pk=warehouse) if warehouse else None,
+        )
+        return Response(GoodsReceiptSerializer(receipt).data, status=201)
+
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         order = self.get_object()
         try:
             order.confirm()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(order).data)
+
+    @action(detail=True, methods=["get"])
+    def approval(self, request, pk=None):
+        """What, if anything, is holding this order up."""
+        order = self.get_object()
+        return Response({
+            "status": order.approval_status(),
+            "reasons": order.approval_reasons(),
+            "approved_by": str(order.approved_by) if order.approved_by_id else None,
+            "approved_at": order.approved_at,
+        })
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        """
+        Sign off what breaches the policy. Who may sign for how much is the
+        order's own check (its tiers), not this view's. The mirror of sales:
+        purchasing had the permission and the tiers and no way to use them.
+        """
+        order = self.get_object()
+        try:
+            order.approve(by=request.user, note=request.data.get("note", ""))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(order).data)
@@ -145,12 +194,20 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Bill.objects.select_related(
         "vendor__tax_profile", "currency", "payment_terms", "debits"
-    ).prefetch_related(*BILL_FIGURES)
+    ).prefetch_related(*BILL_FIGURES, "lines__item", "lines__charge")
     serializer_class = BillSerializer
     action_permission_map = {
         "post_bill": "purchasing.post_bill",
         "debit_note": "purchasing.post_bill",
     }
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # ?open=true: posted bills that still owe the vendor, as amount_due()
+        # reckons it.
+        if flag(self.request.query_params, "open", False):
+            queryset = queryset.filter(pk__in=bills_still_owed(queryset))
+        return queryset
 
     @action(detail=True, methods=["post"])
     def post_bill(self, request, pk=None):
@@ -163,9 +220,15 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def debit_note(self, request, pk=None):
+        """
+        Debit the whole bill, or pass {"quantities": {"<bill_line_id>": "3"}}
+        to give back part of it.
+        """
         bill = self.get_object()
+        quantities = quantities_by_line(request.data.get("quantities"), bill.lines.all(), "bill")
         try:
-            debit_note = bill.create_debit_note(memo=request.data.get("memo", ""))
+            debit_note = bill.create_debit_note(memo=request.data.get("memo", ""),
+                                                quantities=quantities)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(debit_note).data)
@@ -176,6 +239,8 @@ class BillPaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     Which bill a payment settles. Only the admin could say before review,
     while the sales side had always had its mirror over the API.
     """
+
+    filter_fields = ["bill", "payment"]
 
     queryset = BillPayment.objects.select_related("bill", "payment")
     serializer_class = BillPaymentSerializer
@@ -193,11 +258,13 @@ class BillLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "purchase_order__number", "purchase_order__vendor__code", "purchase_order__vendor__name"]
-    filter_fields = ["purchase_order", "posted", "reverses"]
+    filter_fields = ["purchase_order", "posted", "reverses", "reverses__isnull"]
     date_field = "receipt_date"
     ordering_fields = ["receipt_date", "number"]
 
-    queryset = GoodsReceipt.objects.prefetch_related("lines")
+    queryset = GoodsReceipt.objects.select_related("purchase_order__vendor").prefetch_related(
+        Prefetch("lines", queryset=GoodsReceiptLine.objects.select_related(
+            "order_line__item", "order_line__charge", "lot")))
     serializer_class = GoodsReceiptSerializer
     action_permission_map = {
         "post_receipt": "purchasing.post_goodsreceipt",
@@ -215,9 +282,16 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def return_receipt(self, request, pk=None):
+        """
+        Send goods back. Debits the bills that charged for them unless
+        {"debit_bills": false} (a replacement is coming, not a refund);
+        {"quantities": {"<receipt_line_id>": "20"}} sends back part.
+        """
         receipt = self.get_object()
+        quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
+        debit = flag(request.data, "debit_bills", True)
         try:
-            return_receipt = receipt.create_return()
+            return_receipt = receipt.create_return(quantities=quantities, debit_bills=debit)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(return_receipt).data)

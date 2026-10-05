@@ -135,6 +135,35 @@ class DatesInWordsTests(ScreensTestCase):
         self.assertNotIn("['", str(response.json()))
 
 
+class DatabaseRulesInWordsTests(ScreensTestCase):
+    """A rule only the database holds (a check constraint no serializer
+    runs) was a 500. It is a 400 beside the field it is about."""
+
+    def test_a_negative_quantity_on_a_delivery_line(self):
+        order = self.make_order()
+        line = self.ship_order(order, warehouse=self.warehouse.pk).json()["lines"][0]
+        response = self.as_("Warehouse Staff").patch(
+            f"/api/sales/delivery-lines/{line['id']}/", {"quantity_shipped": "-2"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertEqual(response.json(), {"quantity_shipped": ["Quantity shipped must be more than 0."]})
+        self.assertEqual(order.deliveries.get().lines.get().quantity_shipped, Decimal("10"))
+
+
+class DeletingWhatIsUsedTests(ScreensTestCase):
+    def test_a_customer_with_orders_is_refused_in_words(self):
+        from django.contrib.auth.models import Permission
+
+        self.make_order()
+        user = User.objects.create_user("tidier")
+        user.user_permissions.set(Permission.objects.filter(codename__in=["delete_party", "view_party"]))
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.delete(f"/api/core/parties/{self.customer.pk}/")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("Still used by", str(response.json()))
+        self.assertTrue(Party.objects.filter(pk=self.customer.pk).exists())
+
+
 class ShipTests(ScreensTestCase):
     def test_drafts_what_is_owed_and_moves_nothing(self):
         order = self.make_order(quantity="10")

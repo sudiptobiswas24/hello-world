@@ -57,10 +57,17 @@ class ItemSerializer(serializers.ModelSerializer):
 
 
 class StockMovementSerializer(serializers.ModelSerializer):
+    # Named, so the stock ledger reads without a call per row.
+    item_sku = serializers.CharField(source="item.sku", read_only=True)
+    item_name = serializers.CharField(source="item.name", read_only=True)
+    warehouse_code = serializers.CharField(source="warehouse.code", read_only=True)
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+
     class Meta:
         model = StockMovement
         fields = [
-            "id", "item", "warehouse", "movement_type", "uom", "lot", "bin",
+            "id", "item", "item_sku", "item_name", "warehouse", "warehouse_code",
+            "movement_type", "uom", "lot", "lot_code", "bin",
             "quantity", "document_quantity", "unit_cost", "value_adjustment",
             "adjusts", "reference", "occurred_at", "notes",
         ]

@@ -55,6 +55,7 @@ from apps.accounting.settlement import (
     amount_overdue,
     installment_schedule,
     oldest_overdue,
+    owed_beyond,
     post_drawdown,
     post_settlement_fx,
 )
@@ -1493,6 +1494,41 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return FulfilmentStatus.PARTIAL
 
     @transaction.atomic
+    def create_receipt(self, receipt_date=None, warehouse=None):
+        """
+        What is still to come on this order, as a draft receipt to cut down
+        to what is on the lorry, name the batches of, and post. The mirror
+        of sales' SalesOrder.create_delivery(): one waiting at a time, as a
+        second draft for the same goods would receive them twice on paper.
+
+        Each line arrives at the warehouse it names, else `warehouse`; a
+        line with neither is refused by name rather than guessed at.
+        """
+        lock_rows(self)
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can be received against.")
+        waiting = self.goods_receipts.filter(posted=False, reverses__isnull=True).first()
+        if waiting is not None:
+            raise ValidationError(
+                f"Receipt {waiting.number or 'draft'} for this order is already waiting. "
+                "Post it, or delete it, first.")
+        owed = [(line, line.quantity_open()) for line in self.lines.select_related("item")]
+        owed = [(line, quantity) for line, quantity in owed if quantity > 0]
+        if not owed:
+            raise ValidationError("Nothing is left to receive on this order.")
+        for line, _ in owed:
+            if not line.warehouse_id and warehouse is None:
+                raise ValidationError({"warehouse": [
+                    f"Say which warehouse {line.label()} arrives at: the line names none."]})
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=self, receipt_date=to_date(receipt_date) or timezone.localdate())
+        for line, quantity in owed:
+            GoodsReceiptLine.objects.create(receipt=receipt, order_line=line,
+                                            warehouse=line.warehouse or warehouse,
+                                            quantity_received=quantity)
+        return receipt
+
+    @transaction.atomic
     def create_bill(self, payable_account, bill_date=None, reference=""):
         """
         Draft a bill for whatever this order still owes the vendor,
@@ -2110,6 +2146,12 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
     def is_fully_received(self):
         return self.quantity_received() >= self.quantity
+
+    def quantity_open(self):
+        """What is still to come from the vendor: nothing for a charge."""
+        if self.charge_id is not None:
+            return Decimal("0")
+        return max(self.quantity - self.quantity_received(), Decimal("0"))
 
     def quantity_billed(self):
         """Net quantity billed: posted bills minus posted debit notes."""
@@ -4041,6 +4083,55 @@ def not_paid_in_full(bills):
     ).exclude(posted_total__isnull=False, standing_paid__gte=models.F("posted_total"))
 
 
+def bills_still_owed(bills):
+    """
+    The pks of `bills` that still owe the vendor money: posted bills, not
+    debit notes, whose amount_due() is above nothing. The mirror of sales'
+    still_owed(), decided by the same owed_beyond(); tests_screens_api
+    holds it to amount_due().
+    """
+    owed = owed_beyond(
+        not_paid_in_full(bills.filter(posted=True, debits__isnull=True)),
+        notes=(Bill.objects.filter(posted=True), "debits"),
+        drawdowns=(PrepaymentApplication.objects.all(), "bill"),
+        reductions=("settlement_discount_amount",),
+    )
+    unrecorded = bills.filter(posted=True, debits__isnull=True, posted_total__isnull=True)
+    return list(owed.values_list("pk", flat=True)) + [
+        bill.pk for bill in unrecorded.prefetch_related(*BILL_FIGURES) if bill.amount_due() > 0]
+
+
+def not_received_in_full(lines):
+    """
+    Order lines that may still owe goods: not charges, and less received
+    (posted receipts, less posted returns) than ordered. Narrows what the
+    database hands back; quantity_open() decides each.
+    """
+    from django.db.models import DecimalField, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    def received(returns):
+        moved = GoodsReceiptLine.objects.filter(
+            order_line=OuterRef("pk"), receipt__posted=True,
+            receipt__reverses__isnull=not returns,
+        ).values("order_line").annotate(total=models.Sum("quantity_received")).values("total")
+        return Coalesce(Subquery(moved), Value(Decimal("0")),
+                        output_field=DecimalField(max_digits=18, decimal_places=4))
+
+    return lines.filter(charge__isnull=True).annotate(
+        net_received=received(False) - received(True)
+    ).exclude(net_received__gte=models.F("quantity"))
+
+
+def orders_to_receive(orders):
+    """The pks of confirmed `orders` with goods still to come (quantity_open)."""
+    lines = not_received_in_full(PurchaseOrderLine.objects.filter(
+        order__in=orders.filter(status=OrderStatus.CONFIRMED)))
+    return sorted({line.order_id for line in lines.prefetch_related(
+        models.Prefetch("receipt_lines", queryset=GoodsReceiptLine.objects.select_related("receipt")))
+        if line.quantity_open() > 0})
+
+
 def _billed_beyond_received(lines):
     """
     Only the lines billed for more than they now hold.
@@ -4342,13 +4433,8 @@ class GoodsReceipt(AuditModel):
     Closes the loop between Purchasing and Inventory: posting a receipt
     creates real StockMovement rows. Same posted/immutable/reversal
     pattern as JournalEntry/Invoice/Bill — a mistaken receipt is corrected
-    with create_return(), which reverses the whole receipt (same lines,
+    with create_return(), which sends back all of it or part (same lines,
     opposite stock effect), never by editing a posted receipt.
-
-    Only whole-receipt reversal is supported, not partial-quantity
-    returns — that mirrors how JournalEntry.create_reversal() and the
-    Sales/Purchasing credit/debit notes work, and keeps this from needing
-    its own separate partial-correction design.
     """
 
     number = models.CharField(max_length=32, blank=True, editable=False)

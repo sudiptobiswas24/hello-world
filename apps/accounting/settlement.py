@@ -204,3 +204,44 @@ def oldest_overdue(schedule, as_of):
         if row["outstanding"] > 0 and row["due_date"] < as_of:
             return row
     return None
+
+
+def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
+    """
+    Of `candidates`, the posted documents whose amount_due() is above
+    nothing, decided in the database. Sales and purchasing both ask it.
+
+    amount_due() is the posted total less what was settled otherwise
+    (standing payments, drawdowns of a deposit or prepayment, and the
+    document's own `reductions`: a discount, a write-off) less what its
+    notes corrected, the correction taken only down to nothing. So it is
+    above nothing exactly when the total is more than all of them
+    together.
+
+    `candidates` comes annotated with `standing_paid` (each side's
+    not_paid_in_full); `notes` and `drawdowns` are (queryset, field
+    pointing at the document). Documents with no posted total recorded
+    are left out: their side asks amount_due() of each itself.
+    """
+    from django.db import models
+    from django.db.models import DecimalField, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    money = DecimalField(max_digits=18, decimal_places=2)
+    zero = Value(Decimal("0"))
+
+    def total_of(rows, pointer, field):
+        summed = rows.filter(**{pointer: OuterRef("pk")}).values(pointer).annotate(
+            total=models.Sum(field)).values("total")
+        return Coalesce(Subquery(summed), zero, output_field=money)
+
+    note_rows, note_pointer = notes
+    drawn_rows, drawn_pointer = drawdowns
+    settled = (models.F("standing_paid") + models.F("corrected_total")
+               + models.F("drawn_total"))
+    for name in reductions:
+        settled = settled + Coalesce(models.F(name), zero, output_field=money)
+    return candidates.annotate(
+        corrected_total=total_of(note_rows, note_pointer, "posted_total"),
+        drawn_total=total_of(drawn_rows, drawn_pointer, "amount"),
+    ).filter(posted_total__isnull=False, posted_total__gt=settled)

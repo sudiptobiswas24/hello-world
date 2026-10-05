@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag
+from apps.core.api import flag, quantities_by_line
 
 from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
@@ -362,19 +362,7 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         {"quantities": {"<invoice_line_id>": "3"}} to credit part of it.
         """
         invoice = self.get_object()
-        requested = request.data.get("quantities")
-        quantities = None
-        if requested:
-            lines = {str(line.pk): line for line in invoice.lines.all()}
-            try:
-                quantities = {
-                    lines[str(line_id)]: Decimal(str(quantity))
-                    for line_id, quantity in requested.items()
-                }
-            except KeyError as exc:
-                raise DRFValidationError(f"Line {exc} is not on this invoice.")
-            except (InvalidOperation, TypeError):
-                raise DRFValidationError("Quantities must be numbers.")
+        quantities = quantities_by_line(request.data.get("quantities"), invoice.lines.all(), "invoice")
         try:
             credit_note = invoice.create_credit_note(
                 memo=request.data.get("memo", ""), quantities=quantities
@@ -448,18 +436,7 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         delivery = self.get_object()
         credit = flag(request.data, "credit_invoices", True)
-        quantities = None
-        requested = request.data.get("quantities")
-        if requested:
-            # {"<delivery_line_id>": "20"}: part of it back.
-            lines = {str(line.pk): line for line in delivery.lines.all()}
-            try:
-                quantities = {lines[str(line_id)]: Decimal(str(quantity))
-                              for line_id, quantity in requested.items()}
-            except KeyError as exc:
-                raise DRFValidationError(f"Line {exc} is not on this delivery.")
-            except (InvalidOperation, TypeError, AttributeError):
-                raise DRFValidationError("Quantities must be numbers, by delivery line.")
+        quantities = quantities_by_line(request.data.get("quantities"), delivery.lines.all(), "delivery")
         try:
             returned = delivery.create_return(credit_invoices=credit, quantities=quantities)
         except DjangoValidationError as exc:

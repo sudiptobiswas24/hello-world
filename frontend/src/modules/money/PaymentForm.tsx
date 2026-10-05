@@ -1,0 +1,237 @@
+import { useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router";
+
+import { useAct, useRecord, useRows } from "../../api/hooks";
+import { useAccess } from "../../auth/me";
+import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
+import { DecimalInput, Field, today } from "../../forms/fields";
+import { useDraft } from "../../forms/useDraft";
+import { least, minus, positive, sum } from "../../lib/decimal";
+import { date, money } from "../../lib/format";
+import { ErrorPanel } from "../../shell/ErrorPanel";
+import { PartyPicker, type PartyRole } from "../../forms/PartyPicker";
+
+interface Payment {
+  id: number;
+  number: string;
+  party: number | null;
+  party_name: string;
+  payment_date: string;
+  amount: string;
+  reference: string;
+  memo: string;
+  posted: boolean;
+  voided: boolean;
+  [key: string]: unknown;
+}
+
+interface Allocation {
+  id: number;
+  invoice?: number;
+  invoice_number?: string;
+  bill?: number;
+  bill_number?: string;
+  payment: number;
+  amount: string;
+}
+
+interface OpenInvoice {
+  id: number;
+  number: string;
+  invoice_date: string;
+  due_date: string | null;
+  amount_due: string;
+}
+
+const ENDPOINT = "/api/accounting/payments/";
+
+/** Which way the money went, and what it is put against. */
+export interface MoneyConfig {
+  direction: "receipt" | "disbursement";
+  role: PartyRole;
+  base: string; // "/sales/receipts"
+  plural: string; // "Money received"
+  noun: string; // "receipt"
+  dateLabel: string; // "Received on"
+  /** The documents it settles: invoices, or bills. */
+  field: "invoice" | "bill";
+  documents: string; // "/api/sales/invoices/"
+  documentHref: (id: number) => string;
+  allocations: string; // "/api/sales/invoice-payments/"
+  /** The permissions on allocations and on the documents, in that app. */
+  app: "sales" | "purchasing";
+}
+
+/**
+ * Money a customer paid, or money paid to a vendor: recorded, posted to
+ * the bank, then applied to the invoices or bills it settles. What is
+ * applied can be moved later; what was posted cannot be edited, only
+ * voided (a bounced cheque), which puts the documents back to owing.
+ */
+export function PaymentForm({ config }: { config: MoneyConfig }) {
+  const { id } = useParams();
+  const [params] = useSearchParams();
+  const isNew = id === "new";
+  const navigate = useNavigate();
+  const { can } = useAccess();
+  const record = useRecord<Payment>(ENDPOINT, id);
+  const payment = record.data;
+  const presetParty = Number(params.get(config.role)) || null;
+  const draft = useDraft<Payment>(isNew ? ({ party: presetParty, payment_date: today(), amount: "", reference: "" } as unknown as Payment) : payment);
+  const act = useAct<Payment>();
+
+  if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
+  if (!isNew && !payment) return <div className="loading">Opening…</div>;
+
+  const value = draft.value;
+  const editable = isNew || (!payment!.posted && can("accounting.change_payment"));
+
+  const record_ = async (andPost: boolean) => {
+    const outcome = isNew
+      ? await act.run("POST", ENDPOINT, {
+          party: value.party, direction: config.direction, payment_date: value.payment_date,
+          amount: value.amount, reference: value.reference,
+        }, { done: `${config.noun[0]!.toUpperCase()}${config.noun.slice(1)} recorded` })
+      : await act.run("PATCH", `${ENDPOINT}${payment!.id}/`, draft.changes, { done: "Saved" });
+    if (!outcome.ok) {
+      draft.failed(outcome.error);
+      return;
+    }
+    draft.reset();
+    const saved = outcome.data;
+    if (andPost) await act.run("POST", `${ENDPOINT}${saved.id}/post_payment/`, {}, { done: `${saved.number || config.noun} posted to the bank` });
+    if (isNew) {
+      const document = params.get(config.field);
+      navigate(`${config.base}/${saved.id}${document ? `?${config.field}=${document}` : ""}`, { replace: true });
+    }
+  };
+
+  const state = payment ? (payment.voided ? "Void" : payment.posted ? "Posted" : "Draft") : undefined;
+  return (
+    <article className="doc">
+      <DocHeader back={config.base} backLabel={config.plural} title={`New ${config.noun}`} number={payment?.number || (payment ? `Draft ${config.noun}` : undefined)}
+        state={state} tone={payment?.voided ? "cancelled" : payment?.posted ? "done" : "draft"}>
+        {editable && (draft.dirty || isNew) && (
+          <>
+            <ActionButton pending={act.pending} onClick={() => void record_(false)}>{isNew ? "Save as draft" : "Save"}</ActionButton>
+            {can("accounting.post_payment") && <ActionButton primary pending={act.pending} onClick={() => void record_(true)}>{isNew ? "Record and post" : "Save and post"}</ActionButton>}
+          </>
+        )}
+        {payment && !payment.posted && !draft.dirty && can("accounting.post_payment") && (
+          <ActionButton primary pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${payment.id}/post_payment/`, {}, { done: "Posted to the bank" })}>Post</ActionButton>
+        )}
+        {payment?.posted && !payment.voided && can("accounting.post_payment") && (
+          <ActionButton danger pending={act.pending} onClick={() => {
+            const memo = window.prompt("Why is it void? (a bounced cheque, a recalled transfer)");
+            if (memo !== null) void act.run("POST", `${ENDPOINT}${payment.id}/void/`, { memo }, { done: `Voided: the ${config.field}s it paid are owed again` });
+          }}>Void</ActionButton>
+        )}
+      </DocHeader>
+      <Sheet>
+        <div className="field-grid">
+          <Field label={config.role === "customer" ? "Customer" : "Vendor"} errors={draft.errors.party}>
+            {(fid) => editable
+              ? <PartyPicker role={config.role} id={fid} value={(value.party as number | null) ?? null} invalid={!!draft.errors.party} onChange={(v) => draft.set("party", v as never)} />
+              : <output id={fid}>{payment?.party_name}</output>}
+          </Field>
+          <Field label={config.dateLabel} errors={draft.errors.payment_date}>
+            {(fid) => editable
+              ? <input id={fid} type="date" value={String(value.payment_date ?? "")} onChange={(e) => draft.set("payment_date", e.target.value as never)} />
+              : <output id={fid}>{date(payment?.payment_date)}</output>}
+          </Field>
+          <Field label="Amount" errors={draft.errors.amount}>
+            {(fid) => editable
+              ? <DecimalInput id={fid} places={2} value={String(value.amount ?? "")} onChange={(v) => draft.set("amount", v as never)} aria-invalid={!!draft.errors.amount} />
+              : <output id={fid} className="figure">{money(payment?.amount)}</output>}
+          </Field>
+          <Field label="Reference" hint="Cheque or UTR number" errors={draft.errors.reference}>
+            {(fid, described) => editable
+              ? <input id={fid} aria-describedby={described} value={String(value.reference ?? "")} onChange={(e) => draft.set("reference", e.target.value as never)} />
+              : <output id={fid}>{payment?.reference || "—"}</output>}
+          </Field>
+        </div>
+        {["bank_account", "counterpart_account", "non_field_errors"].map((key) => draft.errors[key] && (
+          <p key={key} className="form-error" role="alert">{draft.errors[key]!.join(" ")}</p>
+        ))}
+      </Sheet>
+      {payment?.posted && !payment.voided && can(`${config.app}.view_${config.field}payment`) && can(`${config.app}.view_${config.field}`) && (
+        <Apply config={config} payment={payment} highlight={Number(params.get(config.field)) || null} />
+      )}
+    </article>
+  );
+}
+
+/** Putting a posted payment against the invoices or bills it settles. */
+function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: Payment; highlight: number | null }) {
+  const { can } = useAccess();
+  const act = useAct();
+  const applied = useRows<Allocation>(config.allocations, { payment: payment.id });
+  const open = useRows<OpenInvoice>(config.documents, { [config.role]: payment.party, open: "true", ordering: "due_date" }, payment.party !== null);
+  const kind = config.field; // "invoice" | "bill"
+  const [amounts, setAmounts] = useState<Record<number, string>>({});
+  const left = minus(payment.amount, sum((applied.data ?? []).map((row) => row.amount)));
+  const canApply = can(`${config.app}.add_${kind}payment`);
+
+  return (
+    <section className="sheet apply">
+      <header className="apply-head">
+        <h2>Applied to {kind}s</h2>
+        <span className={positive(left) ? "pill pill-open" : "pill pill-done"}>{positive(left) ? `${money(left)} not yet applied` : "All applied"}</span>
+      </header>
+      {applied.data?.length ? (
+        <table>
+          <tbody>
+            {applied.data.map((row) => {
+              const number = row[`${kind}_number`] ?? "";
+              return (
+                <tr key={row.id}>
+                  <td><Link to={config.documentHref(row[kind] as number)}>{number}</Link></td>
+                  <td className="k-money">{money(row.amount)}</td>
+                  <td>{can(`${config.app}.delete_${kind}payment`) && (
+                    <button type="button" className="icon-btn" aria-label={`Take ${number} off this ${config.noun}`} disabled={act.pending}
+                      onClick={() => void act.run("DELETE", `${config.allocations}${row.id}/`, undefined, { done: "Taken off" })}>×</button>
+                  )}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : <p className="muted">Nothing applied yet.</p>}
+
+      {canApply && positive(left) && (
+        <>
+          <h3>Open {kind}s of this {config.role}</h3>
+          {open.data?.length ? (
+            <table>
+              <thead><tr><th scope="col">{kind === "invoice" ? "Invoice" : "Bill"}</th><th scope="col">Due</th><th scope="col" className="k-money">Owed</th><th scope="col" className="k-money">Apply</th><th /></tr></thead>
+              <tbody>
+                {open.data.map((invoice) => {
+                  const suggested = least(invoice.amount_due, left);
+                  const typed = amounts[invoice.id] ?? suggested;
+                  return (
+                    <tr key={invoice.id} className={invoice.id === highlight ? "highlight" : undefined}>
+                      <td><Link to={config.documentHref(invoice.id)}>{invoice.number}</Link></td>
+                      <td>{date(invoice.due_date)}</td>
+                      <td className="k-money">{money(invoice.amount_due)}</td>
+                      <td className="k-money">
+                        <DecimalInput className="cell-input" places={2} aria-label={`Amount to apply to ${invoice.number}`} value={typed}
+                          onChange={(v) => setAmounts({ ...amounts, [invoice.id]: v })} />
+                      </td>
+                      <td>
+                        <button type="button" className="btn" disabled={act.pending || !positive(typed || "0")}
+                          onClick={() => void act.run("POST", config.allocations, { [kind]: invoice.id, payment: payment.id, amount: typed },
+                            { done: `Applied to ${invoice.number}`, onDone: () => setAmounts({}) })}>
+                          Apply
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : <p className="muted">{open.isPending ? "…" : `Nothing is owed on posted ${kind}s.`}</p>}
+        </>
+      )}
+    </section>
+  );
+}

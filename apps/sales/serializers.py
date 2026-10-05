@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from apps.accounting.serializers import MoneyLineSerializerMixin
+
 from .models import (
     SuppliedItem,
     ThirdPartyRelease,
@@ -23,14 +25,6 @@ from .models import (
     SalesOrderLine,
     SalesRep,
 )
-
-
-class MoneyLineSerializerMixin(serializers.Serializer):
-    gross_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
-    discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
-    net_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
-    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
-    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
 
 
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):

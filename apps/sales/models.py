@@ -64,6 +64,7 @@ from apps.accounting.settlement import (
     amount_overdue,
     installment_schedule,
     oldest_overdue,
+    owed_beyond,
     post_drawdown,
     post_settlement_fx,
 )
@@ -2556,26 +2557,12 @@ def still_owed(invoices):
     thousand open invoices, and every thousand more another second.
     tests_screens_api holds the two answers to each other.
     """
-    from django.db.models import DecimalField, OuterRef, Subquery, Value
-    from django.db.models.functions import Coalesce
-
-    money = DecimalField(max_digits=18, decimal_places=2)
-
-    def total_of(queryset, field):
-        return Coalesce(Subquery(queryset.annotate(total=models.Sum(field)).values("total")),
-                        Value(Decimal("0")), output_field=money)
-
-    credited = Invoice.objects.filter(credits=OuterRef("pk"), posted=True).values("credits")
-    deposited = DepositApplication.objects.filter(invoice=OuterRef("pk")).values("invoice")
-    candidates = not_paid_in_full(invoices.filter(posted=True, credits__isnull=True)).annotate(
-        credited_total=total_of(credited, "posted_total"),
-        deposited_total=total_of(deposited, "amount"),
+    owed = owed_beyond(
+        not_paid_in_full(invoices.filter(posted=True, credits__isnull=True)),
+        notes=(Invoice.objects.filter(posted=True), "credits"),
+        drawdowns=(DepositApplication.objects.all(), "invoice"),
+        reductions=("written_off_amount", "settlement_discount_amount"),
     )
-    owed = candidates.filter(posted_total__isnull=False, posted_total__gt=(
-        models.F("standing_paid") + models.F("credited_total") + models.F("deposited_total")
-        + Coalesce(models.F("written_off_amount"), Value(Decimal("0")), output_field=money)
-        + Coalesce(models.F("settlement_discount_amount"), Value(Decimal("0")), output_field=money)
-    ))
     unrecorded = invoices.filter(posted=True, credits__isnull=True, posted_total__isnull=True)
     return list(owed.values_list("pk", flat=True)) + [
         invoice.pk for invoice in unrecorded.prefetch_related(*INVOICE_FIGURES)

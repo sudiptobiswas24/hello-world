@@ -113,3 +113,13 @@ class PaymentSerializer(serializers.ModelSerializer):
         # Left out, the company's defaults (Payment.save).
         extra_kwargs = {"bank_account": {"required": False},
                         "counterpart_account": {"required": False}}
+
+
+class MoneyLineSerializerMixin(serializers.Serializer):
+    """What a taxed line comes to, for every trading document's lines."""
+
+    gross_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    discount_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    net_amount = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)

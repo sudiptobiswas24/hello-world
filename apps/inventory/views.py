@@ -395,14 +395,25 @@ class StockReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"])
     def valuation(self, request):
-        report = stock_valuation(as_of=request.query_params.get("as_of"))
+        """What is on hand where, at what value. ?warehouse= and ?item= (ids) narrow it."""
+        params = request.query_params
+        report = stock_valuation(
+            as_of=params.get("as_of"),
+            warehouse=get_object_or_404(Warehouse, pk=params["warehouse"]) if params.get("warehouse") else None,
+            item=get_object_or_404(Item, pk=params["item"]) if params.get("item") else None,
+        )
         return Response({
             "as_of": report["as_of"],
             "total_value": report["total_value"],
             "rows": [
                 {
                     "item": row["item"].sku,
+                    "item_id": row["item"].pk,
+                    "item_name": row["item"].name,
+                    "uom": row["item"].uom.code,
                     "warehouse": row["warehouse"].code,
+                    "warehouse_id": row["warehouse"].pk,
+                    "warehouse_name": row["warehouse"].name,
                     "quantity": row["quantity"],
                     "value": row["value"],
                     "unit_cost": row["unit_cost"],

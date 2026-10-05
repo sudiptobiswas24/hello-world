@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { useAct, useRecord, useReference } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
-import { DecimalInput, Field } from "../../forms/fields";
+import { CommitDecimal, DecimalInput, Field } from "../../forms/fields";
 import { aboveZero } from "../../lib/decimal";
 import { date, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
@@ -123,7 +123,8 @@ export default function DeliveryForm() {
                   <td>{warehouseName(line.warehouse)}</td>
                   <td className="k-quantity">
                     {editable ? (
-                      <QuantityCell line={line} onCommit={(q) => void act.run("PATCH", `/api/sales/delivery-lines/${line.id}/`, { quantity_shipped: q })} />
+                      <CommitDecimal value={line.quantity_shipped} label={`Quantity of ${line.description}`}
+                        onCommit={(q) => void act.run("PATCH", `/api/sales/delivery-lines/${line.id}/`, { quantity_shipped: q })} />
                     ) : quantity(line.quantity_shipped)}
                   </td>
                   {returning !== null && (
@@ -149,17 +150,5 @@ export default function DeliveryForm() {
         )}
       </Sheet>
     </article>
-  );
-}
-
-function QuantityCell({ line, onCommit }: { line: DeliveryLine; onCommit: (q: string) => void }) {
-  const [typed, setTyped] = useState<string | null>(null);
-  const saved = quantity(line.quantity_shipped).replace(/,/g, "");
-  return (
-    <DecimalInput className="cell-input" aria-label={`Quantity of ${line.description}`} value={typed ?? saved} onChange={setTyped}
-      onBlur={() => {
-        if (typed !== null && typed !== "" && typed !== saved) onCommit(typed);
-        setTyped(null);
-      }} />
   );
 }

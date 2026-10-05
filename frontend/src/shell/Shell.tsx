@@ -23,7 +23,9 @@ function useOnline(): boolean {
 }
 
 function singular(label: string): string {
-  const special: Record<string, string> = { "Money received": "receipt", Deliveries: "delivery" };
+  const special: Record<string, string> = {
+    "Money received": "receipt", "Money paid": "payment", Deliveries: "delivery", "Purchase orders": "purchase order",
+  };
   return special[label] ?? label.toLowerCase().replace(/s$/, "");
 }
 

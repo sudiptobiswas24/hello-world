@@ -1,17 +1,17 @@
-import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
-import { useAct, useGet, useRecord, useReference } from "../../api/hooks";
+import { useAct, useGet, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet, Steps, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
-import { RecordPicker } from "../../forms/RecordPicker";
+import { PartyPicker } from "../../forms/PartyPicker";
 import { useDraft } from "../../forms/useDraft";
+import { WarehouseChoice } from "../../forms/WarehouseChoice";
 import { aboveZero } from "../../lib/decimal";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
-import { RelatedList } from "./Related";
+import { RelatedList } from "../../forms/Related";
 
 export interface Order {
   id: number;
@@ -30,12 +30,6 @@ export interface Order {
   [key: string]: unknown;
 }
 
-interface Party {
-  id: number;
-  code: string;
-  name: string;
-}
-
 interface Approval {
   status: string;
   reasons: string[];
@@ -50,27 +44,9 @@ function stage(order: Order): number {
   return 1;
 }
 
-export function CustomerPicker({ value, onChange, invalid, id, disabled }: {
-  value: number | null;
-  onChange: (id: number | null) => void;
-  invalid?: boolean;
-  id?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <RecordPicker<Party>
-      id={id}
-      endpoint="/api/core/parties/"
-      fixed={{ role_assignments__role: "customer", is_active: "true" }}
-      value={value}
-      onChange={(next) => onChange(next)}
-      label={(row) => row.name}
-      detail={(row) => row.code}
-      placeholder="Type a customer's name or code"
-      invalid={invalid}
-      disabled={disabled}
-    />
-  );
+/** Kept for the sales screens that import it from here. */
+export function CustomerPicker(props: Omit<Parameters<typeof PartyPicker>[0], "role">) {
+  return <PartyPicker role="customer" {...props} />;
 }
 
 /**
@@ -87,6 +63,8 @@ export default function OrderForm() {
   const order = record.data;
   const draft = useDraft<Order>(isNew ? ({ customer: null, order_date: today(), reference: "" } as unknown as Order) : order);
   const act = useAct<Order>();
+  const approval = useGet<Approval>(`${ENDPOINT}${order?.id}/approval/`, undefined, order?.status === "draft");
+  const waiting = approval.data?.status === "pending";
 
   if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   if (!isNew && !order) return <div className="loading">Opening…</div>;
@@ -131,12 +109,13 @@ export default function OrderForm() {
             Confirm
           </ActionButton>
         )}
-        {order?.status === "draft" && can("sales.approve_order") && (
+        {order?.status === "draft" && waiting && can("sales.approve_order") && (
           <ActionButton pending={act.pending} onClick={() => void run("approve", "Approved")}>Approve</ActionButton>
         )}
         {order?.status === "confirmed" && order.delivery_status !== "full" && can("sales.add_delivery") && (
-          <ShipButton order={order} pending={act.pending}
-            ship={(warehouse) => void run("ship", "Delivery drafted", (d) => navigate(`/sales/deliveries/${(d as { id: number }).id}`),
+          <WarehouseChoice label="Ship" prompt="Ship from" confirm="Draft delivery" pending={act.pending}
+            needsOne={order.lines.some((line) => !line.charge && aboveZero(line.quantity_open as string) && !line.warehouse)}
+            go={(warehouse) => void run("ship", "Delivery drafted", (d) => navigate(`/sales/deliveries/${(d as { id: number }).id}`),
               warehouse ? { warehouse } : {})} />
         )}
         {order?.status === "confirmed" && order.invoice_status !== "full" && can("sales.add_invoice") && (
@@ -154,7 +133,12 @@ export default function OrderForm() {
       </DocHeader>
 
       {order && order.status !== "cancelled" && <Steps steps={["Draft", "Confirmed", "Shipped", "Invoiced"]} at={stage(order)} />}
-      {order?.status === "draft" && <ApprovalNote id={order.id} />}
+      {order?.status === "draft" && waiting && (approval.data?.reasons.length ?? 0) > 0 && (
+        <div className="note warn" role="note">
+          <strong>Needs approval before it can be confirmed.</strong>
+          <ul>{approval.data!.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+        </div>
+      )}
 
       <Sheet>
         <div className="field-grid">
@@ -207,64 +191,5 @@ export default function OrderForm() {
         </div>
       )}
     </article>
-  );
-}
-
-function ApprovalNote({ id }: { id: number }) {
-  const { data } = useGet<Approval>(`${ENDPOINT}${id}/approval/`);
-  if (!data || !data.reasons?.length || data.status === "approved") return null;
-  return (
-    <div className="note warn" role="note">
-      <strong>Needs approval before it can be confirmed.</strong>
-      <ul>{data.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-    </div>
-  );
-}
-
-interface Warehouse {
-  id: number;
-  code: string;
-  name: string;
-  is_active: boolean;
-  is_quarantine: boolean;
-  is_transit: boolean;
-  consignment_vendor: number | null;
-  held_for: number | null;
-}
-
-/**
- * Ship asks where from only when it has to: a line that names its
- * warehouse ships from it, and where only one warehouse can ship at
- * all, that one is meant. Quarantine, transit, consignment and a
- * customer's own material never ship on a delivery; the server refuses
- * them at posting, so they are not offered here.
- */
-function ShipButton({ order, pending, ship }: { order: Order; pending: boolean; ship: (warehouse: number | null) => void }) {
-  const warehouses = useReference<Warehouse>("/api/inventory/warehouses/");
-  const [asking, setAsking] = useState(false);
-  const [chosen, setChosen] = useState<number | null>(null);
-  const shippable = (warehouses.data ?? []).filter((w) =>
-    w.is_active && !w.is_quarantine && !w.is_transit && w.consignment_vendor === null && w.held_for === null);
-  const needsOne = order.lines.some((line) => !line.charge && aboveZero(line.quantity_open as string) && !line.warehouse);
-
-  const start = () => {
-    if (!needsOne) ship(null);
-    else if (shippable.length === 1) ship(shippable[0]!.id);
-    else setAsking(true);
-  };
-
-  if (!asking) return <ActionButton primary pending={pending || (needsOne && warehouses.isPending)} onClick={start}>Ship</ActionButton>;
-  return (
-    <span className="ship-from">
-      <label>
-        <span>Ship from</span>
-        <select autoFocus value={chosen ?? ""} onChange={(e) => setChosen(Number(e.target.value) || null)}>
-          <option value="">Choose a warehouse…</option>
-          {shippable.map((w) => <option key={w.id} value={w.id}>{w.code} · {w.name}</option>)}
-        </select>
-      </label>
-      <ActionButton primary pending={pending} disabled={chosen === null} onClick={() => ship(chosen)}>Draft delivery</ActionButton>
-      <button type="button" className="btn btn-quiet" onClick={() => setAsking(false)}>Back</button>
-    </span>
   );
 }

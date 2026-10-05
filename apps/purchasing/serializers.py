@@ -1,9 +1,13 @@
+from django.db import transaction
 from rest_framework import serializers
 
+from apps.accounting.serializers import MoneyLineSerializerMixin
+from apps.inventory.tracking import Lot
+
 from .models import (
-    BillPayment,
     Bill,
     BillLine,
+    BillPayment,
     GoodsReceipt,
     GoodsReceiptLine,
     PurchaseOrder,
@@ -19,9 +23,12 @@ class SubcontractComponentSerializer(serializers.ModelSerializer):
         read_only_fields = ["is_computed"]
 
 
-class PurchaseOrderLineSerializer(serializers.ModelSerializer):
+class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     quantity_received = serializers.SerializerMethodField()
     quantity_billed = serializers.SerializerMethodField()
+    quantity_open = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
+    # What the line is called: its description, else its charge or item.
+    label = serializers.CharField(read_only=True)
     components = SubcontractComponentSerializer(many=True, read_only=True)
 
     class Meta:
@@ -31,7 +38,8 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
             "discount_percent", "taxes", "expense_account", "quantity_received",
             "quantity_billed", "bom", "components", "work_order_operation", "warehouse",
             "expected_date",
-            "charge", "description", "inspect_on_receipt",
+            "charge", "description", "inspect_on_receipt", "quantity_open", "label",
+            "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
 
     def get_quantity_received(self, obj):
@@ -43,13 +51,21 @@ class PurchaseOrderLineSerializer(serializers.ModelSerializer):
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
     lines = PurchaseOrderLineSerializer(many=True, read_only=True)
+    # Named, so a list can say who without asking for every vendor.
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    receipt_status = serializers.CharField(read_only=True)
+    bill_status = serializers.CharField(read_only=True)
+    subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    tax_total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    total = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
 
     class Meta:
         model = PurchaseOrder
         fields = [
-            "id", "number", "vendor", "order_date", "reference", "status",
+            "id", "number", "vendor", "vendor_name", "order_date", "reference", "status",
             "currency", "bill_policy", "lines",
             "shipping_note", "drop_ship_for", "subcontract_warehouse",
+            "receipt_status", "bill_status", "subtotal", "tax_total", "total",
         ]
         # Status moves by confirm/cancel, which ask what they ask. Written
         # here, a clerk confirmed past the approval tiers. Sales always had
@@ -57,20 +73,27 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         read_only_fields = ["number", "status"]
 
 
-class BillLineSerializer(serializers.ModelSerializer):
+class BillLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
+    # What the line is called: its description, else its charge or item.
+    label = serializers.CharField(read_only=True)
+
     class Meta:
         model = BillLine
         fields = [
             "id", "bill", "order_line", "item", "description", "quantity", "unit_price",
             "discount_percent", "taxes", "expense_account",
-            "charge",
+            "charge", "label",
+            "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
 
 
 class BillPaymentSerializer(serializers.ModelSerializer):
+    bill_number = serializers.CharField(source="bill.number", read_only=True)
+    payment_number = serializers.CharField(source="payment.number", read_only=True)
+
     class Meta:
         model = BillPayment
-        fields = ["id", "bill", "payment", "amount"]
+        fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount"]
 
 
 class BillSerializer(serializers.ModelSerializer):
@@ -84,6 +107,7 @@ class BillSerializer(serializers.ModelSerializer):
     amount_debited = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     amount_due = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     settlement_status = serializers.CharField(read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
 
     class Meta:
         model = Bill
@@ -91,6 +115,7 @@ class BillSerializer(serializers.ModelSerializer):
             "id",
             "number",
             "vendor",
+            "vendor_name",
             "bill_date",
             "due_date",
             "currency",
@@ -122,15 +147,70 @@ class BillSerializer(serializers.ModelSerializer):
 
 
 class GoodsReceiptLineSerializer(serializers.ModelSerializer):
+    description = serializers.SerializerMethodField()
+    # "lot", "serial" or "none": whether the batch must be named before
+    # the receipt posts.
+    tracking = serializers.CharField(source="order_line.item.tracking", read_only=True, default="none")
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+    # The batch as it is written on the bags. The receipt is where a batch
+    # enters the company, so it is named here, made if it is new.
+    batch = serializers.CharField(write_only=True, required=False, allow_blank=True, max_length=64)
+
     class Meta:
         model = GoodsReceiptLine
-        fields = ["id", "receipt", "order_line", "warehouse", "quantity_received",
-            "bin", "lot",
+        fields = ["id", "receipt", "order_line", "description", "warehouse", "quantity_received",
+            "bin", "lot", "lot_code", "tracking", "batch",
         ]
+
+    def get_description(self, obj):
+        return obj.order_line.label()
+
+    def validate(self, data):
+        batch = data.pop("batch", None)
+        self._new_batch = None
+        if batch is None:
+            return data
+        batch = batch.strip()
+        if not batch:
+            data["lot"] = None
+            return data
+        order_line = data.get("order_line") or getattr(self.instance, "order_line", None)
+        item = getattr(order_line, "item", None)
+        if item is None:
+            raise serializers.ValidationError({"batch": ["Only goods come in batches."]})
+        lot = Lot.objects.filter(item=item, code=batch).first()
+        if lot is None:
+            request = self.context.get("request")
+            if request is not None and not request.user.has_perm("inventory.add_lot"):
+                raise serializers.ValidationError({"batch": [
+                    f"There is no batch {batch} of {item} yet, and naming a new one "
+                    "takes the right to add batches."]})
+            # Made with the line, not before it: a line refused on saving
+            # must not leave a batch behind that nothing ever received.
+            self._new_batch = (item, batch)
+        else:
+            data["lot"] = lot
+        return data
+
+    def _with_batch(self, data):
+        if getattr(self, "_new_batch", None):
+            item, code = self._new_batch
+            data["lot"], _ = Lot.objects.get_or_create(item=item, code=code)
+        return data
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            return super().create(self._with_batch(validated_data))
+
+    def update(self, instance, validated_data):
+        with transaction.atomic():
+            return super().update(instance, self._with_batch(validated_data))
 
 
 class GoodsReceiptSerializer(serializers.ModelSerializer):
     lines = GoodsReceiptLineSerializer(many=True, read_only=True)
+    order_number = serializers.CharField(source="purchase_order.number", read_only=True)
+    vendor_name = serializers.CharField(source="purchase_order.vendor.name", read_only=True)
 
     class Meta:
         model = GoodsReceipt
@@ -138,6 +218,8 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
             "id",
             "number",
             "purchase_order",
+            "order_number",
+            "vendor_name",
             "receipt_date",
             "reference",
             "reverses",

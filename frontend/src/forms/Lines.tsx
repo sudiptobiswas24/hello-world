@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import { useAct, useReference } from "../api/hooks";
 import { money, quantity } from "../lib/format";
-import { DecimalInput } from "./fields";
+import { CommitDecimal, DecimalInput } from "./fields";
 import { RecordPicker } from "./RecordPicker";
 
 export interface TradeLine {
@@ -52,7 +52,7 @@ export interface ExtraColumn {
  * A new line needs only an item and a quantity: the server resolves the
  * price from the price list, as it would for a line typed in elsewhere.
  */
-export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom }: {
+export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales" }: {
   lines: TradeLine[];
   endpoint: string; // /api/sales/sales-order-lines/
   parent: string; // "order", "quotation", "invoice"
@@ -60,14 +60,20 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   editable: boolean;
   extra?: ExtraColumn[];
   withUom?: boolean;
+  /** Which taxes apply: a sale's, or a purchase's. */
+  side?: "sales" | "purchase";
 }) {
   const act = useAct();
   const taxes = useReference<Tax>("/api/accounting/taxes/");
-  const saleTaxes = (taxes.data ?? []).filter((tax) => tax.is_active && tax.scope !== "purchase");
+  const offered = (taxes.data ?? []).filter((tax) => tax.is_active && (tax.scope === "both" || tax.scope === side));
   const taxCode = (id: number) => taxes.data?.find((tax) => tax.id === id)?.code ?? `#${id}`;
 
   const [item, setItem] = useState<Item | null>(null);
   const [qty, setQty] = useState("1");
+  // Left empty, the server prices it: the price list, or the vendor's
+  // agreed price. Typed, it is the price, which is how a purchase with no
+  // agreed price is bought at all.
+  const [price, setPrice] = useState("");
 
   const patch = (line: TradeLine, change: Partial<TradeLine>) => {
     const changed = Object.entries(change).some(([key, value]) => JSON.stringify(line[key]) !== JSON.stringify(value));
@@ -78,10 +84,12 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
     if (!item || !qty || Number.isNaN(Number(qty))) return;
     const body: Record<string, unknown> = { [parent]: parentId, item: item.id, quantity: qty };
     if (withUom) body.uom = item.uom;
+    if (price) body.unit_price = price;
     const outcome = await act.run("POST", endpoint, body, { done: `${item.name} added` });
     if (outcome.ok) {
       setItem(null);
       setQty("1");
+      setPrice("");
     }
   };
 
@@ -106,17 +114,17 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
               <td className="line-what">{line.label || line.description || "—"}</td>
               <td className="k-quantity">
                 {editable ? (
-                  <LazyDecimal value={line.quantity} label="Quantity" onCommit={(v) => patch(line, { quantity: v })} />
+                  <CommitDecimal value={line.quantity} label="Quantity" onCommit={(v) => patch(line, { quantity: v })} />
                 ) : quantity(line.quantity)}
               </td>
               <td className="k-money">
                 {editable ? (
-                  <LazyDecimal value={line.unit_price ?? ""} places={2} label="Unit price" onCommit={(v) => patch(line, { unit_price: v })} />
+                  <CommitDecimal value={line.unit_price ?? ""} places={2} label="Unit price" onCommit={(v) => patch(line, { unit_price: v })} />
                 ) : money(line.unit_price)}
               </td>
               <td className="k-quantity">
                 {editable ? (
-                  <LazyDecimal value={line.discount_percent} places={2} label="Discount percent" onCommit={(v) => patch(line, { discount_percent: v || "0" })} />
+                  <CommitDecimal value={line.discount_percent} places={2} label="Discount percent" onCommit={(v) => patch(line, { discount_percent: v || "0" })} />
                 ) : quantity(line.discount_percent)}
               </td>
               <td>
@@ -128,7 +136,7 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
                     value={line.taxes.map(String)}
                     onChange={(event) => patch(line, { taxes: Array.from(event.target.selectedOptions, (o) => Number(o.value)) })}
                   >
-                    {saleTaxes.map((tax) => <option key={tax.id} value={tax.id}>{tax.code}</option>)}
+                    {offered.map((tax) => <option key={tax.id} value={tax.id}>{tax.code}</option>)}
                   </select>
                 ) : line.taxes.map(taxCode).join(", ")}
               </td>
@@ -177,35 +185,11 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
             ariaLabel="Item to add"
           />
           <DecimalInput value={qty} onChange={setQty} aria-label="Quantity to add" className="qty" />
+          <DecimalInput value={price} onChange={setPrice} places={2} aria-label="Unit price to add" className="qty"
+            placeholder={side === "purchase" ? "Agreed price" : "List price"} />
           <button type="submit" className="btn" disabled={!item || act.pending}>Add line</button>
         </form>
       )}
     </div>
   );
-}
-
-/** A figure edited in place and saved when the box is left, if it changed. */
-function LazyDecimal({ value, onCommit, places = 4, label }: { value: string; onCommit: (value: string) => void; places?: number; label: string }) {
-  const [typed, setTyped] = useState<string | null>(null);
-  return (
-    <DecimalInput
-      className="cell-input"
-      aria-label={label}
-      places={places}
-      value={typed ?? trim(value)}
-      onChange={setTyped}
-      onBlur={() => {
-        if (typed !== null && typed !== trim(value)) onCommit(typed);
-        setTyped(null);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") (event.target as HTMLInputElement).blur();
-        if (event.key === "Escape") setTyped(null);
-      }}
-    />
-  );
-}
-
-function trim(value: string): string {
-  return value.includes(".") ? value.replace(/\.?0+$/, "") : value;
 }

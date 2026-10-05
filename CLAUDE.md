@@ -183,7 +183,13 @@ Go through it before running anything.
 - Two refusals in one test need two separate builds, each of which
   must not collide with the other.
 - Django never calls `full_clean()` for you; `ModelSerializer` does not
-  run check constraints either. Guard in `save()` or the view.
+  run check constraints either. Guard in `save()` or the view. What gets
+  past both reaches the database: `apps.core.api.exception_handler` turns
+  a refused constraint into a 400 beside its field and a delete of
+  something still used into a 400 in words, and each viewset write runs
+  in its own savepoint so the refusal does not poison the request. That
+  is the floor, not the answer: a rule worth a better sentence goes in
+  `save()`.
 
 **Browser tests**
 - Playwright `evaluate` calls a function expression: wrap statements in

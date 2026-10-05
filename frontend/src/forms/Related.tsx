@@ -1,8 +1,8 @@
 import { Link } from "react-router";
 
-import type { Query } from "../../api/client";
-import { useRows } from "../../api/hooks";
-import { useAccess } from "../../auth/me";
+import type { Query } from "../api/client";
+import { useRows } from "../api/hooks";
+import { useAccess } from "../auth/me";
 
 type Row = Record<string, unknown> & { id: number };
 
