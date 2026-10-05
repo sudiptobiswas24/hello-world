@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { aboveZero, fromPaise, least, minus, positive, sum, toPaise } from "./decimal";
+import { aboveZero, asPercent, divide, fromPaise, least, minus, minutesAsHours, positive, sum, toPaise } from "./decimal";
 
 describe("money in paise", () => {
   it("adds what a float would not", () => {
@@ -44,5 +44,26 @@ describe("quantities above zero", () => {
     expect(aboveZero(undefined)).toBe(false);
     expect(aboveZero("10")).toBe(true);
     expect(() => aboveZero("1e3")).toThrow();
+  });
+});
+
+describe("hours and percentages, exactly", () => {
+  it("divides and rounds half away from zero", () => {
+    expect(divide(10n, 3n, 2)).toBe("3.33");
+    expect(divide(-5n, 2n, 0)).toBe("-3");
+    expect(divide(1n, 8n, 2)).toBe("0.13");
+  });
+
+  it("reads minutes as hours", () => {
+    expect(minutesAsHours("90.00")).toBe("1.5");
+    expect(minutesAsHours("2700.0000")).toBe("45.0");
+    expect(minutesAsHours("100")).toBe("1.7");
+    expect(minutesAsHours(null)).toBe("");
+  });
+
+  it("reads a ratio as a percentage", () => {
+    expect(asPercent("0.8234")).toBe("82.3%");
+    expect(asPercent("1")).toBe("100.0%");
+    expect(asPercent(null)).toBe("—");
   });
 });

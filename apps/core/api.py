@@ -299,8 +299,13 @@ class FieldFilter(BaseFilterBackend):
     500 from the database.
     """
 
+    # Asked of every list, whatever it filters by.
+    ALWAYS = frozenset({"search", "page", "page_size", "ordering", "format"})
+
     def filter_queryset(self, request, queryset, view):
         params = request.query_params
+        if getattr(view, "action", None) == "list":
+            self._refuse_unknown(params, view)
         try:
             for name in getattr(view, "filter_fields", ()):
                 if name not in params:
@@ -330,6 +335,29 @@ class FieldFilter(BaseFilterBackend):
             said = " ".join(getattr(error, "messages", None) or [str(error)])
             raise DRFValidationError(f"Cannot filter by that: {said}")
         return queryset
+
+
+def _refuse_unknown_params(params, view):
+    """
+    A list asked to narrow by something it does not narrow by says so.
+
+    Ignored, `?meter=5` on a list that has no such filter answered every
+    meter's readings, and a panel meant to show one meter's showed all of
+    them, looking right. A view that reads a parameter itself names it in
+    `extra_params`.
+    """
+    allowed = set(FieldFilter.ALWAYS) | set(getattr(view, "filter_fields", ()))
+    allowed |= set(getattr(view, "extra_params", ()))
+    if getattr(view, "date_field", None):
+        allowed |= {"from", "to"}
+    unknown = sorted(set(params) - allowed)
+    if unknown:
+        raise DRFValidationError(
+            f"This list cannot be narrowed by {', '.join(unknown)}; it can by "
+            f"{', '.join(sorted(allowed - FieldFilter.ALWAYS)) or 'nothing but search'}.")
+
+
+FieldFilter._refuse_unknown = staticmethod(_refuse_unknown_params)
 
 
 class Ordering(OrderingFilter):

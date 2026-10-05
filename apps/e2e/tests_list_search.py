@@ -113,8 +113,13 @@ class InvoiceListTests(ListSearchTestCase):
             response = self.client.get(INVOICES, params)
             self.assertEqual(response.status_code, 400, params)
 
-    def test_a_field_the_list_does_not_name_is_ignored(self):
-        self.assertEqual(len(self.numbers(self.client.get(INVOICES, {"exchange_rate": "9"}))), 4)
+    def test_a_field_the_list_does_not_name_is_refused_in_words(self):
+        # Ignored, it answered every invoice, and a screen asking for one
+        # customer's showed all of them, looking right.
+        response = self.client.get(INVOICES, {"exchange_rate": "9"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot be narrowed by exchange_rate", str(response.json()))
+        self.assertIn("customer", str(response.json()))  # and says what it can
 
     def test_a_list_with_nothing_to_search_ignores_the_search(self):
         response = self.client.get("/api/sales/invoice-lines/", {"search": "no such thing"})

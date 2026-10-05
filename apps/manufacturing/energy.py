@@ -348,3 +348,64 @@ def by_run(meter):
     for booking, share in allocation(meter)[0]:
         runs[booking.work_order_id] += share
     return dict(runs)
+
+
+def summary(start, end):
+    """
+    Each meter over [start, end]: what it recorded, what went to runs and
+    what was drawn idle, what it cost, and the days nobody read it.
+
+    Asked of every meter at once, so it reads only the window: the
+    intervals closed by a reading inside it, and the bookings those
+    intervals can hold, each laid on its interval by a binary search
+    rather than tested against every interval (a year of three-shift
+    readings against a year of bookings is millions of comparisons).
+    """
+    from bisect import bisect_left
+
+    from .orders import TimeBooking
+
+    rows = []
+    for meter in EnergyMeter.objects.select_related("machine", "work_centre"):
+        if meter.installed_on > end or (meter.retired_on and meter.retired_on < start):
+            continue
+        spans = [span for span in intervals(meter) if start <= span[3].shift_date <= end]
+        kwh = sum((span[2] for span in spans), ZERO)
+        run_kwh, idle_kwh, cost, unpriced = ZERO, ZERO, ZERO, False
+        if spans:
+            bookings = TimeBooking.objects.filter(
+                posted=True, voided_at__isnull=True,
+                booking_date__gte=spans[0][0][0], booking_date__lte=spans[-1][1][0],
+            ).select_related("shift")
+            if meter.machine_id:
+                bookings = bookings.filter(machine_id=meter.machine_id)
+            else:
+                bookings = bookings.filter(operation__work_centre_id=meter.work_centre_id)
+            uppers = [span[1] for span in spans]
+            minutes = [ZERO] * len(spans)
+            for booking in bookings:
+                at = slot(booking.booking_date, booking.shift)
+                index = bisect_left(uppers, at)
+                if index < len(spans) and spans[index][0] < at <= spans[index][1]:
+                    minutes[index] += booking.minutes
+            for (_after, _upto, span_kwh, reading), booked in zip(spans, minutes):
+                if booked:
+                    run_kwh += span_kwh
+                else:
+                    idle_kwh += span_kwh
+                rate = _tariff(reading.shift_date)
+                if rate is None:
+                    unpriced = True
+                else:
+                    cost += span_kwh * rate
+        read_days = {span[3].shift_date for span in spans}
+        first = max(start, meter.installed_on)
+        last = min(end, meter.retired_on or end, timezone.localdate())
+        days = (last - first).days + 1 if last >= first else 0
+        rows.append({
+            "meter": meter.pk, "code": meter.code, "serves": str(meter.serves()),
+            "kwh": kwh, "run_kwh": run_kwh, "idle_kwh": idle_kwh,
+            "cost": None if unpriced else cost, "readings": len(spans),
+            "days_unread": max(days - len(read_days), 0),
+        })
+    return rows

@@ -57,6 +57,7 @@ def _order_lines():
 
 
 class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    extra_params = ('to_receive',)
     search_fields = ["number", "reference", "vendor__code", "vendor__name"]
     filter_fields = ["vendor", "status"]
     date_field = "order_date"
@@ -207,6 +208,7 @@ class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    extra_params = ('open',)
     search_fields = ["number", "reference", "vendor__code", "vendor__name", "purchase_order__number"]
     filter_fields = ["vendor", "posted", "debits", "debits__isnull", "is_prepayment",
                      "purchase_order", "payable_account", "currency"]

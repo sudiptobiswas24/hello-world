@@ -60,8 +60,8 @@ class SweepMixin:
         return opened
 
     def _note_failure(self, response):
-        # 403 and 404 are already noted by BrowserMixin; the rest here.
-        if response.status >= 400 and response.status not in (403, 404):
+        # 403, 404 and server faults are already noted by BrowserMixin; the rest here.
+        if 400 <= response.status < 500 and response.status not in (403, 404):
             if not any(status == response.status and part in response.url
                        for status, part in self.expected_refusals):
                 self.problems.append(f"{response.status} {response.url}")

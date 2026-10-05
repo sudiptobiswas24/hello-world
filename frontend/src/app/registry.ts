@@ -38,7 +38,7 @@ export interface Module {
   screens: Screen[];
 }
 
-export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "accounts" | "people";
+export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "plant" | "accounts" | "people";
 
 export const MODULES: Module[] = [
   {
@@ -144,6 +144,64 @@ export const MODULES: Module[] = [
       {
         path: "schedule", label: "Machine schedule", permission: "manufacturing.view_workorder",
         keywords: "dispatch loom extruder queue", load: () => import("../modules/production/Schedule"),
+      },
+    ],
+  },
+  {
+    key: "plant",
+    label: "Plant",
+    icon: "plant",
+    screens: [
+      {
+        path: "losses", label: "Machine effectiveness", permission: "manufacturing.view_workcentre",
+        keywords: "oee availability performance quality losses productivity", load: () => import("../modules/plant/Losses"),
+      },
+      {
+        path: "hours-lost", label: "Where the hours went", permission: "manufacturing.view_downtime",
+        keywords: "downtime reasons pareto stoppages", load: () => import("../modules/plant/HoursLost"),
+      },
+      {
+        path: "stoppages", label: "Stoppages", permission: "manufacturing.view_downtime", create: "manufacturing.add_downtime",
+        keywords: "downtime breakdown stop", load: () => import("../modules/plant/Stoppages"),
+        detail: () => import("../modules/plant/StoppageForm"),
+      },
+      {
+        path: "due", label: "Maintenance due", permission: "manufacturing.view_maintenanceschedule",
+        keywords: "preventive service overdue", load: () => import("../modules/plant/Due"),
+      },
+      {
+        path: "jobs", label: "Maintenance jobs", permission: "manufacturing.view_maintenancejob", create: "manufacturing.add_maintenancejob",
+        keywords: "repair breakdown fitter spares work order", load: () => import("../modules/plant/Jobs"),
+        detail: () => import("../modules/plant/JobForm"),
+      },
+      {
+        path: "schedules", label: "Maintenance schedules", permission: "manufacturing.view_maintenanceschedule",
+        create: "manufacturing.add_maintenanceschedule",
+        keywords: "preventive routine running hours calendar", load: () => import("../modules/plant/Schedules"),
+        detail: () => import("../modules/plant/ScheduleForm"),
+      },
+      {
+        path: "breakdowns", label: "Breakdowns", permission: "manufacturing.view_maintenancejob",
+        keywords: "reliability mtbf mttr failures", load: () => import("../modules/plant/Reliability"),
+      },
+      {
+        path: "energy", label: "Electricity", permission: "manufacturing.view_energymeter",
+        keywords: "kwh power energy idle units", load: () => import("../modules/plant/Energy"),
+      },
+      {
+        path: "readings", label: "Meter readings", permission: "manufacturing.view_meterreading", create: "manufacturing.add_meterreading",
+        keywords: "electricity meter reading kwh", load: () => import("../modules/plant/Readings"),
+        detail: () => import("../modules/plant/ReadingForm"),
+      },
+      {
+        path: "meters", label: "Energy meters", permission: "manufacturing.view_energymeter", create: "manufacturing.add_energymeter",
+        keywords: "electricity meter", load: () => import("../modules/plant/Meters"),
+        detail: () => import("../modules/plant/MeterForm"),
+      },
+      {
+        path: "tariffs", label: "Electricity tariffs", permission: "manufacturing.view_energytariff", create: "manufacturing.add_energytariff",
+        keywords: "rate per unit kwh", load: () => import("../modules/plant/Tariffs"),
+        detail: () => import("../modules/plant/TariffForm"),
       },
     ],
   },

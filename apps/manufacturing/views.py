@@ -80,6 +80,7 @@ from .serializers import (
     BomSubstituteSerializer,
     CostVersionSerializer,
     StandardCostSerializer,
+    MaintenanceJobDetailSerializer,
     MaintenanceJobSerializer,
     MaintenanceScheduleSerializer,
     FabricRollSerializer,
@@ -244,6 +245,7 @@ class OrderProfitabilityViewSet(viewsets.ViewSet):
 
 class CrewAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """Who is on which bank's shift; ?work_centre= to see one bank's."""
+    extra_params = ('work_centre',)
 
     queryset = CrewAssignment.objects.select_related("employee__party", "work_centre",
                                                      "shift")
@@ -257,6 +259,7 @@ class CrewAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class AlternateRoutingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """Other ways a bill is made, tried in priority after its own routing."""
+    extra_params = ('bom',)
 
     queryset = AlternateRouting.objects.select_related("bom", "routing")
     serializer_class = AlternateRoutingSerializer
@@ -500,6 +503,17 @@ class EnergyMeterViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = EnergyMeter.objects.select_related("machine", "work_centre")
     serializer_class = EnergyMeterSerializer
+    filter_fields = ["machine", "work_centre"]
+    search_fields = ["code"]
+    ordering_fields = ["code"]
+
+    @action(detail=False, methods=["get"])
+    def summary(self, request):
+        """?start&end: each meter's kWh, to runs and idle, cost, and days unread."""
+        start, end = _window(request)
+        return Response([row | {"kwh": _kwh(row["kwh"]), "run_kwh": _kwh(row["run_kwh"]),
+                                "idle_kwh": _kwh(row["idle_kwh"]), "cost": _rupees(row["cost"])}
+                         for row in _run(energy.summary, start, end)])
 
     @action(detail=False, methods=["get"])
     def idle(self, request):
@@ -532,8 +546,12 @@ class EnergyMeterViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class MeterReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """Readings are entered and voided; never edited or deleted."""
 
-    queryset = MeterReading.objects.select_related("meter", "shift")
+    queryset = MeterReading.objects.select_related("meter", "shift", "read_by__party")
     serializer_class = MeterReadingSerializer
+    filter_fields = ["meter", "shift", "voided_at__isnull"]
+    search_fields = ["meter__code"]
+    date_field = "shift_date"
+    ordering_fields = ["shift_date"]
     http_method_names = ["get", "post", "head", "options"]
     action_permission_map = {"void": "manufacturing.change_meterreading"}
 
@@ -797,8 +815,11 @@ class StandardCostViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class MaintenanceScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = MaintenanceSchedule.objects.select_related("work_centre")
+    queryset = MaintenanceSchedule.objects.select_related("work_centre", "machine")
     serializer_class = MaintenanceScheduleSerializer
+    filter_fields = ["work_centre", "machine", "is_active"]
+    search_fields = ["name"]
+    ordering_fields = ["name"]
     action_permission_map = {"raise_job": "manufacturing.add_maintenancejob"}
 
     @action(detail=False, methods=["get"])
@@ -816,9 +837,17 @@ class MaintenanceScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = MaintenanceJob.objects.select_related(
-        "schedule", "work_centre", "downtime"
+        "schedule", "work_centre", "machine", "downtime", "technician__party"
     )
     serializer_class = MaintenanceJobSerializer
+    filter_fields = ["work_centre", "machine", "schedule", "is_breakdown", "done_on__isnull",
+                     "cancelled_at__isnull"]
+    search_fields = ["fault", "notes", "schedule__name"]
+    date_field = "due_on"
+    ordering_fields = ["due_on"]
+
+    def get_serializer_class(self):
+        return MaintenanceJobDetailSerializer if self.action == "retrieve" else MaintenanceJobSerializer
     action_permission_map = {"complete": "manufacturing.change_maintenancejob",
                              "cancel": "manufacturing.change_maintenancejob",
                              "labour": "manufacturing.change_maintenancejob",
@@ -1475,14 +1504,50 @@ class ShiftViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class DowntimeReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = DowntimeReason.objects.all()
+    filter_fields = ["is_planned", "is_active"]
     serializer_class = DowntimeReasonSerializer
 
 
 class DowntimeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Downtime.objects.select_related(
-        "work_centre", "shift", "reason", "work_order"
+        "work_centre", "machine", "shift", "reason", "work_order"
     )
     serializer_class = DowntimeSerializer
+    filter_fields = ["work_centre", "machine", "shift", "reason", "work_order", "reason__is_planned"]
+    search_fields = ["number", "notes"]
+    date_field = "shift_date"
+    ordering_fields = ["shift_date", "minutes", "number"]
+
+    @action(detail=False, methods=["get"], url_path="by-reason")
+    def by_reason(self, request):
+        """
+        ?start&end, and work_centre= or machine= (codes): stoppages by reason,
+        the most hours first, each with its share of all the hours stopped.
+        """
+        from django.db.models import Count, Sum
+
+        start, end = _window(request)
+        rows = Downtime.objects.filter(shift_date__gte=start, shift_date__lte=end)
+        params = request.query_params
+        if params.get("machine"):
+            rows = rows.filter(machine=get_object_or_404(Machine, code=params["machine"]))
+        elif params.get("work_centre"):
+            rows = rows.filter(work_centre=get_object_or_404(WorkCentre, code=params["work_centre"]))
+        grouped = list(rows.values("reason__code", "reason__name", "reason__is_planned").annotate(
+            stoppages=Count("id"), minutes=Sum("minutes")).order_by("-minutes", "reason__code"))
+        # At the column's two places on every database: SQLite sums 120,
+        # PostgreSQL 120.00.
+        cents = Decimal("0.01")
+        total = sum((row["minutes"] for row in grouped), Decimal("0")).quantize(cents)
+        return Response({
+            "rows": [{
+                "reason": row["reason__code"], "name": row["reason__name"],
+                "planned": row["reason__is_planned"], "stoppages": row["stoppages"],
+                "minutes": str(row["minutes"].quantize(cents)),
+                "share": str((row["minutes"] * 100 / total).quantize(Decimal("0.1"))) if total else "0.0",
+            } for row in grouped],
+            "total_minutes": str(total),
+        })
 
 
 class OperatorYieldViewSet(viewsets.ViewSet):

@@ -246,6 +246,20 @@ ROLES = {
         # floor makes what was specified, and a supervisor who could change
         # the bill could make any variance disappear. Nor costing.
     ],
+    # The fitters' office: routine work, repairs, spares and the meters.
+    "Maintenance": [
+        *REFERENCE,
+        *HOW_IT_IS_MADE,
+        *view("inventory", "stockmovement", "stockposition", "storagebin", "stockadjustment"),
+        *view("hr", "employee"),
+        *full("manufacturing", "maintenanceschedule", "maintenancelabour", "spareissue",
+              "energymeter"),
+        *crud("manufacturing", "maintenancejob", actions=("add", "change", "view")),
+        *crud("manufacturing", "meterreading", actions=("add", "change", "view")),
+        *view("manufacturing", "energytariff", "downtime", "timebooking"),
+        # deliberately NOT work orders or production entries: maintenance
+        # keeps the machines, the floor records what they made.
+    ],
     # The shared login on a station tablet. Operators say who they are
     # with their PIN; the login itself can do nothing else.
     "Station": [

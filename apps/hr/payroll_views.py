@@ -132,6 +132,7 @@ class PayComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class CompensationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    extra_params = ('employee',)
     queryset = EmployeeCompensation.objects.select_related("employee", "component")
     serializer_class = CompensationSerializer
 
@@ -202,6 +203,7 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    extra_params = ('run',)
     queryset = Payslip.objects.select_related("employee__party", "run", "payment__journal_entry").prefetch_related(
         "payment__journal_entry__reversed_by", "lines__component")
     action_permission_map = {"pay": "hr.post_payrun"}

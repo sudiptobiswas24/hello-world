@@ -18,6 +18,7 @@ class CallOffSerializer(serializers.ModelSerializer):
 
 
 class CallOffViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    extra_params = ('line',)
     customer_path = "line__order__customer"
     queryset = CallOff.objects.select_related("line")
     serializer_class = CallOffSerializer

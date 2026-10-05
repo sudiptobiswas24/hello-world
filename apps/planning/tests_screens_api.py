@@ -85,7 +85,7 @@ class PlanAndFirmTests(ScreensTestCase):
         self.assertEqual(response.json()["work_order_number"], work_order.number)
         self.assertEqual(work_order.status, WorkOrderStatus.DRAFT)
 
-        drafts = planner.get("/api/manufacturing/work-orders/", {"status": "draft", "q": "FAB"}).json()
+        drafts = planner.get("/api/manufacturing/work-orders/", {"status": "draft", "search": "FAB"}).json()
         self.assertEqual([row["id"] for row in drafts], [work_order.pk])
         self.assertEqual((drafts[0]["item_sku"], drafts[0]["work_centre_code"]),
                          ("FAB-10X10", work_order.work_centre.code if work_order.work_centre_id else ""))

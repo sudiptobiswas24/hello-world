@@ -44,7 +44,7 @@ export interface ListViewProps<T> {
 const SIZES = [50, 100, 200];
 const RESERVED = new Set(["q", "page", "size", "ordering"]);
 
-function cell<T>(column: Column<T>, row: T): ReactNode {
+export function cell<T>(column: Column<T>, row: T): ReactNode {
   if (column.render) return column.render(row);
   const value = (row as Record<string, unknown>)[column.key];
   switch (column.kind) {

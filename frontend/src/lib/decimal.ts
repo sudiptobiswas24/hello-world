@@ -44,3 +44,36 @@ export function aboveZero(value: string | null | undefined): boolean {
   if (!match) throw new Error(`Not a number: ${value}`);
   return match[1] !== "-" && /[1-9]/.test(`${match[2]}${match[3] ?? ""}`);
 }
+
+/** A decimal string as a whole number scaled by 10^places, rounded half away from zero. */
+function scaled(value: string | number | null | undefined, places: number): bigint {
+  const match = String(value ?? "0").trim().match(/^([+-]?)(\d*)(?:\.(\d*))?$/);
+  if (!match) throw new Error(`Not a number: ${value}`);
+  const fraction = (match[3] ?? "").padEnd(places + 1, "0");
+  let size = BigInt(match[2] || "0") * 10n ** BigInt(places) + BigInt(fraction.slice(0, places) || "0");
+  if (Number(fraction[places]) >= 5) size += 1n;
+  return match[1] === "-" ? -size : size;
+}
+
+/** `whole` / `by` to `places`, rounded half away from zero, as a string. */
+export function divide(whole: bigint, by: bigint, places: number): string {
+  if (by === 0n) throw new Error("Division by nothing");
+  const negative = (whole < 0n) !== (by < 0n);
+  const [a, b] = [whole < 0n ? -whole : whole, by < 0n ? -by : by];
+  const unit = 10n ** BigInt(places);
+  const quotient = (a * unit * 2n + b) / (b * 2n);
+  const text = places ? `${quotient / unit}.${String(quotient % unit).padStart(places, "0")}` : String(quotient);
+  return negative && quotient !== 0n ? `-${text}` : text;
+}
+
+/** Minutes, as a quantity string, in hours to one place: "90.00" reads "1.5". */
+export function minutesAsHours(minutes: string | number | null | undefined): string {
+  if (minutes === null || minutes === undefined || minutes === "") return "";
+  return divide(scaled(minutes, 4), 600000n, 1); // minutes x 10^4, over 60 x 10^4
+}
+
+/** A ratio ("0.8234") as a percentage to one place ("82.3%"); a missing one reads "—". */
+export function asPercent(ratio: string | number | null | undefined): string {
+  if (ratio === null || ratio === undefined || ratio === "") return "—";
+  return `${divide(scaled(ratio, 6), 10000n, 1)}%`; // ratio x 10^6 x 100, over 10^6
+}

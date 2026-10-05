@@ -314,20 +314,29 @@ class CustomerMaterialReturnSerializer(serializers.ModelSerializer):
 
 
 class EnergyMeterSerializer(serializers.ModelSerializer):
+    serves = serializers.SerializerMethodField()
+
     class Meta:
         model = EnergyMeter
-        fields = ["id", "code", "machine", "work_centre", "multiplier", "installed_on",
+        fields = ["id", "code", "machine", "work_centre", "serves", "multiplier", "installed_on",
                   "initial_reading", "retired_on"]
+
+    def get_serves(self, obj):
+        return str(obj.serves())
         # The model's own save says why a pair is wrong; the serializer's
         # generic unique-together message would not.
         validators = []
 
 
 class MeterReadingSerializer(serializers.ModelSerializer):
+    meter_code = serializers.CharField(source="meter.code", read_only=True)
+    shift_name = serializers.CharField(source="shift.name", read_only=True, default="")
+    read_by_name = serializers.CharField(source="read_by.party.name", read_only=True, default="")
+
     class Meta:
         model = MeterReading
-        fields = ["id", "meter", "shift_date", "shift", "reading", "read_by", "voided_at",
-                  "voided_reason"]
+        fields = ["id", "meter", "meter_code", "shift_date", "shift", "shift_name", "reading",
+                  "read_by", "read_by_name", "voided_at", "voided_reason"]
         read_only_fields = ["voided_at", "voided_reason"]
         validators = []
 
@@ -468,9 +477,14 @@ class MaintenanceScheduleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MaintenanceSchedule
-        fields = ["id", "work_centre", "machine", "name", "every_days",
+        fields = ["id", "work_centre", "machine", "serves", "name", "every_days",
                   "every_run_hours", "duration_minutes", "last_done_on",
                   "is_active", "notes", "hours_remaining", "due_on", "is_due"]
+
+    serves = serializers.SerializerMethodField()
+
+    def get_serves(self, obj):
+        return str(obj.machine or obj.work_centre)
 
     def get_hours_remaining(self, obj):
         return obj.hours_remaining()
@@ -483,11 +497,17 @@ class MaintenanceScheduleSerializer(serializers.ModelSerializer):
 
 
 class MaintenanceJobSerializer(serializers.ModelSerializer):
+    serves = serializers.SerializerMethodField()
+    title = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    schedule_name = serializers.CharField(source="schedule.name", read_only=True, default="")
+    technician_name = serializers.CharField(source="technician.party.name", read_only=True, default="")
+
     class Meta:
         model = MaintenanceJob
-        fields = ["id", "schedule", "work_centre", "machine", "due_on",
-                  "planned_minutes", "done_on", "actual_minutes", "downtime",
-                  "notes", "is_breakdown", "fault", "technician", "cause",
+        fields = ["id", "schedule", "schedule_name", "work_centre", "machine", "serves", "title",
+                  "status", "due_on", "planned_minutes", "done_on", "actual_minutes", "downtime",
+                  "notes", "is_breakdown", "fault", "technician", "technician_name", "cause",
                   "action_taken", "cancelled_at", "cancelled_reason", "labour_minutes"]
         read_only_fields = ["done_on", "actual_minutes", "downtime", "is_breakdown", "cause",
                             "action_taken", "cancelled_at", "cancelled_reason"]
@@ -496,6 +516,46 @@ class MaintenanceJobSerializer(serializers.ModelSerializer):
 
     def get_labour_minutes(self, obj):
         return str(obj.labour_minutes())
+
+    def get_serves(self, obj):
+        return str(obj.machine or obj.work_centre)
+
+    def get_title(self, obj):
+        # What the job is, in the words it was raised with.
+        return (obj.schedule.name if obj.schedule_id else obj.fault) or obj.notes or "Repair"
+
+    def get_status(self, obj):
+        return "cancelled" if obj.cancelled_at else "done" if obj.done_on else "open"
+
+
+class MaintenanceJobDetailSerializer(MaintenanceJobSerializer):
+    """One job, with the fitters' time and the spares on it."""
+
+    labour = serializers.SerializerMethodField()
+    spares = serializers.SerializerMethodField()
+    spares_value = serializers.SerializerMethodField()
+
+    class Meta(MaintenanceJobSerializer.Meta):
+        fields = MaintenanceJobSerializer.Meta.fields + ["labour", "spares", "spares_value"]
+
+    def get_labour(self, obj):
+        return [{"id": row.pk, "technician_name": row.technician.party.name,
+                 "worked_on": row.worked_on, "minutes": str(row.minutes)}
+                for row in obj.labour.select_related("technician__party")]
+
+    def get_spares(self, obj):
+        rows = []
+        for issue in obj.spares.select_related("adjustment").prefetch_related("adjustment__lines__item"):
+            rows.append({
+                "id": issue.pk, "adjustment": issue.adjustment.number,
+                "items": ", ".join(f"{line.item.sku} x {abs(line.quantity).normalize():f}"
+                                   for line in issue.adjustment.lines.all()),
+                "value": str(issue.value()), "standing": issue.is_standing(),
+            })
+        return rows
+
+    def get_spares_value(self, obj):
+        return str(obj.spares_value())
 
 
 class PrintDesignSerializer(serializers.ModelSerializer):
@@ -856,11 +916,20 @@ class DowntimeReasonSerializer(serializers.ModelSerializer):
 
 class DowntimeSerializer(serializers.ModelSerializer):
     hours = serializers.SerializerMethodField()
+    serves = serializers.SerializerMethodField()
+    reason_name = serializers.CharField(source="reason.name", read_only=True, default="")
+    is_planned = serializers.BooleanField(source="reason.is_planned", read_only=True, default=False)
+    shift_name = serializers.CharField(source="shift.name", read_only=True, default="")
+    work_order_number = serializers.CharField(source="work_order.number", read_only=True, default="")
 
     class Meta:
         model = Downtime
-        fields = ["id", "number", "work_centre", "machine", "shift_date",
-                  "shift", "reason", "minutes", "hours", "work_order", "notes"]
+        fields = ["id", "number", "work_centre", "machine", "serves", "shift_date",
+                  "shift", "shift_name", "reason", "reason_name", "is_planned", "minutes", "hours",
+                  "work_order", "work_order_number", "notes"]
+
+    def get_serves(self, obj):
+        return str(obj.machine or obj.work_centre)
         read_only_fields = ["number"]
 
     def get_hours(self, obj):

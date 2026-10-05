@@ -91,6 +91,7 @@ def _order_lines():
 
 
 class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    extra_params = ('to_ship',)
     search_fields = ["number", "reference", "customer__code", "customer__name"]
     filter_fields = ["customer", "status", "sales_rep"]
     date_field = "order_date"
@@ -268,6 +269,7 @@ class SuppliedItemViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.M
 
 
 class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    extra_params = ('open',)
     search_fields = ["number", "reference", "customer__code", "customer__name", "sales_order__number"]
     filter_fields = ["customer", "posted", "credits", "credits__isnull", "is_down_payment",
                      "sales_order", "receivable_account", "currency"]

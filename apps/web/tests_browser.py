@@ -78,8 +78,10 @@ class BrowserMixin:
         page = context.new_page()
         page.on("console", lambda message: message.type == "error" and self.problems.append(message.text))
         page.on("pageerror", lambda error: self.problems.append(str(error)))
-        page.on("response", lambda response: response.status in (403, 404) and self.problems.append(
-            f"{response.status} {response.url}"))
+        # A refusal, a missing page or a server fault, with its address:
+        # the console says only "status of 500", not which request.
+        page.on("response", lambda response: (response.status in (403, 404) or response.status >= 500)
+                and self.problems.append(f"{response.status} {response.url}"))
         # A question nobody expected (leave and lose your changes?) is a
         # fault; a test that means to answer one says so with answering().
         def unexpected(dialog):
