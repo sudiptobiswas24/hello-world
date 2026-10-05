@@ -18,7 +18,7 @@ from apps.core.api import Search
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.inventory.models import MovementType, StockMovement
 from apps.sales.models import Invoice, InvoiceLine
-from apps.sales.tests_base import SalesTestCase
+from apps.sales.tests_base import SalesTestCase, carries_every_customer
 
 INVOICES = "/api/sales/invoices/"
 
@@ -34,6 +34,8 @@ class ListSearchTestCase(SalesTestCase):
     def as_(self, role):
         user = User.objects.create_user(role.replace(" ", "_"))
         user.groups.add(Group.objects.get(name=role))
+        if role == "Sales Rep":
+            carries_every_customer(user)
         client = APIClient()
         client.force_authenticate(user)
         return client

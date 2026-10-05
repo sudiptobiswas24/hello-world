@@ -164,6 +164,38 @@ class SalesInTheBrowserTests(BrowserTestCase):
         rep.get_by_role("combobox", name="Customer").fill("Kisan")
         expect(rep.get_by_role("option", name=re.compile("Kisan Feeds"))).to_be_visible()
 
+    def test_the_ar_manager_gives_a_customer_to_a_rep_who_then_sees_only_theirs(self):
+        from apps.core.models import PartyRoleAssignment
+        from apps.sales.models import CustomerProfile
+
+        rep = self.person("Sales Rep")  # carries the customers there are now: Acme
+        made = []
+        for code, name in (("C-80", "Beta Cement"), ("C-81", "Gamma Fertiliser")):
+            party = Party.objects.create(code=code, name=name)
+            PartyRoleAssignment.objects.create(party=party, role=PartyRole.CUSTOMER)
+            made.append(party)
+        beta, gamma = made
+        ar = self.sign_in(self.person("AR Manager"), f"/app/sales/customers/{beta.pk}")
+        terms = ar.get_by_role("region", name="Sales terms")
+        terms.get_by_label("Sales rep").select_option(label=rep.employee.party.name)
+        terms.get_by_role("button", name="Save").click()
+        self.toast(ar, "Saved")
+        self.assertEqual(CustomerProfile.objects.get(party=beta).sales_rep, rep.employee.party)
+
+        page = self.sign_in(rep, "/app/sales/customers", page=self.new_page())
+        expect(page.get_by_role("row", name=re.compile("Beta Cement"))).to_be_visible()
+        expect(page.get_by_role("row", name=re.compile(self.customer.name))).to_be_visible()
+        expect(page.get_by_text("Gamma Fertiliser")).to_have_count(0)
+        # And what they cannot see is not found, not shown.
+        page.goto(self.url(f"/sales/customers/{gamma.pk}"))
+        expect(page.locator(".error-panel")).to_contain_text("Not found")
+        page.wait_for_load_state("networkidle")
+        self.problems.clear()  # that 404 was asked for
+        # Their terms are read, not changed: a rep cannot hand a customer on.
+        page.goto(self.url(f"/sales/customers/{beta.pk}"))
+        expect(page.get_by_role("region", name="Sales terms")).to_contain_text(rep.employee.party.name)
+        expect(page.get_by_role("region", name="Sales terms").get_by_role("combobox")).to_have_count(0)
+
     def test_a_duplicate_code_is_said_beside_the_field(self):
         rep = self.sign_in(self.person("Sales Rep"), "/app/sales/customers/new")
         rep.get_by_label("Code", exact=True).fill("C-1")  # Acme's

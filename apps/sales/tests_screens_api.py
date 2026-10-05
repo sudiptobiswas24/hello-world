@@ -15,7 +15,7 @@ from rest_framework.test import APIClient
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.sales.models import Delivery, SalesOrder, SalesOrderLine
-from apps.sales.tests_base import SalesTestCase
+from apps.sales.tests_base import SalesTestCase, carries_every_customer
 
 DAY = datetime.date(2026, 3, 5)
 
@@ -28,6 +28,8 @@ class ScreensTestCase(SalesTestCase):
     def as_(self, role):
         user, _ = User.objects.get_or_create(username=role.replace(" ", "_"))
         user.groups.add(Group.objects.get(name=role))
+        if role == "Sales Rep":
+            carries_every_customer(user)
         client = APIClient()
         client.force_authenticate(user)
         return client
@@ -155,7 +157,10 @@ class DeletingWhatIsUsedTests(ScreensTestCase):
 
         self.make_order()
         user = User.objects.create_user("tidier")
-        user.user_permissions.set(Permission.objects.filter(codename__in=["delete_party", "view_party"]))
+        # Not a rep: someone who reads parties sees every customer only
+        # when told so, or they would see none (tests_reps).
+        user.user_permissions.set(Permission.objects.filter(
+            codename__in=["delete_party", "view_party", "view_every_customer"]))
         client = APIClient()
         client.force_authenticate(user)
         response = client.delete(f"/api/core/parties/{self.customer.pk}/")
@@ -431,9 +436,9 @@ class NamesOnListsTests(ScreensTestCase):
 
 
 class CustomerWithItsRoleTests(ScreensTestCase):
-    def create(self, **body):
-        return self.as_("Sales Rep").post("/api/core/parties/", {"code": "C-9", "name": "Kisan Feeds", **body},
-                                          format="json")
+    def create(self, as_="Sales Rep", **body):
+        return self.as_(as_).post("/api/core/parties/", {"code": "C-9", "name": "Kisan Feeds", **body},
+                                  format="json")
 
     def test_a_role_that_is_not_trading_is_refused_and_nothing_is_made(self):
         response = self.create(role=PartyRole.EMPLOYEE)
@@ -455,7 +460,8 @@ class CustomerWithItsRoleTests(ScreensTestCase):
         self.assertEqual(PartyRoleAssignment.objects.filter(party__name="Kisan Feeds").count(), 0)
 
     def test_without_a_role_none_is_given(self):
-        self.assertEqual(self.create().status_code, 201)
+        # Not by a rep, who makes customers only (tests_reps).
+        self.assertEqual(self.create(as_="Purchasing Clerk").status_code, 201)
         self.assertFalse(Party.objects.get(code="C-9").role_assignments.exists())
 
 

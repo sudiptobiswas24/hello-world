@@ -20,7 +20,7 @@ from django.core.management import call_command
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.sales.models import Invoice, InvoiceLine
-from apps.sales.tests_base import SalesTestCase
+from apps.sales.tests_base import SalesTestCase, carries_every_customer
 
 try:
     from playwright.sync_api import expect, sync_playwright
@@ -123,6 +123,8 @@ class BrowserMixin:
         """person() by a name no fixture uses: payroll's keeps an employee in self.person."""
         user = User.objects.create_user(role.replace(" ", "_").lower(), password=PASSWORD, first_name="Asha")
         user.groups.add(Group.objects.get(name=role))
+        if role == "Sales Rep":
+            carries_every_customer(user)
         return user
 
     def sign_in(self, user, path="/app/", page=None):

@@ -9,7 +9,8 @@ still carries the business, so a problem costs a day, not a month-end.
 
 1. Install on the server (RUNBOOK.md) and restore nothing yet.
 2. Import a **copy** of the old system's records as they stand on the
-   pilot's first day (docs/IMPORT.md), employees and logins included.
+   pilot's first day (docs/IMPORT.md), employees and logins included,
+   and which rep carries each customer: a rep sees only their own.
 3. `python manage.py go_live_check` until it reports no failure, and
    read its warnings aloud to whoever owns each.
 4. Pick the people: two or three per desk, the ones who will be asked

@@ -45,12 +45,15 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         leave = LeaveRequest.objects.get()
         self.assertEqual((leave.employee, leave.policy, leave.start_date, leave.status),
                          (weaver, self.policy, datetime.date(2026, 11, 2), LeaveStatus.PENDING))
-        expect(asker.get_by_role("button", name="Approve")).to_have_count(0)  # nobody approves their own
+        expect(asker.get_by_role("button", name="Approve", exact=True)).to_have_count(0)  # nobody approves their own
 
         manager = self.new_page()
         self.sign_in(self.linked("Line Manager", self.boss), "/app/payroll/leave", page=manager)
         manager.locator("tbody tr", has_text="W-1").click()
-        manager.get_by_role("button", name="Approve").click()
+        # The request's own page, not the list: there "Approve" also names
+        # the Approved filter, and a slow run clicked that instead.
+        manager.wait_for_url(re.compile(rf"/payroll/leave/{leave.pk}$"))
+        manager.get_by_role("button", name="Approve", exact=True).click()
         expect(manager.locator(".pill", has_text="approved")).to_be_visible()
         leave.refresh_from_db()
         self.assertEqual((leave.status, leave.decided_by), (LeaveStatus.APPROVED, self.boss))
@@ -66,7 +69,7 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         leave = self.request(weaver, datetime.date(2026, 11, 9), datetime.date(2026, 11, 9))
         hr = self.sign_in(self.linked("HR Admin", self.employee("HR-1", manager=None)),
                           f"/app/payroll/leave/{leave.pk}")
-        hr.get_by_role("button", name="Approve").click()
+        hr.get_by_role("button", name="Approve", exact=True).click()
         expect(hr.locator(".pill", has_text="approved")).to_be_visible()
         leave.refresh_from_db()
         self.assertEqual(leave.status, LeaveStatus.APPROVED)

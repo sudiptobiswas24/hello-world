@@ -117,6 +117,32 @@ def _people(add):
             f"{', '.join(nobody)}: HR decides their leave until a manager is set.")
     if not User.objects.filter(is_active=True, is_superuser=True).exists():
         add(WARN, "Administrator", "No active superuser: nobody can open the admin.")
+    _reps(add, users)
+
+
+def _reps(add, users):
+    """Reps see their own customers only: one who is nobody's rep sees none."""
+    from apps.sales.models import CustomerProfile, SalesRep
+    from apps.sales.scoping import UNLIMITED, rep_limit
+
+    limited = [user for user in users.filter(groups__name="Sales Rep").distinct()
+               if rep_limit(user) is not UNLIMITED]
+    if not limited:
+        return
+    lost = sorted(user.username for user in limited if not SalesRep.objects.filter(
+        party__employee_profile__user=user, is_active=True).exists())
+    if lost:
+        add(WARN, "Sales reps who carry nobody",
+            f"{', '.join(lost)}: no active sales rep record on their employee, so they see "
+            "no customer and can make none.")
+    from apps.core.models import Party, PartyRole
+
+    loose = Party.objects.filter(role_assignments__role=PartyRole.CUSTOMER, is_active=True).exclude(
+        pk__in=CustomerProfile.objects.filter(sales_rep__isnull=False).values("party"))
+    if loose.exists():
+        add(WARN, "Customers with no rep",
+            f"{loose.count()} customer(s) are nobody's: no rep sees them until one is set "
+            "on the customer's sales terms.")
 
 
 def _books(add):

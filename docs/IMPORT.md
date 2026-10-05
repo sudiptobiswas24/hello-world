@@ -1,18 +1,19 @@
 # Bringing the old system's records in
 
 Once, at go-live, from CSV files saved out of the old system or a
-spreadsheet (UTF-8; a spreadsheet's byte-order mark is fine). Seven
+spreadsheet (UTF-8; a spreadsheet's byte-order mark is fine). Eight
 kinds, brought in in this order, because each needs the one before:
 
 | Order | Kind | What it makes |
 |---|---|---|
 | 1 | `parties` | Customers, vendors, with GST details, credit limit, billing address |
 | 2 | `employees` | Employees with department and manager, and their logins and roles |
-| 3 | `items` | Items with their unit, HSN and costing |
-| 4 | `opening_stock` | One posted stock adjustment a warehouse |
-| 5 | `open_invoices` | Posted invoices still owed, one per old invoice |
-| 6 | `open_bills` | Posted bills still owing, one per old bill |
-| 7 | `opening_balances` | One posted journal entry for every other balance |
+| 3 | `customer_reps` | Which rep each customer belongs to |
+| 4 | `items` | Items with their unit, HSN and costing |
+| 5 | `opening_stock` | One posted stock adjustment a warehouse |
+| 6 | `open_invoices` | Posted invoices still owed, one per old invoice |
+| 7 | `open_bills` | Posted bills still owing, one per old bill |
+| 8 | `opening_balances` | One posted journal entry for every other balance |
 
 ```bash
 python manage.py import_csv parties parties.csv --template   # a blank file to fill in
@@ -77,13 +78,22 @@ employee number; a party that exists is given the employee role),
 manager's employee number, in this file or already in), `job_title`,
 `email`, `username` (the login: made if new, linked if it exists and
 is no one else's), `roles` (role names separated by `;`, such as
-`Line Manager;Employee Self Service`; needs `username`).
+`Line Manager;Employee Self Service`; needs `username`), `sales_rep`
+(`yes` makes them a sales rep, who can then carry customers).
 
 With `--commit`, `--passwords-out <file>` is required: each new login's
 first password is written there, readable only by whoever ran the
 import, and never shown on the screen. Hand each out, have it changed at
 the first sign-in, and delete the file. Someone with no manager and no
 department manager has their leave decided by HR, who may decide anyone's.
+
+### customer_reps
+
+`customer*` (code), `rep*` (the rep's employee number, made a rep with
+`sales_rep` yes in the employees file). A rep sees their own customers
+and nobody else's, so a customer left out here is seen by no rep until
+the AR Manager sets one on the customer's sales terms; `go_live_check`
+counts them. Run again to move a customer to another rep.
 
 ### items
 

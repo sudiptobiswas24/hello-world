@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .audit import AuditableViewSetMixin
+from .scoping import created, refuse_change, refuse_create, scoped, visible_parties
 from .models import (
     Address,
     Company,
@@ -84,35 +85,90 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # clerk's to do from a sales screen.
     TRADING_ROLES = {PartyRole.CUSTOMER, PartyRole.VENDOR}
 
+    def get_queryset(self):
+        return scoped(super().get_queryset(), self.request.user)
+
     def perform_create(self, serializer):
         role = self.request.data.get("role")
         if role is not None and role not in self.TRADING_ROLES:
             raise DRFValidationError({"role": [f"A new party can be made a customer or a vendor here, not {role!r}."]})
         user = self.request.user
+        said = refuse_create(user, role)
+        if said:
+            raise DRFValidationError([said])
         with transaction.atomic():
             # Who made it, as AuditableViewSetMixin would have said: this
             # override had dropped it for every party made in the office.
             party = serializer.save(created_by=user, updated_by=user)
             if role is not None:
                 PartyRoleAssignment.objects.create(party=party, role=role, created_by=user, updated_by=user)
+            created(party, role, user)
+
+    def perform_update(self, serializer):
+        said = refuse_change(self.request.user, serializer.instance)
+        if said:
+            raise DRFValidationError([said])
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        said = refuse_change(self.request.user, instance)
+        if said:
+            raise DRFValidationError([said])
+        super().perform_destroy(instance)
 
 
-class PartyRoleAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class PartyScopedMixin:
+    """
+    A record that belongs to a party (an address, a contact): read only
+    where the party may be seen, and made or moved only onto one that may
+    be changed.
+    """
+
+    def get_queryset(self):
+        return scoped(super().get_queryset(), self.request.user, "party")
+
+    def _check_party(self, serializer):
+        party = serializer.validated_data.get("party") or getattr(serializer.instance, "party", None)
+        if party is None:
+            return
+        limit = visible_parties(self.request.user)
+        if limit is not None and not Party.objects.filter(limit, pk=party.pk).exists():
+            raise DRFValidationError({"party": ["Not one of the parties you can see."]})
+        said = refuse_change(self.request.user, party)
+        if said:
+            raise DRFValidationError({"party": [said]})
+
+    def perform_create(self, serializer):
+        self._check_party(serializer)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._check_party(serializer)
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        said = refuse_change(self.request.user, instance.party)
+        if said:
+            raise DRFValidationError([said])
+        super().perform_destroy(instance)
+
+
+class PartyRoleAssignmentViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyRoleAssignment.objects.all()
     serializer_class = PartyRoleAssignmentSerializer
 
 
-class AddressViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class AddressViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Address.objects.select_related("country", "party")
     serializer_class = AddressSerializer
 
 
-class ContactViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class ContactViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Contact.objects.select_related("party")
     serializer_class = ContactSerializer
 
 
-class PartyBankAccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class PartyBankAccountViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyBankAccount.objects.select_related("party", "currency")
     serializer_class = PartyBankAccountSerializer
 

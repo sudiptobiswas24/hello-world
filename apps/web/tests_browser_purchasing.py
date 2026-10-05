@@ -132,7 +132,7 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         buyer = self.sign_in(self.person("Purchasing Clerk"), "/app/purchasing/orders")
         order = self.raise_order(buyer, "100", price="4")
         expect(buyer.get_by_role("note")).to_contain_text("above the 100")
-        expect(buyer.get_by_role("button", name="Approve")).to_have_count(0)
+        expect(buyer.get_by_role("button", name="Approve", exact=True)).to_have_count(0)
         buyer.get_by_role("button", name="Confirm", exact=True).click()
         expect(buyer.locator(".toast-bad", has_text="needs approval")).to_be_visible()
         order.refresh_from_db()
@@ -140,7 +140,7 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
 
         approver = self.new_page()
         self.sign_in(self.person("AP Manager"), f"/app/purchasing/orders/{order.pk}", page=approver)
-        approver.get_by_role("button", name="Approve").click()
+        approver.get_by_role("button", name="Approve", exact=True).click()
         expect(approver.get_by_role("note")).to_have_count(0)
         order.refresh_from_db()
         self.assertIsNotNone(order.approved_at)

@@ -27,7 +27,7 @@ from apps.purchasing.models import (
     PurchaseOrderLine,
 )
 from apps.sales.models import Invoice, SalesOrder, SalesOrderLine
-from apps.sales.tests_base import SalesTestCase
+from apps.sales.tests_base import SalesTestCase, carries_every_customer
 
 DAY = datetime.date(2026, 3, 2)
 
@@ -43,6 +43,8 @@ class DefaultsTestCase(SalesTestCase):
     def as_(self, role):
         user = User.objects.create_user(role.replace(" ", "_"))
         user.groups.add(Group.objects.get(name=role))
+        if role == "Sales Rep":
+            carries_every_customer(user)
         client = APIClient()
         client.force_authenticate(user)
         return client

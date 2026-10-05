@@ -20,7 +20,7 @@ from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from apps.sales.models import Delivery, Invoice
-from apps.sales.tests_base import SalesTestCase
+from apps.sales.tests_base import SalesTestCase, carries_every_customer
 
 
 class LifecycleTestCase(SalesTestCase):
@@ -31,6 +31,8 @@ class LifecycleTestCase(SalesTestCase):
     def as_(self, role):
         user = User.objects.create_user(f"{role.replace(' ', '_').lower()}-{User.objects.count()}")
         user.groups.add(Group.objects.get(name=role))
+        if role == "Sales Rep":
+            carries_every_customer(user)
         client = APIClient()
         client.force_authenticate(user)
         return client

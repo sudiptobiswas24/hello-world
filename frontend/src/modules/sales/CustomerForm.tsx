@@ -1,12 +1,14 @@
 import { RelatedList } from "../../forms/Related";
 import { date, money } from "../../lib/format";
 import { PartyForm } from "../parties/PartyForm";
+import { SalesTerms } from "./SalesTerms";
 
 /** A customer: who they are, their open orders and what they owe. */
 export default function CustomerForm() {
   return (
     <PartyForm role="customer" base="/sales/customers" plural="Customers" related={(party) => (
       <>
+        <SalesTerms party={party.id} />
         <RelatedList title="Open orders" endpoint="/api/sales/sales-orders/" permission="sales.view_salesorder"
           query={{ customer: party.id, status: "confirmed" }} href={(row) => `/sales/orders/${row.id}`}
           cells={(row) => [String(row.number), date(String(row.order_date)), money(String(row.total))]} />

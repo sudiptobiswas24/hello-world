@@ -30,6 +30,7 @@ from .price_variation import (
     bill_variation,
     rows_for,
 )
+from .scoping import CustomerScopedMixin
 
 
 def _run(callable_, *args, **kwargs):
@@ -102,12 +103,14 @@ class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                         status=201 if request.method == "POST" else 200)
 
 
-class PriceClauseViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class PriceClauseViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "order_line__order__customer"
     queryset = PriceVariationClause.objects.select_related("index", "order_line")
     serializer_class = PriceClauseSerializer
 
 
-class PriceVariationBillViewSet(AuditableViewSetMixin, viewsets.GenericViewSet):
+class PriceVariationBillViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.GenericViewSet):
+    customer_path = "order__customer"
     queryset = PriceVariationBill.objects.select_related("order")
     action_permission_map = {"cancel": "sales.change_pricevariationbill",
                              "preview": "sales.view_pricevariationbill"}

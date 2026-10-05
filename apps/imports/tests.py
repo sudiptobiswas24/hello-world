@@ -277,6 +277,36 @@ def read_passwords(path):
         return [(row["username"], row["first_password"]) for row in csv.DictReader(handle)]
 
 
+class CustomerRepsTests(ImportTestCase):
+    """Reps marked in the employees file, then their customers, by code."""
+
+    def setUp(self):
+        super().setUp()
+        call_command("setup_roles", verbosity=0)
+        self.assertTrue(run("parties", PARTIES, commit=True).committed)
+        report = run("employees", "employee_number,name,hire_date,sales_rep\n"
+                     "E-1,Asha Rep,2026-01-01,yes\nE-2,Clerk,2026-01-01,no\n", commit=True)
+        self.assertTrue(report.committed, report.errors)
+
+    def test_a_customer_carried_by_someone_not_a_rep_is_refused(self):
+        report = run("customer_reps", "customer,rep\nC-100,E-2\nV-100,E-1\nC-100,E-9\n")
+        self.assertEqual(self.errors(report), [(2, "rep"), (3, "customer"), (4, "rep")])
+
+    def test_customers_are_given_their_rep(self):
+        from apps.hr.models import Employee
+        from apps.sales.models import SalesRep
+
+        rep = Employee.objects.get(employee_number="E-1").party
+        self.assertTrue(SalesRep.objects.filter(party=rep).exists())
+        self.assertFalse(SalesRep.objects.filter(party__employee_profile__employee_number="E-2").exists())
+        report = run("customer_reps", "customer,rep\nC-100,E-1\nB-100,E-1\n", commit=True)
+        self.assertTrue(report.committed, report.errors)
+        carried = Party.objects.filter(customer_profile__sales_rep=rep)
+        self.assertEqual(sorted(carried.values_list("code", flat=True)), ["B-100", "C-100"])
+        # C-100's credit limit, from the parties file, is kept.
+        self.assertEqual(Party.objects.get(code="C-100").customer_profile.credit_limit, Decimal("500000"))
+
+
 class TemplatesTests(ImportTestCase):
     def test_each_kind_has_a_blank_file_that_reads_back_as_no_rows(self):
         import os

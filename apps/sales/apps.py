@@ -8,7 +8,10 @@ class SalesConfig(AppConfig):
 
     def ready(self):
         from apps.accounting.settlement import register_allocation_model
+        from apps.core.scoping import register_party_scope
 
         from .models import InvoicePayment
+        from .scoping import SalesScope
 
         register_allocation_model(InvoicePayment)
+        register_party_scope(SalesScope())

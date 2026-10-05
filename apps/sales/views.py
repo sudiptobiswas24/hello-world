@@ -56,6 +56,7 @@ from .models import (
     run_dunning,
     still_owed,
 )
+from .scoping import UNLIMITED, CustomerScopedMixin, carried_by, rep_limit
 from .serializers import (
     SuppliedItemSerializer,
     ThirdPartyReleaseSerializer,
@@ -89,7 +90,7 @@ def _order_lines():
     )
 
 
-class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "customer__code", "customer__name"]
     filter_fields = ["customer", "status", "sales_rep"]
     date_field = "order_date"
@@ -207,7 +208,8 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(InvoiceSerializer(invoice).data, status=201)
 
 
-class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class SalesOrderLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "order__customer"
     queryset = _order_lines().select_related("order__customer__tax_profile")
     serializer_class = SalesOrderLineSerializer
     action_permission_map = {"close_short": "sales.change_salesorder",
@@ -244,7 +246,8 @@ class SalesOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         })
 
 
-class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class SuppliedItemViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "order__customer"
     """What the customer sends for a job-work order; settled once it is confirmed."""
 
     queryset = SuppliedItem.objects.select_related("order", "item")
@@ -264,7 +267,7 @@ class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError(exc.messages)
 
 
-class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "customer__code", "customer__name", "sales_order__number"]
     filter_fields = ["customer", "posted", "credits", "credits__isnull", "is_down_payment",
                      "sales_order", "receivable_account", "currency"]
@@ -327,6 +330,7 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 date_from=request.query_params.get("from"),
                 date_to=request.query_params.get("to"),
                 group_by=request.query_params.get("group_by", "customer"),
+                invoices=self.get_queryset(),
             )
         except ValueError as exc:
             raise DRFValidationError(str(exc))
@@ -335,7 +339,7 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def aging(self, request):
         """AR aging: outstanding invoices bucketed by days overdue."""
-        buckets = ar_aging(as_of=request.query_params.get("as_of"))
+        buckets = ar_aging(as_of=request.query_params.get("as_of"), invoices=self.get_queryset())
         return Response({
             key: {
                 "count": bucket["count"],
@@ -373,14 +377,16 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(credit_note).data)
 
 
-class InvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class InvoiceLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "invoice__customer"
     queryset = InvoiceLine.objects.select_related(
         "invoice__customer__tax_profile", "item", "credits_line"
     ).prefetch_related("taxes", "recorded_taxes__tax")
     serializer_class = InvoiceLineSerializer
 
 
-class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class InvoicePaymentViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "invoice__customer"
     filter_fields = ["invoice", "payment"]
 
     queryset = InvoicePayment.objects.select_related("invoice", "payment")
@@ -393,7 +399,8 @@ class InvoicePaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError(exc.messages)
 
 
-class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "sales_order__customer"
     search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name"]
     filter_fields = ["sales_order", "posted", "reverses", "reverses__isnull"]
     date_field = "delivery_date"
@@ -450,7 +457,8 @@ class DeliveryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(payload)
 
 
-class DeliveryLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class DeliveryLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "delivery__sales_order__customer"
     queryset = DeliveryLine.objects.select_related("delivery", "order_line", "warehouse")
     serializer_class = DeliveryLineSerializer
 
@@ -465,9 +473,11 @@ class PriceListItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = PriceListItemSerializer
 
 
-class CustomerProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = CustomerProfile.objects.select_related("party", "price_list")
+class CustomerProfileViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "party"
+    queryset = CustomerProfile.objects.select_related("party", "price_list", "sales_rep")
     serializer_class = CustomerProfileSerializer
+    filter_fields = ["party", "sales_rep"]
 
     @action(detail=True, methods=["get"])
     def exposure(self, request, pk=None):
@@ -482,7 +492,7 @@ class CustomerProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         })
 
 
-class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "customer__code", "customer__name"]
     filter_fields = ["customer", "status"]
     date_field = "quotation_date"
@@ -565,7 +575,8 @@ class QuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(SalesOrderSerializer(order).data)
 
 
-class QuotationLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class QuotationLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "quotation__customer"
     queryset = QuotationLine.objects.select_related("quotation", "item")
     serializer_class = QuotationLineSerializer
 
@@ -590,7 +601,8 @@ class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(DunningNoticeSerializer(notices, many=True).data)
 
 
-class DunningNoticeViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class DunningNoticeViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    customer_path = "invoice__customer"
     queryset = DunningNotice.objects.select_related("invoice", "level")
     serializer_class = DunningNoticeSerializer
 
@@ -612,10 +624,12 @@ class CommissionPlanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class SalesRepViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = SalesRep.objects.select_related("party", "plan")
+    filter_fields = ["is_active"]
+    search_fields = ["party__code", "party__name"]
     serializer_class = SalesRepSerializer
 
 
-class RecurringInvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = RecurringInvoice.objects.prefetch_related("lines")
     serializer_class = RecurringInvoiceSerializer
     action_permission_map = {"run": "sales.add_invoice"}
@@ -637,7 +651,8 @@ class RecurringInvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response(InvoiceSerializer(issued, many=True).data)
 
 
-class RecurringInvoiceLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+class RecurringInvoiceLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+    customer_path = "schedule__customer"
     queryset = RecurringInvoiceLine.objects.select_related("schedule", "item")
     serializer_class = RecurringInvoiceLineSerializer
 
@@ -679,7 +694,7 @@ class SalesReportViewSet(viewsets.ViewSet):
         return Response({"sent": len(sent) if sent is not None else 0})
 
 
-class ThirdPartyReleaseViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+class ThirdPartyReleaseViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     """An agency's inspection certificate, entered and posted in one step."""
 
     queryset = ThirdPartyRelease.objects.select_related("customer", "agency").prefetch_related(

@@ -360,6 +360,13 @@ ROLES = {
     ],
 }
 
+# Every role that reads parties sees every customer, but a rep, who sees
+# their own (apps/sales/scoping.py). Given here rather than in each list
+# so a role added later is not quietly limited to nobody's customers.
+for _role, _permissions in ROLES.items():
+    if _role != "Sales Rep" and "core.view_party" in _permissions:
+        _permissions.append("sales.view_every_customer")
+
 
 class Command(BaseCommand):
     help = "Create or update the default role groups and their permissions."

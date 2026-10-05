@@ -191,12 +191,15 @@ class PriceListSerializer(serializers.ModelSerializer):
 
 
 class CustomerProfileSerializer(serializers.ModelSerializer):
+    sales_rep_name = serializers.CharField(source="sales_rep.name", read_only=True, default="")
+    price_list_name = serializers.CharField(source="price_list.name", read_only=True, default="")
+
     class Meta:
         model = CustomerProfile
-        fields = ["id", "party", "price_list", "credit_limit", "virgin_only",
+        fields = ["id", "party", "price_list", "price_list_name", "credit_limit", "virgin_only",
                   "max_filler_percent", "min_uv_percent", "third_party_inspection",
                   "release_covers_returns",
-            "over_delivery_percent", "under_delivery_percent",
+            "over_delivery_percent", "under_delivery_percent", "sales_rep", "sales_rep_name",
         ]
 
 
@@ -253,9 +256,11 @@ class CommissionPlanSerializer(serializers.ModelSerializer):
 
 
 class SalesRepSerializer(serializers.ModelSerializer):
+    name = serializers.CharField(source="party.name", read_only=True)
+
     class Meta:
         model = SalesRep
-        fields = ["id", "party", "plan", "is_active"]
+        fields = ["id", "party", "name", "plan", "is_active"]
 
 
 class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):

@@ -29,8 +29,8 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-KINDS = ("parties", "employees", "items", "opening_stock", "open_invoices", "open_bills",
-         "opening_balances")
+KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
+         "open_bills", "opening_balances")
 
 
 # Each kind's columns, in the order a template gives them; docs/IMPORT.md
@@ -40,7 +40,8 @@ COLUMNS = {
                 "gstin", "gst_state", "gst_registration", "credit_limit", "address_line1",
                 "address_line2", "city", "state", "postal_code", "country"],
     "employees": ["employee_number", "name", "party_code", "hire_date", "department", "manager",
-                  "job_title", "email", "username", "roles"],
+                  "job_title", "email", "username", "roles", "sales_rep"],
+    "customer_reps": ["customer", "rep"],
     "items": ["sku", "name", "uom", "item_type", "hsn_code", "track_inventory", "costing_method",
               "tracking", "sale_price", "standard_cost"],
     "opening_stock": ["sku", "warehouse", "quantity", "unit_cost", "lot"],
@@ -307,6 +308,10 @@ def _employees(rows, report, options):
                 elif row.get("roles"):
                     raise RowError("roles", "are a login's; give the username too.")
                 employee.save()
+                if yes_no(row, "sales_rep", False):
+                    from apps.sales.models import SalesRep
+
+                    SalesRep.objects.get_or_create(party=party)
                 made[employee_number] = employee
                 if password:
                     report.passwords.append((username, password))
@@ -474,9 +479,26 @@ def _opening_balances(rows, report, options):
         report.refuse(0, "", " ".join(error.messages))
 
 
+def _customer_rep(row, options):
+    """Whose customer a party is: a rep sees their own and nobody else's."""
+    from apps.core.models import Party, PartyRole
+    from apps.hr.models import Employee
+    from apps.sales.models import CustomerProfile, SalesRep
+
+    customer = by_code(Party, row, "customer", role_assignments__role=PartyRole.CUSTOMER)
+    employee = by_code(Employee, row, "rep", field_name="employee_number")
+    if not SalesRep.objects.filter(party=employee.party, is_active=True).exists():
+        raise RowError("rep", f"{employee.employee_number} is not a sales rep (sales_rep yes "
+                              "in the employees file).")
+    profile = CustomerProfile.objects.filter(party=customer).first() or CustomerProfile(party=customer)
+    profile.sales_rep = employee.party
+    profile.save()
+
+
 PER_ROW = {
     "parties": _party,
     "items": _item,
+    "customer_reps": _customer_rep,
     "open_invoices": lambda row, options: _open_document(row, options, "sales"),
     "open_bills": lambda row, options: _open_document(row, options, "purchasing"),
 }

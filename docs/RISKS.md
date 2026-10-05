@@ -50,13 +50,20 @@ can prove.
 
 ## Known limits in the code
 
-6. **Permissions are by model, not by record, except for leave.** Anyone
-   who may post invoices may post *any* invoice, and a sales rep reads
-   every customer. Leave is the exception: a login is linked to its
-   employee, people read their own and their reports' requests, and only
-   the employee's manager (or one above, or their department's) decides.
-   Nothing else is scoped to the person yet. *Likely to matter:* once
-   more than one team shares a role.
+6. **Permissions are by model, not by record, except for leave and a
+   rep's customers.** Anyone who may post invoices may post *any*
+   invoice. Two things are scoped to the person: leave (people read their
+   own and their reports' requests, and their manager chain or HR
+   decides), and customers. A sales rep sees, sells to and changes only
+   the customers carried by them (each customer's sales terms name its
+   rep), with their orders, quotations, invoices and the sales and
+   receivables reports; a customer they make is theirs. Everyone else
+   holds `sales.view_every_customer` and sees all. A login that reads
+   parties without that permission and is nobody's rep sees no customer:
+   a custom role made outside `setup_roles` must be given it.
+   `go_live_check` names reps who carry nobody and customers no rep
+   carries. Nothing else is scoped to the person yet. *Likely to matter:*
+   a purchasing team split by vendor.
 7. **Sign-in guessing is limited by name and address together.** Ten
    wrong in fifteen minutes lock that name from that address only, so a
    colleague cannot lock someone out from their own desk; fifty from one

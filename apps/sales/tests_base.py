@@ -147,3 +147,29 @@ class SalesTestCase(TestCase):
             debit=Sum("debit"), credit=Sum("credit")
         )
         return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
+
+
+def carries_every_customer(user):
+    """
+    Make a Sales Rep login a rep who carries every customer there is now:
+    what a fixture means by "the rep" when it signs in as one. A rep sees
+    only their own customers (scoping.py), and a login linked to no
+    employee sees none.
+    """
+    from apps.core.models import Party, PartyRole, PartyRoleAssignment
+    from apps.hr.models import Employee
+
+    from .models import CustomerProfile, SalesRep
+
+    employee = Employee.objects.filter(user=user).first()
+    if employee is None:
+        person = Party.objects.create(code=f"REP-{user.pk}", name=f"Rep {user.username}")
+        PartyRoleAssignment.objects.create(party=person, role=PartyRole.EMPLOYEE)
+        employee = Employee.objects.create(party=person, employee_number=f"REP-{user.pk}",
+                                           hire_date=datetime.date(2026, 1, 1), user=user)
+    SalesRep.objects.get_or_create(party=employee.party)
+    for customer in Party.objects.filter(role_assignments__role=PartyRole.CUSTOMER).distinct():
+        profile = CustomerProfile.objects.filter(party=customer).first() or CustomerProfile(party=customer)
+        profile.sales_rep = employee.party
+        profile.save()
+    return user

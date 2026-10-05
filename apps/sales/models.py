@@ -240,8 +240,16 @@ class CustomerProfile(AuditModel):
         help_text="How far short of the ordered quantity still counts as the order "
                   "met: nothing more is planned or promised against it.",
     )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="customers_carried",
+        help_text="The rep whose customer this is. A rep sees their own customers "
+                  "and nobody else's; a new order takes them as its rep.",
+    )
 
     class Meta:
+        permissions = [
+            ("view_every_customer", "Can see every customer, not only one's own as a rep"),
+        ]
         constraints = [
             models.CheckConstraint(
                 check=(Q(max_filler_percent__isnull=True)
@@ -254,6 +262,18 @@ class CustomerProfile(AuditModel):
 
     def __str__(self):
         return f"Sales profile for {self.party}"
+
+    def save(self, *args, **kwargs):
+        # A customer carried by someone who is not a rep would be seen by
+        # nobody limited to their own, and paid commission to nobody.
+        # Asked when the rep is set or changed: a rep who has since left
+        # must not stop accounts changing the customer's credit limit.
+        before = (None if self._state.adding else
+                  CustomerProfile.objects.filter(pk=self.pk).values_list("sales_rep_id", flat=True).first())
+        if self.sales_rep_id and self.sales_rep_id != before and not SalesRep.objects.filter(
+                party_id=self.sales_rep_id, is_active=True).exists():
+            raise ValidationError({"sales_rep": [f"{self.sales_rep} is not an active sales rep."]})
+        super().save(*args, **kwargs)
 
     def has_material_rules(self):
         return (self.virgin_only or self.max_filler_percent is not None
@@ -467,9 +487,11 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         self.payment_terms = self.payment_terms or customer.payment_terms
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
+        profile = CustomerProfile.objects.filter(party=customer).first()
         if self.third_party_inspection is None:
-            profile = CustomerProfile.objects.filter(party=customer).first()
             self.third_party_inspection = bool(profile and profile.third_party_inspection)
+        if not self.sales_rep_id and profile and profile.sales_rep_id:
+            self.sales_rep_id = profile.sales_rep_id
 
     def credit_limit_breach(self):
         """
@@ -1935,6 +1957,11 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         self.payment_terms = self.payment_terms or customer.payment_terms
         self.billing_address = self.billing_address or customer.billing_address()
         self.shipping_address = self.shipping_address or customer.shipping_address()
+        # An invoice from an order, or a credit note, carries the rep of
+        # what it came from; only one typed in afresh takes the customer's.
+        if not self.sales_rep_id and not self.sales_order_id and not self.credits_id:
+            self.sales_rep_id = (CustomerProfile.objects.filter(party=customer)
+                                 .values_list("sales_rep_id", flat=True).first())
 
     def delete(self, *args, **kwargs):
         if self.posted:
@@ -3110,7 +3137,7 @@ def send_statements(as_of=None, since=None, customers=None, send=True):
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
 
 
-def ar_aging(as_of=None):
+def ar_aging(as_of=None, invoices=None):
     """
     Outstanding customer invoices bucketed by how overdue they are.
 
@@ -3122,7 +3149,8 @@ def ar_aging(as_of=None):
     buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
 
     invoices = (
-        not_paid_in_full(Invoice.objects.filter(posted=True, credits__isnull=True))
+        not_paid_in_full((Invoice.objects.all() if invoices is None else invoices)
+                         .filter(posted=True, credits__isnull=True))
         .select_related("customer", "currency", "payment_terms")
         .prefetch_related(*INVOICE_FIGURES)
     )
@@ -3977,7 +4005,7 @@ def run_dunning(as_of=None, send=True):
     return notices
 
 
-def revenue_report(date_from=None, date_to=None, group_by="customer"):
+def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=None):
     """
     Net revenue over a period, from posted invoices less credit notes.
 
@@ -3991,9 +4019,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer"):
     # would book the sale twice, once on the deposit and once on the
     # invoice that draws it down.
     # A deposit returned is no more a sale than the deposit was.
-    invoices = Invoice.objects.filter(posted=True, is_down_payment=False).exclude(
-        credits__is_down_payment=True
-    )
+    invoices = (Invoice.objects.all() if invoices is None else invoices).filter(
+        posted=True, is_down_payment=False).exclude(credits__is_down_payment=True)
     if date_from:
         invoices = invoices.filter(invoice_date__gte=date_from)
     if date_to:
@@ -4197,6 +4224,9 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             self.payment_terms = self.payment_terms or customer.payment_terms
             self.billing_address = self.billing_address or customer.billing_address()
             self.shipping_address = self.shipping_address or customer.shipping_address()
+            if not self.sales_rep_id:
+                self.sales_rep_id = (CustomerProfile.objects.filter(party=customer)
+                                     .values_list("sales_rep_id", flat=True).first())
         super().save(*args, **kwargs)
 
     def render_pdf(self):
