@@ -329,8 +329,8 @@ ROLES = {
         *view("hr", "leavepolicy"),
         "hr.decide_leaverequest",
         "hr.view_every_leaverequest",
-        # For someone nobody manages; never over a manager who exists.
-        "hr.decide_unmanaged_leaverequest",
+        # Anyone's leave, as HR, a manager's or not.
+        "hr.decide_any_leaverequest",
     ],
     "Payroll Officer": [
         *REFERENCE,

@@ -499,7 +499,7 @@ class LeaveRequest(AuditModel):
         permissions = [
             ("decide_leaverequest", "Can approve or reject leave requests"),
             ("view_every_leaverequest", "Can read everyone's leave requests, not only their own and their reports'"),
-            ("decide_unmanaged_leaverequest", "Can decide leave for someone with no manager"),
+            ("decide_any_leaverequest", "Can decide anyone's leave, as HR"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -641,12 +641,10 @@ class LeaveRequest(AuditModel):
             )
         # Their manager, a manager above, or their department's: anyone
         # else's yes was recorded as a decision nobody with the standing
-        # to make it had made. Someone with none of those is decided by
-        # HR (as_hr, the view's hr.decide_unmanaged_leaverequest), or
-        # nobody could ever decide their leave; HR does not overrule a
-        # manager who exists.
-        if as_hr and self.employee.manager_id is None and not (
-                self.employee.department_id and self.employee.department.manager_id):
+        # to make it had made. And HR (as_hr, the view's
+        # hr.decide_any_leaverequest), for anyone: the plant's choice,
+        # so someone with no manager is never left undecided.
+        if as_hr:
             return
         if self.employee_id not in by.reports():
             raise ValidationError(

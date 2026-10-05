@@ -107,7 +107,7 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @staticmethod
     def _as_hr(request):
-        return request.user.has_perm("hr.decide_unmanaged_leaverequest")
+        return request.user.has_perm("hr.decide_any_leaverequest")
 
     def _decider(self, request):
         """

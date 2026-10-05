@@ -83,7 +83,7 @@ With `--commit`, `--passwords-out <file>` is required: each new login's
 first password is written there, readable only by whoever ran the
 import, and never shown on the screen. Hand each out, have it changed at
 the first sign-in, and delete the file. Someone with no manager and no
-department manager has their leave decided by HR.
+department manager has their leave decided by HR, who may decide anyone's.
 
 ### items
 

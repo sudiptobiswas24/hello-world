@@ -61,16 +61,21 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         expect(colleague.get_by_text("No leave requests").first).to_be_visible()
         self.assertEqual(self.problems, [])
 
-    def test_a_manager_who_is_not_theirs_is_refused_in_words(self):
-        weaver = self.employee("W-3")
+    def test_hr_decides_anyones_and_another_teams_manager_cannot_open_it(self):
+        weaver = self.employee("W-3")  # reports to self.boss
         leave = self.request(weaver, datetime.date(2026, 11, 9), datetime.date(2026, 11, 9))
-        other = self.employee("MGR-2", manager=None)
-        # HR, who may read everyone's, but does not manage the weaver.
-        page = self.sign_in(self.linked("HR Admin", other), f"/app/payroll/leave/{leave.pk}")
-        page.get_by_role("button", name="Approve").click()
-        expect(page.locator(".toast-bad", has_text="does not manage")).to_be_visible()
+        hr = self.sign_in(self.linked("HR Admin", self.employee("HR-1", manager=None)),
+                          f"/app/payroll/leave/{leave.pk}")
+        hr.get_by_role("button", name="Approve").click()
+        expect(hr.locator(".pill", has_text="approved")).to_be_visible()
         leave.refresh_from_db()
-        self.assertEqual(leave.status, LeaveStatus.PENDING)
+        self.assertEqual(leave.status, LeaveStatus.APPROVED)
+        self.assertEqual(self.problems, [])
+
+        stranger = self.new_page()
+        self.sign_in(self.linked("Line Manager", self.employee("MGR-2", manager=None)),
+                     f"/app/payroll/leave/{leave.pk}", page=stranger)
+        expect(stranger.get_by_role("heading", name="Not found")).to_be_visible()
         self.problems.clear()  # the refusal is the point here
 
     def test_a_login_with_no_employee_is_told_why_it_cannot_ask(self):

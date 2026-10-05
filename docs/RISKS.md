@@ -92,7 +92,7 @@ can prove.
     being read back from the ledger; a screen that formats a right
     number wrongly is caught only where a flow test reads that cell.
 
-## Decisions taken without the user, to confirm
+## Decisions taken for the owner, confirmed on 2026-10-05
 
 15. **A drop-ship is awaited until it is received, cancelled or closed
     short.** Its customer line is not shipped from the shelf, held in
@@ -103,15 +103,15 @@ can prove.
     account and currency.** A receipt recorded against revenue (a cash
     sale) cannot be applied to an invoice; record it against the
     receivable.
-17. **Leave is decided only by a manager, as themselves**, on the Leave
-    screen (People). Someone with no manager and no department manager
-    has their leave decided by HR (`hr.decide_unmanaged_leaverequest`,
-    held by HR Admin); HR never overrules a manager who exists. A new "Line Manager" role decides leave and reads only
-    their reports'; HR Admin and Payroll Officer read everyone's. An
-    administrator may still name the decider, and the audit trail records
-    who did. Logins must be linked to employees (the employee record's
-    `user`) before any of this works for them: an unlinked login sees no
-    leave at all.
+17. **Leave is decided by the employee's manager (or one above, or
+    their department's), or by HR, always as themselves and never their
+    own** (confirmed by the owner, 2026-10-05). It is asked and decided
+    on the Leave screen (People). HR Admin holds
+    `hr.decide_any_leaverequest` and may decide anyone's, a manager's
+    team included; a Line Manager decides and reads only their reports'.
+    HR Admin and Payroll Officer read everyone's. Logins must be linked
+    to employees (the employee record's `user`, or the employees import)
+    before any of this works for them: an unlinked login sees no leave.
 18. **A purchase line can now be closed short**, like a sales line: the
     rest is no longer expected, planned as supply or awaited by a
     customer on a drop-ship. Refused while more is billed than received

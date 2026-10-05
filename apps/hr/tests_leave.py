@@ -527,8 +527,8 @@ class OnlyTheirManagersDecideTests(LeaveTestCase):
 
 
 
-class HrDecidesForSomeoneNobodyManagesTests(LeaveTestCase):
-    """Someone with no manager could never have leave decided. HR fills the gap, and only the gap."""
+class HrDecidesAnyonesLeaveTests(LeaveTestCase):
+    """Someone with no manager could never have leave decided. HR may decide anyone's, the plant's choice."""
 
     def booking(self, person):
         return self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
@@ -541,8 +541,14 @@ class HrDecidesForSomeoneNobodyManagesTests(LeaveTestCase):
         loner.approve(by=hr, as_hr=True)
         self.assertEqual((loner.status, loner.decided_by), (LeaveStatus.APPROVED, hr))
 
-    def test_hr_does_not_overrule_a_manager_who_exists(self):
+    def test_hr_decides_for_someone_who_has_a_manager_too(self):
         hr = self.employee("HR-2", manager=None)
         managed = self.booking(self.employee("L-2"))  # reports to self.boss
-        with self.assertRaisesMessage(ValidationError, "does not manage"):
-            managed.approve(by=hr, as_hr=True)
+        managed.reject(by=hr, reason="Year-end stock count", as_hr=True)
+        self.assertEqual((managed.status, managed.decided_by), (LeaveStatus.REJECTED, hr))
+
+    def test_not_even_hr_decides_their_own(self):
+        hr = self.employee("HR-3", manager=None)
+        own = self.booking(hr)
+        with self.assertRaisesMessage(ValidationError, "cannot decide their own"):
+            own.approve(by=hr, as_hr=True)
