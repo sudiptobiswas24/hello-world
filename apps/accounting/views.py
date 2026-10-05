@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Prefetch
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -7,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
+from apps.core.api import flag
 from apps.core.audit import AuditableViewSetMixin
 
 from decimal import Decimal, InvalidOperation
@@ -44,6 +46,69 @@ class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Account.objects.all()
     serializer_class = AccountSerializer
+    # The chart is reference data every role reads; what was posted to an
+    # account is the books, and reading it is reading journal entries.
+    action_permission_map = {"ledger": "accounting.view_journalentry"}
+
+    @action(detail=True, methods=["get"])
+    def ledger(self, request, pk=None):
+        """
+        ?from=&to=&page=&page_size=: the account's posted lines, newest
+        first, each with the balance after it, under what it opened and
+        closed at. The running balance is the database's window over the
+        whole period, so page five is as right as page one; the opening is
+        everything before `from`, summed in the database too.
+        """
+        from django.db.models import F, Sum, Value, Window
+        from django.db.models.functions import Coalesce
+
+        from apps.core.api import whole_number
+        from apps.core.models import to_date
+
+        account = self.get_object()
+        params = request.query_params
+        start, end = to_date(params.get("from")), to_date(params.get("to"))
+        page = whole_number(params, "page", default=1, least=1)
+        size = min(whole_number(params, "page_size", default=50, least=1), 500)
+        zero = Value(Decimal("0"))
+
+        posted = JournalLine.objects.filter(account=account, entry__posted=True)
+
+        def movement(lines):
+            return lines.aggregate(debit=Coalesce(Sum("debit"), zero), credit=Coalesce(Sum("credit"), zero))
+
+        before = movement(posted.filter(entry__date__lt=start)) if start else {"debit": 0, "credit": 0}
+        opening = Decimal(before["debit"]) - Decimal(before["credit"])
+        period = posted
+        if start:
+            period = period.filter(entry__date__gte=start)
+        if end:
+            period = period.filter(entry__date__lte=end)
+        totals = movement(period)
+        count = period.count()
+        rows = period.select_related("entry", "party").annotate(moved=Window(
+            Sum(F("debit") - F("credit")),
+            order_by=[F("entry__date").asc(), F("entry_id").asc(), F("id").asc()],
+        )).order_by("-entry__date", "-entry_id", "-id")[(page - 1) * size: page * size]
+        response = Response({
+            "account": {"id": account.pk, "code": account.code, "name": account.name,
+                        "account_type": account.account_type},
+            "from": start, "to": end,
+            "opening": opening,
+            "debit": totals["debit"], "credit": totals["credit"],
+            "closing": opening + totals["debit"] - totals["credit"],
+            "lines": [{
+                "id": line.pk, "entry": line.entry_id, "date": line.entry.date,
+                "reference": line.entry.reference, "memo": line.description or line.entry.memo,
+                "party": line.party.name if line.party_id else "",
+                "debit": line.debit, "credit": line.credit,
+                "balance": opening + line.moved,
+            } for line in rows],
+        })
+        response["X-Total-Count"] = str(count)
+        response["X-Page"] = str(page)
+        response["X-Page-Size"] = str(size)
+        return response
 
 
 class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -52,7 +117,8 @@ class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "date"
     ordering_fields = ["date"]
 
-    queryset = JournalEntry.objects.prefetch_related("lines")
+    queryset = JournalEntry.objects.prefetch_related(
+        Prefetch("lines", queryset=JournalLine.objects.select_related("account", "party")))
     serializer_class = JournalEntrySerializer
     action_permission_map = {
         "post_entry": "accounting.post_journalentry",
@@ -85,7 +151,7 @@ class JournalLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["account", "party", "entry", "entry__posted"]
     date_field = "entry__date"
 
-    queryset = JournalLine.objects.select_related("entry", "account").order_by(
+    queryset = JournalLine.objects.select_related("entry", "account", "party").order_by(
         "-entry__date", "-entry_id", "-id")
     serializer_class = JournalLineSerializer
 
@@ -202,7 +268,7 @@ class FinancialStatementViewSet(viewsets.ViewSet):
         report = trial_balance(
             as_of=request.query_params.get("as_of"),
             start=request.query_params.get("start"),
-            include_zero=request.query_params.get("include_zero") == "true",
+            include_zero=flag(request.query_params, "include_zero", False),
         )
         return Response({
             "balanced": report["balanced"],
@@ -211,6 +277,7 @@ class FinancialStatementViewSet(viewsets.ViewSet):
             "rows": [
                 {
                     "account": row["account"].code,
+                    "account_id": row["account"].pk,
                     "name": row["account"].name,
                     "opening": row["opening"],
                     "debit": row["debit"],
@@ -233,12 +300,12 @@ class FinancialStatementViewSet(viewsets.ViewSet):
             "expense_total": report["expense_total"],
             "net_profit": report["net_profit"],
             "income": [
-                {"account": row["account"].code, "name": row["account"].name,
+                {"account": row["account"].code, "account_id": row["account"].pk, "name": row["account"].name,
                  "balance": row["balance"], "natural": row["natural"]}
                 for row in report["income"]
             ],
             "expenses": [
-                {"account": row["account"].code, "name": row["account"].name,
+                {"account": row["account"].code, "account_id": row["account"].pk, "name": row["account"].name,
                  "balance": row["balance"], "natural": row["natural"]}
                 for row in report["expenses"]
             ],
@@ -254,17 +321,17 @@ class FinancialStatementViewSet(viewsets.ViewSet):
             "retained_brought_forward": report["retained_brought_forward"],
             "profit_for_year": report["profit_for_year"],
             "assets": [
-                {"account": row["account"].code, "name": row["account"].name,
+                {"account": row["account"].code, "account_id": row["account"].pk, "name": row["account"].name,
                  "balance": row["balance"], "natural": row["natural"]}
                 for row in report["assets"]
             ],
             "liabilities": [
-                {"account": row["account"].code, "name": row["account"].name,
+                {"account": row["account"].code, "account_id": row["account"].pk, "name": row["account"].name,
                  "balance": row["balance"], "natural": row["natural"]}
                 for row in report["liabilities"]
             ],
             "equity": [
-                {"account": row["account"].code, "name": row["account"].name,
+                {"account": row["account"].code, "account_id": row["account"].pk, "name": row["account"].name,
                  "balance": row["balance"], "natural": row["natural"]}
                 for row in report["equity"]
             ],

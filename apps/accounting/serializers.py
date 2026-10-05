@@ -20,9 +20,14 @@ class AccountSerializer(serializers.ModelSerializer):
 
 
 class JournalLineSerializer(serializers.ModelSerializer):
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    party_name = serializers.CharField(source="party.name", read_only=True, default="")
+
     class Meta:
         model = JournalLine
-        fields = ["id", "entry", "account", "party", "debit", "credit", "description"]
+        fields = ["id", "entry", "account", "account_code", "account_name", "party", "party_name",
+                  "debit", "credit", "description"]
 
     def validate(self, attrs):
         debit = attrs.get("debit", getattr(self.instance, "debit", 0)) or 0

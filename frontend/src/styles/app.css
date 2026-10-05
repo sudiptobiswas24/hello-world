@@ -546,3 +546,11 @@ small.bad, .bad { color: var(--bad); }
 .sentences { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
 .row-actions { display: inline-flex; gap: 6px; }
 .sheet.machine h2 { font-size: 15px; }
+
+/* Statements: sections of accounts with a total under each. */
+.statement-section { margin: 16px 0; }
+.statement-section h2 { font-size: 15px; margin: 0 0 6px; }
+.statement-section table, .statement-foot { width: 100%; max-width: 760px; }
+.statement-section td.code { width: 7rem; }
+.statement-section tfoot th, .statement-section tfoot td { border-top: 1px solid var(--line); font-weight: 600; }
+.statement-foot th { text-align: left; font-weight: 500; }

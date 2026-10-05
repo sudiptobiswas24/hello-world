@@ -31,7 +31,7 @@ export interface Module {
   screens: Screen[];
 }
 
-export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "accounts";
+export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "accounts" | "people";
 
 export const MODULES: Module[] = [
   {
@@ -137,6 +137,55 @@ export const MODULES: Module[] = [
       {
         path: "schedule", label: "Machine schedule", permission: "manufacturing.view_workorder",
         keywords: "dispatch loom extruder queue", load: () => import("../modules/production/Schedule"),
+      },
+    ],
+  },
+  {
+    key: "accounts",
+    label: "Accounts",
+    icon: "accounts",
+    screens: [
+      {
+        path: "chart", label: "Chart of accounts", permission: "accounting.view_journalentry",
+        keywords: "ledger account gl", load: () => import("../modules/accounts/Chart"),
+        detail: () => import("../modules/accounts/Ledger"),
+      },
+      {
+        path: "journals", label: "Journal entries", permission: "accounting.view_journalentry", create: "accounting.add_journalentry",
+        keywords: "journal voucher jv", load: () => import("../modules/accounts/Journals"),
+        detail: () => import("../modules/accounts/JournalForm"),
+      },
+      {
+        path: "trial-balance", label: "Trial balance", permission: "accounting.view_journalentry",
+        keywords: "tb balances", load: () => import("../modules/accounts/TrialBalance"),
+      },
+      {
+        path: "profit-and-loss", label: "Profit and loss", permission: "accounting.view_journalentry",
+        keywords: "p&l income statement", load: () => import("../modules/accounts/ProfitLoss"),
+      },
+      {
+        path: "balance-sheet", label: "Balance sheet", permission: "accounting.view_journalentry",
+        keywords: "position assets liabilities", load: () => import("../modules/accounts/BalanceSheet"),
+      },
+      {
+        path: "gst", label: "GST returns", permission: "gst.compile_returns",
+        keywords: "gstr1 gstr3b tax return", load: () => import("../modules/accounts/GstReturns"),
+      },
+    ],
+  },
+  {
+    key: "payroll",
+    label: "Payroll",
+    icon: "people",
+    screens: [
+      {
+        path: "runs", label: "Pay runs", permission: "hr.view_payrun", create: "hr.add_payrun",
+        keywords: "salary wages payslip", load: () => import("../modules/payroll/PayRuns"),
+        detail: () => import("../modules/payroll/PayRunForm"),
+      },
+      {
+        path: "dues", label: "Statutory dues", permission: "hr.view_statutoryremittance",
+        keywords: "pf esi tds professional tax remittance", load: () => import("../modules/payroll/Liabilities"),
       },
     ],
   },

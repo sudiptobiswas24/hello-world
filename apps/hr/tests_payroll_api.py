@@ -217,3 +217,51 @@ class TheLastRunPaidOnTests(PayrollApiTestCase):
         response = self.client.get("/api/hr/payslips/", {"run": run.pk})
         self.assertEqual([slip["run"] for slip in response.json()], [run.pk])
         self.assertEqual(len(self.client.get("/api/hr/payslips/").json()), 2)
+
+
+class PayrollScreensTests(PayrollApiTestCase):
+    """What the payroll screens ask: every slip, paged; a void on a date."""
+
+    def test_payslips_are_paged_not_cut_at_five_hundred(self):
+        for code in ("P2", "P3"):
+            self.pay(self.employee(code), self.salary, "4000")
+        run = self.pay_run()
+        run.calculate()
+        response = self.client.get("/api/hr/payslips/", {"run": run.pk, "page_size": "2"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response["X-Total-Count"], len(response.json())), ("3", 2))
+        rest = self.client.get("/api/hr/payslips/", {"run": run.pk, "page_size": "2", "page": "2"}).json()
+        self.assertEqual(len(rest), 1)
+
+    def test_a_void_on_no_such_day_is_refused_not_dated_today(self):
+        run = self.pay_run()
+        run.calculate()
+        run.post()
+        response = self.client.post(f"/api/hr/pay-runs/{run.pk}/void/", {"on_date": "31/06/2026"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        run.refresh_from_db()
+        self.assertIsNone(run.voided_at)
+
+    def test_the_run_list_does_not_ask_per_slip(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def count():
+            with CaptureQueriesContext(connection) as queries:
+                self.assertEqual(self.client.get("/api/hr/pay-runs/").status_code, 200)
+            return len(queries)
+
+        self.pay_run().calculate()
+        before = count()
+        for code in ("P2", "P3", "P4"):
+            self.pay(self.employee(code), self.salary, "4000")
+        import datetime
+        self.pay_run(start=datetime.date(2026, 7, 1), end=datetime.date(2026, 7, 31),
+                     pay_date=datetime.date(2026, 7, 31)).calculate()
+        self.assertEqual(count(), before)
+
+    def test_a_liabilities_date_that_is_no_day_is_refused(self):
+        for typed in ["2026-02-30", "tomorrow"]:
+            with self.subTest(typed=typed):
+                response = self.client.get("/api/hr/statutory-liabilities/", {"as_of": typed})
+                self.assertEqual(response.status_code, 400, response.content)

@@ -16,7 +16,6 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
-from django.utils.dateparse import parse_date
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -24,6 +23,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
+from apps.core.models import to_date
 from apps.core.permissions import RequiredPermission
 
 from .models import Employee
@@ -122,7 +122,7 @@ def _slip(slip):
                    "description": line.description, "rate": str(line.rate),
                    "quantity": None if line.quantity is None else str(line.quantity),
                    "amount": str(line.amount)}
-                  for line in slip.lines.select_related("component")],
+                  for line in slip.lines.all()],
     }
 
 
@@ -142,7 +142,14 @@ class CompensationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = PayRun.objects.all()
+    search_fields = ["number", "name"]
+    filter_fields = ["status"]
+    date_field = "period_start"
+    ordering_fields = ["period_start", "pay_date", "number"]
+
+    # Each run's totals add up its slips' lines: read once for the page.
+    queryset = PayRun.objects.prefetch_related("payslips__lines__component", "payslips__employee__party",
+                                               "payslips__payment__journal_entry__reversed_by")
     serializer_class = PayRunSerializer
     http_method_names = ["get", "post", "patch", "head", "options"]
     action_permission_map = {
@@ -171,24 +178,32 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             if not hours[person].is_finite() or hours[person] < 0:
                 raise DRFValidationError([f"Hours for {person} are a number, not negative."])
         _run(run.calculate, employees=people, hours=hours)
+        run = self._fresh(run)
         return Response({**self.get_serializer(run).data,
                          "payslips": [_slip(slip) for slip in run.payslips.all()]})
+
+    def _fresh(self, run):
+        """The run read again: what was prefetched for it predates the action."""
+        return self.get_queryset().get(pk=run.pk)
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
         run = self.get_object()
         _run(run.post)
-        return Response(self.get_serializer(run).data)
+        return Response(self.get_serializer(self._fresh(run)).data)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
         run = self.get_object()
-        _run(run.void, on_date=parse_date(str(request.data.get("on_date") or "")))
-        return Response(self.get_serializer(run).data)
+        # to_date refuses a date it cannot read; parse_date answered None,
+        # and None meant today, so a typo voided the run as of today.
+        _run(run.void, on_date=to_date(request.data.get("on_date")))
+        return Response(self.get_serializer(self._fresh(run)).data)
 
 
 class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = Payslip.objects.select_related("employee__party", "run")
+    queryset = Payslip.objects.select_related("employee__party", "run", "payment__journal_entry").prefetch_related(
+        "payment__journal_entry__reversed_by")
     action_permission_map = {"pay": "hr.post_payrun"}
 
     def get_queryset(self):
@@ -197,7 +212,11 @@ class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
         return rows.filter(run_id=run) if run else rows
 
     def list(self, request):
-        return Response([_slip(slip) for slip in self.get_queryset()[:500]])
+        # Paged like every list: the first 500 and silence about the rest
+        # was a pay run of 600 people missing a hundred slips.
+        slips = self.paginate_queryset(self.get_queryset().order_by("run_id", "employee__employee_number", "pk")
+                                       .prefetch_related("lines__component"))
+        return self.get_paginated_response([_slip(slip) for slip in slips])
 
     def retrieve(self, request, pk=None):
         return Response(_slip(self.get_object()))
@@ -247,10 +266,9 @@ class StatutoryLiabilitiesView(viewsets.ViewSet):
     required_permission = "hr.view_statutoryremittance"
 
     def list(self, request):
-        as_of = request.query_params.get("as_of")
-        if as_of and parse_date(as_of) is None:
-            raise DRFValidationError(["as_of is a date, YYYY-MM-DD."])
-        rows = statutory_liabilities(parse_date(as_of) if as_of else None)
+        # to_date: parse_date answers None for "tomorrow" but raises on
+        # 2026-02-30, which was a 500.
+        rows = statutory_liabilities(to_date(request.query_params.get("as_of")))
         return Response([{
             "account": row["account"].pk, "account_code": row["account"].code,
             "account_name": row["account"].name, "period": row["period"].isoformat(),

@@ -94,6 +94,10 @@ class BrowserMixin:
         return invoice
 
     def person(self, role):
+        return self.login_for(role)
+
+    def login_for(self, role):
+        """person() by a name no fixture uses: payroll's keeps an employee in self.person."""
         user = User.objects.create_user(role.replace(" ", "_").lower(), password=PASSWORD, first_name="Asha")
         user.groups.add(Group.objects.get(name=role))
         return user
