@@ -520,3 +520,28 @@ class PrepaymentsStayWithinTheOrderTests(PrepaymentTestCase):
         with self.assertRaisesMessage(ValidationError, "exceed the order total"):
             second.post()
         self.assertEqual(self.balance(self.prepaid), Decimal("35.00"))
+
+
+class PartOfAPrepaymentIsTakenBackTests(PrepaymentTestCase):
+    """The mirror of sales' PartOfADepositIsGivenBackTests."""
+
+    def test_part_is_taken_back_and_more_than_is_left_is_refused(self):
+        prepayment = self.prepay(self.make_order("10", "100"))  # 30% of 1,000.00
+        note = prepayment.create_debit_note(memo="Order cut", amount=Decimal("90"))
+        self.assertEqual((note.total(), prepayment.prepayment_unapplied()),
+                         (Decimal("90.00"), Decimal("210.00")))
+        self.assertIsNone(note.journal_entry.reverses)
+        with self.assertRaisesMessage(ValidationError, "Only 210.00 of"):
+            prepayment.create_debit_note(amount=Decimal("210.01"))
+        with self.assertRaisesMessage(ValidationError, "above nothing"):
+            prepayment.create_debit_note(amount=Decimal("0"))
+        prepayment.create_debit_note()
+        self.assertEqual(prepayment.prepayment_unapplied(), Decimal("0.00"))
+
+    def test_a_bill_is_not_debited_by_amount(self):
+        order = self.make_order(quantity="10")
+        self.receive(order, "10")
+        bill = order.create_bill(self.payable)
+        bill.post()
+        with self.assertRaisesMessage(ValidationError, "not by an amount"):
+            bill.create_debit_note(amount=Decimal("10"))

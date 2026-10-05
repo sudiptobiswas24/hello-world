@@ -187,6 +187,30 @@ def quantities_by_line(requested, lines, document):
     return chosen
 
 
+def money_amount(data, name):
+    """
+    An amount of money from a request, to the paisa: None when not given,
+    refused beside the field when it is not a number above nothing or
+    carries more places than money has.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    value = data.get(name)
+    if value in (None, ""):
+        return None
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        amount = None
+    if amount is None or not amount.is_finite():
+        raise DRFValidationError({name: [f"{value!r} is not an amount."]})
+    if amount <= 0:
+        raise DRFValidationError({name: ["It must be above nothing."]})
+    if amount != amount.quantize(Decimal("0.01")):
+        raise DRFValidationError({name: ["Money has two places: give it to the paisa."]})
+    return amount
+
+
 TRUE = {"true", "1", "yes", "on"}
 FALSE = {"false", "0", "no", "off"}
 

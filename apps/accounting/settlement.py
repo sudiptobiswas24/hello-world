@@ -245,3 +245,43 @@ def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
         corrected_total=total_of(note_rows, note_pointer, "posted_total"),
         drawn_total=total_of(drawn_rows, drawn_pointer, "amount"),
     ).filter(posted_total__isnull=False, posted_total__gt=settled)
+
+
+# What records a payment being applied to a document: sales registers
+# InvoicePayment, purchasing BillPayment (each in its apps.py), so neither
+# is imported here. A party can be a customer and a vendor at once, and
+# its receipt could be applied in full to an invoice and again in full to
+# a debit note while each side counted only its own applications.
+ALLOCATION_MODELS = []
+
+
+def register_allocation_model(model):
+    if model not in ALLOCATION_MODELS:
+        ALLOCATION_MODELS.append(model)
+
+
+def allocated_on(payment, excluding=None):
+    """What of `payment` is applied to anything, on either side, less `excluding`."""
+    from django.db.models import Sum
+
+    total = Decimal("0")
+    for model in ALLOCATION_MODELS:
+        rows = model.objects.filter(payment=payment)
+        if isinstance(excluding, model) and excluding.pk:
+            rows = rows.exclude(pk=excluding.pk)
+        total += rows.aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    return total
+
+
+def refuse_other_control_account(payment, account, document):
+    """
+    A payment settles a document only through the account the document
+    was booked to. Applied across accounts, the document reads settled
+    while its control account keeps the balance and the payment's account
+    the opposite one, and nothing ever matches them again.
+    """
+    if payment.counterpart_account_id != account.pk:
+        raise ValidationError(
+            f"{payment} was booked against {payment.counterpart_account}, and {document} "
+            f"against {account}: applied to it, both accounts would be left wrong. Record "
+            f"the money against {account}.")

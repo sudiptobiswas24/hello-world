@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { useAct, useReference } from "../api/hooks";
+import { aboveZero } from "../lib/decimal";
 import { money, quantity } from "../lib/format";
 import { CommitDecimal, DecimalInput } from "./fields";
 import { RecordPicker } from "./RecordPicker";
@@ -52,7 +53,7 @@ export interface ExtraColumn {
  * A new line needs only an item and a quantity: the server resolves the
  * price from the price list, as it would for a line typed in elsewhere.
  */
-export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales" }: {
+export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable }: {
   lines: TradeLine[];
   endpoint: string; // /api/sales/sales-order-lines/
   parent: string; // "order", "quotation", "invoice"
@@ -62,6 +63,8 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   withUom?: boolean;
   /** Which taxes apply: a sale's, or a purchase's. */
   side?: "sales" | "purchase";
+  /** A confirmed order's lines may be closed short (and reopened) by whoever may change it. */
+  closable?: boolean;
 }) {
   const act = useAct();
   const taxes = useReference<Tax>("/api/accounting/taxes/");
@@ -106,6 +109,7 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
             {extra.map((column) => <th key={column.label} scope="col" className="k-quantity">{column.label}</th>)}
             <th scope="col" className="k-money">Amount</th>
             {editable && <th scope="col" aria-label="Remove" />}
+            {closable && <th scope="col">Rest</th>}
           </tr>
         </thead>
         <tbody>
@@ -159,10 +163,13 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
                   </button>
                 </td>
               )}
+              {closable && (
+                <td><CloseShort line={line} endpoint={endpoint} side={side} /></td>
+              )}
             </tr>
           ))}
           {lines.length === 0 && (
-            <tr><td colSpan={7 + extra.length} className="empty-line">No lines yet.</td></tr>
+            <tr><td colSpan={7 + extra.length + (closable ? 1 : 0)} className="empty-line">No lines yet.</td></tr>
           )}
         </tbody>
       </table>
@@ -191,5 +198,59 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
         </form>
       )}
     </div>
+  );
+}
+
+/**
+ * The rest of a line that will never come or go: closed short with a
+ * reason, or reopened. The reason is asked for in the row, not in a
+ * dialog, and the server refuses what it must (billed beyond what moved).
+ */
+function CloseShort({ line, endpoint, side }: { line: TradeLine; endpoint: string; side: "sales" | "purchase" }) {
+  const act = useAct();
+  const [asking, setAsking] = useState(false);
+  const [reason, setReason] = useState("");
+  const name = line.label || line.description || "this line";
+  if (line.closed_short_at) {
+    return (
+      <span className="closed-short">
+        <small title={line.closed_short_reason as string}>Closed short</small>{" "}
+        <button type="button" className="btn small" disabled={act.pending}
+          onClick={() => void act.run("POST", `${endpoint}${line.id}/reopen/`, {}, { done: `${name} reopened` })}>
+          Reopen
+        </button>
+      </span>
+    );
+  }
+  if (line.charge || !aboveZero(line.quantity_open as string)) return null;
+  if (!asking) {
+    return (
+      <button type="button" className="btn small" aria-label={`Close ${name} short`} onClick={() => setAsking(true)}>
+        Close short
+      </button>
+    );
+  }
+  return (
+    <form
+      className="close-short"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        const outcome = await act.run("POST", `${endpoint}${line.id}/close-short/`, { reason }, { done: `${name} closed short` });
+        if (outcome.ok) {
+          setAsking(false);
+          setReason("");
+        }
+      }}
+    >
+      <input
+        aria-label={`Why the rest of ${name} will not ${side === "purchase" ? "come" : "ship"}`}
+        placeholder={side === "purchase" ? "Why it will not come" : "Why it will not ship"}
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+        autoFocus
+      />
+      <button type="submit" className="btn small" disabled={!reason.trim() || act.pending}>Close</button>
+      <button type="button" className="btn small ghost" onClick={() => setAsking(false)}>Cancel</button>
+    </form>
   );
 }

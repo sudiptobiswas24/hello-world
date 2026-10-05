@@ -7,6 +7,7 @@ Needs the built application (npm run build in frontend/) and a Chromium
 Playwright can launch; skipped, saying which, where either is missing.
 """
 
+import contextlib
 import datetime
 import os
 import unittest
@@ -80,9 +81,31 @@ class BrowserMixin:
         page.on("response", lambda response: response.status in (403, 404) and self.problems.append(
             f"{response.status} {response.url}"))
         # A question nobody expected (leave and lose your changes?) is a
-        # fault; a test that means to answer one says so with expect_event.
-        page.on("dialog", lambda dialog: (self.problems.append(f"dialog: {dialog.message}"), dialog.dismiss()))
+        # fault; a test that means to answer one says so with answering().
+        def unexpected(dialog):
+            self.problems.append(f"dialog: {dialog.message}")
+            dialog.dismiss()
+
+        page.on("dialog", unexpected)
+        page._unexpected_dialog = unexpected
         return page
+
+    @contextlib.contextmanager
+    def answering(self, page, reply):
+        """The one question the next step asks, answered with `reply`; any other is still a fault."""
+        asked = []
+
+        def answer(dialog):
+            asked.append(dialog.message)
+            dialog.accept(reply)
+
+        page.remove_listener("dialog", page._unexpected_dialog)
+        page.once("dialog", answer)
+        try:
+            yield asked
+        finally:
+            page.on("dialog", page._unexpected_dialog)
+        self.assertEqual(len(asked), 1, "the step asked nothing")
 
     def invoice(self, customer, day, price, post=True):
         invoice = Invoice.objects.create(customer=customer, invoice_date=day,

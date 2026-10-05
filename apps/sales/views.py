@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag, quantities_by_line, record_or_404
+from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
 
 from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
@@ -267,7 +267,7 @@ class SuppliedItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "customer__code", "customer__name", "sales_order__number"]
     filter_fields = ["customer", "posted", "credits", "credits__isnull", "is_down_payment",
-                     "sales_order"]
+                     "sales_order", "receivable_account", "currency"]
     date_field = "invoice_date"
     ordering_fields = ["invoice_date", "due_date", "number"]
 
@@ -363,9 +363,10 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         invoice = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), invoice.lines.all(), "invoice")
+        amount = money_amount(request.data, "amount")  # a down payment's, part of what is left
         try:
             credit_note = invoice.create_credit_note(
-                memo=request.data.get("memo", ""), quantities=quantities
+                memo=request.data.get("memo", ""), quantities=quantities, amount=amount
             )
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)

@@ -447,6 +447,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .lines table { width: 100%; }
 .lines th, .lines td { max-width: none; }
 .lines td.line-what { white-space: normal; min-width: 220px; }
+.btn.small { height: 28px; padding: 0 10px; font-size: 13px; }
+.btn.ghost { border-color: transparent; background: transparent; }
+.lines form.close-short { display: flex; gap: 6px; align-items: center; }
+.lines form.close-short input { height: 28px; min-width: 180px; }
+.lines .closed-short small { color: var(--ink-3); }
 .cell-input { width: 100%; max-width: 120px; height: 30px; padding: 0 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; text-align: right; font-family: var(--mono); font-size: 13px; }
 .cell-input:hover { border-color: var(--line-strong); }
 .cell-input:focus { outline: none; border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 2px var(--accent-soft); }

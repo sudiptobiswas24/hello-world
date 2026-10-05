@@ -169,6 +169,7 @@ export default function OrderForm() {
               parentId={order.id}
               withUom
               editable={order.status === "draft" && can("sales.change_salesorder")}
+              closable={order.status === "confirmed" && can("sales.change_salesorder")}
               extra={order.status === "confirmed" ? [
                 { label: "Shipped", render: (line) => quantity(line.quantity_shipped as string) },
                 { label: "Invoiced", render: (line) => quantity(line.quantity_invoiced as string) },

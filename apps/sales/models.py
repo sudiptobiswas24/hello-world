@@ -61,12 +61,14 @@ from apps.accounting.mixins import (
 )
 
 from apps.accounting.settlement import (
+    allocated_on,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
     owed_beyond,
     post_drawdown,
     post_settlement_fx,
+    refuse_other_control_account,
 )
 
 from .pricing import resolve_price
@@ -2037,18 +2039,21 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             self.apply_available_deposits(on_date=self.invoice_date)
 
     @serialised("posted")
-    def create_credit_note(self, memo="", quantities=None):
+    def create_credit_note(self, memo="", quantities=None, amount=None):
         """
         Credit this invoice. By default the whole thing; pass
         `quantities` as {invoice_line: quantity} to credit part of it, which
-        is what a partial goods return needs.
+        is what a partial goods return needs. A down payment is credited by
+        `amount` instead: part of what is left of it, or by default all.
         """
         if not self.posted:
             raise ValidationError("Only a posted invoice can be credited.")
         if self.is_credit_note():
             raise ValidationError("Cannot issue a credit note against a credit note.")
         if self.is_down_payment:
-            return self._credit_deposit(memo, quantities)
+            return self._credit_deposit(memo, quantities, amount)
+        if amount is not None:
+            raise ValidationError("An invoice is credited by the quantities of its lines, not by an amount.")
 
         if quantities is None:
             # What is still creditable, not the whole line: crediting an
@@ -2155,9 +2160,10 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"more would exceed the order total of {order_total}."
             )
 
-    def _credit_deposit(self, memo, quantities):
+    def _credit_deposit(self, memo, quantities, amount=None):
         """
-        Give back what is left of a down payment.
+        Give back what is left of a down payment, or `amount` of it: the
+        customer cut the order, and keeps the deposit for what remains.
 
         By amount, not quantity: the deposit is one line of one, and part
         of it may already have been drawn down against a final invoice.
@@ -2178,6 +2184,13 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"{self.number} has already been drawn down in full against {drawn}; "
                 "credit those invoices instead."
             )
+        if amount is not None:
+            if amount <= 0 or amount != round_money(amount):
+                raise ValidationError("Give back an amount above nothing, to the paisa.")
+            if amount > left:
+                raise ValidationError(
+                    f"Only {left} of {self.number} is left to give back; cannot give back {amount}.")
+            left = amount
         line = self.lines.get()  # One, by _check_deposit_shape().
         credit_note = Invoice.objects.create(
             customer=self.customer,
@@ -2366,7 +2379,7 @@ class InvoicePayment(AuditModel):
 
     @staticmethod
     def unallocated_for(payment):
-        return payment.amount - InvoicePayment.allocated_for(payment)
+        return payment.amount - allocated_on(payment)
 
     def clean(self):
         if not self.payment_id or not self.invoice_id:
@@ -2398,7 +2411,9 @@ class InvoicePayment(AuditModel):
                 "is not supported."
             )
 
-        available = self.payment.amount - InvoicePayment.allocated_for(self.payment, excluding=self)
+        refuse_other_control_account(self.payment, self.invoice.receivable_account, self.invoice)
+        # Applied anywhere, not only to invoices: see allocated_on().
+        available = self.payment.amount - allocated_on(self.payment, excluding=self)
         if self.amount > available:
             raise ValidationError(
                 f"Only {available} of this payment is unallocated; cannot apply {self.amount}."

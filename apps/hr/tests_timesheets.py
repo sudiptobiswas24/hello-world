@@ -55,8 +55,8 @@ class TimesheetTestCase(TestCase):
         Company.objects.create(
             name="Test Co", base_currency=self.usd, net_pay_account=self.net_pay
         )
-        self.person = self.employee("E1")
         self.boss = self.employee("MGR")
+        self.person = self.employee("E1", manager=self.boss)
 
     def employee(self, code, hire=datetime.date(2020, 1, 1), **kwargs):
         party = Party.objects.create(code=f"P-{code}", name=code)

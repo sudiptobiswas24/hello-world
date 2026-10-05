@@ -278,15 +278,26 @@ from apps.hr.tests_leave import LeaveTestCase  # noqa: E402
 
 
 class LeaveOverTheApiTests(LifecycleTestCase):
+    """
+    Asked for by the weaver, decided by their manager, each signed in as
+    themselves: the login is the employee, so nobody names who decided.
+    """
+
     employee = LeaveTestCase.employee
 
     def setUp(self):
         super().setUp()
         LeaveTestCase.setUp(self)
-        self.weaver = self.employee("W-1")
+        self.weaver = self.employee("W-1")  # reports to self.boss
+
+    def as_person(self, role, employee):
+        client = self.as_(role)
+        employee.user = User.objects.order_by("-pk").first()
+        employee.save()
+        return client
 
     def apply(self):
-        own = self.as_("Employee Self Service")
+        own = self.as_person("Employee Self Service", self.weaver)
         return own, self.ok(own.post("/api/hr/leave-requests/", {
             "employee": self.weaver.pk, "policy": self.policy.pk, "leave_type": "vacation",
             "start_date": "2026-11-02", "end_date": "2026-11-04", "reason": "Wedding"},
@@ -296,10 +307,14 @@ class LeaveOverTheApiTests(LifecycleTestCase):
         own, leave = self.apply()
         # Nobody approves their own.
         self.assertEqual(own.post(f"/api/hr/leave-requests/{leave['id']}/approve/",
-                                  {"decided_by": self.boss.pk}, format="json").status_code, 403)
-        hr = self.as_("HR Admin")
-        decided = self.ok(hr.post(f"/api/hr/leave-requests/{leave['id']}/approve/",
-                                  {"decided_by": self.boss.pk}, format="json"))
+                                  {}, format="json").status_code, 403)
+        manager = self.as_person("Line Manager", self.boss)
+        # Not on someone else's behalf, even someone with the standing.
+        other = self.employee("MGR-2", manager=None)
+        refused = manager.post(f"/api/hr/leave-requests/{leave['id']}/approve/",
+                               {"decided_by": other.pk}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        decided = self.ok(manager.post(f"/api/hr/leave-requests/{leave['id']}/approve/", {}, format="json"))
         self.assertEqual((decided["status"], decided["decided_by"]), ("approved", self.boss.pk))
         # It draws on the allowance it was asked against: three days of 25.
         from apps.hr.models import LeaveRequest, leave_balance
@@ -308,23 +323,45 @@ class LeaveOverTheApiTests(LifecycleTestCase):
         self.assertEqual(leave_balance(self.weaver, self.policy, 2026), Decimal("22"))
 
     def test_half_a_day_is_half_a_day(self):
-        own = self.as_("Employee Self Service")
+        own = self.as_person("Employee Self Service", self.weaver)
         leave = self.ok(own.post("/api/hr/leave-requests/", {
             "employee": self.weaver.pk, "policy": self.policy.pk, "leave_type": "vacation",
             "start_date": "2026-11-02", "end_date": "2026-11-02", "half_day": True},
             format="json"), 201)
         # Counted, and frozen, when it is approved.
-        decided = self.ok(self.as_("HR Admin").post(
-            f"/api/hr/leave-requests/{leave['id']}/approve/", {"decided_by": self.boss.pk},
-            format="json"))
+        decided = self.ok(self.as_person("Line Manager", self.boss).post(
+            f"/api/hr/leave-requests/{leave['id']}/approve/", {}, format="json"))
         self.assertEqual((decided["half_day"], decided["days_taken"]), (True, "0.50"))
 
     def test_refused_with_a_reason(self):
         own, leave = self.apply()
-        decided = self.ok(self.as_("HR Admin").post(
+        decided = self.ok(self.as_person("Line Manager", self.boss).post(
             f"/api/hr/leave-requests/{leave['id']}/reject/",
-            {"decided_by": self.boss.pk, "reason": "Year-end dispatch"}, format="json"))
+            {"reason": "Year-end dispatch"}, format="json"))
         self.assertEqual(decided["status"], "rejected")
+
+    def test_a_manager_who_is_not_theirs_may_not_decide_and_cannot_see_it(self):
+        own, leave = self.apply()
+        stranger = self.as_person("Line Manager", self.employee("MGR-3", manager=None))
+        self.assertEqual(stranger.post(f"/api/hr/leave-requests/{leave['id']}/approve/", {},
+                                       format="json").status_code, 404)
+        self.assertEqual(stranger.get("/api/hr/leave-requests/").json(), [])
+
+    def test_leave_is_asked_for_oneself_and_read_by_whom_it_concerns(self):
+        own, leave = self.apply()
+        colleague = self.employee("W-2")
+        refused = own.post("/api/hr/leave-requests/", {
+            "employee": colleague.pk, "policy": self.policy.pk, "leave_type": "vacation",
+            "start_date": "2026-11-09", "end_date": "2026-11-09"}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("employee", refused.json())
+        peer = self.as_person("Employee Self Service", colleague)
+        self.assertEqual(peer.get("/api/hr/leave-requests/").json(), [])
+        self.assertEqual([row["id"] for row in own.get("/api/hr/leave-requests/").json()], [leave["id"]])
+        hr = self.as_("HR Admin")
+        self.assertEqual([row["id"] for row in hr.get("/api/hr/leave-requests/").json()], [leave["id"]])
+        unlinked = self.as_("Employee Self Service")
+        self.assertEqual(unlinked.get("/api/hr/leave-requests/").json(), [])
 
     def test_withdrawn_by_the_one_who_asked(self):
         own, leave = self.apply()

@@ -24,7 +24,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "hire_date",
             "termination_date",
             "employment_status",
-            "working_days", "holiday_region",
+            "working_days", "holiday_region", "user",
         ]
 
 

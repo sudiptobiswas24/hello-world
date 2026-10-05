@@ -298,3 +298,25 @@ class WhatIsComingFromTheVendorIsNotShippedTwiceTests(DropShipTestCase):
 
         drop.cancel()
         self.assertEqual(line.quantity_reserved(), Decimal("10"))
+
+    def test_a_drop_ship_line_delivers_only_its_own_customer_line(self):
+        from .models import PurchaseOrderLine
+
+        sale = self.sales_order("10")
+        other = self.sales_order("10")
+        drop = PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        line = drop.lines.get()
+        line.sales_order_line = other.lines.get()
+        with self.assertRaisesMessage(ValidationError, "only a drop-ship order raised for it"):
+            line.save()
+        plain = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 2),
+                                             currency=self.usd)
+        with self.assertRaisesMessage(ValidationError, "only a drop-ship order raised for it"):
+            PurchaseOrderLine.objects.create(order=plain, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                             unit_price=Decimal("6"), sales_order_line=sale.lines.get())
+        from apps.inventory.models import Item
+
+        bolt = Item.objects.create(sku="BOLT", name="Bolt", uom=self.uom)
+        with self.assertRaisesMessage(ValidationError, "the same item"):
+            PurchaseOrderLine.objects.create(order=drop, item=bolt, uom=self.uom, quantity=Decimal("1"),
+                                             unit_price=Decimal("6"), sales_order_line=sale.lines.get())

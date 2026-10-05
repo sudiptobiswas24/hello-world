@@ -39,6 +39,7 @@ class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSer
             "quantity_billed", "bom", "components", "work_order_operation", "warehouse",
             "expected_date",
             "charge", "description", "inspect_on_receipt", "quantity_open", "label",
+            "closed_short_at", "closed_short_reason",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]
 

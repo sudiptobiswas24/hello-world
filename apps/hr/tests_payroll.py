@@ -234,8 +234,8 @@ class ProrationTests(PayrollTestCase):
             code="UNP", name="Unpaid", leave_type="unpaid",
             annual_days=Decimal("0"), allows_negative=True, is_paid=False,
         )
-        person = self.employee("U1")
         boss = self.employee("U2")
+        person = self.employee("U1", manager=boss)
         self.pay(person, self.salary, "4400")
         leave = LeaveRequest.objects.create(
             employee=person, policy=unpaid, leave_type=LeaveType.UNPAID,
@@ -252,8 +252,8 @@ class ProrationTests(PayrollTestCase):
             code="HOL", name="Holiday", leave_type="vacation",
             annual_days=Decimal("25"),
         )
-        person = self.employee("U3")
         boss = self.employee("U4")
+        person = self.employee("U3", manager=boss)
         self.pay(person, self.salary, "4400")
         leave = LeaveRequest.objects.create(
             employee=person, policy=holiday, leave_type=LeaveType.VACATION,
@@ -293,8 +293,8 @@ class ProrationTests(PayrollTestCase):
             code="UNP", name="Unpaid", leave_type="unpaid",
             annual_days=Decimal("0"), allows_negative=True, is_paid=False,
         )
-        person = self.employee("U7")
         boss = self.employee("U8")
+        person = self.employee("U7", manager=boss)
         self.pay(person, self.salary, "4400")
         self.pay(person, self.bonus, "500")
         leave = LeaveRequest.objects.create(

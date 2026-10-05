@@ -98,8 +98,14 @@ export default function InvoiceForm() {
     done: (result) => `${(result as Invoice).number} posted`,
   });
   const credit = async () => {
-    if (!window.confirm(`Credit all of ${invoice!.number}? A credit note is posted at once.`)) return;
-    const outcome = await act.run("POST", `${ENDPOINT}${invoice!.id}/credit_note/`, {}, {
+    // A deposit is given back by amount: part of what is left, or all of it.
+    let body: Record<string, string> = {};
+    if (invoice!.is_down_payment) {
+      const amount = window.prompt(`How much of ${invoice!.number} to give back? Leave it empty for all that is left. A credit note is posted at once.`);
+      if (amount === null) return;
+      if (amount.trim()) body = { amount: amount.trim() };
+    } else if (!window.confirm(`Credit all of ${invoice!.number}? A credit note is posted at once.`)) return;
+    const outcome = await act.run("POST", `${ENDPOINT}${invoice!.id}/credit_note/`, body, {
       done: (result) => `Credit note ${(result as Invoice).number} posted`,
     });
     if (outcome.ok) navigate(`/sales/invoices/${outcome.data.id}`);

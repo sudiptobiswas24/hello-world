@@ -48,6 +48,10 @@ class LeaveTestCase(TestCase):
     def employee(self, code, hire=datetime.date(2020, 1, 1), **kwargs):
         party = Party.objects.create(code=f"P-{code}", name=code)
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
+        # Everyone after the boss reports to them, unless a test says
+        # otherwise: only a manager decides leave.
+        if getattr(self, "boss", None) is not None:
+            kwargs.setdefault("manager", self.boss)
         return Employee.objects.create(
             party=party, employee_number=code, hire_date=hire, **kwargs
         )
@@ -217,7 +221,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         person = self.employee("W1")
         booking = self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
         booking.approve(by=self.boss)
-        booking.withdraw_approval()
+        booking.withdraw_approval(by=self.boss)
         self.assertEqual(booking.status, LeaveStatus.PENDING)
         self.assertIsNone(booking.decided_by)
         self.assertIsNone(booking.days_taken)
@@ -226,7 +230,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         person = self.employee("W2")
         booking = self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
         booking.approve(by=self.boss)
-        booking.withdraw_approval()
+        booking.withdraw_approval(by=self.boss)
         booking.cancel()
         self.assertEqual(leave_taken(person, self.policy, 2026), Decimal("0"))
 
@@ -468,3 +472,56 @@ class BalanceTests(LeaveTestCase):
         self.assertEqual(rows["HOL"]["taken"], Decimal("5.00"))
         self.assertEqual(rows["HOL"]["balance"], Decimal("20.00"))
         self.assertEqual(rows["SICK"]["balance"], Decimal("10.00"))
+
+
+class OnlyTheirManagersDecideTests(LeaveTestCase):
+    """
+    Anyone but the person themselves could decide anyone's leave: the
+    decision recorded a manager who need not manage them at all.
+    """
+
+    def booking(self, person):
+        return self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
+
+    def test_a_manager_who_is_not_theirs_is_refused(self):
+        other_boss = self.employee("MGR-B", manager=None)
+        booking = self.booking(self.employee("A1"))  # reports to self.boss
+        for decide in (booking.approve, booking.reject):
+            with self.subTest(decide=decide.__name__), \
+                    self.assertRaisesMessage(ValidationError, "does not manage"):
+                decide(by=other_boss)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, LeaveStatus.PENDING)
+
+    def test_a_manager_above_and_the_departments_manager_may(self):
+        from .models import Department
+
+        head = self.employee("HEAD", manager=None)
+        self.boss.manager = head
+        self.boss.save()
+        first = self.booking(self.employee("A2"))
+        first.approve(by=head)
+        self.assertEqual(first.decided_by, head)
+
+        dept_head = self.employee("DEPT", manager=None)
+        weaving = Department.objects.create(code="WV", name="Weaving", manager=dept_head)
+        loner = self.employee("A3", manager=None, department=weaving)
+        second = self.booking(loner)
+        second.approve(by=dept_head)
+        self.assertEqual(second.status, LeaveStatus.APPROVED)
+
+    def test_someone_with_no_manager_is_decided_by_nobody_until_they_have_one(self):
+        loner = self.employee("A4", manager=None)
+        with self.assertRaisesMessage(ValidationError, "does not manage"):
+            self.booking(loner).approve(by=self.boss)
+
+    def test_only_their_manager_takes_a_yes_back(self):
+        booking = self.booking(self.employee("A5"))
+        booking.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "does not manage"):
+            booking.withdraw_approval(by=self.employee("MGR-C", manager=None))
+        with self.assertRaisesMessage(ValidationError, "say who"):
+            booking.withdraw_approval(by=None)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, LeaveStatus.APPROVED)
+

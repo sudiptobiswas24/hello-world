@@ -5,6 +5,7 @@ bill it and pay. Each step is read back from the database and the
 ledger, not just the screen. Then the refusals a screen must show.
 """
 
+import datetime
 import re
 from decimal import Decimal
 
@@ -202,3 +203,39 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
                     expect(page.locator("main").first).to_contain_text(heading)
                     page.wait_for_load_state("networkidle")
                 self.assertEqual(self.problems, [], role)
+
+    def test_a_short_delivery_is_closed_short_and_reopened_by_the_buyer(self):
+        from apps.purchasing.models import GoodsReceiptLine, PurchaseOrderLine
+
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 3, 1),
+                                             currency=self.usd)
+        line = PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom,
+                                                quantity=Decimal("10"), unit_price=Decimal("4"))
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 3, 2))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                        quantity_received=Decimal("7"))
+        receipt.post()
+
+        buyer = self.sign_in(self.person("Purchasing Clerk"), f"/app/purchasing/orders/{order.pk}")
+        row = buyer.locator(".lines tbody tr", has_text="Widget")
+        row.get_by_role("button", name=re.compile(r"^Close .*Widget short$")).click()
+        close = row.get_by_role("button", name="Close", exact=True)
+        expect(close).to_be_disabled()  # no reason, no close
+        row.get_by_label(re.compile(r"^Why the rest of .*Widget will not come$")).fill("Vendor out of stock till March")
+        close.click()
+        expect(row.get_by_text("Closed short")).to_be_visible()
+        line.refresh_from_db()
+        self.assertEqual((line.closed_short_reason, line.quantity_open()),
+                         ("Vendor out of stock till March", Decimal("0")))
+
+        row.get_by_role("button", name="Reopen").click()
+        expect(row.get_by_role("button", name=re.compile(r"^Close .*Widget short$"))).to_be_visible()
+        line.refresh_from_db()
+        self.assertEqual(line.quantity_open(), Decimal("3"))
+
+        store = self.new_page()
+        self.sign_in(self.person("Warehouse Staff"), f"/app/purchasing/orders/{order.pk}", page=store)
+        expect(store.locator(".lines tbody tr", has_text="Widget")).to_be_visible()
+        expect(store.get_by_role("button", name=re.compile("short$"))).to_have_count(0)
+        self.assertEqual(self.problems, [])

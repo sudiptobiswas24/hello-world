@@ -599,3 +599,46 @@ class DownPaymentsStayWithinTheOrderTests(SalesTestCase):
         with self.assertRaisesMessage(ValidationError, "exceed the order total"):
             second.post()
         self.assertEqual(self.balance(self.deposits), Decimal("-700.00"))
+
+
+class PartOfADepositIsGivenBackTests(SalesTestCase):
+    """
+    A deposit could only be credited back whole, or whatever was left of
+    it: a customer who cut the order kept no deposit for the rest.
+    """
+
+    def test_part_is_given_back_and_the_rest_stays_held_for_the_order(self):
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        self.assertEqual(self.balance(self.deposits), Decimal("-300.00"))
+
+        note = deposit.create_credit_note(memo="Order cut to seven", amount=Decimal("90"))
+        self.assertEqual((note.total(), deposit.deposit_unapplied(), self.balance(self.deposits)),
+                         (Decimal("90.00"), Decimal("210.00"), Decimal("-210.00")))
+        self.assertIsNone(note.journal_entry.reverses)  # part, not the whole entry undone
+
+        self.ship(order, "7")
+        invoice = self.bill(order)
+        self.assertEqual((invoice.amount_deposited(), invoice.amount_due(), self.balance(self.deposits)),
+                         (Decimal("210.00"), Decimal("490.00"), Decimal("0")))
+
+    def test_more_than_is_left_or_nothing_is_refused(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        deposit.create_credit_note(amount=Decimal("200"))
+        with self.assertRaisesMessage(ValidationError, "Only 100.00 of"):
+            deposit.create_credit_note(amount=Decimal("100.01"))
+        for amount in ("0", "-5", "10.005"):
+            with self.subTest(amount=amount), self.assertRaisesMessage(ValidationError, "above nothing"):
+                deposit.create_credit_note(amount=Decimal(amount))
+        self.assertEqual(deposit.deposit_unapplied(), Decimal("100.00"))
+        deposit.create_credit_note()  # the rest
+        self.assertEqual((deposit.deposit_unapplied(), self.balance(self.deposits)),
+                         (Decimal("0.00"), Decimal("0")))
+
+    def test_an_invoice_is_not_credited_by_amount(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        with self.assertRaisesMessage(ValidationError, "not by an amount"):
+            invoice.create_credit_note(amount=Decimal("10"))

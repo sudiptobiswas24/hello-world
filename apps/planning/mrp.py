@@ -383,9 +383,8 @@ def purchase_supply(item, warehouse, on_date):
         .select_related("order", "item", "uom")
     )
     for line in lines:
-        remaining = line.item.to_stock_quantity(
-            line.quantity - line.quantity_received(), line.uom or line.item.uom
-        )
+        # quantity_open(): closed short, the rest is not coming.
+        remaining = line.item.to_stock_quantity(line.quantity_open(), line.uom or line.item.uom)
         if remaining <= 0:
             continue
         rows.append(_supply(

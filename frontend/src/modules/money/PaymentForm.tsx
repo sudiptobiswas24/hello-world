@@ -63,6 +63,8 @@ export interface MoneyConfig {
   allocations: string; // "/api/sales/invoice-payments/"
   /** The permissions on allocations and on the documents, in that app. */
   app: "sales" | "purchasing";
+  /** The documents' control account: only those booked where the money was can take it. */
+  account: "receivable_account" | "payable_account";
 }
 
 /**
@@ -171,7 +173,12 @@ function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: P
   const [appliedPage, setAppliedPage] = useState(1);
   const [openPage, setOpenPage] = useState(1);
   const appliedRows = usePage<Allocation>(config.allocations, { payment: payment.id }, appliedPage, 50);
-  const openRows = usePage<OpenInvoice>(config.documents, { [config.role]: payment.party, open: "true", ordering: "due_date" },
+  // Only what this money can settle: the server refuses another control
+  // account or currency, so offering those would only invite a refusal.
+  const openRows = usePage<OpenInvoice>(config.documents, {
+    [config.role]: payment.party, open: "true", ordering: "due_date",
+    [config.account]: String(payment.counterpart_account ?? ""), currency: String(payment.currency ?? ""),
+  },
     openPage, 50, payment.party !== null);
   const applied = { data: appliedRows.data?.rows };
   const open = { data: openRows.data?.rows, isPending: openRows.isPending };

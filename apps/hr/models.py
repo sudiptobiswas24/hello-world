@@ -82,6 +82,13 @@ class Employee(AuditModel):
     """
 
     party = models.OneToOneField(Party, on_delete=models.PROTECT, related_name="employee_profile")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="employee",
+        help_text="The login this person signs in with. Decisions they take in the "
+                  "office application (approving a colleague's leave) are taken as "
+                  "this employee, and they read their own requests and their reports'.",
+    )
     employee_number = models.CharField(max_length=32, unique=True)
     department = models.ForeignKey(
         Department, null=True, blank=True, on_delete=models.SET_NULL, related_name="employees"
@@ -116,6 +123,21 @@ class Employee(AuditModel):
 
     def __str__(self):
         return f"{self.employee_number} - {self.party.name}"
+
+    def reports(self):
+        """
+        The pks of everyone this person manages: direct reports, theirs in
+        turn, and everyone in a department they manage, however deep. A
+        reporting line drawn in a circle stops where it began.
+        """
+        found, frontier = set(), {self.pk}
+        while frontier:
+            below = set(Employee.objects.filter(
+                Q(manager_id__in=frontier) | Q(department__manager_id__in=frontier)
+            ).values_list("pk", flat=True)) - found - {self.pk}
+            found |= below
+            frontier = below
+        return found
 
     # -- the shop-floor PIN ------------------------------------------------
 
@@ -474,7 +496,10 @@ class LeaveRequest(AuditModel):
 
     class Meta:
         ordering = ["-start_date"]
-        permissions = [("decide_leaverequest", "Can approve or reject leave requests")]
+        permissions = [
+            ("decide_leaverequest", "Can approve or reject leave requests"),
+            ("view_every_leaverequest", "Can read everyone's leave requests, not only their own and their reports'"),
+        ]
         constraints = [
             models.CheckConstraint(
                 check=Q(end_date__gte=models.F("start_date")),
@@ -613,6 +638,13 @@ class LeaveRequest(AuditModel):
             raise ValidationError(
                 f"{self.employee} cannot decide their own leave."
             )
+        # Their manager, a manager above, or their department's: anyone
+        # else's yes was recorded as a decision nobody with the standing
+        # to make it had made.
+        if self.employee_id not in by.reports():
+            raise ValidationError(
+                f"{by} does not manage {self.employee}: their manager, a manager above "
+                "them, or their department's manager decides their leave.")
 
     @serialised("status")
     def approve(self, by, note=""):
@@ -654,7 +686,7 @@ class LeaveRequest(AuditModel):
             )
 
     @serialised("status")
-    def withdraw_approval(self, by=None, note=""):
+    def withdraw_approval(self, by, note=""):
         """
         Put an approved request back in the queue.
 
@@ -666,6 +698,9 @@ class LeaveRequest(AuditModel):
         """
         if self.status != LeaveStatus.APPROVED:
             raise ValidationError("Only an approved leave request can be sent back.")
+        # Whoever may give the decision may take it back; `by` was taken
+        # and never asked, so anyone could undo a manager's yes.
+        self.check_approver(by)
         self.status = LeaveStatus.PENDING
         self.decided_by = None
         self.decided_at = None

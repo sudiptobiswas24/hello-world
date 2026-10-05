@@ -62,6 +62,8 @@ class LeaveRequestTests(TestCase):
         self.manager = Employee.objects.create(
             party=manager_party, employee_number="E006", hire_date="2025-01-01"
         )
+        self.employee.manager = self.manager  # only a manager decides leave
+        self.employee.save()
 
     def make_request(self):
         return LeaveRequest.objects.create(

@@ -52,12 +52,14 @@ from apps.inventory.models import (
     plan_putaway,
 )
 from apps.accounting.settlement import (
+    allocated_on,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
     owed_beyond,
     post_drawdown,
     post_settlement_fx,
+    refuse_other_control_account,
 )
 from apps.inventory.valuation import (
     cogs_account_for,
@@ -1192,21 +1194,19 @@ class ReorderRule(AuditModel):
             # A drop-ship goes to the customer, never onto this shelf.
             order__drop_ship_for__isnull=True,
         ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
-        return sum(
-            (max(line.quantity - line.quantity_received(), Decimal("0")) for line in lines),
-            Decimal("0"),
-        )
+        return sum((line.quantity_open() for line in lines), Decimal("0"))
 
     def committed(self):
-        """Confirmed sales not yet shipped from this warehouse."""
+        """Confirmed sales still to ship from this warehouse: not what a vendor drop-ships."""
         from apps.sales.models import OrderStatus as SalesOrderStatus
-        from apps.sales.models import SalesOrderLine
+        from apps.sales.models import SalesOrderLine, quantities_awaited
 
-        lines = SalesOrderLine.objects.filter(
+        lines = list(SalesOrderLine.objects.filter(
             item=self.item, order__status=SalesOrderStatus.CONFIRMED, charge__isnull=True
-        ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True))
+        ).filter(Q(warehouse=self.warehouse) | Q(warehouse__isnull=True)))
+        awaited = quantities_awaited(lines)
         return sum(
-            (line.quantity_open() for line in lines),
+            (line.quantity_to_ship(awaited[line.pk]) for line in lines),
             Decimal("0"),
         )
 
@@ -1839,6 +1839,8 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         related_name="drop_ship_lines",
         help_text="The customer line this drop-ship fulfils.",
     )
+    closed_short_at = models.DateTimeField(null=True, blank=True, editable=False)
+    closed_short_reason = models.CharField(max_length=255, blank=True, editable=False)
     work_order_operation = models.ForeignKey(
         "manufacturing.WorkOrderOperation", null=True, blank=True,
         on_delete=models.PROTECT, related_name="purchase_lines",
@@ -1938,6 +1940,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 "to count the same thing."
             )
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_outside_step()
         if self.is_charge() and not self.expense_account_id:
@@ -2111,17 +2114,35 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             sales_line.reclaim_stock()
         return result
 
-    def _check_drop_ship_quantity(self):
+    def _check_drop_ship_quantity(self, reopening=False):
         """
-        A drop-ship line may still bring no more than the customer is
+        A drop-ship line delivers its customer's line, and may still bring no more than the customer is
         still owed, less what other drop-ship lines are bringing. Checked
         on every save, so an edited quantity orders no more twice than a
         second create_for_drop_ship() may.
         """
-        if self.sales_order_line_id is None or self.is_charge():
+        if self.sales_order_line_id is None:
             return
-        if self.order_id and self.order.status == OrderStatus.CANCELLED:
+        sales_line = self.sales_order_line
+        # Its receipt posts a delivery of the customer's line, so it must
+        # be for that line, on that order's drop-ship, in its unit: one
+        # pointed anywhere else shipped the customer goods nobody sent.
+        if self.order.drop_ship_for_id != sales_line.order_id:
+            raise ValidationError({"sales_order_line": [
+                f"{sales_line.label()} is on {sales_line.order}; only a drop-ship order raised "
+                "for it may deliver it."]})
+        unit = self.uom_id or (self.item.uom_id if self.item_id else None)
+        if self.is_charge() or self.item_id != sales_line.item_id or \
+                unit != (sales_line.uom_id or sales_line.item.uom_id):
+            raise ValidationError({"sales_order_line": [
+                f"A drop-ship line delivers {sales_line.label()} itself: the same item, counted "
+                f"in {sales_line.uom or sales_line.item.uom}."]})
+        if self.order.status == OrderStatus.CANCELLED or (self.is_closed_short() and not reopening):
             return
+        # What the other drop-ships bring is read next; two edits at once
+        # must not both fit the same room. The sales order, as
+        # create_for_drop_ship() takes it, so the two queue in one order.
+        lock_rows(sales_line.order, refresh=False)
         others = drop_ship_awaited([self.sales_order_line_id], excluding=self.pk)
         room = self.sales_order_line.quantity_open() - others[self.sales_order_line_id]
         coming = self.quantity - (self.quantity_received() if self.pk else Decimal("0"))
@@ -2198,13 +2219,62 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return received - returned
 
     def is_fully_received(self):
-        return self.quantity_received() >= self.quantity
+        """Everything came, or the rest never will (closed short)."""
+        return self.is_closed_short() or self.quantity_received() >= self.quantity
+
+    def is_closed_short(self):
+        return self.closed_short_at is not None
 
     def quantity_open(self):
-        """What is still to come from the vendor: nothing for a charge."""
-        if self.charge_id is not None:
+        """What is still to come from the vendor: nothing for a charge or once closed short."""
+        if self.charge_id is not None or self.is_closed_short():
             return Decimal("0")
         return max(self.quantity - self.quantity_received(), Decimal("0"))
+
+    @serialised("closed_short_at")
+    def close_short(self, reason):
+        """
+        The vendor will send no more: nothing further is expected,
+        planned as supply, or awaited by a customer on a drop-ship. The
+        mirror of a sales line's close_short(); without it a short
+        delivery was supply for ever, and a drop-ship sent back to the
+        vendor left its customer's line owed by nobody.
+        """
+        if self.is_charge():
+            raise ValidationError("A charge is not received; there is nothing to close.")
+        if self.is_closed_short():
+            raise ValidationError(f"{self.label()} is already closed short.")
+        if self.quantity_open() <= 0:
+            raise ValidationError(f"{self.label()} is already received in full; there is nothing to close.")
+        received, billed = self.quantity_received(), self.quantity_billed()
+        if billed > received:
+            raise ValidationError(
+                f"{self.label()} is billed for {billed} and {received} received. Raise a debit "
+                "note for the difference first: closed short, it may bill only what came.")
+        reason = " ".join((reason or "").split())
+        if not reason:
+            raise ValidationError("Say why the rest will not come.")
+        self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
+        super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        if self.sales_order_line_id is not None:
+            # No longer coming from the vendor: the shelf's to send, and hold.
+            self.sales_order_line.reclaim_stock()
+
+    @serialised("closed_short_at")
+    def reopen(self):
+        """Expected again after all."""
+        if not self.is_closed_short():
+            raise ValidationError(f"{self.label()} is not closed short.")
+        if self.order.status != OrderStatus.CONFIRMED:
+            raise ValidationError(f"{self.order} is {self.order.status}; nothing on it can be expected.")
+        if self.sales_order_line_id is not None:
+            # Reopened, it is awaited again: refused where the customer's
+            # line is already being met another way.
+            self._check_drop_ship_quantity(reopening=True)
+        self.closed_short_at, self.closed_short_reason = None, ""
+        super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        if self.sales_order_line_id is not None:
+            self.sales_order_line.reclaim_stock()
 
     def quantity_billed(self):
         """Net quantity billed: posted bills minus posted debit notes."""
@@ -3156,7 +3226,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
     @serialised("posted")
-    def create_debit_note(self, memo="", quantities=None, accruals=None):
+    def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
@@ -3166,13 +3236,18 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         purchase side could only ever reverse a bill in full, so a vendor
         who short-shipped one line of ten had to have the entire bill
         cancelled and re-entered.
+
+        A prepayment is debited by `amount`: part of what is left of it,
+        or by default all.
         """
         if not self.posted:
             raise ValidationError("Only a posted bill can be corrected with a debit note.")
         if self.debits_id:
             raise ValidationError("Cannot issue a debit note against a debit note.")
         if self.is_prepayment:
-            return self._debit_prepayment(memo, quantities)
+            return self._debit_prepayment(memo, quantities, amount)
+        if amount is not None:
+            raise ValidationError("A bill is debited by the quantities of its lines, not by an amount.")
 
         if quantities is None:
             selected = [(line, line.quantity_debitable()) for line in self.lines.all()]
@@ -3264,9 +3339,9 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"would exceed the order total of {order_total}."
             )
 
-    def _debit_prepayment(self, memo, quantities):
+    def _debit_prepayment(self, memo, quantities, amount=None):
         """
-        Take back what is left of a prepayment, by amount. The mirror of
+        Take back what is left of a prepayment, or `amount` of it. The mirror of
         sales' `_credit_deposit`, and for the same reason: part of it may
         already have been drawn down against a bill.
         """
@@ -3284,6 +3359,13 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"{self.number} has already been drawn down in full against {drawn}; "
                 "debit those bills instead."
             )
+        if amount is not None:
+            if amount <= 0 or amount != round_money(amount):
+                raise ValidationError("Take back an amount above nothing, to the paisa.")
+            if amount > left:
+                raise ValidationError(
+                    f"Only {left} of {self.number} is left to take back; cannot take back {amount}.")
+            left = amount
         line = self.lines.get()  # One, by _check_prepayment_shape().
         debit_note = Bill.objects.create(
             vendor=self.vendor,
@@ -3859,7 +3941,7 @@ class BillPayment(AuditModel):
 
     @staticmethod
     def unallocated_for(payment):
-        return payment.amount - BillPayment.allocated_for(payment)
+        return payment.amount - allocated_on(payment)
 
     def clean(self):
         if not self.payment_id or not self.bill_id:
@@ -3892,7 +3974,9 @@ class BillPayment(AuditModel):
                 "is not supported."
             )
 
-        available = self.payment.amount - BillPayment.allocated_for(self.payment, excluding=self)
+        refuse_other_control_account(self.payment, self.bill.payable_account, self.bill)
+        # Applied anywhere, not only to bills: see allocated_on().
+        available = self.payment.amount - allocated_on(self.payment, excluding=self)
         if self.amount > available:
             raise ValidationError(
                 f"Only {available} of this payment is unallocated; cannot apply {self.amount}."
@@ -4172,7 +4256,7 @@ def not_received_in_full(lines):
         return Coalesce(Subquery(moved), Value(Decimal("0")),
                         output_field=DecimalField(max_digits=18, decimal_places=4))
 
-    return lines.filter(charge__isnull=True).annotate(
+    return lines.filter(charge__isnull=True, closed_short_at__isnull=True).annotate(
         net_received=received(False) - received(True)
     ).exclude(net_received__gte=models.F("quantity"))
 
@@ -4625,6 +4709,10 @@ class GoodsReceipt(AuditModel):
         if not is_return:
             for line in lines:
                 already_received = line.order_line.quantity_received()
+                if line.order_line.is_closed_short():
+                    raise ValidationError(
+                        f"{line.order_line.label()} was closed short: "
+                        f"{line.order_line.closed_short_reason}. Reopen it to receive more.")
                 if already_received + line.quantity_received > line.order_line.quantity:
                     raise ValidationError(
                         f"Receiving {line.quantity_received} of {line.order_line.item} would "

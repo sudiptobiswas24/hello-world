@@ -70,6 +70,10 @@ class AuditTestCase(TestCase):
     def employee(self, code, hire=datetime.date(2020, 1, 1), **kwargs):
         party = Party.objects.create(code=f"P-{code}", name=code)
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
+        # Everyone after the boss reports to them, unless a test says
+        # otherwise: only a manager decides leave.
+        if getattr(self, "boss", None) is not None:
+            kwargs.setdefault("manager", self.boss)
         return Employee.objects.create(
             party=party, employee_number=code, hire_date=hire, **kwargs
         )

@@ -327,15 +327,24 @@ ROLES = {
         *crud("hr", "employee"),
         *crud("hr", "leaverequest"),
         "hr.decide_leaverequest",
+        "hr.view_every_leaverequest",
     ],
     "Payroll Officer": [
         *REFERENCE,
         *view("hr", "department", "employee", "leaverequest", "payslip", "payslipline",
               "statutoryremittance"),
+        # Unpaid leave is pay: payroll reads everyone's.
+        "hr.view_every_leaverequest",
         *full("hr", "paycomponent", "paycomponentslab", "employeecompensation"),
         *crud("hr", "payrun", actions=("add", "change", "view")),
         # deliberately NOT hr.post_payrun: whoever works the payroll out
         # does not also put it in the ledger and pay it.
+    ],
+    # Decides their own team's leave: the model refuses anyone they do
+    # not manage, and the list shows only their reports'.
+    "Line Manager": [
+        *view("hr", "department", "employee", "leaverequest"),
+        "hr.decide_leaverequest",
     ],
     "Employee Self Service": [
         *crud("purchasing", "purchaserequisition", actions=("add", "change", "view")),

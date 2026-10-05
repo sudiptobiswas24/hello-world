@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
 from apps.accounting.defaults import chosen_or_default
-from apps.core.api import flag, quantities_by_line, record_or_404
+from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
 from apps.inventory.models import Warehouse
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
@@ -183,12 +183,33 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = _order_lines().select_related("order__vendor__tax_profile")
     serializer_class = PurchaseOrderLineSerializer
+    action_permission_map = {"close_short": "purchasing.change_purchaseorder",
+                             "reopen": "purchasing.change_purchaseorder"}
+
+    @action(detail=True, methods=["post"], url_path="close-short")
+    def close_short(self, request, pk=None):
+        """{reason}: the vendor will send no more of this line."""
+        line = self.get_object()
+        try:
+            line.close_short(request.data.get("reason", ""))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(line).data)
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        line = self.get_object()
+        try:
+            line.reopen()
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(line).data)
 
 
 class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "vendor__code", "vendor__name", "purchase_order__number"]
     filter_fields = ["vendor", "posted", "debits", "debits__isnull", "is_prepayment",
-                     "purchase_order"]
+                     "purchase_order", "payable_account", "currency"]
     date_field = "bill_date"
     ordering_fields = ["bill_date", "due_date", "number"]
 
@@ -226,9 +247,10 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         bill = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), bill.lines.all(), "bill")
+        amount = money_amount(request.data, "amount")  # a prepayment's, part of what is left
         try:
             debit_note = bill.create_debit_note(memo=request.data.get("memo", ""),
-                                                quantities=quantities)
+                                                quantities=quantities, amount=amount)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(debit_note).data)

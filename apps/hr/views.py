@@ -1,14 +1,21 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from apps.core.api import record_or_404
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import Department, Employee, LeaveRequest, leave_summary
+
+
+def _employee_of(user):
+    """The employee a login belongs to, or None."""
+    return Employee.objects.filter(user=user).first() if user.is_authenticated else None
 from .serializers import DepartmentSerializer, EmployeeSerializer, LeaveRequestSerializer
 
 
@@ -47,11 +54,48 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "reject": "hr.decide_leaverequest",
     }
 
+    def get_queryset(self):
+        # Your own requests and your reports'; everyone's only to those
+        # who keep the records (HR, payroll). Self service read every
+        # colleague's leave, reasons and all, until the login knew whose
+        # it was.
+        queryset = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser or user.has_perm("hr.view_every_leaverequest"):
+            return queryset
+        me = _employee_of(user)
+        if me is None:
+            return queryset.none()
+        return queryset.filter(Q(employee=me) | Q(employee__in=me.reports()))
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        employee = serializer.validated_data.get("employee")
+        if not (user.is_superuser or user.has_perm("hr.change_employee")):
+            me = _employee_of(user)
+            if me is None or employee != me:
+                raise DRFValidationError({"employee": [
+                    "You ask for your own leave; HR records anyone else's."
+                    if me is not None else
+                    "Your login is not linked to an employee: HR links it on your record."]})
+        super().perform_create(serializer)
+
     def _decider(self, request):
-        # No User<->Employee link exists yet, so the decider is passed
-        # explicitly rather than inferred from request.user. Revisit once
-        # accounts are tied to Employee records.
-        return get_object_or_404(Employee, pk=request.data.get("decided_by"))
+        """
+        The signed-in person, as the employee they are. An administrator
+        may name another (`decided_by`), and the audit trail still says who
+        did it; anyone else decides as themselves, whatever they send.
+        """
+        named = request.data.get("decided_by")
+        if request.user.is_superuser and named not in (None, ""):
+            return record_or_404(Employee, named, "decided_by")
+        me = _employee_of(request.user)
+        if me is None:
+            raise DRFValidationError({"decided_by": [
+                "Your login is not linked to an employee: HR links it on your record."]})
+        if named not in (None, "") and str(named) != str(me.pk):
+            raise DRFValidationError({"decided_by": ["You decide as yourself."]})
+        return me
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):

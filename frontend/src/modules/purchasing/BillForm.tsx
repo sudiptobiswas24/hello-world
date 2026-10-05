@@ -90,8 +90,14 @@ export default function BillForm() {
     done: (result) => `${(result as Bill).number} posted`,
   });
   const debit = async () => {
-    if (!window.confirm(`Debit all of ${bill!.number}? A debit note is posted at once.`)) return;
-    const outcome = await act.run("POST", `${ENDPOINT}${bill!.id}/debit_note/`, {}, {
+    // A prepayment is taken back by amount: part of what is left, or all of it.
+    let body: Record<string, string> = {};
+    if (bill!.is_prepayment) {
+      const amount = window.prompt(`How much of ${bill!.number} to take back? Leave it empty for all that is left. A debit note is posted at once.`);
+      if (amount === null) return;
+      if (amount.trim()) body = { amount: amount.trim() };
+    } else if (!window.confirm(`Debit all of ${bill!.number}? A debit note is posted at once.`)) return;
+    const outcome = await act.run("POST", `${ENDPOINT}${bill!.id}/debit_note/`, body, {
       done: (result) => `Debit note ${(result as Bill).number} posted`,
     });
     if (outcome.ok) navigate(`/purchasing/bills/${outcome.data.id}`);

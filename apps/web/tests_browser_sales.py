@@ -208,3 +208,37 @@ class SalesInTheBrowserTests(BrowserTestCase):
                 self.assertGreater(opened, 0)
                 self.assertEqual(self.problems, [], role)
 
+
+    def test_the_rep_closes_the_rest_of_a_line_short_and_reopens_it(self):
+        order = self.make_order(quantity="10", price="100")
+        self.ship(order, "6")
+        line = order.lines.get()
+        rep = self.sign_in(self.person("Sales Rep"), f"/app/sales/orders/{order.pk}")
+        row = rep.locator(".lines tbody tr", has_text="Widget")
+        row.get_by_role("button", name=re.compile(r"^Close .*Widget short$")).click()
+        row.get_by_label(re.compile(r"^Why the rest of .*Widget will not ship$")).fill("Customer cut the order")
+        row.get_by_role("button", name="Close", exact=True).click()
+        expect(row.get_by_text("Closed short")).to_be_visible()
+        line.refresh_from_db()
+        self.assertEqual((line.closed_short_reason, line.quantity_open()), ("Customer cut the order", Decimal("0")))
+        row.get_by_role("button", name="Reopen").click()
+        expect(row.get_by_role("button", name=re.compile("short$"))).to_be_visible()
+        line.refresh_from_db()
+        self.assertEqual(line.quantity_open(), Decimal("4"))
+        self.assertEqual(self.problems, [])
+
+    def test_part_of_a_deposit_is_given_back_from_the_screen(self):
+        order = self.make_order(quantity="10", price="100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        ar = self.sign_in(self.person("AR Manager"), f"/app/sales/invoices/{deposit.pk}")
+        with self.answering(ar, "90") as asked:
+            ar.get_by_role("button", name="Credit note").click()
+            ar.wait_for_url(re.compile(r"/sales/invoices/(?!%d$)\d+$" % deposit.pk))
+        self.assertIn("Leave it empty for all that is left", asked[0])
+        deposit.refresh_from_db()
+        self.assertEqual(deposit.deposit_unapplied(), Decimal("210.00"))
+        note = Invoice.objects.get(credits=deposit)
+        self.assertEqual(note.total(), Decimal("90.00"))
+        expect(ar.locator(".doc-head")).to_contain_text(note.number)
+        self.assertEqual(self.problems, [])

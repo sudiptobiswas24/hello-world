@@ -580,24 +580,10 @@ has that this one still doesn't.
   `DocumentSequence` now. Inventory's own documents (transfers,
   adjustments) still carry hand-typed references.
 
-## Known gaps (not yet addressed)
+## Known gaps
 
-- **Permissions are model-level, not object-level.** A user with
-  `hr.decide_leaverequest` can approve *anyone's* leave, not just
-  their reports'; a user with `sales.post_invoice` can post *any*
-  invoice. Row-level rules ("only your own manager approves your
-  leave") need the User↔Employee link below.
-- **No User↔Employee link.** `LeaveRequest.approve/reject` take an
-  explicit `decided_by` employee id rather than inferring it from the
-  logged-in user, because there's no account-to-employee mapping yet.
-  This is the prerequisite for object-level permissions.
-- **Payroll** is not built. Employee compensation, pay runs, and the
-  resulting ledger postings are a separate design effort.
-- ~~Bill ↔ GoodsReceipt three-way match~~ — **done**, see Purchasing
-  above.
-- ~~Vendor prepayments~~ — **done**, see Purchasing.
-- ~~Landed cost~~ — **done**, see Purchasing.
-- ~~Settlement discounts are sales-only~~ — **done**, see Purchasing.
+What is not built, what is limited and what no test can prove are kept
+in [docs/RISKS.md](docs/RISKS.md), current with the code.
 
 ## Local setup
 
@@ -656,9 +642,11 @@ python manage.py runserver
   `POST /api/purchasing/bills/{id}/debit_note/`. Post a receipt with
   `POST /api/purchasing/goods-receipts/{id}/post_receipt/`, correct one
   with `POST /api/purchasing/goods-receipts/{id}/return_receipt/`.
-- HR API: `/api/hr/` (departments, employees, leave-requests). Decide a
-  leave request with `POST /api/hr/leave-requests/{id}/approve/` or
-  `/reject/` (body: `decided_by: <employee id>`), or `/cancel/`.
+- HR API: `/api/hr/` (departments, employees, leave-requests). Link a
+  login to its employee with the employee's `user`. Decide a leave
+  request with `POST /api/hr/leave-requests/{id}/approve/` or `/reject/`
+  as the signed-in manager (an administrator may pass `decided_by`), or
+  `/cancel/`.
 
 ## Office application
 

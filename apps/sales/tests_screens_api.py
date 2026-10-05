@@ -509,3 +509,23 @@ class WhatIsLeftToApplyTests(ScreensTestCase):
         self.allocate(payment, second, "300")
         row = self.as_("AR Manager").get(f"/api/accounting/payments/{payment.pk}/").json()
         self.assertEqual(Decimal(row["unallocated"]), Decimal("200"))  # 1500 - 1000 - 300
+
+
+class PartOfADepositThroughTheApiTests(ScreensTestCase):
+    def test_an_amount_is_read_to_the_paisa_and_refused_beside_its_field(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, percent=30)
+        deposit.post()
+        url = f"/api/sales/invoices/{deposit.pk}/credit_note/"
+        ar = self.as_("AR Manager")
+        for typed in ["ninety", "0", "-1", "10.005"]:
+            with self.subTest(typed=typed):
+                refused = ar.post(url, {"amount": typed}, format="json")
+                self.assertEqual(refused.status_code, 400, refused.content)
+                self.assertIn("amount", refused.json())
+        self.assertEqual(self.as_("Sales Rep").post(url, {"amount": "90"}, format="json").status_code, 403)
+        given = ar.post(url, {"amount": "90", "memo": "Order cut"}, format="json")
+        self.assertEqual(given.status_code, 200, given.content)
+        self.assertEqual(given.json()["total"], "90.00")
+        deposit.refresh_from_db()
+        self.assertEqual(deposit.deposit_unapplied(), Decimal("210.00"))

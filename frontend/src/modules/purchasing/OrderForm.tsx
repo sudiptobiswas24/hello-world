@@ -155,6 +155,7 @@ export default function OrderForm() {
           <>
             <Lines lines={order.lines} endpoint="/api/purchasing/purchase-order-lines/" parent="order" parentId={order.id}
               withUom side="purchase" editable={order.status === "draft" && can("purchasing.change_purchaseorder")}
+              closable={order.status === "confirmed" && can("purchasing.change_purchaseorder")}
               extra={order.status === "confirmed" ? [
                 { label: "Received", render: (line) => quantity(line.quantity_received as string) },
                 { label: "Billed", render: (line) => quantity(line.quantity_billed as string) },
