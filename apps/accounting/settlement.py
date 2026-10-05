@@ -104,7 +104,7 @@ def _post_exchange_difference(
 @transaction.atomic
 def post_drawdown(
     *, party, held_account, control_account, amount, held_rate, document_rate,
-    date, reference, memo, is_receivable,
+    date, reference, memo, is_receivable, taxes=(),
 ):
     """
     Draw money held up front — a customer's deposit, a prepayment to a
@@ -124,8 +124,15 @@ def post_drawdown(
     the base cleared, each rounded on its own. Rounding the difference
     of the rates instead can leave a paisa on the control account that
     no document explains.
+
+    `taxes`, [(account, amount)], is tax the money held carried (an
+    advance for a service bears it when received): that much is taken
+    off the tax accounts rather than the held one, since the document it
+    is drawn against charges tax on the whole.
     """
     held_base = round_money(Decimal(amount) * (held_rate or Decimal("1")))
+    tax_base = [(account, round_money(Decimal(tax) * (held_rate or Decimal("1"))))
+                for account, tax in taxes]
     booked_base = round_money(Decimal(amount) * (document_rate or Decimal("1")))
 
     entry = JournalEntry.objects.create(date=date, reference=reference, memo=memo)
@@ -134,9 +141,15 @@ def post_drawdown(
     debit, credit = (
         (held_account, control_account) if is_receivable else (control_account, held_account)
     )
+    if tax_base and not is_receivable:
+        raise ValueError("Tax on money held is drawn down only from a customer's advance.")
     JournalLine.objects.create(
-        entry=entry, account=debit, party=party, debit=held_base, description=memo,
+        entry=entry, account=debit, party=party,
+        debit=held_base - sum((tax for _, tax in tax_base), Decimal("0")), description=memo,
     )
+    for account, tax in tax_base:
+        JournalLine.objects.create(entry=entry, account=account, party=party, debit=tax,
+                                   description=f"Tax on the advance: {memo}"[:255])
     JournalLine.objects.create(
         entry=entry, account=credit, party=party, credit=held_base, description=memo,
     )

@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     "apps.planning",
     "apps.assets",
     "apps.gst",
+    "apps.imports",
     "apps.web",
 ]
 

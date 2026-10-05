@@ -852,6 +852,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         if account is None:
             raise ValidationError("The company has no customer deposit account configured.")
 
+        taxes = self._advance_taxes()
         invoice = Invoice.objects.create(
             customer=self.customer,
             invoice_date=invoice_date or timezone.localdate(),
@@ -865,14 +866,56 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             sales_rep=self.sales_rep,
             is_down_payment=True,
         )
-        InvoiceLine.objects.create(
+        line = InvoiceLine.objects.create(
             invoice=invoice,
             description=description or f"Down payment on order {self.number or self.pk}",
             quantity=Decimal("1"),
             unit_price=amount,
             revenue_account=account,
         )
+        if taxes:
+            # An advance for a service bears its tax when it is received;
+            # `amount` is what the customer pays, so the line is what is
+            # left of it once the tax is taken out.
+            line.taxes.set(taxes)
+            line.unit_price = _net_within(line, amount)
+            line.save()
         return invoice
+
+    def _advance_taxes(self):
+        """
+        The taxes an advance on this order bears: none on goods (GST is not
+        due on an advance for goods), the order's own on job work, which is
+        a service. One set for the whole order, or refused: an advance is
+        one line and cannot say which rate a part of it was for.
+        """
+        if not self.is_job_work:
+            return []
+        sets = {frozenset(line.taxes.values_list("pk", flat=True))
+                for line in self.lines.filter(charge__isnull=True)}
+        if len(sets) > 1:
+            raise ValidationError(
+                f"{self}'s lines bear different taxes, and an advance is taxed at one "
+                "rate. Bill the work in parts, each on an order of its own rate.")
+        return list(Tax.objects.filter(pk__in=next(iter(sets), frozenset())))
+
+
+def _net_within(line, gross):
+    """
+    The line's unit price that, with its taxes, comes to `gross`: or as
+    near as the paisa allows (a tax rounded at each rate cannot reach
+    every total). Tried a paisa either side of the plain division.
+    """
+    line.unit_price = gross
+    rate = line.tax_total() / gross if gross else Decimal("0")
+    guess = round_money(gross / (1 + rate))
+    best = None
+    for step in range(-3, 4):
+        line.unit_price = guess + Decimal(step) / 100
+        miss = abs(line.total() - gross)
+        if best is None or miss < best[0]:
+            best = (miss, line.unit_price)
+    return best[1]
 
 
 class SuppliedItem(AuditModel):
@@ -1684,6 +1727,20 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if account is None:
             raise ValidationError("The company has no customer deposit account configured.")
 
+        # A taxed advance (job work): this share of its tax is reversed
+        # here, because the invoice it is drawn against charges tax on the
+        # whole. The last drawdown takes exactly what is left.
+        charged = deposit.advance_taxes()
+        if not charged:
+            reversals = []
+        elif amount == left:
+            reversals = deposit.advance_tax_for(deposit.lines.get().net_amount())
+        else:
+            reversals = [(tax, round_money(tax_amount * amount / deposit.total()))
+                         for tax, tax_amount in charged]
+        for tax, _amount in reversals:
+            if tax.collected_account_id is None:
+                raise ValidationError(f"{tax} has no account it is collected to.")
         entry, fx_entry = post_drawdown(
             party=self.customer, held_account=account,
             control_account=self.receivable_account, amount=amount,
@@ -1691,11 +1748,16 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             date=on_date, reference=self.number,
             memo=f"Down payment {deposit.number} applied to {self.number}",
             is_receivable=True,
+            taxes=[(tax.collected_account, tax_amount) for tax, tax_amount in reversals if tax_amount],
         )
-        return DepositApplication.objects.create(
+        application = DepositApplication.objects.create(
             invoice=self, deposit=deposit, amount=amount, date=on_date,
             journal_entry=entry, fx_entry=fx_entry,
         )
+        for tax, tax_amount in reversals:
+            if tax_amount:
+                DepositTaxReversal.objects.create(application=application, tax=tax, amount=tax_amount)
+        return application
 
     def apply_available_deposits(self, on_date=None):
         """Draw down every deposit still outstanding on this invoice's order."""
@@ -2112,8 +2174,8 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         known. A draft could be given more through the API: a second
         line booked revenue on a document every report leaves out as not
         a sale, and crediting it back assumed one line and failed. Tax on
-        an advance (owed on services, such as job work) is not handled
-        here; it is refused rather than half-booked.
+        an advance is owed on a service, and a job-work order's advance
+        bears it; on goods none is due, and any is refused.
         """
         lines = list(self.lines.all())
         if len(lines) != 1:
@@ -2130,9 +2192,10 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError(
                 "A down payment line is one of its amount, with no discount."
             )
-        if line.taxes.exists():
+        if line.taxes.exists() and not (self.sales_order_id and self.sales_order.is_job_work):
             raise ValidationError(
-                "Tax on a down payment is not supported; post it without tax."
+                "No tax is due on an advance for goods; post it without tax. (An advance "
+                "for job work bears its tax, from the order.)"
             )
         account = Company.get().customer_deposit_account
         if account is None or line.revenue_account_id != account.pk:
@@ -2190,7 +2253,9 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             if amount > left:
                 raise ValidationError(
                     f"Only {left} of {self.number} is left to give back; cannot give back {amount}.")
-            left = amount
+        else:
+            amount = left
+        net = self.advance_net_for(amount)
         line = self.lines.get()  # One, by _check_deposit_shape().
         credit_note = Invoice.objects.create(
             customer=self.customer,
@@ -2204,16 +2269,86 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             sales_rep=self.sales_rep,
             credits=self,
         )
-        InvoiceLine.objects.create(
+        returned = InvoiceLine.objects.create(
             invoice=credit_note,
             credits_line=line,
             description=f"Down payment {self.number} returned",
             quantity=Decimal("1"),
-            unit_price=left,
+            unit_price=net,
             revenue_account=line.revenue_account,
         )
+        # Its tax goes back with it: the same taxes, bound by the line it
+        # credits (InvoiceLine.fixed_tax_amounts).
+        returned.taxes.set(line.taxes.all())
         credit_note.post(memo=memo)
         return credit_note
+
+    # -- tax on an advance (job work) ----------------------------------------
+
+    def advance_taxes(self):
+        """On a posted down payment: [(tax, amount)] it charged, as it recorded them."""
+        if not self.is_down_payment or not self.taxes_recorded:
+            return []
+        return [(row.tax, row.amount) for row in self.lines.get().recorded_taxes.all()]
+
+    def _advance_given_back(self):
+        """(net, {tax pk: tax}) of this down payment already drawn down or credited back."""
+        net, taxes = Decimal("0"), defaultdict(Decimal)
+        for application in self.applications.all():
+            reversed_here = list(application.tax_reversals.all())
+            net += application.amount - sum((row.amount for row in reversed_here), Decimal("0"))
+            for row in reversed_here:
+                taxes[row.tax_id] += row.amount
+        for note in self.credit_notes.all():
+            if not note.posted:
+                continue
+            for note_line in note.lines.all():
+                net += note_line.net_amount()
+                for tax, amount in note_line.tax_amounts():
+                    taxes[tax.pk] += amount
+        return net, taxes
+
+    def advance_tax_for(self, net):
+        """
+        [(tax, amount)] the part of this down payment worth `net` before tax
+        carries: in proportion, and the last of it exactly what is left, so
+        the tax account it was charged to clears to nothing.
+        """
+        charged = self.advance_taxes()
+        if not charged:
+            return []
+        whole = self.lines.get().net_amount()
+        given_net, given_tax = self._advance_given_back()
+        if net >= whole - given_net:
+            return [(tax, amount - given_tax[tax.pk]) for tax, amount in charged]
+        return [(tax, round_money(amount * net / whole)) for tax, amount in charged]
+
+    def advance_net_for(self, gross):
+        """
+        The net that, with its tax, is `gross` of this down payment: all
+        that is left, or a part. A part the tax rounding cannot reach is
+        refused, naming the amounts either side that it can.
+        """
+        charged = self.advance_taxes()
+        if not charged:
+            return gross
+        whole = self.lines.get().net_amount()
+        given_net, _ = self._advance_given_back()
+        if gross == self.deposit_unapplied():
+            return whole - given_net
+        rate = sum((amount for _, amount in charged), Decimal("0")) / whole
+        guess = round_money(gross / (1 + rate))
+        reached = {}
+        for step in range(-3, 4):
+            net = guess + Decimal(step) / 100
+            reached[net + sum((amount for _, amount in self.advance_tax_for(net)), Decimal("0"))] = net
+        if gross in reached:
+            return reached[gross]
+        below = max((total for total in reached if total < gross), default=None)
+        above = min((total for total in reached if total > gross), default=None)
+        raise ValidationError(
+            f"{gross} does not split into an amount and its tax to the paisa; give back "
+            + " or ".join(str(total) for total in (below, above) if total is not None) + ".")
 
 
 # Everything an invoice's own figures read — totals, tax, paid, credited,
@@ -2259,6 +2394,18 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
 
     def corrected_line(self):
         return self.credits_line
+
+    def fixed_tax_amounts(self):
+        # Crediting back a taxed advance: the tax goes back in proportion,
+        # and with the last of it exactly what the advance still carries
+        # after its drawdowns, which reverse tax of their own. Measured
+        # against the credit notes alone, a deposit drawn down in part and
+        # then returned left a paisa on the GST account for good.
+        original = self.credits_line
+        if (original is not None and not self.invoice.taxes_recorded
+                and original.invoice.is_down_payment and original.invoice.taxes_recorded):
+            return original.invoice.advance_tax_for(self.net_amount())
+        return super().fixed_tax_amounts()
 
     def current_hsn(self):
         # A credit note keeps what its invoice line froze; only a fresh
@@ -2507,6 +2654,28 @@ class DepositApplication(AuditModel):
 
     def __str__(self):
         return f"{self.deposit} -> {self.invoice} ({self.amount})"
+
+
+class DepositTaxReversal(models.Model):
+    """
+    The tax on a job-work advance that one drawdown reversed: a fact of
+    the drawdown, recorded rather than worked out again, so the last
+    drawdown or credit note can take exactly what is left and GSTR-1's
+    table 11B reports what was adjusted.
+    """
+
+    application = models.ForeignKey(DepositApplication, on_delete=models.CASCADE,
+                                    related_name="tax_reversals")
+    tax = models.ForeignKey(Tax, on_delete=models.PROTECT, related_name="+")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="deposit_tax_reversal_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.tax} {self.amount} on {self.application}"
 
 
 class InvoiceWriteOff(AuditModel):

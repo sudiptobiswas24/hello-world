@@ -585,6 +585,12 @@ has that this one still doesn't.
 What is not built, what is limited and what no test can prove are kept
 in [docs/RISKS.md](docs/RISKS.md), current with the code.
 
+## Go-live
+
+The old system's parties, items and opening position come in from CSV
+files with `python manage.py import_csv`, a dry run until told
+`--commit`: see [docs/IMPORT.md](docs/IMPORT.md).
+
 ## Local setup
 
 ```bash

@@ -19,9 +19,15 @@ can prove.
    the words on the screens are the plant's words, is unknown.
    *Do:* a pilot with two or three people per desk on a copy of real
    data, for a fortnight, before anything is switched off.
-2. **There is no import from the old system.** Opening balances,
-   open orders, item masters, parties and stock on hand would be keyed
-   by hand or loaded through the API. *Do:* see "Later items", L4.
+2. **The import has never seen the plant's own files.** `import_csv`
+   (docs/IMPORT.md) brings in parties, items, opening stock, open
+   invoices and bills and the other opening balances, dry run first,
+   each file whole or not at all. It was tested on files written for the
+   tests. The old system's exports will have their own column names,
+   date shapes and oddities. *Do:* a dry run of every file on a copy of
+   the database, weeks before go-live, and reconcile the opening-balance
+   account to the old system's equity. It adds and never updates, and
+   brings in no history and no open orders.
 3. **The Docker image has never been built here.** Docker Hub was not
    reachable from this environment, so `Dockerfile` and
    `docker-compose.yml` are unverified. *Do:* build and start them once
@@ -49,7 +55,10 @@ can prove.
    colleague's user name can lock them out. There is no per-address
    throttle. *Do:* put the server behind a proxy that rate-limits
    `/accounts/login/` by address.
-8. **GST is compiled, not filed.** GSTR-1, GSTR-3B and ITC-04 are
+8. **GST is compiled, not filed, and periods before go-live must not be
+   compiled here.** Opening invoices are dated in periods the old system
+   filed; compiled here they would read as supplies with no tax.
+   **Filing:** GSTR-1, GSTR-3B and ITC-04 are
    built; e-invoice and e-way bill payloads are built. Nothing is sent
    to the GST portal or NIC: someone uploads them. A payload the portal
    rejects is found out there, not here.
@@ -95,17 +104,26 @@ can prove.
     rest is no longer expected, planned as supply or awaited by a
     customer on a drop-ship. Refused while more is billed than received
     (raise a debit note first).
+19. **GST on an advance is charged on job-work orders only**, at the
+    order's tax (an order whose lines bear different taxes takes no
+    single advance), and reversed when the advance is drawn down or given
+    back; the last of it takes exactly what is left. An advance received
+    and invoiced in the same month appears in neither 11A nor 11B. Part
+    of an advance whose amount the tax rounding cannot reach to the
+    paisa is refused, naming the amounts either side. Advances paid *to*
+    vendors carry no tax here: credit on them waits for the vendor's
+    invoice.
 
 ## Later items
 
 Tracked here until done; each moves to "Known limits" with what it does
 not cover, or is deleted with the commit that finishes it.
 
-- **L1 GST on advances received for job work.** Not built: an advance
-  against a job-work order carries no GST liability today.
+- ~~L1 GST on advances received for job work~~ — done; see item 19.
 - ~~L2 Refunding part of a customer deposit~~ — done: a deposit is
   credited back by any amount up to what is left (and a vendor
   prepayment debited back the same way), from the invoice or bill
   screen or `{"amount": "90.00"}` on the credit or debit note action.
 - ~~L3 Link a login to an employee~~ — done, for leave; see items 6 and 17.
-- **L4 Import from files (CSV).** Not built; see item 2.
+- ~~L4 Import from files (CSV)~~ — done; see item 2 for what it has
+  not been tried on.

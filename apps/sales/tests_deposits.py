@@ -519,7 +519,7 @@ class ADownPaymentIsOneLineOfMoneyHeldTests(SalesTestCase):
         with self.assertRaisesMessage(ValidationError, "single line"):
             deposit.post()
 
-    def test_tax_is_refused(self):
+    def test_tax_on_an_advance_for_goods_is_refused(self):
         from apps.accounting.models import Account, AccountType, Tax
 
         payable = Account.objects.create(code="2100", name="Tax",
@@ -528,7 +528,9 @@ class ADownPaymentIsOneLineOfMoneyHeldTests(SalesTestCase):
                                  collected_account=payable, paid_account=payable)
         deposit = self.draft()
         deposit.lines.get().taxes.add(tax)
-        with self.assertRaisesMessage(ValidationError, "Tax on a down payment"):
+        # No GST is due on an advance for goods; a job-work order's is
+        # taxed (apps/gst/tests_advances.py).
+        with self.assertRaisesMessage(ValidationError, "No tax is due on an advance for goods"):
             deposit.post()
 
     def test_another_account_is_refused(self):

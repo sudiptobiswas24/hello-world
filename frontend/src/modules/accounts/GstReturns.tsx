@@ -25,6 +25,7 @@ const SECTIONS: [string, string][] = [
   ["b2b", "B2B invoices"], ["b2cl", "B2C large"], ["b2cs", "B2C small"], ["exp", "Exports"],
   ["cdnr", "Credit/debit notes (registered)"], ["cdnur", "Credit/debit notes (unregistered)"],
   ["hsn_b2b", "HSN summary, B2B"], ["hsn_b2c", "HSN summary, B2C"], ["documents", "Documents issued"],
+  ["advances_received", "11A Advances received, not yet invoiced"], ["advances_adjusted", "11B Advances adjusted"],
 ];
 
 const ROWS_3B: [keyof Gstr3b, string][] = [

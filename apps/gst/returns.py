@@ -16,13 +16,14 @@ configuration.
 Built:
 - GSTR-1: B2B (with SEZ), B2CL, B2CS, exports, credit notes to
   registered (CDNR) and unregistered (CDNUR) buyers, nil / exempt /
-  non-GST, the HSN summary split B2B and B2C, documents issued.
+  non-GST, the HSN summary split B2B and B2C, documents issued, and
+  advances (table 11: 11A received and not invoiced in the period, 11B
+  adjusted against an invoice or refunded).
 - GSTR-3B: 3.1(a), (b), (c), (e); 3.2; 4(A)(5); 5.
 
 Not built, and returned as `not_built` rather than left looking
 complete: reverse charge (3.1(d), 4(A)(3)), imports (4(A)(1), (2)),
-blocked and reversed credit (4(B), 4(D)), advances (table 11),
-amendments, e-commerce operators, and the set-off in table 6.
+blocked and reversed credit (4(B), 4(D)), amendments, e-commerce operators, and the set-off in table 6.
 
 Nothing is filed. Filing needs GSTN credentials through a GST Suvidha
 Provider, which this system does not hold. `gstr1_json` gives the
@@ -49,7 +50,6 @@ NOT_BUILT = [
     "3.1(d) and 4(A)(3): reverse charge",
     "4(A)(1), 4(A)(2): import of goods and services",
     "4(B), 4(D): credit reversed or ineligible",
-    "GSTR-1 table 11: advances",
     "Amendments to earlier periods",
     "Supplies through e-commerce operators",
     "GSTR-3B table 6: payment and set-off",
@@ -267,6 +267,7 @@ def gstr1(start, end):
         "gstin": settings.gstin, "period": (start, end),
         "b2b": [], "b2cl": [], "exp": [], "b2cs": [], "cdnr": [], "cdnur": [],
         "nil": {}, "hsn_b2b": [], "hsn_b2c": [], "documents": [],
+        "advances_received": [], "advances_adjusted": [],
         "warnings": [], "not_built": NOT_BUILT,
     }
     b2cs = defaultdict(_money)
@@ -353,8 +354,72 @@ def gstr1(start, end):
             for (code, uqc, rate), totals in sorted(rows.items())
         ]
     result["documents"] = _documents_issued(documents)
+    received, adjusted = _advances(start, end, settings.state)
+    result["advances_received"], result["advances_adjusted"] = _rows(received), _rows(adjusted)
     result["warnings"] = sorted(set(result["warnings"]))
     return result
+
+
+def _rows(totals):
+    return [
+        {"supply": "inter" if inter else "intra", "place_of_supply": place, "rate": rate} | money
+        for (inter, place, rate), money in sorted(totals.items())
+        if any(money.values())
+    ]
+
+
+def _advances(start, end, state):
+    """
+    Table 11: tax on advances for services (job work), by place and rate.
+
+    11A is tax on advances received in the period and not adjusted in it:
+    what was received less what was drawn down or given back by the end
+    of the period. 11B is the tax on earlier advances adjusted in the
+    period, against an invoice or by a refund. An advance received and
+    invoiced in the same month is in neither, as the portal expects.
+    """
+    from apps.sales.models import Invoice
+
+    received, adjusted = defaultdict(_money), defaultdict(_money)
+    deposits = Invoice.objects.filter(
+        posted=True, is_down_payment=True, invoice_date__lte=end,
+        lines__recorded_taxes__gst_head__in=HEADS,
+    ).distinct().prefetch_related(
+        "lines__recorded_taxes", "applications__tax_reversals__tax",
+        "credit_notes__lines__recorded_taxes",
+    )
+    for deposit in deposits:
+        document = _document(deposit, deposit.invoice_date, state, False)
+        (line,) = document.lines
+        key = (document.inter, document.place, line.rate)
+        rate = deposit.exchange_rate or Decimal("1")
+        events = []
+        for application in deposit.applications.all():
+            event = _money()
+            for row in application.tax_reversals.all():
+                if row.tax.gst_head in HEADS:
+                    event[row.tax.gst_head] += round_money(row.amount * rate)
+            event["taxable"] = round_money(application.amount * rate) - sum(event[head] for head in HEADS)
+            events.append((application.date, event))
+        for note in deposit.credit_notes.all():
+            if note.posted:
+                (returned,) = _document(note, note.invoice_date, state, True).lines
+                event = _money()
+                _add(event, returned)
+                events.append((note.invoice_date, event))
+        if start <= deposit.invoice_date:
+            row = received[key]
+            _add(row, line)
+            for when, event in events:
+                if when <= end:
+                    for column in event:
+                        row[column] -= event[column]
+        else:
+            for when, event in events:
+                if start <= when <= end:
+                    for column in event:
+                        adjusted[key][column] += event[column]
+    return received, adjusted
 
 
 def _documents_issued(documents):
@@ -399,6 +464,13 @@ def gstr3b(start, end):
         {"place_of_supply": place, "taxable": totals["taxable"], "igst": totals["igst"]}
         for place, totals in sorted(unregistered.items())
     ]
+    # Tax on advances for services is due when they are received, and
+    # given back when they are adjusted: table 11 of GSTR-1, net, in 3.1(a).
+    received, adjusted = _advances(start, end, settings.state)
+    for totals, sign in ((received, 1), (adjusted, -1)):
+        for money in totals.values():
+            for column in money:
+                result["3.1a"][column] += sign * money[column]
 
     for document in _bills(start, end, settings.state):
         sign = -1 if document.is_note else 1
@@ -434,6 +506,18 @@ def _gstn_items(items, heads=("iamt", "camt", "samt", "csamt")):
          | {key: float(item[names[key]]) for key in heads}}
         for index, item in enumerate(items, start=1)
     ]
+
+
+def _gstn_advances(rows):
+    by_place = defaultdict(list)
+    for row in rows:
+        by_place[(row["place_of_supply"], row["supply"])].append({
+            "rt": float(row["rate"]), "ad_amt": float(row["taxable"]),
+            "iamt": float(row["igst"]), "camt": float(row["cgst"]),
+            "samt": float(row["sgst"]), "csamt": float(row["cess"]),
+        })
+    return [{"pos": place, "sply_ty": supply.upper(), "itms": items}
+            for (place, supply), items in by_place.items()]
 
 
 def gstr1_json(result):
@@ -488,6 +572,8 @@ def gstr1_json(result):
             for row in result["b2cs"]
         ],
         "cdnr": [{"ctin": gstin, "nt": notes} for gstin, notes in cdnr.items()],
+        "at": _gstn_advances(result["advances_received"]),
+        "txpd": _gstn_advances(result["advances_adjusted"]),
         "cdnur": [
             {"typ": {"b2cl": "B2CL", "exp_with_payment": "EXPWP",
                      "exp_without_payment": "EXPWOP"}[entry["type"]],
