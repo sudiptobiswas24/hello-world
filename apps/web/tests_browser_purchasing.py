@@ -55,6 +55,38 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         page.get_by_role("button", name="Add line").click()
         return PurchaseOrder.objects.get(pk=int(page.url.rsplit("/", 1)[1]))
 
+    def test_a_debit_note_with_gst_on_a_bill_the_old_system_booked(self):
+        from decimal import Decimal
+
+        from apps.accounting.models import Tax
+        from apps.purchasing.models import BillLine
+
+        gst = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
+                                 collected_account=Account.objects.create(
+                                     code="2291", name="GST out", account_type=AccountType.LIABILITY),
+                                 paid_account=Account.objects.create(
+                                     code="1391", name="GST in", account_type=AccountType.ASSET))
+        expense = Account.objects.create(code="5191", name="Granules", account_type=AccountType.EXPENSE)
+        old = Bill.objects.create(vendor=self.vendor, bill_date="2026-09-10", reference="V/9",
+                                  payable_account=self.payable, currency=self.usd, is_opening_balance=True)
+        BillLine.objects.create(bill=old, description="Opening balance: V/9", quantity=Decimal("1"),
+                                unit_price=Decimal("590"), expense_account=expense)
+        old.post()
+        ap = self.sign_in(self.person("AP Manager"), f"/app/purchasing/bills/{old.pk}")
+        ap.get_by_role("button", name="Debit note with GST").click()
+        form = ap.get_by_role("form", name="Debit note with GST")
+        form.get_by_label("Line 1 what").fill("Short weight on V/9")
+        form.get_by_label("Line 1 price").fill("50")
+        form.get_by_label("Line 1 tax").select_option(label=gst.name)
+        form.get_by_label("Line 1 account").select_option(label="5191 · Granules")
+        form.get_by_role("button", name="Post it").click()
+        expect(ap.locator(".toast", has_text="posted").first).to_be_visible()
+        note = Bill.objects.get(debits=old)
+        self.assertEqual((note.total(), note.corrects_old_supply), (Decimal("59.00"), True))
+        old.refresh_from_db()
+        self.assertEqual(old.amount_due(), Decimal("531.00"))
+        self.assertEqual(self.problems, [])
+
     def test_an_order_from_first_line_to_the_vendor_paid(self):
         self.item.tracking = "lot"
         self.item.save()

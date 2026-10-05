@@ -73,10 +73,18 @@ can prove.
    Caddy without raising it and every sign-in shares the proxy's address.
 8. **GST is compiled, not filed.** Opening invoices and bills from the
    import are marked and left out of every return and e-invoice: the old
-   system reported them. A credit note for goods the old system invoiced
-   cannot be raised here with its GST, since the opening invoice is one
-   line of money with none; raise it as the old system would have and
-   report it by hand. **Filing:** GSTR-1, GSTR-3B and ITC-04 are
+   system reported them. A rate difference or a return on something the
+   old system invoiced is a **credit note with GST** on the opening
+   invoice (its own lines and tax): it reduces this month's output tax,
+   is reported in GSTR-1 against the old invoice's number and date, and
+   is e-invoiced against them. For an unregistered buyer the old
+   invoice's full value is asked, since it decides whether the note is
+   reported as a large one; for a registered buyer it is optional, and
+   without it nothing stops notes crediting more than the old invoice
+   was for (what was owed on it is not what it was for). The mirror on bills, a debit note with GST,
+   takes the input tax back. The old system's number is the opening
+   invoice's reference, so that reference must be the number exactly as
+   it was filed. **Filing:** GSTR-1, GSTR-3B and ITC-04 are
    built; e-invoice and e-way bill payloads are built. Nothing is sent
    to the GST portal or NIC: someone uploads them. A payload the portal
    rejects is found out there, not here.

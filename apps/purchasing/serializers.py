@@ -138,10 +138,14 @@ class BillSerializer(serializers.ModelSerializer):
             "amount_due",
             "settlement_status",
             "is_prepayment",
+            "is_opening_balance",
+            "corrects_old_supply",
+            "old_bill_value",
         ]
         read_only_fields = [
             "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
-            "exchange_rate", "is_prepayment",
+            "exchange_rate", "is_prepayment", "is_opening_balance", "corrects_old_supply",
+            "old_bill_value",
         ]
         # Left out, the company's default payable account (Bill.save).
         extra_kwargs = {"payable_account": {"required": False}}

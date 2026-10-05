@@ -220,7 +220,26 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post_bill": "purchasing.post_bill",
         "debit_note": "purchasing.post_bill",
+        "debit_old_supply": "purchasing.post_bill",
     }
+
+    @action(detail=True, methods=["post"])
+    def debit_old_supply(self, request, pk=None):
+        """
+        {lines: [{item?, description, quantity, unit_price, taxes, expense_account}],
+        memo?, on_date?, old_value?}: a debit note with GST on a bill the old
+        system booked, which takes the input tax back.
+        """
+        from apps.accounting.old_supply import from_request
+        from apps.inventory.models import Item
+
+        bill = self.get_object()
+        lines, memo, on_date, old_value = from_request(request.data, "expense_account", Item)
+        try:
+            note = bill.debit_old_supply(lines, memo=memo, on_date=on_date, old_value=old_value)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(note).data, status=201)
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)

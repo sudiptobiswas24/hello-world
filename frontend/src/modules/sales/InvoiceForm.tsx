@@ -5,6 +5,7 @@ import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
+import { OldSupplyNote } from "../../forms/OldSupplyNote";
 import { useDraft } from "../../forms/useDraft";
 import { minus, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
@@ -23,6 +24,8 @@ export interface Invoice {
   credits: number | null;
   posted: boolean;
   is_down_payment: boolean;
+  is_opening_balance: boolean;
+  party_gstin: string;
   lines: TradeLine[];
   subtotal: string;
   tax_total: string;
@@ -183,7 +186,18 @@ export default function InvoiceForm() {
           </>
         )}
         {isNew && <p className="muted">Create the invoice, then add its lines. An invoice for an order is raised from the order.</p>}
+        {invoice?.is_opening_balance && (
+          <p className="note" role="note">Brought in from the old system: {invoice.reference}, what was still owed on it. A rate difference or a return on it is a credit note with its own GST, below; the Credit note button only clears the balance.</p>
+        )}
       </Sheet>
+
+      {invoice?.posted && invoice.is_opening_balance && (
+        <OldSupplyNote endpoint={ENDPOINT} id={invoice.id} path="credit_old_supply" permission="sales.post_invoice"
+          title="Credit note with GST" accountField="revenue_account" accountType="income"
+          askValue={!invoice.party_gstin} valueRequired={!invoice.party_gstin}
+          valueLabel="What the old invoice was for in all"
+          href={(id) => `/sales/invoices/${id}`} />
+      )}
 
       {invoice?.posted && seesPayments && (
         <section className="related-list">

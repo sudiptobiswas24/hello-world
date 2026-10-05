@@ -289,7 +289,31 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     action_permission_map = {
         "post_invoice": "sales.post_invoice",
         "credit_note": "sales.post_invoice",
+        "credit_old_supply": "sales.post_invoice",
     }
+
+    @action(detail=True, methods=["post"])
+    def credit_old_supply(self, request, pk=None):
+        """
+        {lines: [{item?, description, quantity, unit_price, taxes, revenue_account?}],
+        memo?, on_date?, old_value?}: a credit note with GST on an invoice the old
+        system issued. A line's account is the company's revenue account unless named.
+        """
+        from apps.accounting.defaults import default_account
+        from apps.accounting.old_supply import from_request
+        from apps.inventory.models import Item
+
+        invoice = self.get_object()
+        try:
+            usual = default_account("revenue")
+        except DjangoValidationError:
+            usual = None  # each line then names its own, or is refused
+        lines, memo, on_date, old_value = from_request(request.data, "revenue_account", Item, usual)
+        try:
+            note = invoice.credit_old_supply(lines, memo=memo, on_date=on_date, old_value=old_value)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(note).data, status=201)
 
     @action(detail=True, methods=["post"])
     def post_invoice(self, request, pk=None):

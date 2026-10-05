@@ -6,6 +6,7 @@ import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
 import { PartyPicker } from "../../forms/PartyPicker";
+import { OldSupplyNote } from "../../forms/OldSupplyNote";
 import { useDraft } from "../../forms/useDraft";
 import { minus, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
@@ -24,6 +25,7 @@ interface Bill {
   debits: number | null;
   posted: boolean;
   is_prepayment: boolean;
+  is_opening_balance: boolean;
   lines: TradeLine[];
   subtotal: string;
   tax_total: string;
@@ -167,7 +169,17 @@ export default function BillForm() {
           </>
         )}
         {isNew && <p className="muted">Create the bill, then add its lines. A bill for an order is raised from the order, so it is checked against what arrived.</p>}
+        {bill?.is_opening_balance && (
+          <p className="note" role="note">Brought in from the old system: {bill.reference}, what was still owing on it. A debit note with GST on it, for short weight or a rate difference, takes the input tax back; the Debit note button only clears the balance.</p>
+        )}
       </Sheet>
+
+      {bill?.posted && bill.is_opening_balance && (
+        <OldSupplyNote endpoint={ENDPOINT} id={bill.id} path="debit_old_supply" permission="purchasing.post_bill"
+          title="Debit note with GST" accountField="expense_account" accountType="expense"
+          askValue valueLabel="What the old bill was for in all, if known"
+          href={(id) => `/purchasing/bills/${id}`} />
+      )}
 
       {bill?.posted && seesPayments && (
         <section className="related-list">

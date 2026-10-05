@@ -2420,6 +2420,16 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         help_text="Money paid to the vendor up front, held as an asset until the "
                   "goods arrive.",
     )
+    corrects_old_supply = models.BooleanField(
+        default=False, editable=False,
+        help_text="A debit note with its own GST on a bill the old system booked: "
+                  "it takes back input tax this month.",
+    )
+    old_bill_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="On such a note, what the old bill was for in all: no more is "
+                  "debited against it.",
+    )
     is_opening_balance = models.BooleanField(
         default=False, editable=False,
         help_text="Brought in at go-live (import_csv open_bills): what the old "
@@ -3305,6 +3315,39 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             note_line.taxes.set(line.taxes.all())
         debit_note.post(memo=memo)
         return debit_note
+
+    def debit_old_supply(self, lines, memo="", on_date=None, old_value=None):
+        """
+        A debit note with GST on a bill the old system booked: the mirror
+        of Invoice.credit_old_supply (apps/accounting/old_supply.py).
+        """
+        from apps.accounting.old_supply import check_room, checked_lines
+
+        if not self.is_opening_balance or self.is_debit_note():
+            raise ValidationError(
+                f"{self} is not a bill from the old system; debit it the ordinary way.")
+        if not self.posted:
+            raise ValidationError("Only a posted bill can be corrected with a debit note.")
+        checked = checked_lines(lines, "expense_account", "debit")
+        with transaction.atomic():
+            lock_rows(self)
+            earlier = list(self.debit_notes.filter(posted=True, corrects_old_supply=True))
+            if old_value is None:
+                old_value = next((note.old_bill_value for note in earlier
+                                  if note.old_bill_value is not None), None)
+            note = Bill.objects.create(
+                vendor=self.vendor, bill_date=to_date(on_date) or timezone.localdate(),
+                reference=self.reference, currency=self.currency,
+                payment_terms=self.payment_terms, payable_account=self.payable_account,
+                debits=self, corrects_old_supply=True, old_bill_value=old_value,
+            )
+            for fields, taxes in checked:
+                line = BillLine.objects.create(bill=note, **fields)
+                line.taxes.set(taxes)
+            check_room(old_value, sum((n.total() for n in earlier), Decimal("0")),
+                       note.total(), "bill", "debited")
+            note.post(memo=memo or None)
+        return note
 
     def _check_prepayment_shape(self):
         """

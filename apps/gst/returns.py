@@ -204,7 +204,10 @@ def _invoices(start, end, state):
     queryset = Invoice.objects.filter(
         posted=True, is_down_payment=False, is_opening_balance=False,
         invoice_date__gte=start, invoice_date__lte=end,
-    ).exclude(credits__is_down_payment=True).exclude(credits__is_opening_balance=True)
+    ).exclude(credits__is_down_payment=True).exclude(
+        # A plain credit of an opening balance is no supply; a note with
+        # its own GST on the old invoice is (credit_old_supply).
+        credits__is_opening_balance=True, corrects_old_supply=False)
     _refuse_unrecorded(queryset, "invoices and credit notes")
     queryset = queryset.select_related("credits").prefetch_related(
         "lines__recorded_taxes__tax", "lines__item__uom__gst_uqc",
@@ -222,19 +225,20 @@ def _bills(start, end, state):
     queryset = Bill.objects.filter(
         posted=True, is_prepayment=False, is_opening_balance=False,
         bill_date__gte=start, bill_date__lte=end,
-    ).exclude(debits__is_prepayment=True).exclude(debits__is_opening_balance=True)
+    ).exclude(debits__is_prepayment=True).exclude(
+        debits__is_opening_balance=True, corrects_old_supply=False)
     _refuse_unrecorded(queryset, "bills and debit notes")
     queryset = queryset.prefetch_related("lines__recorded_taxes__tax").order_by("bill_date", "number")
     return [_document(bill, bill.bill_date, state, bill.is_debit_note()) for bill in queryset]
 
 
-def _section(document, settings):
-    """Where an invoice is reported in GSTR-1."""
+def _section(document, settings, value=None):
+    """Where an invoice is reported in GSTR-1; `value` when not the document's own."""
     if document.registration == "overseas":
         return "exp"
     if document.registered:
         return "b2b"
-    if document.inter and document.value > settings.b2cl_limit:
+    if document.inter and (document.value if value is None else value) > settings.b2cl_limit:
         return "b2cl"
     return "b2cs"
 
@@ -282,13 +286,19 @@ def gstr1(start, end):
     for document in documents:
         sign = -1 if document.is_note else 1
         original = document.source.credits if document.is_note else None
-        if original is not None and original.taxes_recorded:
-            invoice = _document(original, original.invoice_date, settings.state, False)
-        else:
-            # An invoice or, for a note whose invoice predates recording,
-            # the note itself: it froze the same party when it posted.
+        if original is not None and original.is_opening_balance:
+            # The old invoice is here only as what was owed on it: the note
+            # froze the same buyer, and says what the old one was for.
             invoice = document
-        section = _section(invoice, settings)
+            section = _section(document, settings, value=document.source.old_invoice_value or ZERO)
+        else:
+            if original is not None and original.taxes_recorded:
+                invoice = _document(original, original.invoice_date, settings.state, False)
+            else:
+                # An invoice or, for a note whose invoice predates recording,
+                # the note itself: it froze the same party when it posted.
+                invoice = document
+            section = _section(invoice, settings)
 
         if section == "b2cs":
             for line in document.taxed():
@@ -306,7 +316,9 @@ def gstr1(start, end):
             result[section].append(entry)
         else:
             entry = _head(document) | {
-                "original": original.number, "original_date": original.invoice_date,
+                # The old system's number, for a note on one of its invoices.
+                "original": original.reference if original.is_opening_balance else original.number,
+                "original_date": original.invoice_date,
                 "items": _items(document),
             }
             if section == "b2b":

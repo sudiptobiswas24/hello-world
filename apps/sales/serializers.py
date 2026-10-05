@@ -119,11 +119,13 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "credits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
-            "is_down_payment",
+            "is_down_payment", "is_opening_balance", "corrects_old_supply", "old_invoice_value",
+            "party_gstin",
         ]
         read_only_fields = [
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
-            "posted", "posted_at", "sent_at", "is_down_payment",
+            "posted", "posted_at", "sent_at", "is_down_payment", "is_opening_balance",
+            "corrects_old_supply", "old_invoice_value", "party_gstin",
         ]
         # Left out, the company's default receivable account (Invoice.save).
         extra_kwargs = {"receivable_account": {"required": False}}

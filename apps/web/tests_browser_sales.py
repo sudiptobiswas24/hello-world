@@ -196,6 +196,42 @@ class SalesInTheBrowserTests(BrowserTestCase):
         expect(page.get_by_role("region", name="Sales terms")).to_contain_text(rep.employee.party.name)
         expect(page.get_by_role("region", name="Sales terms").get_by_role("combobox")).to_have_count(0)
 
+    def test_a_credit_note_with_gst_on_an_invoice_the_old_system_issued(self):
+        from apps.accounting.models import Account, AccountType, Tax
+        from apps.sales.models import InvoiceLine
+
+        def account(code, kind):
+            return Account.objects.create(code=code, name=code, account_type=kind)
+
+        gst = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"),
+                                 collected_account=account("2210", AccountType.LIABILITY),
+                                 paid_account=account("1310", AccountType.ASSET))
+        old = Invoice.objects.create(customer=self.customer, invoice_date="2026-09-10", reference="OLD/1",
+                                     receivable_account=self.ar, is_opening_balance=True)
+        InvoiceLine.objects.create(invoice=old, description="Opening balance: OLD/1", quantity=Decimal("1"),
+                                   unit_price=Decimal("118000"), revenue_account=self.revenue)
+        old.post()
+        ar = self.sign_in(self.person("AR Manager"), f"/app/sales/invoices/{old.pk}")
+        expect(ar.get_by_role("note")).to_contain_text("Brought in from the old system")
+        ar.get_by_role("button", name="Credit note with GST").click()
+        form = ar.get_by_role("form", name="Credit note with GST")
+        form.get_by_label("Line 1 what").fill("Rate difference on OLD/1")
+        form.get_by_label("Line 1 price").fill("10000")
+        form.get_by_label("Line 1 tax").select_option(label="GST 18%")
+        # Acme has no GSTIN: where the note is reported turns on what the
+        # old invoice was for, and it is asked rather than guessed.
+        expect(form.get_by_role("button", name="Post it")).to_be_disabled()
+        form.get_by_label("What the old invoice was for in all").fill("118000")
+        form.get_by_role("button", name="Post it").click()
+        self.toast(ar, "posted")
+        note = Invoice.objects.get(credits=old)
+        ar.wait_for_url(re.compile(rf"/sales/invoices/{note.pk}$"))
+        self.assertEqual((note.total(), note.corrects_old_supply, note.posted), (Decimal("11800.00"), True, True))
+        expect(ar.locator(".doc-head")).to_contain_text(note.number)
+        old.refresh_from_db()
+        self.assertEqual(old.amount_due(), Decimal("106200.00"))
+        self.assertEqual(self.problems, [])
+
     def test_a_duplicate_code_is_said_beside_the_field(self):
         rep = self.sign_in(self.person("Sales Rep"), "/app/sales/customers/new")
         rep.get_by_label("Code", exact=True).fill("C-1")  # Acme's

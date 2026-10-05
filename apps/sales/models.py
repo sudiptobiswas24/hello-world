@@ -1447,6 +1447,17 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         help_text="Money taken up front against an order, held as a liability "
                   "until the goods are delivered.",
     )
+    corrects_old_supply = models.BooleanField(
+        default=False, editable=False,
+        help_text="A credit note with its own GST on an invoice the old system issued: "
+                  "reported in this system's returns against the old number.",
+    )
+    old_invoice_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="On such a note, what the old invoice was for in all: no more is "
+                  "credited against it, and for an unregistered buyer it decides "
+                  "whether the note is reported as a large one (CDNUR).",
+    )
     is_opening_balance = models.BooleanField(
         default=False, editable=False,
         help_text="Brought in at go-live (import_csv open_invoices): what the old "
@@ -2197,6 +2208,47 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             credit_line.taxes.set(line.taxes.all())
         credit_note.post(memo=memo)
         return credit_note
+
+    def credit_old_supply(self, lines, memo="", on_date=None, old_value=None):
+        """
+        A credit note with GST on an invoice the old system issued (see
+        apps/accounting/old_supply.py). `lines` are dicts of item,
+        description, quantity, unit_price, taxes and revenue_account.
+        """
+        from apps.accounting.old_supply import check_room, checked_lines
+
+        if not self.is_opening_balance or self.is_credit_note():
+            raise ValidationError(
+                f"{self} is not an invoice from the old system; credit it the ordinary way.")
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be credited.")
+        checked = checked_lines(lines, "revenue_account", "credit")
+        with transaction.atomic():
+            lock_rows(self)
+            earlier = list(self.credit_notes.filter(posted=True, corrects_old_supply=True))
+            if old_value is None:
+                old_value = next((note.old_invoice_value for note in earlier
+                                  if note.old_invoice_value is not None), None)
+            if (old_value is None and not self.party_gstin
+                    and self.party_registration != "overseas"):
+                raise ValidationError(
+                    f"{self.customer} is unregistered: say what the old invoice was for in "
+                    "all, which decides whether the note is reported as a large one.")
+            note = Invoice.objects.create(
+                customer=self.customer, invoice_date=to_date(on_date) or timezone.localdate(),
+                reference=self.reference, receivable_account=self.receivable_account,
+                currency=self.currency, payment_terms=self.payment_terms,
+                billing_address=self.billing_address, shipping_address=self.shipping_address,
+                sales_rep=self.sales_rep, credits=self, corrects_old_supply=True,
+                old_invoice_value=old_value,
+            )
+            for fields, taxes in checked:
+                line = InvoiceLine.objects.create(invoice=note, **fields)
+                line.taxes.set(taxes)
+            check_room(old_value, sum((n.total() for n in earlier), Decimal("0")),
+                       note.total(), "invoice", "credited")
+            note.post(memo=memo or None)
+        return note
 
     def _check_deposit_shape(self):
         """

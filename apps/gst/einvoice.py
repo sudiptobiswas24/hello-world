@@ -240,7 +240,8 @@ def build(invoice):
 
     if not invoice.posted:
         raise ValidationError(f"{invoice} is not posted; there is nothing to register.")
-    if invoice.is_opening_balance or (invoice.credits_id and invoice.credits.is_opening_balance):
+    if invoice.is_opening_balance or (invoice.credits_id and invoice.credits.is_opening_balance
+                                      and not invoice.corrects_old_supply):
         raise ValidationError(
             f"{invoice.number} is an opening balance from the old system, which registered "
             "the supply; it is not registered again.")
@@ -308,7 +309,8 @@ def build(invoice):
     if document.is_note and invoice.credits_id:
         original = invoice.credits
         payload["RefDtls"] = {"PrecDocDtls": [{
-            "InvNo": original.number, "InvDt": p.portal_date(original.invoice_date),
+            "InvNo": original.reference if original.is_opening_balance else original.number,
+            "InvDt": p.portal_date(original.invoice_date),
         }]}
     if overseas:
         country = billed_at.country

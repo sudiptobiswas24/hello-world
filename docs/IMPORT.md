@@ -112,7 +112,9 @@ counts them. Run again to move a customer to another rep.
 `reference*` (the old document's number: refused if that party already
 has one with it), `date*` (the old document's date), `amount*` (what is
 still owed, tax included), `payment_terms` (code; default the party's),
-`currency` (code; default the party's).
+`currency` (code; default the party's). The reference must be the old
+invoice's number exactly as it was filed: a credit note with GST raised
+on it later is reported against that number.
 
 The due date follows from the date and the terms, as it would for a new
 invoice, so aging is right from the first day. Only what is still owed
