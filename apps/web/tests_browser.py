@@ -10,6 +10,7 @@ Playwright can launch; skipped, saying which, where either is missing.
 import contextlib
 import datetime
 import os
+import threading
 import unittest
 from decimal import Decimal
 
@@ -17,6 +18,9 @@ from django.contrib.auth.models import Group, User
 from django.contrib.staticfiles import finders
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 from django.core.management import call_command
+from django.db import connections
+from django.db.backends.sqlite3.base import DatabaseWrapper as SQLiteDatabase
+from django.db.backends.sqlite3.base import SQLiteCursorWrapper
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.sales.models import Invoice, InvoiceLine
@@ -28,6 +32,58 @@ except ImportError:  # pragma: no cover - depends on the machine
     sync_playwright = None
 
 PASSWORD = "plant-ledger-42"
+
+
+class OneCallAtATime(SQLiteCursorWrapper):
+    """
+    On SQLite the live server's threads share one in-memory connection
+    (and the test, which Playwright's greenlet hands a connection of its
+    own, shares its cache). Two calls into it at once can deadlock: one
+    holds SQLite's lock while it calls back into Python (Django's date
+    functions) and waits for the GIL, while the other holds the GIL and
+    waits for SQLite's lock. The stock valuation screen, asking two
+    things at once, hung a run that way. One call at a time, whichever
+    thread or connection makes it. PostgreSQL is left alone.
+    """
+
+    lock = threading.RLock()
+
+    def execute(self, *args, **kwargs):
+        with self.lock:
+            return super().execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        with self.lock:
+            return super().executemany(*args, **kwargs)
+
+    def fetchone(self):
+        with self.lock:
+            return super().fetchone()
+
+    def fetchmany(self, *args, **kwargs):
+        with self.lock:
+            return super().fetchmany(*args, **kwargs)
+
+    def fetchall(self):
+        with self.lock:
+            return super().fetchall()
+
+    def __next__(self):
+        with self.lock:
+            return super().__next__()
+
+    def close(self):
+        with self.lock:
+            return super().close()
+
+
+_PLAIN_CURSOR = SQLiteDatabase.create_cursor
+
+
+def _one_call_at_a_time(on):
+    if any(connection.vendor == "sqlite" and connection.is_in_memory_db() for connection in connections.all()):
+        SQLiteDatabase.create_cursor = (
+            (lambda self, name=None: self.connection.cursor(factory=OneCallAtATime)) if on else _PLAIN_CURSOR)
 
 
 @unittest.skipIf(sync_playwright is None, "Playwright is not installed")
@@ -47,6 +103,7 @@ class BrowserMixin:
     @classmethod
     def setUpClass(cls):
         os.environ["DJANGO_ALLOW_ASYNC_UNSAFE"] = "true"
+        _one_call_at_a_time(True)
         super().setUpClass()
         cls.playwright = sync_playwright().start()
         executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None
@@ -55,6 +112,7 @@ class BrowserMixin:
         except Exception as error:  # noqa: BLE001 - any launch failure means no browser
             cls.playwright.stop()
             super().tearDownClass()
+            _one_call_at_a_time(False)
             raise unittest.SkipTest(f"No usable Chromium: {str(error).splitlines()[0]}")
 
     @classmethod
@@ -62,6 +120,7 @@ class BrowserMixin:
         cls.browser.close()
         cls.playwright.stop()
         super().tearDownClass()
+        _one_call_at_a_time(False)
         os.environ.pop("DJANGO_ALLOW_ASYNC_UNSAFE", None)
 
     def setUp(self):

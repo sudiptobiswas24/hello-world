@@ -198,6 +198,12 @@ Go through it before running anything.
   `_databases_support_transactions` returning False.
 - Run with `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium`,
   or they skip and the count looks right.
+- On SQLite every cursor call is serialised (`OneCallAtATime` in
+  `apps/web/tests_browser.py`). Without it two requests at once deadlock
+  on the GIL inside Django's date functions and the whole run hangs,
+  with nothing printed. Playwright's greenlet also gives the test body a
+  different connection from `setUpClass`'s; patch the class, not the
+  instance.
 
 **Mutation testing**
 - Never edit sources while a harness runs; it restores from its own

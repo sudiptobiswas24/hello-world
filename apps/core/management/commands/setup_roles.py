@@ -222,6 +222,26 @@ ROLES = {
         *view("purchasing", "purchaseorder", "purchaseorderline"),
         *view("sales", "salesorder", "salesorderline"),
         *view("inventory", "stockmovement", "stockposition", "storagebin"),
+        # Counting the shelf and moving stock between warehouses is the
+        # store's work; posting a count's differences is not (Stores Manager).
+        *crud("inventory", "stockcount", actions=("add", "view")),
+        *crud("inventory", "stockcountline", actions=("add", "change", "delete", "view")),
+        *crud("inventory", "stocktransfer", actions=("add", "change", "view")),
+        *full("inventory", "stocktransferline"),
+        *view("inventory", "stockadjustment", "stockadjustmentline", "adjustmentreason",
+              "stockreservation"),
+    ],
+    # Whoever posts what the shelf was found to hold, and writes stock on
+    # or off for a reason: the store's head, not the person who counted.
+    "Stores Manager": [
+        *REFERENCE,
+        *view("inventory", "stockmovement", "stockposition", "stockreservation"),
+        *full("inventory", "stockcount", "stockcountline", "stocktransfer", "stocktransferline",
+              "stockadjustment", "stockadjustmentline", "storagebin"),
+        *crud("inventory", "adjustmentreason", actions=("add", "change", "view")),
+        *crud("inventory", "lot", actions=("add", "change", "view")),
+        *view("purchasing", "goodsreceipt", "purchaseorder"),
+        *view("sales", "delivery", "salesorder"),
     ],
     # -- the plant ------------------------------------------------------
     "Production Supervisor": [

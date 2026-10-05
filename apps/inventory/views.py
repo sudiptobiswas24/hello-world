@@ -228,16 +228,27 @@ class LotViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class StorageBinViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = StorageBin.objects.select_related("warehouse", "parent")
     serializer_class = StorageBinSerializer
+    filter_fields = ["warehouse", "is_active", "is_pickable"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class AdjustmentReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = AdjustmentReason.objects.all()
     serializer_class = AdjustmentReasonSerializer
+    filter_fields = ["is_active", "direction"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class StockAdjustmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = StockAdjustment.objects.prefetch_related("lines")
+    queryset = StockAdjustment.objects.select_related("warehouse", "reason").prefetch_related(
+        "lines__item", "lines__lot")
     serializer_class = StockAdjustmentSerializer
+    filter_fields = ["warehouse", "reason", "posted"]
+    search_fields = ["number", "memo"]
+    date_field = "adjustment_date"
+    ordering_fields = ["adjustment_date", "number"]
     action_permission_map = {
         "post": "inventory.change_stockadjustment",
         "void": "inventory.change_stockadjustment",
@@ -265,8 +276,13 @@ class StockAdjustmentLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = StockCount.objects.prefetch_related("lines")
+    queryset = StockCount.objects.select_related("warehouse", "reason").prefetch_related(
+        "lines__item", "lines__lot")
     serializer_class = StockCountSerializer
+    filter_fields = ["warehouse", "posted"]
+    search_fields = ["number", "memo"]
+    date_field = "count_date"
+    ordering_fields = ["count_date", "number"]
     action_permission_map = {"post": "inventory.change_stockcount"}
 
     @action(detail=True, methods=["post"])
@@ -308,8 +324,13 @@ class StockCountLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class StockTransferViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = StockTransfer.objects.prefetch_related("lines")
+    queryset = StockTransfer.objects.select_related("from_warehouse", "to_warehouse").prefetch_related(
+        "lines__item", "lines__lot")
     serializer_class = StockTransferSerializer
+    filter_fields = ["status", "from_warehouse", "to_warehouse"]
+    search_fields = ["number", "reference"]
+    date_field = "transfer_date"
+    ordering_fields = ["transfer_date", "number"]
     action_permission_map = {
         "post": "inventory.change_stocktransfer",
         "send": "inventory.change_stocktransfer",
@@ -369,8 +390,10 @@ class StockReservationViewSet(viewsets.ReadOnlyModelViewSet):
     is a claim nothing will ever give back.
     """
 
-    queryset = StockReservation.objects.select_related("item", "warehouse")
+    queryset = StockReservation.objects.select_related("item", "warehouse").prefetch_related("source")
     serializer_class = StockReservationSerializer
+    filter_fields = ["item", "warehouse", "released_at__isnull"]
+    search_fields = ["item__sku", "item__name"]
 
 
 class StockReportViewSet(viewsets.ViewSet):

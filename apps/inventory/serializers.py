@@ -89,12 +89,16 @@ class StockMovementSerializer(serializers.ModelSerializer):
 class LotSerializer(serializers.ModelSerializer):
     on_hand = serializers.SerializerMethodField()
     has_expired = serializers.SerializerMethodField()
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, lot):
+        return f"{lot.item.sku} · {lot.item.name}"
 
     class Meta:
         model = Lot
         fields = [
             "id", "item", "code", "expires_on", "manufactured_on",
-            "supplier_reference", "notes", "is_active", "on_hand", "has_expired",
+            "supplier_reference", "notes", "is_active", "on_hand", "has_expired", "item_label",
         ]
 
     def get_on_hand(self, lot):
@@ -105,32 +109,47 @@ class LotSerializer(serializers.ModelSerializer):
 
 
 class StorageBinSerializer(serializers.ModelSerializer):
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+
     class Meta:
         model = StorageBin
         fields = [
-            "id", "warehouse", "parent", "code", "name", "sequence",
+            "id", "warehouse", "warehouse_name", "parent", "code", "name", "sequence",
             "is_pickable", "is_active",
         ]
 
 
 class AdjustmentReasonSerializer(serializers.ModelSerializer):
+    account_label = serializers.SerializerMethodField()
+
     class Meta:
         model = AdjustmentReason
-        fields = ["id", "code", "name", "account", "direction", "is_active"]
+        fields = ["id", "code", "name", "account", "account_label", "direction", "is_active"]
+
+    def get_account_label(self, reason):
+        return f"{reason.account.code} · {reason.account.name}" if reason.account_id else ""
 
 
 class StockAdjustmentLineSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+
+    def get_item_label(self, line):
+        return f"{line.item.sku} · {line.item.name}"
+
     class Meta:
         model = StockAdjustmentLine
         fields = [
             "id", "adjustment", "item", "uom", "lot", "bin", "quantity",
-            "revaluation", "unit_cost", "notes",
+            "revaluation", "unit_cost", "notes", "item_label", "lot_code",
         ]
         read_only_fields = ["unit_cost"]
 
 
 class StockAdjustmentSerializer(serializers.ModelSerializer):
     lines = StockAdjustmentLineSerializer(many=True, read_only=True)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
+    reason_name = serializers.CharField(source="reason.name", read_only=True, default="")
     total_value = serializers.SerializerMethodField()
     voided = serializers.SerializerMethodField()
 
@@ -139,7 +158,7 @@ class StockAdjustmentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "number", "adjustment_date", "warehouse", "reason", "memo",
             "posted", "posted_at", "journal_entry", "voided_entry", "voided_at",
-            "count", "lines", "total_value", "voided",
+            "count", "lines", "total_value", "voided", "warehouse_name", "reason_name",
         ]
         read_only_fields = [
             "number", "posted", "posted_at", "journal_entry", "voided_entry",
@@ -154,13 +173,19 @@ class StockAdjustmentSerializer(serializers.ModelSerializer):
 
 
 class StockCountLineSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+
+    def get_item_label(self, line):
+        return f"{line.item.sku} · {line.item.name}"
+
     variance = serializers.SerializerMethodField()
 
     class Meta:
         model = StockCountLine
         fields = [
             "id", "count", "item", "uom", "lot", "bin", "counted_quantity",
-            "system_quantity", "variance", "notes",
+            "system_quantity", "variance", "notes", "item_label", "lot_code",
         ]
         read_only_fields = ["system_quantity"]
 
@@ -170,24 +195,37 @@ class StockCountLineSerializer(serializers.ModelSerializer):
 
 class StockCountSerializer(serializers.ModelSerializer):
     lines = StockCountLineSerializer(many=True, read_only=True)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
+    reason_name = serializers.CharField(source="reason.name", read_only=True, default="")
+    lines_count = serializers.SerializerMethodField()
+
+    def get_lines_count(self, count):
+        return len(count.lines.all())
 
     class Meta:
         model = StockCount
         fields = [
             "id", "number", "count_date", "warehouse", "reason", "memo",
-            "counted_by", "posted", "posted_at", "lines",
+            "counted_by", "posted", "posted_at", "lines", "warehouse_name", "reason_name",
+            "lines_count",
         ]
         read_only_fields = ["number", "posted", "posted_at"]
 
 
 class StockTransferLineSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+
+    def get_item_label(self, line):
+        return f"{line.item.sku} · {line.item.name}"
+
     outstanding = serializers.SerializerMethodField()
 
     class Meta:
         model = StockTransferLine
         fields = [
             "id", "transfer", "item", "uom", "lot", "from_bin", "to_bin",
-            "quantity", "notes", "outstanding",
+            "quantity", "notes", "outstanding", "item_label", "lot_code",
         ]
 
     def get_outstanding(self, line):
@@ -196,13 +234,15 @@ class StockTransferLineSerializer(serializers.ModelSerializer):
 
 class StockTransferSerializer(serializers.ModelSerializer):
     lines = StockTransferLineSerializer(many=True, read_only=True)
+    from_name = serializers.CharField(source="from_warehouse.name", read_only=True, default="")
+    to_name = serializers.CharField(source="to_warehouse.name", read_only=True, default="")
 
     class Meta:
         model = StockTransfer
         fields = [
             "id", "number", "transfer_date", "from_warehouse", "to_warehouse",
             "transit_warehouse", "status", "reference", "memo",
-            "dispatched_at", "received_at", "cancelled_at", "lines",
+            "dispatched_at", "received_at", "cancelled_at", "lines", "from_name", "to_name",
         ]
         read_only_fields = [
             "number", "status", "dispatched_at", "received_at", "cancelled_at",
@@ -211,12 +251,21 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
 class StockReservationSerializer(serializers.ModelSerializer):
     remaining = serializers.SerializerMethodField()
+    item_label = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
+    held_for = serializers.SerializerMethodField()
+
+    def get_item_label(self, reservation):
+        return f"{reservation.item.sku} · {reservation.item.name}"
+
+    def get_held_for(self, reservation):
+        return str(reservation.source) if reservation.source is not None else ""
 
     class Meta:
         model = StockReservation
         fields = [
             "id", "item", "warehouse", "quantity", "consumed", "remaining",
-            "released_at", "released_reason",
+            "released_at", "released_reason", "item_label", "warehouse_name", "held_for",
         ]
         read_only_fields = fields
 

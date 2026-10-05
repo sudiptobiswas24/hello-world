@@ -172,6 +172,33 @@ class DeclaredListFieldsTests(TestCase):
         self.assertGreater(len(self.views()), 100)
 
 
+class EveryAddressAScreenAsksForExistsTests(TestCase):
+    """
+    A screen that asks for an address the server does not have shows an
+    error panel, and only on the day someone opens it: bins were asked
+    for at storage-bins/ until the sweep happened to open the list.
+    """
+
+    def test_every_api_path_in_the_office_application_resolves(self):
+        import pathlib
+        import re
+
+        from django.urls import Resolver404, resolve
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
+        found = set()
+        for path in source.rglob("*.ts*"):
+            found.update(re.findall(r'"(/api/[a-z-]+/[a-z-]+/(?:[a-z-]+/)?)', path.read_text()))
+        self.assertGreater(len(found), 50)
+        missing = []
+        for url in sorted(found):
+            try:
+                resolve(url)
+            except Resolver404:
+                missing.append(url)
+        self.assertEqual(missing, [])
+
+
 class HasOneFilterTests(SalesTestCase):
     def test_credit_notes_are_the_invoices_that_credit_one(self):
         call_command("setup_roles", verbosity=0)

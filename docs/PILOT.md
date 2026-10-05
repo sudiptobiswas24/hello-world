@@ -21,7 +21,8 @@ still carries the business, so a problem costs a day, not a month-end.
 | Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging |
 | Dispatch | Warehouse Staff | ship an order, choosing batches; a customer return |
 | Purchasing | Purchasing Clerk | purchase order → confirm; close a short line |
-| Stores | Warehouse Staff | goods in with batch numbers; stock on hand and its movements |
+| Stores | Warehouse Staff, Stores Manager | goods in with batch numbers; stock on hand and its movements; a count of one rack, posted by the manager; a transfer between warehouses |
+| Maintenance | Maintenance | a service raised from Maintenance due and completed; a breakdown raised from its stoppage; the day's meter readings |
 | Accounts | AP Manager, Bookkeeper | bill from an order → payment; a journal; trial balance |
 | Production | Production Planner, Supervisor | plan → firm → release; the machine schedule |
 | Floor | Station | a shift's entries at one loom and one extruder |

@@ -279,6 +279,57 @@ export const MODULES: Module[] = [
         path: "items", label: "Items", permission: "inventory.view_item",
         keywords: "product sku material", load: () => import("../modules/stores/Items"),
       },
+      {
+        path: "counts", label: "Stock counts", permission: "inventory.view_stockcount", create: "inventory.add_stockcount",
+        keywords: "physical count stocktake verification", load: () => import("../modules/stores/Counts"),
+        detail: () => import("../modules/stores/CountForm"),
+      },
+      {
+        path: "transfers", label: "Transfers", permission: "inventory.view_stocktransfer", create: "inventory.add_stocktransfer",
+        keywords: "move warehouse transit lorry branch", load: () => import("../modules/stores/Transfers"),
+        detail: () => import("../modules/stores/TransferForm"),
+      },
+      {
+        path: "adjustments", label: "Adjustments", permission: "inventory.view_stockadjustment", create: "inventory.add_stockadjustment",
+        keywords: "write off damage scrap samples opening", load: () => import("../modules/stores/Adjustments"),
+        detail: () => import("../modules/stores/AdjustmentForm"),
+      },
+      {
+        path: "batches", label: "Batches", permission: "inventory.view_lot",
+        keywords: "lot batch granule roll expiry", load: () => import("../modules/stores/Lots"),
+        detail: () => import("../modules/stores/LotForm"),
+      },
+      {
+        path: "reserved", label: "Reserved stock", permission: "inventory.view_stockreservation",
+        keywords: "reservation allocated held promised", load: () => import("../modules/stores/Reservations"),
+      },
+      {
+        path: "value", label: "Stock value", permission: "inventory.view_stockmovement",
+        keywords: "valuation inventory value report", load: () => import("../modules/stores/Valuation"),
+      },
+      {
+        path: "against-books", label: "Stock against the books", permission: "inventory.view_stockmovement",
+        keywords: "reconciliation ledger inventory account", load: () => import("../modules/stores/Reconciliation"),
+      },
+      {
+        path: "slow-moving", label: "Slow-moving stock", permission: "inventory.view_stockmovement",
+        keywords: "dead stock non moving aging", load: () => import("../modules/stores/SlowMoving"),
+      },
+      {
+        path: "negative", label: "Negative stock", permission: "inventory.view_stockmovement",
+        keywords: "below zero errors", load: () => import("../modules/stores/Negative"),
+      },
+      {
+        path: "bins", label: "Bins", permission: "inventory.view_storagebin", create: "inventory.add_storagebin",
+        keywords: "location rack shelf", load: () => import("../modules/stores/Bins"),
+        detail: () => import("../modules/stores/BinForm"),
+      },
+      {
+        path: "reasons", label: "Adjustment reasons", permission: "inventory.view_adjustmentreason",
+        create: "inventory.add_adjustmentreason",
+        keywords: "write off reason account", load: () => import("../modules/stores/Reasons"),
+        detail: () => import("../modules/stores/ReasonForm"),
+      },
     ],
   },
 ];
