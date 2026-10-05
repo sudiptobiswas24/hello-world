@@ -94,8 +94,14 @@ def refused_by_database(error):
     text = str(error)
     # PostgreSQL: Key (code)=(C-1) already exists. SQLite: UNIQUE
     # constraint failed: core_party.code.
-    unique = re.search(r"Key \((\w+)(?:, [^)]*)?\)=", text) or re.search(
-        r"UNIQUE constraint failed: \w+\.(\w+)", text)
+    # Only a uniqueness rule is a duplicate: PostgreSQL writes "Key (x)=(y)"
+    # under a foreign-key violation too, which read as "another record
+    # already has this" for a record that does not exist at all.
+    duplicate = "duplicate key" in text or "UNIQUE constraint failed" in text
+    unique = duplicate and (re.search(r"Key \((\w+)(?:, [^)]*)?\)=", text) or re.search(
+        r"UNIQUE constraint failed: \w+\.(\w+)", text))
+    if "foreign key" in text.lower():
+        return {"non_field_errors": ["Refused: it names a record that does not exist."]}
     if unique:
         field = unique.group(1)
         return {field: [f"Another record already has this {field.replace('_', ' ')}."]}
@@ -114,6 +120,21 @@ def refused_by_database(error):
         return {"non_field_errors": ["Another record already has these details."]}
     rule = named.group(1).replace("_", " ") if named else "a rule of the database"
     return {"non_field_errors": [f"Refused: that breaks {rule}."]}
+
+
+def record_or_404(model, value, field):
+    """
+    The `model` row a request names by id in `field`. An id that is not a
+    number is refused beside the field; get_object_or_404 alone raised
+    ValueError on "MAIN" or an account code, which was a 500.
+    """
+    from django.shortcuts import get_object_or_404
+
+    try:
+        pk = int(str(value).strip())
+    except ValueError:
+        raise DRFValidationError({field: [f"{value!r} is not the id of a {model._meta.verbose_name}."]}) from None
+    return get_object_or_404(model, pk=pk)
 
 
 def whole_number(data, name, default=None, least=0):

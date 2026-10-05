@@ -8,7 +8,6 @@ to make its clerk choose the receivable account again.
 """
 
 from django.core.exceptions import ValidationError
-from django.shortcuts import get_object_or_404
 
 from apps.core.models import Company
 
@@ -39,7 +38,9 @@ def chosen_or_default(data, field, purpose):
     """The account a request names in `field`, else the company default."""
     from .models import Account
 
+    from apps.core.api import record_or_404
+
     chosen = data.get(field)
     if chosen:
-        return get_object_or_404(Account, pk=chosen)
+        return record_or_404(Account, chosen, field)
     return default_account(purpose, field)

@@ -22,6 +22,13 @@ export interface Screen {
   create?: string;
   /** Reached from other screens, not offered in the navigation. */
   hidden?: boolean;
+  /** Further permissions the screen's other reads need (its detail, a panel). */
+  also?: string[];
+}
+
+/** Whether to offer a screen: what it reads first, and everything else it needs. */
+export function offered(screen: Screen, can: (permission: string) => boolean): boolean {
+  return !screen.hidden && can(screen.permission) && (screen.also ?? []).every(can);
 }
 
 export interface Module {
@@ -146,7 +153,10 @@ export const MODULES: Module[] = [
     icon: "accounts",
     screens: [
       {
-        path: "chart", label: "Chart of accounts", permission: "accounting.view_journalentry",
+        // The list reads the chart; each account opens on its ledger, which
+        // is the books and takes the right to read journal entries.
+        path: "chart", label: "Chart of accounts", permission: "accounting.view_account",
+        also: ["accounting.view_journalentry"],
         keywords: "ledger account gl", load: () => import("../modules/accounts/Chart"),
         detail: () => import("../modules/accounts/Ledger"),
       },

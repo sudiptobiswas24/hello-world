@@ -311,7 +311,7 @@ class BillsStillOwedAgreeWithAmountDueTests(ScreensTestCase):
         self.receive(order, "10")
         settled["met from a prepayment"] = self.bill_order(order)
 
-        answer = set(bills_still_owed(Bill.objects.all()))
+        answer = set(bills_still_owed(Bill.objects.all()).values_list("pk", flat=True))
         for name, document in owed.items():
             self.assertIn(document.pk, answer, f"{name}: due {document.amount_due()}")
         for name, document in settled.items():

@@ -73,3 +73,26 @@ class CountersCarryAcrossTests(TransactionTestCase):
                          [("x.yearly", 2026, 42)])
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class TheFirstYearStartsWhereTheSequenceSaysTests(TestCase):
+    """next_number was read by no yearly sequence: a takeover from another
+    system restarted at 1, and switching to yearly re-issued this year's numbers."""
+
+    def test_a_takeover_carries_on_from_its_number(self):
+        sequence = DocumentSequence.objects.create(code="sales.invoice", name="Invoices", prefix="INV-",
+                                                   next_number=1001)
+        self.assertEqual(sequence.peek(datetime.date(2026, 5, 1)), "INV-2026-01001")
+        self.assertEqual(sequence.next_value(datetime.date(2026, 5, 1)), "INV-2026-01001")
+        self.assertEqual(sequence.next_value(datetime.date(2026, 5, 2)), "INV-2026-01002")
+        # The next year starts over, as a yearly sequence does.
+        self.assertEqual(sequence.next_value(datetime.date(2027, 4, 1)), "INV-2027-00001")
+
+    def test_switching_to_yearly_mid_year_does_not_reissue_numbers(self):
+        sequence = DocumentSequence.objects.create(code="sales.order", name="Orders", prefix="SO-",
+                                                   reset_yearly=False)
+        for _ in range(3):
+            sequence.next_value(datetime.date(2026, 6, 1))
+        sequence.reset_yearly = True
+        sequence.save()
+        self.assertEqual(sequence.next_value(datetime.date(2026, 6, 2)), "SO-2026-00004")

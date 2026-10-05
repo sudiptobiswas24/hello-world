@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 
-import { useAct, useRecord, useRows } from "../../api/hooks";
+import { useAct, usePage, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { DecimalInput, Field, today } from "../../forms/fields";
+import { Pager } from "../../forms/Pager";
 import { useDraft } from "../../forms/useDraft";
-import { least, minus, positive, sum } from "../../lib/decimal";
+import { least, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { PartyPicker, type PartyRole } from "../../forms/PartyPicker";
@@ -22,6 +23,8 @@ interface Payment {
   memo: string;
   posted: boolean;
   voided: boolean;
+  /** What is left to apply, as the server adds it up. */
+  unallocated: string;
   [key: string]: unknown;
 }
 
@@ -165,11 +168,18 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
 function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: Payment; highlight: number | null }) {
   const { can } = useAccess();
   const act = useAct();
-  const applied = useRows<Allocation>(config.allocations, { payment: payment.id });
-  const open = useRows<OpenInvoice>(config.documents, { [config.role]: payment.party, open: "true", ordering: "due_date" }, payment.party !== null);
+  const [appliedPage, setAppliedPage] = useState(1);
+  const [openPage, setOpenPage] = useState(1);
+  const appliedRows = usePage<Allocation>(config.allocations, { payment: payment.id }, appliedPage, 50);
+  const openRows = usePage<OpenInvoice>(config.documents, { [config.role]: payment.party, open: "true", ordering: "due_date" },
+    openPage, 50, payment.party !== null);
+  const applied = { data: appliedRows.data?.rows };
+  const open = { data: openRows.data?.rows, isPending: openRows.isPending };
   const kind = config.field; // "invoice" | "bill"
   const [amounts, setAmounts] = useState<Record<number, string>>({});
-  const left = minus(payment.amount, sum((applied.data ?? []).map((row) => row.amount)));
+  // The server's figure: adding up the allocations on this page alone
+  // read a receipt applied to 250 invoices as part applied.
+  const left = payment.unallocated;
   const canApply = can(`${config.app}.add_${kind}payment`);
 
   return (
@@ -179,7 +189,7 @@ function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: P
         <span className={positive(left) ? "pill pill-open" : "pill pill-done"}>{positive(left) ? `${money(left)} not yet applied` : "All applied"}</span>
       </header>
       {applied.data?.length ? (
-        <table>
+        <><table>
           <tbody>
             {applied.data.map((row) => {
               const number = row[`${kind}_number`] ?? "";
@@ -196,13 +206,14 @@ function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: P
             })}
           </tbody>
         </table>
+        {appliedRows.data && <Pager page={appliedPage} size={50} total={appliedRows.data.total} onPage={setAppliedPage} />}</>
       ) : <p className="muted">Nothing applied yet.</p>}
 
       {canApply && positive(left) && (
         <>
           <h3>Open {kind}s of this {config.role}</h3>
           {open.data?.length ? (
-            <table>
+            <><table>
               <thead><tr><th scope="col">{kind === "invoice" ? "Invoice" : "Bill"}</th><th scope="col">Due</th><th scope="col" className="k-money">Owed</th><th scope="col" className="k-money">Apply</th><th /></tr></thead>
               <tbody>
                 {open.data.map((invoice) => {
@@ -229,6 +240,7 @@ function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: P
                 })}
               </tbody>
             </table>
+            {openRows.data && <Pager page={openPage} size={50} total={openRows.data.total} onPage={setOpenPage} />}</>
           ) : <p className="muted">{open.isPending ? "…" : `Nothing is owed on posted ${kind}s.`}</p>}
         </>
       )}

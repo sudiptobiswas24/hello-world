@@ -235,3 +235,39 @@ class ComponentsGoOutOnceTests(SubcontractTestCase):
         order.issue_components(self.warehouse)
         with self.assertRaisesMessage(ValidationError, "already been issued"):
             order.issue_components(self.warehouse)
+
+
+class ComponentTopUpTests(SubcontractTestCase):
+    """A second issue was refused outright, so components the subcontractor
+    scrapped could never be replaced and the order never received."""
+
+    def test_a_second_issue_sends_nothing_and_says_so(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        with self.assertRaisesMessage(ValidationError, "already been issued"):
+            order.issue_components(self.warehouse)
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("10"))
+        self.assertEqual(self.motor.on_hand_at(self.subcontractor), Decimal("20"))
+
+    def test_what_was_scrapped_is_topped_up_and_the_order_received(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        # Two frames ruined at the subcontractor's.
+        StockMovement.objects.create(
+            item=self.frame, warehouse=self.subcontractor, movement_type=MovementType.ADJUSTMENT,
+            uom=self.uom, quantity=Decimal("-2"), unit_cost=Decimal("8"), occurred_at=timezone.now())
+        with self.assertRaisesMessage(ValidationError, "short 2"):
+            self.receive(order, "10")
+        order.issue_components(self.warehouse, quantities={self.frame: Decimal("2")})
+        self.assertEqual(self.frame.on_hand_at(self.warehouse), Decimal("88"))
+        self.receive(order, "10")
+        self.assertEqual(self.assembly.on_hand_at(self.warehouse), Decimal("10"))
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("0"))
+
+    def test_a_top_up_names_a_component_of_this_order(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        with self.assertRaisesMessage(ValidationError, "not a component"):
+            order.issue_components(self.warehouse, quantities={self.assembly: Decimal("1")})
+        with self.assertRaisesMessage(ValidationError, "above nothing"):
+            order.issue_components(self.warehouse, quantities={self.frame: Decimal("0")})

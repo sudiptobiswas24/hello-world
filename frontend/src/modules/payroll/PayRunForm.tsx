@@ -1,9 +1,12 @@
 import { useNavigate, useParams } from "react-router";
 
-import { useAct, useRecord, useRows } from "../../api/hooks";
+import { useState } from "react";
+
+import { useAct, usePage, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet, Steps, Totals } from "../../forms/Document";
 import { Field } from "../../forms/fields";
+import { Pager } from "../../forms/Pager";
 import { useDraft } from "../../forms/useDraft";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
@@ -51,7 +54,8 @@ export default function PayRunForm() {
   const record = useRecord<Run>(ENDPOINT, id);
   const run = record.data;
   const draft = useDraft<Run>(isNew ? ({ name: "", period_start: "", period_end: "", pay_date: "" } as unknown as Run) : run);
-  const slips = useRows<Slip>("/api/hr/payslips/", { run: run?.id }, Boolean(run) && can("hr.view_payslip"));
+  const [slipPage, setSlipPage] = useState(1);
+  const slips = usePage<Slip>("/api/hr/payslips/", { run: run?.id }, slipPage, 100, Boolean(run) && can("hr.view_payslip"));
   const act = useAct<Run>();
 
   if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
@@ -115,7 +119,7 @@ export default function PayRunForm() {
               <table>
                 <thead><tr><th scope="col">Person</th><th scope="col" className="k-money">Gross</th><th scope="col" className="k-money">Deductions</th><th scope="col" className="k-money">Net</th><th scope="col" className="k-money">Employer cost</th><th scope="col">Paid</th></tr></thead>
                 <tbody>
-                  {(slips.data ?? []).map((slip) => (
+                  {(slips.data?.rows ?? []).map((slip) => (
                     <tr key={slip.id}>
                       <td><strong>{slip.employee}</strong> {slip.name}</td>
                       <td className="k-money">{money(slip.gross)}</td>
@@ -127,6 +131,7 @@ export default function PayRunForm() {
                   ))}
                 </tbody>
               </table>
+              {slips.data && <Pager page={slipPage} size={100} total={slips.data.total} onPage={setSlipPage} />}
             </div>
             <Totals rows={[["Gross", run.gross], ["Net", run.net, true], ["Employer cost", run.employer_cost], ["Still to pay", run.unpaid_net]]} />
           </>

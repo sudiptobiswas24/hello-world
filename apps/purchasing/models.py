@@ -1472,6 +1472,10 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 )
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
+        # A drop-ship called off: the customer's goods are this plant's to
+        # send again, and its shelf's to hold for them.
+        for line in self.lines.filter(sales_order_line__isnull=False).select_related("sales_order_line"):
+            line.sales_order_line.reclaim_stock()
 
     def receipt_status(self):
         # Charge lines never arrive, so counting them would pin an
@@ -1606,12 +1610,17 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             raise ValidationError("Only a confirmed sales order can be drop-shipped.")
         _require_vendor_role(vendor)
 
+        # What is not already coming from a vendor: drop-shipping the same
+        # remainder twice ordered it twice, and the second lorry was the
+        # customer's to refuse and this company's to pay for.
         selected = [
             line for line in (lines if lines is not None else sales_order.lines.all())
-            if not line.is_charge() and line.quantity_open() > 0
+            if not line.is_charge() and line.quantity_to_ship() > 0
         ]
         if not selected:
-            raise ValidationError("There is nothing left on this order to drop-ship.")
+            raise ValidationError(
+                "There is nothing left on this order to drop-ship: what is still owed "
+                "is already on a drop-ship order.")
 
         order_date = to_date(order_date) or timezone.localdate()
         order = cls.objects.create(
@@ -1620,7 +1629,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             shipping_note=f"Deliver direct to {sales_order.customer}",
         )
         for line in selected:
-            remaining = line.quantity_open()
+            remaining = line.quantity_to_ship()
             PurchaseOrderLine.objects.create(
                 order=order, sales_order_line=line, item=line.item, uom=line.uom,
                 quantity=remaining,
@@ -1632,7 +1641,7 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return order
 
     @transaction.atomic
-    def issue_components(self, from_warehouse, occurred_at=None):
+    def issue_components(self, from_warehouse, occurred_at=None, quantities=None):
         """
         Send the components out to the subcontractor.
 
@@ -1640,17 +1649,17 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         subcontractor is still stock you own and still stock you can lose,
         and writing it off on despatch would hide both facts. A transfer
         keeps the value on the books where it belongs.
+
+        By default, what the order still needs that has not gone yet: all
+        of it the first time, the difference after the order grows, and
+        nothing on a second click. `quantities` ({item: quantity}) sends
+        exactly that instead, on top of what went: the top-up when the
+        subcontractor scrapped some, which the receipt otherwise refuses as
+        short and a plain re-issue would have called already sent.
         """
         lock_rows(self)
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can issue components.")
-        # Nothing asked whether they had gone already: a second call sent
-        # every component out again.
-        if StockMovement.objects.filter(
-            reference=self.number, movement_type=MovementType.TRANSFER_IN,
-            warehouse=self.subcontract_warehouse_id,
-        ).exists():
-            raise ValidationError(f"The components for {self} have already been issued.")
         if self.subcontract_warehouse_id is None:
             raise ValidationError(
                 "Set a subcontract warehouse before issuing components; the stock has to "
@@ -1658,37 +1667,53 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             )
         occurred_at = occurred_at or timezone.now()
 
-        moved = []
-        lock_positions(
-            pair
-            for line in self.lines.filter(charge__isnull=True)
-            for component in line.components.select_related("item")
-            for pair in (
-                (component.item, from_warehouse),
-                (component.item, self.subcontract_warehouse),
-            )
-        )
+        required = {}
         for line in self.lines.filter(charge__isnull=True):
             for component in line.components.select_related("item"):
-                quantity = round_money(component.quantity_per * line.quantity)
-                if quantity <= 0 or not component.item.track_inventory:
-                    continue
-                cost = component.item.removal_unit_cost(from_warehouse, quantity)
-                for warehouse, movement_type, signed in (
-                    (from_warehouse, MovementType.TRANSFER_OUT, -quantity),
-                    (self.subcontract_warehouse, MovementType.TRANSFER_IN, quantity),
-                ):
-                    StockMovement.objects.create(
-                        item=component.item, warehouse=warehouse,
-                        movement_type=movement_type, uom=component.item.uom,
-                        quantity=signed,
-                        unit_cost=cost, reference=self.number,
-                        occurred_at=occurred_at,
-                        notes=f"Components to subcontractor for {self.number}",
-                    )
-                moved.append((component.item, quantity))
-        if not moved:
+                if component.item.track_inventory:
+                    required[component.item] = required.get(component.item, Decimal("0")) + round_money(
+                        component.quantity_per * line.quantity)
+        sent = dict(StockMovement.objects.filter(
+            reference=self.number, movement_type=MovementType.TRANSFER_IN,
+            warehouse=self.subcontract_warehouse_id,
+        ).values_list("item").annotate(total=models.Sum("quantity")).values_list("item", "total"))
+        if quantities is None:
+            # What is still to go. Sent already counts whether or not it
+            # was used: a second call sends nothing rather than all of it again.
+            plan = {item: need - (sent.get(item.pk) or Decimal("0")) for item, need in required.items()}
+        else:
+            plan = {}
+            for item, quantity in quantities.items():
+                if item not in required:
+                    raise ValidationError(f"{item} is not a component of {self}.")
+                if quantity <= 0:
+                    raise ValidationError(f"Send a quantity of {item} above nothing.")
+                plan[item] = quantity
+        plan = {item: quantity for item, quantity in plan.items() if quantity > 0}
+        if not required:
             raise ValidationError("This order has no components to issue.")
+        if not plan:
+            raise ValidationError(f"The components for {self} have already been issued.")
+
+        lock_positions(
+            pair for item in plan for pair in ((item, from_warehouse), (item, self.subcontract_warehouse))
+        )
+        moved = []
+        for item, quantity in plan.items():
+            cost = item.removal_unit_cost(from_warehouse, quantity)
+            for warehouse, movement_type, signed in (
+                (from_warehouse, MovementType.TRANSFER_OUT, -quantity),
+                (self.subcontract_warehouse, MovementType.TRANSFER_IN, quantity),
+            ):
+                StockMovement.objects.create(
+                    item=item, warehouse=warehouse,
+                    movement_type=movement_type, uom=item.uom,
+                    quantity=signed,
+                    unit_cost=cost, reference=self.number,
+                    occurred_at=occurred_at,
+                    notes=f"Components to subcontractor for {self.number}",
+                )
+            moved.append((item, quantity))
         return moved
 
     def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
@@ -1974,7 +1999,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         if self._state.adding and self.order_id and self.order.approved_at:
             self.order.withdraw_approval()
         self._check_bom()
+        self._check_drop_ship_quantity()
         super().save(*args, **kwargs)
+        if self.sales_order_line_id is not None:
+            self.sales_order_line.reclaim_stock()
         if self.bom_id is not None:
             if self.order.status == OrderStatus.DRAFT:
                 self.rebuild_components()
@@ -2077,7 +2105,32 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "This line has been received or billed and can no longer be removed."
             )
-        super().delete(*args, **kwargs)
+        sales_line = self.sales_order_line
+        result = super().delete(*args, **kwargs)
+        if sales_line is not None:
+            sales_line.reclaim_stock()
+        return result
+
+    def _check_drop_ship_quantity(self):
+        """
+        A drop-ship line may still bring no more than the customer is
+        still owed, less what other drop-ship lines are bringing. Checked
+        on every save, so an edited quantity orders no more twice than a
+        second create_for_drop_ship() may.
+        """
+        if self.sales_order_line_id is None or self.is_charge():
+            return
+        if self.order_id and self.order.status == OrderStatus.CANCELLED:
+            return
+        others = drop_ship_awaited([self.sales_order_line_id], excluding=self.pk)
+        room = self.sales_order_line.quantity_open() - others[self.sales_order_line_id]
+        coming = self.quantity - (self.quantity_received() if self.pk else Decimal("0"))
+        if coming > room:
+            def shown(value):
+                return format(value.normalize(), "f")
+            raise ValidationError({"quantity": [
+                f"{self.sales_order_line.label()} is owed {shown(max(room, Decimal('0')))} more "
+                f"than other drop-ships bring; this line would bring {shown(coming)}."]})
 
     def requires_inspection(self):
         """
@@ -4085,7 +4138,7 @@ def not_paid_in_full(bills):
 
 def bills_still_owed(bills):
     """
-    The pks of `bills` that still owe the vendor money: posted bills, not
+    The `bills` that still owe the vendor money: posted bills, not
     debit notes, whose amount_due() is above nothing. The mirror of sales'
     still_owed(), decided by the same owed_beyond(); tests_screens_api
     holds it to amount_due().
@@ -4097,8 +4150,9 @@ def bills_still_owed(bills):
         reductions=("settlement_discount_amount",),
     )
     unrecorded = bills.filter(posted=True, debits__isnull=True, posted_total__isnull=True)
-    return list(owed.values_list("pk", flat=True)) + [
-        bill.pk for bill in unrecorded.prefetch_related(*BILL_FIGURES) if bill.amount_due() > 0]
+    asked = [bill.pk for bill in unrecorded.prefetch_related(*BILL_FIGURES) if bill.amount_due() > 0]
+    # A subquery, not a list of pks, as still_owed() says.
+    return bills.filter(models.Q(pk__in=owed.values("pk")) | models.Q(pk__in=asked))
 
 
 def not_received_in_full(lines):
@@ -4132,7 +4186,27 @@ def orders_to_receive(orders):
         if line.quantity_open() > 0})
 
 
-def _billed_beyond_received(lines):
+def drop_ship_awaited(sales_line_ids, excluding=None):
+    """
+    {sales order line pk: what open drop-ship lines are still to deliver
+    for it}, in the sales line's unit, which a drop-ship line is raised
+    in. Registered with sales (apps.py) as what its shelves need not send.
+    Cancelled orders bring nothing; drafts are counted, as a second
+    drop-ship raised beside a draft is the same goods ordered twice.
+    """
+    lines = not_received_in_full(PurchaseOrderLine.objects.filter(
+        sales_order_line_id__in=sales_line_ids, order__drop_ship_for__isnull=False,
+    ).exclude(order__status=OrderStatus.CANCELLED))
+    if excluding is not None:
+        lines = lines.exclude(pk=excluding)
+    awaited = defaultdict(Decimal)
+    for sales_line_id, quantity, received in lines.values_list(
+            "sales_order_line_id", "quantity", "net_received"):
+        awaited[sales_line_id] += max(quantity - received, Decimal("0"))
+    return awaited
+
+
+def _billed_beyond_received(lines, vendor=None):
     """
     Only the lines billed for more than they now hold.
 
@@ -4140,13 +4214,17 @@ def _billed_beyond_received(lines):
     way quantity_billed() and quantity_received() sum them, and compared
     here. A correlated sum per line took 1.2 seconds over a year's lines
     with every index in use: the cost was asking 6,000 times, not how.
+    With a `vendor`, only that vendor's lines are summed.
     """
     def net(model, document, quantity, reversal):
         signed = models.Case(
             models.When(**{f"{document}__{reversal}__isnull": True}, then=models.F(quantity)),
             default=-models.F(quantity),
         )
-        rows = model.objects.filter(**{f"{document}__posted": True}).values(
+        rows = model.objects.filter(**{f"{document}__posted": True})
+        if vendor is not None:
+            rows = rows.filter(order_line__order__vendor=vendor)
+        rows = rows.values(
             "order_line").annotate(total=models.Sum(signed))
         return {row["order_line"]: row["total"] for row in rows}
 
@@ -4297,10 +4375,10 @@ def billed_not_held(vendor=None):
     agreed to pay for, that went back to the vendor and was never
     credited? Each row is a debit note waiting to be raised.
     """
-    lines = with_line_figures(_billed_beyond_received(
-        PurchaseOrderLine.objects.select_related("order__vendor", "item")))
+    lines = PurchaseOrderLine.objects.select_related("order__vendor", "item")
     if vendor is not None:
         lines = lines.filter(order__vendor=vendor)
+    lines = with_line_figures(_billed_beyond_received(lines, vendor))
 
     rows = []
     for line in lines:

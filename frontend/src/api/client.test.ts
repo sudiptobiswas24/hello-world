@@ -85,8 +85,10 @@ describe("a page of a list", () => {
 describe("what went wrong", () => {
   it("puts each field's refusal under its field and in the sentences", () => {
     const read = readErrors({ quantity: ["Must be positive."], non_field_errors: ["Posted."] });
-    expect(read.fields).toEqual({ quantity: ["Must be positive."] });
-    expect(read.messages).toEqual(["Posted.", "Quantity: Must be positive."]);
+    // The whole-form refusal stays under fields too, for the form's own
+    // place for it; leaving it out kept every such place empty.
+    expect(read.fields).toEqual({ quantity: ["Must be positive."], non_field_errors: ["Posted."] });
+    expect(read.messages).toEqual(["Quantity: Must be positive.", "Posted."]);
   });
 
   it("names the line a refusal is about", () => {

@@ -214,7 +214,7 @@ def sales_demand(item, warehouse, on_date):
     trusting the planning module and start keeping the real list in a
     spreadsheet.
     """
-    from apps.sales.models import OrderStatus, SalesOrderLine
+    from apps.sales.models import OrderStatus, SalesOrderLine, quantities_awaited
 
     rows = []
     lines = (
@@ -227,6 +227,8 @@ def sales_demand(item, warehouse, on_date):
         .filter(Q(warehouse=warehouse) | Q(warehouse__isnull=True))
         .select_related("order", "item", "uom")
     )
+    lines = list(lines)
+    awaited = quantities_awaited(lines)
     for line in lines:
         # Job work is made to the order from what the customer sends, so
         # it is not netted against stock the company made for anybody
@@ -241,7 +243,15 @@ def sales_demand(item, warehouse, on_date):
         from apps.sales.call_offs import open_schedule
 
         unit = line.uom or line.item.uom
+        # What a vendor is drop-shipping is not this plant's to make or
+        # buy: it comes off the soonest dates, the ones it is raised for.
+        coming = awaited[line.pk]
         for day, owed in open_schedule(line):
+            taken = min(owed, coming)
+            coming -= taken
+            owed -= taken
+            if owed <= 0:
+                continue
             rows.append(_demand(
                 day, line.item.to_stock_quantity(owed, unit), DemandSource.SALES,
                 sales_order_line=line,

@@ -318,6 +318,29 @@ def refuse_ownership_problems(customer, lots):
         raise ValidationError(" ".join(dict.fromkeys(problems)))
 
 
+# What will reach a customer from somewhere other than this plant's
+# shelves: a vendor shipping a drop-ship straight to them. Registered by
+# purchasing, which holds the pointer, so sales imports nothing of it.
+# Each takes order-line pks and returns {pk: quantity in the line's unit}.
+AWAITED_PROVIDERS = []
+
+
+def register_awaited_provider(provider):
+    if provider not in AWAITED_PROVIDERS:
+        AWAITED_PROVIDERS.append(provider)
+
+
+def quantities_awaited(lines):
+    """{order-line pk: what others will still deliver for it}, in one ask a provider."""
+    ids = [line.pk for line in lines if line.pk is not None]
+    awaited = defaultdict(Decimal)
+    if ids:
+        for provider in AWAITED_PROVIDERS:
+            for pk, quantity in provider(ids).items():
+                awaited[pk] += quantity
+    return awaited
+
+
 def refuse_material_problems(customer, rows):
     """rows: [(item, lots, on_date)]. Refuse naming every problem at once."""
     problems = []
@@ -638,10 +661,11 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 continue
             if not line.item.track_inventory:
                 continue
-            outstanding = line.quantity_open_in_stock_units()
+            outstanding = line.quantity_to_ship_in_stock_units()
             if outstanding <= 0:
                 StockReservation.objects.for_source(line).open().update(
-                    released_at=timezone.now(), released_reason="Fully shipped"
+                    released_at=timezone.now(), released_reason=(
+                        "Coming from the vendor" if line.quantity_open() > 0 else "Fully shipped")
                 )
                 continue
             _held, short = StockReservation.objects.claim(
@@ -659,7 +683,7 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 continue
             if not line.item.track_inventory:
                 continue
-            outstanding = line.quantity_open_in_stock_units()
+            outstanding = line.quantity_to_ship_in_stock_units()
             held = line.quantity_reserved()
             if outstanding - held > 0:
                 shortfalls[line] = outstanding - held
@@ -683,9 +707,15 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             raise ValidationError(
                 f"Delivery {waiting.number or 'draft'} for this order is already waiting to "
                 "ship. Post it, or delete it, first.")
-        owed = [(line, line.quantity_open()) for line in self.lines.select_related("item")]
+        lines = list(self.lines.select_related("item"))
+        awaited = quantities_awaited(lines)
+        owed = [(line, line.quantity_to_ship(awaited[line.pk])) for line in lines]
         owed = [(line, quantity) for line, quantity in owed if quantity > 0]
         if not owed:
+            if any(awaited[line.pk] > 0 and line.quantity_open() > 0 for line in lines):
+                raise ValidationError(
+                    "What is left on this order is coming from the vendor on a drop-ship; "
+                    "nothing is left to ship from here.")
             raise ValidationError("Nothing is left to ship on this order.")
         for line, _ in owed:
             if not line.warehouse_id and warehouse is None:
@@ -995,6 +1025,26 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             return Decimal("0")
         return self.item.to_stock_quantity(self.quantity_open(), self.uom or self.item.uom)
 
+    def quantity_to_ship(self, awaited=None):
+        """
+        What this plant still has to send itself: quantity_open() less
+        what a vendor is to deliver straight to the customer on an open
+        drop-ship. What ships, plans and holds stock asks this; what the
+        customer is owed is still quantity_open(). `awaited` is this
+        line's share of quantities_awaited(), when a caller asked for many.
+        """
+        owed = self.quantity_open()
+        if owed <= 0:
+            return Decimal("0")
+        if awaited is None:
+            awaited = quantities_awaited([self])[self.pk]
+        return max(owed - awaited, Decimal("0"))
+
+    def quantity_to_ship_in_stock_units(self):
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(self.quantity_to_ship(), self.uom or self.item.uom)
+
     def invoice_limit(self):
         """
         The most this line may bill: what shipped where it closed short,
@@ -1036,7 +1086,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(f"{self.order} is {self.order.status}; it cannot owe anything.")
         self.closed_short_at, self.closed_short_reason = None, ""
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
-        self._reclaim_stock()
+        self.reclaim_stock()
 
     def save(self, *args, **kwargs):
         if self.pk:
@@ -1122,17 +1172,19 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         # what it has promised, so the claim has to follow. Leaving the old
         # one standing holds stock for a quantity nobody is waiting for.
         if self.order_id and self.order.status == OrderStatus.CONFIRMED:
-            self._reclaim_stock()
+            self.reclaim_stock()
 
-    def _reclaim_stock(self):
+    def reclaim_stock(self):
+        """Hold what this line still has to ship from its warehouse, and no more."""
         if self.is_charge() or self.item_id is None or not self.item.track_inventory:
             return
         if self.warehouse_id is None:
             release_for(self, "No warehouse on the line")
             return
-        outstanding = self.quantity_open_in_stock_units()
+        outstanding = self.quantity_to_ship_in_stock_units()
         if outstanding <= 0:
-            release_for(self, "Closed short" if self.is_closed_short() else "Fully shipped")
+            release_for(self, "Closed short" if self.is_closed_short() else
+                        "Coming from the vendor" if self.quantity_open() > 0 else "Fully shipped")
             return
         StockReservation.objects.claim(self, self.item, self.warehouse, outstanding)
 
@@ -2542,8 +2594,8 @@ def not_paid_in_full(invoices):
 
 def still_owed(invoices):
     """
-    The pks of `invoices` that still owe money: posted invoices, not
-    credit notes, whose amount_due() is above nothing.
+    The `invoices` that still owe money: posted invoices, not credit
+    notes, whose amount_due() is above nothing.
 
     Decided in the database. amount_due() is the total less what was
     settled otherwise (paid by payments that stand, discounted, written
@@ -2564,9 +2616,11 @@ def still_owed(invoices):
         reductions=("written_off_amount", "settlement_discount_amount"),
     )
     unrecorded = invoices.filter(posted=True, credits__isnull=True, posted_total__isnull=True)
-    return list(owed.values_list("pk", flat=True)) + [
-        invoice.pk for invoice in unrecorded.prefetch_related(*INVOICE_FIGURES)
-        if invoice.amount_due() > 0]
+    asked = [invoice.pk for invoice in unrecorded.prefetch_related(*INVOICE_FIGURES)
+             if invoice.amount_due() > 0]
+    # A subquery, not a list of pks: a list is one bound value an invoice,
+    # and SQLite refuses a statement past 32,766 of them.
+    return invoices.filter(models.Q(pk__in=owed.values("pk")) | models.Q(pk__in=asked))
 
 
 def not_shipped_in_full(lines):
@@ -2593,12 +2647,15 @@ def not_shipped_in_full(lines):
 
 
 def orders_to_ship(orders):
-    """The pks of confirmed `orders` with goods still owed (quantity_open)."""
-    lines = not_shipped_in_full(SalesOrderLine.objects.filter(
-        order__in=orders.filter(status=OrderStatus.CONFIRMED)))
-    return sorted({line.order_id for line in lines.prefetch_related(
-        models.Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery")))
-        if line.quantity_open() > 0})
+    """
+    The pks of confirmed `orders` with goods still to ship from here
+    (quantity_to_ship): not what a vendor is to drop-ship.
+    """
+    lines = list(not_shipped_in_full(SalesOrderLine.objects.filter(
+        order__in=orders.filter(status=OrderStatus.CONFIRMED))).prefetch_related(
+        models.Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery"))))
+    awaited = quantities_awaited(lines)
+    return sorted({line.order_id for line in lines if line.quantity_to_ship(awaited[line.pk]) > 0})
 
 
 def committed_balance(customer):
@@ -3311,7 +3368,8 @@ class Delivery(AuditModel):
         """
         outstanding = {}
         for line in self.lines.all():
-            remaining = line.order_line.quantity_open()
+            # From the shelf: what a vendor is to drop-ship is not left behind.
+            remaining = line.order_line.quantity_to_ship()
             if remaining > 0:
                 outstanding[line.order_line] = remaining
         return outstanding

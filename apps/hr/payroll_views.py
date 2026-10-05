@@ -203,7 +203,7 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Payslip.objects.select_related("employee__party", "run", "payment__journal_entry").prefetch_related(
-        "payment__journal_entry__reversed_by")
+        "payment__journal_entry__reversed_by", "lines__component")
     action_permission_map = {"pay": "hr.post_payrun"}
 
     def get_queryset(self):

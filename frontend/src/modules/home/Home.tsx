@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 
 import { list, type Query } from "../../api/client";
-import { MODULES, screenUrl } from "../../app/registry";
+import { MODULES, offered, screenUrl } from "../../app/registry";
 import { useAccess } from "../../auth/me";
 import { count } from "../../lib/format";
 import { Icon } from "../../shell/Icon";
@@ -60,7 +60,7 @@ export default function Home() {
   const { me, can } = useAccess();
   const modules = MODULES.map((module) => ({
     ...module,
-    screens: module.screens.filter((screen) => can(screen.permission) && !screen.hidden),
+    screens: module.screens.filter((screen) => offered(screen, can)),
   })).filter((module) => module.screens.length > 0);
   const waiting = WAITING.filter((item) => can(item.permission));
 

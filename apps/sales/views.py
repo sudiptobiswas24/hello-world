@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag, quantities_by_line
+from apps.core.api import flag, quantities_by_line, record_or_404
 
 from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
@@ -122,7 +122,7 @@ class SalesOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         warehouse = request.data.get("warehouse")
         delivery = order.create_delivery(
             delivery_date=request.data.get("delivery_date"),
-            warehouse=get_object_or_404(Warehouse, pk=warehouse) if warehouse else None,
+            warehouse=record_or_404(Warehouse, warehouse, "warehouse") if warehouse else None,
         )
         return Response(DeliverySerializer(delivery).data, status=201)
 
@@ -281,7 +281,7 @@ class InvoiceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # ?open=true: posted invoices that still owe money, as amount_due()
         # reckons it.
         if flag(self.request.query_params, "open", False):
-            queryset = queryset.filter(pk__in=still_owed(queryset))
+            queryset = still_owed(queryset)
         return queryset
     action_permission_map = {
         "post_invoice": "sales.post_invoice",

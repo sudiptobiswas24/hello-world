@@ -230,10 +230,14 @@ class JournalEntry(AuditModel):
             raise ValidationError("Only a posted journal entry can be reversed.")
         # Nothing asked before: reversing an entry twice through the API
         # took it back twice, and a second click was all it needed.
-        if self.reversed_by.exists():
+        # Asked of the database after the lock, not of self.reversed_by: a
+        # list that prefetched the reversals answers from what it read
+        # before the lock, and a reversal committed since would be missed.
+        standing = list(JournalEntry.objects.filter(reverses=self).values_list("pk", flat=True))
+        if standing:
             raise ValidationError(
                 f"JE-{self.pk} has already been reversed by "
-                f"{', '.join(f'JE-{r.pk}' for r in self.reversed_by.all())}."
+                f"{', '.join(f'JE-{pk}' for pk in standing)}."
             )
         reversal = JournalEntry.objects.create(
             date=entry_date or timezone.localdate(),
@@ -825,7 +829,9 @@ class Payment(AuditModel):
         """
         if not self.posted:
             raise ValidationError("Only a posted payment can be voided.")
-        if self.voided_entry_id or self.journal_entry.reversed_by.exists():
+        # The entry's reversals asked of the database, not of a cache filled
+        # before the lock (create_reversal asks again, under its own lock).
+        if self.voided_entry_id or JournalEntry.objects.filter(reverses_id=self.journal_entry_id).exists():
             raise ValidationError("This payment has already been voided.")
 
         entry = self.journal_entry.create_reversal(

@@ -88,10 +88,13 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         role = self.request.data.get("role")
         if role is not None and role not in self.TRADING_ROLES:
             raise DRFValidationError({"role": [f"A new party can be made a customer or a vendor here, not {role!r}."]})
+        user = self.request.user
         with transaction.atomic():
-            party = serializer.save()
+            # Who made it, as AuditableViewSetMixin would have said: this
+            # override had dropped it for every party made in the office.
+            party = serializer.save(created_by=user, updated_by=user)
             if role is not None:
-                PartyRoleAssignment.objects.create(party=party, role=role)
+                PartyRoleAssignment.objects.create(party=party, role=role, created_by=user, updated_by=user)
 
 
 class PartyRoleAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

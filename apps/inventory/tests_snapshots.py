@@ -476,3 +476,65 @@ class AskingWhetherToFoldIsItselfSampledTests(SnapshotTestCase):
             )
             fold_position(item, self.north)
         self.assertEqual(replay(item, self.north), self.unfolded(item, self.north))
+
+
+class AReportReadsEveryPositionInOneGoTests(SnapshotTestCase):
+    """
+    preloaded() reads every position a report walks by lists of items and
+    warehouses, and drops what came before each position's own fold. It
+    was one OR clause a position, which SQLite refused short of a
+    thousand: "Expression tree is too large".
+    """
+
+    def report(self, **kwargs):
+        from .reports import stock_valuation
+
+        return {(row["item"].sku, row["warehouse"].code): (row["quantity"], row["value"])
+                for row in stock_valuation(**kwargs)["rows"]}
+
+    def test_a_thousand_positions_are_one_report(self):
+        Warehouse.objects.create(code="E", name="East")
+        Warehouse.objects.create(code="W", name="West")
+        Item.objects.bulk_create(Item(sku=f"B-{index:03}", name="Bulk", uom=self.each,
+                                      costing_method=CostingMethod.AVERAGE) for index in range(260))
+        first, last = Item.objects.get(sku="B-000"), Item.objects.get(sku="B-259")
+        self.move(first, "10", "3")
+        self.move(last, "4", "7", warehouse=self.south)
+        self.assertEqual(Item.objects.count() * Warehouse.objects.count(), 1040)
+
+        self.assertEqual(self.report(), {("B-000", "N"): (Decimal("10"), Decimal("30.00")),
+                                         ("B-259", "S"): (Decimal("4"), Decimal("28.00"))})
+
+    def test_each_position_starts_at_its_own_fold(self):
+        # North is folded late, south early, and the fifo item not at all:
+        # what south did between the two folds, and everything the fifo
+        # item did, must still be read.
+        day = lambda n: datetime.date(2026, 3, n)
+        average, fifo = self.item(CostingMethod.AVERAGE), self.item(CostingMethod.FIFO, sku="F")
+        self.move(average, "100", "4", warehouse=self.south, when=day(1))
+        fold_position(average, self.south)
+        self.move(average, "50", "6", warehouse=self.south, when=day(2))
+        self.move(average, "100", "5", when=day(3))
+        self.move(average, "-30", when=day(4))
+        fold_position(average, self.north)
+        self.move(average, "-20", when=day(5))
+        self.move(fifo, "10", "2", when=day(1))
+        self.move(fifo, "10", "3", when=day(5))
+        self.move(fifo, "-15", when=day(6))
+        self.assertEqual(StockValuationSnapshot.objects.filter(
+            item=average, warehouse__isnull=False).count(), 2)
+
+        expected = {}
+        for item in (average, fifo):
+            for shelf in (self.north, self.south):
+                quantity, value = self.unfolded(item, shelf)
+                if quantity or value:
+                    expected[(item.sku, shelf.code)] = (quantity, round(value, 2))
+        # Worked by hand: south 100 @ 4 + 50 @ 6 = 150 for 700; north
+        # 100 @ 5 less 50 = 50 for 250; fifo 20 less 15 leaves 5 @ 3.
+        self.assertEqual(expected, {
+            ("S-average", "N"): (Decimal("50"), Decimal("250.00")),
+            ("S-average", "S"): (Decimal("150"), Decimal("700.00")),
+            ("F", "N"): (Decimal("5"), Decimal("15.00")),
+        })
+        self.assertEqual(self.report(), expected)

@@ -67,7 +67,7 @@ export function readErrors(body: unknown): { messages: string[]; fields: FieldEr
   const walk = (value: unknown, path: string) => {
     if (value === null || value === undefined) return;
     if (typeof value === "string") {
-      if (!path || path === "detail" || path === "non_field_errors") messages.push(value);
+      if (!path || path === "detail") messages.push(value);
       else (fields[path] ??= []).push(value);
       return;
     }
@@ -85,8 +85,11 @@ export function readErrors(body: unknown): { messages: string[]; fields: FieldEr
     }
   };
   walk(body, "");
+  // non_field_errors is about the whole form: said as it is, and kept under
+  // fields too, so a form can show it above its boxes. It reached only the
+  // toast before, and every form's place for it stayed empty.
   for (const [path, list] of Object.entries(fields)) {
-    for (const message of list) messages.push(`${labelFor(path)}: ${message}`);
+    for (const message of list) messages.push(path === "non_field_errors" ? message : `${labelFor(path)}: ${message}`);
   }
   return { messages, fields };
 }

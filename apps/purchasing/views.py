@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
 from apps.accounting.defaults import chosen_or_default
-from apps.core.api import flag, quantities_by_line
+from apps.core.api import flag, quantities_by_line, record_or_404
 from apps.inventory.models import Warehouse
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
@@ -89,7 +89,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         warehouse = request.data.get("warehouse")
         receipt = order.create_receipt(
             receipt_date=request.data.get("receipt_date"),
-            warehouse=get_object_or_404(Warehouse, pk=warehouse) if warehouse else None,
+            warehouse=record_or_404(Warehouse, warehouse, "warehouse") if warehouse else None,
         )
         return Response(GoodsReceiptSerializer(receipt).data, status=201)
 
@@ -206,7 +206,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # ?open=true: posted bills that still owe the vendor, as amount_due()
         # reckons it.
         if flag(self.request.query_params, "open", False):
-            queryset = queryset.filter(pk__in=bills_still_owed(queryset))
+            queryset = bills_still_owed(queryset)
         return queryset
 
     @action(detail=True, methods=["post"])

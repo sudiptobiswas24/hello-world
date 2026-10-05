@@ -45,7 +45,6 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
 
 
 class CostingMethod(models.TextChoices):
@@ -83,24 +82,30 @@ def preloaded(items, warehouses, as_of=None):
     ):
         folds[(snapshot.item_id, snapshot.warehouse_id, snapshot.method)] = snapshot
 
-    wanted = Q(pk__in=[])
     methods = {item.pk: item.costing_method for item in items}
     usable = {}
     for item_id in item_ids:
         for warehouse_id in warehouse_ids:
-            fold = usable_from(folds.get((item_id, warehouse_id, methods[item_id])), as_of)
-            usable[(item_id, warehouse_id)] = fold
-            here = Q(item_id=item_id, warehouse_id=warehouse_id)
-            if fold is not None:
-                here &= Q(occurred_at__gt=fold.boundary_at) | Q(
-                    occurred_at=fold.boundary_at, id__gt=fold.boundary_id)
-            wanted |= here
-    rows = StockMovement.objects.filter(wanted)
+            usable[(item_id, warehouse_id)] = usable_from(
+                folds.get((item_id, warehouse_id, methods[item_id])), as_of)
+    # By lists of items and warehouses, each position's fold applied as
+    # the rows are read. One OR clause a position, as this was, nests a
+    # level a position: SQLite refused it short of a thousand (250 items
+    # in four warehouses), "Expression tree is too large". The database
+    # still starts at the earliest fold when every position has one.
+    rows = StockMovement.objects.filter(item_id__in=item_ids, warehouse_id__in=warehouse_ids)
+    boundaries = [fold.boundary_at for fold in usable.values() if fold is not None]
+    if usable and len(boundaries) == len(usable):
+        rows = rows.filter(occurred_at__gte=min(boundaries))
     if as_of is not None:
         rows = rows.filter(occurred_at__date__lte=as_of)
     movements = defaultdict(list)
     for movement in rows.order_by("occurred_at", "id"):
-        movements[(movement.item_id, movement.warehouse_id)].append(movement)
+        key = (movement.item_id, movement.warehouse_id)
+        fold = usable.get(key)
+        if fold is not None and (movement.occurred_at, movement.pk) <= (fold.boundary_at, fold.boundary_id):
+            continue
+        movements[key].append(movement)
 
     token = _PRELOADED.set({"as_of": as_of, "folds": usable, "movements": movements})
     try:

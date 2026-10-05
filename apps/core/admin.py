@@ -115,9 +115,13 @@ class PaymentTermsAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 class DocumentSequenceYearInline(admin.TabularInline):
+    # Each year's next number is set here once a yearly sequence has
+    # counters: the sequence's own next_number only seeds its first one.
+    # A number set back onto one already used is refused when it is
+    # issued (the documents' numbers are unique).
     model = DocumentSequenceYear
     extra = 0
-    readonly_fields = ("year", "next_number")
+    readonly_fields = ("year",)
     can_delete = False
 
 

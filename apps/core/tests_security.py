@@ -102,6 +102,25 @@ class GuessingStopsTests(TestCase):
             self.assertIsNotNone(
                 authenticate(username="accounts", password="right-horse-battery"))
 
+    def test_guesses_while_locked_do_not_keep_it_locked(self):
+        """One guess every ninety seconds held a name locked for ever."""
+        self.guess(10)
+        start = timezone.now()
+        for minutes in (2, 5, 8, 11, 14):
+            with mock.patch("django.utils.timezone.now", return_value=start + datetime.timedelta(minutes=minutes)):
+                self.assertIsNone(authenticate(username="accounts", password="wrong"))
+        with mock.patch("django.utils.timezone.now", return_value=start + datetime.timedelta(minutes=16)):
+            self.assertEqual(authenticate(username="accounts", password="right-horse-battery"), self.user)
+
+    def test_failures_older_than_the_window_are_not_kept(self):
+        from apps.core.models import LoginFailure
+
+        authenticate(username="typo-once", password="x")
+        later = timezone.now() + datetime.timedelta(minutes=20)
+        with mock.patch("django.utils.timezone.now", return_value=later):
+            authenticate(username="someone-else", password="x")
+        self.assertEqual(list(LoginFailure.objects.values_list("username", flat=True)), ["someone-else"])
+
     def test_the_api_s_basic_authentication_is_counted_too(self):
         client = APIClient()
         for _ in range(10):

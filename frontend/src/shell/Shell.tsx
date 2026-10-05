@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 
 import { csrfToken } from "../api/client";
-import { MODULES, screenUrl } from "../app/registry";
+import { MODULES, offered, screenUrl } from "../app/registry";
 import { useAccess } from "../auth/me";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { Icon } from "./Icon";
@@ -47,7 +47,7 @@ export function Shell() {
 
   const modules = useMemo(
     () =>
-      MODULES.map((module) => ({ ...module, screens: module.screens.filter((screen) => can(screen.permission) && !screen.hidden) }))
+      MODULES.map((module) => ({ ...module, screens: module.screens.filter((screen) => offered(screen, can)) }))
         .filter((module) => module.screens.length > 0),
     [can],
   );

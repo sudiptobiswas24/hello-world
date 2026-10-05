@@ -87,3 +87,21 @@ class LedgerTests(LedgerTestCase):
         url = "/api/accounting/financial-statements/trial-balance/"
         self.assertEqual(self.as_("Bookkeeper").get(url, {"include_zero": "maybe"}).status_code, 400)
         self.assertEqual(self.as_("Bookkeeper").get(url, {"include_zero": "1"}).status_code, 200)
+
+
+class ReversedSinceItWasReadTests(LedgerTestCase):
+    """A reversal decided under the lock asks the database, not what a
+    list prefetched before it: review found a second reversal let through."""
+
+    def test_an_entry_reversed_by_someone_else_meanwhile(self):
+        from django.db.models import Prefetch
+
+        entry = JournalEntry.objects.filter(posted=True).first()
+        stale = JournalEntry.objects.prefetch_related(Prefetch("reversed_by")).get(pk=entry.pk)
+        self.assertEqual(list(stale.reversed_by.all()), [])  # read before the other clerk
+        JournalEntry.objects.get(pk=entry.pk).create_reversal(memo="First")
+        from django.core.exceptions import ValidationError
+
+        with self.assertRaisesMessage(ValidationError, "already been reversed"):
+            stale.create_reversal(memo="Second")
+        self.assertEqual(JournalEntry.objects.filter(reverses=entry).count(), 1)

@@ -373,7 +373,7 @@ class StillOwedAgreesWithAmountDueTests(ScreensTestCase):
         settled["deposit and cash"] = self.bill(order)
         self.allocate(self.receipt("500"), settled["deposit and cash"], "500")
 
-        answer = set(still_owed(Invoice.objects.all()))
+        answer = set(still_owed(Invoice.objects.all()).values_list("pk", flat=True))
         for name, document in owed.items():
             self.assertIn(document.pk, answer, f"{name}: due {document.amount_due()}")
         for name, document in settled.items():
@@ -457,3 +457,55 @@ class CustomerWithItsRoleTests(ScreensTestCase):
     def test_without_a_role_none_is_given(self):
         self.assertEqual(self.create().status_code, 201)
         self.assertFalse(Party.objects.get(code="C-9").role_assignments.exists())
+
+
+class VoidedSinceItWasReadTests(ScreensTestCase):
+    def test_a_payment_whose_entry_was_reversed_by_hand_meanwhile(self):
+        from django.core.exceptions import ValidationError
+
+        from apps.accounting.models import JournalEntry, Payment
+
+        payment = self.receipt("100")
+        stale = Payment.objects.select_related("journal_entry").prefetch_related(
+            "journal_entry__reversed_by").get(pk=payment.pk)
+        self.assertFalse(stale.voided_entry_id)
+        JournalEntry.objects.get(pk=payment.journal_entry_id).create_reversal(memo="By hand")
+        with self.assertRaisesMessage(ValidationError, "already been voided"):
+            stale.void(memo="Bounced")
+        self.assertEqual(JournalEntry.objects.filter(reverses_id=payment.journal_entry_id).count(), 1)
+        self.assertEqual(self.balance(self.bank), Decimal("0.00"))  # in once, out once
+
+
+class ReviewFindingsTests(ScreensTestCase):
+    def test_a_party_made_in_the_office_says_who_made_it(self):
+        response = self.as_("Sales Rep").post("/api/core/parties/", {"code": "C-50", "name": "Raj Cement",
+                                                                    "role": "customer"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        party = Party.objects.get(code="C-50")
+        rep = User.objects.get(username="Sales_Rep")
+        self.assertEqual((party.created_by, party.updated_by), (rep, rep))
+        self.assertEqual(party.role_assignments.get().created_by, rep)
+
+    def test_an_id_that_is_not_a_number_is_refused_by_its_field(self):
+        order = self.make_order()
+        response = self.ship_order(order, warehouse="MAIN")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("warehouse", response.json())
+        response = self.as_("AR Manager").post(f"/api/sales/sales-orders/{order.pk}/create_invoice/",
+                                               {"receivable_account": "1100"}, format="json")
+        self.assertEqual(response.status_code, 404, response.content)  # a number, but no such account
+        response = self.as_("AR Manager").post(f"/api/sales/sales-orders/{order.pk}/create_invoice/",
+                                               {"receivable_account": "AR"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("receivable_account", response.json())
+
+
+class WhatIsLeftToApplyTests(ScreensTestCase):
+    def test_the_server_says_what_is_left_on_a_receipt(self):
+        first = self.bill(self.make_order(quantity="10", price="100"))
+        second = self.bill(self.make_order(quantity="10", price="100"))
+        payment = self.receipt("1500")
+        self.allocate(payment, first, "1000")
+        self.allocate(payment, second, "300")
+        row = self.as_("AR Manager").get(f"/api/accounting/payments/{payment.pk}/").json()
+        self.assertEqual(Decimal(row["unallocated"]), Decimal("200"))  # 1500 - 1000 - 300

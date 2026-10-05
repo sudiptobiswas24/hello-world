@@ -1045,3 +1045,20 @@ class RefusalTests(PlanningTestCase):
         self.sell(self.fabric, "1000", self.day(30))
         with self.assertRaises(ValidationError):
             self.plan()
+
+
+class WhatAVendorDropShipsIsNotPlannedTests(PlanningTestCase):
+    def test_only_what_the_vendor_is_not_bringing_is_made(self):
+        from apps.purchasing.models import PurchaseOrder
+
+        sale = self.sell(self.fabric, "1000", self.day(30))
+        drop = PurchaseOrder.create_for_drop_ship(sale.order, self.vendor)
+        self.assertNotIn("FAB-10X10", self.orders())
+
+        line = drop.lines.get()
+        line.quantity = Decimal("600")
+        line.save()
+        self.assertEqual(self.orders()["FAB-10X10"].quantity, Decimal("400"))
+
+        drop.cancel()
+        self.assertEqual(self.orders()["FAB-10X10"].quantity, Decimal("1000"))

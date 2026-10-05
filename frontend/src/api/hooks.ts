@@ -25,6 +25,24 @@ export function useReference<T>(endpoint: string, query?: Query) {
   });
 }
 
+/**
+ * One page of a list with how many there are in all, for a panel that
+ * must say when it is showing only part: a pay run of 600 people, a
+ * receipt applied to 250 invoices.
+ */
+export function usePage<T>(endpoint: string, query: Query, page: number, size: number, enabled = true) {
+  return useQuery<{ rows: T[]; total: number }, ApiError>({
+    queryKey: ["list", endpoint, query, page, size],
+    queryFn: async ({ signal }) => {
+      const result = await list<T>(endpoint, { ...query, page, page_size: size }, signal);
+      return { rows: result.rows, total: result.total };
+    },
+    enabled,
+    staleTime: 5_000,
+    placeholderData: (previous) => previous,
+  });
+}
+
 /** The rows of any list, for a panel on another document. */
 export function useRows<T>(endpoint: string, query: Query, enabled = true) {
   return useQuery<T[], ApiError>({

@@ -45,11 +45,18 @@ class LockoutModelBackend(ModelBackend):
             return None
         name = str(username).lower()
         if is_locked(name):
-            LoginFailure.objects.create(username=name)
+            # Refused, and not counted: counting it kept a name locked for
+            # ever on one guess every ninety seconds. Now the lock ends a
+            # quarter of an hour after the tenth failure, unless ten more
+            # come in that time.
             return None
         user = super().authenticate(request, username=username, password=password, **kwargs)
         if user is None:
-            LoginFailure.objects.create(username=name)
+            now = timezone.now()
+            LoginFailure.objects.create(username=name, at=now)
+            # Nothing older than the window decides anything: kept, the
+            # table grew by every typo and every scan, for ever.
+            LoginFailure.objects.filter(at__lt=now - WINDOW).delete()
         else:
             LoginFailure.objects.filter(username=name).delete()
         return user

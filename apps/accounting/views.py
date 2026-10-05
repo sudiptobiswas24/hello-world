@@ -219,7 +219,7 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Payment.objects.select_related(
         "party", "bank_account", "counterpart_account", "journal_entry"
-    ).prefetch_related("journal_entry__reversed_by")
+    ).prefetch_related("journal_entry__reversed_by", "invoice_allocations", "bill_allocations")
     serializer_class = PaymentSerializer
     action_permission_map = {
         "post_payment": "accounting.post_payment",

@@ -734,7 +734,9 @@ class DocumentSequence(AuditModel):
         if not self.reset_yearly:
             return self._format(self.next_number, year)
         counter = self.years.filter(year=year).first()
-        return self._format(counter.next_number if counter else 1, year)
+        if counter is None:
+            return self._format(1 if self.years.exists() else self.next_number, year)
+        return self._format(counter.next_number, year)
 
     def next_value(self, on_date=None):
         """
@@ -751,8 +753,15 @@ class DocumentSequence(AuditModel):
             if sequence.reset_yearly:
                 # Under the sequence's lock, so two first numbers of a year
                 # cannot both create the year's counter.
+                # The first counter a sequence ever has starts where the
+                # sequence says: numbers taken over from an older system,
+                # or a sequence switched to yearly mid-year, carry on from
+                # next_number. Every later year starts at 1. Once there are
+                # counters, each is changed on its own (the admin's years).
+                first = not sequence.years.exists()
                 counter, _ = DocumentSequenceYear.objects.get_or_create(
-                    sequence=sequence, year=year
+                    sequence=sequence, year=year,
+                    defaults={"next_number": sequence.next_number if first else 1},
                 )
                 number = counter.next_number
                 counter.next_number = number + 1

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from .models import (
@@ -102,6 +104,16 @@ class PaymentSerializer(serializers.ModelSerializer):
     # invoices it paid are owed again.
     voided = serializers.SerializerMethodField()
 
+    # What is left to apply, worked out here rather than by a screen adding
+    # up the allocations it happened to load (200 at most). Read through
+    # the reverse relations, so accounting imports neither trading module.
+    unallocated = serializers.SerializerMethodField()
+
+    def get_unallocated(self, obj):
+        applied = sum((row.amount for row in obj.invoice_allocations.all()), Decimal("0")) + sum(
+            (row.amount for row in obj.bill_allocations.all()), Decimal("0"))
+        return str(obj.amount - applied)
+
     def get_voided(self, obj):
         if obj.voided_entry_id:
             return True
@@ -112,7 +124,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "number", "party", "party_name", "direction", "payment_date", "amount", "currency",
             "exchange_rate", "bank_account", "counterpart_account", "reference", "memo",
-            "journal_entry", "posted", "posted_at", "voided",
+            "journal_entry", "posted", "posted_at", "voided", "unallocated",
         ]
         read_only_fields = ["number", "exchange_rate", "journal_entry", "posted", "posted_at"]
         # Left out, the company's defaults (Payment.save).

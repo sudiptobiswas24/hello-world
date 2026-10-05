@@ -262,6 +262,21 @@ class PayComponentSlab(AuditModel):
                                    name="slab_month_is_a_month"),
         ]
 
+    def save(self, *args, **kwargs):
+        # Two bands over one wage: slab_for took the first, and tax was
+        # under-deducted with nothing said. Bands of one component for one
+        # month (or for every month) may touch, not overlap.
+        others = PayComponentSlab.objects.filter(component_id=self.component_id, month=self.month).exclude(pk=self.pk)
+        for other in others:
+            starts_below_its_top = other.up_to is None or self.above < other.up_to
+            its_start_below_my_top = self.up_to is None or other.above < self.up_to
+            if starts_below_its_top and its_start_below_my_top:
+                raise ValidationError(
+                    f"Over {self.above} up to {self.up_to or 'anything'} overlaps the band over "
+                    f"{other.above} up to {other.up_to or 'anything'}; a wage must fall in one band."
+                )
+        super().save(*args, **kwargs)
+
     def __str__(self):
         top = self.up_to if self.up_to is not None else "and over"
         return f"{self.component.code} {self.above}-{top}: {self.amount}"
@@ -823,7 +838,11 @@ class Payslip(AuditModel):
             effective_from__lte=self.run.period_end,
         ).filter(
             Q(effective_to__isnull=True) | Q(effective_to__gte=self.run.period_start)
-        ).select_related("component").order_by("component__sequence", "component__code")
+        ).select_related("component").prefetch_related(
+            # What each component is taken of, covered by and banded at,
+            # read with the rows rather than asked once per component.
+            "component__base_components", "component__coverage_components", "component__slabs",
+        ).order_by("component__sequence", "component__code")
 
         running_taxable = Decimal("0")
         computed = {}
@@ -926,9 +945,11 @@ class Payslip(AuditModel):
             return running_taxable
         late = [other.code for other in named if other.sequence >= component.sequence]
         if late:
+            # Equal counts as not before: which of two at one sequence is
+            # worked out first is an accident of their codes.
             raise ValidationError(
-                f"{component.code} is taken of {', '.join(late)}, which come after it on "
-                "the slip; give them a lower sequence."
+                f"{component.code} is taken of {', '.join(late)}, which do not come before "
+                f"it on the slip (sequence {component.sequence} or later); give them a lower sequence."
             )
         return sum((computed.get(other.pk, Decimal("0")) for other in named), Decimal("0"))
 

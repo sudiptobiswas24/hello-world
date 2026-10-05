@@ -213,3 +213,88 @@ class DropShipReceiptTests(DropShipTestCase):
 
         self.assertEqual(self.balance(self.grni), Decimal("0"))
         self.assertEqual(self.balance(self.payable), Decimal("-60"))
+
+
+class WhatIsComingFromTheVendorIsNotShippedTwiceTests(DropShipTestCase):
+    """
+    An open drop-ship is goods on their way to the customer. Before this
+    the shelf was asked to send them too: create_delivery drafted the
+    whole line, the order sat on the to-ship list, a second drop-ship
+    ordered the same remainder again, and the line held stock for them.
+    """
+
+    def stock(self, quantity):
+        StockMovement.objects.create(
+            item=self.item, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+            uom=self.uom, quantity=Decimal(quantity), unit_cost=Decimal("5"),
+            occurred_at=datetime.datetime(2026, 1, 1, 9, tzinfo=datetime.timezone.utc),
+        )
+
+    def test_a_second_drop_ship_of_the_same_goods_is_refused(self):
+        sale = self.sales_order("10")
+        PurchaseOrder.create_for_drop_ship(sale, self.vendor)  # still a draft
+        with self.assertRaisesMessage(ValidationError, "already on a drop-ship order"):
+            PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        self.assertEqual(PurchaseOrder.objects.filter(drop_ship_for=sale).count(), 1)
+
+    def test_a_drop_ship_line_cannot_be_raised_past_what_is_owed(self):
+        sale = self.sales_order("10")
+        line = PurchaseOrder.create_for_drop_ship(sale, self.vendor).lines.get()
+        line.quantity = Decimal("11")
+        with self.assertRaisesMessage(ValidationError, "would bring 11"):
+            line.save()
+        line.refresh_from_db()
+        line.quantity = Decimal("4")
+        line.save()
+        second = PurchaseOrder.create_for_drop_ship(sale, self.vendor).lines.get()
+        self.assertEqual(second.quantity, Decimal("6"))
+        second.quantity = Decimal("7")
+        with self.assertRaisesMessage(ValidationError, "would bring 7"):
+            second.save()
+
+    def test_the_shelf_ships_only_what_the_vendor_is_not_bringing(self):
+        from apps.sales.models import orders_to_ship
+
+        sale = self.sales_order("10")
+        drop = PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        with self.assertRaisesMessage(ValidationError, "coming from the vendor"):
+            sale.create_delivery(warehouse=self.warehouse)
+        self.assertEqual(orders_to_ship(SalesOrder.objects.all()), [])
+
+        line = drop.lines.get()
+        line.quantity = Decimal("6")
+        line.save()
+        self.assertEqual(orders_to_ship(SalesOrder.objects.all()), [sale.pk])
+        delivery = sale.create_delivery(warehouse=self.warehouse)
+        self.assertEqual(delivery.lines.get().quantity_shipped, Decimal("4"))
+        delivery.delete()
+
+        drop.cancel()
+        self.assertEqual(sale.create_delivery(warehouse=self.warehouse)
+                         .lines.get().quantity_shipped, Decimal("10"))
+
+    def test_received_in_part_the_rest_is_still_the_vendors(self):
+        sale = self.sales_order("10")
+        drop = PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        drop.confirm()
+        self.receive(drop, "3")
+        self.sales_line.refresh_from_db()
+        self.assertEqual(self.sales_line.quantity_open(), Decimal("7"))
+        self.assertEqual(self.sales_line.quantity_to_ship(), Decimal("0"))
+
+    def test_the_shelf_stops_holding_stock_for_it_and_holds_it_again_if_called_off(self):
+        self.stock("10")
+        sale = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 1, 1),
+                                         currency=self.usd)
+        line = SalesOrderLine.objects.create(
+            order=sale, item=self.item, uom=self.uom, quantity=Decimal("10"),
+            unit_price=Decimal("10"), revenue_account=self.revenue, warehouse=self.warehouse)
+        sale.confirm()
+        self.assertEqual(line.quantity_reserved(), Decimal("10"))
+
+        drop = PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        self.assertEqual(line.quantity_reserved(), Decimal("0"))
+        self.assertEqual(sale.reservation_shortfalls(), {})
+
+        drop.cancel()
+        self.assertEqual(line.quantity_reserved(), Decimal("10"))

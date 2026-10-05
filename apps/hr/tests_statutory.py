@@ -179,7 +179,7 @@ class WhatIsTakenTests(StatutoryTestCase):
 
     def test_a_base_component_must_come_before_it(self):
         self.pf.base_components.add(self.pt)
-        with self.assertRaisesMessage(ValidationError, "come after it"):
+        with self.assertRaisesMessage(ValidationError, "do not come before it"):
             self.run_for(*JUNE, post=False)
 
 
@@ -469,3 +469,23 @@ class LinesAlreadyPostedMigrate(TransactionTestCase):
              ("posted", "deduction", pf.pk), ("posted", "employer_cost", pf.pk)])
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class SlabBandsDoNotOverlapTests(StatutoryTestCase):
+    """Overlapping bands were saved and the first one silently won."""
+
+    def test_an_overlapping_band_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "overlaps"):
+            PayComponentSlab.objects.create(component=self.pt, above=Decimal("9000"),
+                                            up_to=Decimal("12000"), amount=Decimal("150"))
+        with self.assertRaisesMessage(ValidationError, "overlaps"):
+            PayComponentSlab.objects.create(component=self.pt, above=Decimal("0"), amount=Decimal("0"))
+
+    def test_touching_bands_and_a_months_own_band_are_not_overlaps(self):
+        PayComponentSlab.objects.create(component=self.pt, above=Decimal("0"),
+                                        up_to=Decimal("7500"), amount=Decimal("0"))
+        PayComponentSlab.objects.create(component=self.pt, above=Decimal("7500"),
+                                        up_to=Decimal("10000"), amount=Decimal("190"), month=3)
+        self.assertEqual(self.pt.slab_for(Decimal("9000"), 3), Decimal("190"))
+        self.assertEqual(self.pt.slab_for(Decimal("9000"), 4), Decimal("175"))
+        self.assertEqual(self.pt.slab_for(Decimal("5000"), 4), Decimal("0"))
