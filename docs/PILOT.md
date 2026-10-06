@@ -24,7 +24,8 @@ still carries the business, so a problem costs a day, not a month-end.
 | Stores | Warehouse Staff, Stores Manager | goods in with batch numbers; stock on hand and its movements; a count of one rack, posted by the manager; a transfer between warehouses |
 | Maintenance | Maintenance | a service raised from Maintenance due and completed; a breakdown raised from its stoppage; the day's meter readings |
 | Accounts | AP Manager, Bookkeeper | bill from an order → payment; a journal; trial balance |
-| Production | Production Planner, Supervisor | plan → firm → release; the machine schedule |
+| Production | Production Planner, Supervisor | plan → firm → release; the machine schedule; the month's forecast and any build-ahead weeks in the master schedule |
+| Quality | Quality Inspector, Quality Manager | each batch's inspection read and posted; batch status before dispatch; a complaint and its actions; calibration due |
 | Floor | Station | a shift's entries at one loom and one extruder |
 | GST | GST Officer | the month's GSTR-1 and 3B, compared with the old system's |
 | HR | Payroll Officer, Controller | a pay run worked out, posted, and its statutory dues |

@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
 from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
+from apps.planning.forecast import Forecast
 from apps.planning.models import PlanningRun
 from apps.planning.tests_mrp import PlanningTestCase
 
@@ -24,6 +25,22 @@ from .tests_browser import BrowserMixin
 class ProductionInTheBrowserTests(BrowserMixin, PlanningTestCase, StaticLiveServerTestCase):
     def url(self, path):
         return f"{self.live_server_url}/app{path}"
+
+    def test_the_planner_writes_down_what_is_expected(self):
+        planner = self.sign_in(self.person("Production Planner"), "/app/production/forecasts/new")
+        planner.get_by_role("combobox", name="Item").fill("FAB-10X10")
+        planner.get_by_role("option", name=re.compile("FAB-10X10")).click()
+        planner.get_by_label("Warehouse").select_option(label="Plant")
+        planner.get_by_label("From").fill("2026-06-01")
+        planner.get_by_label("To").fill("2026-06-30")
+        planner.get_by_label("Expected").fill("5000")
+        planner.get_by_role("button", name="Create").click()
+        planner.wait_for_url(re.compile(r"/production/forecasts/\d+$"))
+        forecast = Forecast.objects.get()
+        self.assertEqual((forecast.item, forecast.warehouse, str(forecast.quantity)),
+                         (self.fabric, self.plant, "5000.0000"))
+        expect(planner.locator("main").first).to_contain_text("Woven fabric, 10x10")
+        self.assertEqual(self.problems, [])
 
     def test_the_planner_plans_and_firms_and_the_floor_releases(self):
         self.stock(self.tape, "2000")

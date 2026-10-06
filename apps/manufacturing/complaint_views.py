@@ -47,13 +47,14 @@ class CorrectiveActionSerializer(serializers.ModelSerializer):
 
 class ComplaintSerializer(serializers.ModelSerializer):
     lots = serializers.SerializerMethodField()
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
     actions = CorrectiveActionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Complaint
         fields = ["id", "number", "customer", "received_on", "category", "description",
                   "quantity_affected", "status", "root_cause", "decided_on", "decided_by",
-                  "rejection_reason", "reopened_reason", "lots", "actions"]
+                  "rejection_reason", "reopened_reason", "lots", "actions", "customer_name"]
         read_only_fields = ["number", "status", "root_cause", "decided_on", "decided_by",
                             "rejection_reason", "reopened_reason"]
 
@@ -66,6 +67,10 @@ class ComplaintSerializer(serializers.ModelSerializer):
 class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Complaint.objects.select_related("customer").prefetch_related("actions")
     serializer_class = ComplaintSerializer
+    filter_fields = ["status", "category", "customer"]
+    search_fields = ["number", "customer__name", "description"]
+    date_field = "received_on"
+    ordering_fields = ["received_on", "number"]
     http_method_names = ["get", "post", "patch", "head", "options"]
     action_permission_map = {
         "lots": "manufacturing.change_complaint",
@@ -133,6 +138,7 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class CorrectiveActionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = CorrectiveAction.objects.select_related("complaint", "owner")
     serializer_class = CorrectiveActionSerializer
+    filter_fields = ["complaint", "kind", "done_on__isnull"]
     http_method_names = ["get", "post", "delete", "head", "options"]
     action_permission_map = {"done": "manufacturing.change_correctiveaction",
                              "verify": "manufacturing.change_correctiveaction"}

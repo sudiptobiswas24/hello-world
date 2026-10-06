@@ -13,20 +13,29 @@ from .models import (
 
 
 class TransferRouteSerializer(serializers.ModelSerializer):
+    from_name = serializers.CharField(source="from_warehouse.name", read_only=True)
+    to_name = serializers.CharField(source="to_warehouse.name", read_only=True)
+
     class Meta:
         model = TransferRoute
-        fields = ["id", "from_warehouse", "to_warehouse", "lead_days",
+        fields = ["id", "from_warehouse", "to_warehouse", "from_name", "to_name", "lead_days",
                   "priority", "is_active", "notes"]
 
 
 class ForecastSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     consumed = serializers.SerializerMethodField()
     unconsumed = serializers.SerializerMethodField()
 
     class Meta:
         model = Forecast
         fields = ["id", "item", "warehouse", "starts_on", "ends_on",
-                  "quantity", "is_active", "notes", "consumed", "unconsumed"]
+                  "quantity", "is_active", "notes", "consumed", "unconsumed", "item_label", "warehouse_name"]
 
     def get_consumed(self, obj):
         return obj.consumed()
@@ -143,9 +152,15 @@ class PlanningRunSerializer(serializers.ModelSerializer):
 
 
 class MasterScheduleEntrySerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True, default="")
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = MasterScheduleEntry
         fields = ["id", "item", "warehouse", "week_of", "quantity", "reason", "work_order",
-                  "committed_at", "overload_accepted", "withdrawn_at", "withdrawn_reason"]
+                  "committed_at", "overload_accepted", "withdrawn_at", "withdrawn_reason", "item_label", "warehouse_name"]
         read_only_fields = ["work_order", "committed_at", "overload_accepted",
                             "withdrawn_at", "withdrawn_reason"]

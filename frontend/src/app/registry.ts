@@ -38,7 +38,7 @@ export interface Module {
   screens: Screen[];
 }
 
-export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "plant" | "accounts" | "people";
+export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "plant" | "quality" | "accounts" | "people";
 
 export const MODULES: Module[] = [
   {
@@ -145,6 +145,32 @@ export const MODULES: Module[] = [
         path: "schedule", label: "Machine schedule", permission: "manufacturing.view_workorder",
         keywords: "dispatch loom extruder queue", load: () => import("../modules/production/Schedule"),
       },
+      {
+        path: "promise", label: "When can we promise?", permission: "planning.view_plannedorder",
+        also: ["inventory.view_warehouse"],
+        keywords: "atp ctp delivery date available to promise", load: () => import("../modules/production/WhenCanWePromise"),
+      },
+      {
+        path: "forecasts", label: "Forecasts", permission: "planning.view_forecast", create: "planning.add_forecast",
+        keywords: "demand expected sales", load: () => import("../modules/production/Forecasts"),
+        detail: () => import("../modules/production/ForecastForm"),
+      },
+      {
+        path: "forecast-from-history", label: "Forecast from history", permission: "planning.view_forecast",
+        also: ["inventory.view_warehouse"],
+        keywords: "seasonal statistical propose backtest", load: () => import("../modules/production/Propose"),
+      },
+      {
+        path: "master-schedule", label: "Master schedule", permission: "planning.view_masterscheduleentry",
+        create: "planning.add_masterscheduleentry",
+        keywords: "mps build ahead season campaign", load: () => import("../modules/production/MasterSchedule"),
+        detail: () => import("../modules/production/MasterScheduleForm"),
+      },
+      {
+        path: "routes", label: "Transfer routes", permission: "planning.view_transferroute", create: "planning.add_transferroute",
+        keywords: "branch depot restock", load: () => import("../modules/production/Routes"),
+        detail: () => import("../modules/production/RouteForm"),
+      },
     ],
   },
   {
@@ -202,6 +228,61 @@ export const MODULES: Module[] = [
         path: "tariffs", label: "Electricity tariffs", permission: "manufacturing.view_energytariff", create: "manufacturing.add_energytariff",
         keywords: "rate per unit kwh", load: () => import("../modules/plant/Tariffs"),
         detail: () => import("../modules/plant/TariffForm"),
+      },
+    ],
+  },
+  {
+    key: "quality",
+    label: "Quality",
+    icon: "quality",
+    screens: [
+      {
+        path: "inspections", label: "Inspections", permission: "quality.view_inspection", create: "quality.add_inspection",
+        keywords: "qc test batch release hold", load: () => import("../modules/quality/Inspections"),
+        detail: () => import("../modules/quality/InspectionForm"),
+      },
+      {
+        path: "batch-status", label: "Batch status", permission: "quality.view_inspection", also: ["inventory.view_lot"],
+        keywords: "released held lot status", load: () => import("../modules/quality/BatchStatus"),
+      },
+      {
+        path: "complaints", label: "Complaints", permission: "manufacturing.view_complaint", create: "manufacturing.add_complaint",
+        keywords: "customer complaint capa corrective action", load: () => import("../modules/quality/Complaints"),
+        detail: () => import("../modules/quality/ComplaintForm"),
+      },
+      {
+        path: "control-chart", label: "Control chart", permission: "quality.view_inspection",
+        also: ["quality.view_inspectionplan", "quality.view_characteristic"],
+        keywords: "spc xbar capability cpk", load: () => import("../modules/quality/Spc"),
+      },
+      {
+        path: "sampling", label: "Sampling", permission: "quality.view_inspection",
+        keywords: "aql iso 2859 sample size", load: () => import("../modules/quality/Sampling"),
+      },
+      {
+        path: "plans", label: "Inspection plans", permission: "quality.view_inspectionplan", create: "quality.add_inspectionplan",
+        keywords: "limits specification tests", load: () => import("../modules/quality/Plans"),
+        detail: () => import("../modules/quality/PlanForm"),
+      },
+      {
+        path: "characteristics", label: "Characteristics", permission: "quality.view_characteristic",
+        create: "quality.add_characteristic",
+        keywords: "tenacity gsm mfi elongation", load: () => import("../modules/quality/Characteristics"),
+        detail: () => import("../modules/quality/CharacteristicForm"),
+      },
+      {
+        path: "calibration-due", label: "Calibration due", permission: "quality.view_instrument",
+        keywords: "overdue instruments gauges", load: () => import("../modules/quality/CalibrationDue"),
+      },
+      {
+        path: "instruments", label: "Instruments", permission: "quality.view_instrument", create: "quality.add_instrument",
+        keywords: "scale tester gauge", load: () => import("../modules/quality/Instruments"),
+        detail: () => import("../modules/quality/InstrumentForm"),
+      },
+      {
+        path: "calibrations", label: "Calibrations", permission: "quality.view_calibration", create: "quality.add_calibration",
+        keywords: "certificate standard", load: () => import("../modules/quality/Calibrations"),
+        detail: () => import("../modules/quality/CalibrationForm"),
       },
     ],
   },

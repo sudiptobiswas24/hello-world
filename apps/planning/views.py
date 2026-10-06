@@ -58,11 +58,16 @@ class TransferRouteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "from_warehouse", "to_warehouse"
     )
     serializer_class = TransferRouteSerializer
+    filter_fields = ["from_warehouse", "to_warehouse", "is_active"]
 
 
 class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Forecast.objects.select_related("item", "warehouse")
     serializer_class = ForecastSerializer
+    filter_fields = ["item", "warehouse", "is_active"]
+    search_fields = ["item__sku", "item__name"]
+    date_field = "starts_on"
+    ordering_fields = ["starts_on"]
 
     @action(detail=False, methods=["get"])
     def coverage(self, request):
@@ -422,6 +427,10 @@ class MasterScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = MasterScheduleEntry.objects.select_related("item", "warehouse", "work_order")
     serializer_class = MasterScheduleEntrySerializer
+    filter_fields = ["item", "warehouse"]
+    search_fields = ["item__sku", "item__name", "reason"]
+    date_field = "week_of"
+    ordering_fields = ["week_of"]
 
     def perform_create(self, serializer):
         _run(serializer.save)

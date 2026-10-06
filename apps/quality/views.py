@@ -38,25 +38,36 @@ def _run(callable_, *args, **kwargs):
 class CharacteristicViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Characteristic.objects.select_related("uom")
     serializer_class = CharacteristicSerializer
+    filter_fields = ["is_active", "kind"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class InspectionPlanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = InspectionPlan.objects.select_related("item").prefetch_related(
+    queryset = InspectionPlan.objects.select_related("item").prefetch_related("lines__characteristic",
         "lines"
     )
     serializer_class = InspectionPlanSerializer
+    filter_fields = ["is_active", "item", "is_mandatory"]
+    search_fields = ["name", "item__sku", "item__name"]
+    ordering_fields = ["name"]
 
 
 class PlanLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PlanLine.objects.select_related("plan", "characteristic")
     serializer_class = PlanLineSerializer
+    filter_fields = ["plan"]
 
 
 class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Inspection.objects.select_related(
         "lot", "lot__item", "plan", "inspected_by", "decided_by"
-    ).prefetch_related("readings")
+    ).prefetch_related("readings__plan_line__characteristic")
     serializer_class = InspectionSerializer
+    filter_fields = ["posted", "result", "lot", "plan", "disposition"]
+    search_fields = ["number", "lot__code", "lot__item__sku", "lot__item__name"]
+    date_field = "inspected_on"
+    ordering_fields = ["inspected_on", "number"]
     action_permission_map = {
         "post": "quality.change_inspection",
         "void": "quality.change_inspection",
@@ -78,6 +89,7 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class ReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Reading.objects.select_related("inspection", "plan_line")
     serializer_class = ReadingSerializer
+    filter_fields = ["inspection", "plan_line"]
 
 
 class LotStatusViewSet(viewsets.ViewSet):
@@ -111,6 +123,9 @@ class InstrumentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Instrument.objects.prefetch_related("measures")
     serializer_class = InstrumentSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name", "serial_number"]
+    ordering_fields = ["code"]
 
     @action(detail=False, methods=["get"])
     def due(self, request):
@@ -129,6 +144,10 @@ class CalibrationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Calibration.objects.select_related("instrument")
     serializer_class = CalibrationSerializer
+    filter_fields = ["instrument", "posted", "result"]
+    search_fields = ["number", "instrument__code", "instrument__name"]
+    date_field = "calibrated_on"
+    ordering_fields = ["calibrated_on", "number"]
 
     def perform_update(self, serializer):
         _run(serializer.save)
