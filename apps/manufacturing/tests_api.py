@@ -566,7 +566,7 @@ class ShiftAndOeeApiTests(RunTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data[0]["operator"], "E1")
         self.assertEqual(response.data[0]["work_centre"], "EXT-1")
-        self.assertEqual(Decimal(str(response.data[0]["minutes"])), Decimal("400.00"))
+        self.assertEqual(response.json()[0]["minutes"], "400.00")
 
     def test_a_window_nobody_gave_is_a_sentence(self):
         response = self.client.get(

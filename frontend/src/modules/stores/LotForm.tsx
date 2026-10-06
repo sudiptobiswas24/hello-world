@@ -1,7 +1,27 @@
 import { RecordScreen } from "../../views/RecordScreen";
 import { ITEM } from "./refs";
 
-/** One batch: its dates and where it has been. Made by the receipt or the run that produced it. */
+type Row = Record<string, unknown> & { id: number };
+type LotRow = { code: string; item: string };
+
+/** What a batch was made from, every level back: for a complaint. */
+function madeFrom(data: unknown): Row[] {
+  return (data as { level: number; lot: LotRow; made_by: string; from_lot: LotRow; quantity: string }[]).map((row, index) => ({
+    id: index, level: row.level, lot_code: row.lot.code, made_by: row.made_by,
+    from_code: row.from_lot.code, from_item: row.from_lot.item, quantity: row.quantity,
+  }));
+}
+
+/** Who was shipped it, or something made from it: for a recall. */
+function heldBy(data: unknown): Row[] {
+  const report = data as { customers: { customer: string; name: string; lot: LotRow; quantity: string; deliveries: string[] }[] };
+  return report.customers.map((row, index) => ({
+    id: index, name: `${row.customer} · ${row.name}`, lot_code: row.lot.code, quantity: row.quantity,
+    deliveries: row.deliveries.join(", "),
+  }));
+}
+
+/** One batch: its dates, what it was made from, who holds it and where it has been. */
 export default function LotForm() {
   return (
     <RecordScreen
@@ -23,6 +43,26 @@ export default function LotForm() {
         { key: "on_hand", label: "On hand", readOnly: true },
       ]}
       panels={[{
+        title: "Made from", permission: "inventory.view_lot", endpoint: "", query: () => ({}),
+        read: { path: (record) => `/api/manufacturing/lot-trace/${String(record.id)}/made-from/`, rows: madeFrom },
+        columns: [
+          { key: "level", label: "Back", width: "5rem" },
+          { key: "lot_code", label: "Batch" },
+          { key: "made_by", label: "By run", width: "10rem" },
+          { key: "from_code", label: "From batch" },
+          { key: "from_item", label: "Of", width: "10rem" },
+          { key: "quantity", label: "Quantity", kind: "quantity", width: "9rem" },
+        ],
+      }, {
+        title: "Who holds it", permission: "inventory.view_lot", endpoint: "", query: () => ({}),
+        read: { path: (record) => `/api/manufacturing/lot-trace/${String(record.id)}/recall/`, rows: heldBy },
+        columns: [
+          { key: "name", label: "Customer" },
+          { key: "lot_code", label: "As batch", width: "10rem" },
+          { key: "quantity", label: "Quantity", kind: "quantity", width: "9rem" },
+          { key: "deliveries", label: "Deliveries" },
+        ],
+      }, {
         title: "Where it has been", permission: "inventory.view_stockmovement",
         endpoint: "/api/inventory/stock-movements/", query: (record) => ({ lot: record.id, ordering: "-occurred_at" }),
         columns: [

@@ -3,7 +3,7 @@ import { useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 
 import { list, type Query } from "../api/client";
-import { useAct, useRecord } from "../api/hooks";
+import { useAct, useGet, useRecord } from "../api/hooks";
 import { useAccess } from "../auth/me";
 import { ActionButton, DocHeader, Sheet } from "../forms/Document";
 import { DecimalInput, Field, today } from "../forms/fields";
@@ -91,6 +91,8 @@ export interface PanelDef {
   href?: (row: Row) => string;
   /** Rows straight off the record itself, not another endpoint. */
   rows?: (record: Row) => Row[];
+  /** Rows out of a report about the record, at a path naming it: a batch's trace. */
+  read?: { path: (record: Row) => string; rows: (data: unknown) => Row[] };
   rowAction?: RowAction;
   /** A line added from the panel, while the record allows it. */
   adder?: {
@@ -276,6 +278,15 @@ function ActionForm({ action, record, endpoint, onClose }: {
  * actions its state allows. Only what the person changed is sent, and
  * what the server refuses is shown beside the box it is about.
  */
+function ReadTable({ read, record, columns, href }: {
+  read: NonNullable<PanelDef["read"]>; record: Row; columns: Column<Row>[]; href?: (row: Row) => string;
+}) {
+  const found = useGet<unknown>(read.path(record));
+  if (found.isError) return <p className="muted">Could not read it: {found.error.message}</p>;
+  return <DataTable rows={found.data === undefined ? [] : read.rows(found.data)} pending={found.isPending}
+    columns={columns} href={href} empty="None." />;
+}
+
 export function RecordScreen(props: RecordScreenProps) {
   const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], panels = [], permissions, editable, afterCreate, note } = props;
   const { id } = useParams();
@@ -404,7 +415,9 @@ function Panel({ panel, record }: { panel: PanelDef; record: Row }) {
       <h2 className="section-title">{panel.title}</h2>
       {panel.rows
         ? <DataTable rows={panel.rows(record)} columns={columns} href={panel.href} empty="None yet." />
-        : <DataTable endpoint={panel.endpoint} query={panel.query(record)} columns={columns} href={panel.href} empty="None yet." />}
+        : panel.read
+          ? <ReadTable read={panel.read} record={record} columns={columns} href={panel.href} />
+          : <DataTable endpoint={panel.endpoint} query={panel.query(record)} columns={columns} href={panel.href} empty="None yet." />}
       {adder && (adding
         ? <ActionForm record={record} endpoint="" onClose={() => setAdding(false)} action={{
             label: adder.label, path: "", permission: adder.permission, done: "Added",

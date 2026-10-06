@@ -723,9 +723,13 @@ class SalesReportViewSet(viewsets.ViewSet):
 class ThirdPartyReleaseViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     """An agency's inspection certificate, entered and posted in one step."""
 
-    queryset = ThirdPartyRelease.objects.select_related("customer", "agency").prefetch_related(
-        "lines")
+    queryset = ThirdPartyRelease.objects.select_related("customer", "agency", "sales_order").prefetch_related(
+        "lines__lot")
     serializer_class = ThirdPartyReleaseSerializer
+    filter_fields = ["customer", "sales_order", "posted", "agency"]
+    search_fields = ["number", "their_reference", "customer__name"]
+    date_field = "inspected_on"
+    ordering_fields = ["inspected_on", "number"]
 
     @action(detail=False, methods=["post"])
     def record(self, request):

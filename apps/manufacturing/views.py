@@ -611,8 +611,12 @@ class TestCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     void/ withdraws it with a reason; print/ is the page sent to the customer.
     """
 
-    queryset = TestCertificate.objects.select_related("delivery")
+    queryset = TestCertificate.objects.select_related("delivery__sales_order__customer")
     serializer_class = TestCertificateSerializer
+    filter_fields = ["delivery", "voided_at__isnull"]
+    search_fields = ["number", "delivery__number", "delivery__sales_order__customer__name"]
+    date_field = "issued_on"
+    ordering_fields = ["issued_on", "number"]
     http_method_names = ["get", "post", "head", "options"]
     action_permission_map = {"void": "manufacturing.change_testcertificate"}
 
@@ -1035,9 +1039,11 @@ class FabricRollViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """
 
     queryset = FabricRoll.objects.select_related(
-        "lot", "lot__item", "specification", "entry"
+        "lot", "lot__item", "specification", "entry", "machine"
     )
     serializer_class = FabricRollSerializer
+    filter_fields = ["machine", "specification", "entry"]
+    search_fields = ["lot__code"]
 
     @action(detail=False, methods=["get"])
     def metres(self, request):
@@ -1632,9 +1638,10 @@ class OperatorYieldViewSet(viewsets.ViewSet):
                 "operator": row["operator"].employee_number,
                 "name": row["operator"].party.name,
                 "work_centre": row["work_centre"].code,
-                "minutes": row["minutes"],
-                "ideal_minutes": row["ideal_minutes"],
-                "performance": row["performance"],
+                "minutes": str(Decimal(row["minutes"]).quantize(Decimal("0.01"))),
+                "ideal_minutes": str(Decimal(row["ideal_minutes"]).quantize(Decimal("0.01"))),
+                "performance": (None if row["performance"] is None
+                                else str(row["performance"].quantize(Decimal("0.0001")))),
                 "bookings": row["bookings"],
             }
             for row in _run(by_operator, start, end, work_centre=centre)
@@ -1678,7 +1685,7 @@ class LotTraceViewSet(viewsets.ViewSet):
             {
                 "level": row["level"], "lot": _lot_row(row["lot"]),
                 "made_by": row["made_by"].number,
-                "from_lot": _lot_row(row["from_lot"]), "quantity": row["quantity"],
+                "from_lot": _lot_row(row["from_lot"]), "quantity": _stock_text(row["quantity"]),
             }
             for row in genealogy(lot, depth=self._depth(request))
         ])
@@ -1692,7 +1699,7 @@ class LotTraceViewSet(viewsets.ViewSet):
             "descendants": [
                 {
                     "level": row["level"], "lot": _lot_row(row["lot"]),
-                    "used_by": row["used_by"].number, "quantity": row["quantity"],
+                    "used_by": row["used_by"].number, "quantity": _stock_text(row["quantity"]),
                     "made": [_lot_row(child) for child in row["made"]],
                 }
                 for row in report["descendants"]
@@ -1700,7 +1707,7 @@ class LotTraceViewSet(viewsets.ViewSet):
             "customers": [
                 {
                     "customer": row["customer"].code, "name": row["customer"].name,
-                    "lot": _lot_row(row["lot"]), "quantity": row["quantity"],
+                    "lot": _lot_row(row["lot"]), "quantity": _stock_text(row["quantity"]),
                     "deliveries": row["deliveries"],
                 }
                 for row in report["customers"]
@@ -2093,8 +2100,12 @@ class RunFlowViewSet(viewsets.ViewSet):
 class RebatchViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     """Batches split or joined: record (posted at once) and void."""
 
-    queryset = Rebatch.objects.prefetch_related("lines__lot")
+    queryset = Rebatch.objects.select_related("item", "warehouse").prefetch_related("lines__lot")
     serializer_class = RebatchSerializer
+    filter_fields = ["item", "warehouse", "posted"]
+    search_fields = ["number", "reason", "item__sku"]
+    date_field = "rebatched_on"
+    ordering_fields = ["rebatched_on", "number"]
 
     @action(detail=False, methods=["post"])
     def record(self, request):

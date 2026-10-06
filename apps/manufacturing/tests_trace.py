@@ -235,11 +235,13 @@ class LotTraceApiTests(TraceTestCase):
         body = forward.json()
         self.assertEqual(body["descendants"][0]["used_by"], run.number)
         self.assertEqual(body["customers"][0]["customer"], "CEM")
-        self.assertEqual(Decimal(body["customers"][0]["quantity"]), Decimal("600"))
+        # Normalised, as the complaint's investigation sends it: 600, not 600.0000.
+        self.assertEqual(body["customers"][0]["quantity"], "600")
 
         back = self.client.get(f"/api/manufacturing/lot-trace/{self.tape_lot.pk}/made-from/")
         self.assertEqual(back.status_code, 200, back.content)
         self.assertIn("PP-2609", {row["from_lot"]["code"] for row in back.json()})
+        self.assertEqual({type(row["quantity"]) for row in back.json()}, {str})
 
     def test_a_bad_depth_or_lot_is_a_sentence(self):
         base = f"/api/manufacturing/lot-trace/{self.polymer_lot.pk}/recall/"

@@ -139,7 +139,10 @@ Go through it before running anything.
   says. The return to vendor credited the price it paid instead, and the
   shelf and the ledger parted for good. Where the two differ, the
   difference is a price variance, posted.
-- A `DecimalField` in a raw `Response` becomes a float; send `str()`.
+- Every `Decimal` leaves the API as exact text (`apps/core/renderers.py`),
+  raw `Response` and `SerializerMethodField` included: no `str()` needed.
+  What still needs care is the places: a ratio from a division goes out
+  at every digit it has unless it is quantized first.
 
 **Dates and the database the plant runs**
 - The plant's day is `timezone.localdate()` or `to_date(moment)`, never

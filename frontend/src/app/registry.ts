@@ -62,6 +62,11 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/sales/DeliveryForm"),
       },
       {
+        path: "releases", label: "Third-party releases", permission: "sales.view_thirdpartyrelease",
+        keywords: "sgs bureau veritas agency inspection release", load: () => import("../modules/sales/Releases"),
+        detail: () => import("../modules/sales/ReleaseForm"),
+      },
+      {
         path: "invoices", label: "Invoices", permission: "sales.view_invoice", create: "sales.add_invoice",
         keywords: "bill credit note customer", load: () => import("../modules/sales/Invoices"),
         detail: () => import("../modules/sales/InvoiceForm"),
@@ -162,6 +167,29 @@ export const MODULES: Module[] = [
         create: "manufacturing.add_timebooking", also: ["manufacturing.view_workorderoperation"],
         keywords: "hours minutes labour machine booking", load: () => import("../modules/floor/Bookings"),
         detail: () => import("../modules/floor/BookingForm"),
+      },
+      {
+        path: "bales", label: "Bales", permission: "manufacturing.view_bale",
+        keywords: "bale packed bundle dispatch", load: () => import("../modules/floor/Bales"),
+        detail: () => import("../modules/floor/BaleForm"),
+      },
+      {
+        path: "rolls", label: "Fabric rolls", permission: "manufacturing.view_fabricroll",
+        keywords: "roll loom gsm metres weight", load: () => import("../modules/floor/Rolls"),
+      },
+      {
+        path: "rebatches", label: "Rebatches", permission: "manufacturing.view_rebatch",
+        keywords: "split join merge batch lot", load: () => import("../modules/floor/Rebatches"),
+        detail: () => import("../modules/floor/RebatchForm"),
+      },
+      {
+        path: "operator-yield", label: "Operator yield", permission: "manufacturing.view_timebooking",
+        also: ["manufacturing.view_workcentre"],
+        keywords: "operator performance people productivity", load: () => import("../modules/floor/OperatorYield"),
+      },
+      {
+        path: "scrap", label: "Scrap by reason", permission: "manufacturing.view_workorder",
+        keywords: "scrap waste reason step", load: () => import("../modules/floor/ScrapReport"),
       },
       {
         path: "promise", label: "When can we promise?", permission: "planning.view_plannedorder",
@@ -341,6 +369,12 @@ export const MODULES: Module[] = [
         path: "complaints", label: "Complaints", permission: "manufacturing.view_complaint", create: "manufacturing.add_complaint",
         keywords: "customer complaint capa corrective action", load: () => import("../modules/quality/Complaints"),
         detail: () => import("../modules/quality/ComplaintForm"),
+      },
+      {
+        path: "certificates", label: "Test certificates", permission: "manufacturing.view_testcertificate",
+        create: "manufacturing.add_testcertificate", also: ["sales.view_delivery"],
+        keywords: "test certificate coa shipment", load: () => import("../modules/quality/Certificates"),
+        detail: () => import("../modules/quality/CertificateForm"),
       },
       {
         path: "control-chart", label: "Control chart", permission: "quality.view_inspection",

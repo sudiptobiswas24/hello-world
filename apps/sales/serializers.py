@@ -289,17 +289,22 @@ class RecurringInvoiceSerializer(serializers.ModelSerializer):
 
 
 class ThirdPartyReleaseLineSerializer(serializers.ModelSerializer):
+    lot_code = serializers.CharField(source="lot.code", read_only=True)
+
     class Meta:
         model = ThirdPartyReleaseLine
-        fields = ["id", "lot", "quantity_offered", "quantity_released", "remarks"]
+        fields = ["id", "lot", "quantity_offered", "quantity_released", "remarks", "lot_code"]
 
 
 class ThirdPartyReleaseSerializer(serializers.ModelSerializer):
     lines = ThirdPartyReleaseLineSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    agency_name = serializers.CharField(source="agency.name", read_only=True, default="")
+    order_number = serializers.CharField(source="sales_order.number", read_only=True, default="")
 
     class Meta:
         model = ThirdPartyRelease
         fields = ["id", "number", "customer", "sales_order", "agency", "inspector",
                   "their_reference", "inspected_on", "posted", "posted_at", "voided_at",
-                  "voided_reason", "lines"]
+                  "voided_reason", "lines", "customer_name", "agency_name", "order_number"]
         read_only_fields = fields

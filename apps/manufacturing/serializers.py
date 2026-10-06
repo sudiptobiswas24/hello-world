@@ -266,10 +266,13 @@ class BagSolveSerializer(FoldAllowanceDefault, serializers.ModelSerializer):
 
 
 class TestCertificateSerializer(serializers.ModelSerializer):
+    delivery_number = serializers.CharField(source="delivery.number", read_only=True)
+    customer_name = serializers.CharField(source="delivery.sales_order.customer.name", read_only=True)
+
     class Meta:
         model = TestCertificate
         fields = ["id", "number", "delivery", "issued_on", "content", "voided_at",
-                  "voided_reason"]
+                  "voided_reason", "delivery_number", "customer_name"]
         read_only_fields = fields
 
 
@@ -643,17 +646,22 @@ class FabricRollSerializer(serializers.ModelSerializer):
         fields = ["id", "lot", "specification", "entry", "machine", "width_mm",
                   "length_m", "net_weight_kg", "core_weight_kg", "is_tubular",
                   "notes", "implied_gsm", "metres_per_kg",
-                  "gsm_deviation_percent", "within_tolerance"]
+                  "gsm_deviation_percent", "within_tolerance", "lot_code", "machine_code",
+                  "specification_name"]
+
+    lot_code = serializers.CharField(source="lot.code", read_only=True)
+    machine_code = serializers.CharField(source="machine.code", read_only=True, default="")
+    specification_name = serializers.CharField(source="specification.name", read_only=True, default="")
 
     def get_implied_gsm(self, obj):
-        return obj.implied_gsm()
+        return str(obj.implied_gsm())
 
     def get_metres_per_kg(self, obj):
-        return obj.metres_per_kg()
+        return str(obj.metres_per_kg())
 
     def get_gsm_deviation_percent(self, obj):
         deviation = obj.gsm_deviation_percent()
-        return None if deviation is None else round(deviation, 3)
+        return None if deviation is None else str(round(deviation, 3))
 
     def get_within_tolerance(self, obj):
         return obj.is_within_tolerance()
@@ -1095,9 +1103,14 @@ class RebatchLineSerializer(serializers.ModelSerializer):
 
 class RebatchSerializer(serializers.ModelSerializer):
     lines = RebatchLineSerializer(many=True, read_only=True)
+    item_label = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
 
     class Meta:
         model = Rebatch
         fields = ["id", "number", "item", "warehouse", "rebatched_on", "reason", "posted",
-                  "posted_at", "voided_at", "voided_reason", "lines"]
+                  "posted_at", "voided_at", "voided_reason", "lines", "item_label", "warehouse_name"]
         read_only_fields = fields
