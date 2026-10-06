@@ -38,7 +38,7 @@ export interface Module {
   screens: Screen[];
 }
 
-export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "plant" | "quality" | "accounts" | "people";
+export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "making" | "plant" | "quality" | "accounts" | "people";
 
 export const MODULES: Module[] = [
   {
@@ -170,6 +170,80 @@ export const MODULES: Module[] = [
         path: "routes", label: "Transfer routes", permission: "planning.view_transferroute", create: "planning.add_transferroute",
         keywords: "branch depot restock", load: () => import("../modules/production/Routes"),
         detail: () => import("../modules/production/RouteForm"),
+      },
+    ],
+  },
+  {
+    key: "making",
+    label: "How it's made",
+    icon: "making",
+    screens: [
+      {
+        path: "boms", label: "Bills of materials", permission: "manufacturing.view_billofmaterials",
+        create: "manufacturing.add_billofmaterials",
+        keywords: "bom recipe formula inputs components", load: () => import("../modules/making/Boms"),
+        detail: () => import("../modules/making/BomForm"),
+      },
+      {
+        path: "routings", label: "Routings", permission: "manufacturing.view_routing",
+        create: "manufacturing.add_routing",
+        keywords: "steps operations process route", load: () => import("../modules/making/Routings"),
+        detail: () => import("../modules/making/RoutingForm"),
+      },
+      {
+        path: "work-centres", label: "Work centres", permission: "manufacturing.view_workcentre",
+        create: "manufacturing.add_workcentre",
+        keywords: "bank looms extruders capacity rates cost an hour", load: () => import("../modules/making/WorkCentres"),
+        detail: () => import("../modules/making/WorkCentreForm"),
+      },
+      {
+        path: "machines", label: "Machines", permission: "manufacturing.view_machine",
+        create: "manufacturing.add_machine",
+        keywords: "loom extruder press capability width", load: () => import("../modules/making/Machines"),
+        detail: () => import("../modules/making/MachineForm"),
+      },
+      {
+        path: "shifts", label: "Shifts", permission: "manufacturing.view_shift",
+        create: "manufacturing.add_shift",
+        keywords: "hours day night", load: () => import("../modules/making/Shifts"),
+        detail: () => import("../modules/making/ShiftForm"),
+      },
+      {
+        path: "crews", label: "Crews", permission: "manufacturing.view_crewassignment",
+        create: "manufacturing.add_crewassignment",
+        also: ["hr.view_employee"],
+        keywords: "manning operators who shift bank", load: () => import("../modules/making/Crews"),
+        detail: () => import("../modules/making/CrewForm"),
+      },
+      {
+        path: "tools", label: "Tools", permission: "manufacturing.view_tool",
+        create: "manufacturing.add_tool",
+        keywords: "cylinder die reed screen wear life", load: () => import("../modules/making/Tools"),
+        detail: () => import("../modules/making/ToolForm"),
+      },
+      {
+        path: "setup-families", label: "Setup families", permission: "manufacturing.view_setupfamily",
+        create: "manufacturing.add_setupfamily",
+        keywords: "changeover colour family", load: () => import("../modules/making/SetupFamilies"),
+        detail: () => import("../modules/making/SetupFamilyForm"),
+      },
+      {
+        path: "changeovers", label: "Changeover rules", permission: "manufacturing.view_changeoverrule",
+        create: "manufacturing.add_changeoverrule",
+        keywords: "changeover setup minutes purge", load: () => import("../modules/making/ChangeoverRules"),
+        detail: () => import("../modules/making/ChangeoverRuleForm"),
+      },
+      {
+        path: "scrap-reasons", label: "Scrap reasons", permission: "manufacturing.view_scrapreason",
+        create: "manufacturing.add_scrapreason",
+        keywords: "waste why", load: () => import("../modules/making/ScrapReasons"),
+        detail: () => import("../modules/making/ScrapReasonForm"),
+      },
+      {
+        path: "stoppage-reasons", label: "Stoppage reasons", permission: "manufacturing.view_downtimereason",
+        create: "manufacturing.add_downtimereason",
+        keywords: "downtime breakdown why", load: () => import("../modules/making/DowntimeReasons"),
+        detail: () => import("../modules/making/DowntimeReasonForm"),
       },
     ],
   },

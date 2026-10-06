@@ -27,6 +27,7 @@ still carries the business, so a problem costs a day, not a month-end.
 | Production | Production Planner, Supervisor | plan → firm → release; the machine schedule; the month's forecast and any build-ahead weeks in the master schedule |
 | Quality | Quality Inspector, Quality Manager | each batch's inspection read and posted; batch status before dispatch; a complaint and its actions; calibration due |
 | Floor | Station | a shift's entries at one loom and one extruder |
+| How it's made | Process Engineer | the recipes, routings, machines and work-centre rates checked against the old system's before the first run is costed; any change to one before it is used |
 | GST | GST Officer | the month's GSTR-1 and 3B, compared with the old system's |
 | HR | Payroll Officer, Controller | a pay run worked out, posted, and its statutory dues |
 

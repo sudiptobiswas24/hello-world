@@ -414,26 +414,45 @@ class BomSubstituteSerializer(serializers.ModelSerializer):
 class BomComponentSerializer(serializers.ModelSerializer):
     gross_quantity = serializers.SerializerMethodField()
     substitutes = BomSubstituteSerializer(many=True, read_only=True)
+    item_label = serializers.SerializerMethodField()
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
 
     class Meta:
         model = BomComponent
         fields = ["id", "bom", "item", "quantity", "uom", "waste_percent",
-                  "line_number", "notes", "gross_quantity", "substitutes"]
+                  "line_number", "notes", "gross_quantity", "substitutes", "item_label", "uom_code"]
 
     def get_gross_quantity(self, obj):
         return round(obj.gross_quantity(), 6)
 
 
 class BomByproductSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = BomByproduct
         fields = ["id", "bom", "item", "quantity", "uom", "valuation",
-                  "cost_share_percent", "line_number"]
+                  "cost_share_percent", "line_number", "item_label", "uom_code"]
 
 
 class BillOfMaterialsSerializer(serializers.ModelSerializer):
     components = BomComponentSerializer(many=True, read_only=True)
     byproducts = BomByproductSerializer(many=True, read_only=True)
+    routing_name = serializers.CharField(source="routing.name", read_only=True, default="")
+    item_label = serializers.SerializerMethodField()
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
 
     class Meta:
         model = BillOfMaterials
@@ -442,6 +461,7 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
                   "backflush", "expected_reject_percent", "notes",
                   "components", "byproducts",
             "routing", "valid_from", "valid_to", "is_phantom",
+            "item_label", "uom_code", "routing_name",
         ]
         read_only_fields = ["is_computed"]
 
@@ -580,6 +600,7 @@ class PrintDesignSerializer(serializers.ModelSerializer):
 
 
 class ToolSerializer(serializers.ModelSerializer):
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True, default="")
     used = serializers.SerializerMethodField()
     remaining = serializers.SerializerMethodField()
     used_percent = serializers.SerializerMethodField()
@@ -589,7 +610,8 @@ class ToolSerializer(serializers.ModelSerializer):
         model = Tool
         fields = ["id", "code", "name", "kind", "design", "work_centre",
                   "life_limit", "life_uom", "status", "acquired_on", "notes",
-                  "used", "remaining", "used_percent", "is_worn", "expected_on"]
+                  "used", "remaining", "used_percent", "is_worn", "expected_on",
+                  "work_centre_name"]
 
     def get_used(self, obj):
         return obj.used()
@@ -638,23 +660,32 @@ class FabricRollSerializer(serializers.ModelSerializer):
 
 
 class RoutingOperationSerializer(serializers.ModelSerializer):
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True, default="")
+
     class Meta:
         model = RoutingOperation
         fields = ["id", "routing", "sequence", "name", "work_centre",
                   "is_outside", "outside_lead_days", "outside_cost_per_unit",
-                  "setup_minutes", "units_per_hour", "rate_uom", "notes"]
+                  "setup_minutes", "units_per_hour", "rate_uom", "notes", "work_centre_name"]
 
 
 class CrewAssignmentSerializer(serializers.ModelSerializer):
+    employee_name = serializers.CharField(source="employee.party.name", read_only=True)
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
+    shift_name = serializers.CharField(source="shift.name", read_only=True)
+
     class Meta:
         model = CrewAssignment
-        fields = ["id", "employee", "work_centre", "shift", "valid_from", "valid_to"]
+        fields = ["id", "employee", "work_centre", "shift", "valid_from", "valid_to",
+                  "employee_name", "work_centre_name", "shift_name"]
 
 
 class AlternateRoutingSerializer(serializers.ModelSerializer):
+    routing_name = serializers.CharField(source="routing.name", read_only=True)
+
     class Meta:
         model = AlternateRouting
-        fields = ["id", "bom", "routing", "priority", "notes"]
+        fields = ["id", "bom", "routing", "priority", "notes", "routing_name"]
 
 
 class RoutingSerializer(serializers.ModelSerializer):
@@ -666,22 +697,32 @@ class RoutingSerializer(serializers.ModelSerializer):
 
 
 class SetupFamilySerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = SetupFamily
-        fields = ["id", "item", "work_centre", "family"]
+        fields = ["id", "item", "work_centre", "family", "item_label", "work_centre_name"]
 
 
 class ChangeoverRuleSerializer(serializers.ModelSerializer):
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
+
     class Meta:
         model = ChangeoverRule
         fields = ["id", "work_centre", "from_family", "to_family", "minutes",
-                  "purge_kg", "notes"]
+                  "purge_kg", "notes", "work_centre_name"]
 
 
 class MachineSerializer(serializers.ModelSerializer):
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
+
     class Meta:
         model = Machine
-        fields = ["id", "work_centre", "code", "name", "capacity_per_hour",
+        fields = ["id", "work_centre", "work_centre_name", "code", "name", "capacity_per_hour",
                   "capacity_uom", "available_hours_per_day", "working_days",
                   "hours_per_day", "days_pattern", "is_active", "notes",
                   "min_width_cm", "max_width_cm", "min_length_cm", "max_length_cm",

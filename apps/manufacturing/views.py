@@ -250,6 +250,7 @@ class CrewAssignmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = CrewAssignment.objects.select_related("employee__party", "work_centre",
                                                      "shift")
     serializer_class = CrewAssignmentSerializer
+    filter_fields = ["shift", "employee"]
 
     def get_queryset(self):
         rows = super().get_queryset()
@@ -638,8 +639,12 @@ class TestCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = BillOfMaterials.objects.prefetch_related("components", "byproducts")
+    queryset = BillOfMaterials.objects.select_related("item", "uom", "routing").prefetch_related(
+        "components__item", "components__uom", "components__substitutes",
+        "byproducts__item", "byproducts__uom")
     serializer_class = BillOfMaterialsSerializer
+    filter_fields = ["item", "is_active", "is_default", "routing", "is_phantom"]
+    search_fields = ["item__sku", "item__name", "name"]
 
     @action(detail=True, methods=["get"])
     def explosion(self, request, pk=None):
@@ -715,13 +720,15 @@ class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class BomComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = BomComponent.objects.select_related("item", "bom")
+    queryset = BomComponent.objects.select_related("item", "bom", "uom")
     serializer_class = BomComponentSerializer
+    filter_fields = ["bom"]
 
 
 class BomByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = BomByproduct.objects.select_related("item", "bom")
+    queryset = BomByproduct.objects.select_related("item", "bom", "uom")
     serializer_class = BomByproductSerializer
+    filter_fields = ["bom"]
 
 
 class BomSubstituteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -729,6 +736,7 @@ class BomSubstituteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "item", "component", "component__item", "component__bom"
     )
     serializer_class = BomSubstituteSerializer
+    filter_fields = ["component"]
 
 
 class CostVersionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -986,6 +994,9 @@ class PrintDesignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class ToolViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Tool.objects.select_related("design", "work_centre", "life_uom")
     serializer_class = ToolSerializer
+    filter_fields = ["kind", "status", "work_centre"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
     @action(detail=False, methods=["get"])
     def wearing_out(self, request):
@@ -1010,6 +1021,7 @@ class ToolUsageViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     queryset = ToolUsage.objects.select_related("tool", "entry")
     serializer_class = ToolUsageSerializer
+    filter_fields = ["tool"]
 
 
 class FabricRollViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1057,13 +1069,17 @@ class FabricRollViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class RoutingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Routing.objects.prefetch_related("operations")
+    queryset = Routing.objects.prefetch_related("operations__work_centre")
     serializer_class = RoutingSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class RoutingOperationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = RoutingOperation.objects.select_related("routing", "work_centre")
     serializer_class = RoutingOperationSerializer
+    filter_fields = ["routing", "work_centre"]
 
 
 class SetupFamilyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1071,6 +1087,8 @@ class SetupFamilyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = SetupFamily.objects.select_related("item", "work_centre").all()
     serializer_class = SetupFamilySerializer
+    filter_fields = ["work_centre", "item", "family"]
+    search_fields = ["family", "item__sku", "item__name"]
 
 
 class ChangeoverRuleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1078,6 +1096,7 @@ class ChangeoverRuleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = ChangeoverRule.objects.select_related("work_centre").all()
     serializer_class = ChangeoverRuleSerializer
+    filter_fields = ["work_centre"]
 
 
 class MachineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1085,11 +1104,17 @@ class MachineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Machine.objects.select_related("work_centre").all()
     serializer_class = MachineSerializer
+    filter_fields = ["work_centre", "is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkCentre.objects.all()
     serializer_class = WorkCentreSerializer
+    filter_fields = ["is_active", "speed_basis"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
     @action(detail=True, methods=["get"])
     def crew(self, request, pk=None):
@@ -1500,12 +1525,15 @@ class TimeBookingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class ShiftViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Shift.objects.all()
     serializer_class = ShiftSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
 
 
 class DowntimeReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = DowntimeReason.objects.all()
     filter_fields = ["is_planned", "is_active"]
     serializer_class = DowntimeReasonSerializer
+    search_fields = ["code", "name"]
 
 
 class DowntimeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1958,6 +1986,9 @@ def _stock_text(value):
 class ScrapReasonViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ScrapReason.objects.all()
     serializer_class = ScrapReasonSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class ProductionScrapViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

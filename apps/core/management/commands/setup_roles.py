@@ -287,6 +287,20 @@ ROLES = {
         "manufacturing.view_loomstation",
         *crud("manufacturing", "scalereading", actions=("add", "view")),
     ],
+    # Whoever keeps how things are made: the recipes, the routes, the
+    # machines and their rates, the reasons the floor chooses from. What a
+    # recipe says is what a run is costed and planned against, so it is
+    # not the planner's to change.
+    "Process Engineer": [
+        *REFERENCE,
+        *full("manufacturing", "billofmaterials", "bomcomponent", "bombyproduct", "bomsubstitute",
+              "routing", "routingoperation", "alternaterouting", "workcentre", "machine", "shift",
+              "tool", "scrapreason", "downtimereason", "setupfamily", "changeoverrule"),
+        *view("manufacturing", "bagspecification", "fabricspecification", "tapespecification",
+              "filmspecification", "linerspecification", "bagcoatingline", "printdesign",
+              "coretype", "toolusage", "workorder", "crewassignment"),
+        *view("hr", "employee"),
+    ],
     "Production Planner": [
         *REFERENCE,
         *HOW_IT_IS_MADE,
