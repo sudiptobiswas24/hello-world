@@ -29,23 +29,29 @@ class CurrencySerializer(serializers.ModelSerializer):
 
 
 class ExchangeRateSerializer(serializers.ModelSerializer):
+    currency_code = serializers.CharField(source="currency.code", read_only=True)
+
     class Meta:
         model = ExchangeRate
-        fields = ["id", "currency", "rate", "valid_from"]
+        fields = ["id", "currency", "rate", "valid_from", "currency_code"]
 
 
 class UnitOfMeasureSerializer(serializers.ModelSerializer):
+    base_unit_code = serializers.CharField(source="base_unit.code", read_only=True, default="")
+
     class Meta:
         model = UnitOfMeasure
-        fields = ["id", "code", "name", "category", "base_unit", "conversion_factor"]
+        fields = ["id", "code", "name", "category", "base_unit", "conversion_factor", "base_unit_code"]
 
 
 class AddressSerializer(serializers.ModelSerializer):
+    one_line = serializers.CharField(read_only=True)
+
     class Meta:
         model = Address
         fields = [
             "id", "party", "address_type", "label", "line1", "line2", "city", "state",
-            "postal_code", "country", "is_primary", "is_active",
+            "postal_code", "country", "is_primary", "is_active", "one_line",
         ]
 
 
@@ -61,11 +67,13 @@ class ContactSerializer(serializers.ModelSerializer):
 
 
 class PartyBankAccountSerializer(serializers.ModelSerializer):
+    currency_code = serializers.CharField(source="currency.code", read_only=True, default="")
+
     class Meta:
         model = PartyBankAccount
         fields = [
             "id", "party", "account_name", "bank_name", "account_number", "iban",
-            "swift_bic", "currency", "is_primary", "is_active",
+            "swift_bic", "currency", "is_primary", "is_active", "currency_code",
         ]
 
 

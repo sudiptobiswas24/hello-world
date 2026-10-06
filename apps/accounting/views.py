@@ -159,11 +159,14 @@ class JournalLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class TaxGroupViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = TaxGroup.objects.all()
     serializer_class = TaxGroupSerializer
+    search_fields = ["code", "name"]
 
 
 class TaxViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Tax.objects.select_related("group", "collected_account", "paid_account")
     serializer_class = TaxSerializer
+    filter_fields = ["group", "scope", "is_active", "gst_head", "computation"]
+    search_fields = ["code", "name"]
 
     @action(detail=False, methods=["post"])
     def preview(self, request):
@@ -197,18 +200,23 @@ class TaxViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class FiscalPositionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = FiscalPosition.objects.prefetch_related("tax_mappings")
+    queryset = FiscalPosition.objects.prefetch_related("tax_mappings__source_tax", "tax_mappings__target_tax")
     serializer_class = FiscalPositionSerializer
+    filter_fields = ["is_active", "country"]
+    search_fields = ["code", "name"]
 
 
 class FiscalPositionTaxMappingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = FiscalPositionTaxMapping.objects.select_related("source_tax", "target_tax")
     serializer_class = FiscalPositionTaxMappingSerializer
+    filter_fields = ["fiscal_position", "source_tax"]
 
 
 class PartyTaxProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyTaxProfile.objects.select_related("party", "fiscal_position")
     serializer_class = PartyTaxProfileSerializer
+    filter_fields = ["party", "fiscal_position", "tax_exempt"]
+    search_fields = ["gstin", "party__name"]
 
 
 class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

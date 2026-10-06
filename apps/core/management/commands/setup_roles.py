@@ -69,6 +69,9 @@ ROLES = {
         *crud("core", "paymenttermsline"),
         *crud("core", "documentsequence"),
         *crud("core", "company", actions=("change", "view")),
+        # Reference data the books depend on: where parties are and how
+        # they are grouped, and what quantities are counted in.
+        *full("core", "country", "partytag", "unitofmeasure"),
         *crud("accounting", "tax"),
         # The rates a quotation costs at and the standards stock is valued
         # at: cost, so the controller's, not the salesman's who quotes.
@@ -377,6 +380,9 @@ ROLES = {
         *crud("gst", "einvoice", actions=("add", "change", "view")),
         *crud("gst", "ewaybill", actions=("add", "change", "view")),
         *full("gst", "unitquantitycode"),
+        # A party's GST registration is master data, not a booking: the
+        # officer who files GSTR-1 by GSTIN is the one who finds it wrong.
+        *crud("accounting", "partytaxprofile", actions=("add", "change", "view")),
         *view("accounting", "gstsettings", "journalentry", "journalline"),
         *view("sales", "invoice", "invoiceline", "invoicelinetax", "delivery"),
         *view("purchasing", "bill", "billline", "billlinetax"),

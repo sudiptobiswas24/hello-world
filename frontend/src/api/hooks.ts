@@ -73,8 +73,14 @@ export function useAct<R = unknown>() {
   const toast = useToast();
   const mutation = useMutation<R, ApiError, { method: "POST" | "PATCH" | "DELETE" | "PUT"; path: string; body?: unknown; options?: ActOptions<R> }>({
     mutationFn: ({ method, path, body }) => send<R>(method, path, body),
-    onSuccess: async (result, { options }) => {
-      await queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] !== "me" && query.queryKey[0] !== "reference" });
+    onSuccess: async (result, { options, path }) => {
+      await queryClient.invalidateQueries({ predicate: (query) => {
+        const [kind, endpoint] = query.queryKey;
+        // A short master (currencies, countries) is read once and kept for
+        // the session; a write to it is the one time it changes.
+        if (kind === "reference") return typeof endpoint === "string" && path.startsWith(endpoint);
+        return kind !== "me";
+      } });
       const done = options?.done;
       if (done) toast.ok(typeof done === "function" ? done(result) : done);
       options?.onDone?.(result);

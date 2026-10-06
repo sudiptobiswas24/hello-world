@@ -6,7 +6,10 @@ import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { Field } from "../../forms/fields";
 import { useDraft } from "../../forms/useDraft";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { RecordPanel } from "../../views/RecordScreen";
 import type { ReactNode } from "react";
+
+import { PARTY_PANELS } from "./panels";
 
 import type { PartyRole } from "../../forms/PartyPicker";
 
@@ -27,7 +30,7 @@ const FIELDS: [keyof Party & string, string, string?][] = [
   ["code", "Code", "Short and unique: what people type to find them"],
   ["name", "Name"],
   ["legal_name", "Legal name", "As it must appear on invoices, if different"],
-  ["tax_id", "GSTIN"],
+  ["tax_id", "Other tax number", "PAN, or a foreign tax number. The GST registration is kept under GST, below"],
   ["phone", "Phone"],
   ["email", "Email", "Where invoices and statements are sent"],
 ];
@@ -92,6 +95,7 @@ export function PartyForm({ role, base, plural, related }: PartyConfig) {
         </div>
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
       </Sheet>
+      {party && PARTY_PANELS.map((panel) => <RecordPanel key={panel.title} panel={panel} record={party} />)}
       {party && related && <div className="related">{related(party)}</div>}
     </article>
   );

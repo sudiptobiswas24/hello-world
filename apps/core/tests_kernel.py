@@ -160,10 +160,17 @@ class AddressAndContactTests(TestCase):
         )
 
     def test_only_one_primary_address_per_type(self):
-        self.make_address()
+        # Saved, the new primary takes the place of the old one.
+        first = self.make_address()
+        second = self.make_address(city="Shelbyville")
+        first.refresh_from_db()
+        self.assertEqual((first.is_primary, second.is_primary), (False, True))
+        # Written past save(), the database still holds one.
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
-                self.make_address(city="Shelbyville")
+                Address.objects.bulk_create([Address(
+                    party=self.party, address_type=AddressType.BILLING, line1="2 Main St",
+                    city="Capital City", is_primary=True)])
 
     def test_primary_billing_and_shipping_can_coexist(self):
         self.make_address(AddressType.BILLING)
@@ -184,10 +191,14 @@ class AddressAndContactTests(TestCase):
         self.assertEqual(address.formatted(), "1 Main St\nSpringfield 12345\nUnited States")
 
     def test_only_one_primary_contact_per_party(self):
-        Contact.objects.create(party=self.party, first_name="Ada", is_primary=True)
+        ada = Contact.objects.create(party=self.party, first_name="Ada", is_primary=True)
+        Contact.objects.create(party=self.party, first_name="Grace", is_primary=True)
+        ada.refresh_from_db()
+        self.assertFalse(ada.is_primary)
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
-                Contact.objects.create(party=self.party, first_name="Grace", is_primary=True)
+                Contact.objects.bulk_create([Contact(party=self.party, first_name="Mary",
+                                                     is_primary=True)])
 
     def test_primary_contact_lookup(self):
         Contact.objects.create(party=self.party, first_name="Ada", last_name="Lovelace")
@@ -214,14 +225,18 @@ class BankAccountTests(TestCase):
         account.full_clean()  # should not raise
 
     def test_only_one_primary_account_per_party(self):
-        PartyBankAccount.objects.create(
+        main = PartyBankAccount.objects.create(
             party=self.party, account_name="Main", account_number="123", is_primary=True
         )
+        PartyBankAccount.objects.create(
+            party=self.party, account_name="Other", account_number="456", is_primary=True
+        )
+        main.refresh_from_db()
+        self.assertFalse(main.is_primary)
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
-                PartyBankAccount.objects.create(
-                    party=self.party, account_name="Other", account_number="456", is_primary=True
-                )
+                PartyBankAccount.objects.bulk_create([PartyBankAccount(
+                    party=self.party, account_name="Third", account_number="789", is_primary=True)])
 
 
 class CompanyTests(TestCase):

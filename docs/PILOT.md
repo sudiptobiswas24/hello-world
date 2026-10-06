@@ -18,7 +18,7 @@ still carries the business, so a problem costs a day, not a month-end.
 
 | Desk | Role to give them | Their flows to run every day |
 |---|---|---|
-| Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging |
+| Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging; a new customer's delivery address and contact, on its page |
 | Dispatch | Warehouse Staff | ship an order, choosing batches; a customer return |
 | Purchasing | Purchasing Clerk | purchase order → confirm; close a short line |
 | Stores | Warehouse Staff, Stores Manager | goods in with batch numbers; stock on hand and its movements; a count of one rack, posted by the manager; a transfer between warehouses; fabric out to the laminator on a job-work challan, and what it lost; a customer's own granules received and the unused sent back |
@@ -29,7 +29,8 @@ still carries the business, so a problem costs a day, not a month-end.
 | Floor | Station | a shift's entries at one loom and one extruder |
 | How it's made | Process Engineer | the recipes, routings, machines and work-centre rates checked against the old system's before the first run is costed; any change to one before it is used; each sack's tape, fabric and bag specification and its print design |
 | Costing | Controller | the polymer rate sheet and conversion rates against the old costing sheet; the quotation policy; a standard-cost version rolled up, read and published |
-| GST | GST Officer | the month's GSTR-1 and 3B, compared with the old system's |
+| Settings | Controller | the month's exchange rates; units, payment terms and taxes as the old system had them |
+| GST | GST Officer | the month's GSTR-1 and 3B, compared with the old system's; each new customer's GSTIN, checked on the portal and entered on its page before its first invoice |
 | HR | Payroll Officer, Controller | a pay run worked out, posted, and its statutory dues |
 
 ## Every day of the pilot

@@ -24,11 +24,18 @@ export interface Screen {
   hidden?: boolean;
   /** Further permissions the screen's other reads need (its detail, a panel). */
   also?: string[];
+  /**
+   * A master every role reads (currencies, units) is offered in the
+   * navigation only to whoever keeps it; the rest reach a record of it
+   * from where it is used.
+   */
+  keep?: string;
 }
 
 /** Whether to offer a screen: what it reads first, and everything else it needs. */
 export function offered(screen: Screen, can: (permission: string) => boolean): boolean {
-  return !screen.hidden && can(screen.permission) && (screen.also ?? []).every(can);
+  return !screen.hidden && can(screen.permission) && (screen.also ?? []).every(can)
+    && (!screen.keep || can(screen.keep));
 }
 
 export interface Module {
@@ -38,7 +45,7 @@ export interface Module {
   screens: Screen[];
 }
 
-export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "making" | "plant" | "quality" | "accounts" | "people";
+export type IconName = "home" | "sales" | "purchasing" | "stock" | "production" | "making" | "plant" | "quality" | "accounts" | "people" | "settings";
 
 export const MODULES: Module[] = [
   {
@@ -211,6 +218,12 @@ export const MODULES: Module[] = [
         create: "planning.add_masterscheduleentry",
         keywords: "mps build ahead season campaign", load: () => import("../modules/production/MasterSchedule"),
         detail: () => import("../modules/production/MasterScheduleForm"),
+      },
+      {
+        path: "planning-settings", label: "Planning settings", permission: "planning.view_planningsettings",
+        keep: "planning.change_planningsettings",
+        keywords: "horizon fence lead time requisition", load: () => import("../modules/production/PlanningSettingsList"),
+        detail: () => import("../modules/production/PlanningSettingsForm"),
       },
       {
         path: "routes", label: "Transfer routes", permission: "planning.view_transferroute", create: "planning.add_transferroute",
@@ -615,6 +628,89 @@ export const MODULES: Module[] = [
         create: "manufacturing.add_customermaterialreturn",
         keywords: "return customer supplied material", load: () => import("../modules/stores/CustomerReturns"),
         detail: () => import("../modules/stores/CustomerReturnForm"),
+      },
+    ],
+  },
+  {
+    key: "settings",
+    label: "Settings",
+    icon: "settings",
+    screens: [
+      {
+        path: "company", label: "Company", permission: "core.view_company",
+        keep: "core.change_company",
+        keywords: "base currency default accounts fiscal year gstin", load: () => import("../modules/settings/CompanyList"),
+        detail: () => import("../modules/settings/CompanyForm"),
+      },
+      {
+        path: "currencies", label: "Currencies", permission: "core.view_currency",
+        keep: "core.change_currency",
+        create: "core.add_currency",
+        keywords: "currency base inr usd", load: () => import("../modules/settings/Currencies"),
+        detail: () => import("../modules/settings/CurrencyForm"),
+      },
+      {
+        path: "exchange-rates", label: "Exchange rates", permission: "core.view_exchangerate",
+        keep: "core.change_exchangerate",
+        create: "core.add_exchangerate",
+        keywords: "fx rate forex", load: () => import("../modules/settings/ExchangeRates"),
+        detail: () => import("../modules/settings/ExchangeRateForm"),
+      },
+      {
+        path: "countries", label: "Countries", permission: "core.view_country",
+        keep: "core.change_country",
+        create: "core.add_country",
+        keywords: "country", load: () => import("../modules/settings/Countries"),
+        detail: () => import("../modules/settings/CountryForm"),
+      },
+      {
+        path: "units", label: "Units of measure", permission: "core.view_unitofmeasure",
+        keep: "core.change_unitofmeasure",
+        create: "core.add_unitofmeasure",
+        keywords: "uom unit kg pcs conversion", load: () => import("../modules/settings/Units"),
+        detail: () => import("../modules/settings/UnitForm"),
+      },
+      {
+        path: "payment-terms", label: "Payment terms", permission: "core.view_paymentterms",
+        keep: "core.change_paymentterms",
+        create: "core.add_paymentterms",
+        keywords: "credit days net discount terms", load: () => import("../modules/settings/PaymentTermsList"),
+        detail: () => import("../modules/settings/PaymentTermsForm"),
+      },
+      {
+        path: "party-tags", label: "Party tags", permission: "core.view_partytag",
+        keep: "core.change_partytag",
+        create: "core.add_partytag",
+        keywords: "tag group segment", load: () => import("../modules/settings/PartyTags"),
+        detail: () => import("../modules/settings/PartyTagForm"),
+      },
+      {
+        path: "taxes", label: "Taxes", permission: "accounting.view_tax",
+        keep: "accounting.change_tax",
+        create: "accounting.add_tax",
+        keywords: "gst cgst sgst igst cess rate", load: () => import("../modules/settings/Taxes"),
+        detail: () => import("../modules/settings/TaxForm"),
+      },
+      {
+        path: "tax-groups", label: "Tax groups", permission: "accounting.view_taxgroup",
+        keep: "accounting.change_taxgroup",
+        create: "accounting.add_taxgroup",
+        keywords: "tax group", load: () => import("../modules/settings/TaxGroups"),
+        detail: () => import("../modules/settings/TaxGroupForm"),
+      },
+      {
+        path: "fiscal-positions", label: "Fiscal positions", permission: "accounting.view_fiscalposition",
+        keep: "accounting.change_fiscalposition",
+        create: "accounting.add_fiscalposition",
+        keywords: "export sez tax mapping", load: () => import("../modules/settings/FiscalPositions"),
+        detail: () => import("../modules/settings/FiscalPositionForm"),
+      },
+      {
+        path: "gst-registrations", label: "GST registrations", permission: "accounting.view_partytaxprofile",
+        keep: "accounting.change_partytaxprofile",
+        create: "accounting.add_partytaxprofile",
+        keywords: "gstin registered composition sez unregistered exempt", load: () => import("../modules/settings/GstRegistrations"),
+        detail: () => import("../modules/settings/GstRegistrationForm"),
       },
     ],
   },

@@ -79,6 +79,9 @@ export interface RowAction {
   done: string;
   /** Asked first, in words, when the action cannot be taken back. */
   confirm?: string;
+  /** A change to the row itself (archive it) rather than an action posted to it. */
+  method?: "POST" | "PATCH";
+  body?: (row: Row) => unknown;
 }
 
 /** The rows that hang off the record: a job's labour, a meter's readings. */
@@ -94,6 +97,8 @@ export interface PanelDef {
   /** Rows out of a report about the record, at a path naming it: a batch's trace. */
   read?: { path: (record: Row) => string; rows: (data: unknown) => Row[] };
   rowAction?: RowAction;
+  /** Several, where a row can be made primary, archived or restored. */
+  rowActions?: RowAction[];
   /** A line added from the panel, while the record allows it. */
   adder?: {
     label: string;
@@ -373,31 +378,38 @@ export function RecordScreen(props: RecordScreenProps) {
         </div>
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
       </Sheet>
-      {saved && panels.map((panel) => <Panel key={panel.title} panel={panel} record={saved} />)}
+      {saved && panels.map((panel) => <RecordPanel key={panel.title} panel={panel} record={saved} />)}
     </article>
   );
 }
 
-function Panel({ panel, record }: { panel: PanelDef; record: Row }) {
+/** Rows that hang off a record, on a record screen or any page about one (a party's addresses). */
+export function RecordPanel({ panel, record }: { panel: PanelDef; record: Row }) {
   const { can } = useAccess();
   const act = useAct<Row>();
   const [adding, setAdding] = useState(false);
   if (!can(panel.permission)) return null;
-  const rowAction = panel.rowAction && can(panel.rowAction.permission) ? panel.rowAction : null;
+  const rowActions = [...(panel.rowAction ? [panel.rowAction] : []), ...(panel.rowActions ?? [])]
+    .filter((action) => can(action.permission));
   const remover = panel.remover && can(panel.remover.permission) && (!panel.remover.when || panel.remover.when(record))
     ? panel.remover : null;
   const adder = panel.adder && can(panel.adder.permission) && (!panel.adder.when || panel.adder.when(record))
     ? panel.adder : null;
   const extra: Column<Row>[] = [];
-  if (rowAction) {
+  if (rowActions.length) {
     extra.push({
-      key: "_act", label: "", width: "8rem",
-      render: (row) => (!rowAction.when || rowAction.when(row)) ? (
-        <button type="button" className="btn" disabled={act.pending} onClick={() => {
-          if (rowAction.confirm && !window.confirm(rowAction.confirm)) return;
-          void act.run("POST", rowAction.url(row, record), {}, { done: rowAction.done });
-        }}>{rowAction.label}</button>
-      ) : null,
+      key: "_act", label: "", width: rowActions.length > 1 ? "14rem" : "8rem",
+      render: (row) => (
+        <span className="row-actions">
+          {rowActions.filter((action) => !action.when || action.when(row)).map((action) => (
+            <button key={action.label} type="button" className="btn" disabled={act.pending} onClick={() => {
+              if (action.confirm && !window.confirm(action.confirm)) return;
+              void act.run(action.method ?? "POST", action.url(row, record), action.body ? action.body(row) : {},
+                { done: action.done });
+            }}>{action.label}</button>
+          ))}
+        </span>
+      ),
     });
   }
   if (remover) {

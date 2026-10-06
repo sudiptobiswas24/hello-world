@@ -43,11 +43,13 @@ from .serializers import (
 class CountryViewSet(viewsets.ModelViewSet):
     queryset = Country.objects.all()
     serializer_class = CountrySerializer
+    search_fields = ["code", "name"]
 
 
 class CurrencyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Currency.objects.all()
     serializer_class = CurrencySerializer
+    search_fields = ["code", "name"]
 
     @action(detail=True, methods=["get"])
     def rate(self, request, pk=None):
@@ -64,11 +66,17 @@ class CurrencyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class ExchangeRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ExchangeRate.objects.select_related("currency")
     serializer_class = ExchangeRateSerializer
+    filter_fields = ["currency"]
+    search_fields = ["currency__code", "currency__name"]
+    date_field = "valid_from"
+    ordering_fields = ["valid_from"]
 
 
 class UnitOfMeasureViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = UnitOfMeasure.objects.all()
+    queryset = UnitOfMeasure.objects.select_related("base_unit")
     serializer_class = UnitOfMeasureSerializer
+    filter_fields = ["category"]
+    search_fields = ["code", "name"]
 
 
 class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -156,31 +164,39 @@ class PartyScopedMixin:
 class PartyRoleAssignmentViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyRoleAssignment.objects.all()
     serializer_class = PartyRoleAssignmentSerializer
+    filter_fields = ["party", "role"]
 
 
 class AddressViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Address.objects.select_related("country", "party")
     serializer_class = AddressSerializer
+    filter_fields = ["party", "address_type", "is_active", "is_primary"]
 
 
 class ContactViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Contact.objects.select_related("party")
     serializer_class = ContactSerializer
+    filter_fields = ["party", "is_active", "is_primary"]
+    search_fields = ["first_name", "last_name", "email", "phone", "mobile"]
 
 
 class PartyBankAccountViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyBankAccount.objects.select_related("party", "currency")
     serializer_class = PartyBankAccountSerializer
+    filter_fields = ["party", "is_active"]
 
 
 class PartyTagViewSet(viewsets.ModelViewSet):
     queryset = PartyTag.objects.all()
     serializer_class = PartyTagSerializer
+    search_fields = ["name", "description"]
 
 
 class PaymentTermsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PaymentTerms.objects.all()
     serializer_class = PaymentTermsSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
 
 
 class CompanyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

@@ -5,7 +5,7 @@ decision still owed, or a place the tests do not reach. Each says what
 would go wrong, how likely it is here, and what to do about it. Remove
 an entry only in the commit that removes the risk.
 
-Last reviewed: 2026-10-05.
+Last reviewed: 2026-10-06.
 
 ## Before the first real day
 
@@ -154,3 +154,7 @@ not cover, or is deleted with the commit that finishes it.
 - ~~L3 Link a login to an employee~~ — done, for leave; see items 6 and 17.
 - ~~L4 Import from files (CSV)~~ — done; see item 2 for what it has
   not been tried on.
+- L6 A second role for a party already made: a vendor who also buys
+  scrap. Only the admin gives one today, and the roles API it would use
+  does not yet ask what making a party asks (trading roles only, and a
+  rep's own customers). Comes with the batch for admin-only features.

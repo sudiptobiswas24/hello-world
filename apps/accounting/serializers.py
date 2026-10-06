@@ -66,20 +66,25 @@ class TaxGroupSerializer(serializers.ModelSerializer):
 
 
 class TaxSerializer(serializers.ModelSerializer):
+    group_name = serializers.CharField(source="group.name", read_only=True, default="")
+
     class Meta:
         model = Tax
         fields = [
             "id", "code", "name", "group", "computation", "rate", "price_included",
             "include_base_amount", "sequence", "scope", "collected_account",
             "paid_account", "is_active",
-            "gst_head",
+            "gst_head", "group_name",
         ]
 
 
 class FiscalPositionTaxMappingSerializer(serializers.ModelSerializer):
+    source_tax_name = serializers.CharField(source="source_tax.name", read_only=True)
+    target_tax_name = serializers.CharField(source="target_tax.name", read_only=True, default="")
+
     class Meta:
         model = FiscalPositionTaxMapping
-        fields = ["id", "fiscal_position", "source_tax", "target_tax"]
+        fields = ["id", "fiscal_position", "source_tax", "target_tax", "source_tax_name", "target_tax_name"]
 
 
 class FiscalPositionSerializer(serializers.ModelSerializer):

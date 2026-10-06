@@ -13,7 +13,6 @@ interface Party {
 const columns: Column<Party>[] = [
   { key: "code", label: "Code", sort: "code", width: "8rem" },
   { key: "name", label: "Name", sort: "name" },
-  { key: "tax_id", label: "GSTIN", width: "12rem" },
   { key: "phone", label: "Phone", width: "10rem" },
   { key: "email", label: "Email" },
   {
@@ -38,7 +37,7 @@ export function PartyList({ role, title, base }: { role: "customer" | "vendor"; 
       rowKey={(row) => row.id}
       rowHref={(row) => `${base}/${row.id}`}
       create={{ href: `${base}/new`, permission: "core.add_party" }}
-      searchHint="Code, name, GSTIN, phone, email"
+      searchHint="Code, name, phone, email"
       facets={[
         { label: "Active", params: { is_active: "true" } },
         { label: "Archived", params: { is_active: "false" } },

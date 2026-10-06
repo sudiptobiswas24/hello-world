@@ -475,6 +475,23 @@ class PartyRoleAssignment(AuditModel):
         return f"{self.party} [{self.role}]"
 
 
+def take_primary(row, **scope):
+    """
+    Marking a record primary unmarks whichever was, in the same scope.
+
+    The database holds one primary per scope and refuses a second; a
+    person ticking "primary" on the new address means the old one no
+    longer is, and should not have to untick it first. Called from save()
+    inside the save's own transaction, so a refused save unmarks nothing.
+    A scope with no party is no scope: the company's own address is
+    nobody's rival, and the database does not hold party-less rows to one.
+    """
+    if not row.is_primary or None in scope.values():
+        return
+    type(row)._base_manager.filter(is_primary=True, **scope).exclude(pk=row.pk).update(
+        is_primary=False, updated_at=timezone.now(), updated_by_id=row.updated_by_id)
+
+
 class AddressType(models.TextChoices):
     BILLING = "billing", "Billing"
     SHIPPING = "shipping", "Shipping"
@@ -518,8 +535,44 @@ class Address(AuditModel):
             )
         ]
 
+    # What a document prints of an address. Its label, whether it is the
+    # primary one and whether it is still in use print nowhere.
+    PRINTED = ("party_id", "address_type", "line1", "line2", "city", "state", "postal_code",
+               "country_id")
+
     def __str__(self):
         return self.one_line()
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            before = Address.objects.filter(pk=self.pk).values(*self.PRINTED).first()
+            if before and any(before[name] != getattr(self, name) for name in self.PRINTED):
+                printed_on = self.posted_documents()
+                if printed_on:
+                    raise ValidationError(
+                        f"A posted {printed_on} prints this address, and every reprint would print "
+                        "the new one. Add the new address and archive this one."
+                    )
+        with transaction.atomic():
+            take_primary(self, party_id=self.party_id, address_type=self.address_type)
+            super().save(*args, **kwargs)
+
+    def posted_documents(self):
+        """
+        The kind of posted document that names this address, or "".
+
+        Asked of whatever points at an address and can be posted, without
+        importing it: core imports no module built on it.
+        """
+        for relation in self._meta.get_fields(include_hidden=True):
+            if not (relation.one_to_many and relation.auto_created):
+                continue
+            model = relation.related_model
+            if not any(field.name == "posted" for field in model._meta.get_fields()):
+                continue
+            if model._base_manager.filter(**{relation.field.name: self, "posted": True}).exists():
+                return str(model._meta.verbose_name)
+        return ""
 
     def one_line(self):
         parts = [self.line1, self.line2, self.city, self.state, self.postal_code]
@@ -565,6 +618,11 @@ class Contact(AuditModel):
     def __str__(self):
         return f"{self.full_name()} ({self.party.name})"
 
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            take_primary(self, party_id=self.party_id)
+            super().save(*args, **kwargs)
+
     def full_name(self):
         return " ".join(part for part in [self.first_name, self.last_name] if part)
 
@@ -602,7 +660,9 @@ class PartyBankAccount(AuditModel):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_number()
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            take_primary(self, party_id=self.party_id)
+            super().save(*args, **kwargs)
 
     def _check_number(self):
         if not self.account_number and not self.iban:
