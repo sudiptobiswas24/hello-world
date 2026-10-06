@@ -1,6 +1,7 @@
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Prefetch, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -12,9 +13,10 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.core.api import record_or_404
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.permissions import ActionPermission, RequiredPermission
-from apps.inventory.models import Lot, Warehouse
+from apps.inventory.models import Item, Lot, Warehouse
 from apps.sales.models import SalesOrderLine
 
 from .bom import (
@@ -70,6 +72,7 @@ from .scrap import OperationReport, ProductionScrap, ScrapReason
 from . import rebatch as rebatching
 from .rebatch import Rebatch
 from .serializers import (
+    CoatingLineSerializer,
     RebatchSerializer,
     OperationReportSerializer,
     ProductionScrapSerializer,
@@ -358,7 +361,55 @@ class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["code"]
     # Solving writes nothing, so it asks only to see specifications:
     # whoever quotes a sack need not be allowed to create one.
-    action_permission_map = {"solve": "manufacturing.view_bagspecification"}
+    action_permission_map = {"solve": "manufacturing.view_bagspecification",
+                             "coating": "manufacturing.change_bagspecification"}
+
+    @action(detail=True, methods=["post", "delete"])
+    def coating(self, request, pk=None):
+        """
+        A polymer added to the blend ({"item", "parts"}), or taken out
+        (DELETE ?item=). The blend is what makes a sack laminated: the
+        first line laminates it, with the coating's weight
+        ("lamination_gsm"), and taking the last one off leaves it plain
+        and weightless, in the same save. Separately, each refused the
+        other: a laminated sack needs a coating, and a coating on a plain
+        sack is bought for every sack and put on none.
+        """
+        sack = self.get_object()
+        blend = sack.coating_blend()
+        if request.method == "DELETE":
+            item = record_or_404(Item, request.query_params.get("item"), "item")
+            kept = [(each, parts) for each, parts in blend if each.pk != item.pk]
+            if len(kept) == len(blend):
+                raise DRFValidationError({"item": [f"{item.sku} is not in the coating."]})
+        else:
+            line = CoatingLineSerializer(data=request.data)
+            line.is_valid(raise_exception=True)
+            item, parts = line.validated_data["item"], line.validated_data["parts"]
+            if any(each.pk == item.pk for each, _parts in blend):
+                raise DRFValidationError({"item": [f"{item.sku} is in the coating already; take it out "
+                                                   "and add it with its whole share."]})
+            kept = [*blend, (item, parts)]
+            if not sack.is_laminated:
+                weight = request.data.get("lamination_gsm")
+                try:
+                    weight = Decimal(str(weight))
+                except (InvalidOperation, ValueError):
+                    weight = None
+                if weight is None or not weight.is_finite() or weight <= 0:
+                    raise DRFValidationError({"lamination_gsm": [
+                        "The sack becomes laminated with this; say how heavy the coating is."]})
+                sack.lamination_gsm = weight
+        if not kept:
+            sack.lamination_gsm = Decimal("0")
+        sack.is_laminated = bool(kept)
+        sack.set_coating(kept)
+        try:
+            with transaction.atomic():
+                sack.save()
+        except DjangoValidationError as error:
+            raise DRFValidationError(error.messages)
+        return Response(self.get_serializer(BagSpecification.objects.get(pk=sack.pk)).data)
 
     @action(detail=False, methods=["post"],
             permission_classes=[IsAuthenticated, ActionPermission])

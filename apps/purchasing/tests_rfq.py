@@ -170,10 +170,11 @@ class ComparisonTests(RfqTestCase):
     def test_a_part_quote_gets_no_total(self):
         """A part-quote compared against a full one is not a comparison,
         and showing it as a smaller number is actively misleading."""
-        rfq = self.rfq("100")
+        rfq = self.rfq("100", issue=False)
         second_line = RfqLine.objects.create(
             rfq=rfq, item=self.item, uom=self.uom, quantity=Decimal("50")
         )
+        rfq.issue()
         self.invitations[0].quote(self.line, "5")
         self.invitations[0].quote(second_line, "5")
         self.invitations[1].quote(self.line, "4")  # only one line
@@ -226,18 +227,19 @@ class AwardTests(RfqTestCase):
         self.assertEqual(order.lines.get().warehouse, self.warehouse)
 
     def test_a_vendor_who_did_not_quote_everything_cannot_be_awarded(self):
-        rfq = self.rfq("100")
+        rfq = self.rfq("100", issue=False)
         RfqLine.objects.create(
             rfq=rfq, item=self.item, uom=self.uom, quantity=Decimal("50")
         )
+        rfq.issue()
         self.invitations[0].quote(self.line, "5")
 
         with self.assertRaisesMessage(ValidationError, "did not quote"):
             rfq.award(self.invitations[0])
 
     def test_an_unissued_rfq_cannot_be_awarded(self):
+        # Nobody can quote on a draft, so it is refused before any quote is read.
         rfq = self.rfq(issue=False)
-        self.invitations[0].quote(self.line, "5")
         with self.assertRaisesMessage(ValidationError, "Only an issued RFQ"):
             rfq.award(self.invitations[0])
 

@@ -1,5 +1,21 @@
 from rest_framework.routers import DefaultRouter
 
+from .documents_api import (
+    BlanketOrderLineViewSet,
+    BlanketOrderViewSet,
+    PurchaseRequisitionLineViewSet,
+    PurchaseRequisitionViewSet,
+    RequestForQuotationViewSet,
+    RfqInvitationViewSet,
+    RfqLineViewSet,
+)
+from .masters_api import (
+    ApprovalTierViewSet,
+    BudgetViewSet,
+    PurchaseApprovalPolicyViewSet,
+    ReorderRuleViewSet,
+    VendorPriceViewSet,
+)
 from .views import (
     BillPaymentViewSet,
     PurchasingReportViewSet,
@@ -22,5 +38,17 @@ router.register(
 router.register("bill-lines", BillLineViewSet)
 router.register("goods-receipts", GoodsReceiptViewSet)
 router.register("goods-receipt-lines", GoodsReceiptLineViewSet)
+router.register("vendor-prices", VendorPriceViewSet)
+router.register("reorder-rules", ReorderRuleViewSet)
+router.register("budgets", BudgetViewSet)
+router.register("approval-policies", PurchaseApprovalPolicyViewSet)
+router.register("approval-tiers", ApprovalTierViewSet)
+router.register("requisitions", PurchaseRequisitionViewSet)
+router.register("requisition-lines", PurchaseRequisitionLineViewSet)
+router.register("rfqs", RequestForQuotationViewSet)
+router.register("rfq-lines", RfqLineViewSet)
+router.register("rfq-invitations", RfqInvitationViewSet)
+router.register("blanket-orders", BlanketOrderViewSet)
+router.register("blanket-order-lines", BlanketOrderLineViewSet)
 
 urlpatterns = router.urls

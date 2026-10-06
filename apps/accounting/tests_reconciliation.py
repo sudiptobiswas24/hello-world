@@ -164,8 +164,11 @@ class MatchingTests(ReconciliationTestCase):
         )
         line = self.line(second, "1000", on=datetime.date(2026, 2, 5))
 
-        with self.assertRaises(IntegrityError):
+        with self.assertRaisesMessage(ValidationError, "already matched"):
             line.match(payment)
+        # Written past match(), the database still refuses it.
+        with self.assertRaises(IntegrityError):
+            BankStatementLine.objects.filter(pk=line.pk).update(payment=payment)
 
     def test_a_line_can_be_unmatched(self):
         payment = self.receipt("1000")

@@ -1,5 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
+from .writeoffs_api import InvoiceWriteOffViewSet
+
 from .call_off_views import CallOffViewSet
 from .price_variation_views import (
     PriceClauseViewSet,
@@ -38,6 +40,7 @@ router.register("third-party-releases", ThirdPartyReleaseViewSet)
 router.register("invoices", InvoiceViewSet)
 router.register("invoice-lines", InvoiceLineViewSet)
 router.register("invoice-payments", InvoicePaymentViewSet)
+router.register("invoice-write-offs", InvoiceWriteOffViewSet)
 router.register("deliveries", DeliveryViewSet)
 router.register("delivery-lines", DeliveryLineViewSet)
 router.register("price-lists", PriceListViewSet)

@@ -296,7 +296,25 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         "post_invoice": "sales.post_invoice",
         "credit_note": "sales.post_invoice",
         "credit_old_supply": "sales.post_invoice",
+        "write_off": "sales.write_off_invoice",
     }
+
+    @action(detail=True, methods=["post"])
+    def write_off(self, request, pk=None):
+        """What is left, or {"amount": "..."} of it, to bad debt; with a reason."""
+        invoice = self.get_object()
+        reason = (request.data.get("reason") or "").strip()
+        if not reason:
+            # The model takes a blank reason; an auditor asking why a
+            # receivable vanished does not.
+            raise DRFValidationError({"reason": ["Say why it will not be paid."]})
+        try:
+            invoice.write_off(amount=money_amount(request.data, "amount"),
+                              on_date=request.data.get("date") or None, reason=reason)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        invoice.refresh_from_db()
+        return Response(self.get_serializer(invoice).data)
 
     @action(detail=True, methods=["post"])
     def credit_old_supply(self, request, pk=None):

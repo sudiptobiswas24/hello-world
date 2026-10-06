@@ -203,6 +203,44 @@ export const MODULES: Module[] = [
         path: "aging", label: "Payables by age", permission: "purchasing.view_purchaseorder",
         keywords: "aging overdue creditors payable", load: () => import("../modules/purchasing/Aging"),
       },
+      {
+        path: "requisitions", label: "Requisitions", permission: "purchasing.view_purchaserequisition", create: "purchasing.add_purchaserequisition",
+        also: ["purchasing.view_purchaserequisitionline"],
+        keywords: "request indent ask approve", load: () => import("../modules/purchasing/Requisitions"),
+        detail: () => import("../modules/purchasing/RequisitionForm"),
+      },
+      {
+        path: "rfqs", label: "Requests for quotation", permission: "purchasing.view_requestforquotation", create: "purchasing.add_requestforquotation",
+        also: ["purchasing.view_rfqline", "purchasing.view_rfqinvitation"],
+        keywords: "rfq quotation tender compare quotes award", load: () => import("../modules/purchasing/Rfqs"),
+        detail: () => import("../modules/purchasing/RfqForm"),
+      },
+      {
+        path: "blanket-orders", label: "Blanket orders", permission: "purchasing.view_blanketorder", create: "purchasing.add_blanketorder",
+        also: ["purchasing.view_blanketorderline"],
+        keywords: "blanket contract agreement release call off", load: () => import("../modules/purchasing/BlanketOrders"),
+        detail: () => import("../modules/purchasing/BlanketOrderForm"),
+      },
+      {
+        path: "vendor-prices", label: "Vendor prices", permission: "purchasing.view_vendorprice", create: "purchasing.add_vendorprice",
+        keywords: "agreed price break lead time preferred vendor", load: () => import("../modules/purchasing/VendorPrices"),
+        detail: () => import("../modules/purchasing/VendorPriceForm"),
+      },
+      {
+        path: "reorder-rules", label: "Reorder rules", permission: "purchasing.view_reorderrule", create: "purchasing.add_reorderrule",
+        keywords: "minimum maximum reorder level min max", load: () => import("../modules/purchasing/ReorderRules"),
+        detail: () => import("../modules/purchasing/ReorderRuleForm"),
+      },
+      {
+        path: "budgets", label: "Budgets", permission: "purchasing.view_budget", create: "purchasing.add_budget",
+        keywords: "budget spend committed available", load: () => import("../modules/purchasing/Budgets"),
+        detail: () => import("../modules/purchasing/BudgetForm"),
+      },
+      {
+        path: "approval-policies", label: "Purchase approval", permission: "purchasing.view_purchaseapprovalpolicy", create: "purchasing.add_purchaseapprovalpolicy",
+        keywords: "approval limit threshold tier sign off", load: () => import("../modules/purchasing/ApprovalPolicies"),
+        detail: () => import("../modules/purchasing/ApprovalPolicyForm"),
+      },
     ],
   },
   {
@@ -335,6 +373,12 @@ export const MODULES: Module[] = [
     label: "How it's made",
     icon: "making",
     screens: [
+      {
+        path: "manufacturing-settings", label: "Manufacturing settings", permission: "manufacturing.view_manufacturingsettings",
+        keep: "manufacturing.change_manufacturingsettings",
+        keywords: "wip work in progress variance scrap revaluation accounts", load: () => import("../modules/making/ManufacturingSettingsList"),
+        detail: () => import("../modules/making/ManufacturingSettingsForm"),
+      },
       {
         path: "boms", label: "Bills of materials", permission: "manufacturing.view_billofmaterials",
         create: "manufacturing.add_billofmaterials",
@@ -588,6 +632,12 @@ export const MODULES: Module[] = [
         keywords: "certificate standard", load: () => import("../modules/quality/Calibrations"),
         detail: () => import("../modules/quality/CalibrationForm"),
       },
+      {
+        path: "quality-settings", label: "Quality settings", permission: "quality.view_qualitysettings",
+        keep: "quality.change_qualitysettings",
+        keywords: "concession second person segregation", load: () => import("../modules/quality/QualitySettingsList"),
+        detail: () => import("../modules/quality/QualitySettingsForm"),
+      },
     ],
   },
   {
@@ -633,6 +683,17 @@ export const MODULES: Module[] = [
       {
         path: "asset-register", label: "Fixed asset register", permission: "assets.view_fixedasset",
         keywords: "book value depreciation register", load: () => import("../modules/accounts/AssetRegister"),
+      },
+      {
+        path: "bank-statements", label: "Bank statements", permission: "accounting.view_bankstatement",
+        create: "accounting.add_bankstatement",
+        keywords: "reconciliation brs bank reconcile cheque unpresented", load: () => import("../modules/accounts/BankStatements"),
+        detail: () => import("../modules/accounts/BankStatementForm"),
+      },
+      {
+        path: "bad-debts", label: "Bad debts", permission: "sales.view_invoicewriteoff",
+        keywords: "write off bad debt recover uncollectable", load: () => import("../modules/accounts/WriteOffs"),
+        detail: () => import("../modules/accounts/WriteOffForm"),
       },
       {
         path: "asset-categories", label: "Asset categories", permission: "assets.view_assetcategory",
@@ -850,6 +911,20 @@ export const MODULES: Module[] = [
         create: "core.add_unitofmeasure",
         keywords: "uom unit kg pcs conversion", load: () => import("../modules/settings/Units"),
         detail: () => import("../modules/settings/UnitForm"),
+      },
+      {
+        path: "charge-types", label: "Charge types", permission: "accounting.view_chargetype",
+        keep: "accounting.change_chargetype",
+        create: "accounting.add_chargetype",
+        keywords: "freight loading surcharge sac", load: () => import("../modules/settings/ChargeTypes"),
+        detail: () => import("../modules/settings/ChargeTypeForm"),
+      },
+      {
+        path: "numbering", label: "Document numbering", permission: "core.view_documentsequence",
+        keep: "core.change_documentsequence",
+        create: "core.add_documentsequence",
+        keywords: "sequence prefix invoice number series", load: () => import("../modules/settings/DocumentSequences"),
+        detail: () => import("../modules/settings/DocumentSequenceForm"),
       },
       {
         path: "payment-terms", label: "Payment terms", permission: "core.view_paymentterms",

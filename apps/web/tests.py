@@ -210,8 +210,12 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
     # Every collection no screen keeps, and why it needs none.
     NO_SCREEN = {
         "/api/core/party-roles/": (
-            "A party is made in its role, from the customer or vendor list or by HR. A second "
-            "role is the admin's until its panel comes with the batch for admin-only features."
+            "Read only. A party is made in its role, from the customer or vendor list or by HR, "
+            "and a second trading role is given on the party page (parties/<id>/roles/)."
+        ),
+        "/api/core/roles/": (
+            "Read to choose a role an approval tier names. Roles are made by setup_roles "
+            "and given to people in the admin."
         ),
         "/api/manufacturing/scale-readings/": "Posted by a scale's bridge; nobody lists it.",
         "/api/manufacturing/work-order-operations/": (

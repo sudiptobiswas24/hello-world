@@ -165,7 +165,6 @@ not cover, or is deleted with the commit that finishes it.
   costing, valuation folds and lot trace switch them over stock and are
   reworked first, or a step that switches one revalues the stock or
   puts it into an opening batch.
-- L6 A second role for a party already made: a vendor who also buys
-  scrap. Only the admin gives one today, and the roles API it would use
-  does not yet ask what making a party asks (trading roles only, and a
-  rep's own customers). Comes with the batch for admin-only features.
+- ~~L6 A second role for a party already made~~ — done: given on the
+  party's page (`parties/<id>/roles/`), asked as making the party is
+  asked; a rep claims no vendor, and a role a document names stays.

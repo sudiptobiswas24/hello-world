@@ -155,7 +155,11 @@ class FoldAllowanceDefault:
 
 class CoatingLineSerializer(serializers.Serializer):
     item = serializers.PrimaryKeyRelatedField(queryset=Item.objects.all())
+    item_label = serializers.SerializerMethodField()
     parts = serializers.DecimalField(max_digits=10, decimal_places=3)
+
+    def get_item_label(self, line):
+        return f"{line.item.sku} · {line.item.name}"
 
 
 class BagSpecificationSerializer(FoldAllowanceDefault, serializers.ModelSerializer):

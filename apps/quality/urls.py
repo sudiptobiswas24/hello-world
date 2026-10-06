@@ -1,5 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
+from .settings_api import QualitySettingsViewSet
+
 from .views import (
     SamplingPlanViewSet,
     ControlChartViewSet,
@@ -24,5 +26,7 @@ router.register("instruments", InstrumentViewSet)
 router.register("calibrations", CalibrationViewSet)
 router.register("spc", ControlChartViewSet, basename="spc")
 router.register("sampling", SamplingPlanViewSet, basename="sampling")
+
+router.register("quality-settings", QualitySettingsViewSet, basename="quality-setting")
 
 urlpatterns = router.urls

@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .numbering_api import DocumentSequenceViewSet
 from .views import (
     AddressViewSet,
     CompanyViewSet,
@@ -14,6 +15,7 @@ from .views import (
     PartyTagViewSet,
     PartyViewSet,
     PaymentTermsViewSet,
+    RoleViewSet,
     UnitOfMeasureViewSet,
 )
 
@@ -30,5 +32,7 @@ router.register("exchange-rates", ExchangeRateViewSet)
 router.register("units-of-measure", UnitOfMeasureViewSet)
 router.register("payment-terms", PaymentTermsViewSet)
 router.register("company", CompanyViewSet)
+router.register("roles", RoleViewSet)
+router.register("document-sequences", DocumentSequenceViewSet)
 
 urlpatterns = [path("me/", MeView.as_view(), name="me"), *router.urls]

@@ -184,6 +184,8 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = _order_lines().select_related("order__vendor__tax_profile")
     serializer_class = PurchaseOrderLineSerializer
+    # The orders a blanket or a requisition became, found from it.
+    filter_fields = ["order", "blanket_line__blanket", "requisition_line__requisition"]
     action_permission_map = {"close_short": "purchasing.change_purchaseorder",
                              "reopen": "purchasing.change_purchaseorder"}
 
@@ -312,7 +314,46 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post_receipt": "purchasing.post_goodsreceipt",
         "return_receipt": "purchasing.post_goodsreceipt",
+        "accept": "purchasing.add_receiptinspection",
+        "reject": "purchasing.add_receiptinspection",
     }
+
+    @action(detail=True, methods=["get"])
+    def inspection(self, request, pk=None):
+        """What is still held for inspection on this receipt, and every decision made on it."""
+        receipt = self.get_object()
+        from .models import ReceiptInspection
+
+        return Response({
+            "waiting": [{"line": line.pk, "item": f"{line.order_line.item.sku} · {line.order_line.item.name}",
+                         "warehouse": line.warehouse.name, "quantity": quantity}
+                        for line, quantity in receipt.awaiting_inspection().items()],
+            "decided": [{"id": row.pk, "line": row.receipt_line_id, "quantity": row.quantity,
+                         "accepted": row.accepted, "on": row.inspected_on, "note": row.note,
+                         "item": row.receipt_line.order_line.item.sku}
+                        for row in ReceiptInspection.objects.filter(receipt_line__receipt=receipt)
+                        .select_related("receipt_line__order_line__item").order_by("id")],
+        })
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        """{warehouse, quantities?}: held goods passed, cleared to a shelf they can ship from."""
+        receipt = self.get_object()
+        warehouse = record_or_404(Warehouse, request.data.get("warehouse"), "warehouse")
+        quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
+        receipt.accept(warehouse, quantities=quantities)
+        return Response(self.get_serializer(receipt).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """{quantities?, note, debit_bills?}: held goods failed, and sent back to the vendor."""
+        receipt = self.get_object()
+        quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
+        if not str(request.data.get("note", "")).strip():
+            raise DRFValidationError({"note": ["Say why they failed: it is the vendor's record."]})
+        returned = receipt.reject(quantities=quantities, note=str(request.data["note"]),
+                                  debit_bills=flag(request.data, "debit_bills", True))
+        return Response({"return": returned.pk, "number": returned.number}, status=201)
 
     @action(detail=True, methods=["post"])
     def post_receipt(self, request, pk=None):

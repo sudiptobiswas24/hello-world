@@ -27,7 +27,7 @@ export default function BagSpecForm() {
         { key: "bag_length_cm", label: "Bag length cm", kind: "decimal", places: 2, hint: "The finished sack's length, hems excluded" },
         { key: "bottom_hem_cm", label: "Bottom hem cm", kind: "decimal", places: 2, initial: "3", hint: "Fabric turned up and stitched at the bottom" },
         { key: "top_hem_cm", label: "Top hem cm", kind: "decimal", places: 2, initial: "2", hint: "Fabric folded and hemmed at the mouth, one stitch row" },
-        { key: "is_laminated", label: "Laminated", kind: "bool", initial: false },
+        { key: "is_laminated", label: "Laminated", kind: "bool", initial: false, readOnly: true, hint: "Laminated while it has a coating blend: add the first polymer below" },
         { key: "lamination_gsm", label: "Lamination GSM", kind: "decimal", places: 2, initial: "0", hint: "Weight of the coating per square metre of fabric, typically 12 to 20" },
         { key: "lamination_waste_percent", label: "Lamination waste %", kind: "decimal", places: 3, initial: "4", hint: "Of the coating polymer fed in" },
         { key: "print_colours", label: "Print colours", kind: "integer", initial: 0, hint: "Colours printed on the front face" },
@@ -93,12 +93,26 @@ export default function BagSpecForm() {
         { key: "routing", label: "Routing", kind: "ref", ref: ROUTING, hint: "The machines this passes through" },
       ]}
       panels={[{
-        title: "Coating blend", permission: "manufacturing.view_bagcoatingline", endpoint: "", query: () => ({}),
-        rows: (record) => ((record.coating as Row[]) ?? []).map((line, index) => ({ id: index, ...line })),
+        title: "Coating blend", permission: "manufacturing.view_bagspecification", endpoint: "", query: () => ({}),
+        rows: (record) => ((record.coating as Row[]) ?? []).map((line) => ({ ...line, id: Number(line.item), spec: record.id })),
         columns: [
-          { key: "item", label: "Item" },
+          { key: "item_label", label: "Polymer" },
           { key: "parts", label: "Parts", kind: "quantity", width: "8rem" },
         ],
+        adder: {
+          label: "Add a polymer", permission: "manufacturing.change_bagspecification",
+          url: (record) => `/api/manufacturing/bag-specifications/${String(record.id)}/coating/`,
+          fields: (record) => [
+            { key: "item", label: "Polymer", kind: "pick", pick: ITEM },
+            { key: "parts", label: "Parts", kind: "decimal", places: 3, hint: "Its share by weight: 80 and 20, or 4 and 1" },
+            ...(record.is_laminated ? [] : [{ key: "lamination_gsm", label: "Coating GSM", kind: "decimal", places: 2, hint: "The sack becomes laminated: the coating's weight per square metre, typically 12 to 20" } as FieldDef]),
+          ],
+          body: (values) => values,
+        },
+        remover: {
+          permission: "manufacturing.change_bagspecification",
+          url: (row) => `/api/manufacturing/bag-specifications/${String(row.spec)}/coating/?item=${String(row.item)}`,
+        },
       }]}
     />
   );

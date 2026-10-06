@@ -49,6 +49,7 @@ from apps.sales.models import (
     InvoiceLine,
     InvoicePayment,
     InvoicePolicy,
+    InvoiceWriteOff,
 )
 from apps.sales import tests_base as sales_fixture
 
@@ -179,6 +180,16 @@ class SalesRaceTests(RaceCase):
         self.once(race(Invoice, *[
             lambda: Invoice.objects.get(pk=invoice.pk).create_credit_note()] * 2))
         self.assertEqual(self.balance(self.ar), Decimal("0.00"))
+
+    def test_a_write_off_is_recovered_once(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        invoice.write_off(reason="Liquidated")
+        write_off = invoice.write_offs.get()
+        self.once(race(JournalEntry, *[
+            lambda: Invoice.objects.get(pk=invoice.pk).recover_write_off(
+                InvoiceWriteOff.objects.get(pk=write_off.pk))] * 2))
+        self.assertEqual((self.balance(self.bad_debt), self.balance(self.ar)),
+                         (Decimal("0.00"), Decimal("1000.00")))
 
     def test_a_deposit_is_drawn_down_once(self):
         order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)

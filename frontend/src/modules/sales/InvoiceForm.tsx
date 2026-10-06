@@ -113,6 +113,16 @@ export default function InvoiceForm() {
     });
     if (outcome.ok) navigate(`/sales/invoices/${outcome.data.id}`);
   };
+  const writeOff = async () => {
+    // Not a credit note: the sale happened and the money never came.
+    const amount = window.prompt(`How much of ${invoice!.number} to write off to bad debt? Leave it empty for all that is owed.`);
+    if (amount === null) return;
+    const reason = window.prompt("Why will it not be paid?");
+    if (reason === null) return;
+    await act.run("POST", `${ENDPOINT}${invoice!.id}/write_off/`, { reason, ...(amount.trim() ? { amount: amount.trim() } : {}) }, {
+      done: "Written off to bad debt",
+    });
+  };
   const email = () => act.run("POST", `${ENDPOINT}${invoice!.id}/send/`, {}, {
     done: (result) => `Sent to ${(result as unknown as { sent_to: string }).sent_to}`,
   });
@@ -129,6 +139,9 @@ export default function InvoiceForm() {
         )}
         {invoice?.posted && !invoice.credits && can("sales.post_invoice") && positive(minus(invoice.total, invoice.amount_credited)) && (
           <ActionButton pending={act.pending} onClick={() => void credit()}>Credit note</ActionButton>
+        )}
+        {invoice?.posted && !invoice.credits && positive(invoice.amount_due) && can("sales.write_off_invoice") && (
+          <ActionButton pending={act.pending} onClick={() => void writeOff()}>Write off</ActionButton>
         )}
         {invoice?.posted && !invoice.credits && positive(invoice.amount_due) && can("accounting.add_payment") && (
           <Link className="btn" to={`/sales/receipts/new?customer=${invoice.customer}&invoice=${invoice.id}`}>Receive payment</Link>

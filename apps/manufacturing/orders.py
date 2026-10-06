@@ -153,6 +153,21 @@ class ManufacturingSettings(AuditModel):
     def __str__(self):
         return "Manufacturing settings"
 
+    def save(self, *args, **kwargs):
+        if self._state.adding and ManufacturingSettings.objects.exists():
+            raise ValidationError("There is one set of manufacturing settings; change it rather than adding "
+                                  "another.")
+        if not self._state.adding:
+            before = ManufacturingSettings.objects.get(pk=self.pk)
+            # A released run's material sits on the old account, and its
+            # close would clear the new one: the old balance would stay
+            # for good.
+            if before.wip_account_id and self.wip_account_id != before.wip_account_id \
+                    and WorkOrder.objects.filter(status=WorkOrderStatus.RELEASED).exists():
+                raise ValidationError({"wip_account": "Runs are open with material on the present work in "
+                                                      "progress account; close them before moving it."})
+        super().save(*args, **kwargs)
+
     @classmethod
     def get(cls):
         return cls.objects.first() or cls.objects.create()

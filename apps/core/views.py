@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from rest_framework import viewsets
+from django.contrib.auth.models import Group
+from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
@@ -124,6 +125,56 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError([said])
         super().perform_destroy(instance)
 
+    action_permission_map = {"roles": "core.change_party"}
+
+    @action(detail=True, methods=["post", "delete"])
+    def roles(self, request, pk=None):
+        """
+        A vendor who also buys from us made a customer too ({"role"}), or
+        a role given by mistake taken back (DELETE ?role=). Asked as a new
+        party in that role is asked: a rep makes only customers, and the
+        customer is theirs once made.
+        """
+        party = self.get_object()
+        role = request.data.get("role") if request.method == "POST" else request.query_params.get("role")
+        if role not in self.TRADING_ROLES:
+            raise DRFValidationError({"role": [f"A party can be made a customer or a vendor here, not {role!r}."]})
+        user = request.user
+        said = refuse_change(user, party)
+        held = party.role_assignments.filter(role=role)
+        if request.method == "POST":
+            said = said or refuse_create(user, role)
+            if not said and held.exists():
+                said = f"{party} is a {role} already."
+            if said:
+                raise DRFValidationError([said])
+            with transaction.atomic():
+                PartyRoleAssignment.objects.create(party=party, role=role, created_by=user, updated_by=user)
+                created(party, role, user)
+        else:
+            if not said and not held.exists():
+                said = f"{party} is not a {role}."
+            said = said or _in_use_as(party, role)
+            if said:
+                raise DRFValidationError([said])
+            held.delete()
+        return Response(self.get_serializer(Party.objects.get(pk=party.pk)).data)
+
+
+def _in_use_as(party, role):
+    """
+    Why `party` cannot stop being a `role`: a document names it as one.
+    Found by field name, so the kernel asks the trading modules without
+    importing them; taken away, the party would drop out of the customer
+    list its orders were made from.
+    """
+    for relation in Party._meta.related_objects:
+        if relation.field.name == role and relation.related_model._base_manager.filter(
+                **{role: party}).exists():
+            return (f"{party} is the {role} on {relation.related_model._meta.verbose_name_plural}; "
+                    f"it stays a {role}.")
+    return None
+
 
 class PartyScopedMixin:
     """
@@ -161,7 +212,9 @@ class PartyScopedMixin:
         super().perform_destroy(instance)
 
 
-class PartyRoleAssignmentViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
+class PartyRoleAssignmentViewSet(PartyScopedMixin, viewsets.ReadOnlyModelViewSet):
+    # Given and taken through the party (PartyViewSet.roles), which asks
+    # what making a party in that role asks; written here, nothing did.
     queryset = PartyRoleAssignment.objects.all()
     serializer_class = PartyRoleAssignmentSerializer
     filter_fields = ["party", "role"]
@@ -240,3 +293,17 @@ class MeView(APIView):
         for provider in ME_EXTRAS:
             answer.update(provider(user))
         return Response(answer)
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Group
+        fields = ["id", "name"]
+
+
+class RoleViewSet(viewsets.ReadOnlyModelViewSet):
+    """The roles there are, to choose one: an approval tier names who signs."""
+
+    queryset = Group.objects.order_by("name")
+    serializer_class = RoleSerializer
+    search_fields = ["name"]

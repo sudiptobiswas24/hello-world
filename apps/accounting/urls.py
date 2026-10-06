@@ -1,5 +1,8 @@
 from rest_framework.routers import DefaultRouter
 
+from .banking_api import BankStatementLineViewSet, BankStatementViewSet
+from .charges_api import ChargeTypeViewSet
+
 from .views import (
     FinancialStatementViewSet,
     AccountViewSet,
@@ -26,5 +29,9 @@ router.register("payments", PaymentViewSet)
 router.register(
     "financial-statements", FinancialStatementViewSet, basename="financial-statement"
 )
+
+router.register("charge-types", ChargeTypeViewSet)
+router.register("bank-statements", BankStatementViewSet)
+router.register("bank-statement-lines", BankStatementLineViewSet)
 
 urlpatterns = router.urls

@@ -141,11 +141,17 @@ class DocumentSequenceTests(TestCase):
         self.assertEqual(peeked, "INV-2026-00001")
         self.assertEqual(self.sequence.next_value(datetime.date(2026, 3, 1)), "INV-2026-00001")
 
-    def test_year_can_be_omitted(self):
+    def test_year_can_be_omitted_from_one_running_count(self):
         sequence = DocumentSequence.objects.create(
-            code="po", name="POs", prefix="PO-", padding=4, include_year=False
+            code="po", name="POs", prefix="PO-", padding=4, include_year=False, reset_yearly=False
         )
         self.assertEqual(sequence.next_value(datetime.date(2026, 3, 1)), "PO-0001")
+        self.assertEqual(sequence.next_value(datetime.date(2027, 1, 1)), "PO-0002")
+
+    def test_a_yearly_count_shows_the_year(self):
+        # Without it January's PO-0001 is last January's too.
+        with self.assertRaises(ValidationError):
+            DocumentSequence.objects.create(code="po", name="POs", prefix="PO-", include_year=False)
 
 
 class AddressAndContactTests(TestCase):

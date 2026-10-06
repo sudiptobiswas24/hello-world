@@ -167,11 +167,14 @@ class RequisitionToOrderTests(RequisitionTestCase):
         other = Party.objects.create(code="V-2", name="Other", default_currency=self.usd)
         PartyRoleAssignment.objects.create(party=other, role=PartyRole.VENDOR)
 
-        requisition = self.approved("10", "5")
+        # Both lines asked for, then approved: what is approved is what is ordered.
+        requisition = self.requisition("10", "5", submit=False)
         second_line = PurchaseRequisitionLine.objects.create(
             requisition=requisition, item=self.item, uom=self.uom,
             quantity=Decimal("4"), estimated_price=Decimal("5"),
         )
+        requisition.submit()
+        requisition.approve(by=self.manager)
 
         first = requisition.create_order(self.vendor, lines=[self.line],
                                          order_date=datetime.date(2026, 1, 10))

@@ -8,6 +8,9 @@ import { CommitDecimal, CommitText, DecimalInput, Field } from "../../forms/fiel
 import { aboveZero } from "../../lib/decimal";
 import { date, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { RecordPanel } from "../../views/RecordScreen";
+
+import { INSPECTION_PANELS } from "./inspection";
 
 interface ReceiptLine {
   id: number;
@@ -161,6 +164,9 @@ export default function GoodsReceiptForm() {
           </div>
         )}
       </Sheet>
+      {receipt.posted && INSPECTION_PANELS.map((panel) => (
+        <RecordPanel key={panel.title} panel={panel} record={receipt as unknown as Record<string, unknown> & { id: number }} />
+      ))}
     </article>
   );
 }

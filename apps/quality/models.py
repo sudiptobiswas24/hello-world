@@ -72,6 +72,11 @@ class QualitySettings(AuditModel):
     def __str__(self):
         return "Quality settings"
 
+    def save(self, *args, **kwargs):
+        if self._state.adding and QualitySettings.objects.exists():
+            raise ValidationError("There is one set of quality settings; change it rather than adding another.")
+        super().save(*args, **kwargs)
+
     @classmethod
     def get(cls):
         return cls.objects.first() or cls.objects.create()

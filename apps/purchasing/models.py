@@ -38,6 +38,7 @@ from apps.core.models import (
     PaymentTerms,
     UnitOfMeasure,
     lock_rows,
+    only_one,
     prefetched,
     serialised,
     to_date,
@@ -86,6 +87,26 @@ def _names_another(row, field):
     if row._state.adding or row.pk is None:
         return True
     return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
+
+
+def _while(document, statuses, change):
+    """
+    Refuse `change` unless the document stands in one of `statuses`, said
+    in words. Asked of the stored status, not the one in hand: a line
+    holds its parent as it was read, and two people's screens are not
+    each other's.
+    """
+    if document.pk is None:
+        return
+    status = type(document)._base_manager.filter(pk=document.pk).values_list("status", flat=True).first()
+    if status is not None and status not in statuses:
+        label = dict(type(document)._meta.get_field("status").choices).get(status, status)
+        raise ValidationError(f"{document} is {str(label).lower()}: {change}")
+
+
+def _whole_save(kwargs):
+    """A save of every field, which a document's own steps never make: they name theirs."""
+    return kwargs.get("update_fields") is None
 
 
 class VendorPrice(AuditModel):
@@ -141,7 +162,15 @@ class VendorPrice(AuditModel):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_terms()
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            if self.is_preferred:
+                # One vendor is preferred for an item: preferring another
+                # hands it over, or preferred_vendor() picks between them by
+                # the order the rows happen to come in. The same vendor's
+                # other quantity breaks keep theirs.
+                VendorPrice.objects.filter(item_id=self.item_id, is_preferred=True).exclude(
+                    vendor_id=self.vendor_id).update(is_preferred=False, updated_at=timezone.now())
+            super().save(*args, **kwargs)
 
     def _check_terms(self):
         if _names_another(self, "vendor"):
@@ -208,7 +237,16 @@ class RequestForQuotation(AuditModel):
     def __str__(self):
         return self.number or f"RFQ-draft-{self.pk}"
 
-    @transaction.atomic
+    def save(self, *args, **kwargs):
+        if _whole_save(kwargs):
+            _while(self, [RfqStatus.DRAFT], "a request is changed while it is a draft. Cancel it and ask again.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self, [RfqStatus.DRAFT], "only a draft is deleted; an issued request is cancelled.")
+        return super().delete(*args, **kwargs)
+
+    @serialised("status")
     def issue(self):
         if self.status != RfqStatus.DRAFT:
             raise ValidationError(f"This RFQ is already {self.get_status_display().lower()}.")
@@ -372,6 +410,18 @@ class RfqLine(AuditModel):
     def __str__(self):
         return f"{self.item} x{self.quantity}"
 
+    # Vendors quote on these lines and the award orders them: changed after
+    # the request goes out, the quotes and the order read different things.
+    LINES_FIXED = "its lines change while it is a draft, before anyone quotes on them."
+
+    def save(self, *args, **kwargs):
+        _while(self.rfq, [RfqStatus.DRAFT], self.LINES_FIXED)
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self.rfq, [RfqStatus.DRAFT], self.LINES_FIXED)
+        return super().delete(*args, **kwargs)
+
 
 class RfqInvitation(AuditModel):
     """One vendor's involvement in an RFQ."""
@@ -400,7 +450,15 @@ class RfqInvitation(AuditModel):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_vendor()
+        if self._state.adding:
+            # A vendor may be asked late, while answers are still coming in.
+            _while(self.rfq, [RfqStatus.DRAFT, RfqStatus.SENT],
+                   "vendors are asked before it is awarded or cancelled.")
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self.rfq, [RfqStatus.DRAFT], "a vendor asked is an answer owed; take them off only a draft.")
+        return super().delete(*args, **kwargs)
 
     def _check_vendor(self):
         if _names_another(self, "vendor"):
@@ -408,6 +466,7 @@ class RfqInvitation(AuditModel):
 
     def decline(self, note=""):
         """A vendor saying no is an answer, and worth keeping."""
+        _while(self.rfq, [RfqStatus.SENT], "a vendor declines while the request is out.")
         if self.quotes.exists():
             raise ValidationError("This vendor has already quoted.")
         self.declined = True
@@ -456,6 +515,16 @@ class RfqQuote(AuditModel):
 
     def __str__(self):
         return f"{self.invitation.vendor} @ {self.unit_price}"
+
+    def save(self, *args, **kwargs):
+        # A quote given while the request was out; after the award it is the
+        # record of how the vendor was chosen, and moves no more.
+        _while(self.invitation.rfq, [RfqStatus.SENT], "quotes are given while the request is out.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self.invitation.rfq, [RfqStatus.SENT], "quotes are given while the request is out.")
+        return super().delete(*args, **kwargs)
 
 
 class RequisitionStatus(models.TextChoices):
@@ -521,7 +590,16 @@ class PurchaseRequisition(AuditModel):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_requester()
+        if _whole_save(kwargs):
+            # What was approved is what gets ordered: the approval-withdrawal
+            # hole orders had, here before anyone could reach it.
+            _while(self, [RequisitionStatus.DRAFT],
+                   "a requisition is changed while it is a draft. Cancel it and ask again.")
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self, [RequisitionStatus.DRAFT], "only a draft is deleted; a submitted one is cancelled.")
+        return super().delete(*args, **kwargs)
 
     def _check_requester(self):
         if _names_another(self, "requested_by"):
@@ -672,6 +750,16 @@ class PurchaseRequisitionLine(AuditModel):
 
     def __str__(self):
         return f"{self.item} x{self.quantity}"
+
+    LINES_FIXED = "its lines change while it is a draft; what is approved is what is ordered."
+
+    def save(self, *args, **kwargs):
+        _while(self.requisition, [RequisitionStatus.DRAFT], self.LINES_FIXED)
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self.requisition, [RequisitionStatus.DRAFT], self.LINES_FIXED)
+        return super().delete(*args, **kwargs)
 
     def estimated_value(self):
         price = self.estimated_price
@@ -827,7 +915,15 @@ class BlanketOrder(AuditModel):
         self._check_terms()
         if self._state.adding and self.vendor_id and not self.currency_id:
             self.currency = self.vendor.default_currency
+        if _whole_save(kwargs):
+            # The vendor and terms agreed are what releases are made under.
+            _while(self, [BlanketStatus.DRAFT],
+                   "an agreement is changed while it is a draft. Close it and agree another.")
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self, [BlanketStatus.DRAFT], "only a draft is deleted; a confirmed agreement is closed.")
+        return super().delete(*args, **kwargs)
 
     def total(self):
         return sum((line.committed_value() for line in self.lines.all()), Decimal("0"))
@@ -862,7 +958,7 @@ class BlanketOrder(AuditModel):
         self.status = BlanketStatus.CLOSED
         self.save(update_fields=["status", "updated_at"])
 
-    @transaction.atomic
+    @serialised("status")
     def release(self, quantities, order_date=None, expected_date=None):
         """
         Call off part of the commitment as a real purchase order.
@@ -920,6 +1016,18 @@ class BlanketOrderLine(TaxedLineMixin, AuditModel):
 
     def __str__(self):
         return f"{self.item} x{self.quantity}"
+
+    # The price and volume agreed: releases already made were priced from
+    # these, and the agreement is the record of what was committed.
+    LINES_FIXED = "its lines change while it is a draft; releases are priced from them."
+
+    def save(self, *args, **kwargs):
+        _while(self.blanket, [BlanketStatus.DRAFT], self.LINES_FIXED)
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        _while(self.blanket, [BlanketStatus.DRAFT], self.LINES_FIXED)
+        return super().delete(*args, **kwargs)
 
     class Meta:
         constraints = [
@@ -987,6 +1095,12 @@ class PurchaseApprovalPolicy(AuditModel):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        # One policy is in force: active() reads the first.
+        with transaction.atomic():
+            only_one(self, "is_active")
+            super().save(*args, **kwargs)
 
     @classmethod
     def active(cls):
@@ -1537,6 +1651,11 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 )
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
+        # What a requisition asked for is no longer on order, so it is open
+        # to order again: "ordered" was a stored fact this cancel unmade.
+        PurchaseRequisition.objects.filter(
+            status=RequisitionStatus.ORDERED, lines__order_lines__order=self,
+        ).update(status=RequisitionStatus.APPROVED, updated_at=timezone.now())
         # A drop-ship called off: the customer's goods are this plant's to
         # send again, and its shelf's to hold for them.
         for line in self.lines.filter(sales_order_line__isnull=False).select_related("sales_order_line"):
@@ -5165,7 +5284,7 @@ class GoodsReceipt(AuditModel):
             if line.quantity_uninspected() > 0
         }
 
-    @transaction.atomic
+    @serialised("posted")
     def accept(self, warehouse, quantities=None, occurred_at=None):
         """
         Clear inspected goods into a warehouse they can be shipped from.

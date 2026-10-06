@@ -52,6 +52,8 @@ ROLES = {
         *crud("accounting", "bankstatementline", actions=("add", "change", "view")),
         # deliberately NOT accounting.close_bankstatement: whoever keys the
         # statement in should not also be the one who signs it off.
+        # Matching a line is naming the payment it is.
+        *view("accounting", "payment"),
         *crud("accounting", "account"),
         *crud("accounting", "journalentry"),
         *crud("accounting", "journalline"),
@@ -78,6 +80,7 @@ ROLES = {
         *full("manufacturing", "materialrate", "stagerate", "quotepolicy", "costversion",
               "standardcost"),
         *crud("manufacturing", "costsheet", actions=("add", "delete", "view")),
+        *crud("manufacturing", "manufacturingsettings", actions=("change", "view")),
         *crud("accounting", "taxgroup"),
         *crud("accounting", "chargetype"),
         *crud("accounting", "fiscalposition"),
@@ -105,6 +108,8 @@ ROLES = {
         *crud("sales", "invoicewriteoff"),
         *crud("sales", "depositapplication", actions=("view",)),
         "sales.write_off_invoice",
+        # Which it cannot do without reading the invoice.
+        *view("sales", "invoice", "invoiceline"),
     ],
     "Sales Rep": [
         *REFERENCE,
@@ -215,6 +220,8 @@ ROLES = {
         *crud("purchasing", "blanketorderline"),
         *crud("purchasing", "purchaseapprovalpolicy"),
         *crud("purchasing", "approvaltier"),
+        # The roles a tier names, to choose one.
+        "auth.view_group",
         *crud("purchasing", "billpayment"),
         "purchasing.approve_purchaseorder",
         *crud("purchasing", "prepaymentapplication", actions=("view",)),

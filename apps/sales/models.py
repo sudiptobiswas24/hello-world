@@ -33,6 +33,7 @@ from apps.core.models import (
     PaymentTerms,
     UnitOfMeasure,
     lock_rows,
+    only_one,
     prefetched,
     serialised,
     to_date,
@@ -198,6 +199,12 @@ class ApprovalPolicy(AuditModel):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        # One policy is in force: active() reads the first.
+        with transaction.atomic():
+            only_one(self, "is_active")
+            super().save(*args, **kwargs)
 
     @classmethod
     def active(cls):
@@ -1700,6 +1707,9 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         if write_off.invoice_id != self.pk:
             raise ValidationError("That write-off belongs to a different invoice.")
+        # Read again under its lock: two recoveries of one write-off both
+        # saw it standing and reversed it twice.
+        lock_rows(write_off)
         if write_off.recovered_entry_id:
             raise ValidationError("That write-off has already been recovered.")
 

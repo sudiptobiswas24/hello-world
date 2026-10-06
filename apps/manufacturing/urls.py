@@ -1,5 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
+from .settings_api import ManufacturingSettingsViewSet
+
 from . import views
 from .station_views import LoomStationViewSet, ScaleReadingViewSet, StationReportViewSet
 from .complaint_views import ComplaintViewSet, CorrectiveActionViewSet
@@ -127,5 +129,7 @@ router.register("energy-tariffs", EnergyTariffViewSet)
 router.register("station-reports", StationReportViewSet, basename="station-report")
 router.register("complaints", ComplaintViewSet)
 router.register("corrective-actions", CorrectiveActionViewSet)
+
+router.register("manufacturing-settings", ManufacturingSettingsViewSet, basename="manufacturing-setting")
 
 urlpatterns = router.urls

@@ -35,8 +35,30 @@ function kept(noun: string, endpoint: string, model: string): RowAction[] {
   ];
 }
 
+const TRADING_ROLES: [string, string][] = [["customer", "Customer"], ["vendor", "Vendor"]];
+const ROLE_NAMES: [string, string][] = [...TRADING_ROLES, ["employee", "Employee"], ["other", "Other"]];
+
 /** What a customer's or a vendor's page holds beside who they are. */
 export const PARTY_PANELS: PanelDef[] = [
+  {
+    // A vendor who also buys from us is one party in two roles, so its
+    // payments and dues net against each other rather than across two codes.
+    title: "Roles", permission: "core.view_party", endpoint: "", query: () => ({}),
+    rows: (party) => ((party.roles as string[]) ?? []).map((role, index) => ({ id: index + 1, role, party: party.id })),
+    columns: [{ key: "role", label: "Role", render: (row) => named(ROLE_NAMES, row.role) }],
+    adder: {
+      label: "Add a role", permission: "core.change_party",
+      url: (party) => `/api/core/parties/${String(party.id)}/roles/`,
+      fields: (party) => [{ key: "role", label: "Role", kind: "choice",
+        choices: TRADING_ROLES.filter(([key]) => !((party.roles as string[]) ?? []).includes(key)) }],
+      body: (values) => values,
+      when: (party) => TRADING_ROLES.some(([key]) => !((party.roles as string[]) ?? []).includes(key)),
+    },
+    remover: {
+      permission: "core.change_party",
+      url: (row) => `/api/core/parties/${String(row.party)}/roles/?role=${String(row.role)}`,
+    },
+  },
   {
     title: "Addresses", permission: "core.view_address", endpoint: "/api/core/addresses/",
     query: (party) => ({ party: String(party.id) }),

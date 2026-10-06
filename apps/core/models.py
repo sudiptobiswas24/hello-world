@@ -475,21 +475,31 @@ class PartyRoleAssignment(AuditModel):
         return f"{self.party} [{self.role}]"
 
 
+def only_one(row, field, **scope):
+    """
+    Setting a yes-or-no that only one row may hold clears it on the
+    others in the same scope: the primary address, the policy in force.
+
+    Ticking it on the new row means the old one no longer holds it, and
+    nobody should have to untick that first; leaving two holding it
+    makes whichever reads "the" one pick by the order rows come in.
+    Called from save() inside the save's own transaction, so a refused
+    save clears nothing.
+    """
+    if not getattr(row, field):
+        return
+    type(row)._base_manager.filter(**{field: True}, **scope).exclude(pk=row.pk).update(
+        **{field: False}, updated_at=timezone.now(), updated_by_id=row.updated_by_id)
+
+
 def take_primary(row, **scope):
     """
-    Marking a record primary unmarks whichever was, in the same scope.
-
-    The database holds one primary per scope and refuses a second; a
-    person ticking "primary" on the new address means the old one no
-    longer is, and should not have to untick it first. Called from save()
-    inside the save's own transaction, so a refused save unmarks nothing.
-    A scope with no party is no scope: the company's own address is
-    nobody's rival, and the database does not hold party-less rows to one.
+    One primary per party (and kind of address). A scope with no party is
+    no scope: the company's own address is nobody's rival, and the
+    database does not hold party-less rows to one.
     """
-    if not row.is_primary or None in scope.values():
-        return
-    type(row)._base_manager.filter(is_primary=True, **scope).exclude(pk=row.pk).update(
-        is_primary=False, updated_at=timezone.now(), updated_by_id=row.updated_by_id)
+    if None not in scope.values():
+        only_one(row, "is_primary", **scope)
 
 
 class AddressType(models.TextChoices):
@@ -837,6 +847,35 @@ class DocumentSequence(AuditModel):
 
     def __str__(self):
         return f"{self.code} (next: {self.peek()})"
+
+    def save(self, *args, **kwargs):
+        # Each change refused here gives a number twice, and a document
+        # number is unique: the second post fails, or worse, two papers
+        # carry one number. A number too high is only a gap, so raising
+        # it stays allowed; there is no lowering, even before first use,
+        # because nothing records whether a number was issued.
+        if self.reset_yearly and not self.include_year:
+            raise ValidationError({"include_year": "A sequence that starts again each year has to show "
+                                                   "the year, or January's first number repeats last year's."})
+        if not self._state.adding:
+            before = DocumentSequence.objects.get(pk=self.pk)
+            counted = self.years.exists()
+            if self.code != before.code:
+                raise ValidationError({"code": "The code is what the documents ask for; under a new one "
+                                               "they would start a fresh sequence at 1."})
+            if self.next_number < before.next_number:
+                raise ValidationError({"next_number": f"Numbers up to {before.next_number - 1} may already "
+                                                      "be on paper; the next one cannot go back."})
+            if counted and self.next_number != before.next_number:
+                raise ValidationError({"next_number": "Each year keeps its own counter now, so this number "
+                                                      "is no longer read."})
+            if counted and before.reset_yearly and not self.reset_yearly:
+                raise ValidationError({"reset_yearly": "This sequence has counted by year; one counter from "
+                                                       "here would start below numbers already issued."})
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A sequence is not deleted: the next document would start it again at 1.")
 
     def _format(self, number, year):
         middle = f"{year}-" if self.include_year else ""

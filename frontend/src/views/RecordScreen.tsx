@@ -60,7 +60,8 @@ export interface ActionDef {
   path: string;
   permission: string;
   when?: (record: Row) => boolean;
-  fields?: FieldDef[];
+  /** Or worked out from the record: a statement's match offers its own lines. */
+  fields?: FieldDef[] | ((record: Row) => FieldDef[]);
   done: string;
   primary?: boolean;
   danger?: boolean;
@@ -243,7 +244,7 @@ export function useRefs(fields: FieldDef[]): Record<string, Row[] | undefined> {
 function ActionForm({ action, record, endpoint, onClose }: {
   action: ActionDef; record: Row; endpoint: string; onClose: () => void;
 }) {
-  const fields = action.fields ?? [];
+  const fields = (typeof action.fields === "function" ? action.fields(record) : action.fields) ?? [];
   const refs = useRefs(fields);
   const [values, setValues] = useState<Row>(() => {
     const start = blank(fields);
@@ -354,7 +355,7 @@ export function RecordScreen(props: RecordScreenProps) {
         )}
         {offered.map((action) => (
           <ActionButton key={action.path} primary={action.primary} danger={action.danger} pending={act.pending}
-            onClick={() => (action.fields?.length ? setAsking(action) : void act.run(
+            onClick={() => (typeof action.fields === "function" || action.fields?.length ? setAsking(action) : void act.run(
               "POST", action.url ? action.url(saved!) : `${endpoint}${saved!.id}/${action.path}/`,
               action.body ? action.body({ id: 0 }, saved!) : {},
               { done: action.done, onDone: (result) => { if (action.then) navigate(action.then(result)); } }))}>

@@ -962,6 +962,15 @@ class BankStatement(AuditModel):
         self._check_span()
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        # Its lines go with it, and a line posted to an account would leave
+        # its entry in the ledger with nothing to say why.
+        if self.closed:
+            raise ValidationError("This statement is closed. Reopen it to make changes.")
+        if self.lines.filter(journal_entry__isnull=False).exists():
+            raise ValidationError("Lines on this statement were posted to the ledger; reverse them first.")
+        super().delete(*args, **kwargs)
+
     def line_total(self):
         return sum((line.amount for line in self.lines.all()), Decimal("0"))
 
@@ -1066,6 +1075,7 @@ class BankStatement(AuditModel):
         self.closed_at = timezone.now()
         super(BankStatement, self).save(update_fields=["closed", "closed_at", "updated_at"])
 
+    @serialised("closed")
     def reopen(self):
         if not self.closed:
             raise ValidationError("This statement is not closed.")
@@ -1141,11 +1151,23 @@ class BankStatementLine(AuditModel):
             pk=self.statement_id, closed=True
         ).exists():
             raise ValidationError("This statement is closed. Reopen it to make changes.")
+        if not self._state.adding:
+            # Matching checked the amount against the payment, and posting
+            # booked it; changed afterwards, the line says one thing and
+            # what explains it another.
+            before = BankStatementLine.objects.get(pk=self.pk)
+            moved = (before.amount, before.date, before.statement_id) != (
+                self.amount, to_date(self.date), self.statement_id)
+            if moved and (before.payment_id or before.journal_entry_id):
+                raise ValidationError("This line is explained already; unmatch or reverse it before "
+                                      "changing it.")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         if self.statement.closed:
             raise ValidationError("This statement is closed. Reopen it to make changes.")
+        if self.journal_entry_id:
+            raise ValidationError("This line was posted to the ledger; reverse it first.")
         super().delete(*args, **kwargs)
 
     @serialised("payment", "journal_entry")
@@ -1159,6 +1181,9 @@ class BankStatementLine(AuditModel):
             raise ValidationError("A voided payment never reached the bank.")
         if payment.bank_account_id != self.statement.bank_account_id:
             raise ValidationError("That payment went through a different bank account.")
+        elsewhere = BankStatementLine.objects.filter(payment=payment).select_related("statement").first()
+        if elsewhere is not None:
+            raise ValidationError(f"That payment is already matched, on the statement {elsewhere.statement}.")
         if payment.signed_base_amount() != self.amount:
             raise ValidationError(
                 f"The bank shows {self.amount} and the payment is "
@@ -1168,9 +1193,12 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["payment", "updated_at"])
         return self
 
+    @serialised("payment", "journal_entry")
     def unmatch(self):
         if self.journal_entry_id:
             raise ValidationError("This line was posted, not matched. Reverse it instead.")
+        if not self.payment_id:
+            raise ValidationError("This line is not matched.")
         self.payment = None
         self.save(update_fields=["payment", "updated_at"])
 
@@ -1210,6 +1238,26 @@ class BankStatementLine(AuditModel):
         self.journal_entry = entry
         self.save(update_fields=["journal_entry", "updated_at"])
         return entry
+
+    @serialised("payment", "journal_entry")
+    def reverse_posting(self, on_date=None):
+        """
+        Take back a line posted to the wrong account. `unmatch` said to
+        reverse it and nothing could: the entry stayed, and the line read
+        as explained by it whatever was done to the entry by hand.
+        """
+        if not self.journal_entry_id:
+            raise ValidationError("This line was not posted to an account.")
+        # On the posting's own date by default: dated later, the bank
+        # account to the statement's end still holds the wrong posting, and
+        # once the line is posted again it holds the movement twice.
+        reversal = self.journal_entry.create_reversal(
+            entry_date=to_date(on_date) or self.journal_entry.date,
+            memo=f"Reversed: {self.journal_entry.memo}",
+        )
+        self.journal_entry = None
+        self.save(update_fields=["journal_entry", "updated_at"])
+        return reversal
 
 
 from .gst import GstSettings  # noqa: E402,F401
