@@ -59,6 +59,30 @@ export default function BomForm() {
           remover: { permission: "manufacturing.delete_bomcomponent", url: (row) => `/api/manufacturing/bom-components/${row.id}/` },
         },
         {
+          // What may go in instead of an input when it is short, in the
+          // order they are tried.
+          title: "Substitutes", permission: "manufacturing.view_bomsubstitute",
+          endpoint: "/api/manufacturing/bom-substitutes/", query: (record) => ({ component__bom: String(record.id) }),
+          columns: [
+            { key: "instead_of", label: "Instead of" },
+            { key: "item_label", label: "Use" },
+            { key: "quantity_per", label: "For each", kind: "quantity", width: "8rem" },
+            { key: "priority", label: "Tried", width: "5rem" },
+          ],
+          adder: { label: "Add a substitute", permission: "manufacturing.add_bomsubstitute",
+            url: () => "/api/manufacturing/bom-substitutes/",
+            fields: (record) => [
+              { key: "component", label: "Instead of", kind: "choice",
+                choices: ((record.components as Row[]) ?? []).map((input): [string, string] => [String(input.id), String(input.item_label)]) },
+              { key: "item", label: "Use", kind: "pick", pick: ITEM },
+              { key: "quantity_per", label: "For each", kind: "decimal", places: 6, initial: "1",
+                hint: "How much of it replaces one of the input" },
+              { key: "priority", label: "Tried", kind: "integer", initial: 1 },
+            ],
+            body: (values) => values },
+          remover: { permission: "manufacturing.delete_bomsubstitute", url: (row) => `/api/manufacturing/bom-substitutes/${row.id}/` },
+        },
+        {
           title: "Also comes off it", permission: "manufacturing.view_bombyproduct", endpoint: "", query: () => ({}),
           rows: (record) => (record.byproducts as Row[]) ?? [],
           columns: [

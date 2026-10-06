@@ -41,6 +41,8 @@ export interface FieldDef {
   createOnly?: boolean;
   /** Left out of the new form. */
   existingOnly?: boolean;
+  /** Asked only when the record is made, and not shown after (it was turned into something else). */
+  newOnly?: boolean;
   wide?: boolean;
   /** What a new record starts with. */
   initial?: unknown;
@@ -129,6 +131,8 @@ export interface RecordScreenProps {
   editable?: (record: Row) => boolean;
   /** Where to go after a delete, and after a create (default: the new record). */
   afterCreate?: (record: Row) => string;
+  /** Where a new one is posted, when an action makes it rather than the collection. */
+  createUrl?: string;
   note?: (record: Row | undefined) => ReactNode;
   /** Below the panels: an editor the record shares with a document (its trade lines). */
   below?: (record: Row, editable: boolean) => ReactNode;
@@ -295,7 +299,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], panels = [], permissions, editable, afterCreate, note, below } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], panels = [], permissions, editable, afterCreate, note, below, createUrl } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -326,7 +330,7 @@ export function RecordScreen(props: RecordScreenProps) {
       if (field.key in source) body[field.key] = source[field.key];
     }
     const outcome = isNew
-      ? await act.run("POST", endpoint, body, { done: "Saved" })
+      ? await act.run("POST", createUrl ?? endpoint, body, { done: "Saved" })
       : await act.run("PATCH", `${endpoint}${saved!.id}/`, body, { done: "Saved" });
     if (outcome.ok) {
       draft.reset();
@@ -367,7 +371,7 @@ export function RecordScreen(props: RecordScreenProps) {
       )}
       <Sheet>
         <div className="field-grid">
-          {fields.filter((field) => !(isNew && (field.existingOnly || field.readOnly))).map((field) => (
+          {fields.filter((field) => !(isNew && (field.existingOnly || field.readOnly)) && !(!isNew && field.newOnly)).map((field) => (
             <Field key={field.key} label={field.label} hint={open(field) ? field.hint : undefined}
               errors={draft.errors[field.key]} wide={field.wide || field.kind === "textarea"}>
               {(fid) => open(field)

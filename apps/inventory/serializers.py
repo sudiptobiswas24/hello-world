@@ -37,9 +37,11 @@ class WarehouseSerializer(serializers.ModelSerializer):
 
 
 class ItemUnitSerializer(serializers.ModelSerializer):
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+
     class Meta:
         model = ItemUnit
-        fields = ["id", "item", "uom", "factor"]
+        fields = ["id", "item", "uom", "factor", "uom_code"]
 
 
 class ItemSerializer(serializers.ModelSerializer):

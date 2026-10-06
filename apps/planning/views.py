@@ -313,6 +313,8 @@ class PlanningActionViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet
 
 
 class PlannedDemandViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    filter_fields = ["planned_order", "source", "sales_order_line", "work_order", "forecast"]
+    search_fields = ["planned_order__item__sku", "planned_order__item__name"]
     queryset = PlannedDemand.objects.select_related(
         "planned_order", "sales_order_line", "work_order", "parent"
     )

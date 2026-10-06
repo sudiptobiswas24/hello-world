@@ -812,6 +812,11 @@ class StationReportViewSet(viewsets.GenericViewSet):
     lookup_field = "code"
     permission_classes = [IsAuthenticated, CanReadStationReports]
 
+    def list(self, request):
+        """The stations there are, to choose one: code and name."""
+        return Response([{"id": station.pk, "code": station.code, "name": getattr(station, "name", "") or station.code}
+                         for station in self.get_queryset().filter(is_active=True).order_by("code")])
+
     def retrieve(self, request, code=None):
         station = self.get_object()
         value = request.query_params.get("date")

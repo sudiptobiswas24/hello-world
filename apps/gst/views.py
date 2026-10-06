@@ -97,6 +97,8 @@ class EInvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
     queryset = einvoice.EInvoice.objects.select_related("invoice")
     serializer_class = EInvoiceSerializer
+    filter_fields = ["invoice"]
+    search_fields = ["invoice__number", "irn", "ack_number"]
     action_permission_map = {"record": "gst.change_einvoice"}
 
     def create(self, request):
@@ -127,6 +129,8 @@ class EwayBillViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
 
     queryset = ewaybill.EwayBill.objects.select_related("invoice", "challan")
     serializer_class = EwayBillSerializer
+    filter_fields = ["invoice", "delivery", "challan"]
+    search_fields = ["number", "vehicle_number", "invoice__number", "transporter_name"]
     action_permission_map = {"record": "gst.change_ewaybill", "cancel": "gst.change_ewaybill"}
 
     def create(self, request):

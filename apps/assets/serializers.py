@@ -19,6 +19,8 @@ class DepreciationEntrySerializer(serializers.ModelSerializer):
 
 
 class FixedAssetSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(source="category.name", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
     accumulated = serializers.SerializerMethodField()
     net_book_value = serializers.SerializerMethodField()
     monthly_charge = serializers.SerializerMethodField()
@@ -29,7 +31,7 @@ class FixedAssetSerializer(serializers.ModelSerializer):
                   "acquisition_date", "in_service_date", "cost",
                   "salvage_value", "life_months", "status", "disposed_on",
                   "capitalisation_entry", "disposal_entry", "accumulated",
-                  "net_book_value", "monthly_charge"]
+                  "net_book_value", "monthly_charge", "category_name", "vendor_name"]
         read_only_fields = ["number", "bill_line", "status", "disposed_on",
                             "capitalisation_entry", "disposal_entry"]
 

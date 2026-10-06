@@ -396,6 +396,7 @@ class CostSheetLineSerializer(serializers.ModelSerializer):
 
 class CostSheetSerializer(serializers.ModelSerializer):
     lines = CostSheetLineSerializer(many=True, read_only=True)
+    specification_code = serializers.CharField(source="specification.code", read_only=True)
     per_kg = serializers.SerializerMethodField()
     order_value = serializers.SerializerMethodField()
 
@@ -404,7 +405,7 @@ class CostSheetSerializer(serializers.ModelSerializer):
         fields = [
             "id", "specification", "quantity", "costed_on", "bag_grams", "overhead_percent",
             "margin_percent", "material", "conversion", "credit", "overhead", "cost", "price",
-            "quoted_price", "per_kg", "order_value", "quotation_line", "lines",
+            "quoted_price", "per_kg", "order_value", "quotation_line", "lines", "specification_code",
         ]
         read_only_fields = fields
 
@@ -422,8 +423,19 @@ class CostSheetRequestSerializer(serializers.Serializer):
     margin_percent = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
 
 
+class CarriedQuotationField(serializers.PrimaryKeyRelatedField):
+    """A quotation the login may price: for a rep, their own customers' only."""
+
+    def get_queryset(self):
+        from apps.sales.scoping import UNLIMITED, carried_by, rep_limit
+
+        rep = rep_limit(self.context["request"].user)
+        quotations = Quotation.objects.all()
+        return quotations if rep is UNLIMITED else quotations.filter(carried_by(rep, "customer"))
+
+
 class QuoteRequestSerializer(serializers.Serializer):
-    quotation = serializers.PrimaryKeyRelatedField(queryset=Quotation.objects.all())
+    quotation = CarriedQuotationField()
     # Required, if only as an empty list: a line's taxes are its own,
     # and none is a statement, not a default.
     taxes = serializers.PrimaryKeyRelatedField(queryset=Tax.objects.all(), many=True,
@@ -431,10 +443,19 @@ class QuoteRequestSerializer(serializers.Serializer):
 
 
 class BomSubstituteSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    instead_of = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
+    def get_instead_of(self, row):
+        return f"{row.component.item.sku} · {row.component.item.name}"
+
     class Meta:
         model = BomSubstitute
         fields = ["id", "component", "item", "quantity_per", "priority",
-                  "is_active", "notes"]
+                  "is_active", "notes", "item_label", "instead_of"]
 
 
 class BomComponentSerializer(serializers.ModelSerializer):
@@ -1123,10 +1144,15 @@ class ProductionScrapSerializer(serializers.ModelSerializer):
 
 
 class OperationReportSerializer(serializers.ModelSerializer):
+    step = serializers.SerializerMethodField()
+
+    def get_step(self, row):
+        return f"{row.operation.work_order.number} · {row.operation.sequence} {row.operation.name}"
+
     class Meta:
         model = OperationReport
         fields = ["id", "operation", "reported_on", "quantity_good", "machine", "memo",
-                  "voided_at", "voided_reason"]
+                  "voided_at", "voided_reason", "step"]
         read_only_fields = fields
 
 

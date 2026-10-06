@@ -297,6 +297,33 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/production/PlanningSettingsForm"),
       },
       {
+        path: "plan-actions", label: "What the plan says to do", permission: "planning.view_planningaction",
+        keywords: "expedite defer cancel reschedule exception", load: () => import("../modules/production/PlanningActions"),
+      },
+      {
+        path: "planned-for", label: "What planned orders are for", permission: "planning.view_planneddemand",
+        keywords: "pegging demand where used", load: () => import("../modules/production/PlannedDemands"),
+      },
+      {
+        path: "levels", label: "Explosion levels", permission: "planning.view_plannedorder",
+        keywords: "low level code bom level cycle", load: () => import("../modules/production/Levels"),
+      },
+      {
+        path: "step-counts", label: "Step counts", permission: "manufacturing.view_operationreport",
+        create: "manufacturing.add_operationreport",
+        keywords: "operation report step output count", load: () => import("../modules/floor/StepCounts"),
+        detail: () => import("../modules/floor/StepCountForm"),
+      },
+      {
+        path: "station-report", label: "Station morning report", permission: "manufacturing.view_loomstation",
+        keywords: "8 am morning loom rolls exceptions", load: () => import("../modules/floor/StationReport"),
+      },
+      {
+        path: "profitability", label: "Order profitability", permission: "manufacturing.view_costsheet",
+        also: ["sales.view_salesorder", "sales.view_salesorderline"],
+        keywords: "margin quote actual cost order", load: () => import("../modules/floor/Profitability"),
+      },
+      {
         path: "routes", label: "Transfer routes", permission: "planning.view_transferroute", create: "planning.add_transferroute",
         keywords: "branch depot restock", load: () => import("../modules/production/Routes"),
         detail: () => import("../modules/production/RouteForm"),
@@ -374,6 +401,12 @@ export const MODULES: Module[] = [
         create: "manufacturing.add_downtimereason",
         keywords: "downtime breakdown why", load: () => import("../modules/making/DowntimeReasons"),
         detail: () => import("../modules/making/DowntimeReasonForm"),
+      },
+      {
+        path: "cost-sheets", label: "Cost sheets", permission: "manufacturing.view_costsheet",
+        create: "manufacturing.add_costsheet",
+        keywords: "costing quotation price sack cost", load: () => import("../modules/making/CostSheets"),
+        detail: () => import("../modules/making/CostSheetForm"),
       },
       {
         path: "bags", label: "Bag specifications", permission: "manufacturing.view_bagspecification",
@@ -591,6 +624,34 @@ export const MODULES: Module[] = [
         path: "gst", label: "GST returns", permission: "gst.compile_returns",
         keywords: "gstr1 gstr3b tax return", load: () => import("../modules/accounts/GstReturns"),
       },
+      {
+        path: "assets", label: "Fixed assets", permission: "assets.view_fixedasset",
+        create: "assets.add_fixedasset",
+        keywords: "machine building vehicle depreciation capital", load: () => import("../modules/accounts/Assets"),
+        detail: () => import("../modules/accounts/AssetForm"),
+      },
+      {
+        path: "asset-register", label: "Fixed asset register", permission: "assets.view_fixedasset",
+        keywords: "book value depreciation register", load: () => import("../modules/accounts/AssetRegister"),
+      },
+      {
+        path: "asset-categories", label: "Asset categories", permission: "assets.view_assetcategory",
+        create: "assets.add_assetcategory",
+        keywords: "depreciation method life", load: () => import("../modules/accounts/AssetCategories"),
+        detail: () => import("../modules/accounts/AssetCategoryForm"),
+      },
+      {
+        path: "e-invoices", label: "E-invoices", permission: "gst.view_einvoice",
+        create: "gst.add_einvoice",
+        keywords: "irn einvoice gst portal", load: () => import("../modules/gst/EInvoices"),
+        detail: () => import("../modules/gst/EInvoiceForm"),
+      },
+      {
+        path: "eway-bills", label: "E-way bills", permission: "gst.view_ewaybill",
+        create: "gst.add_ewaybill",
+        keywords: "eway e-way transport vehicle lr", load: () => import("../modules/gst/EwayBills"),
+        detail: () => import("../modules/gst/EwayBillForm"),
+      },
     ],
   },
   {
@@ -612,6 +673,35 @@ export const MODULES: Module[] = [
         path: "dues", label: "Statutory dues", permission: "hr.view_statutoryremittance",
         keywords: "pf esi tds professional tax remittance", load: () => import("../modules/payroll/Liabilities"),
       },
+      {
+        path: "employees", label: "Employees", permission: "hr.view_employee",
+        create: "hr.add_employee",
+        keywords: "staff worker operator person hire", load: () => import("../modules/payroll/Employees"),
+        detail: () => import("../modules/payroll/EmployeeForm"),
+      },
+      {
+        path: "departments", label: "Departments", permission: "hr.view_department",
+        create: "hr.add_department",
+        keywords: "department cost centre", load: () => import("../modules/payroll/Departments"),
+        detail: () => import("../modules/payroll/DepartmentForm"),
+      },
+      {
+        path: "pay-components", label: "Pay components", permission: "hr.view_paycomponent",
+        create: "hr.add_paycomponent",
+        keywords: "earning deduction pf esi professional tax slab", load: () => import("../modules/payroll/PayComponents"),
+        detail: () => import("../modules/payroll/PayComponentForm"),
+      },
+      {
+        path: "leave-policies", label: "Leave policies", permission: "hr.view_leavepolicy",
+        keywords: "leave entitlement days", load: () => import("../modules/payroll/LeavePolicies"),
+        detail: () => import("../modules/payroll/LeavePolicyForm"),
+      },
+      {
+        path: "remittances", label: "Statutory remittances", permission: "hr.view_statutoryremittance",
+        create: "hr.add_statutoryremittance",
+        keywords: "pf esi tds paid challan", load: () => import("../modules/payroll/Remittances"),
+        detail: () => import("../modules/payroll/RemittanceForm"),
+      },
     ],
   },
   {
@@ -628,8 +718,28 @@ export const MODULES: Module[] = [
         keywords: "stock ledger in out", load: () => import("../modules/stores/Movements"),
       },
       {
-        path: "items", label: "Items", permission: "inventory.view_item",
+        path: "items", label: "Items", permission: "inventory.view_item", create: "inventory.add_item",
         keywords: "product sku material", load: () => import("../modules/stores/Items"),
+        detail: () => import("../modules/stores/ItemForm"),
+      },
+      {
+        path: "warehouses", label: "Warehouses", permission: "inventory.view_warehouse",
+        keep: "inventory.change_warehouse",
+        create: "inventory.add_warehouse",
+        keywords: "store godown location quarantine", load: () => import("../modules/stores/Warehouses"),
+        detail: () => import("../modules/stores/WarehouseForm"),
+      },
+      {
+        path: "item-templates", label: "Item templates", permission: "inventory.view_itemtemplate",
+        create: "inventory.add_itemtemplate",
+        keywords: "variant size colour template", load: () => import("../modules/stores/ItemTemplates"),
+        detail: () => import("../modules/stores/ItemTemplateForm"),
+      },
+      {
+        path: "item-attributes", label: "Item attributes", permission: "inventory.view_itemattribute",
+        create: "inventory.add_itemattribute",
+        keywords: "variant attribute size colour", load: () => import("../modules/stores/ItemAttributes"),
+        detail: () => import("../modules/stores/ItemAttributeForm"),
       },
       {
         path: "counts", label: "Stock counts", permission: "inventory.view_stockcount", create: "inventory.add_stockcount",

@@ -43,6 +43,8 @@ def _date(request, name):
 class AssetCategoryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = AssetCategory.objects.all()
     serializer_class = AssetCategorySerializer
+    filter_fields = ["is_active", "method"]
+    search_fields = ["code", "name"]
 
 
 class DepreciationEntryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -50,6 +52,8 @@ class DepreciationEntryViewSet(viewsets.ReadOnlyModelViewSet):
 
     queryset = DepreciationEntry.objects.select_related("asset").all()
     serializer_class = DepreciationEntrySerializer
+    filter_fields = ["asset"]
+    date_field = "period_end"
 
 
 class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -63,8 +67,11 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     register a lathe is not thereby someone who can write one off.
     """
 
-    queryset = FixedAsset.objects.select_related("category").all()
+    queryset = FixedAsset.objects.select_related("category", "vendor").all()
     serializer_class = FixedAssetSerializer
+    filter_fields = ["category", "status"]
+    search_fields = ["number", "name"]
+    date_field = "acquisition_date"
     # Depreciating, capitalising and undoing it all post to the ledger:
     # they take the right to post, not merely the right to add an asset.
     action_permission_map = {

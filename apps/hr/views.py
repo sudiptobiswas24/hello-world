@@ -34,6 +34,7 @@ from .serializers import (
 class DepartmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
+    search_fields = ["code", "name"]
 
 
 class LeavePolicyViewSet(viewsets.ReadOnlyModelViewSet):
@@ -44,8 +45,11 @@ class LeavePolicyViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Employee.objects.select_related("party")
+    queryset = Employee.objects.select_related("party", "department")
     serializer_class = EmployeeSerializer
+    filter_fields = ["department", "employment_status", "manager"]
+    search_fields = ["employee_number", "party__name", "job_title"]
+    ordering_fields = ["employee_number", "hire_date"]
 
     @action(detail=True, methods=["get"], url_path="leave")
     def leave(self, request, pk=None):

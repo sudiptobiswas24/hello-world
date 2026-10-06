@@ -199,6 +199,52 @@ class EveryAddressAScreenAsksForExistsTests(TestCase):
         self.assertEqual(missing, [])
 
 
+class EveryCollectionIsKeptOnAScreenTests(TestCase):
+    """
+    The mirror of the test above. Fifty collections had an API and no
+    screen until the S5 and S6 batches; nothing said so, and the only
+    way to keep their rows was the Django admin. A collection named only
+    as a picker's source is chosen from, not kept, so it does not count.
+    """
+
+    # Every collection no screen keeps, and why it needs none.
+    NO_SCREEN = {
+        "/api/core/party-roles/": (
+            "A party is made in its role, from the customer or vendor list or by HR. A second "
+            "role is the admin's until its panel comes with the batch for admin-only features."
+        ),
+        "/api/manufacturing/scale-readings/": "Posted by a scale's bridge; nobody lists it.",
+        "/api/manufacturing/work-order-operations/": (
+            "A run's steps, written by releasing it and shown on its page."
+        ),
+    }
+
+    def test_every_collection_is_kept_on_a_screen_or_says_why_not(self):
+        import pathlib
+        import re
+
+        from django.urls import get_resolver, reverse
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
+        text = "".join(path.read_text() for path in source.rglob("*.ts*"))
+        picker = re.compile(r'(?:FieldDef\["(?:ref|pick)"\]\s*=\s*\{|\b(?:ref|pick):\s*\{)\s*endpoint:\s*"[^"]+"')
+        kept = picker.sub("", text)
+
+        def names(patterns):
+            for pattern in patterns:
+                if hasattr(pattern, "url_patterns"):
+                    yield from names(pattern.url_patterns)
+                elif pattern.name and pattern.name.endswith("-list"):
+                    yield pattern.name
+
+        collections = {reverse(name) for name in names(get_resolver().url_patterns)}
+        self.assertGreater(len(collections), 150)
+        self.assertEqual(sorted(url for url in collections if url not in kept and url not in self.NO_SCREEN), [])
+        # And a reason outlives nothing: a collection given a screen, or
+        # gone, comes off the list.
+        self.assertEqual(sorted(url for url in self.NO_SCREEN if url in kept or url not in collections), [])
+
+
 class HasOneFilterTests(SalesTestCase):
     def test_credit_notes_are_the_invoices_that_credit_one(self):
         call_command("setup_roles", verbosity=0)

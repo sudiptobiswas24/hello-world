@@ -82,6 +82,8 @@ def _run(callable_, *args, **kwargs):
 class WarehouseViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = Warehouse.objects.all()
     serializer_class = WarehouseSerializer
+    filter_fields = ["is_active", "is_quarantine", "is_transit", "held_for"]
+    search_fields = ["code", "name"]
 
 
 class ItemUnitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -89,6 +91,7 @@ class ItemUnitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = ItemUnit.objects.select_related("item", "uom")
     serializer_class = ItemUnitSerializer
+    filter_fields = ["item", "uom"]
 
 
 class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -98,7 +101,7 @@ class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
-    action_permission_map = {"set_standard_cost": "inventory.change_item"}
+    action_permission_map = {"set_standard_cost": "accounting.post_journalentry"}
 
     @action(detail=True, methods=["get"])
     def stock(self, request, pk=None):
@@ -538,16 +541,21 @@ class StockReportViewSet(viewsets.ViewSet):
 class ItemAttributeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ItemAttribute.objects.prefetch_related("values")
     serializer_class = ItemAttributeSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
 
 
 class ItemAttributeValueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ItemAttributeValue.objects.select_related("attribute")
     serializer_class = ItemAttributeValueSerializer
+    filter_fields = ["attribute", "is_active"]
 
 
 class ItemTemplateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ItemTemplate.objects.prefetch_related("attributes", "variants")
     serializer_class = ItemTemplateSerializer
+    filter_fields = ["is_active", "item_type"]
+    search_fields = ["code", "name"]
     action_permission_map = {
         "generate_variants": "inventory.add_item",
         "deactivate": "inventory.change_itemtemplate",

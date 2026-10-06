@@ -30,6 +30,8 @@ export default function Items() {
       endpoint="/api/inventory/items/"
       columns={columns}
       rowKey={(row) => row.id}
+      rowHref={(row) => `/stores/items/${row.id}`}
+      create={{ href: "/stores/items/new", permission: "inventory.add_item" }}
       searchHint="Code, name, HSN"
       facets={[
         { label: "Active", params: { is_active: "true" } },

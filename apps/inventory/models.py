@@ -343,12 +343,36 @@ class Item(AuditModel):
                 "another."
             )
 
+    # How its stock is counted and valued. Every movement already posted
+    # was counted in this unit and valued by this method; changed after,
+    # on-hand and value are replayed under rules they never happened by.
+    # The costing method and tracking belong here and are not here yet
+    # (docs/RISKS.md, L5): fixtures under standard costing, valuation
+    # folds and lot trace switch them over stock already held, and are
+    # reworked first, or a step that switches them revalues the stock or
+    # puts it into an opening batch.
+    COUNTED_AS = (("uom_id", "unit"), ("track_inventory", "whether stock is kept"))
+
+    def _check_counting_frozen(self):
+        if not self.pk:
+            return
+        before = Item.objects.filter(pk=self.pk).values(*(name for name, _ in self.COUNTED_AS)).first()
+        if before is None:
+            return
+        changed = [words for name, words in self.COUNTED_AS if before[name] != getattr(self, name)]
+        if changed and self.movements.exists():
+            raise ValidationError(
+                f"{self.sku} has stock movements counted and valued as it stands, so its "
+                f"{' and '.join(changed)} cannot change. Make a new item and move the stock to it."
+            )
+
     def save(self, *args, **kwargs):
         from apps.accounting.gst import validate_hsn
 
         self._check_costing_is_answerable()
         self._check_matches_template()
         self._check_variant_key_frozen()
+        self._check_counting_frozen()
         self.hsn_code = validate_hsn(self.hsn_code)
         super().save(*args, **kwargs)
 

@@ -213,6 +213,11 @@ class OrderProfitabilityViewSet(viewsets.ViewSet):
     def list(self, request):
         from .profitability import line_profitability
 
+        if not request.user.has_perm("manufacturing.view_costsheet"):
+            from rest_framework.exceptions import PermissionDenied
+
+            raise PermissionDenied("An order's profitability is its costs: it is read by whoever reads "
+                                   "cost sheets.")
         order = request.query_params.get("order")
         if not order:
             raise DRFValidationError(["Name the sales order: ?order=<id>."])
@@ -224,8 +229,14 @@ class OrderProfitabilityViewSet(viewsets.ViewSet):
             return None if row is None else {key: text(row[key]) for key in (
                 "material", "conversion", "credit", "direct")}
 
+        from apps.sales.scoping import UNLIMITED, carried_by, rep_limit
+
+        lines = SalesOrderLine.objects.filter(order_id=order, item__isnull=False)
+        rep = rep_limit(request.user)
+        if rep is not UNLIMITED:
+            lines = lines.filter(carried_by(rep, "order__customer"))
         rows = []
-        for line in SalesOrderLine.objects.filter(order_id=order, item__isnull=False):
+        for line in lines:
             found = line_profitability(line)
             quote = found["quoted"]
             rows.append({
@@ -621,8 +632,24 @@ class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = CostSheet.objects.select_related("specification").prefetch_related("lines")
     serializer_class = CostSheetSerializer
+    filter_fields = ["specification", "quotation_line"]
+    search_fields = ["specification__code", "specification__name"]
+    date_field = "costed_on"
     http_method_names = ["get", "post", "delete", "head", "options"]
     action_permission_map = {"quote": "sales.add_quotationline"}
+
+    def get_queryset(self):
+        from apps.sales.scoping import UNLIMITED, carried_by, rep_limit
+
+        queryset = super().get_queryset()
+        rep = rep_limit(self.request.user)
+        if rep is UNLIMITED:
+            return queryset
+        # A sack costed for an enquiry is nobody's yet. One priced onto a
+        # quotation shows that customer's price, and is a rep's to read
+        # only if the customer is theirs.
+        return queryset.filter(Q(quotation_line__isnull=True)
+                               | carried_by(rep, "quotation_line__quotation__customer"))
 
     def create(self, request, *args, **kwargs):
         request_data = CostSheetRequestSerializer(data=request.data)
@@ -636,7 +663,7 @@ class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def quote(self, request, pk=None):
-        request_data = QuoteRequestSerializer(data=request.data)
+        request_data = QuoteRequestSerializer(data=request.data, context={"request": request})
         request_data.is_valid(raise_exception=True)
         line = quoting.quote(self.get_object(), request_data.validated_data["quotation"],
                              request_data.validated_data["taxes"])
@@ -780,7 +807,7 @@ class BomSubstituteViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "item", "component", "component__item", "component__bom"
     )
     serializer_class = BomSubstituteSerializer
-    filter_fields = ["component"]
+    filter_fields = ["component", "component__bom", "item"]
 
 
 class CostVersionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -2103,6 +2130,9 @@ class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSe
 
     queryset = OperationReport.objects.select_related("operation__work_order")
     serializer_class = OperationReportSerializer
+    filter_fields = ["operation", "operation__work_order", "machine"]
+    search_fields = ["operation__work_order__number", "operation__name", "memo"]
+    date_field = "reported_on"
 
     @action(detail=False, methods=["post"])
     def record(self, request):

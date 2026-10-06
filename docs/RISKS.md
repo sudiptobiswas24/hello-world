@@ -154,6 +154,17 @@ not cover, or is deleted with the commit that finishes it.
 - ~~L3 Link a login to an employee~~ — done, for leave; see items 6 and 17.
 - ~~L4 Import from files (CSV)~~ — done; see item 2 for what it has
   not been tried on.
+- L5 An item's costing method and tracking are not yet fixed once its
+  stock has moved, as its unit is. A costing method changed over stock
+  already held replays every past movement under a method it never
+  happened by, and the stock's value parts from the ledger with no
+  entry to say why. Lot tracking switched on over stock already held
+  strands that stock: every movement must then name a batch, and that
+  stock is in none. The item screen sets both only when the item is
+  made; the API still takes a change. Test fixtures under standard
+  costing, valuation folds and lot trace switch them over stock and are
+  reworked first, or a step that switches one revalues the stock or
+  puts it into an opening batch.
 - L6 A second role for a party already made: a vendor who also buys
   scrap. Only the admin gives one today, and the roles API it would use
   does not yet ask what making a party asks (trading roles only, and a

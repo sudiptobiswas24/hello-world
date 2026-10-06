@@ -1,4 +1,7 @@
+from django.db import transaction
 from rest_framework import serializers
+
+from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
 from .models import Department, Employee, LeavePolicy, LeaveRequest
 
@@ -13,6 +16,28 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 class EmployeeSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="party.name", read_only=True)
+    department_name = serializers.CharField(source="department.name", read_only=True, default="")
+    # HR makes the person with the employee: whoever keeps employees need
+    # not also keep customers and vendors to take somebody on.
+    new_name = serializers.CharField(write_only=True, required=False, max_length=255)
+
+    def validate(self, attrs):
+        if self.instance is None and not attrs.get("party") and not attrs.get("new_name"):
+            raise serializers.ValidationError({"party": ["Name the person, or choose who they already are."]})
+        return attrs
+
+    def create(self, validated_data):
+        name = validated_data.pop("new_name", "")
+        with transaction.atomic():
+            if not validated_data.get("party"):
+                person = Party.objects.create(code=validated_data["employee_number"], name=name)
+                PartyRoleAssignment.objects.create(party=person, role=PartyRole.EMPLOYEE)
+                validated_data["party"] = person
+            return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("new_name", None)
+        return super().update(instance, validated_data)
 
     class Meta:
         model = Employee
@@ -26,8 +51,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "hire_date",
             "termination_date",
             "employment_status",
-            "working_days", "holiday_region", "user", "name",
+            "working_days", "holiday_region", "user", "name", "department_name", "new_name",
         ]
+        extra_kwargs = {"party": {"required": False}}
 
 
 class LeavePolicySerializer(serializers.ModelSerializer):

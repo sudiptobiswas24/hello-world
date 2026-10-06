@@ -75,16 +75,21 @@ class SlabSerializer(serializers.ModelSerializer):
 
 
 class RemittanceSerializer(serializers.ModelSerializer):
+    payment_number = serializers.CharField(source="payment.number", read_only=True)
+    account_name = serializers.CharField(source="liability_account.name", read_only=True)
+
     class Meta:
         model = StatutoryRemittance
-        fields = ["id", "payment", "liability_account", "period", "amount"]
+        fields = ["id", "payment", "liability_account", "period", "amount", "payment_number", "account_name"]
 
 
 class CompensationSerializer(serializers.ModelSerializer):
+    component_name = serializers.CharField(source="component.name", read_only=True)
+
     class Meta:
         model = EmployeeCompensation
         fields = ["id", "employee", "component", "amount", "effective_from", "effective_to",
-                  "note"]
+                  "note", "component_name"]
 
 
 class PayRunSerializer(serializers.ModelSerializer):
@@ -129,17 +134,15 @@ def _slip(slip):
 class PayComponentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PayComponent.objects.all()
     serializer_class = PayComponentSerializer
+    filter_fields = ["kind", "basis", "is_active"]
+    search_fields = ["code", "name"]
 
 
 class CompensationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    extra_params = ('employee',)
     queryset = EmployeeCompensation.objects.select_related("employee", "component")
     serializer_class = CompensationSerializer
-
-    def get_queryset(self):
-        rows = super().get_queryset()
-        employee = self.request.query_params.get("employee")
-        return rows.filter(employee_id=employee) if employee else rows
+    filter_fields = ["employee", "component"]
+    date_field = "effective_from"
 
 
 class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -236,6 +239,7 @@ class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 class SlabViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PayComponentSlab.objects.select_related("component")
     serializer_class = SlabSerializer
+    filter_fields = ["component"]
 
     def perform_create(self, serializer):
         try:
@@ -255,6 +259,8 @@ class RemittanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = StatutoryRemittance.objects.select_related("payment", "liability_account")
     serializer_class = RemittanceSerializer
+    filter_fields = ["liability_account", "payment"]
+    date_field = "period"
     http_method_names = ["get", "post", "delete", "head", "options"]
 
     def perform_create(self, serializer):

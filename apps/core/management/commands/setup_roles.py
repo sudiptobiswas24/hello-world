@@ -77,7 +77,7 @@ ROLES = {
         # at: cost, so the controller's, not the salesman's who quotes.
         *full("manufacturing", "materialrate", "stagerate", "quotepolicy", "costversion",
               "standardcost"),
-        *view("manufacturing", "costsheet"),
+        *crud("manufacturing", "costsheet", actions=("add", "delete", "view")),
         *crud("accounting", "taxgroup"),
         *crud("accounting", "chargetype"),
         *crud("accounting", "fiscalposition"),
@@ -146,7 +146,7 @@ ROLES = {
         *crud("sales", "customerprofile"),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
-        *view("manufacturing", "costsheet"),
+        *crud("manufacturing", "costsheet", actions=("add", "delete", "view")),
         *crud("sales", "dunninglevel"),
         *crud("sales", "commissionplan"),
         *crud("sales", "salesrep"),
@@ -258,6 +258,10 @@ ROLES = {
               "stockadjustment", "stockadjustmentline", "storagebin"),
         *crud("inventory", "adjustmentreason", actions=("add", "change", "view")),
         *crud("inventory", "lot", actions=("add", "change", "view")),
+        # The item master and where it is kept: nobody else made an item
+        # or a warehouse from the office before these screens.
+        *crud("inventory", "item", actions=("add", "change", "view")),
+        *full("inventory", "itemunit", "warehouse", "itemtemplate", "itemattribute", "itemattributevalue"),
         *view("purchasing", "goodsreceipt", "purchaseorder"),
         *view("sales", "delivery", "salesorder"),
         # Material out to a job worker and the customer's own material in
@@ -326,6 +330,9 @@ ROLES = {
               "filmspecification", "linerspecification", "printdesign"),
         *view("manufacturing", "bagcoatingline", "coretype", "toolusage", "workorder",
               "crewassignment"),
+        # A new sack is a new item before it is a specification.
+        *crud("inventory", "item", actions=("add", "change", "view")),
+        *full("inventory", "itemunit"),
         *view("hr", "employee"),
     ],
     "Production Planner": [
