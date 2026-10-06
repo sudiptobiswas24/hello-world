@@ -277,6 +277,9 @@ class FilmSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = FilmSpecification.objects.select_related("film_item", "bom")
     serializer_class = FilmSpecificationSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class LinerSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -284,11 +287,17 @@ class LinerSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = LinerSpecification.objects.select_related("liner_item", "film", "bom")
     serializer_class = LinerSpecificationSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class TapeSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = TapeSpecification.objects.select_related("tape_item", "bom")
     serializer_class = TapeSpecificationSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
     @action(detail=True, methods=["get"])
     def strength(self, request, pk=None):
@@ -325,11 +334,17 @@ class FabricSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "fabric_item", "warp_tape", "weft_tape", "bom"
     )
     serializer_class = FabricSpecificationSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
 
 
 class BagSpecificationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BagSpecification.objects.select_related("bag_item", "fabric", "bom")
     serializer_class = BagSpecificationSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code"]
     # Solving writes nothing, so it asks only to see specifications:
     # whoever quotes a sack need not be allowed to create one.
     action_permission_map = {"solve": "manufacturing.view_bagspecification"}
@@ -407,6 +422,10 @@ class _DatedRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class MaterialRateViewSet(_DatedRateViewSet):
     queryset = MaterialRate.objects.select_related("item")
     serializer_class = MaterialRateSerializer
+    filter_fields = ["item"]
+    search_fields = ["item__sku", "item__name", "note"]
+    date_field = "valid_from"
+    ordering_fields = ["valid_from"]
 
 
 class _InwardViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -438,8 +457,13 @@ class CustomerMaterialReceiptViewSet(_InwardViewSet):
     """A customer's material arriving on their challan. register/?customer= says
     what is received, used, returned and on hand."""
 
-    queryset = CustomerMaterialReceipt.objects.prefetch_related("lines")
+    queryset = CustomerMaterialReceipt.objects.select_related("customer", "warehouse").prefetch_related(
+        "lines__item", "lines__lot")
     serializer_class = CustomerMaterialReceiptSerializer
+    filter_fields = ["customer", "warehouse", "posted"]
+    search_fields = ["number", "their_challan", "customer__name"]
+    date_field = "received_on"
+    ordering_fields = ["received_on", "number"]
     action_permission_map = {
         "post": "manufacturing.change_customermaterialreceipt",
         "void": "manufacturing.change_customermaterialreceipt",
@@ -462,6 +486,8 @@ class CustomerMaterialReceiptViewSet(_InwardViewSet):
 class CustomerMaterialReceiptLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = CustomerMaterialReceiptLine.objects.select_related("receipt")
     serializer_class = CustomerMaterialReceiptLineSerializer
+    filter_fields = ["receipt", "item", "receipt__customer", "receipt__posted"]
+    search_fields = ["item__sku", "item__name", "lot__code"]
 
     def perform_create(self, serializer):
         _run(serializer.save)
@@ -474,8 +500,13 @@ class CustomerMaterialReceiptLineViewSet(AuditableViewSetMixin, viewsets.ModelVi
 
 
 class CustomerMaterialReturnViewSet(_InwardViewSet):
-    queryset = CustomerMaterialReturn.objects.prefetch_related("lines")
+    queryset = CustomerMaterialReturn.objects.select_related("customer", "warehouse").prefetch_related(
+        "lines__item", "lines__lot")
     serializer_class = CustomerMaterialReturnSerializer
+    filter_fields = ["customer", "warehouse", "posted"]
+    search_fields = ["number", "customer__name"]
+    date_field = "returned_on"
+    ordering_fields = ["returned_on", "number"]
     action_permission_map = {
         "post": "manufacturing.change_customermaterialreturn",
         "void": "manufacturing.change_customermaterialreturn",
@@ -485,6 +516,7 @@ class CustomerMaterialReturnViewSet(_InwardViewSet):
 class CustomerMaterialReturnLineViewSet(CustomerMaterialReceiptLineViewSet):
     queryset = CustomerMaterialReturnLine.objects.select_related("material_return")
     serializer_class = CustomerMaterialReturnLineSerializer
+    filter_fields = ["material_return"]
 
 
 class EnergyTariffViewSet(_DatedRateViewSet):
@@ -565,13 +597,20 @@ class MeterReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class StageRateViewSet(_DatedRateViewSet):
-    queryset = StageRate.objects.all()
+    queryset = StageRate.objects.select_related("work_centre")
     serializer_class = StageRateSerializer
+    filter_fields = ["stage", "work_centre"]
+    search_fields = ["stage", "note"]
+    date_field = "valid_from"
+    ordering_fields = ["valid_from"]
 
 
 class QuotePolicyViewSet(_DatedRateViewSet):
     queryset = QuotePolicy.objects.all()
     serializer_class = QuotePolicySerializer
+    search_fields = ["note"]
+    date_field = "valid_from"
+    ordering_fields = ["valid_from"]
 
 
 class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -755,6 +794,9 @@ class CostVersionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = CostVersion.objects.prefetch_related("costs")
     serializer_class = CostVersionSerializer
+    search_fields = ["code", "name"]
+    date_field = "effective_from"
+    ordering_fields = ["effective_from", "code"]
     action_permission_map = {
         "roll_up": "manufacturing.change_costversion",
         "publish": "manufacturing.change_costversion",
@@ -825,6 +867,8 @@ class CostVersionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class StandardCostViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = StandardCost.objects.select_related("version", "item", "bom")
     serializer_class = StandardCostSerializer
+    filter_fields = ["version", "item"]
+    search_fields = ["item__sku", "item__name"]
 
 
 class MaintenanceScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -983,6 +1027,9 @@ class PrintDesignViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "customer", "approved_by"
     ).prefetch_related("tools")
     serializer_class = PrintDesignSerializer
+    filter_fields = ["is_active", "customer"]
+    search_fields = ["code", "name", "customer__name"]
+    ordering_fields = ["code"]
 
     @action(detail=True, methods=["get"])
     def cylinders(self, request, pk=None):
@@ -1552,7 +1599,7 @@ class WorkOrderOperationViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelVie
     queryset = WorkOrderOperation.objects.select_related("work_order__item").order_by(
         "work_order__number", "sequence")
     serializer_class = OperationChoiceSerializer
-    filter_fields = ["work_order", "work_centre", "work_order__status"]
+    filter_fields = ["work_order", "work_centre", "work_order__status", "is_outside"]
     search_fields = ["work_order__number", "name", "work_order__item__sku"]
 
 
@@ -1758,8 +1805,13 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     issued.
     """
 
-    queryset = JobWorkChallan.objects.select_related("job_worker").prefetch_related("lines")
+    queryset = JobWorkChallan.objects.select_related("job_worker").prefetch_related(
+        "lines__operation__work_order")
     serializer_class = JobWorkChallanSerializer
+    filter_fields = ["job_worker", "posted"]
+    search_fields = ["number", "job_worker__name", "vehicle"]
+    date_field = "challan_date"
+    ordering_fields = ["challan_date", "number"]
     action_permission_map = {
         "post": "manufacturing.change_jobworkchallan",
         "void": "manufacturing.change_jobworkchallan",
@@ -1819,6 +1871,7 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class JobWorkLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = JobWorkLine.objects.select_related("challan", "operation")
     serializer_class = JobWorkLineSerializer
+    filter_fields = ["challan"]
 
     def perform_create(self, serializer):
         _run(serializer.save)
@@ -1837,6 +1890,8 @@ class JobWorkLossViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = JobWorkLoss.objects.select_related("line")
     serializer_class = JobWorkLossSerializer
+    filter_fields = ["line", "line__challan"]
+    date_field = "loss_date"
     http_method_names = ["get", "post", "head", "options"]
     action_permission_map = {"void": "manufacturing.change_jobworkloss"}
 

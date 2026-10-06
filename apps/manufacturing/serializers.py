@@ -277,42 +277,63 @@ class TestCertificateSerializer(serializers.ModelSerializer):
 
 
 class MaterialRateSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = MaterialRate
-        fields = ["id", "item", "rate", "valid_from", "note"]
+        fields = ["id", "item", "rate", "valid_from", "note", "item_label"]
 
 
 class CustomerMaterialReceiptLineSerializer(serializers.ModelSerializer):
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = CustomerMaterialReceiptLine
-        fields = ["id", "receipt", "item", "lot", "quantity", "declared_value"]
+        fields = ["id", "receipt", "item", "lot", "quantity", "declared_value", "item_label", "lot_code"]
 
 
 class CustomerMaterialReceiptSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     lines = CustomerMaterialReceiptLineSerializer(many=True, read_only=True)
 
     class Meta:
         model = CustomerMaterialReceipt
         fields = ["id", "number", "customer", "warehouse", "received_on", "their_challan",
                   "their_challan_date", "posted", "posted_at", "voided_at", "voided_reason",
-                  "lines"]
+                  "lines", "customer_name", "warehouse_name"]
         read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
         validators = []
 
 
 class CustomerMaterialReturnLineSerializer(serializers.ModelSerializer):
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = CustomerMaterialReturnLine
-        fields = ["id", "material_return", "receipt_line", "item", "lot", "quantity"]
+        fields = ["id", "material_return", "receipt_line", "item", "lot", "quantity", "item_label", "lot_code"]
 
 
 class CustomerMaterialReturnSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
     lines = CustomerMaterialReturnLineSerializer(many=True, read_only=True)
 
     class Meta:
         model = CustomerMaterialReturn
         fields = ["id", "number", "customer", "warehouse", "returned_on", "posted",
-                  "posted_at", "voided_at", "voided_reason", "lines"]
+                  "posted_at", "voided_at", "voided_reason", "lines", "customer_name", "warehouse_name"]
         read_only_fields = ["number", "posted", "posted_at", "voided_at", "voided_reason"]
 
 
@@ -351,10 +372,12 @@ class EnergyTariffSerializer(serializers.ModelSerializer):
 
 
 class StageRateSerializer(serializers.ModelSerializer):
+    work_centre_name = serializers.CharField(source="work_centre.name", read_only=True, default="")
+
     class Meta:
         model = StageRate
         fields = ["id", "stage", "rate", "valid_from", "note",
-            "work_centre",
+            "work_centre", "work_centre_name",
         ]
 
 
@@ -470,10 +493,15 @@ class BillOfMaterialsSerializer(serializers.ModelSerializer):
 
 
 class StandardCostSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = StandardCost
         fields = ["id", "version", "item", "material", "conversion",
-                  "byproduct_credit", "total", "is_rolled", "bom", "notes"]
+                  "byproduct_credit", "total", "is_rolled", "bom", "notes", "item_label"]
         read_only_fields = ["total", "is_rolled", "bom"]
 
 
@@ -583,13 +611,14 @@ class MaintenanceJobDetailSerializer(MaintenanceJobSerializer):
 
 class PrintDesignSerializer(serializers.ModelSerializer):
     is_approved = serializers.BooleanField(read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True, default="")
     cylinders_short_by = serializers.SerializerMethodField()
 
     class Meta:
         model = PrintDesign
         fields = ["id", "code", "name", "customer", "colours",
                   "artwork_reference", "approved_on", "approved_by", "engraving_lead_days",
-                  "is_active", "notes", "is_approved", "cylinders_short_by", "ready_on"]
+                  "is_active", "notes", "is_approved", "cylinders_short_by", "ready_on", "customer_name"]
 
     ready_on = serializers.SerializerMethodField()
 
@@ -1047,28 +1076,36 @@ class DowntimeSerializer(serializers.ModelSerializer):
 
 
 class JobWorkLineSerializer(serializers.ModelSerializer):
+    operation_label = serializers.SerializerMethodField()
+
+    def get_operation_label(self, row):
+        return f"{row.operation.work_order.number} · {row.operation.sequence} {row.operation.name}"
+
     class Meta:
         model = JobWorkLine
         fields = ["id", "challan", "operation", "description", "hsn_code", "quantity",
-                  "value", "tax_rate", "is_capital_goods"]
+                  "value", "tax_rate", "is_capital_goods", "operation_label"]
 
 
 class JobWorkChallanSerializer(serializers.ModelSerializer):
     lines = JobWorkLineSerializer(many=True, read_only=True)
+    job_worker_name = serializers.CharField(source="job_worker.name", read_only=True)
 
     class Meta:
         model = JobWorkChallan
         fields = ["id", "number", "job_worker", "challan_date", "vehicle", "notes",
                   "job_worker_gstin", "job_worker_state", "posted", "posted_at",
-                  "voided_at", "lines"]
+                  "voided_at", "lines", "job_worker_name"]
         read_only_fields = ["number", "job_worker_gstin", "job_worker_state", "posted",
                             "posted_at", "voided_at"]
 
 
 class JobWorkLossSerializer(serializers.ModelSerializer):
+    line_description = serializers.CharField(source="line.description", read_only=True)
+
     class Meta:
         model = JobWorkLoss
-        fields = ["id", "line", "loss_date", "quantity", "note", "voided_at"]
+        fields = ["id", "line", "loss_date", "quantity", "note", "voided_at", "line_description"]
 
 
 class ScrapReasonSerializer(serializers.ModelSerializer):

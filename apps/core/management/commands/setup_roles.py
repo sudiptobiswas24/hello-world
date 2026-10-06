@@ -70,6 +70,11 @@ ROLES = {
         *crud("core", "documentsequence"),
         *crud("core", "company", actions=("change", "view")),
         *crud("accounting", "tax"),
+        # The rates a quotation costs at and the standards stock is valued
+        # at: cost, so the controller's, not the salesman's who quotes.
+        *full("manufacturing", "materialrate", "stagerate", "quotepolicy", "costversion",
+              "standardcost"),
+        *view("manufacturing", "costsheet"),
         *crud("accounting", "taxgroup"),
         *crud("accounting", "chargetype"),
         *crud("accounting", "fiscalposition"),
@@ -117,6 +122,7 @@ ROLES = {
         *crud("sales", "customerprofile", actions=("view",)),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
+        *view("manufacturing", "costsheet"),
         # deliberately NOT sales.post_invoice
     ],
     "AR Manager": [
@@ -133,6 +139,7 @@ ROLES = {
         *crud("sales", "customerprofile"),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
+        *view("manufacturing", "costsheet"),
         *crud("sales", "dunninglevel"),
         *crud("sales", "commissionplan"),
         *crud("sales", "salesrep"),
@@ -242,6 +249,12 @@ ROLES = {
         *crud("inventory", "lot", actions=("add", "change", "view")),
         *view("purchasing", "goodsreceipt", "purchaseorder"),
         *view("sales", "delivery", "salesorder"),
+        # Material out to a job worker and the customer's own material in
+        # and back: stock that moves without being bought or sold.
+        *full("manufacturing", "jobworkchallan", "jobworkline", "jobworkloss",
+              "customermaterialreceipt", "customermaterialreceiptline",
+              "customermaterialreturn", "customermaterialreturnline"),
+        *view("manufacturing", "workorder", "workorderoperation"),
     ],
     # -- the plant ------------------------------------------------------
     "Production Supervisor": [
@@ -296,9 +309,12 @@ ROLES = {
         *full("manufacturing", "billofmaterials", "bomcomponent", "bombyproduct", "bomsubstitute",
               "routing", "routingoperation", "alternaterouting", "workcentre", "machine", "shift",
               "tool", "scrapreason", "downtimereason", "setupfamily", "changeoverrule"),
-        *view("manufacturing", "bagspecification", "fabricspecification", "tapespecification",
-              "filmspecification", "linerspecification", "bagcoatingline", "printdesign",
-              "coretype", "toolusage", "workorder", "crewassignment"),
+        # What the customer's sack is made of and printed with: the
+        # specifications write the recipes, so they are the engineer's.
+        *full("manufacturing", "bagspecification", "fabricspecification", "tapespecification",
+              "filmspecification", "linerspecification", "printdesign"),
+        *view("manufacturing", "bagcoatingline", "coretype", "toolusage", "workorder",
+              "crewassignment"),
         *view("hr", "employee"),
     ],
     "Production Planner": [

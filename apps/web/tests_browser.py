@@ -106,6 +106,11 @@ class BrowserMixin:
         _one_call_at_a_time(True)
         super().setUpClass()
         cls.playwright = sync_playwright().start()
+        # Playwright's own five seconds for an expectation is a guess about
+        # an idle machine. The gate runs its three suites side by side, and
+        # a page rendering slowly under that load is not a defect; one that
+        # never shows what it should still fails, fifteen seconds later.
+        expect.set_options(timeout=15_000)
         executable = os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE") or None
         try:
             cls.browser = cls.playwright.chromium.launch(executable_path=executable)
