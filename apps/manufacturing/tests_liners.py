@@ -33,6 +33,7 @@ from .routing import Routing, RoutingOperation
 from .station import LineKind, LoomStation
 from .station_film import FilmRoll, record_film, void_film
 from .tests_orders import TODAY
+from .tests_quoting import settled_before
 from .tests_station import at
 from .tests_station_coat import CoatingTestCase
 from .woven import BagSpecification
@@ -361,7 +362,8 @@ class CostedDownToThePolymerTests(LinerTestCase):
         spec = BagSpecification.objects.get(pk=self.lam_spec.pk)
         spec.liner_item = self.liner
         spec.save()
-        self.lined = spec
+        settled_before(TODAY)
+        self.lined = BagSpecification.objects.get(pk=spec.pk)
 
     def test_the_liner_is_walked_not_priced(self):
         from .quoting import _Walk
@@ -483,10 +485,14 @@ class WhichSpecificationTests(LinerTestCase):
     def test_a_film_changed_after_the_day_cannot_be_costed_on_it(self):
         import datetime
 
+        from django.utils import timezone
+
         from .quoting import compute
 
-        spec = self.lined()
+        self.lined()
+        settled_before(TODAY)
+        # The film alone edited after the day: the rest stood as it was.
         FilmSpecification.objects.filter(pk=self.film.pk).update(
-            created_at=self.film.updated_at - datetime.timedelta(days=2))
+            updated_at=timezone.now())
         with self.assertRaisesMessage(ValidationError, "LF-50"):
-            compute(spec, TODAY)
+            compute(BagSpecification.objects.get(pk=self.lam_spec.pk), TODAY)

@@ -185,6 +185,12 @@ Go through it before running anything.
 - Never name a test helper or attribute `run` or `order`.
 - Two refusals in one test need two separate builds, each of which
   must not collide with the other.
+- A test the machine's speed can decide is a defect, not a flake.
+  Costing on a past day reads an edit off timestamps (a save more than a
+  second after the create), so a fixture whose recipe stood before the
+  day says so with `settled_before(day)` and reads the specification
+  again; its own saves otherwise count as edits whenever the gate is
+  loaded. Prove such a fix at the worst case (the threshold at nothing).
 - Django never calls `full_clean()` for you; `ModelSerializer` does not
   run check constraints either. Guard in `save()` or the view. What gets
   past both reaches the database: `apps.core.api.exception_handler` turns

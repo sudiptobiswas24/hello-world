@@ -37,6 +37,26 @@ from .tests_woven import WovenTestCase, close
 DAY = datetime.date(2026, 9, 1)
 
 
+def settled_before(day):
+    """
+    Every recipe and work centre as it stood before `day`: made and last
+    changed the day before. Costing on a past day asks, by timestamps,
+    whether any part of the chain was edited after it, an edit being a
+    save more than a second after the create; a fixture's own saves then
+    read as edits made today whenever the machine is slow enough to take
+    a second over them. A test that wants an edit after the day makes one.
+    """
+    from .liners import FilmSpecification, LinerSpecification
+    from .orders import WorkCentre
+    from .woven import BagSpecification, FabricSpecification, TapeSpecification
+
+    moment = timezone.make_aware(datetime.datetime.combine(day - datetime.timedelta(days=1),
+                                                           datetime.time(9)))
+    for model in (BagSpecification, FabricSpecification, TapeSpecification, LinerSpecification,
+                  FilmSpecification, WorkCentre):
+        model.objects.update(created_at=moment, updated_at=moment)
+
+
 class QuotingTestCase(WovenTestCase):
     def setUp(self):
         super().setUp()
@@ -49,6 +69,9 @@ class QuotingTestCase(WovenTestCase):
             StageRate.objects.create(stage=stage, rate=Decimal(rate), valid_from=DAY)
         QuotePolicy.objects.create(overhead_percent=Decimal("8"), margin_percent=Decimal("12"),
                                    valid_from=DAY)
+        settled_before(DAY)
+        # Read again: the one in hand still carries the times it was saved at.
+        self.sack = type(self.sack).objects.get(pk=self.sack.pk)
 
     def line(self, sheet, kind, item=None, stage=""):
         return sheet.lines.get(kind=kind, item=item, stage=stage)
@@ -99,7 +122,8 @@ class WorkedByHandTests(QuotingTestCase):
         sack = self.bag(code="LAM", is_laminated=True, lamination_gsm=Decimal("15"),
                         coating=[(lam_pp, 80), (ldpe, 20)], print_colours=2, ink_item=ink,
                         bag_item=Item.objects.create(sku="BAG-LAM", name="Lam", uom=self.pcs))
-        sheet = cost(sack, Decimal("1000"), DAY)
+        settled_before(DAY)
+        sheet = cost(type(sack).objects.get(pk=sack.pk), Decimal("1000"), DAY)
         # roll = fabric 0.113063 + coat 0.01575 + 0.0039375
         self.assertTrue(close(self.line(sheet, "conversion", stage="lamination").amount, "0.597377"))
         self.assertTrue(close(self.line(sheet, "conversion", stage="printing").amount, "0.663752"))
@@ -337,6 +361,7 @@ class ConversionFromTheWorkCentreTests(QuotingTestCase):
             efficiency_percent=Decimal("80"))
         self.tables = WorkCentre.objects.create(code="CUT", name="Cutting",
                                                 machine_rate_per_hour=Decimal("900"))
+        settled_before(DAY)
 
     def route(self, bom, *steps):
         from .routing import Routing, RoutingOperation
@@ -386,6 +411,8 @@ class ConversionFromTheWorkCentreTests(QuotingTestCase):
         self.route(fabric.warp_tape.bom, (self.extruder, "400", self.kg))
         self.route(weft.bom, (self.extruder, "200", self.kg))
         self.from_centre("tape", self.extruder)
+        settled_before(DAY)
+        sack = type(sack).objects.get(pk=sack.pk)
         line = self.line(cost(sack, Decimal("1000"), DAY + datetime.timedelta(days=1)),
                          "conversion", stage="tape")
         # Equal ends and picks of the same tape: half the tape each, at
@@ -411,6 +438,7 @@ class ConversionFromTheWorkCentreTests(QuotingTestCase):
                                           labour_rate_per_hour=Decimal("300"))
         self.route(self.sack.bom, (press, "2000", self.pcs))
         self.from_centre("packing", press)
+        settled_before(DAY)
         line = self.line(cost(self.sack, Decimal("1000"), DAY + datetime.timedelta(days=1)),
                          "conversion", stage="packing")
         self.assertEqual((line.quantity, line.rate, line.amount),
@@ -445,8 +473,8 @@ class ConversionFromTheWorkCentreTests(QuotingTestCase):
 
         self.route(self.sack.bom, (self.tables, "600", self.pcs))
         self.from_centre("cutting", self.tables)
-        WorkCentre.objects.filter(pk=self.tables.pk).update(
-            created_at=timezone.now() - datetime.timedelta(days=60))
+        # Made before the day, changed today.
+        WorkCentre.objects.filter(pk=self.tables.pk).update(updated_at=timezone.now())
         self.refused("CUT was changed after", cost, self.sack, Decimal("1000"),
                      DAY + datetime.timedelta(days=1))
         cost(self.sack, Decimal("1000"), timezone.localdate())
