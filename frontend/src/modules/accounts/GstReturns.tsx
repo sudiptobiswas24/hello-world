@@ -15,8 +15,8 @@ interface Gstr1 {
 
 interface Gstr3b {
   gstin: string;
-  "3.1a": Heads; "3.1b": Heads; "3.1c": Heads; "3.1e": Heads;
-  "4A5": Heads;
+  "3.1a": Heads; "3.1b": Heads; "3.1c": Heads; "3.1d": Heads; "3.1e": Heads;
+  "4A3": Heads; "4A5": Heads;
   "5": { inter: string; intra: string };
   warnings: string[];
 }
@@ -30,7 +30,8 @@ const SECTIONS: [string, string][] = [
 
 const ROWS_3B: [keyof Gstr3b, string][] = [
   ["3.1a", "3.1(a) Outward taxable"], ["3.1b", "3.1(b) Zero rated"], ["3.1c", "3.1(c) Nil and exempt"],
-  ["3.1e", "3.1(e) Non-GST"], ["4A5", "4(A)(5) ITC, all other"],
+  ["3.1d", "3.1(d) Inward, reverse charge"], ["3.1e", "3.1(e) Non-GST"],
+  ["4A3", "4(A)(3) ITC, reverse charge"], ["4A5", "4(A)(5) ITC, all other"],
 ];
 
 /**

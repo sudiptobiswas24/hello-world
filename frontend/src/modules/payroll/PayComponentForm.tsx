@@ -19,7 +19,7 @@ export default function PayComponentForm() {
         { key: "code", label: "Code" },
         { key: "name", label: "Name" },
         { key: "kind", label: "Kind", kind: "choice", choices: [["earning", "Earning"], ["deduction", "Employee deduction"], ["employer_cost", "Employer cost"]] },
-        { key: "basis", label: "Basis", kind: "choice", choices: [["fixed", "Fixed amount"], ["percent", "Percentage of its base (taxable gross unless named)"], ["per_hour", "Rate per hour"], ["per_unit", "Rate per unit produced"], ["slab", "Amount from a slab of its base"]], initial: "fixed" },
+        { key: "basis", label: "Basis", kind: "choice", choices: [["fixed", "Fixed amount"], ["percent", "Percentage of its base (taxable gross unless named)"], ["per_hour", "Rate per hour"], ["per_unit", "Rate per unit produced"], ["overtime", "Rate per overtime hour on the attendance register"], ["slab", "Amount from a slab of its base"]], initial: "fixed" },
         { key: "expense_account", label: "Expense account", kind: "pick", pick: ACCOUNT, hint: "Where an earning or an employer cost is charged" },
         { key: "liability_account", label: "Liability account", kind: "pick", pick: ACCOUNT, hint: "What a deduction or employer contribution is owed into — tax payable, pension payable" },
         { key: "measure", label: "Measure", hint: "For piece work, what is counted" },

@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router";
 import type { Query } from "../api/client";
 import { useGet, useReference } from "../api/hooks";
 import { useAccess } from "../auth/me";
+import { csvText, downloadCsv } from "../lib/csv";
 import { today } from "../forms/fields";
 import { ErrorPanel } from "../shell/ErrorPanel";
 import { DataTable, type Column } from "./DataTable";
@@ -91,6 +92,9 @@ export function ReportView<D, T extends Row>(props: {
     <section className="report">
       <header className="list-head">
         <h1>{title}</h1>
+        {found.length > 0 && (
+          <button type="button" className="btn" onClick={() => downloadCsv(title, csvText(columns, found as unknown as Record<string, unknown>[]))}>CSV</button>
+        )}
         {params.map((param) => param.kind === "date" ? (
           <label key={param.key} className="inline">{param.label}{" "}
             <input type="date" value={values[param.key]} onChange={(e) => set(param.key, e.target.value)} />

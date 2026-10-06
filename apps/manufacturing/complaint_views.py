@@ -54,9 +54,20 @@ class ComplaintSerializer(serializers.ModelSerializer):
         model = Complaint
         fields = ["id", "number", "customer", "received_on", "category", "description",
                   "quantity_affected", "status", "root_cause", "decided_on", "decided_by",
-                  "rejection_reason", "reopened_reason", "lots", "actions", "customer_name"]
+                  "rejection_reason", "reopened_reason", "lots", "actions", "customer_name", "settled",
+                  "cost"]
         read_only_fields = ["number", "status", "root_cause", "decided_on", "decided_by",
                             "rejection_reason", "reopened_reason"]
+
+    settled = serializers.SerializerMethodField()
+    cost = serializers.SerializerMethodField()
+
+    def get_settled(self, obj):
+        return [{"note": row.credit_note_id, "number": row.credit_note.number, "net": row.credit_note.subtotal(),
+                 "reason": row.credit_note.claim_reason} for row in obj.settlements.select_related("credit_note")]
+
+    def get_cost(self, obj):
+        return obj.cost()
 
     def get_lots(self, obj):
         return [{"lot": row.lot.code, "item": row.lot.item.sku,
@@ -77,7 +88,24 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "close": "manufacturing.change_complaint",
         "reject": "manufacturing.change_complaint",
         "reopen": "manufacturing.change_complaint",
+        # Giving money back is accounts', whoever investigated.
+        "settle": "sales.post_invoice",
     }
+
+    @action(detail=True, methods=["post"])
+    def settle(self, request, pk=None):
+        """Money given back for it: {invoice, net, reason, memo}, a claim credit note on that invoice."""
+        from apps.core.api import money_amount, record_or_404
+        from apps.sales.models import Invoice
+
+        complaint = self.get_object()
+        invoice = record_or_404(Invoice, request.data.get("invoice"), "invoice")
+        net = money_amount(request.data, "net")
+        if net is None:
+            raise DRFValidationError({"net": ["Say how much, before tax, is given back."]})
+        _run(complaint.settle, invoice, net, request.data.get("reason") or "", request.data.get("memo") or "")
+        complaint.refresh_from_db()
+        return Response(self.get_serializer(complaint).data)
 
     @action(detail=True, methods=["post"])
     def lots(self, request, pk=None):
@@ -102,6 +130,11 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                               "quantity": str(row["quantity"]),
                               "deliveries": row["deliveries"]}
                              for row in found["also_held_by"]],
+            "tape_settings": [{"run": row.work_order.number, "machine": row.machine.code if row.machine else "",
+                               "recorded_at": row.recorded_at, "draw_ratio": row.draw_ratio,
+                               "quench_temperature_c": row.quench_temperature_c,
+                               "oven_temperature_c": row.oven_temperature_c, "note": row.note}
+                              for row in found["tape_settings"]],
         })
 
     @action(detail=True, methods=["post"])

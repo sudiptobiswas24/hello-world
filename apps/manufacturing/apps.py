@@ -7,6 +7,7 @@ class ManufacturingConfig(AppConfig):
     label = "manufacturing"
 
     def ready(self):
+        from apps.hr.attendance import register_shift_clock
         from apps.hr.payroll import register_piece_measure
         from apps.inventory.models import register_unit_provider
         from apps.quality.release import register_lot_sources
@@ -17,6 +18,7 @@ class ManufacturingConfig(AppConfig):
         from .inward import ownership_problems
         from .piecework import kilograms_woven, metres_woven
         from .rebatch import sources
+        from .shifts import shift_starts
         from .woven import sack_units
 
         register_unit_provider(sack_units)
@@ -27,3 +29,4 @@ class ManufacturingConfig(AppConfig):
         register_piece_measure("kilograms_woven", "Kilograms woven", kilograms_woven)
         register_piece_measure("bags_converted", "Bags cut and stitched", bags_converted)
         register_piece_measure("liners_sealed", "Liners cut and sealed", liners_sealed)
+        register_shift_clock(shift_starts)

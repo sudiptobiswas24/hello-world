@@ -13,6 +13,7 @@ from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
 from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
+from apps.core.models import Party, to_date
 
 from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
@@ -297,7 +298,36 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         "credit_note": "sales.post_invoice",
         "credit_old_supply": "sales.post_invoice",
         "write_off": "sales.write_off_invoice",
+        "claim": "sales.post_invoice",
+        "claims": "sales.view_invoice",
     }
+
+    @action(detail=False, methods=["post"])
+    def claim(self, request):
+        """Money given back on a customer's claim: {invoice, net, reason, memo, date}; the credit note made."""
+        given = str(request.data.get("invoice") or "")
+        invoice = self.get_queryset().filter(pk=int(given)).first() if given.isdigit() else None
+        if invoice is None:
+            raise DRFValidationError({"invoice": ["Not one of the invoices you can see."]})
+        net = money_amount(request.data, "net")
+        if net is None:
+            raise DRFValidationError({"net": ["Say how much, before tax, is given back."]})
+        try:
+            note = invoice.credit_claim(net, request.data.get("reason") or "", memo=request.data.get("memo") or "",
+                                        on_date=request.data.get("date") or None)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+        return Response(self.get_serializer(note).data, status=201)
+
+    @action(detail=False, methods=["get"])
+    def claims(self, request):
+        """Claims credited ?from= to ?to=: what quality cost."""
+        from .models import claims
+
+        start, end = to_date(request.query_params.get("from")), to_date(request.query_params.get("to"))
+        if not start or not end:
+            raise DRFValidationError({"from": ["Give the first and last days."]})
+        return Response(claims(start, end))
 
     @action(detail=True, methods=["post"])
     def write_off(self, request, pk=None):
@@ -449,8 +479,10 @@ class InvoicePaymentViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets
 
 class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     customer_path = "sales_order__customer"
-    search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name"]
-    filter_fields = ["sales_order", "posted", "reverses", "reverses__isnull"]
+    search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name",
+                     "lr_number", "vehicle_number"]
+    filter_fields = ["sales_order", "posted", "reverses", "reverses__isnull", "transporter", "freight_charge__isnull",
+                     "received_on__isnull"]
     date_field = "delivery_date"
     ordering_fields = ["delivery_date", "number"]
 
@@ -460,7 +492,44 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     action_permission_map = {
         "post_delivery": "sales.post_delivery",
         "customer_return": "sales.post_delivery",
+        "transport": "sales.change_delivery",
+        "received": "sales.change_delivery",
+        "unacknowledged": "sales.view_delivery",
     }
+
+    @action(detail=True, methods=["post"])
+    def received(self, request, pk=None):
+        """The customer's acknowledgement: {received_on, received_by, reference}."""
+        delivery = self.get_object()
+        try:
+            delivery.record_receipt(request.data.get("received_on"), request.data.get("received_by") or "",
+                                    request.data.get("reference") or "")
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+        delivery.refresh_from_db()
+        return Response(self.get_serializer(delivery).data)
+
+    @action(detail=False, methods=["get"])
+    def unacknowledged(self, request):
+        """Deliveries out that no customer has yet signed for, oldest first."""
+        rows = self.filter_queryset(self.get_queryset()).filter(
+            posted=True, reverses__isnull=True, received_on__isnull=True).order_by("delivery_date", "pk")
+        return Response([{"id": row.pk, "number": row.number, "date": row.delivery_date,
+                          "customer": row.sales_order.customer.name, "lr_number": row.lr_number} for row in rows])
+
+    @action(detail=True, methods=["post"])
+    def transport(self, request, pk=None):
+        """Who carried it: {transporter, lr_number, lr_date, vehicle_number}, after it shipped too."""
+        delivery = self.get_object()
+        given = request.data.get("transporter")
+        transporter = record_or_404(Party, given, "transporter") if given not in (None, "") else None
+        try:
+            delivery.record_transport(transporter, request.data.get("lr_number") or "",
+                                      request.data.get("lr_date") or None, request.data.get("vehicle_number") or "")
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        delivery.refresh_from_db()
+        return Response(self.get_serializer(delivery).data)
 
     @action(detail=True, methods=["post"])
     def post_delivery(self, request, pk=None):

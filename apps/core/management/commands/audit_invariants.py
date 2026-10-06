@@ -115,6 +115,7 @@ class Command(BaseCommand):
         "core.exception_handler": "named in settings, never called by name",
         "inventory.describe_plan": "for a pick list a UI will render",
         "inventory.hours_by_account": "a report, for whatever asks",
+        "planning.parse_month": "called by the CSV importer in apps/imports, which is not audited",
     }
 
     # -- shape 2: inert feature ------------------------------------------

@@ -1,6 +1,9 @@
 from rest_framework.routers import DefaultRouter
 
+from .packing_api import PackingLineViewSet
+from .positions_api import MachinePositionViewSet
 from .settings_api import ManufacturingSettingsViewSet
+from .tape_settings_api import TapeRunSettingViewSet
 
 from . import views
 from .station_views import LoomStationViewSet, ScaleReadingViewSet, StationReportViewSet
@@ -129,6 +132,9 @@ router.register("energy-tariffs", EnergyTariffViewSet)
 router.register("station-reports", StationReportViewSet, basename="station-report")
 router.register("complaints", ComplaintViewSet)
 router.register("corrective-actions", CorrectiveActionViewSet)
+router.register("tape-run-settings", TapeRunSettingViewSet)
+router.register("packing-lines", PackingLineViewSet)
+router.register("machine-positions", MachinePositionViewSet)
 
 router.register("manufacturing-settings", ManufacturingSettingsViewSet, basename="manufacturing-setting")
 

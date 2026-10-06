@@ -41,6 +41,7 @@ from apps.manufacturing.orders import MaterialIssue, WorkOrder, WorkOrderStatus
 from apps.manufacturing import tests_orders as run_fixture
 from apps.purchasing.models import Bill, BillPayment
 from apps.purchasing import tests_prepayments as purchase_fixture
+from apps.purchasing import tests_tds as tds_fixture
 # Modules, not classes: a TestCase named here would be collected and run
 # again in this module.
 from apps.sales.models import (
@@ -226,6 +227,33 @@ class PurchasingRaceTests(RaceCase):
         purchase_fixture.PurchasingLifecycleTestCase.setUp(self)
         self.bank = Account.objects.create(code="1010", name="Bank",
                                            account_type=AccountType.ASSET)
+
+    def test_two_bills_do_not_both_catch_up_the_year(self):
+        """
+        Three untaxed bills of 25,000 under 194C, then two of 30,000 deducted
+        at once. Whichever goes first catches the year up (1,05,000 or
+        1,35,000 of base); the other takes only itself, or finds itself
+        already covered. Either way the year is taxed once: 1,35,000 and 2,700.
+        """
+        from apps.accounting.models import Account, AccountType, PartyTaxProfile, TdsSection
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.purchasing.models import TdsDeduction
+
+        payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
+        section = TdsSection.objects.create(
+            code="194C", name="Contractors", rate_percent=Decimal("2"), no_pan_rate_percent=Decimal("20"),
+            mode="whole", single_threshold=Decimal("30000"), annual_threshold=Decimal("100000"),
+            payable_account=payable)
+        party = Party.objects.create(code="V-C", name="Loom Fitters")
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.VENDOR)
+        PartyTaxProfile.objects.create(party=party, pan="AAAPL1234C", tds_section=section)
+        for _ in range(3):
+            tds_fixture.TdsTestCase.bill(self, "25000", vendor=party)
+        last = [tds_fixture.TdsTestCase.bill(self, "30000", vendor=party) for _ in range(2)]
+        race(JournalEntry, *[lambda pk=bill.pk: Bill.objects.get(pk=pk).deduct_tds() for bill in last])
+        standing = TdsDeduction.objects.filter(reversed_entry__isnull=True)
+        self.assertEqual((sum(row.base for row in standing), sum(row.amount for row in standing)),
+                         (Decimal("135000.00"), Decimal("2700.00")))
 
     def billed(self):
         order = self.make_order("10", "5")

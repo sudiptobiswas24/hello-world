@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.accounting.defaults import chosen_or_default
 from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
 from apps.inventory.models import Warehouse
+from apps.core.models import to_date
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
@@ -219,13 +220,50 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Bill.objects.select_related(
         "vendor__tax_profile", "currency", "payment_terms", "debits"
-    ).prefetch_related(*BILL_FIGURES, "lines__item", "lines__charge")
+    ).prefetch_related(*BILL_FIGURES, "lines__item", "lines__charge", "carried__delivery")
     serializer_class = BillSerializer
     action_permission_map = {
         "post_bill": "purchasing.post_bill",
         "debit_note": "purchasing.post_bill",
         "debit_old_supply": "purchasing.post_bill",
+        "deduct_tds": "purchasing.add_tdsdeduction",
+        "carried": "purchasing.change_bill",
     }
+
+    @action(detail=True, methods=["post", "delete"])
+    def carried(self, request, pk=None):
+        """A delivery this freight bill charges for ({"delivery"}), or one taken off it (DELETE ?delivery=)."""
+        from apps.sales.models import Delivery
+
+        from .freight import FreightDelivery, carry
+
+        bill = self.get_object()
+        given = request.data.get("delivery") if request.method == "POST" else request.query_params.get("delivery")
+        delivery = record_or_404(Delivery, given, "delivery")
+        if request.method == "POST":
+            try:
+                carry(bill, delivery)
+            except DjangoValidationError as exc:
+                raise DRFValidationError(exc.messages)
+        else:
+            gone, _ = FreightDelivery.objects.filter(bill=bill, delivery=delivery).delete()
+            if not gone:
+                raise DRFValidationError({"delivery": [f"{delivery.number} is not on this bill."]})
+        return Response(self.get_serializer(self.get_queryset().get(pk=bill.pk)).data)
+
+    @action(detail=True, methods=["post"])
+    def deduct_tds(self, request, pk=None):
+        """Tax deducted from what the bill owes: under {"section"}, or the vendor's own."""
+        from apps.accounting.models import TdsSection
+
+        bill = self.get_object()
+        section = request.data.get("section")
+        section = record_or_404(TdsSection, section, "section") if section not in (None, "") else None
+        try:
+            bill.deduct_tds(section=section, on_date=request.data.get("date") or None)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(self.get_queryset().get(pk=bill.pk)).data)
 
     @action(detail=True, methods=["post"])
     def debit_old_supply(self, request, pk=None):
@@ -443,7 +481,8 @@ class PurchasingReportViewSet(viewsets.ViewSet):
 
     required_permission = "purchasing.view_purchaseorder"
 
-    action_permission_map = {"draw": "purchasing.post_bill", "raise_reorder": "purchasing.add_purchaserequisition"}
+    action_permission_map = {"draw": "purchasing.post_bill", "raise_reorder": "purchasing.add_purchaserequisition",
+                             "msme": "purchasing.view_bill", "unbilled_freight": "purchasing.view_bill"}
 
     def list(self, request):
         return Response({
@@ -454,7 +493,29 @@ class PurchasingReportViewSet(viewsets.ViewSet):
             "consignment": "consignment/",
             "payment-run": "payment-run/",
             "vendor-balance": "vendor-balance/",
+            "msme": "msme/",
+            "unbilled-freight": "unbilled-freight/",
         })
+
+    @action(detail=False, methods=["get"], url_path="unbilled-freight")
+    def unbilled_freight(self, request):
+        """Deliveries carried by ?transporter= (or anyone) that no freight bill names yet."""
+        from apps.core.models import Party
+
+        from .freight import unbilled_freight
+
+        given = request.query_params.get("transporter")
+        return Response(unbilled_freight(record_or_404(Party, given, "transporter") if given else None))
+
+    @action(detail=False, methods=["get"])
+    def msme(self, request):
+        """Micro and small vendors' bills dated ?start= to ?end=, against the Act's days, as of ?as_of=."""
+        from .msme import msme_bills
+
+        start, end = to_date(request.query_params.get("start")), to_date(request.query_params.get("end"))
+        if not start or not end:
+            raise DRFValidationError({"start": ["Give the first and last bill dates."]})
+        return Response(msme_bills(start, end, as_of=request.query_params.get("as_of") or None))
 
     @action(detail=False, methods=["get"])
     def aging(self, request):

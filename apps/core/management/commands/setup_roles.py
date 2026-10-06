@@ -34,7 +34,8 @@ HOW_IT_IS_MADE = [
           "filmspecification", "linerspecification", "bagcoatingline", "billofmaterials",
           "bomcomponent", "bombyproduct", "bomsubstitute", "routing", "routingoperation",
           "alternaterouting", "workcentre", "machine", "shift", "tool", "printdesign",
-          "coretype", "scrapreason", "downtimereason", "setupfamily", "changeoverrule"),
+          "coretype", "scrapreason", "downtimereason", "setupfamily", "changeoverrule", "packingline",
+          "machineposition"),
 ]
 
 
@@ -70,6 +71,7 @@ ROLES = {
         *crud("core", "paymentterms"),
         *crud("core", "paymenttermsline"),
         *crud("core", "documentsequence"),
+        *crud("core", "licence"),
         *crud("core", "company", actions=("change", "view")),
         # Reference data the books depend on: where parties are and how
         # they are grouped, and what quantities are counted in.
@@ -83,6 +85,14 @@ ROLES = {
         *crud("manufacturing", "manufacturingsettings", actions=("change", "view")),
         *crud("accounting", "taxgroup"),
         *crud("accounting", "chargetype"),
+        *crud("accounting", "tdssection"),
+        # TDS: what customers deducted, confirmed against Form 26AS; what
+        # the company deducted and paid over, read for the return.
+        *crud("sales", "customertds", actions=("add", "change", "view")),
+        *view("purchasing", "tdsdeduction", "tdschallan"),
+        # The year-end add-back for vendors paid late (43B(h)) is read off
+        # the bills and their orders.
+        *view("purchasing", "bill", "purchaseorder"),
         *crud("accounting", "fiscalposition"),
         *crud("accounting", "fiscalpositiontaxmapping"),
         *crud("accounting", "partytaxprofile"),
@@ -144,6 +154,12 @@ ROLES = {
         *crud("sales", "invoice"),
         *crud("sales", "invoiceline"),
         *crud("sales", "invoicepayment"),
+        # What a customer's remittance says it deducted; confirming it in
+        # Form 26AS is the Controller's.
+        *crud("sales", "customertds", actions=("add", "view")),
+        *view("accounting", "tdssection"),
+        # Complaints are settled in money here, so read.
+        *view("manufacturing", "complaint", "correctiveaction"),
         *crud("sales", "pricelist"),
         *crud("sales", "pricelistitem"),
         *crud("accounting", "chargetype"),
@@ -228,6 +244,12 @@ ROLES = {
         *crud("accounting", "payment"),
         "purchasing.post_bill",
         "accounting.post_payment",
+        # A transporter's freight bill is matched to the deliveries it carried.
+        *view("sales", "delivery"),
+        # Tax deducted from what vendors are paid, and paid over by challan.
+        *crud("purchasing", "tdsdeduction", actions=("add", "view")),
+        *crud("purchasing", "tdschallan", actions=("add", "view")),
+        *view("accounting", "tdssection"),
     ],
     "Warehouse Staff": [
         *REFERENCE,
@@ -294,6 +316,9 @@ ROLES = {
               "meterreading", "spareissue", "toolusage"),
         *crud("manufacturing", "maintenancejob", actions=("add", "change", "view")),
         *crud("manufacturing", "scalereading", actions=("add", "view")),
+        *crud("manufacturing", "taperunsetting", actions=("add", "view")),
+        # The shift register is the supervisor's to mark.
+        *crud("hr", "attendanceday", actions=("add", "change", "view")),
         *view("manufacturing", "loomstation", "stationattempt", "maintenanceschedule",
               "energymeter", "coatingcheck", "testcertificate", "complaint"),
         "manufacturing.weigh_at_station",
@@ -308,7 +333,7 @@ ROLES = {
         *view("inventory", "stockmovement", "stockposition", "storagebin", "stockadjustment"),
         *view("hr", "employee"),
         *full("manufacturing", "maintenanceschedule", "maintenancelabour", "spareissue",
-              "energymeter"),
+              "energymeter", "machineposition"),
         *crud("manufacturing", "maintenancejob", actions=("add", "change", "view")),
         *crud("manufacturing", "meterreading", actions=("add", "change", "view")),
         *view("manufacturing", "energytariff", "downtime", "timebooking"),
@@ -334,9 +359,9 @@ ROLES = {
         # What the customer's sack is made of and printed with: the
         # specifications write the recipes, so they are the engineer's.
         *full("manufacturing", "bagspecification", "fabricspecification", "tapespecification",
-              "filmspecification", "linerspecification", "printdesign"),
+              "filmspecification", "linerspecification", "printdesign", "packingline", "machineposition"),
         *view("manufacturing", "bagcoatingline", "coretype", "toolusage", "workorder",
-              "crewassignment"),
+              "crewassignment", "taperunsetting"),
         # A new sack is a new item before it is a specification.
         *crud("inventory", "item", actions=("add", "change", "view")),
         *full("inventory", "itemunit"),
@@ -346,7 +371,7 @@ ROLES = {
         *REFERENCE,
         *HOW_IT_IS_MADE,
         *full("planning", "forecast", "masterscheduleentry", "planneddemand",
-              "plannedorder", "planningaction", "planningrun", "transferroute"),
+              "plannedorder", "planningaction", "planningrun", "transferroute", "shipmenthistory"),
         *crud("planning", "planningsettings", actions=("change", "view")),
         *crud("manufacturing", "workorder", actions=("add", "change", "view")),
         *crud("manufacturing", "workorderoperation", actions=("change", "view")),
@@ -373,7 +398,7 @@ ROLES = {
         *crud("manufacturing", "testcertificate", actions=("add", "view")),
         *crud("purchasing", "receiptinspection", actions=("add", "change", "view")),
         *view("manufacturing", "workorder", "bagcount", "fabricroll", "processroll",
-              "productionentry", "complaint", "correctiveaction"),
+              "productionentry", "complaint", "correctiveaction", "taperunsetting"),
         *view("purchasing", "goodsreceipt", "goodsreceiptline"),
         *view("sales", "thirdpartyrelease", "delivery"),
         *view("inventory", "stockmovement"),
@@ -391,7 +416,7 @@ ROLES = {
         *full("purchasing", "receiptinspection"),
         *full("sales", "thirdpartyrelease", "thirdpartyreleaseline"),
         *view("manufacturing", "workorder", "bagcount", "fabricroll", "processroll",
-              "productionentry"),
+              "productionentry", "taperunsetting"),
         *view("purchasing", "goodsreceipt", "goodsreceiptline"),
         *view("sales", "delivery", "deliveryline", "salesorder"),
         *view("inventory", "stockmovement"),
@@ -415,6 +440,9 @@ ROLES = {
     ],
     "HR Admin": [
         *REFERENCE,
+        # The factory licence and the boards' consents are the personnel office's to renew.
+        *crud("core", "licence"),
+        *full("hr", "attendanceday"),
         *crud("hr", "department"),
         *crud("hr", "employee"),
         *crud("hr", "leaverequest"),
@@ -423,9 +451,13 @@ ROLES = {
         "hr.view_every_leaverequest",
         # Anyone's leave, as HR, a manager's or not.
         "hr.decide_any_leaverequest",
+        # The contract labour registers the inspector reads.
+        *crud("hr", "labourcontractor", actions=("add", "change", "view")),
+        *crud("hr", "contractworker", actions=("add", "change", "view")),
     ],
     "Payroll Officer": [
         *REFERENCE,
+        *full("hr", "attendanceday"),
         *view("hr", "department", "employee", "leaverequest", "leavepolicy", "payslip", "payslipline",
               "statutoryremittance"),
         # Unpaid leave is pay: payroll reads everyone's.

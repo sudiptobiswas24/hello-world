@@ -144,3 +144,6 @@ from .woven import (  # noqa: F401
     Weave,
 )
 from .complaints import Complaint, ComplaintLot, CorrectiveAction  # noqa: F401
+from .tape_settings import TapeRunSetting  # noqa: E402,F401
+from .packing import BalePacking, PackingLine  # noqa: E402,F401
+from .positions import MachinePosition, SparePlacement  # noqa: E402,F401

@@ -101,6 +101,8 @@ counts them. Run again to move a customer to another rep.
 `service`), `track_inventory` (default yes), `costing_method`,
 `tracking`, `sale_price`, `standard_cost`.
 
+`stock_class` (raw_material, packing, consumable, semi_finished or finished) groups the item on the bank's stock statement; left blank it shows there as unclassified until the controller sets it.
+
 ### opening_stock — needs `--date`
 
 `sku*`, `warehouse*` (code), `quantity*` (above nothing), `unit_cost*`
@@ -129,6 +131,18 @@ credit note after go-live.
 loans, fixed assets, GST ledgers, and the opening-balance account
 itself, so the file balances. The receivable, payable, inventory and
 goods-received accounts are refused here: they come in as documents.
+
+### shipment_history
+
+`sku*`, `warehouse*` (code), `month*` (`2025-04` or `2025-04-01`),
+`quantity*` (shipped less returned that month, in the item's stock unit,
+nothing or more), `note` (where the figure came from). Two or three
+years of it, so the seasonal forecast has a past to read from the first
+month; without it the forecast proposes nothing until a year of
+deliveries has gone through here. Only months this system did not ship
+in itself: a month with posted deliveries is refused, because it is
+counted already. Run again to correct a month; the figure is replaced.
+The planner also sees and keeps it under Planning, Shipment history.
 
 ## What this does not do
 

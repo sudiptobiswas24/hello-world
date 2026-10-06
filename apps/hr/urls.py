@@ -1,5 +1,8 @@
 from rest_framework.routers import DefaultRouter
 
+from .attendance_api import AttendanceDayViewSet
+from .contract_labour_api import ContractWorkerViewSet, LabourContractorViewSet
+
 from .payroll_views import (
     CompensationViewSet,
     PayComponentViewSet,
@@ -7,6 +10,7 @@ from .payroll_views import (
     PayslipViewSet,
     RemittanceViewSet,
     SlabViewSet,
+    GratuityView,
     StatutoryLiabilitiesView,
 )
 from .views import DepartmentViewSet, EmployeeViewSet, LeavePolicyViewSet, LeaveRequestViewSet
@@ -23,5 +27,9 @@ router.register("payslips", PayslipViewSet)
 router.register("pay-component-slabs", SlabViewSet)
 router.register("statutory-remittances", RemittanceViewSet)
 router.register("statutory-liabilities", StatutoryLiabilitiesView, basename="statutory-liabilities")
+router.register("gratuity", GratuityView, basename="gratuity")
+router.register("labour-contractors", LabourContractorViewSet)
+router.register("contract-workers", ContractWorkerViewSet)
+router.register("attendance", AttendanceDayViewSet)
 
 urlpatterns = router.urls

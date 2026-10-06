@@ -34,9 +34,6 @@ class SalesInTheBrowserTests(BrowserTestCase):
     def url(self, path):
         return f"{self.live_server_url}/app{path}"
 
-    def toast(self, page, text):
-        expect(page.locator(".toast", has_text=text).first).to_be_visible()
-
     def take_order(self, page, quantity):
         page.goto(self.url("/sales/orders/new"))
         page.get_by_role("combobox", name="Customer").fill("Acm")

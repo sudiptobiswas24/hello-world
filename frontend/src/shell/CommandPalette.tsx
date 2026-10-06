@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 
+import { get } from "../api/client";
+
 export interface Command {
   label: string;
   hint: string;
@@ -51,11 +53,33 @@ export function rank(commands: Command[], typed: string): Command[] {
  * Ctrl+K (or ⌘K) from anywhere: type a few letters of a screen and press
  * Enter. Faster than the mouse for people who live in this all day.
  */
+interface Hit { kind: string; label: string; href: string }
+
 export function CommandPalette({ commands, open, onClose }: { commands: Command[]; open: boolean; onClose: () => void }) {
   const [typed, setTyped] = useState("");
   const [active, setActive] = useState(0);
+  // Records whose number, code or name holds what was typed, asked of the
+  // server a moment after the typing stops: an invoice, a bale, a lorry.
+  const [records, setRecords] = useState<Command[]>([]);
   const navigate = useNavigate();
-  const found = useMemo(() => rank(commands, typed).slice(0, 12), [commands, typed]);
+  useEffect(() => {
+    const wanted = typed.trim();
+    if (wanted.length < 2) {
+      setRecords([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      get<Hit[]>("/api/web/search/", { q: wanted }, controller.signal)
+        .then((hits) => setRecords(hits.map((hit) => ({ label: hit.label, hint: hit.kind, href: hit.href }))))
+        .catch(() => undefined);
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [typed]);
+  const found = useMemo(() => [...rank(commands, typed).slice(0, 8), ...records].slice(0, 12), [commands, typed, records]);
 
   useEffect(() => setActive(0), [typed]);
 

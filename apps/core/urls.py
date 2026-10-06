@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .licences_api import LicenceViewSet
 from .numbering_api import DocumentSequenceViewSet
 from .views import (
     AddressViewSet,
@@ -34,5 +35,6 @@ router.register("payment-terms", PaymentTermsViewSet)
 router.register("company", CompanyViewSet)
 router.register("roles", RoleViewSet)
 router.register("document-sequences", DocumentSequenceViewSet)
+router.register("licences", LicenceViewSet)
 
 urlpatterns = [path("me/", MeView.as_view(), name="me"), *router.urls]

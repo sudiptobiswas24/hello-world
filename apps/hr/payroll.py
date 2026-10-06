@@ -65,6 +65,7 @@ class ComponentBasis(models.TextChoices):
     PERCENT_OF_GROSS = "percent", "Percentage of its base (taxable gross unless named)"
     PER_HOUR = "per_hour", "Rate per hour"
     PER_UNIT = "per_unit", "Rate per unit produced"
+    PER_OVERTIME_HOUR = "overtime", "Rate per overtime hour on the attendance register"
     SLAB = "slab", "Amount from a slab of its base"
 
 
@@ -196,6 +197,8 @@ class PayComponent(AuditModel):
             )
         if self.remit_by_day is not None and not 1 <= self.remit_by_day <= 28:
             raise ValidationError(f"{self.code}: pay it over by a day from 1 to 28.")
+        if self.basis == ComponentBasis.PER_OVERTIME_HOUR and self.kind != ComponentKind.EARNING:
+            raise ValidationError(f"{self.code}: overtime is something earned.")
         if self.basis == ComponentBasis.PER_UNIT:
             if self.kind != ComponentKind.EARNING:
                 raise ValidationError(f"{self.code}: piece work is something earned.")
@@ -805,16 +808,34 @@ class Payslip(AuditModel):
             ))
         return total
 
+    def absent_days(self):
+        """Days the attendance register shows the person away without leave, a half day as a half."""
+        from .attendance import absent_days
+
+        return absent_days(self.employee, self.run.period_start, self.run.period_end)
+
     def paid_proportion(self):
         """
         The fraction of a full period's pay this person has earned.
 
-        Days employed, less unpaid leave, over the days the period holds.
+        Days employed, less unpaid leave and absences, over the days the
+        period holds. A day-rated worker is paid on the register alone,
+        so an unmarked working day of theirs stops the run rather than
+        passing as present.
         """
+        from .attendance import unmarked_days
+
         full = self.period_working_days()
         if full <= 0:
             return Decimal("0")
-        earned = self.days_employed() - self.unpaid_leave_days()
+        if self.employee.paid_by_attendance:
+            missing = unmarked_days(self.employee, self.run.period_start, self.run.period_end)
+            if missing:
+                raise ValidationError(
+                    f"{self.employee} is paid by attendance and {len(missing)} working day(s) in this "
+                    f"period are not marked, the first {missing[0]}. Mark the register before the run."
+                )
+        earned = self.days_employed() - self.unpaid_leave_days() - self.absent_days()
         if earned <= 0:
             return Decimal("0")
         return min(earned / full, Decimal("1"))
@@ -1006,6 +1027,10 @@ class Payslip(AuditModel):
             if component.basis == ComponentBasis.SLAB:
                 return component.slab_for(base, self.run.period_end.month)
             return base * row.amount / Decimal("100")
+        if component.basis == ComponentBasis.PER_OVERTIME_HOUR:
+            from .attendance import overtime_hours
+
+            return overtime_hours(self.employee, self.run.period_start, self.run.period_end) * row.amount
         if component.basis == ComponentBasis.PER_HOUR:
             worked = Decimal(hours) if hours is not None else self.worked_hours()
             if not worked:

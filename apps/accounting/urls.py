@@ -1,5 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
+from .tds_api import TdsSectionViewSet
+
 from .banking_api import BankStatementLineViewSet, BankStatementViewSet
 from .charges_api import ChargeTypeViewSet
 
@@ -31,6 +33,7 @@ router.register(
 )
 
 router.register("charge-types", ChargeTypeViewSet)
+router.register("tds-sections", TdsSectionViewSet)
 router.register("bank-statements", BankStatementViewSet)
 router.register("bank-statement-lines", BankStatementLineViewSet)
 

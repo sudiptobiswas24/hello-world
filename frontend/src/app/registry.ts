@@ -54,6 +54,10 @@ export const MODULES: Module[] = [
     icon: "sales",
     screens: [
       {
+        path: "unacknowledged", label: "Not yet signed for", permission: "sales.view_delivery",
+        keywords: "proof of delivery pod received grn acknowledgement", load: () => import("../modules/sales/Unacknowledged"),
+      },
+      {
         path: "orders", label: "Orders", permission: "sales.view_salesorder", create: "sales.add_salesorder",
         keywords: "so sales order customer", load: () => import("../modules/sales/Orders"),
         detail: () => import("../modules/sales/OrderForm"),
@@ -77,6 +81,11 @@ export const MODULES: Module[] = [
         path: "invoices", label: "Invoices", permission: "sales.view_invoice", create: "sales.add_invoice",
         keywords: "bill credit note customer", load: () => import("../modules/sales/Invoices"),
         detail: () => import("../modules/sales/InvoiceForm"),
+      },
+      {
+        path: "claims", label: "Claims", permission: "sales.view_invoice",
+        keywords: "claim torn short weight rate dispute deduction quality cost", load: () => import("../modules/sales/Claims"),
+        detail: () => import("../modules/sales/ClaimForm"),
       },
       {
         path: "receipts", label: "Money received", permission: "accounting.view_payment", create: "accounting.add_payment",
@@ -175,6 +184,11 @@ export const MODULES: Module[] = [
     icon: "purchasing",
     screens: [
       {
+        path: "unbilled-freight", label: "Freight not yet billed", permission: "purchasing.view_bill",
+        also: ["sales.view_delivery", "purchasing.view_purchaseorder"],
+        keywords: "freight transporter lr lorry receipt unbilled", load: () => import("../modules/purchasing/UnbilledFreight"),
+      },
+      {
         path: "orders", label: "Purchase orders", permission: "purchasing.view_purchaseorder", create: "purchasing.add_purchaseorder",
         keywords: "po buy vendor supplier", load: () => import("../modules/purchasing/Orders"),
         detail: () => import("../modules/purchasing/OrderForm"),
@@ -225,6 +239,10 @@ export const MODULES: Module[] = [
         path: "vendor-prices", label: "Vendor prices", permission: "purchasing.view_vendorprice", create: "purchasing.add_vendorprice",
         keywords: "agreed price break lead time preferred vendor", load: () => import("../modules/purchasing/VendorPrices"),
         detail: () => import("../modules/purchasing/VendorPriceForm"),
+      },
+      {
+        path: "reorder", label: "What to reorder", permission: "purchasing.view_purchaseorder",
+        keywords: "reorder suggestions under minimum level shortfall order", load: () => import("../modules/purchasing/Reorder"),
       },
       {
         path: "reorder-rules", label: "Reorder rules", permission: "purchasing.view_reorderrule", create: "purchasing.add_reorderrule",
@@ -311,6 +329,12 @@ export const MODULES: Module[] = [
         path: "promise", label: "When can we promise?", permission: "planning.view_plannedorder",
         also: ["inventory.view_warehouse"],
         keywords: "atp ctp delivery date available to promise", load: () => import("../modules/production/WhenCanWePromise"),
+      },
+      {
+        path: "shipment-history", label: "Shipment history", permission: "planning.view_shipmenthistory",
+        create: "planning.add_shipmenthistory",
+        keywords: "shipment history old system months forecast import", load: () => import("../modules/planning/ShipmentHistory"),
+        detail: () => import("../modules/planning/ShipmentHistoryForm"),
       },
       {
         path: "forecasts", label: "Forecasts", permission: "planning.view_forecast", create: "planning.add_forecast",
@@ -521,6 +545,12 @@ export const MODULES: Module[] = [
     icon: "plant",
     screens: [
       {
+        path: "daily", label: "Yesterday's production", permission: "manufacturing.view_productionentry",
+        also: ["manufacturing.view_workcentre"],
+        keywords: "daily production report tonnes wastage kwh per kg morning yesterday section",
+        load: () => import("../modules/plant/DailyProduction"),
+      },
+      {
         path: "losses", label: "Machine effectiveness", permission: "manufacturing.view_workcentre",
         keywords: "oee availability performance quality losses productivity", load: () => import("../modules/plant/Losses"),
       },
@@ -536,6 +566,11 @@ export const MODULES: Module[] = [
       {
         path: "due", label: "Maintenance due", permission: "manufacturing.view_maintenanceschedule",
         keywords: "preventive service overdue", load: () => import("../modules/plant/Due"),
+      },
+      {
+        path: "critical-spares", label: "Critical spares", permission: "manufacturing.view_machineposition",
+        also: ["inventory.view_item"],
+        keywords: "critical spares positions bearing life keep in stock", load: () => import("../modules/plant/CriticalSpares"),
       },
       {
         path: "jobs", label: "Maintenance jobs", permission: "manufacturing.view_maintenancejob", create: "manufacturing.add_maintenancejob",
@@ -691,6 +726,37 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/accounts/BankStatementForm"),
       },
       {
+        path: "tds-deducted", label: "TDS deducted", permission: "purchasing.view_tdsdeduction",
+        keywords: "tds 194q 194c 194j deducted vendor withholding", load: () => import("../modules/accounts/TdsDeductions"),
+        detail: () => import("../modules/accounts/TdsDeductionForm"),
+      },
+      {
+        path: "tds-challans", label: "TDS challans", permission: "purchasing.view_tdschallan",
+        create: "purchasing.add_tdschallan",
+        keywords: "tds challan 281 pay over bsr", load: () => import("../modules/accounts/TdsChallans"),
+        detail: () => import("../modules/accounts/TdsChallanForm"),
+      },
+      {
+        path: "tds-return", label: "TDS return", permission: "purchasing.view_tdsdeduction",
+        keywords: "26q quarterly tds return", load: () => import("../modules/accounts/TdsReturn"),
+      },
+      {
+        path: "bank-stock-statement", label: "Bank stock statement", permission: "accounting.view_journalentry",
+        keywords: "bank stock statement drawing power cash credit debtors creditors margin",
+        load: () => import("../modules/accounts/BankStockStatement"),
+      },
+      {
+        path: "msme-payments", label: "MSME payments", permission: "purchasing.view_bill",
+        also: ["purchasing.view_purchaseorder"],
+        keywords: "msme 43b udyam 45 days micro small late payment", load: () => import("../modules/accounts/MsmeReport"),
+      },
+      {
+        path: "customer-tds", label: "TDS by customers", permission: "sales.view_customertds",
+        create: "sales.add_customertds",
+        keywords: "tds receivable 26as form 16a customer deducted", load: () => import("../modules/accounts/CustomerTdsList"),
+        detail: () => import("../modules/accounts/CustomerTdsForm"),
+      },
+      {
         path: "bad-debts", label: "Bad debts", permission: "sales.view_invoicewriteoff",
         keywords: "write off bad debt recover uncollectable", load: () => import("../modules/accounts/WriteOffs"),
         detail: () => import("../modules/accounts/WriteOffForm"),
@@ -741,6 +807,20 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/EmployeeForm"),
       },
       {
+        path: "attendance", label: "Attendance", permission: "hr.view_attendanceday", create: "hr.add_attendanceday",
+        keywords: "attendance register shift present absent half day late overtime",
+        load: () => import("../modules/payroll/Attendance"),
+        detail: () => import("../modules/payroll/AttendanceForm"),
+      },
+      {
+        path: "punch-file", label: "Punch file", permission: "hr.add_attendanceday",
+        keywords: "biometric reader punch csv import attendance", load: () => import("../modules/payroll/PunchFile"),
+      },
+      {
+        path: "attendance-gaps", label: "Not yet marked", permission: "hr.view_attendanceday",
+        keywords: "attendance unmarked day rated pay run gaps", load: () => import("../modules/payroll/AttendanceGaps"),
+      },
+      {
         path: "departments", label: "Departments", permission: "hr.view_department",
         create: "hr.add_department",
         keywords: "department cost centre", load: () => import("../modules/payroll/Departments"),
@@ -756,6 +836,16 @@ export const MODULES: Module[] = [
         path: "leave-policies", label: "Leave policies", permission: "hr.view_leavepolicy",
         keywords: "leave entitlement days", load: () => import("../modules/payroll/LeavePolicies"),
         detail: () => import("../modules/payroll/LeavePolicyForm"),
+      },
+      {
+        path: "gratuity", label: "Gratuity", permission: "hr.view_employeecompensation",
+        keywords: "gratuity provision years of service", load: () => import("../modules/payroll/Gratuity"),
+      },
+      {
+        path: "labour-contractors", label: "Labour contractors", permission: "hr.view_labourcontractor",
+        create: "hr.add_labourcontractor",
+        keywords: "clra contract labour licence form xii xiii", load: () => import("../modules/payroll/LabourContractors"),
+        detail: () => import("../modules/payroll/LabourContractorForm"),
       },
       {
         path: "remittances", label: "Statutory remittances", permission: "hr.view_statutoryremittance",
@@ -918,6 +1008,20 @@ export const MODULES: Module[] = [
         create: "accounting.add_chargetype",
         keywords: "freight loading surcharge sac", load: () => import("../modules/settings/ChargeTypes"),
         detail: () => import("../modules/settings/ChargeTypeForm"),
+      },
+      {
+        path: "licences", label: "Licences", permission: "core.view_licence", keep: "core.change_licence",
+        create: "core.add_licence",
+        keywords: "licence factory consent pollution fire noc stamping metrology boiler renewal calendar lapse",
+        load: () => import("../modules/settings/Licences"),
+        detail: () => import("../modules/settings/LicenceForm"),
+      },
+      {
+        path: "tds-sections", label: "TDS sections", permission: "accounting.view_tdssection",
+        keep: "accounting.change_tdssection",
+        create: "accounting.add_tdssection",
+        keywords: "tds 194q 194c 194j rate threshold", load: () => import("../modules/settings/TdsSections"),
+        detail: () => import("../modules/settings/TdsSectionForm"),
       },
       {
         path: "numbering", label: "Document numbering", permission: "core.view_documentsequence",

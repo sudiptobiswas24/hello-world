@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
 
-import { list, type Query } from "../../api/client";
+import { get, list, type Query } from "../../api/client";
 import { MODULES, offered, screenUrl } from "../../app/registry";
 import { useAccess } from "../../auth/me";
 import { count } from "../../lib/format";
@@ -55,6 +55,31 @@ function WaitingTile({ item }: { item: Waiting }) {
   );
 }
 
+interface InboxRow { key: string; label: string; count: number; href: string }
+
+/** The morning checks, counted now for this login: what fell due that is theirs to act on. */
+function Inbox() {
+  const rows = useQuery({
+    queryKey: ["inbox"],
+    queryFn: async ({ signal }) => (await get<{ rows: InboxRow[] }>("/api/web/inbox/", undefined, signal)).rows,
+    staleTime: 60_000,
+  });
+  if (!rows.data?.length) return null;
+  return (
+    <>
+      <h2 className="section-title">Yours to act on today</h2>
+      <div className="tiles">
+        {rows.data.map((row) => (
+          <Link key={row.key} to={row.href} className="tile link bad">
+            <span>{row.label}</span>
+            <strong>{count(row.count)}</strong>
+          </Link>
+        ))}
+      </div>
+    </>
+  );
+}
+
 /** Where a person starts: what is waiting on them, then everything their roles open. */
 export default function Home() {
   const { me, can } = useAccess();
@@ -67,6 +92,7 @@ export default function Home() {
   return (
     <section className="home">
       <h1>{greeting(new Date().getHours())}, {me.name.split(" ")[0]}</h1>
+      <Inbox />
       {waiting.length > 0 && (
         <>
           <h2 className="section-title">Waiting today</h2>

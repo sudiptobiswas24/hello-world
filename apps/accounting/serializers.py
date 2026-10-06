@@ -74,7 +74,7 @@ class TaxSerializer(serializers.ModelSerializer):
             "id", "code", "name", "group", "computation", "rate", "price_included",
             "include_base_amount", "sequence", "scope", "collected_account",
             "paid_account", "is_active",
-            "gst_head", "group_name",
+            "gst_head", "group_name", "reverse_charge", "reverse_charge_account",
         ]
 
 
@@ -100,6 +100,7 @@ class PartyTaxProfileSerializer(serializers.ModelSerializer):
         model = PartyTaxProfile
         fields = ["id", "party", "fiscal_position", "tax_exempt", "exemption_reference",
             "gstin", "gst_state", "gst_registration",
+            "pan", "tds_section", "tds_rate_percent", "tds_rate_reference", "msme_category", "udyam_number",
         ]
 
 

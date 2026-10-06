@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
+from .history_api import ShipmentHistoryViewSet
 from .views import (
     MasterScheduleViewSet,
     ForecastViewSet,
@@ -24,5 +25,6 @@ router.register("actions", PlanningActionViewSet)
 router.register("levels", LowLevelCodeViewSet, basename="levels")
 router.register("promise", PromiseViewSet, basename="promise")
 router.register("master-schedule", MasterScheduleViewSet)
+router.register("shipment-history", ShipmentHistoryViewSet)
 
 urlpatterns = router.urls

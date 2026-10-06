@@ -219,8 +219,11 @@ class TaxedDocumentMixin(models.Model):
         return amounts
 
     def tax_total(self):
+        # Tax the company pays itself under reverse charge is not part of
+        # what the other party is owed.
         return sum(
-            (amount for amounts in self.line_tax_amounts().values() for _, amount in amounts),
+            (amount for amounts in self.line_tax_amounts().values() for tax, amount in amounts
+             if not tax.reverse_charge),
             Decimal("0"),
         )
 
@@ -331,6 +334,8 @@ class RecordedLineTax(models.Model):
     tax = models.ForeignKey(Tax, on_delete=models.PROTECT, related_name="+")
     rate = models.DecimalField(max_digits=9, decimal_places=4)
     gst_head = models.CharField(max_length=8, blank=True)
+    reverse_charge = models.BooleanField(
+        default=False, help_text="Paid by the company, not charged by the vendor, as the tax stood.")
     taxable = models.DecimalField(
         max_digits=18, decimal_places=2,
         help_text="The line's net amount the tax was charged on, in the "
@@ -419,7 +424,7 @@ class PostedTaxDocumentMixin(models.Model):
                         "which column it belongs in. Set it before posting."
                     )
                 line.recorded_taxes.create(
-                    tax=tax, rate=tax.rate, gst_head=tax.gst_head,
+                    tax=tax, rate=tax.rate, gst_head=tax.gst_head, reverse_charge=tax.reverse_charge,
                     taxable=line.net_amount(), amount=amount,
                 )
             line.hsn_code = line.current_hsn()

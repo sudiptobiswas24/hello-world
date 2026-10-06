@@ -1055,10 +1055,13 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         data = request.data
         warehouse = get_object_or_404(Warehouse, pk=data.get("warehouse"))
         lines = []
+        from .positions import MachinePosition
+
         for row in data.get("lines") or []:
             item = get_object_or_404(Item, pk=row.get("item"))
             lot = get_object_or_404(Lot, pk=row["lot"], item=item) if row.get("lot") else None
-            lines.append((item, row.get("quantity"), lot))
+            position = get_object_or_404(MachinePosition, pk=row["position"]) if row.get("position") else None
+            lines.append((item, row.get("quantity"), lot, position))
         issued_to = (get_object_or_404(Employee, pk=data["issued_to"])
                      if data.get("issued_to") else None)
         issue = _run(issue_spares, job, warehouse, lines, on_date=data.get("on_date"),
@@ -1247,6 +1250,23 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["is_active", "speed_basis"]
     search_fields = ["code", "name"]
     ordering_fields = ["code"]
+    # The day's output is the floor's record, not the bank's master data.
+    action_permission_map = {"daily": "manufacturing.view_productionentry"}
+
+    @action(detail=False, methods=["get"])
+    def daily(self, request):
+        """?day= (yesterday if not given): each section's output, scrap, kWh and kWh a kilogramme."""
+        import datetime
+
+        from django.utils import timezone
+
+        from .daily import daily_production
+
+        raw = request.query_params.get("day") or ""
+        day = parse_date(raw) if raw else timezone.localdate() - datetime.timedelta(days=1)
+        if day is None:
+            raise DRFValidationError(["Give day as YYYY-MM-DD."])
+        return Response(daily_production(day))
 
     @action(detail=True, methods=["get"])
     def crew(self, request, pk=None):
@@ -2049,6 +2069,9 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
             "delivery": bale.delivery.number if bale.delivery_id else None,
             "lines": [{"lot": line.lot.code, "bags": _plain(line.quantity)}
                       for line in bale.lines.select_related("lot")],
+            "packing": [{"item": item.sku, "quantity": _plain(quantity)} for item, quantity in bale.packing.lines()]
+            if hasattr(bale, "packing") else [],
+            "packing_cost": str(bale.packing.cost()) if hasattr(bale, "packing") else None,
         }
 
     def list(self, request):

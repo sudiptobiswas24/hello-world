@@ -33,5 +33,6 @@ urlpatterns = [
     path("api/planning/", include("apps.planning.urls")),
     path("api/assets/", include("apps.assets.urls")),
     path("api/gst/", include("apps.gst.urls")),
+    path("api/web/", include("apps.web.api_urls")),
     path("", include("apps.web.urls")),
 ]

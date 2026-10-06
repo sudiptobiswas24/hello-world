@@ -6,6 +6,9 @@ import { ActionButton, DocHeader, Sheet, Steps } from "../../forms/Document";
 import { Field } from "../../forms/fields";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { RecordPanel } from "../../views/RecordScreen";
+
+import { TAPE_SETTINGS_PANEL } from "./tapeSettings";
 
 interface Component {
   id: number;
@@ -142,6 +145,9 @@ export default function WorkOrderForm() {
         )}
         {order.notes && <p className="muted">{order.notes}</p>}
       </Sheet>
+      {order.status !== "draft" && order.status !== "cancelled" && (
+        <RecordPanel panel={TAPE_SETTINGS_PANEL} record={order as unknown as Record<string, unknown> & { id: number }} />
+      )}
     </article>
   );
 }

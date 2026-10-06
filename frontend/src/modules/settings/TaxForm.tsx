@@ -30,6 +30,8 @@ export default function TaxForm() {
         { key: "paid_account", label: "Paid account", kind: "pick", pick: ACCOUNT, hint: "Purchases" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "gst_head", label: "GST head", kind: "choice", choices: [["cgst", "Central tax (CGST)"], ["sgst", "State or union territory tax (SGST/UTGST)"], ["igst", "Integrated tax (IGST)"], ["cess", "Compensation cess"], ["other", "Not GST"]], hint: "Which column of a GST return this tax is reported in" },
+        { key: "reverse_charge", label: "Reverse charge", kind: "bool", initial: false, hint: "Paid by the company, not charged by the vendor: freight from a goods transport agency. Purchases only" },
+        { key: "reverse_charge_account", label: "Reverse charge owed to", kind: "pick", pick: ACCOUNT, hint: "Where the tax the company owes on the supply waits to be paid in cash" },
       ]}
     />
   );

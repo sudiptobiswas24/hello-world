@@ -112,6 +112,11 @@ class Employee(AuditModel):
         max_length=32, blank=True,
         help_text="Which public holidays apply. Blank means the company-wide set only.",
     )
+    paid_by_attendance = models.BooleanField(
+        default=False,
+        help_text="A day-rated worker: paid for the days the attendance register shows and no "
+                  "other, so a pay run waits until every working day of theirs is marked.",
+    )
     pin_digest = models.CharField(
         max_length=64, null=True, blank=True, unique=True, editable=False,
         help_text="A keyed digest of the person's shop-floor PIN, never the PIN. "
@@ -827,3 +832,7 @@ from .payroll import (  # noqa: E402,F401
     Payslip,
     PayslipLine,
 )
+
+
+from .attendance import AttendanceDay  # noqa: E402,F401
+from .contract_labour import ContractWorker, LabourContractor  # noqa: E402,F401

@@ -24,6 +24,7 @@ export default function ManufacturingSettingsForm() {
         { key: "revaluation_account", label: "Revaluation account", kind: "pick", pick: ACCOUNT, hint: "Where a standard cost change lands" },
         { key: "scrap_account", label: "Scrap account", kind: "pick", pick: ACCOUNT, hint: "Where production that failed is written off" },
         { key: "spares_reason", label: "Spares reason", kind: "ref", ref: REASON, hint: "What spare parts issued to a maintenance job are written off under, and so which expense account they land in" },
+        { key: "packing_reason", label: "Packing reason", kind: "ref", ref: REASON, hint: "What a bale's cover, straps and label are written off under when it is pressed, and so which expense account they land in" },
       ]}
     />
   );

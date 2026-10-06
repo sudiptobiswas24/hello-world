@@ -122,6 +122,22 @@ class Complaint(AuditModel):
 
     # -- the batches --------------------------------------------------
 
+    def settle(self, invoice, net, reason, memo=""):
+        """Money given back for this complaint, by a claim credit note on the customer's invoice."""
+        if self.status == ComplaintStatus.REJECTED:
+            raise ValidationError("A rejected complaint is not paid for; reopen it if it was upheld after all.")
+        if invoice.customer_id != self.customer_id:
+            raise ValidationError(f"{invoice.number} is {invoice.customer}'s, not {self.customer}'s.")
+        with transaction.atomic():
+            note = invoice.credit_claim(net, reason, memo=memo or f"Complaint {self.number}")
+            ComplaintSettlement.objects.create(complaint=self, credit_note=note)
+        return note
+
+    def cost(self):
+        """What settling it has given back, before tax."""
+        return sum((row.credit_note.subtotal() for row in self.settlements.select_related("credit_note")),
+                   Decimal("0"))
+
     def add_lot(self, lot, quantity=None):
         return ComplaintLot.objects.create(complaint=self, lot=lot,
                                            quantity=None if quantity is None
@@ -135,11 +151,18 @@ class Complaint(AuditModel):
         from .demand import genealogy
         from .trace import held_by_customers
 
+        from .tape_settings import TapeRunSetting
+
         lots = self.lots()
+        made_from = {lot.code: genealogy(lot, depth) for lot in lots}
+        runs = {row["made_by"].pk for rows in made_from.values() for row in rows}
         return {
-            "made_from": {lot.code: genealogy(lot, depth) for lot in lots},
+            "made_from": made_from,
             "also_held_by": [row for row in held_by_customers(lots)
                              if row["customer"].pk != self.customer_id],
+            # What the tape lines were set to on the runs that made them.
+            "tape_settings": list(TapeRunSetting.objects.filter(work_order_id__in=runs).select_related(
+                "work_order", "machine")),
         }
 
     # -- deciding -----------------------------------------------------
@@ -315,3 +338,20 @@ def complaints_by(start, end, field="category"):
     else:
         raise ValidationError("Count by category or by customer.")
     return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+
+
+class ComplaintSettlement(AuditModel):
+    """
+    A credit note that settled a complaint, so a complaint can say what it
+    cost and a claim which complaint it answered.
+    """
+
+    complaint = models.ForeignKey(Complaint, on_delete=models.PROTECT, related_name="settlements")
+    credit_note = models.OneToOneField("sales.Invoice", on_delete=models.PROTECT,
+                                       related_name="complaint_settlement", editable=False)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.credit_note} for {self.complaint}"

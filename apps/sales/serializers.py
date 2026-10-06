@@ -172,13 +172,15 @@ class DeliverySerializer(serializers.ModelSerializer):
     lines = DeliveryLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="sales_order.customer.name", read_only=True)
     order_number = serializers.CharField(source="sales_order.number", read_only=True)
+    transporter_name = serializers.CharField(source="transporter.name", read_only=True, default="")
 
     class Meta:
         model = Delivery
         fields = [
             "id", "number", "sales_order", "order_number", "customer_name", "delivery_date",
             "reference", "shipping_address", "reverses", "backorder_of", "posted", "posted_at", "lines",
-            "returned_under_release",
+            "returned_under_release", "transporter", "transporter_name", "lr_number", "lr_date", "vehicle_number",
+            "received_on", "received_by", "receipt_reference",
         ]
         read_only_fields = ["number", "reverses", "backorder_of", "posted", "posted_at",
                             "returned_under_release"]

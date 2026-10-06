@@ -364,7 +364,7 @@ class MeterReadingSerializer(serializers.ModelSerializer):
     class Meta:
         model = MeterReading
         fields = ["id", "meter", "meter_code", "shift_date", "shift", "shift_name", "reading",
-                  "read_by", "read_by_name", "voided_at", "voided_reason"]
+                  "max_demand_kva", "power_factor", "read_by", "read_by_name", "voided_at", "voided_reason"]
         read_only_fields = ["voided_at", "voided_reason"]
         validators = []
 

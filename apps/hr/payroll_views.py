@@ -285,3 +285,35 @@ class StatutoryLiabilitiesView(viewsets.ViewSet):
             "due_date": row["due_date"].isoformat() if row["due_date"] else None,
             "overdue": row["overdue"],
         } for row in rows])
+
+
+class GratuityView(viewsets.ViewSet):
+    """
+    GET ?as_of=&components=BASIC,DA&provision=<account>: gratuity owed to each
+    employee in service, and the total set against the provision.
+    """
+
+    permission_classes = [IsAuthenticated, RequiredPermission]
+    required_permission = "hr.view_employeecompensation"
+
+    def list(self, request):
+        from apps.accounting.models import Account
+        from apps.core.api import record_or_404
+
+        from .gratuity import gratuity_due
+
+        as_of = to_date(request.query_params.get("as_of"))
+        codes = [code.strip() for code in (request.query_params.get("components") or "").split(",") if code.strip()]
+        if not as_of or not codes:
+            raise DRFValidationError({"components": ["Give the day and the wage components gratuity is on, "
+                                                     "as codes: BASIC,DA."]})
+        components = list(PayComponent.objects.filter(code__in=codes))
+        unknown = sorted(set(codes) - {component.code for component in components})
+        provision = request.query_params.get("provision")
+        provision = record_or_404(Account, provision, "provision") if provision else None
+        found = gratuity_due(as_of, components, provision)
+        if unknown:
+            # A report, not a form: a code the plant does not use counts nothing and says so.
+            found["note"] = (f"No pay component {', '.join(unknown)}: nothing is counted for it. Gratuity is on "
+                             "the components named here by their codes.")
+        return Response(found)

@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.html import escape
@@ -66,6 +67,16 @@ def _exact(value):
 
 def _person(employee):
     return {"number": employee.employee_number, "name": employee.party.name}
+
+
+def station_meters(station):
+    """The meters on this station's machines or their banks, the ones still in service."""
+    from .energy import EnergyMeter
+
+    machines = list(station.machines.values_list("pk", "work_centre_id"))
+    return list(EnergyMeter.objects.filter(retired_on__isnull=True).filter(
+        Q(machine_id__in=[pk for pk, _ in machines]) | Q(work_centre_id__in=[centre for _, centre in machines])
+    ).select_related("machine", "work_centre").order_by("code"))
 
 
 class LoomStationViewSet(viewsets.GenericViewSet):
@@ -133,6 +144,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                 for core in CoreType.objects.filter(is_active=True)
             ],
             "reasons": dict(FabricRoll._meta.get_field("override_reason").choices),
+            "meters": [{"code": meter.code, "serves": str(meter.serves())} for meter in station_meters(station)],
         })
 
     @action(detail=True, methods=["post"], url_path="sign-in")
@@ -269,6 +281,31 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                                      counted_at=timezone.now())
         return Response({"contractor": contractor.code, "shift_date": shift_date,
                          "kg": _exact(kg)}, status=201)
+
+    def _meter(self, station, code):
+        found = next((meter for meter in station_meters(station) if meter.code == code), None)
+        if found is None:
+            raise DRFValidationError({"meter": [f"No meter {code or ''!r} is on this station's lines."]})
+        return found
+
+    @action(detail=True, methods=["post"])
+    def meter(self, request, code=None):
+        """The board's three dials, copied as the shift ends: kWh, maximum demand and power factor."""
+        from .energy import MeterReading
+
+        station = self.get_object()
+        operator = self._require_operator(request, station)
+        meter = self._meter(station, request.data.get("meter"))
+        now = timezone.now()
+        shift = Shift.covering(now)
+        if shift is None:
+            raise DRFValidationError(["No shift is running."])
+        dials = {name: _decimal(request.data, name) if request.data.get(name) not in (None, "") else None
+                 for name in ("max_demand_kva", "power_factor")}
+        reading = _run(MeterReading.objects.create, meter=meter, shift_date=shift.shift_date_for(now), shift=shift,
+                       reading=_decimal(request.data, "reading"), read_by=operator, **dials)
+        return Response({"id": reading.pk, "meter": meter.code, "reading": _exact(reading.reading),
+                         "shift": shift.code}, status=201)
 
     @action(detail=True, methods=["post"])
     def waste(self, request, code=None):

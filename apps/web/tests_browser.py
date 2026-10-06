@@ -10,7 +10,9 @@ Playwright can launch; skipped, saying which, where either is missing.
 import contextlib
 import datetime
 import os
+import sqlite3
 import threading
+import time
 import unittest
 from decimal import Decimal
 
@@ -44,17 +46,33 @@ class OneCallAtATime(SQLiteCursorWrapper):
     waits for SQLite's lock. The stock valuation screen, asking two
     things at once, hung a run that way. One call at a time, whichever
     thread or connection makes it. PostgreSQL is left alone.
+
+    The two connections also lock each other out by the table: one still
+    reading auth_user for a request in flight blocks the other's write
+    into it, and shared-cache SQLite refuses at once ("database table is
+    locked") rather than waiting as it would for a busy file. The write
+    waits here, for the request to end (tests_sqlite_locks.py).
     """
 
     lock = threading.RLock()
+    waits_for = 15  # seconds, before a lock that never lifts is reported
+
+    def _waiting(self, call, *args, **kwargs):
+        deadline = time.monotonic() + self.waits_for
+        while True:
+            with self.lock:
+                try:
+                    return call(*args, **kwargs)
+                except sqlite3.OperationalError as error:
+                    if "is locked" not in str(error) or time.monotonic() >= deadline:
+                        raise
+            time.sleep(0.01)
 
     def execute(self, *args, **kwargs):
-        with self.lock:
-            return super().execute(*args, **kwargs)
+        return self._waiting(super().execute, *args, **kwargs)
 
     def executemany(self, *args, **kwargs):
-        with self.lock:
-            return super().executemany(*args, **kwargs)
+        return self._waiting(super().executemany, *args, **kwargs)
 
     def fetchone(self):
         with self.lock:
@@ -203,6 +221,9 @@ class BrowserMixin:
 
     def rows(self):
         return self.page.locator("tbody tr:not(.skeleton)")
+
+    def toast(self, page, text):
+        expect(page.locator(".toast", has_text=text).first).to_be_visible()
 
 
 class BrowserTestCase(BrowserMixin, SalesTestCase, StaticLiveServerTestCase):

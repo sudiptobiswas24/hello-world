@@ -19,10 +19,10 @@ Built:
   non-GST, the HSN summary split B2B and B2C, documents issued, and
   advances (table 11: 11A received and not invoiced in the period, 11B
   adjusted against an invoice or refunded).
-- GSTR-3B: 3.1(a), (b), (c), (e); 3.2; 4(A)(5); 5.
+- GSTR-3B: 3.1(a), (b), (c), (d), (e); 3.2; 4(A)(3), 4(A)(5); 5.
 
 Not built, and returned as `not_built` rather than left looking
-complete: reverse charge (3.1(d), 4(A)(3)), imports (4(A)(1), (2)),
+complete: imports (4(A)(1), (2)),
 blocked and reversed credit (4(B), 4(D)), amendments, e-commerce operators, and the set-off in table 6.
 
 Nothing is filed. Filing needs GSTN credentials through a GST Suvidha
@@ -47,7 +47,6 @@ ZERO = Decimal("0")
 HEADS = ("igst", "cgst", "sgst", "cess")
 ZERO_RATED = ("sez", "overseas")
 NOT_BUILT = [
-    "3.1(d) and 4(A)(3): reverse charge",
     "4(A)(1), 4(A)(2): import of goods and services",
     "4(B), 4(D): credit reversed or ineligible",
     "Amendments to earlier periods",
@@ -92,6 +91,9 @@ class Line:
     cess: Decimal = ZERO
     source: object = None
     rates: dict = field(default_factory=dict)
+    # Tax the company pays on the supplier's behalf, by head: reported in
+    # 3.1(d) as owed and in 4(A)(3) as credit, never in 4(A)(5).
+    reverse_charge: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -173,6 +175,10 @@ def _document(source, date, state, is_note):
             source=line,
         )
         for row in gst:
+            if row.reverse_charge:
+                recorded.reverse_charge[row.gst_head] = recorded.reverse_charge.get(row.gst_head, ZERO) \
+                    + base(row.amount)
+                continue
             setattr(recorded, row.gst_head, getattr(recorded, row.gst_head) + base(row.amount))
             recorded.rates[row.gst_head] = recorded.rates.get(row.gst_head, ZERO) + row.rate
         document.lines.append(recorded)
@@ -461,8 +467,8 @@ def gstr3b(start, end):
     settings = _settings()
     result = {
         "gstin": settings.gstin, "period": (start, end),
-        "3.1a": _money(), "3.1b": _money(), "3.1c": _money(), "3.1e": _money(),
-        "3.2": [], "4A5": _money(), "5": {"inter": ZERO, "intra": ZERO},
+        "3.1a": _money(), "3.1b": _money(), "3.1c": _money(), "3.1d": _money(), "3.1e": _money(),
+        "3.2": [], "4A3": _money(), "4A5": _money(), "5": {"inter": ZERO, "intra": ZERO},
         "5_non_gst": {"inter": ZERO, "intra": ZERO},
         "warnings": [], "not_built": NOT_BUILT,
     }
@@ -494,6 +500,15 @@ def gstr3b(start, end):
         # paid on the bill of entry, not claimed off the unit's invoice.
         claimable = document.registered and document.registration == "regular"
         for line in document.lines:
+            if line.reverse_charge:
+                # Owed by the company and claimed back, whoever the
+                # supplier is: the credit rests on the company's payment,
+                # not on the supplier's registration.
+                result["3.1d"]["taxable"] += sign * line.taxable
+                for head, amount in line.reverse_charge.items():
+                    result["3.1d"][head] += sign * amount
+                    result["4A3"][head] += sign * amount
+                continue
             if line.nature in ("nil", "exempt"):
                 result["5"]["inter" if document.inter else "intra"] += sign * line.taxable
             elif line.nature == "non_gst":
@@ -507,6 +522,7 @@ def gstr3b(start, end):
                     "claimed as credit."
                 )
     result["4A5"].pop("taxable")
+    result["4A3"].pop("taxable")
     result["warnings"] = sorted(set(result["warnings"]))
     return result
 

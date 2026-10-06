@@ -109,12 +109,21 @@ class BillSerializer(serializers.ModelSerializer):
     amount_due = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     settlement_status = serializers.CharField(read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    amount_tds = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
+    carried = serializers.SerializerMethodField()
+
+    def get_carried(self, bill):
+        return [{"id": row.pk, "delivery": row.delivery_id, "number": row.delivery.number,
+                 "date": row.delivery.delivery_date, "lr_number": row.delivery.lr_number}
+                for row in bill.carried.all()]
 
     class Meta:
         model = Bill
         fields = [
             "id",
             "number",
+            "amount_tds",
+            "carried",
             "vendor",
             "vendor_name",
             "bill_date",

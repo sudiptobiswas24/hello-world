@@ -423,6 +423,17 @@ class Tax(AuditModel):
                   "Blank is refused on a document posted under GST: a return "
                   "cannot put an unclassified tax anywhere.",
     )
+    reverse_charge = models.BooleanField(
+        default=False,
+        help_text="Paid by the company rather than charged by the vendor: freight from a goods "
+                  "transport agency, say. Adds nothing to what the vendor is owed; the company owes "
+                  "it to the government and claims it back as credit.",
+    )
+    reverse_charge_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Reverse charge: where the tax the company owes on the vendor's supply waits to be "
+                  "paid in cash.",
+    )
 
     class Meta:
         verbose_name_plural = "taxes"
@@ -450,6 +461,29 @@ class Tax(AuditModel):
             raise ValidationError("A purchase tax needs a paid_account to post to.")
         if self.price_included and self.computation == TaxComputation.FIXED and self.rate < 0:
             raise ValidationError("A fixed included tax cannot be negative.")
+        if self.reverse_charge:
+            if self.scope != TaxScope.PURCHASE:
+                raise ValidationError({"reverse_charge": "Reverse charge is on what the company buys; the "
+                                                         "tax's scope is purchases."})
+            if not self.reverse_charge_account_id:
+                raise ValidationError({"reverse_charge_account": "Say where the tax the company owes on it "
+                                                                 "is owed."})
+            if self.price_included:
+                raise ValidationError({"price_included": "The vendor's price holds no tax it does not charge."})
+        if self.pk and self._used():
+            before = Tax.objects.get(pk=self.pk)
+            if before.reverse_charge != self.reverse_charge:
+                raise ValidationError({"reverse_charge": "Posted documents bore this tax as they found it; a "
+                                                         "tax charged the other way is a new tax."})
+
+    def _used(self):
+        """Whether any posted line recorded this tax."""
+        from django.apps import apps
+
+        from .mixins import RecordedLineTax
+
+        return any(model._base_manager.filter(tax=self).exists() for model in apps.get_models()
+                   if issubclass(model, RecordedLineTax))
 
     def applies_to_sales(self):
         return self.scope in (TaxScope.SALES, TaxScope.BOTH)
@@ -676,6 +710,29 @@ class PartyTaxProfile(AuditModel):
             ("overseas", "Overseas"),
         ],
     )
+    pan = models.CharField(
+        max_length=10, blank=True,
+        help_text="The party's PAN. Read off the GSTIN when there is one; without either, "
+                  "tax is deducted at the no-PAN rate.",
+    )
+    tds_section = models.ForeignKey(
+        "accounting.TdsSection", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The section its bills are deducted under by default.",
+    )
+    tds_rate_percent = models.DecimalField(
+        max_digits=7, decimal_places=4, null=True, blank=True,
+        help_text="A rate of its own under that section: an individual's 1% under 194C, or a "
+                  "lower-deduction certificate (section 197). Empty for the section's rate.",
+    )
+    tds_rate_reference = models.CharField(
+        max_length=64, blank=True, help_text="The certificate or reason the rate of its own rests on.",
+    )
+    msme_category = models.CharField(
+        max_length=8, blank=True, choices=[("micro", "Micro"), ("small", "Small"), ("medium", "Medium")],
+        help_text="As its Udyam registration says. A micro or small vendor is paid within 45 days, or "
+                  "the expense waits for the payment before it is deducted (section 43B(h)).",
+    )
+    udyam_number = models.CharField(max_length=19, blank=True, help_text="UDYAM-XX-00-0000000")
 
     def __str__(self):
         return f"Tax profile for {self.party}"
@@ -707,6 +764,42 @@ class PartyTaxProfile(AuditModel):
                 self.gst_registration = "regular"
         elif self.gst_state and self.gst_state not in STATES:
             raise ValidationError(f"{self.gst_state} is not a GST state code.")
+        self._check_tds()
+        self._check_msme()
+
+    def _check_tds(self):
+        from .tds import validate_pan
+
+        if self.pan:
+            self.pan = validate_pan(self.pan)
+            if self.gstin and self.gstin[2:12] != self.pan:
+                raise ValidationError({"pan": f"The GSTIN {self.gstin} carries the PAN {self.gstin[2:12]}, "
+                                              f"not {self.pan}."})
+        if self.tds_rate_percent is not None:
+            if self.tds_section_id is None:
+                raise ValidationError({"tds_rate_percent": "A rate of its own is under a section; name it."})
+            if not self.tds_rate_reference:
+                raise ValidationError({"tds_rate_reference": "Say what the rate rests on: the certificate "
+                                                             "number, or the deductee being an individual."})
+            if not self.pan_on_file():
+                raise ValidationError({"tds_rate_percent": "Without a PAN the no-PAN rate applies whatever "
+                                                           "else is on file."})
+
+    def _check_msme(self):
+        import re
+
+        if self.udyam_number:
+            self.udyam_number = self.udyam_number.strip().upper()
+            if not re.match(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$", self.udyam_number):
+                raise ValidationError({"udyam_number": f"{self.udyam_number!r} is not a Udyam number: "
+                                                       "UDYAM-, the state, two digits, seven digits."})
+        if self.msme_category and not self.udyam_number:
+            raise ValidationError({"udyam_number": "An MSME category rests on its Udyam registration; give the "
+                                                   "number."})
+
+    def pan_on_file(self):
+        """The PAN given, or the one inside the GSTIN."""
+        return self.pan or (self.gstin[2:12] if self.gstin else "")
 
     def place_of_supply(self):
         from .gst import OVERSEAS_PLACE
@@ -1261,3 +1354,4 @@ class BankStatementLine(AuditModel):
 
 
 from .gst import GstSettings  # noqa: E402,F401
+from .tds import TdsSection  # noqa: E402,F401

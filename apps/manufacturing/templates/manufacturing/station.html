@@ -164,6 +164,7 @@
     <button type="button" class="secondary" id="btn-manual" data-t="manual"></button>
     <button type="button" class="secondary" id="btn-waste" data-t="waste"></button>
     <button type="button" class="secondary" id="btn-count" data-t="tape_count"></button>
+    <button type="button" class="secondary" id="btn-meter" data-t="meter_read"></button>
   </footer>
 </section>
 
@@ -204,6 +205,17 @@
     <button type="button" class="primary" id="c-save" data-t="save" style="flex:0 0 auto;padding:0 22px"></button></div>
 </dialog>
 
+<dialog id="dlg-meter">
+  <h2 data-t="meter_read"></h2>
+  <label for="e-meter" data-t="meter"></label><select id="e-meter" class="big"></select>
+  <label for="e-kwh" data-t="kwh_reading"></label><input id="e-kwh" class="big mono" inputmode="decimal">
+  <label for="e-kva" data-t="kva"></label><input id="e-kva" class="big mono" inputmode="decimal">
+  <label for="e-pf" data-t="pf"></label><input id="e-pf" class="big mono" inputmode="decimal">
+  <div class="error" id="e-error" role="alert"></div>
+  <div class="actions"><button type="button" class="secondary" data-close data-t="cancel"></button>
+    <button type="button" class="primary" id="e-save" data-t="save" style="flex:0 0 auto;padding:0 22px"></button></div>
+</dialog>
+
 <div id="print-area"></div>
 
 <script>
@@ -234,6 +246,7 @@ const T = {
     connect_scale: "Connect scale", scale_on: "Scale connected", scale_off: "Scale not connected",
     server_on: "Plant server reachable", server_off: "Plant server not reachable",
     waste: "Weigh waste", tape_count: "Count tape on looms", save: "Save",
+    meter_read: "Read the meter", meter: "Meter", kwh_reading: "Meter reading (kWh)", kva: "Maximum demand (kVA)", pf: "Power factor",
     closes_day: "Shift-day this count closes", saved: "Saved",
     scale_offline: "Scale not connected", calibration: "Scale under calibration",
     does_not_fit: "Roll does not fit platform", other: "Other, with a note",
@@ -259,6 +272,7 @@ const T = {
     connect_scale: "স্কেল যুক্ত করুন", scale_on: "স্কেল যুক্ত", scale_off: "স্কেল যুক্ত নয়",
     server_on: "প্ল্যান্ট সার্ভার সংযুক্ত", server_off: "প্ল্যান্ট সার্ভারে সংযোগ নেই",
     waste: "বর্জ্য ওজন করুন", tape_count: "তাঁতে টেপ গুনুন", save: "সংরক্ষণ",
+    meter_read: "মিটার পড়ুন", meter: "মিটার", kwh_reading: "মিটার রিডিং (kWh)", kva: "সর্বোচ্চ চাহিদা (kVA)", pf: "পাওয়ার ফ্যাক্টর",
     closes_day: "এই গণনা কোন দিনের", saved: "সংরক্ষিত",
     scale_offline: "স্কেল যুক্ত নয়", calibration: "স্কেল ক্যালিব্রেশনে",
     does_not_fit: "রোল প্ল্যাটফর্মে আঁটে না", other: "অন্য কারণ, নোটসহ",
@@ -284,6 +298,7 @@ const T = {
     connect_scale: "तराज़ू जोड़ें", scale_on: "तराज़ू जुड़ा है", scale_off: "तराज़ू जुड़ा नहीं",
     server_on: "प्लांट सर्वर से जुड़ा", server_off: "प्लांट सर्वर से संपर्क नहीं",
     waste: "कचरा तौलें", tape_count: "करघों पर टेप गिनें", save: "सहेजें",
+    meter_read: "मीटर पढ़ें", meter: "मीटर", kwh_reading: "मीटर रीडिंग (kWh)", kva: "अधिकतम माँग (kVA)", pf: "पावर फैक्टर",
     closes_day: "यह गिनती किस दिन की है", saved: "सहेजा गया",
     scale_offline: "तराज़ू जुड़ा नहीं", calibration: "तराज़ू कैलिब्रेशन में",
     does_not_fit: "रोल प्लेटफ़ॉर्म पर नहीं आता", other: "अन्य, टिप्पणी के साथ",
@@ -610,6 +625,24 @@ async function saveWaste() {
     flash(t("saved"), true);
   } catch (e) { document.getElementById("w-error").textContent = e.message; }
 }
+function fillMeters() {
+  const select = document.getElementById("e-meter");
+  select.innerHTML = "";
+  (station.meters || []).forEach((m) => {
+    const o = document.createElement("option"); o.value = m.code; o.textContent = m.code + " · " + m.serves; select.appendChild(o);
+  });
+}
+async function saveMeter() {
+  try {
+    await api("meter/", { body: { meter: document.getElementById("e-meter").value,
+                                   reading: document.getElementById("e-kwh").value,
+                                   max_demand_kva: document.getElementById("e-kva").value,
+                                   power_factor: document.getElementById("e-pf").value } });
+    document.getElementById("dlg-meter").close();
+    ["e-kwh", "e-kva", "e-pf"].forEach((id) => { document.getElementById(id).value = ""; });
+    flash(t("saved"), true);
+  } catch (e) { document.getElementById("e-error").textContent = e.message; }
+}
 async function saveCount() {
   try {
     await api("tape-count/", { body: { contractor: document.getElementById("c-contractor").value,
@@ -655,6 +688,8 @@ async function start() {
   document.getElementById("btn-confirm").addEventListener("click", () => submitRoll().catch((e) => flash(e.message, false)));
   document.getElementById("btn-manual").addEventListener("click", () => openDialog("dlg-manual"));
   document.getElementById("btn-waste").addEventListener("click", () => { fillContractors("w-contractor"); openDialog("dlg-waste"); });
+  document.getElementById("btn-meter").addEventListener("click", () => { fillMeters(); openDialog("dlg-meter"); });
+  document.getElementById("e-save").addEventListener("click", saveMeter);
   document.getElementById("btn-count").addEventListener("click", () => { fillContractors("c-contractor"); openDialog("dlg-count"); });
   document.getElementById("m-approve").addEventListener("click", approveManual);
   document.getElementById("w-save").addEventListener("click", saveWaste);

@@ -589,27 +589,33 @@ def issue_spares(job, warehouse, lines, on_date=None, issued_to=None, reason=Non
     if reason is None:
         raise ValidationError("Say which adjustment reason spares are written off under, "
                               "in the manufacturing settings.")
+    from .positions import on_the_jobs_machine, place
+
     rows = []
     for row in lines or []:
-        item, quantity, lot = (tuple(row) + (None,))[:3]
+        item, quantity, lot, position = (tuple(row) + (None, None))[:4]
+        if position is not None:
+            on_the_jobs_machine(job, position)
         try:
             quantity = Decimal(str(quantity))
         except (ArithmeticError, TypeError, ValueError):
             raise ValidationError(f"The quantity of {item} is a number.")
         if not quantity.is_finite() or quantity <= 0:
             raise ValidationError(f"Issue more than nothing of {item}.")
-        rows.append((item, quantity, lot))
+        rows.append((item, quantity, lot, position))
     if not rows:
         raise ValidationError("Say which spares are issued.")
     adjustment = StockAdjustment.objects.create(
         adjustment_date=to_date(on_date) or timezone.localdate(), warehouse=warehouse,
         reason=reason, memo=f"Spares for {job}"[:255], raised_by=SPARE_ISSUE,
     )
-    for item, quantity, lot in rows:
+    for item, quantity, lot, _ in rows:
         StockAdjustmentLine.objects.create(adjustment=adjustment, item=item, uom=item.uom,
                                            quantity=-quantity, lot=lot)
     adjustment.post()
-    return SpareIssue.objects.create(job=job, adjustment=adjustment, issued_to=issued_to)
+    issue = SpareIssue.objects.create(job=job, adjustment=adjustment, issued_to=issued_to)
+    place(issue, [(item, quantity, position) for item, quantity, _, position in rows])
+    return issue
 
 
 @transaction.atomic
@@ -622,4 +628,6 @@ def return_spares(issue, on_date=None):
                               "Put anything left back with a stock adjustment.")
     issue.adjustment.void(on_date=on_date, memo=f"Spares returned from {issue.job}"[:255],
                           through=SPARE_ISSUE)
+    # Back on the shelf, so out of the positions they were said to have gone to.
+    issue.placements.all().delete()
     return issue

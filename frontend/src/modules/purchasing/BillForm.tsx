@@ -11,7 +11,33 @@ import { useDraft } from "../../forms/useDraft";
 import { minus, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { RecordPanel, type PanelDef } from "../../views/RecordScreen";
 import { billState } from "./Bills";
+
+/** A transporter's freight bill, matched to the deliveries it charges for: each is charged for once. */
+const CARRIED: PanelDef = {
+  title: "Deliveries carried", permission: "sales.view_delivery", endpoint: "", query: () => ({}),
+  rows: (bill) => ((bill.carried as Record<string, unknown>[]) ?? []).map((row) => ({ ...row, id: Number(row.id), bill: bill.id })),
+  columns: [
+    { key: "number", label: "Delivery" },
+    { key: "date", label: "Date", kind: "date", width: "8rem" },
+    { key: "lr_number", label: "LR", width: "9rem" },
+  ],
+  adder: {
+    label: "Add a delivery", permission: "purchasing.change_bill",
+    url: (bill) => `/api/purchasing/bills/${String(bill.id)}/carried/`,
+    fields: (bill) => [{ key: "delivery", label: "Delivery", kind: "pick", pick: {
+      endpoint: "/api/sales/deliveries/", permission: "sales.view_delivery",
+      query: { transporter: String(bill.vendor), freight_charge__isnull: "true", posted: "true" },
+      label: (row: Record<string, unknown>) => `${String(row.number)} · ${String(row.customer_name)} · ${String(row.lr_number || "no LR")}` } }],
+    body: (values) => values,
+    when: (bill) => !bill.debits,
+  },
+  remover: {
+    permission: "purchasing.change_bill",
+    url: (row) => `/api/purchasing/bills/${String(row.bill)}/carried/?delivery=${String(row.delivery)}`,
+  },
+};
 
 interface Bill {
   id: number;
@@ -105,6 +131,11 @@ export default function BillForm() {
     if (outcome.ok) navigate(`/purchasing/bills/${outcome.data.id}`);
   };
 
+  const deductTds = () => {
+    if (!window.confirm(`Deduct TDS on ${bill!.number} under the vendor's section? It is taken off what the bill owes.`)) return;
+    void act.run("POST", `${ENDPOINT}${bill!.id}/deduct_tds/`, {}, { done: "TDS deducted" });
+  };
+
   return (
     <article className="doc">
       <DocHeader back="/purchasing/bills" backLabel="Bills" title={isNew ? "New bill" : title}
@@ -117,6 +148,9 @@ export default function BillForm() {
         )}
         {bill?.posted && !bill.debits && can("purchasing.post_bill") && positive(minus(bill.total, bill.amount_debited)) && (
           <ActionButton pending={act.pending} onClick={() => void debit()}>Debit note</ActionButton>
+        )}
+        {bill?.posted && !bill.debits && !bill.is_prepayment && positive(bill.amount_due) && can("purchasing.add_tdsdeduction") && (
+          <ActionButton pending={act.pending} onClick={deductTds}>Deduct TDS</ActionButton>
         )}
         {bill?.posted && !bill.debits && positive(bill.amount_due) && can("accounting.add_payment") && (
           <Link className="btn" to={`/purchasing/payments/new?vendor=${bill.vendor}&bill=${bill.id}`}>Pay</Link>
@@ -179,6 +213,10 @@ export default function BillForm() {
           title="Debit note with GST" accountField="expense_account" accountType="expense"
           askValue valueLabel="What the old bill was for in all, if known"
           href={(id) => `/purchasing/bills/${id}`} />
+      )}
+
+      {bill && !bill.debits && (bill.lines.some((line) => line.charge) || ((bill as unknown as { carried?: unknown[] }).carried ?? []).length > 0) && (
+        <RecordPanel panel={CARRIED} record={bill as unknown as Record<string, unknown> & { id: number }} />
       )}
 
       {bill?.posted && seesPayments && (

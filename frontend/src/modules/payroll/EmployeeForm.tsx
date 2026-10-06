@@ -32,6 +32,7 @@ export default function EmployeeForm() {
         { key: "employment_status", label: "Employment status", kind: "choice", choices: [["active", "Active"], ["on_leave", "On Leave"], ["terminated", "Terminated"]], initial: "active" },
         { key: "working_days", label: "Working days", initial: "12345", hint: "ISO weekday numbers this person works" },
         { key: "holiday_region", label: "Holiday region", hint: "Which public holidays apply" },
+        { key: "paid_by_attendance", label: "Paid by attendance", kind: "bool", initial: false, hint: "A day-rated worker: the pay run waits until every working day of theirs is on the register" },
       ]}
       panels={[{
         // What they are paid, component by component, from a date: a

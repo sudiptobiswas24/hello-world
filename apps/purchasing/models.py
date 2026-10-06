@@ -2895,7 +2895,10 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not self.is_debit_note():
             return Decimal("0")
         bill = self.debits
-        capacity = max(bill.total() - bill.amount_paid(), Decimal("0"))
+        # Against what the bill still had after everything that settled
+        # it, as sales absorbs credit notes: counting payments alone let a
+        # note absorb the tax deducted, and the vendor's refund vanished.
+        capacity = max(bill.total() - bill._settled_otherwise(), Decimal("0"))
         used = Decimal("0")
         for note in bill.debit_notes.filter(posted=True).order_by("bill_date", "pk"):
             share = min(note.total(), max(capacity - used, Decimal("0")))
@@ -2929,20 +2932,35 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # that the money has already gone out, so what is left is cash owed
         # back, which lives on the note — a bill reading minus fifty says
         # the company owes a negative amount, which is not a thing.
-        paid = (
+        paid = self._settled_otherwise()
+        offset = min(self.amount_debited(), max(self.total() - paid, Decimal("0")))
+        return self.total() - paid - offset
+
+    def _settled_otherwise(self):
+        """Paid, discounted, met from a prepayment or deducted as tax: not debited."""
+        return (
             self.amount_paid()
             + (self.settlement_discount_amount or Decimal("0"))
             + self.amount_prepaid()
+            + self.amount_tds()
         )
-        offset = min(self.amount_debited(), max(self.total() - paid, Decimal("0")))
-        return self.total() - paid - offset
+
+    def amount_tds(self):
+        """Tax deducted from this bill and not taken back."""
+        return sum((row.amount for row in self.tds_deductions.all() if row.reversed_entry_id is None),
+                   Decimal("0"))
+
+    def deduct_tds(self, section=None, on_date=None):
+        from .tds import deduct
+
+        return deduct(self, section=section, on_date=on_date)
 
     def settlement_status(self):
         if not self.posted:
             return SettlementStatus.DRAFT
         if self.amount_due() <= 0:
             return SettlementStatus.PAID
-        if self.amount_paid() or self.amount_debited():
+        if self.amount_paid() or self.amount_debited() or self.amount_tds():
             return SettlementStatus.PARTIAL
         return SettlementStatus.UNPAID
 
@@ -3154,6 +3172,11 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 if account is None:
                     raise ValidationError(f"Tax {tax.code} has no paid account.")
                 tax_totals[account] += amount
+                if tax.reverse_charge:
+                    # Claimed as credit like any input tax, and owed by the
+                    # company rather than the vendor: the two net to
+                    # nothing on what the vendor is paid.
+                    tax_totals[tax.reverse_charge_account] -= amount
         for account, amount in tax_totals.items():
             debits.append((account, round_money(amount * rate), "Tax"))
 
@@ -3637,6 +3660,7 @@ BILL_FIGURES = (
     "debit_notes__lines__taxes",
     "debit_notes__lines__recorded_taxes__tax",
     "prepayment_applications",
+    "tds_deductions",
     "payment_terms__lines",
 )
 
@@ -6041,3 +6065,7 @@ class ReceiptInspection(AuditModel):
     def __str__(self):
         verdict = "accepted" if self.accepted else "rejected"
         return f"{self.quantity} {verdict} on {self.inspected_on}"
+
+
+from .tds import TdsChallan, TdsDeduction  # noqa: E402,F401
+from .freight import FreightDelivery  # noqa: E402,F401

@@ -156,6 +156,14 @@ class MeterReading(AuditModel):
     reading = models.DecimalField(max_digits=14, decimal_places=3)
     read_by = models.ForeignKey("hr.Employee", null=True, blank=True,
                                 on_delete=models.PROTECT, related_name="+")
+    # The two other dials on the board's meter, copied with the kWh: the
+    # demand charge is billed on the first and the penalty on the second.
+    max_demand_kva = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="The maximum demand the meter shows, in kVA, as it stands at this reading.")
+    power_factor = models.DecimalField(
+        max_digits=4, decimal_places=3, null=True, blank=True,
+        help_text="The power factor the meter shows, over 0 and up to 1.")
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
     voided_reason = models.CharField(max_length=255, blank=True, editable=False)
 
@@ -165,12 +173,20 @@ class MeterReading(AuditModel):
             models.UniqueConstraint(fields=["meter", "shift_date", "shift"],
                                     condition=Q(voided_at__isnull=True),
                                     name="one_standing_reading_a_shift"),
+            models.CheckConstraint(check=Q(max_demand_kva__isnull=True) | Q(max_demand_kva__gt=0),
+                                   name="meter_reading_demand_positive"),
+            models.CheckConstraint(check=Q(power_factor__isnull=True) | (Q(power_factor__gt=0) & Q(power_factor__lte=1)),
+                                   name="meter_reading_power_factor_within_one"),
         ]
 
     def __str__(self):
         return f"{self.meter} {self.reading} at the end of {self.shift or 'the day'} {self.shift_date}"
 
     def save(self, *args, **kwargs):
+        if self.power_factor is not None and not 0 < self.power_factor <= 1:
+            raise ValidationError({"power_factor": "A power factor is over 0 and up to 1."})
+        if self.max_demand_kva is not None and self.max_demand_kva <= 0:
+            raise ValidationError({"max_demand_kva": "Maximum demand is more than nothing."})
         if not self._state.adding:
             if not getattr(self, "_voiding", False):
                 raise ValidationError("A reading is what the dial said. Void it and read again.")
@@ -399,6 +415,11 @@ def summary(start, end):
                 else:
                     cost += span_kwh * rate
         read_days = {span[3].shift_date for span in spans}
+        # The board's other two dials: the highest demand seen in the window, and the
+        # power factor as the last reading in it showed.
+        board = [span[3] for span in spans]
+        demand = max((row.max_demand_kva for row in board if row.max_demand_kva is not None), default=None)
+        factor = next((row.power_factor for row in reversed(board) if row.power_factor is not None), None)
         first = max(start, meter.installed_on)
         last = min(end, meter.retired_on or end, timezone.localdate())
         days = (last - first).days + 1 if last >= first else 0
@@ -407,5 +428,6 @@ def summary(start, end):
             "kwh": kwh, "run_kwh": run_kwh, "idle_kwh": idle_kwh,
             "cost": None if unpriced else cost, "readings": len(spans),
             "days_unread": max(days - len(read_days), 0),
+            "max_demand_kva": demand, "power_factor": factor,
         })
     return rows

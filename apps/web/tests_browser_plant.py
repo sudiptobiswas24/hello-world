@@ -26,9 +26,6 @@ class PlantInTheBrowserTests(BrowserMixin, BreakdownTestCase, StaticLiveServerTe
     def url(self, path):
         return f"{self.live_server_url}/app{path}"
 
-    def toast(self, page, text):
-        expect(page.locator(".toast", has_text=text).first).to_be_visible()
-
     def test_a_breakdown_from_the_floor_to_a_machine_running_again(self):
         stoppage = self.stopped("90")
         floor = self.sign_in(self.person("Production Supervisor"), f"/app/plant/stoppages/{stoppage.pk}")

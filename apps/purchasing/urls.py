@@ -1,5 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
+from .tds_api import TdsChallanViewSet, TdsDeductionViewSet
+
 from .documents_api import (
     BlanketOrderLineViewSet,
     BlanketOrderViewSet,
@@ -31,6 +33,8 @@ router = DefaultRouter()
 router.register("purchase-orders", PurchaseOrderViewSet)
 router.register("purchase-order-lines", PurchaseOrderLineViewSet)
 router.register("bills", BillViewSet)
+router.register("tds-deductions", TdsDeductionViewSet)
+router.register("tds-challans", TdsChallanViewSet)
 router.register("bill-payments", BillPaymentViewSet)
 router.register(
     "purchasing-reports", PurchasingReportViewSet, basename="purchasing-report"

@@ -1157,3 +1157,6 @@ class Company(AuditModel):
         start = datetime.date(start_year, self.fiscal_year_start_month, 1)
         end = datetime.date(start_year + 1, self.fiscal_year_start_month, 1) - datetime.timedelta(days=1)
         return start, end
+
+
+from .licences import Licence  # noqa: E402,F401

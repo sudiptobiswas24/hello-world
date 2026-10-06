@@ -514,6 +514,23 @@ def prepare(document, mode=TransportMode.ROAD, distance_km=0, transporter_id="",
 
     is_invoice = isinstance(document, Invoice)
     is_delivery = isinstance(document, Delivery)
+    carried = document if is_delivery else None
+    if is_invoice and document.sales_order_id:
+        # A sale moves on its invoice's e-way bill; the truck is on the
+        # delivery. Taken from it only when there is just the one.
+        shipped = list(Delivery.objects.filter(sales_order_id=document.sales_order_id, posted=True,
+                                               reverses__isnull=True, transporter__isnull=False)[:2])
+        carried = shipped[0] if len(shipped) == 1 else None
+    if carried is not None:
+        # What the delivery says carried it, unless told otherwise.
+        document_carrier = carried
+        carrier = document_carrier.transporter
+        profile = getattr(carrier, "tax_profile", None) if carrier else None
+        transporter_id = transporter_id or (profile.gstin if profile else "")
+        transporter_name = transporter_name or (carrier.name if carrier else "")
+        vehicle_number = vehicle_number or document_carrier.vehicle_number
+        transport_doc_number = transport_doc_number or document_carrier.lr_number
+        transport_doc_date = transport_doc_date or document_carrier.lr_date
     if not is_invoice and not is_delivery:
         challan_vehicle = normalise_vehicle(document.vehicle)
         given = normalise_vehicle(vehicle_number)

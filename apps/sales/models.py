@@ -5,7 +5,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -1475,6 +1475,12 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         help_text="Money taken up front against an order, held as a liability "
                   "until the goods are delivered.",
     )
+    claim_reason = models.CharField(
+        max_length=16, blank=True, editable=False,
+        choices=[("torn", "Torn or damaged bags"), ("short_weight", "Short weight or count"),
+                 ("rate", "Rate disputed"), ("quality", "Quality below specification"), ("other", "Other")],
+        help_text="On a credit note given for a customer's claim: what the money was given back for.",
+    )
     corrects_old_supply = models.BooleanField(
         default=False, editable=False,
         help_text="A credit note with its own GST on an invoice the old system issued: "
@@ -1862,13 +1868,24 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         )
 
     def _settled_otherwise(self):
-        """Paid, discounted, written off or met from a deposit: not credited."""
+        """Paid, discounted, written off, met from a deposit or deducted as tax: not credited."""
         return (
             self.amount_paid()
             + (self.settlement_discount_amount or Decimal("0"))
             + self.amount_written_off()
             + self.amount_deposited()
+            + self.amount_tds()
         )
+
+    def amount_tds(self):
+        """Tax the customer deducted from paying this, and that still stands."""
+        return sum((row.amount for row in self.tds_withheld.all() if row.reversed_entry_id is None),
+                   Decimal("0"))
+
+    def record_tds(self, section, amount, on_date=None, certificate=""):
+        from .tds import record
+
+        return record(self, section, amount, on_date=on_date, certificate=certificate)
 
     def amount_absorbed(self):
         """
@@ -1922,7 +1939,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             if self.amount_written_off() > 0:
                 return SettlementStatus.WRITTEN_OFF
             return SettlementStatus.PAID
-        if self.amount_paid() or self.amount_credited() or self.amount_written_off():
+        if self.amount_paid() or self.amount_credited() or self.amount_written_off() or self.amount_tds():
             return SettlementStatus.PARTIAL
         return SettlementStatus.UNPAID
 
@@ -2245,6 +2262,55 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         credit_note.post(memo=memo)
         return credit_note
 
+    def credit_claim(self, net, reason, memo="", on_date=None):
+        """
+        Money given back on a customer's claim (torn bags, short weight, a
+        rate in dispute): a price adjustment, not a return. `net` is before
+        tax; it is spread over the lines by value, the last taking what
+        rounding leaves, and each line's tax follows from what it bore.
+        No goods move and no quantity stops being returnable.
+        """
+        reasons = dict(type(self)._meta.get_field("claim_reason").choices)
+        if reason not in reasons:
+            raise ValidationError({"reason": "Say what the claim was for."})
+        with transaction.atomic():
+            lock_rows(self)
+            if not self.posted:
+                raise ValidationError("Only a posted invoice can be credited.")
+            if self.is_credit_note():
+                raise ValidationError("A claim is credited against the invoice, not a credit note.")
+            if self.is_down_payment:
+                raise ValidationError("A down payment is given back by amount; credit it that way.")
+            net = round_money(Decimal(net))
+            if net <= 0:
+                raise ValidationError({"net": "A claim gives back more than nothing."})
+            credited = sum((note.subtotal() for note in self.credit_notes.filter(posted=True)), Decimal("0"))
+            left = self.subtotal() - credited
+            if net > left:
+                raise ValidationError({"net": f"Only {left} of {self.number} before tax is left to credit."})
+            lines = [line for line in self.lines.all() if line.net_amount() > 0]
+            whole = sum((line.net_amount() for line in lines), Decimal("0"))
+            note = Invoice.objects.create(
+                customer=self.customer, invoice_date=to_date(on_date) or timezone.localdate(),
+                reference=self.reference, receivable_account=self.receivable_account, currency=self.currency,
+                payment_terms=self.payment_terms, billing_address=self.billing_address,
+                shipping_address=self.shipping_address, sales_rep=self.sales_rep, credits=self,
+                claim_reason=reason,
+            )
+            used = Decimal("0")
+            for index, line in enumerate(lines):
+                share = net - used if index == len(lines) - 1 else round_money(net * line.net_amount() / whole)
+                used += share
+                if share <= 0:
+                    continue
+                claim_line = InvoiceLine.objects.create(
+                    invoice=note, credits_line=line, description=f"{reasons[reason]}: {line.label()}",
+                    quantity=Decimal("1"), unit_price=share, revenue_account=line.revenue_account,
+                )
+                claim_line.taxes.set(line.taxes.all())
+            note.post(memo=memo or f"Claim on {self.number}: {reasons[reason]}")
+            return note
+
     def credit_old_supply(self, lines, memo="", on_date=None, old_value=None):
         """
         A credit note with GST on an invoice the old system issued (see
@@ -2483,6 +2549,7 @@ INVOICE_FIGURES = (
     "credit_notes__lines__recorded_taxes__tax",
     "deposit_applications",
     "applications",
+    "tds_withheld",
     "payment_terms__lines",
 )
 
@@ -2555,7 +2622,9 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
 
     def quantity_credited(self):
         """How much of this line has already been credited by posted credit notes."""
-        return self.credit_lines.filter(invoice__posted=True).aggregate(
+        # A claim gives money back on the line, not goods: what can still be
+        # returned is untouched by it.
+        return self.credit_lines.filter(invoice__posted=True, invoice__claim_reason="").aggregate(
             total=models.Sum("quantity")
         )["total"] or Decimal("0")
 
@@ -3060,7 +3129,7 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
         Invoice.objects.filter(customer=customer, posted=True, currency=currency)
         .prefetch_related(
             "lines__taxes", "payment_allocations__payment", "write_offs",
-            "deposit_applications__deposit",
+            "deposit_applications__deposit", "tds_withheld__section", "tds_withheld__reversed_entry",
         )
     )
     for invoice in invoices:
@@ -3106,6 +3175,17 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
                 entries.append(StatementEntry(
                     to_date(write_off.recovered_entry.date), "Write-off reversed",
                     invoice.number, "", debit=write_off.amount,
+                ))
+        for tds in invoice.tds_withheld.all():
+            if to_date(tds.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(tds.date), "TDS deducted", invoice.number, tds.section.code, credit=tds.amount,
+                ))
+            # Reversed when the customer never filed it: owed again.
+            if tds.reversed_entry_id and to_date(tds.reversed_entry.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(tds.reversed_entry.date), "TDS reversed", invoice.number, tds.section.code,
+                    debit=tds.amount,
                 ))
         if invoice.settlement_discount_amount and invoice.settlement_discount_entry_id:
             discounted_on = to_date(invoice.settlement_discount_entry.date)
@@ -3314,6 +3394,21 @@ class Delivery(AuditModel):
                   "customer's inspector's release, as their profile said when it was "
                   "posted. Recorded, so changing the profile later does not rewrite it.",
     )
+    # How it went: often known only after the truck left, so kept apart
+    # from what the delivery moved and recorded after posting too.
+    transporter = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="carried_deliveries",
+        editable=False)
+    lr_number = models.CharField(max_length=32, blank=True, editable=False,
+                                 help_text="The transporter's lorry receipt.")
+    lr_date = models.DateField(null=True, blank=True, editable=False)
+    vehicle_number = models.CharField(max_length=15, blank=True, editable=False)
+    # What the customer signed for: cement plants pay from their own
+    # receipt, and a disputed delivery is argued from this.
+    received_on = models.DateField(null=True, blank=True, editable=False)
+    received_by = models.CharField(max_length=100, blank=True, editable=False)
+    receipt_reference = models.CharField(max_length=64, blank=True, editable=False,
+                                         help_text="The customer's goods-received note or the signed copy's number.")
 
     class Meta:
         verbose_name_plural = "deliveries"
@@ -3332,6 +3427,34 @@ class Delivery(AuditModel):
 
     def is_return(self):
         return bool(self.reverses_id)
+
+    def record_receipt(self, received_on, received_by="", reference=""):
+        """The customer's acknowledgement of what arrived, after it shipped."""
+        received_on = to_date(received_on)
+        if not self.posted or self.reverses_id:
+            raise ValidationError("Only a delivery that went out is received.")
+        if received_on is None:
+            raise ValidationError({"received_on": "Say when the customer received it."})
+        if received_on < to_date(self.delivery_date):
+            raise ValidationError({"received_on": "It arrived after it left."})
+        self.received_on, self.received_by, self.receipt_reference = received_on, received_by.strip(), reference.strip()
+        super().save(update_fields=["received_on", "received_by", "receipt_reference", "updated_at"])
+
+    def record_transport(self, transporter=None, lr_number="", lr_date=None, vehicle_number=""):
+        """
+        Who carried it and on what lorry receipt: what the e-way bill and the
+        transporter's freight bill are matched by. Written past the posted
+        guard, because it changes nothing the delivery moved.
+        """
+        from apps.gst.ewaybill import normalise_vehicle
+
+        if self.reverses_id:
+            raise ValidationError("A return comes back on its own transport; record it on the delivery out.")
+        self.transporter = transporter
+        self.lr_number = (lr_number or "").strip()
+        self.lr_date = to_date(lr_date)
+        self.vehicle_number = normalise_vehicle(vehicle_number) if vehicle_number else ""
+        super().save(update_fields=["transporter", "lr_number", "lr_date", "vehicle_number", "updated_at"])
 
     def _was_posted_in_db(self):
         if not self.pk:
@@ -4898,3 +5021,36 @@ from .price_variation import (  # noqa: E402,F401
     PriceVariationClause,
     PriceVariationLine,
 )
+
+
+from .tds import CustomerTds  # noqa: E402,F401
+
+
+def _settled_complaint(note):
+    # Read through the reverse relation, so sales imports nothing of
+    # manufacturing, which holds the link.
+    try:
+        return note.complaint_settlement.complaint.number
+    except ObjectDoesNotExist:
+        return ""
+
+
+def claims(start, end):
+    """
+    Money given back on customers' claims in a period, each note with what
+    it was for and the complaint it settled: what quality cost the plant.
+    """
+    notes = Invoice.objects.filter(
+        posted=True, invoice_date__gte=to_date(start), invoice_date__lte=to_date(end),
+    ).exclude(claim_reason="").select_related(
+        "customer", "credits", "complaint_settlement__complaint").prefetch_related(
+        "lines__taxes", "lines__recorded_taxes__tax")
+    rows = []
+    for note in notes.order_by("invoice_date", "pk"):
+        rows.append({
+            "note": note.pk, "number": note.number, "date": to_date(note.invoice_date),
+            "customer": note.customer.name, "invoice": note.credits.number, "reason": note.claim_reason,
+            "net": note.subtotal(), "tax": note.tax_total(), "total": note.total(),
+            "complaint": _settled_complaint(note),
+        })
+    return rows

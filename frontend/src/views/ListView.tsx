@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 
 import { ApiError, list, type Page, type Query } from "../api/client";
 import { useAct } from "../api/hooks";
+import { csvText, downloadCsv } from "../lib/csv";
 import { count, date, money, quantity } from "../lib/format";
 import { useAccess } from "../auth/me";
 import { ErrorPanel } from "../shell/ErrorPanel";
@@ -195,6 +196,23 @@ export function ListView<T>(props: ListViewProps<T>) {
   const last = Math.min(page * size, total);
   const rows = result.data?.rows ?? [];
   const filtered = Boolean(q) || Object.keys(narrowing).length > 0;
+  // Every row the list would show, page after page, as a file: what the
+  // screen shows and nothing it does not.
+  const [exporting, setExporting] = useState(false);
+  const exportAll = async () => {
+    setExporting(true);
+    try {
+      const all: T[] = [];
+      for (let next = 1; ; next += 1) {
+        const got = await list<T>(endpoint, { ...query, page: next, page_size: 500 });
+        all.push(...got.rows);
+        if (all.length >= got.total || got.rows.length === 0) break;
+      }
+      downloadCsv(title, csvText(columns, all as unknown as Record<string, unknown>[]));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <section className="list" aria-busy={result.isFetching}>
@@ -209,6 +227,9 @@ export function ListView<T>(props: ListViewProps<T>) {
             void act.run("POST", action.path, {}, { done: action.done });
           }}>{action.label}</button>
         ))}
+        {total > 0 && (
+          <button type="button" className="btn" disabled={exporting} onClick={() => void exportAll()}>CSV</button>
+        )}
         <div className="search">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
           <input

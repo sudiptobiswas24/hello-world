@@ -30,7 +30,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
-         "open_bills", "opening_balances")
+         "open_bills", "opening_balances", "shipment_history")
 
 
 # Each kind's columns, in the order a template gives them; docs/IMPORT.md
@@ -43,11 +43,12 @@ COLUMNS = {
                   "job_title", "email", "username", "roles", "sales_rep"],
     "customer_reps": ["customer", "rep"],
     "items": ["sku", "name", "uom", "item_type", "hsn_code", "track_inventory", "costing_method",
-              "tracking", "sale_price", "standard_cost"],
+              "tracking", "sale_price", "standard_cost", "stock_class"],
     "opening_stock": ["sku", "warehouse", "quantity", "unit_cost", "lot"],
     "open_invoices": ["customer", "reference", "date", "amount", "payment_terms", "currency"],
     "open_bills": ["vendor", "reference", "date", "amount", "payment_terms", "currency"],
     "opening_balances": ["account", "debit", "credit", "description"],
+    "shipment_history": ["sku", "warehouse", "month", "quantity", "note"],
 }
 
 
@@ -240,7 +241,7 @@ def _item(row, options):
         sale_price=decimal(row, "sale_price", places=4),
         standard_cost=decimal(row, "standard_cost", places=4),
     )
-    for column in ("item_type", "costing_method", "tracking"):
+    for column in ("item_type", "costing_method", "tracking", "stock_class"):
         if row.get(column):
             setattr(item, column, row[column].lower())
     clean(item)
@@ -495,7 +496,31 @@ def _customer_rep(row, options):
     profile.save()
 
 
+def _shipment_history(row, options):
+    """A month the old system shipped an item from a warehouse, for the forecast; run again to correct it."""
+    from apps.inventory.models import Item, Warehouse
+    from apps.planning.history import ShipmentHistory, parse_month
+
+    sku = required(row, "sku")
+    item = Item.objects.filter(sku=sku).first()
+    if item is None:
+        raise RowError("sku", f"No item {sku!r}.")
+    code = required(row, "warehouse")
+    warehouse = Warehouse.objects.filter(code=code).first()
+    if warehouse is None:
+        raise RowError("warehouse", f"No warehouse {code!r}.")
+    month = parse_month(required(row, "month"))
+    if month is None:
+        raise RowError("month", f"{row['month']!r} is not a month; give it as YYYY-MM.")
+    quantity = decimal(row, "quantity", places=4, required_=True)
+    if quantity < 0:
+        raise RowError("quantity", "Shipped less returned is nothing or more.")
+    ShipmentHistory.objects.update_or_create(item=item, warehouse=warehouse, month=month,
+                                             defaults={"quantity": quantity, "note": row.get("note", "")})
+
+
 PER_ROW = {
+    "shipment_history": _shipment_history,
     "parties": _party,
     "items": _item,
     "customer_reps": _customer_rep,

@@ -7,6 +7,7 @@ import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { CommitDecimal, DecimalInput, Field } from "../../forms/fields";
 import { aboveZero } from "../../lib/decimal";
 import { date, quantity } from "../../lib/format";
+import { PartyPicker } from "../../forms/PartyPicker";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 
 interface DeliveryLine {
@@ -30,6 +31,88 @@ interface Delivery {
   reverses: number | null;
   backorder_of: number | null;
   lines: DeliveryLine[];
+  transporter: number | null;
+  transporter_name: string;
+  lr_number: string;
+  lr_date: string | null;
+  vehicle_number: string;
+  received_on: string | null;
+  received_by: string;
+  receipt_reference: string;
+}
+
+/** What the customer signed for, and when: cement plants pay from their own receipt. */
+function Received({ delivery, editable }: { delivery: Delivery; editable: boolean }) {
+  const act = useAct<Delivery>();
+  const [value, setValue] = useState({ received_on: delivery.received_on ?? "", received_by: delivery.received_by,
+    reference: delivery.receipt_reference });
+  const save = () => void act.run("POST", `${ENDPOINT}${delivery.id}/received/`, value, { done: "Receipt recorded" });
+  return (
+    <section className="related-list" aria-label="Received">
+      <h2>Received</h2>
+      <div className="field-grid">
+        <Field label="Received on">
+          {(fid) => editable
+            ? <input id={fid} type="date" value={value.received_on} onChange={(e) => setValue({ ...value, received_on: e.target.value })} />
+            : <output id={fid}>{delivery.received_on ? date(delivery.received_on) : "Not yet"}</output>}
+        </Field>
+        <Field label="Received by">
+          {(fid) => editable
+            ? <input id={fid} value={value.received_by} onChange={(e) => setValue({ ...value, received_by: e.target.value })} />
+            : <output id={fid}>{delivery.received_by || "—"}</output>}
+        </Field>
+        <Field label="Their GRN">
+          {(fid) => editable
+            ? <input id={fid} value={value.reference} onChange={(e) => setValue({ ...value, reference: e.target.value })} />
+            : <output id={fid}>{delivery.receipt_reference || "—"}</output>}
+        </Field>
+      </div>
+      {editable && <ActionButton pending={act.pending} onClick={save}>Save receipt</ActionButton>}
+    </section>
+  );
+}
+
+/**
+ * Who carried it, on what lorry receipt and vehicle: often known only after
+ * the truck has gone, so kept apart from what the delivery moved and
+ * recorded after it shipped too. The e-way bill and the transporter's
+ * freight bill are matched by it.
+ */
+function Transport({ delivery, editable }: { delivery: Delivery; editable: boolean }) {
+  const act = useAct<Delivery>();
+  const [value, setValue] = useState({
+    transporter: delivery.transporter, lr_number: delivery.lr_number, lr_date: delivery.lr_date ?? "",
+    vehicle_number: delivery.vehicle_number,
+  });
+  const save = () => void act.run("POST", `${ENDPOINT}${delivery.id}/transport/`, value, { done: "Transport recorded" });
+  return (
+    <section className="related-list" aria-label="Transport">
+      <h2>Transport</h2>
+      <div className="field-grid">
+        <Field label="Transporter">
+          {(fid) => editable
+            ? <PartyPicker id={fid} role="vendor" value={value.transporter} onChange={(v) => setValue({ ...value, transporter: v as number | null })} />
+            : <output id={fid}>{delivery.transporter_name || "—"}</output>}
+        </Field>
+        <Field label="LR number">
+          {(fid) => editable
+            ? <input id={fid} value={value.lr_number} onChange={(e) => setValue({ ...value, lr_number: e.target.value })} />
+            : <output id={fid}>{delivery.lr_number || "—"}</output>}
+        </Field>
+        <Field label="LR date">
+          {(fid) => editable
+            ? <input id={fid} type="date" value={value.lr_date} onChange={(e) => setValue({ ...value, lr_date: e.target.value })} />
+            : <output id={fid}>{date(delivery.lr_date ?? undefined) || "—"}</output>}
+        </Field>
+        <Field label="Vehicle">
+          {(fid) => editable
+            ? <input id={fid} value={value.vehicle_number} onChange={(e) => setValue({ ...value, vehicle_number: e.target.value })} />
+            : <output id={fid}>{delivery.vehicle_number || "—"}</output>}
+        </Field>
+      </div>
+      {editable && <ActionButton pending={act.pending} onClick={save}>Save transport</ActionButton>}
+    </section>
+  );
 }
 
 interface Warehouse {
@@ -149,6 +232,11 @@ export default function DeliveryForm() {
           </div>
         )}
       </Sheet>
+
+      {!delivery.reverses && <Transport key={`${delivery.id}-${delivery.lr_number}`} delivery={delivery} editable={can("sales.change_delivery")} />}
+      {delivery.posted && !delivery.reverses && (
+        <Received key={`${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />
+      )}
     </article>
   );
 }

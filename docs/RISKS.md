@@ -47,6 +47,11 @@ can prove.
    *Do:* re-measure the lists people complain about in the pilot.
 5. **Backups are only as good as the last restore.** The runbook asks
    for a monthly restore check; nothing enforces it.
+6. **TDS rates are the plant's to enter, and none are entered.** The
+   sections, their rates, thresholds and accounts are kept on the TDS
+   sections screen because they change with every budget. *Do:* enter
+   this year's 194Q, 194C, 194J and 194I with the plant's accountant,
+   and each vendor's PAN and section, before the first bill is paid.
 
 ## Known limits in the code
 
@@ -106,6 +111,107 @@ can prove.
     Numbers are proven by the model and API tests and by the documents
     being read back from the ledger; a screen that formats a right
     number wrongly is caught only where a flow test reads that cell.
+15. **TDS stops at the list.** The quarter's deductions are listed as
+    26Q reads them, but no return file (FVU) is produced and Form 26AS
+    is matched by hand. Tax is deducted on a bill, not on an advance
+    paid before one, and payments abroad (section 195) are refused. A
+    year's threshold is reckoned in bill-date order: a bill entered late
+    for an earlier date does not re-reckon the deductions after it.
+16. **Reverse charge stops at the books and the return.** The tax is
+    owed and claimed and 3B shows it, but nothing makes it paid in cash
+    rather than set off against credit (table 6 is not built), and no
+    self-invoice is raised for a supply from an unregistered person.
+    The reverse-charge taxes are chosen on the bill line: IGST from
+    another state, CGST and SGST from inside it.
+17. **MSME days run from the bill's date.** The Act counts from the day
+    the goods are accepted, which is usually the bill's date here and
+    sometimes later; the list does not know the difference. Interest
+    owed on a late payment (three times the bank rate, compounded
+    monthly) is not computed, and a Udyam number is checked for its
+    shape, not against the registry.
+18. **A claim credit is not undone.** Like every credit note it is a
+    posted correction; a claim credited in error is answered by a new
+    invoice for the amount, not by reversing the note.
+19. **Bonus and gratuity are pay components, set up by hand.** The
+    statutory bonus (8.33% of basic and DA capped at 7,000, for those
+    earning 21,000 or less) and the gratuity provision (4.81% of basic)
+    accrue only once those components are made and given to each person;
+    nothing makes them. The bonus is paid out by an earning that debits
+    the bonus payable. Thirty days' work before a bonus is owed, and the
+    actuarial valuation an auditor may want for gratuity, are not done:
+    the gratuity list is the Act's own arithmetic on last wages.
+20. **A sale's e-way bill takes the truck from its order's one delivery.**
+    An order shipped on two trucks and invoiced once leaves the e-way
+    bill's transport to be typed, because which truck the invoice went
+    on is not recorded.
+21. **A proof of delivery is a reference, not the paper.** The receipt
+    records the date, who signed and the customer's GRN number; the
+    signed copy itself is kept in the file, because nothing here stores
+    a scan.
+22. **Tape line settings are typed from the line, not read from it.**
+    They are as good as the shift's habit of entering a change when it
+    is made; a run with no setting recorded traces only to its granule
+    lot, as before.
+23. **The licence calendar is read, not sent.** A licence due for
+    renewal shows on its list until the morning checks (22 in the plant
+    review) put it in somebody's inbox; nothing mails anyone yet.
+24. **Attendance is a punch file pasted in, not a reader on the wall.**
+    The biometric reader's export is read as CSV (employee number, date,
+    shift, in, out) and checked whole; nothing talks to the device. A
+    row with one punch is listed to be entered by hand, not guessed at,
+    and how late somebody was needs the row's shift code to be a shift
+    the plant keeps.
+25. **Kilogrammes on the daily report are what was weighed or what the
+    item converts to.** Rolls and doffs carry their weight; a sack
+    converts through its specification; a section whose output nothing
+    converts shows its unit and no kilogrammes, and its kWh a kilo is
+    blank rather than wrong. The kilogramme is the weight unit coded
+    kg. The kWh is the section's meters' whole draw for the day, idle
+    included, laid against its good output.
+26. **Maximum demand and power factor are copied off the board's meter
+    by hand.** The highest demand shown for a window is the highest any
+    reading in it carried, which is the board's own figure only if
+    somebody read the meter before the board reset it at the month's
+    end; nothing reads the meter itself.
+27. **Imported shipment history is as good as the old system's
+    register.** A month is one net figure an item and a warehouse,
+    with no deliveries behind it to trace; the forecast reads it as it
+    reads its own months. A month this system shipped in is refused,
+    so the two cannot overlap, but a figure typed for the wrong item
+    forecasts the wrong item.
+28. **The bank statement groups stock by the class set on each item.**
+    An item nobody classed shows on its own "unclassified" line rather
+    than in a class, so the statement is honest and incomplete until
+    the stores set them. Debtors are cut at ninety days, the aging's
+    own buckets; a bank that cuts at sixty reads the aging. The margins
+    are typed each time, not kept, and the statement is read, never
+    stored: last month's is reproduced by asking for its date, and a
+    posting dated back since then changes it.
+29. **Packing is expensed as the bale is pressed, not added to the
+    sacks' value.** The cover, straps and label leave stores under the
+    packing reason's account the moment a bale is sealed; a bale broken
+    afterwards keeps them consumed, because they were cut. A sack with
+    no recipe packs with nothing drawn, which the bale shows.
+30. **Finding a record searches what is written on it, five of a kind
+    at a time.** Numbers, codes, names and lorry registrations; not
+    amounts, dates or the text of a note. A rep finds only their own
+    customers' documents, as their lists show.
+31. **A CSV is the screen's columns, every page of the current
+    filter.** Values go out as the server sends them (exact money and
+    quantities, ISO dates); a column the screen renders from several
+    fields leaves as its raw value. It is built in the browser, so a
+    list of a hundred thousand rows is a wait.
+32. **A spare's life is the gap between placements at the same
+    position, as the fitters recorded them.** An issue not told the
+    position leaves no gap to read. The critical list counts the spare
+    on every shelf, not the maintenance store alone.
+33. **The morning checks know seventeen questions.** Maintenance and
+    calibration due, licences, MSME days, attendance, deliveries
+    unsigned, freight unbilled, invoices and bills past due, four kinds
+    of draft over two days, stock under level, meters unread, complaint
+    actions overdue. Anything else still waits to be asked. The mail
+    needs a mail server named (RUNBOOK.md) and a cron line; the home
+    page needs neither.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
 

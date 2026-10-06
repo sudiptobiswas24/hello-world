@@ -1,5 +1,27 @@
-import { RecordScreen } from "../../views/RecordScreen";
+import { RecordScreen, type PanelDef } from "../../views/RecordScreen";
+import { ITEM } from "../plant/refs";
 import { UOM, VENDOR, WORK_CENTRE } from "./refs";
+
+/** Where on the machine a spare goes, which spare, and whether the machine stands without it. */
+const POSITIONS_PANEL: PanelDef = {
+  title: "Positions", permission: "manufacturing.view_machineposition",
+  endpoint: "/api/manufacturing/machine-positions/", query: (machine) => ({ machine: String(machine.id) }),
+  columns: [
+    { key: "code", label: "Position", width: "8rem" },
+    { key: "name", label: "" },
+    { key: "spare_item_sku", label: "Spare", width: "10rem" },
+    { key: "is_critical", label: "", width: "7rem", render: (row) => (row.is_critical ? "critical" : "") },
+  ],
+  adder: { label: "Add a position", permission: "manufacturing.add_machineposition", url: () => "/api/manufacturing/machine-positions/",
+    fields: [
+      { key: "code", label: "Position", hint: "As the fitter says it: BRG-DS, SCREEN" },
+      { key: "name", label: "Name" },
+      { key: "spare_item", label: "Spare it takes", kind: "pick", pick: ITEM },
+      { key: "is_critical", label: "The machine stands without it", kind: "bool", initial: false },
+    ],
+    body: (values, machine) => ({ ...values, machine: machine.id }) },
+  remover: { permission: "manufacturing.delete_machineposition", url: (row) => `/api/manufacturing/machine-positions/${row.id}/` },
+};
 
 /** One loom, extruder or press in its bank, and what it can take. Empty: the bank's figure. */
 export default function MachineForm() {
@@ -30,6 +52,7 @@ export default function MachineForm() {
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "notes", label: "Notes", wide: true },
       ]}
+      panels={[POSITIONS_PANEL]}
     />
   );
 }

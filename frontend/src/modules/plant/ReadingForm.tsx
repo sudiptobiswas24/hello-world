@@ -18,6 +18,8 @@ export default function ReadingForm() {
         { key: "shift_date", label: "Day", kind: "date", createOnly: true },
         { key: "shift", label: "Shift", kind: "ref", ref: SHIFT, createOnly: true, hint: "Empty for a reading once a day" },
         { key: "reading", label: "Reading", kind: "decimal", places: 3, createOnly: true, hint: "What the dial says, not what was used" },
+        { key: "max_demand_kva", label: "Maximum demand, kVA", kind: "decimal", places: 2, createOnly: true, hint: "As the meter shows it; the demand charge is billed on it" },
+        { key: "power_factor", label: "Power factor", kind: "decimal", places: 3, createOnly: true, hint: "Over 0 and up to 1; below the board's floor is a penalty" },
         { key: "read_by", label: "Read by", kind: "pick", pick: EMPLOYEE, createOnly: true, show: (row) => String(row.read_by_name || "—") },
         { key: "voided_reason", label: "Why voided", readOnly: true },
       ]}

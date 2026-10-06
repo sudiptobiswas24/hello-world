@@ -951,3 +951,6 @@ class PlannedDemand(AuditModel):
 
 
 from .mps import MasterScheduleEntry  # noqa: E402,F401
+
+
+from .history import ShipmentHistory  # noqa: E402,F401

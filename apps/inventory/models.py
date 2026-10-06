@@ -180,6 +180,16 @@ class ItemType(models.TextChoices):
     SERVICE = "service", "Service"
 
 
+class StockClass(models.TextChoices):
+    """What the bank's stock statement groups stock by. Blank is unclassified, and the statement says so."""
+
+    RAW_MATERIAL = "raw_material", "Raw material"
+    PACKING = "packing", "Packing material"
+    CONSUMABLE = "consumable", "Stores and spares"
+    SEMI_FINISHED = "semi_finished", "Semi-finished"
+    FINISHED = "finished", "Finished goods"
+
+
 class Item(AuditModel):
     template = models.ForeignKey(
         "ItemTemplate", null=True, blank=True, on_delete=models.PROTECT,
@@ -205,6 +215,13 @@ class Item(AuditModel):
     )
     description = models.TextField(blank=True)
     item_type = models.CharField(max_length=16, choices=ItemType.choices, default=ItemType.GOODS)
+    # db_default too: a row written by a migration's historical model, or
+    # anything else that does not know the column, lands as unclassified.
+    stock_class = models.CharField(
+        max_length=16, choices=StockClass.choices, blank=True, default="", db_default="",
+        help_text="How the bank's stock statement groups it: raw material, packing, stores and spares, "
+                  "semi-finished or finished. Blank shows on the statement as unclassified.",
+    )
     uom = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, related_name="items")
     track_inventory = models.BooleanField(
         default=True,

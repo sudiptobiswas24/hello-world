@@ -146,6 +146,12 @@ class ManufacturingSettings(AuditModel):
         help_text="What spare parts issued to a maintenance job are written off "
                   "under, and so which expense account they land in.",
     )
+    packing_reason = models.ForeignKey(
+        "inventory.AdjustmentReason", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="What a bale's cover, straps and label are written off under when "
+                  "it is pressed, and so which expense account they land in.",
+    )
 
     class Meta:
         verbose_name_plural = "manufacturing settings"

@@ -85,6 +85,12 @@ def monthly_shipments(item, warehouse, first, last):
         quantity = item.to_stock_quantity(line.quantity_shipped, line.order_line.uom)
         sign = -1 if line.delivery.is_return() else 1
         months[_month_start(line.delivery.delivery_date)] += sign * quantity
+    # The months before this system shipped anything, brought in from the
+    # old one; a month cannot hold both (history.py refuses it).
+    from .history import ShipmentHistory
+
+    for row in ShipmentHistory.objects.filter(item=item, warehouse=warehouse, month__gte=first, month__lte=last):
+        months[row.month] += row.quantity
     return months
 
 
@@ -97,7 +103,12 @@ def _history_start(item, warehouse):
         order_line__item=item, warehouse=warehouse, delivery__posted=True,
         delivery__sales_order__is_job_work=False,
     ).order_by("delivery__delivery_date").values_list("delivery__delivery_date", flat=True).first()
-    return _month_start(first) if first else None
+    from .history import ShipmentHistory
+
+    earliest = ShipmentHistory.objects.filter(item=item, warehouse=warehouse).order_by("month") \
+        .values_list("month", flat=True).first()
+    starts = [month for month in (_month_start(first) if first else None, earliest) if month]
+    return min(starts) if starts else None
 
 
 def _fit(history):

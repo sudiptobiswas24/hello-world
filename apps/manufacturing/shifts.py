@@ -347,3 +347,8 @@ class Downtime(AuditModel):
                 name="Downtime", prefix="DT-",
             )
         super().save(*args, **kwargs)
+
+
+def shift_starts(code):
+    """When the shift of that code begins, for the attendance register; None for a code nobody uses."""
+    return Shift.objects.filter(code=code).values_list("starts_at", flat=True).first()

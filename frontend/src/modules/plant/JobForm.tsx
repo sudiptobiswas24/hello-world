@@ -52,12 +52,17 @@ export default function JobForm() {
             { key: "minutes", label: "Minutes", kind: "decimal", places: 2 },
           ] },
         { label: "Issue spares", path: "spares", permission: "manufacturing.change_maintenancejob", when: open,
-          done: "Spares issued", fields: [
+          done: "Spares issued", fields: (row) => [
             { key: "warehouse", label: "From store", kind: "ref", ref: WAREHOUSE },
             { key: "item", label: "Spare", kind: "pick", pick: ITEM },
             { key: "quantity", label: "Quantity", kind: "decimal" },
+            // Where on the machine it goes, so its life can be read off the gaps between placements.
+            ...(row.machine ? [{ key: "position", label: "Goes to", kind: "ref" as const, hint: "The position on the machine, if it has one",
+              ref: { endpoint: "/api/manufacturing/machine-positions/", permission: "manufacturing.view_machineposition",
+                query: { machine: String(row.machine) }, label: (position: Row) => `${String(position.code)} ${String(position.name ?? "")}`.trim() } }] : []),
           ],
-          body: (values) => ({ warehouse: values.warehouse, lines: [{ item: values.item, quantity: values.quantity }] }) },
+          body: (values) => ({ warehouse: values.warehouse,
+            lines: [{ item: values.item, quantity: values.quantity, ...(values.position ? { position: values.position } : {}) }] }) },
         { label: "Cancel", path: "cancel", permission: "manufacturing.change_maintenancejob", when: open, danger: true,
           done: "Cancelled", fields: [{ key: "reason", label: "Why", kind: "text" }] },
       ]}

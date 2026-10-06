@@ -1,9 +1,28 @@
-import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
+import { RecordScreen, type FieldDef, type PanelDef } from "../../views/RecordScreen";
 
 type Row = Record<string, unknown>;
 
 const ACCOUNT: FieldDef["pick"] = { endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
 const REASON: FieldDef["ref"] = { endpoint: "/api/inventory/adjustment-reasons/", permission: "inventory.view_adjustmentreason", label: (row: Row) => String(row.name || row.code) };
+const PACKING: FieldDef["pick"] = { endpoint: "/api/inventory/items/", permission: "inventory.view_item", label: (row: Row) => `${String(row.sku)} · ${String(row.name)}` };
+/** What a bale of this sack takes from stores when it is pressed: the cover, the straps, the label. */
+const PACKING_PANEL: PanelDef = {
+  title: "A bale of it takes", permission: "manufacturing.view_packingline",
+  endpoint: "/api/manufacturing/packing-lines/", query: (item) => ({ item: String(item.id) }),
+  columns: [
+    { key: "packing_item_sku", label: "Material", width: "10rem" },
+    { key: "packing_item_name", label: "" },
+    { key: "quantity", label: "A bale", kind: "quantity", width: "8rem" },
+    { key: "uom", label: "", width: "5rem" },
+  ],
+  adder: { label: "Add packing", permission: "manufacturing.add_packingline", url: () => "/api/manufacturing/packing-lines/",
+    fields: [
+      { key: "packing_item", label: "Material", kind: "pick", pick: PACKING },
+      { key: "quantity", label: "A bale takes", kind: "decimal", places: 4 },
+    ],
+    body: (values, item) => ({ item: item.id, packing_item: values.packing_item, quantity: values.quantity }) },
+  remover: { permission: "manufacturing.delete_packingline", url: (row) => `/api/manufacturing/packing-lines/${row.id}/` },
+};
 const UNITOFMEASURE: FieldDef["ref"] = { endpoint: "/api/core/units-of-measure/", permission: "core.view_unitofmeasure", label: (row: Row) => String(row.code) };
 
 /** Something bought, made, kept or sold: how it is counted, tracked and valued, and where its value posts. */
@@ -22,6 +41,8 @@ export default function ItemForm() {
         { key: "name", label: "Name" },
         { key: "description", label: "Description", kind: "textarea" },
         { key: "item_type", label: "Item type", kind: "choice", choices: [["goods", "Goods"], ["service", "Service"]], initial: "goods" },
+        { key: "stock_class", label: "Stock class", kind: "choice", hint: "How the bank's stock statement groups it; blank shows as unclassified",
+          choices: [["", "Unclassified"], ["raw_material", "Raw material"], ["packing", "Packing material"], ["consumable", "Stores and spares"], ["semi_finished", "Semi-finished"], ["finished", "Finished goods"]], initial: "" },
         { key: "uom", label: "Counted in", kind: "ref", ref: UNITOFMEASURE, hint: "Fixed once stock has moved" },
         { key: "track_inventory", label: "Track inventory", kind: "bool", initial: true, hint: "Services and non-stocked items should be False so they never affect stock levels" },
         { key: "tracking", label: "Tracking", kind: "choice", choices: [["none", "Not tracked"], ["lot", "By lot or batch"], ["serial", "By serial number"]], initial: "none", createOnly: true, hint: "Set when the item is made: stock already held would name no batch" },
@@ -44,7 +65,7 @@ export default function ItemForm() {
             { key: "reason", label: "Reason", kind: "ref", ref: REASON },
           ] },
       ]}
-      panels={[{
+      panels={[PACKING_PANEL, {
         // Other units it is bought or sold in, and how many of its own
         // unit each holds: a bale of 500 sacks, a 25 kg bag.
         title: "Other units", permission: "inventory.view_itemunit", endpoint: "/api/inventory/item-units/",

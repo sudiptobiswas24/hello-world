@@ -163,6 +163,24 @@ EMAIL_HOST_PASSWORD=<an app password, not the mailbox password>
 DEFAULT_FROM_EMAIL=accounts@deccanpolysacks.in
 ```
 
+## Morning checks
+
+Nothing in the application runs by itself. Each login's home page shows
+what fell due for them (maintenance and calibration due, licences to
+renew, bills past their MSME days, attendance unmarked, deliveries not
+signed for, freight unbilled, invoices and bills past due, drafts nobody
+posted, stock under its reorder level, meters unread, complaint actions
+overdue). To have the same mailed each morning, give the server one cron
+line, at six:
+
+```
+0 6 * * * cd /srv/erp && docker compose run --rm web python manage.py morning_checks
+```
+
+One mail a person with something waiting and an address; nobody else
+hears. Without a mail server (above) the command prints the lines
+instead, and says so. `--dry-run` prints without sending.
+
 ## Backups
 
 Every night at `BACKUP_AT` the `backup` container writes

@@ -202,6 +202,10 @@ def pack(warehouse, packed_by, rows, on_date=None, gross_kg=None):
     )
     for lot, quantity in asked.items():
         BaleLine.objects.create(bale=bale, lot=lot, quantity=quantity)
+    # The cover, straps and label come off the shelf with the bale; refused, the bale is too.
+    from .packing import consume_packing
+
+    consume_packing(bale, on_date)
     return bale
 
 

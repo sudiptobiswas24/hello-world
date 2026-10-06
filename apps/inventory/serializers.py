@@ -48,7 +48,7 @@ class ItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = Item
         fields = [
-            "id", "sku", "name", "description", "item_type", "uom",
+            "id", "sku", "name", "description", "item_type", "stock_class", "uom",
             "track_inventory", "tracking", "costing_method", "standard_cost",
             "sale_price", "inventory_account", "cogs_account", "is_active",
             "hsn_code",
