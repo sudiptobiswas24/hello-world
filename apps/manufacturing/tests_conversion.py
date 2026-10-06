@@ -172,15 +172,16 @@ class BookingTimeChargesTheRunTests(ConversionTestCase):
         self.assertEqual(order.conversion_cost(), Decimal("5400.00"))
 
     def test_a_booking_against_another_runs_operation(self):
+        # Refused as it is written, not left as a draft that fails later.
         order = self.routed()
         other = self.routed("1000")
-        booking = TimeBooking.objects.create(
-            work_order=order, operation=other.operations.get(),
-            booking_date=TODAY, minutes=Decimal("60"),
-        )
         with self.assertRaises(ValidationError) as caught:
-            booking.post()
+            TimeBooking.objects.create(
+                work_order=order, operation=other.operations.get(),
+                booking_date=TODAY, minutes=Decimal("60"),
+            )
         self.assertIn("belongs to", str(caught.exception))
+        self.assertFalse(TimeBooking.objects.exists())
 
     def test_time_cannot_be_booked_against_a_closed_run(self):
         order = self.routed()

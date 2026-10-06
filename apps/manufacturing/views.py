@@ -112,6 +112,7 @@ from .serializers import (
     JobWorkLossSerializer,
     MaterialIssueLineSerializer,
     MaterialIssueSerializer,
+    OperationChoiceSerializer,
     ProductionByproductSerializer,
     ProductionEntrySerializer,
     DowntimeReasonSerializer,
@@ -1436,9 +1437,13 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class MaterialIssueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = MaterialIssue.objects.select_related(
-        "work_order", "warehouse"
-    ).prefetch_related("lines")
+        "work_order__item", "warehouse"
+    ).prefetch_related("lines__item", "lines__uom", "lines__lot")
     serializer_class = MaterialIssueSerializer
+    filter_fields = ["work_order", "posted", "direction", "warehouse"]
+    search_fields = ["number", "work_order__number", "work_order__item__sku", "memo"]
+    date_field = "issue_date"
+    ordering_fields = ["issue_date", "number"]
     action_permission_map = {
         "post": "manufacturing.change_materialissue",
         "void": "manufacturing.change_materialissue",
@@ -1461,15 +1466,20 @@ class MaterialIssueViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class MaterialIssueLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = MaterialIssueLine.objects.select_related("item", "issue")
+    queryset = MaterialIssueLine.objects.select_related("item", "issue", "uom", "lot")
     serializer_class = MaterialIssueLineSerializer
+    filter_fields = ["issue"]
 
 
 class ProductionEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ProductionEntry.objects.select_related(
-        "work_order", "warehouse", "work_centre"
-    ).prefetch_related("byproducts")
+        "work_order__item", "warehouse", "work_centre", "uom", "lot", "machine"
+    ).prefetch_related("byproducts__item", "byproducts__uom", "byproducts__lot")
     serializer_class = ProductionEntrySerializer
+    filter_fields = ["work_order", "posted", "machine", "work_centre", "warehouse"]
+    search_fields = ["number", "work_order__number", "work_order__item__sku", "memo"]
+    date_field = "entry_date"
+    ordering_fields = ["entry_date", "number"]
     action_permission_map = {
         "post": "manufacturing.change_productionentry",
         "void": "manufacturing.change_productionentry",
@@ -1492,15 +1502,20 @@ class ProductionEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class ProductionByproductViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = ProductionByproduct.objects.select_related("item", "entry")
+    queryset = ProductionByproduct.objects.select_related("item", "entry", "uom", "lot")
     serializer_class = ProductionByproductSerializer
+    filter_fields = ["entry"]
 
 
 class TimeBookingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = TimeBooking.objects.select_related(
-        "work_order", "operation", "operation__work_centre"
+        "work_order", "operation", "operation__work_centre", "shift", "machine"
     )
     serializer_class = TimeBookingSerializer
+    filter_fields = ["work_order", "posted", "machine", "shift", "operation"]
+    search_fields = ["number", "work_order__number", "memo"]
+    date_field = "booking_date"
+    ordering_fields = ["booking_date", "number"]
     action_permission_map = {
         "post": "manufacturing.change_timebooking",
         "void": "manufacturing.change_timebooking",
@@ -1520,6 +1535,19 @@ class TimeBookingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             on_date=request.data.get("on_date"), memo=request.data.get("memo", ""),
         )
         return Response(self.get_serializer(booking).data)
+
+
+class WorkOrderOperationViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    A run's steps, to pick one when booking time against it. Read-only:
+    the steps come from the routing when the run is released.
+    """
+
+    queryset = WorkOrderOperation.objects.select_related("work_order__item").order_by(
+        "work_order__number", "sequence")
+    serializer_class = OperationChoiceSerializer
+    filter_fields = ["work_order", "work_centre", "work_order__status"]
+    search_fields = ["work_order__number", "name", "work_order__item__sku"]
 
 
 class ShiftViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -1996,6 +2024,7 @@ class ProductionScrapViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = ProductionScrap.objects.select_related("entry", "reason", "operation")
     serializer_class = ProductionScrapSerializer
+    filter_fields = ["entry", "reason"]
 
     def perform_create(self, serializer):
         _run(serializer.save)

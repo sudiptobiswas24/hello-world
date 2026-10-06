@@ -759,6 +759,20 @@ class WorkCentreSerializer(serializers.ModelSerializer):
         return obj.conversion_rate_per_hour()
 
 
+class OperationChoiceSerializer(serializers.ModelSerializer):
+    """A run's step, named the way a person picks it: which run, which step, making what."""
+
+    label = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkOrderOperation
+        fields = ["id", "work_order", "sequence", "name", "label"]
+        read_only_fields = fields
+
+    def get_label(self, row):
+        return f"{row.work_order.number} · {row.sequence} {row.name} · {row.work_order.item.sku}"
+
+
 class WorkOrderOperationSerializer(serializers.ModelSerializer):
     planned_hours = serializers.SerializerMethodField()
 
@@ -871,37 +885,67 @@ class WorkOrderSerializer(serializers.ModelSerializer):
 
 
 class MaterialIssueLineSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = MaterialIssueLine
         fields = ["id", "issue", "item", "quantity", "uom", "lot", "bin",
-                  "returns_line", "unit_cost", "stock_movement", "line_number"]
+                  "returns_line", "unit_cost", "stock_movement", "line_number",
+                  "item_label", "uom_code", "lot_code"]
         read_only_fields = ["unit_cost", "stock_movement"]
 
 
 class MaterialIssueSerializer(serializers.ModelSerializer):
     lines = MaterialIssueLineSerializer(many=True, read_only=True)
+    work_order_number = serializers.CharField(source="work_order.number", read_only=True)
+    makes = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+
+    def get_makes(self, row):
+        return f"{row.work_order.item.sku} · {row.work_order.item.name}"
 
     class Meta:
         model = MaterialIssue
         fields = ["id", "number", "work_order", "direction", "issue_date",
                   "warehouse", "memo", "posted", "posted_at", "posted_value",
                   "journal_entry", "voided_entry", "voided_at", "lines",
-            "contractor",
+            "contractor", "work_order_number", "makes", "warehouse_name",
         ]
         read_only_fields = ["number", "posted", "posted_at", "posted_value",
                             "journal_entry", "voided_entry", "voided_at"]
 
 
 class ProductionByproductSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = ProductionByproduct
         fields = ["id", "entry", "item", "quantity", "uom", "lot", "bin",
-                  "unit_value", "stock_movement", "line_number"]
+                  "unit_value", "stock_movement", "line_number", "item_label", "uom_code", "lot_code"]
         read_only_fields = ["unit_value", "stock_movement"]
 
 
 class ProductionEntrySerializer(serializers.ModelSerializer):
     byproducts = ProductionByproductSerializer(many=True, read_only=True)
+    work_order_number = serializers.CharField(source="work_order.number", read_only=True)
+    makes = serializers.SerializerMethodField()
+    warehouse_name = serializers.CharField(source="warehouse.name", read_only=True)
+    uom_code = serializers.CharField(source="uom.code", read_only=True)
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+    machine_code = serializers.CharField(source="machine.code", read_only=True, default="")
+
+    def get_makes(self, row):
+        return f"{row.work_order.item.sku} · {row.work_order.item.name}"
 
     class Meta:
         model = ProductionEntry
@@ -909,7 +953,8 @@ class ProductionEntrySerializer(serializers.ModelSerializer):
                   "quantity_produced", "quantity_scrapped", "uom", "lot", "bin",
                   "work_centre", "machine", "memo", "posted", "posted_at", "posted_value",
                   "unit_cost", "stock_movement", "journal_entry", "voided_entry",
-                  "voided_at", "byproducts"]
+                  "voided_at", "byproducts", "work_order_number", "makes", "warehouse_name",
+                  "uom_code", "lot_code", "machine_code"]
         read_only_fields = ["number", "posted", "posted_at", "posted_value",
                             "unit_cost", "stock_movement", "journal_entry",
                             "voided_entry", "voided_at"]
@@ -917,6 +962,21 @@ class ProductionEntrySerializer(serializers.ModelSerializer):
 
 class TimeBookingSerializer(serializers.ModelSerializer):
     hours = serializers.SerializerMethodField()
+    work_order_number = serializers.CharField(source="work_order.number", read_only=True)
+    operation_name = serializers.SerializerMethodField()
+    shift_name = serializers.CharField(source="shift.name", read_only=True, default="")
+    machine_code = serializers.CharField(source="machine.code", read_only=True, default="")
+
+    def get_operation_name(self, row):
+        return f"{row.operation.sequence} {row.operation.name}"
+
+    def validate(self, attrs):
+        # The step already says which run it is a step of: a booking may
+        # name the step alone. One naming both, and not agreeing, is
+        # refused when it posts.
+        if "work_order" not in attrs and attrs.get("operation") is not None and self.instance is None:
+            attrs["work_order"] = attrs["operation"].work_order
+        return attrs
 
     class Meta:
         model = TimeBooking
@@ -924,7 +984,8 @@ class TimeBookingSerializer(serializers.ModelSerializer):
                   "started_at", "shift", "machine", "operators", "minutes", "hours",
                   "quantity_completed", "memo", "hourly_rate", "posted",
                   "posted_at", "posted_value", "journal_entry", "voided_entry",
-                  "voided_at"]
+                  "voided_at", "work_order_number", "operation_name", "shift_name", "machine_code"]
+        extra_kwargs = {"work_order": {"required": False}}
         read_only_fields = ["number", "hourly_rate", "posted", "posted_at",
                             "posted_value", "journal_entry", "voided_entry",
                             "voided_at"]
@@ -1009,9 +1070,11 @@ class ScrapReasonSerializer(serializers.ModelSerializer):
 
 
 class ProductionScrapSerializer(serializers.ModelSerializer):
+    reason_name = serializers.CharField(source="reason.name", read_only=True)
+
     class Meta:
         model = ProductionScrap
-        fields = ["id", "entry", "reason", "operation", "quantity"]
+        fields = ["id", "entry", "reason", "operation", "quantity", "reason_name"]
 
 
 class OperationReportSerializer(serializers.ModelSerializer):

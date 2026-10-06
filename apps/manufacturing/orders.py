@@ -3077,6 +3077,12 @@ class TimeBooking(AuditModel):
                     f"Cannot modify {self} once it is posted. Void it and book "
                     "again."
                 )
+        if (self.operation_id is not None and self.work_order_id is not None
+                and self.operation.work_order_id != self.work_order_id):
+            raise ValidationError(
+                f"{self.operation} belongs to {self.operation.work_order}, not "
+                f"to {self.work_order}."
+            )
         if self.operation_id is not None and self.operation.is_outside:
             # Refused where it is first knowable, which is here and not
             # at posting: a draft booking of our hours against a step a

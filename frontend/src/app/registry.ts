@@ -146,6 +146,24 @@ export const MODULES: Module[] = [
         keywords: "dispatch loom extruder queue", load: () => import("../modules/production/Schedule"),
       },
       {
+        path: "issues", label: "Material issues", permission: "manufacturing.view_materialissue",
+        create: "manufacturing.add_materialissue", also: ["manufacturing.view_workorder"],
+        keywords: "issue material to run return store consume", load: () => import("../modules/floor/Issues"),
+        detail: () => import("../modules/floor/IssueForm"),
+      },
+      {
+        path: "output", label: "Output", permission: "manufacturing.view_productionentry",
+        create: "manufacturing.add_productionentry", also: ["manufacturing.view_workorder"],
+        keywords: "production entry made good scrap", load: () => import("../modules/floor/Entries"),
+        detail: () => import("../modules/floor/EntryForm"),
+      },
+      {
+        path: "time", label: "Time booked", permission: "manufacturing.view_timebooking",
+        create: "manufacturing.add_timebooking", also: ["manufacturing.view_workorderoperation"],
+        keywords: "hours minutes labour machine booking", load: () => import("../modules/floor/Bookings"),
+        detail: () => import("../modules/floor/BookingForm"),
+      },
+      {
         path: "promise", label: "When can we promise?", permission: "planning.view_plannedorder",
         also: ["inventory.view_warehouse"],
         keywords: "atp ctp delivery date available to promise", load: () => import("../modules/production/WhenCanWePromise"),
