@@ -126,6 +126,10 @@ ROLES = {
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
         *view("manufacturing", "costsheet"),
+        # A rep books their customer's schedule, index clause and supplied
+        # material on the orders they took; billing the variation is accounts'.
+        *full("sales", "calloff", "pricevariationclause", "supplieditem"),
+        *view("sales", "priceindex", "priceindexvalue"),
         # deliberately NOT sales.post_invoice
     ],
     "AR Manager": [
@@ -149,6 +153,10 @@ ROLES = {
         *crud("sales", "recurringinvoice"),
         *crud("sales", "recurringinvoiceline"),
         *crud("sales", "dunningnotice", actions=("view",)),
+        # The terms a contract carries past its price: the polymer index it
+        # moves with, the customer's schedule, the material they send.
+        *full("sales", "priceindex", "priceindexvalue", "pricevariationclause", "pricevariationbill",
+              "calloff", "supplieditem"),
         *crud("sales", "invoicewriteoff", actions=("view",)),
         *crud("sales", "depositapplication", actions=("view",)),
         *crud("accounting", "payment"),
@@ -333,7 +341,7 @@ ROLES = {
         *view("manufacturing", "crewassignment", "maintenancejob", "maintenanceschedule",
               "productionentry", "downtime"),
         *view("inventory", "stockmovement", "stockposition", "stockreservation"),
-        *view("sales", "salesorder", "salesorderline", "calloff", "quotation"),
+        *view("sales", "salesorder", "salesorderline", "calloff", "quotation", "supplieditem"),
         *view("purchasing", "purchaseorder", "purchaseorderline", "vendorprice"),
         *crud("purchasing", "purchaserequisition", actions=("add", "view")),
         *crud("purchasing", "purchaserequisitionline", actions=("add", "view")),

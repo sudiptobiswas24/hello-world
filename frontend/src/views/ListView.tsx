@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 
 import { ApiError, list, type Page, type Query } from "../api/client";
+import { useAct } from "../api/hooks";
 import { count, date, money, quantity } from "../lib/format";
 import { useAccess } from "../auth/me";
 import { ErrorPanel } from "../shell/ErrorPanel";
@@ -39,6 +40,17 @@ export interface ListViewProps<T> {
   noun: [string, string];
   /** A "New" button for whoever holds the permission. */
   create?: { href: string; permission: string };
+  /** A run over many records (send the reminders now due), asked first in words. */
+  actions?: ListAction[];
+}
+
+export interface ListAction {
+  label: string;
+  permission: string;
+  /** Where it posts. */
+  path: string;
+  confirm: string;
+  done: string | ((result: unknown) => string);
 }
 
 const SIZES = [50, 100, 200];
@@ -73,8 +85,9 @@ export function cell<T>(column: Column<T>, row: T): ReactNode {
  * ahead so paging forward is immediate.
  */
 export function ListView<T>(props: ListViewProps<T>) {
-  const { title, endpoint, columns, facets = [], rowKey, rowHref, searchHint, fixed, noun, create } = props;
+  const { title, endpoint, columns, facets = [], rowKey, rowHref, searchHint, fixed, noun, create, actions = [] } = props;
   const { can } = useAccess();
+  const act = useAct<unknown>();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -190,6 +203,12 @@ export function ListView<T>(props: ListViewProps<T>) {
         {create && can(create.permission) && (
           <Link className="btn primary" to={create.href}>New</Link>
         )}
+        {actions.filter((action) => can(action.permission)).map((action) => (
+          <button key={action.label} type="button" className="btn" disabled={act.pending} onClick={() => {
+            if (!window.confirm(action.confirm)) return;
+            void act.run("POST", action.path, {}, { done: action.done });
+          }}>{action.label}</button>
+        ))}
         <div className="search">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
           <input

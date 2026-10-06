@@ -31,6 +31,8 @@ class ModelPermissions(DjangoModelPermissions):
         """
         action = getattr(view, "action", None)
         required = getattr(view, "action_permission_map", {}).get(action)
+        if isinstance(required, dict):
+            required = required.get(request.method)
         if not required:
             return super().has_permission(request, view)
         user = request.user
@@ -52,6 +54,11 @@ class ActionPermission(BasePermission):
 
         action_permission_map = {"post_invoice": "sales.post_invoice"}
 
+    An action that both answers a read and takes a write maps each method:
+
+        action_permission_map = {"values": {"GET": "sales.view_priceindexvalue",
+                                            "POST": "sales.add_priceindexvalue"}}
+
     Actions not listed are unaffected by this class (DjangoModelPermissions
     still applies). This is deliberately model-level, not object-level: it
     answers "can this user post invoices at all", not "can this user post
@@ -61,6 +68,8 @@ class ActionPermission(BasePermission):
 
     def has_permission(self, request, view):
         required = getattr(view, "action_permission_map", {}).get(getattr(view, "action", None))
+        if isinstance(required, dict):
+            required = required.get(request.method)
         if not required:
             return True
         return bool(request.user and request.user.has_perm(required))

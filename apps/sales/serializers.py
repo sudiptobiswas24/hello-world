@@ -30,6 +30,8 @@ from .models import (
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     # What the line is called: its description, else its charge or item.
     label = serializers.CharField(read_only=True)
+    order_number = serializers.CharField(source="order.number", read_only=True)
+    customer_name = serializers.CharField(source="order.customer.name", read_only=True)
     quantity_shipped = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
     quantity_invoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
     quantity_uninvoiced = serializers.DecimalField(max_digits=18, decimal_places=4, read_only=True)
@@ -44,6 +46,7 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
             "quantity_open", "closed_short_at", "closed_short_reason",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
             "charge", "description", "warehouse", "delivery_date", "label",
+            "order_number", "customer_name",
         ]
 
 
@@ -76,9 +79,15 @@ class SalesOrderSerializer(serializers.ModelSerializer):
 
 
 class SuppliedItemSerializer(serializers.ModelSerializer):
+    order_number = serializers.CharField(source="order.number", read_only=True)
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = SuppliedItem
-        fields = ["id", "order", "item"]
+        fields = ["id", "order", "item", "order_number", "item_label"]
         validators = []
 
 
@@ -176,9 +185,14 @@ class DeliverySerializer(serializers.ModelSerializer):
 
 
 class PriceListItemSerializer(serializers.ModelSerializer):
+    item_label = serializers.SerializerMethodField()
+
+    def get_item_label(self, row):
+        return f"{row.item.sku} · {row.item.name}"
+
     class Meta:
         model = PriceListItem
-        fields = ["id", "price_list", "item", "min_quantity", "unit_price"]
+        fields = ["id", "price_list", "item", "min_quantity", "unit_price", "item_label"]
 
 
 class PriceListSerializer(serializers.ModelSerializer):
@@ -245,9 +259,14 @@ class DunningLevelSerializer(serializers.ModelSerializer):
 
 
 class DunningNoticeSerializer(serializers.ModelSerializer):
+    invoice_number = serializers.CharField(source="invoice.number", read_only=True)
+    customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
+    level_name = serializers.CharField(source="level.name", read_only=True)
+
     class Meta:
         model = DunningNotice
-        fields = ["id", "invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at"]
+        fields = ["id", "invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at",
+                  "invoice_number", "customer_name", "level_name"]
         read_only_fields = fields
 
 
@@ -259,10 +278,11 @@ class CommissionPlanSerializer(serializers.ModelSerializer):
 
 class SalesRepSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="party.name", read_only=True)
+    plan_name = serializers.CharField(source="plan.name", read_only=True, default="")
 
     class Meta:
         model = SalesRep
-        fields = ["id", "party", "name", "plan", "is_active"]
+        fields = ["id", "party", "name", "plan", "is_active", "plan_name"]
 
 
 class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
@@ -277,13 +297,14 @@ class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.Model
 
 class RecurringInvoiceSerializer(serializers.ModelSerializer):
     lines = RecurringInvoiceLineSerializer(many=True, read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
 
     class Meta:
         model = RecurringInvoice
         fields = [
             "id", "code", "customer", "receivable_account", "currency", "payment_terms",
             "sales_rep", "interval", "interval_count", "start_date", "end_date",
-            "next_run_date", "auto_post", "is_active", "lines",
+            "next_run_date", "auto_post", "is_active", "lines", "customer_name",
         ]
         read_only_fields = ["next_run_date"]
 

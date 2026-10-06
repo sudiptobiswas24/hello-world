@@ -18,7 +18,7 @@ still carries the business, so a problem costs a day, not a month-end.
 
 | Desk | Role to give them | Their flows to run every day |
 |---|---|---|
-| Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging; a new customer's delivery address and contact, on its page |
+| Sales | Sales Rep, AR Manager | order → delivery → invoice → money received; a credit note; aging; a new customer's delivery address and contact, on its page; a price list's breaks; a polymer clause billed at the month's index; a call-off against a schedule; the reminders as they fall due |
 | Dispatch | Warehouse Staff | ship an order, choosing batches; a customer return |
 | Purchasing | Purchasing Clerk | purchase order → confirm; close a short line |
 | Stores | Warehouse Staff, Stores Manager | goods in with batch numbers; stock on hand and its movements; a count of one rack, posted by the manager; a transfer between warehouses; fabric out to the laminator on a job-work challan, and what it lost; a customer's own granules received and the unused sent back |

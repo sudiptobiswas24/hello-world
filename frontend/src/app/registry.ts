@@ -96,6 +96,77 @@ export const MODULES: Module[] = [
         path: "revenue", label: "Sales report", permission: "sales.view_invoice",
         keywords: "revenue turnover report", load: () => import("../modules/sales/Revenue"),
       },
+      {
+        path: "call-offs", label: "Call-offs", permission: "sales.view_calloff",
+        create: "sales.add_calloff",
+        keywords: "schedule release delivery call off", load: () => import("../modules/sales/CallOffs"),
+        detail: () => import("../modules/sales/CallOffForm"),
+      },
+      {
+        path: "price-lists", label: "Price lists", permission: "sales.view_pricelist",
+        create: "sales.add_pricelist",
+        keywords: "price list rate quantity break", load: () => import("../modules/sales/PriceLists"),
+        detail: () => import("../modules/sales/PriceListForm"),
+      },
+      {
+        path: "price-indices", label: "Price indices", permission: "sales.view_priceindex",
+        create: "sales.add_priceindex",
+        keywords: "polymer index pp price variation", load: () => import("../modules/sales/PriceIndices"),
+        detail: () => import("../modules/sales/PriceIndexForm"),
+      },
+      {
+        path: "price-clauses", label: "Price variation clauses", permission: "sales.view_pricevariationclause",
+        create: "sales.add_pricevariationclause",
+        keywords: "pvc polymer escalation clause", load: () => import("../modules/sales/PriceClauses"),
+        detail: () => import("../modules/sales/PriceClauseForm"),
+      },
+      {
+        path: "variation-bills", label: "Price variation bills", permission: "sales.view_pricevariationbill",
+        also: ["sales.view_salesorder"],
+        keywords: "pvc escalation debit credit polymer", load: () => import("../modules/sales/VariationBills"),
+      },
+      {
+        path: "supplied-items", label: "Material the customer sends", permission: "sales.view_supplieditem",
+        create: "sales.add_supplieditem",
+        keywords: "job work customer supplied material", load: () => import("../modules/sales/SuppliedItems"),
+        detail: () => import("../modules/sales/SuppliedItemForm"),
+      },
+      {
+        path: "recurring", label: "Recurring invoices", permission: "sales.view_recurringinvoice",
+        create: "sales.add_recurringinvoice",
+        keywords: "rent contract subscription repeat", load: () => import("../modules/sales/RecurringInvoices"),
+        detail: () => import("../modules/sales/RecurringInvoiceForm"),
+      },
+      {
+        path: "reminders", label: "Payment reminders", permission: "sales.view_dunningnotice",
+        keywords: "dunning overdue reminder statement chase", load: () => import("../modules/sales/Reminders"),
+      },
+      {
+        path: "reminder-levels", label: "Reminder levels", permission: "sales.view_dunninglevel",
+        create: "sales.add_dunninglevel",
+        keywords: "dunning level template email", load: () => import("../modules/sales/DunningLevels"),
+        detail: () => import("../modules/sales/DunningLevelForm"),
+      },
+      {
+        path: "reps", label: "Sales reps", permission: "sales.view_salesrep",
+        create: "sales.add_salesrep",
+        keywords: "salesman representative commission", load: () => import("../modules/sales/SalesReps"),
+        detail: () => import("../modules/sales/SalesRepForm"),
+      },
+      {
+        path: "commission-plans", label: "Commission plans", permission: "sales.view_commissionplan",
+        create: "sales.add_commissionplan",
+        keywords: "commission percent basis", load: () => import("../modules/sales/CommissionPlans"),
+        detail: () => import("../modules/sales/CommissionPlanForm"),
+      },
+      {
+        path: "commission", label: "Commission", permission: "sales.view_commissionplan",
+        keywords: "commission earned rep", load: () => import("../modules/sales/Commission"),
+      },
+      {
+        path: "bad-debts", label: "Bad debts", permission: "sales.view_invoice",
+        keywords: "write off bad debt recovered", load: () => import("../modules/sales/BadDebt"),
+      },
     ],
   },
   {

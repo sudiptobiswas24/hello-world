@@ -130,6 +130,8 @@ export interface RecordScreenProps {
   /** Where to go after a delete, and after a create (default: the new record). */
   afterCreate?: (record: Row) => string;
   note?: (record: Row | undefined) => ReactNode;
+  /** Below the panels: an editor the record shares with a document (its trade lines). */
+  below?: (record: Row, editable: boolean) => ReactNode;
 }
 
 function blank(fields: FieldDef[]): Row {
@@ -293,7 +295,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], panels = [], permissions, editable, afterCreate, note } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], panels = [], permissions, editable, afterCreate, note, below } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -379,6 +381,7 @@ export function RecordScreen(props: RecordScreenProps) {
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
       </Sheet>
       {saved && panels.map((panel) => <RecordPanel key={panel.title} panel={panel} record={saved} />)}
+      {saved && below?.(saved, Boolean(permissions.change && can(permissions.change)) && (!editable || editable(saved)))}
     </article>
   );
 }

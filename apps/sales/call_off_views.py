@@ -12,18 +12,22 @@ from .scoping import CustomerScopedMixin
 
 
 class CallOffSerializer(serializers.ModelSerializer):
+    line_label = serializers.SerializerMethodField()
+
+    def get_line_label(self, row):
+        line = row.line
+        return f"{line.order.number} · {line.order.customer.name} · {line.label()}"
+
     class Meta:
         model = CallOff
-        fields = ["id", "line", "due_on", "quantity", "reference"]
+        fields = ["id", "line", "due_on", "quantity", "reference", "line_label"]
 
 
 class CallOffViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
-    extra_params = ('line',)
     customer_path = "line__order__customer"
-    queryset = CallOff.objects.select_related("line")
+    queryset = CallOff.objects.select_related("line__order__customer", "line__item", "line__charge")
     serializer_class = CallOffSerializer
-
-    def get_queryset(self):
-        rows = super().get_queryset()
-        line = self.request.query_params.get("line")
-        return rows.filter(line_id=line) if line else rows
+    filter_fields = ["line", "line__order", "line__order__customer"]
+    search_fields = ["reference", "line__order__number", "line__order__customer__name", "line__item__sku"]
+    date_field = "due_on"
+    ordering_fields = ["due_on"]

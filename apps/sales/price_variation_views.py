@@ -30,7 +30,7 @@ from .price_variation import (
     bill_variation,
     rows_for,
 )
-from .scoping import CustomerScopedMixin
+from .scoping import UNLIMITED, CustomerScopedMixin, carried_by, rep_limit
 
 
 def _run(callable_, *args, **kwargs):
@@ -54,10 +54,17 @@ class PriceIndexSerializer(serializers.ModelSerializer):
 
 
 class PriceClauseSerializer(serializers.ModelSerializer):
+    index_code = serializers.CharField(source="index.code", read_only=True)
+    line_label = serializers.SerializerMethodField()
+
+    def get_line_label(self, row):
+        line = row.order_line
+        return f"{line.order.number} · {line.order.customer.name} · {line.label()}"
+
     class Meta:
         model = PriceVariationClause
         fields = ["id", "order_line", "index", "base_value", "polymer_kg_per_unit",
-                  "pass_through_percent", "threshold_percent"]
+                  "pass_through_percent", "threshold_percent", "index_code", "line_label"]
 
 
 def _row(row):
@@ -82,8 +89,10 @@ def _bill(bill):
 class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PriceIndex.objects.all()
     serializer_class = PriceIndexSerializer
+    search_fields = ["code", "name"]
     http_method_names = ["get", "post", "head", "options"]
-    action_permission_map = {"values": "sales.add_priceindexvalue"}
+    action_permission_map = {"values": {"GET": "sales.view_priceindexvalue", "POST": "sales.add_priceindexvalue",
+                                        "HEAD": "sales.view_priceindexvalue", "OPTIONS": "sales.view_priceindexvalue"}}
 
     @action(detail=True, methods=["get", "post"])
     def values(self, request, pk=None):
@@ -105,13 +114,23 @@ class PriceIndexViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class PriceClauseViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     customer_path = "order_line__order__customer"
-    queryset = PriceVariationClause.objects.select_related("index", "order_line")
+    queryset = PriceVariationClause.objects.select_related(
+        "index", "order_line__order__customer", "order_line__item", "order_line__charge")
     serializer_class = PriceClauseSerializer
+    filter_fields = ["order_line", "order_line__order", "index"]
+    search_fields = ["order_line__order__number", "order_line__order__customer__name", "index__code"]
 
 
 class PriceVariationBillViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.GenericViewSet):
     customer_path = "order__customer"
     queryset = PriceVariationBill.objects.select_related("order")
+
+    def _order(self, pk):
+        """The order asked about, among the ones this login may see."""
+        rep = rep_limit(self.request.user)
+        orders = SalesOrder.objects.all() if rep is UNLIMITED else SalesOrder.objects.filter(
+            carried_by(rep, "customer"))
+        return get_object_or_404(orders, pk=pk)
     action_permission_map = {"cancel": "sales.change_pricevariationbill",
                              "preview": "sales.view_pricevariationbill"}
 
@@ -123,7 +142,7 @@ class PriceVariationBillViewSet(CustomerScopedMixin, AuditableViewSetMixin, view
 
     def create(self, request):
         data = request.data
-        order = get_object_or_404(SalesOrder, pk=data.get("order"))
+        order = self._order(data.get("order"))
         account = get_object_or_404(Account, pk=data.get("receivable_account"))
         start, end = _dates(data)
         bill = _run(bill_variation, order, start, end, account,
@@ -132,7 +151,7 @@ class PriceVariationBillViewSet(CustomerScopedMixin, AuditableViewSetMixin, view
 
     @action(detail=False, methods=["get"])
     def preview(self, request):
-        order = get_object_or_404(SalesOrder, pk=request.query_params.get("order"))
+        order = self._order(request.query_params.get("order"))
         start, end = _dates(request.query_params)
         return Response([_row(row) for row in _run(rows_for, order, start, end)])
 

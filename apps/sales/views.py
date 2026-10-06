@@ -93,7 +93,7 @@ def _order_lines():
 class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     extra_params = ('to_ship',)
     search_fields = ["number", "reference", "customer__code", "customer__name"]
-    filter_fields = ["customer", "status", "sales_rep"]
+    filter_fields = ["customer", "status", "sales_rep", "is_job_work"]
     date_field = "order_date"
     ordering_fields = ["order_date", "number"]
 
@@ -213,6 +213,8 @@ class SalesOrderLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets
     customer_path = "order__customer"
     queryset = _order_lines().select_related("order__customer__tax_profile")
     serializer_class = SalesOrderLineSerializer
+    filter_fields = ["order", "order__status", "order__customer", "item", "order__is_job_work"]
+    search_fields = ["order__number", "order__customer__name", "item__sku", "item__name"]
     action_permission_map = {"close_short": "sales.change_salesorder",
                              "reopen": "sales.change_salesorder"}
 
@@ -253,6 +255,8 @@ class SuppliedItemViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.M
 
     queryset = SuppliedItem.objects.select_related("order", "item")
     serializer_class = SuppliedItemSerializer
+    filter_fields = ["order", "item"]
+    search_fields = ["order__number", "item__sku", "item__name"]
     http_method_names = ["get", "post", "delete", "head", "options"]
 
     def perform_create(self, serializer):
@@ -490,13 +494,17 @@ class DeliveryLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.M
 
 
 class PriceListViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = PriceList.objects.prefetch_related("entries")
+    queryset = PriceList.objects.prefetch_related("entries__item")
     serializer_class = PriceListSerializer
+    filter_fields = ["is_active", "currency", "is_default"]
+    search_fields = ["code", "name"]
 
 
 class PriceListItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = PriceListItem.objects.select_related("price_list", "item")
     serializer_class = PriceListItemSerializer
+    filter_fields = ["price_list", "item"]
+    search_fields = ["item__sku", "item__name"]
 
 
 class CustomerProfileViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -610,6 +618,8 @@ class QuotationLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.
 class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = DunningLevel.objects.all()
     serializer_class = DunningLevelSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["name"]
     # A run writes to every overdue customer; setting the levels up is not
     # the right to do that.
     action_permission_map = {"run": "sales.post_invoice"}
@@ -629,13 +639,19 @@ class DunningLevelViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class DunningNoticeViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     customer_path = "invoice__customer"
-    queryset = DunningNotice.objects.select_related("invoice", "level")
+    queryset = DunningNotice.objects.select_related("invoice__customer", "level")
     serializer_class = DunningNoticeSerializer
+    filter_fields = ["invoice", "level", "invoice__customer"]
+    search_fields = ["invoice__number", "invoice__customer__name", "sent_to"]
+    date_field = "sent_at"
+    ordering_fields = ["sent_at"]
 
 
 class CommissionPlanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = CommissionPlan.objects.all()
     serializer_class = CommissionPlanSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
 
     @action(detail=False, methods=["get"])
     def report(self, request):
@@ -656,8 +672,11 @@ class SalesRepViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = RecurringInvoice.objects.prefetch_related("lines")
+    queryset = RecurringInvoice.objects.select_related("customer").prefetch_related("lines__taxes")
     serializer_class = RecurringInvoiceSerializer
+    filter_fields = ["customer", "is_active", "interval"]
+    search_fields = ["code", "customer__name"]
+    ordering_fields = ["next_run_date", "code"]
     action_permission_map = {"run": "sales.add_invoice"}
 
     @action(detail=True, methods=["post"])
@@ -681,6 +700,7 @@ class RecurringInvoiceLineViewSet(CustomerScopedMixin, AuditableViewSetMixin, vi
     customer_path = "schedule__customer"
     queryset = RecurringInvoiceLine.objects.select_related("schedule", "item")
     serializer_class = RecurringInvoiceLineSerializer
+    filter_fields = ["schedule"]
 
 
 class SalesReportViewSet(viewsets.ViewSet):
