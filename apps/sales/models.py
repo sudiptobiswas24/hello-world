@@ -81,6 +81,13 @@ def _require_customer_role(party):
         raise ValidationError(f"{party} does not have the Customer role.")
 
 
+def _names_another(row, field):
+    """New, or `field` now names another party than the one stored: when a role is first known to matter."""
+    if row._state.adding or row.pk is None:
+        return True
+    return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
+
+
 class SettlementStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     UNPAID = "unpaid", "Unpaid"
@@ -109,6 +116,15 @@ class PriceList(AuditModel):
         return self.name
 
     def clean(self):
+        self._check_span()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_span()
+        super().save(*args, **kwargs)
+
+    def _check_span(self):
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValidationError("valid_to cannot be before valid_from.")
 
@@ -449,9 +465,14 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return f"{self.number or f'SO-draft-{self.pk}'} {self.customer}"
 
     def clean(self):
-        _require_customer_role(self.customer)
+        self._check_customer()
+
+    def _check_customer(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
 
     def save(self, *args, **kwargs):
+        self._check_customer()
         if self._state.adding:
             self._apply_customer_defaults()
         else:
@@ -1936,7 +1957,11 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return (as_of - oldest["due_date"]).days if oldest else 0
 
     def clean(self):
-        _require_customer_role(self.customer)
+        self._check_kind()
+
+    def _check_kind(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
         if self.is_down_payment and not self.sales_order_id:
             raise ValidationError("A down payment must be against a sales order.")
         if self.is_down_payment and self.credits_id:
@@ -1954,6 +1979,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError(
                 "This invoice is posted and immutable. Issue a credit note instead."
             )
+        self._check_kind()
         if self._state.adding:
             self._apply_customer_defaults()
             if not self.receivable_account_id:
@@ -3789,6 +3815,9 @@ class DeliveryLine(AuditModel):
         return f"{self.order_line.label()} x{self.quantity_shipped} from {self.warehouse}"
 
     def clean(self):
+        self._check_line()
+
+    def _check_line(self):
         if self.order_line_id and self.order_line.is_charge():
             raise ValidationError(
                 f"'{self.order_line.charge}' is a charge, not goods; there is nothing to ship."
@@ -3865,10 +3894,7 @@ class DeliveryLine(AuditModel):
             )
         # In save() rather than only clean(): deliveries are built in code,
         # where nothing calls full_clean() for us.
-        if self.order_line_id and self.order_line.is_charge():
-            raise ValidationError(
-                f"'{self.order_line.charge}' is a charge, not goods; there is nothing to ship."
-            )
+        self._check_line()
         super().save(*args, **kwargs)
 
 
@@ -4240,7 +4266,11 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         return f"{self.number or f'QT-draft-{self.pk}'} {self.customer}"
 
     def clean(self):
-        _require_customer_role(self.customer)
+        self._check_terms()
+
+    def _check_terms(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
         if self.valid_until and self.valid_until < to_date(self.quotation_date):
             raise ValidationError("valid_until cannot be before the quotation date.")
 
@@ -4270,6 +4300,8 @@ class Quotation(TaxedDocumentMixin, AuditModel):
                 "This quotation has already gone to the customer and records what they "
                 "were told. Use create_revision() to change it."
             )
+        if not internal_only:
+            self._check_terms()
         if self._state.adding and self.customer_id:
             customer = self.customer
             self.currency = self.currency or customer.default_currency
@@ -4598,7 +4630,17 @@ class SalesRep(AuditModel):
         return f"Sales rep {self.party}"
 
     def clean(self):
-        _require_employee_role(self.party)
+        self._check_party()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_party()
+        super().save(*args, **kwargs)
+
+    def _check_party(self):
+        if _names_another(self, "party"):
+            _require_employee_role(self.party)
 
 
 def commission_report(date_from=None, date_to=None):
@@ -4736,11 +4778,16 @@ class RecurringInvoice(AuditModel):
         return f"{self.code} ({self.customer})"
 
     def clean(self):
-        _require_customer_role(self.customer)
+        self._check_terms()
+
+    def _check_terms(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
         if self.end_date and self.end_date < to_date(self.start_date):
             raise ValidationError("end_date cannot be before start_date.")
 
     def save(self, *args, **kwargs):
+        self._check_terms()
         if self.next_run_date is None:
             self.next_run_date = to_date(self.start_date)
         if self._state.adding and self.customer_id:

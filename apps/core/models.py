@@ -154,6 +154,18 @@ class Country(TimeStampedModel):
         return self.name
 
 
+# What is already booked in the base currency, said by the modules that
+# book it (accounting registers its posted entries from its ready()): core
+# keeps the currency and imports none of them.
+_BOOKED_IN_BASE = []
+
+
+def register_booked_in_base(ask):
+    """ask() -> words naming what is booked ("A posted journal entry"), or ""."""
+    if ask not in _BOOKED_IN_BASE:
+        _BOOKED_IN_BASE.append(ask)
+
+
 class Currency(AuditModel):
     code = models.CharField(max_length=3, unique=True, help_text="ISO 4217 code, e.g. USD")
     name = models.CharField(max_length=64)
@@ -177,6 +189,23 @@ class Currency(AuditModel):
 
     def __str__(self):
         return self.code
+
+    def save(self, *args, **kwargs):
+        was_base = (Currency.objects.filter(pk=self.pk).values_list("is_base", flat=True).first()
+                    if self.pk else False)
+        if bool(was_base) != self.is_base:
+            if was_base and Company.objects.filter(base_currency=self).exists():
+                raise ValidationError(
+                    f"The company keeps its books in {self.code}. Point the company at another "
+                    "base currency first."
+                )
+            booked = next((said for said in (ask() for ask in _BOOKED_IN_BASE) if said), "")
+            if booked:
+                raise ValidationError(
+                    f"{booked} is already booked in the base currency; moving it would restate "
+                    "every posted amount."
+                )
+        super().save(*args, **kwargs)
 
     def rate_on(self, on_date=None):
         """
@@ -232,6 +261,15 @@ class ExchangeRate(AuditModel):
         return f"1 {self.currency} = {self.rate} (base) from {self.valid_from}"
 
     def clean(self):
+        self._check_rate()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_rate()
+        super().save(*args, **kwargs)
+
+    def _check_rate(self):
         if self.currency_id and self.currency.is_base and self.rate != Decimal("1"):
             raise ValidationError("The base currency's rate against itself must be 1.")
 
@@ -281,6 +319,15 @@ class UnitOfMeasure(AuditModel):
         return self.code
 
     def clean(self):
+        self._check_base_unit()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_base_unit()
+        super().save(*args, **kwargs)
+
+    def _check_base_unit(self):
         if self.base_unit_id and self.base_unit_id == self.pk:
             raise ValidationError("A unit of measure cannot be its own base unit.")
         if self.base_unit_id and self.base_unit.category != self.category:
@@ -549,6 +596,15 @@ class PartyBankAccount(AuditModel):
         return f"{self.account_name} ({self.party.name})"
 
     def clean(self):
+        self._check_number()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_number()
+        super().save(*args, **kwargs)
+
+    def _check_number(self):
         if not self.account_number and not self.iban:
             raise ValidationError("Provide either an account number or an IBAN.")
 
@@ -582,6 +638,15 @@ class PaymentTerms(AuditModel):
         return self.name
 
     def clean(self):
+        self._check_discount()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_discount()
+        super().save(*args, **kwargs)
+
+    def _check_discount(self):
         if self.discount_percent and not self.discount_days:
             raise ValidationError("A discount percentage needs a discount window in days.")
         if self.discount_days and self.discount_days > self.net_days:
@@ -938,6 +1003,9 @@ class Company(AuditModel):
         for one fact is a defect whichever one wins; they now have to
         agree.
         """
+        self._check_base_currency()
+
+    def _check_base_currency(self):
         if self.base_currency_id and not self.base_currency.is_base:
             raise ValidationError(
                 f"{self.base_currency} is not flagged as the base currency. Set "
@@ -945,6 +1013,7 @@ class Company(AuditModel):
             )
 
     def save(self, *args, **kwargs):
+        self._check_base_currency()
         existing = Company.objects.first()
         if self._state.adding and existing is not None:
             # Stay a singleton: fold this into the existing row rather than

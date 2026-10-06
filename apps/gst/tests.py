@@ -28,7 +28,7 @@ from apps.core.models import (
     UnitOfMeasure,
 )
 from apps.inventory.models import Item, ItemUnit
-from apps.purchasing.models import Bill, BillLine
+from apps.purchasing.models import Bill, BillLine, PurchaseOrder, PurchaseOrderLine
 from apps.sales.models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
 
 from .models import UnitQuantityCode
@@ -361,7 +361,10 @@ class RefusalTests(GstReturnTestCase):
         company = Company.get()
         company.customer_deposit_account = deposits
         company.save()
-        deposit = Invoice.objects.create(customer=customer, invoice_date=DAY,
+        order = SalesOrder.objects.create(customer=customer, order_date=DAY)
+        SalesOrderLine.objects.create(order=order, item=self.sack, uom=self.sack.uom, quantity=D("1"),
+                                      unit_price=D("5000"), revenue_account=self.revenue)
+        deposit = Invoice.objects.create(customer=customer, invoice_date=DAY, sales_order=order,
                                          receivable_account=self.ar, is_down_payment=True)
         InvoiceLine.objects.create(invoice=deposit, description="Advance", quantity=D("1"),
                                    unit_price=D("5000"), revenue_account=deposits)
@@ -390,8 +393,11 @@ class RefusalTests(GstReturnTestCase):
         company = Company.get()
         company.vendor_prepayment_account = prepaid
         company.save()
+        order = PurchaseOrder.objects.create(vendor=vendor, order_date=DAY)
+        PurchaseOrderLine.objects.create(order=order, item=self.sack, uom=self.sack.uom, quantity=D("1"),
+                                         unit_price=D("5000"))
         prepayment = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap,
-                                         is_prepayment=True)
+                                         purchase_order=order, is_prepayment=True)
         BillLine.objects.create(bill=prepayment, description="Advance", quantity=D("1"),
                                 unit_price=D("5000"), expense_account=prepaid)
         prepayment.post()

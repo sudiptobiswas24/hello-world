@@ -81,6 +81,13 @@ def _require_vendor_role(party):
         raise ValidationError(f"{party} does not have the Vendor role.")
 
 
+def _names_another(row, field):
+    """New, or `field` now names another party than the one stored: when a role is first known to matter."""
+    if row._state.adding or row.pk is None:
+        return True
+    return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
+
+
 class VendorPrice(AuditModel):
     """
     A price this vendor has agreed for this item — the purchase-side
@@ -128,7 +135,17 @@ class VendorPrice(AuditModel):
         return f"{self.item} from {self.vendor} @ {self.unit_price}"
 
     def clean(self):
-        _require_vendor_role(self.vendor)
+        self._check_terms()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_terms()
+        super().save(*args, **kwargs)
+
+    def _check_terms(self):
+        if _names_another(self, "vendor"):
+            _require_vendor_role(self.vendor)
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValidationError("valid_to cannot be before valid_from.")
 
@@ -377,7 +394,17 @@ class RfqInvitation(AuditModel):
         return f"{self.vendor} on {self.rfq}"
 
     def clean(self):
-        _require_vendor_role(self.vendor)
+        self._check_vendor()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_vendor()
+        super().save(*args, **kwargs)
+
+    def _check_vendor(self):
+        if _names_another(self, "vendor"):
+            _require_vendor_role(self.vendor)
 
     def decline(self, note=""):
         """A vendor saying no is an answer, and worth keeping."""
@@ -488,7 +515,17 @@ class PurchaseRequisition(AuditModel):
         return f"{self.number or f'REQ-draft-{self.pk}'} for {self.requested_by}"
 
     def clean(self):
-        _require_employee_role(self.requested_by)
+        self._check_requester()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_requester()
+        super().save(*args, **kwargs)
+
+    def _check_requester(self):
+        if _names_another(self, "requested_by"):
+            _require_employee_role(self.requested_by)
 
     def estimated_total(self):
         return sum((line.estimated_value() for line in self.lines.all()), Decimal("0"))
@@ -778,11 +815,16 @@ class BlanketOrder(AuditModel):
         return f"{self.number or f'BPO-draft-{self.pk}'} {self.vendor}"
 
     def clean(self):
-        _require_vendor_role(self.vendor)
+        self._check_terms()
+
+    def _check_terms(self):
+        if _names_another(self, "vendor"):
+            _require_vendor_role(self.vendor)
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("A blanket order cannot end before it starts.")
 
     def save(self, *args, **kwargs):
+        self._check_terms()
         if self._state.adding and self.vendor_id and not self.currency_id:
             self.currency = self.vendor.default_currency
         super().save(*args, **kwargs)
@@ -987,6 +1029,15 @@ class Budget(AuditModel):
         return f"{self.code} {self.name}"
 
     def clean(self):
+        self._check_span()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_span()
+        super().save(*args, **kwargs)
+
+    def _check_span(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("A budget cannot end before it starts.")
 
@@ -1164,6 +1215,15 @@ class ReorderRule(AuditModel):
         return f"{self.item} at {self.warehouse}: {self.minimum} / {self.target}"
 
     def clean(self):
+        self._check_levels()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_levels()
+        super().save(*args, **kwargs)
+
+    def _check_levels(self):
         if self.target is not None and self.minimum is not None and self.target < self.minimum:
             raise ValidationError("The target cannot be below the minimum.")
         least, most = self.minimum_order_quantity, self.maximum_order_quantity
@@ -1178,7 +1238,7 @@ class ReorderRule(AuditModel):
                 f"is {self.multiple_of}, so every order would be refused by "
                 "one rule or the other."
             )
-        if self.vendor_id:
+        if self.vendor_id and _names_another(self, "vendor"):
             _require_vendor_role(self.vendor)
 
     def on_order(self):
@@ -1356,9 +1416,14 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return f"{self.number or f'PO-draft-{self.pk}'} {self.vendor}"
 
     def clean(self):
-        _require_vendor_role(self.vendor)
+        self._check_vendor()
+
+    def _check_vendor(self):
+        if _names_another(self, "vendor"):
+            _require_vendor_role(self.vendor)
 
     def save(self, *args, **kwargs):
+        self._check_vendor()
         if self._state.adding and self.vendor_id and not self.currency_id:
             self.currency = self.vendor.default_currency
         super().save(*args, **kwargs)
@@ -2494,7 +2559,11 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return self.currency.rate_on(self.bill_date)
 
     def clean(self):
-        _require_vendor_role(self.vendor)
+        self._check_kind()
+
+    def _check_kind(self):
+        if _names_another(self, "vendor"):
+            _require_vendor_role(self.vendor)
         if self.is_prepayment and not self.purchase_order_id:
             raise ValidationError("A prepayment must be against a purchase order.")
         if self.is_prepayment and self.debits_id:
@@ -2806,6 +2875,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
             raise ValidationError("This bill is posted and immutable. Issue a debit note instead.")
+        self._check_kind()
         if self._state.adding and self.vendor_id:
             self.currency = self.currency or self.vendor.default_currency
             self.payment_terms = self.payment_terms or self.vendor.payment_terms
@@ -5668,10 +5738,13 @@ class GoodsReceiptLine(AuditModel):
         return f"{self.order_line.item} x{self.quantity_received} @ {self.warehouse}"
 
     def clean(self):
+        self._check_line()
+
+    def _check_line(self):
+        # Its quantity is the database's to refuse (received_quantity_positive),
+        # which answers beside the field rather than above the form.
         if self.order_line_id and self.receipt_id and self.order_line.order_id != self.receipt.purchase_order_id:
             raise ValidationError("This line's order_line must belong to the receipt's purchase_order.")
-        if self.quantity_received is not None and self.quantity_received <= 0:
-            raise ValidationError("quantity_received must be positive.")
 
     def save(self, *args, **kwargs):
         if self.receipt_id and GoodsReceipt.objects.filter(pk=self.receipt_id, posted=True).exists():
@@ -5680,6 +5753,7 @@ class GoodsReceiptLine(AuditModel):
             )
         # In save() rather than only clean(): receipts are built in code,
         # where nothing calls full_clean() for us.
+        self._check_line()
         if self.order_line_id and self.order_line.is_charge():
             raise ValidationError(
                 f"'{self.order_line.charge}' is a charge, not goods; nothing arrives for it."

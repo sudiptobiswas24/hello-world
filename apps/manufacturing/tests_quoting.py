@@ -248,7 +248,11 @@ class QuoteTests(QuotingTestCase):
             self.sheet.save()
 
     def test_the_line_carries_the_taxes_named(self):
-        gst = Tax.objects.create(code="GST5", name="GST 5%", rate=Decimal("5"))
+        from apps.accounting.models import Account, AccountType
+
+        payable = Account.objects.create(code="2210", name="GST payable", account_type=AccountType.LIABILITY)
+        gst = Tax.objects.create(code="GST5", name="GST 5%", rate=Decimal("5"), scope="sales",
+                                 collected_account=payable)
         line = quote(self.sheet, self.quotation, [gst])
         self.assertEqual(list(line.taxes.all()), [gst])
 

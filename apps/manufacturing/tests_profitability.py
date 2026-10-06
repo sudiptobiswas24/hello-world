@@ -10,7 +10,7 @@ import datetime
 from decimal import Decimal
 from unittest.mock import patch
 
-from apps.core.models import Party
+from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.sales.models import SalesOrder, SalesOrderLine
 
 from .profitability import line_profitability
@@ -21,6 +21,7 @@ class ProfitTestCase(RunTestCase):
     def setUp(self):
         super().setUp()
         self.customer = Party.objects.create(code="CEM", name="Deccan Cement")
+        PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
         self.sale = SalesOrder.objects.create(customer=self.customer,
                                               order_date=datetime.date(2026, 5, 1),
                                               currency=self.usd)

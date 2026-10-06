@@ -167,6 +167,9 @@ class Machine(AuditModel):
         return f"{self.code} - {self.name}" if self.name else self.code
 
     def clean(self):
+        self._check_working_days()
+
+    def _check_working_days(self):
         # Parsed where somebody types it rather than where a plan
         # divides by it, which is the same reason the work centre
         # parses its own.
@@ -176,8 +179,7 @@ class Machine(AuditModel):
     def save(self, *args, **kwargs):
         # `clean()` is not called for you, and machines are created in
         # code by every fixture and import that sets a plant up.
-        if self.working_days:
-            parse_working_days(self.working_days)
+        self._check_working_days()
         if self.pk:
             self._check_still_takes_its_work()
         super().save(*args, **kwargs)

@@ -7,7 +7,10 @@ practice: a check that has never caught anything is noise that trains
 people to ignore the output.
 """
 
+import ast
+import inspect
 import re
+import textwrap
 from pathlib import Path
 
 from django.apps import apps as django_apps
@@ -90,6 +93,7 @@ class Command(BaseCommand):
         findings += self.unsigned_money(labels)
         findings += self.greenwich_dates(labels, sources)
         findings += self.unsettable_fields(labels)
+        findings += self.admin_only_rules(labels)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -351,6 +355,65 @@ class Command(BaseCommand):
         return findings
 
     # -- shape 4/5: posted documents ------------------------------------
+    # -- shape 1, mirror gap between the admin and everywhere else ----------
+    # Rules clean() asks that save() leaves alone on purpose, with why.
+    ADMIN_ONLY_ON_PURPOSE = {
+        "accounting.JournalLine": "a manual line is refused by its serializer, both sides at once by the "
+                                  "database; posting a zero-value document writes a zero line on purpose",
+    }
+
+    def admin_only_rules(self, labels):
+        """
+        A model whose clean() states a rule its save() never runs.
+
+        Django's admin calls full_clean(); DRF's serializers and the code
+        that builds documents never do. A probe found 33 rules held only
+        in the admin: an order to a party that is no customer, a delivery
+        line off another order, an account under itself. clean() may call
+        checks of its own; each must be one save() calls too, or save()
+        must call clean() itself.
+        """
+        findings = []
+        for label in labels:
+            for model in django_apps.get_app_config(label).get_models():
+                clean = model.__dict__.get("clean")
+                if clean is None or f"{label}.{model.__name__}" in self.ADMIN_ONLY_ON_PURPOSE:
+                    continue
+                saved = set()
+                for cls in model.__mro__:
+                    if cls is models.Model:
+                        break
+                    if "save" in cls.__dict__:
+                        saved = self._self_calls(cls.__dict__["save"])
+                        break
+                if saved & {"clean", "full_clean"}:
+                    continue
+                body = ast.parse(textwrap.dedent(inspect.getsource(clean))).body[0].body
+                body = [node for node in body
+                        if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant))]
+                if body and all(self._is_self_call(node, saved) for node in body):
+                    continue
+                findings.append((
+                    "rule only the admin runs",
+                    f"{label}.{model.__name__}.clean() asks something its save() does not: "
+                    "move it into a check both call.",
+                ))
+        return findings
+
+    @staticmethod
+    def _self_calls(function):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        return {node.func.attr for node in ast.walk(tree)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"}
+
+    @staticmethod
+    def _is_self_call(node, saved):
+        return (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and isinstance(node.value.func.value, ast.Name) and node.value.func.value.id == "self"
+                and node.value.func.attr in saved)
+
     def mutable_posted_documents(self, labels, sources):
         """A posted document that can still be edited is not posted."""
         findings = []

@@ -326,6 +326,9 @@ class WorkCentre(AuditModel):
         return f"{self.code} - {self.name}"
 
     def clean(self):
+        self._check_working_days()
+
+    def _check_working_days(self):
         # Parsed at the point somebody types it, not at the point a plan
         # divides by it. A pattern nobody can read is a pattern that
         # silently schedules the wrong days.
@@ -334,6 +337,7 @@ class WorkCentre(AuditModel):
     def save(self, *args, **kwargs):
         # In save(): work centres come through the API's serializer too,
         # and a speed basis without its settings divides by nothing.
+        self._check_working_days()
         needs = {
             SpeedBasis.TAPE_LINE: (("tape_ends", "tapes wound at once"),
                                    ("line_speed_m_per_min", "a line speed")),

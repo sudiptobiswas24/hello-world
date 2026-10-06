@@ -168,10 +168,12 @@ class PlantTestCase(TestCase):
         issue.post()
         return issue
 
-    def rule(self, item, minimum="0", target="0", multiple_of=None, vendor=None):
+    def rule(self, item, minimum="0", target=None, multiple_of=None, vendor=None):
+        # Planning reads the minimum as a floor and never the target; a
+        # target below the minimum is refused, so it defaults to it.
         return ReorderRule.objects.create(
             item=item, warehouse=self.plant, minimum=Decimal(minimum),
-            target=Decimal(target),
+            target=Decimal(target if target is not None else minimum),
             multiple_of=Decimal(multiple_of) if multiple_of else None,
             vendor=vendor,
         )

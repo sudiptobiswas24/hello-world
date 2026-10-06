@@ -55,10 +55,37 @@ class Account(AuditModel):
         return f"{self.code} - {self.name}"
 
     def clean(self):
+        self._check_tree()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_tree()
+        super().save(*args, **kwargs)
+
+    def _check_tree(self):
         if self.parent_id and self.parent_id == self.pk:
             raise ValidationError("An account cannot be its own parent.")
         if self.parent_id and self.parent.account_type != self.account_type:
             raise ValidationError("A sub-account must have the same account_type as its parent.")
+        # Its own parent at one remove is still its own parent: the chart
+        # would have no top, and every report that walks it would not end.
+        seen, above = {self.pk}, self.parent
+        while above is not None and self.pk is not None:
+            if above.pk in seen:
+                raise ValidationError(f"{above} is already under {self}; it cannot also be above it.")
+            seen.add(above.pk)
+            above = above.parent
+        if self.pk:
+            before = Account.objects.filter(pk=self.pk).values_list("account_type", flat=True).first()
+            if before and before != self.account_type:
+                if self.children.exclude(account_type=self.account_type).exists():
+                    raise ValidationError("Its sub-accounts are of the old type; change them first.")
+                if JournalLine.objects.filter(account=self, entry__posted=True).exists():
+                    raise ValidationError(
+                        f"{self} has posted entries, reported as {before}. Changing its type would "
+                        "move them between the statements; open a new account instead."
+                    )
 
 
 class AccountingPeriod(AuditModel):
@@ -95,8 +122,23 @@ class AccountingPeriod(AuditModel):
         return self.name
 
     def clean(self):
+        self._check_span()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_span()
+        super().save(*args, **kwargs)
+
+    def _check_span(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("A period cannot end before it starts.")
+        if self.pk:
+            before = AccountingPeriod.objects.filter(pk=self.pk).values(
+                "start_date", "end_date", "closed").first()
+            if before and before["closed"] and self.closed and (
+                    before["start_date"], before["end_date"]) != (self.start_date, self.end_date):
+                raise ValidationError(f"{self} is closed; reopen it before moving its dates.")
         overlapping = AccountingPeriod.objects.filter(
             start_date__lte=self.end_date, end_date__gte=self.start_date
         ).exclude(pk=self.pk)
@@ -393,6 +435,15 @@ class Tax(AuditModel):
         return f"{self.name} ({self.rate}%)"
 
     def clean(self):
+        self._check_accounts()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_accounts()
+        super().save(*args, **kwargs)
+
+    def _check_accounts(self):
         if self.scope in (TaxScope.SALES, TaxScope.BOTH) and not self.collected_account_id:
             raise ValidationError("A sales tax needs a collected_account to post to.")
         if self.scope in (TaxScope.PURCHASE, TaxScope.BOTH) and not self.paid_account_id:
@@ -576,6 +627,15 @@ class FiscalPositionTaxMapping(AuditModel):
         return f"{self.source_tax.code} -> {target}"
 
     def clean(self):
+        self._check_target()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_target()
+        super().save(*args, **kwargs)
+
+    def _check_target(self):
         if self.target_tax_id and self.target_tax_id == self.source_tax_id:
             raise ValidationError("Mapping a tax to itself has no effect.")
 
@@ -890,12 +950,16 @@ class BankStatement(AuditModel):
         return f"{self.bank_account.code} to {self.end_date:%d %b %Y}"
 
     def clean(self):
+        self._check_span()
+
+    def _check_span(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("A statement cannot end before it starts.")
 
     def save(self, *args, **kwargs):
         if self.pk and BankStatement.objects.filter(pk=self.pk, closed=True).exists():
             raise ValidationError("This statement is closed. Reopen it to make changes.")
+        self._check_span()
         super().save(*args, **kwargs)
 
     def line_total(self):

@@ -12,7 +12,6 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.core.models import PartyRole, PartyRoleAssignment
 from apps.inventory.models import Lot, MovementType, StockMovement, TrackingMode
 from apps.sales.models import (
     Delivery, DeliveryAllocation, DeliveryLine, SalesOrder, SalesOrderLine,
@@ -35,7 +34,6 @@ class TraceTestCase(DemandTestCase):
         self.grind = Lot.objects.create(item=self.regrind, code="RG-1")
         self.stock(self.virgin, "3000", "100", lot=self.polymer_lot)
         self.stock(self.regrind, "1000", "60", lot=self.grind)
-        PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
 
     def batch_for(self, component):
         return {self.virgin.pk: self.polymer_lot,

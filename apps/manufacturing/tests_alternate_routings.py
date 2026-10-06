@@ -121,12 +121,14 @@ class PlannedTheWayThatIsOnTimeTests(AlternatesTestCase):
         from apps.planning.models import PlanningSettings
         from apps.planning.mrp import plan
         from apps.sales.models import SalesOrder, SalesOrderLine
-        from apps.core.models import Party
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
         PlanningSettings.objects.create(horizon_days=60, default_buy_lead_days=7,
                                         default_make_lead_days=2)
         self.lam_run.cancel()
-        sale = SalesOrder.objects.create(customer=Party.objects.create(code="C1", name="C"),
+        customer = Party.objects.create(code="C1", name="C")
+        PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
+        sale = SalesOrder.objects.create(customer=customer,
                                          order_date=TODAY, currency=self.usd,
                                          status="confirmed")
         SalesOrderLine.objects.create(order=sale, item=self.lam_bag, uom=self.pcs,

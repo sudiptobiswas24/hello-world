@@ -12,7 +12,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
-from apps.core.models import Party
+from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.inventory.models import Lot, TrackingMode
 from apps.sales.models import SalesOrder, SalesOrderLine
 
@@ -25,6 +25,7 @@ class DemandTestCase(RunTestCase):
     def setUp(self):
         super().setUp()
         self.customer = Party.objects.create(code="CEM", name="Deccan Cement")
+        PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
         # The base fixture stocks a 1,000 kg run; some of these are
         # 4,000 kg ones. Same prices, so the averages do not move.
         self.stock(self.virgin, "8000", "100")

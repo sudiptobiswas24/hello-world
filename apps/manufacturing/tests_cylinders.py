@@ -14,7 +14,7 @@ from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from apps.core.models import Party
+from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.inventory.models import Item
 
 from .tests_orders import TODAY
@@ -31,6 +31,7 @@ class CylinderTestCase(CoatingTestCase):
     def setUp(self):
         super().setUp()
         self.customer = Party.objects.create(code="ULT", name="Ultratech")
+        PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
         self.design = PrintDesign.objects.create(
             code="D-ULT", name="Ultratech 50 kg", customer=self.customer, colours=4,
             approved_on=TODAY, engraving_lead_days=21)

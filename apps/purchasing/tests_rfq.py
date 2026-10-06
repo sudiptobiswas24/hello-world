@@ -211,6 +211,7 @@ class AwardTests(RfqTestCase):
         from .models import PurchaseRequisition, PurchaseRequisitionLine
 
         requester = Party.objects.create(code="E-9", name="Requester")
+        PartyRoleAssignment.objects.create(party=requester, role=PartyRole.EMPLOYEE)
         requisition = PurchaseRequisition.objects.create(
             requested_by=requester, request_date=datetime.date(2026, 1, 1))
         wanted = PurchaseRequisitionLine.objects.create(

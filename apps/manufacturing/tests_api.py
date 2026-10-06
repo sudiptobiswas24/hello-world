@@ -423,6 +423,9 @@ class DemandApiTests(RunTestCase):
         self.client = APIClient()
         self.client.force_authenticate(user)
         customer = Party.objects.create(code="CEM", name="Deccan Cement")
+        from apps.core.models import PartyRole, PartyRoleAssignment
+
+        PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
         sale = SalesOrder.objects.create(
             customer=customer, order_date=datetime.date(2026, 9, 1),
             currency=self.usd,
