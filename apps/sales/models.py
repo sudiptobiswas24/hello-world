@@ -1,5 +1,3 @@
-import calendar
-import datetime
 import logging
 from collections import defaultdict
 from decimal import Decimal
@@ -21,6 +19,7 @@ from apps.accounting.models import (
 )
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.history import EventKind, record
+from apps.core.recurrence import RecurrenceInterval, add_interval
 from apps.core.models import (
     Address,
     AuditModel,
@@ -4824,36 +4823,6 @@ def commission_report(date_from=None, date_to=None):
     return sorted(rows, key=lambda row: -row["commission"])
 
 
-class RecurrenceInterval(models.TextChoices):
-    WEEKLY = "weekly", "Weekly"
-    MONTHLY = "monthly", "Monthly"
-    QUARTERLY = "quarterly", "Quarterly"
-    YEARLY = "yearly", "Yearly"
-
-
-def add_interval(start, interval, count=1, anchor_day=None):
-    """
-    Advance a date by `count` intervals.
-
-    `anchor_day` is the day the series is really anchored to. Without it a
-    schedule starting on the 31st clamps to the 28th in February and then
-    stays there — the billing date silently walks backwards. Anchoring
-    means Jan 31 -> Feb 28 -> Mar 31.
-    """
-    if interval == RecurrenceInterval.WEEKLY:
-        return start + datetime.timedelta(weeks=count)
-    months = {
-        RecurrenceInterval.MONTHLY: 1,
-        RecurrenceInterval.QUARTERLY: 3,
-        RecurrenceInterval.YEARLY: 12,
-    }[interval] * count
-    month_index = start.month - 1 + months
-    year = start.year + month_index // 12
-    month = month_index % 12 + 1
-    day = min(anchor_day or start.day, calendar.monthrange(year, month)[1])
-    return datetime.date(year, month, day)
-
-
 class RecurringInvoice(AuditModel):
     """
     A template that issues the same invoice on a schedule — a retainer, a
@@ -4919,7 +4888,7 @@ class RecurringInvoice(AuditModel):
     def has_finished(self):
         return bool(self.end_date and self.next_run_date and self.next_run_date > self.end_date)
 
-    @transaction.atomic
+    @serialised("next_run_date", "is_active")
     def generate_one(self, on_date=None):
         """Issue the next invoice in the series and advance the schedule."""
         if not self.is_active:

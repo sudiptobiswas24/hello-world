@@ -156,6 +156,13 @@ class AccountingPeriod(AuditModel):
         on_date = to_date(on_date)
         return self.start_date <= on_date <= self.end_date
 
+    def delete(self, *args, **kwargs):
+        # Deleting a closed period would unlock its months as a side
+        # effect of tidying up; unlocking is a decision, made by reopening.
+        if self.closed:
+            raise ValidationError(f"{self} is closed; reopen it before deleting it.")
+        super().delete(*args, **kwargs)
+
     @classmethod
     def blocking(cls, on_date):
         """The closed period covering this date, if any."""
@@ -208,6 +215,10 @@ class JournalEntry(AuditModel):
     posted_at = models.DateTimeField(null=True, blank=True)
     reverses = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by"
+    )
+    recurring_journal = models.ForeignKey(
+        "accounting.RecurringJournal", null=True, blank=True, on_delete=models.PROTECT, related_name="entries",
+        help_text="The schedule this entry was taken from (recurring.py), if any.",
     )
 
     class Meta:
@@ -1362,4 +1373,6 @@ class BankStatementLine(AuditModel):
 
 from .gst import GstSettings  # noqa: E402,F401
 from .analytic import CostCentre  # noqa: E402,F401
+from .budgets import Budget, BudgetLine  # noqa: E402,F401
+from .recurring import RecurringJournal, RecurringJournalLine  # noqa: E402,F401
 from .tds import TdsSection  # noqa: E402,F401

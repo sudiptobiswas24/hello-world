@@ -182,6 +182,19 @@ One mail a person with something waiting and an address; nobody else
 hears. Without a mail server (above) the command prints the lines
 instead, and says so. `--dry-run` prints without sending.
 
+What recurs is taken the same way. Recurring invoices and recurring
+journal entries (rent accrued, insurance amortised) are issued by a
+second cron line, a few minutes before the checks so the morning mail
+counts what is left:
+
+```
+50 5 * * * cd /srv/erp && docker compose run --rm web python manage.py generate_recurring
+```
+
+It prints what it issued and names any schedule it could not run (lines
+that do not balance, a date in a closed month) rather than forcing it.
+Until it runs, each login's inbox counts what is due.
+
 ## Backups
 
 Every night at `BACKUP_AT` the `backup` container writes

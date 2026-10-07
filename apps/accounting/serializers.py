@@ -3,8 +3,11 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from .analytic import CostCentre
+from .budgets import Budget, BudgetLine
+from .recurring import RecurringJournal, RecurringJournalLine
 from .models import (
     Account,
+    AccountingPeriod,
     FiscalPosition,
     FiscalPositionTaxMapping,
     JournalEntry,
@@ -26,6 +29,57 @@ class CostCentreSerializer(serializers.ModelSerializer):
     class Meta:
         model = CostCentre
         fields = ["id", "code", "name", "is_active", "note"]
+
+
+class AccountingPeriodSerializer(serializers.ModelSerializer):
+    closed_by_name = serializers.CharField(source="closed_by.username", read_only=True, default="")
+
+    class Meta:
+        model = AccountingPeriod
+        fields = ["id", "name", "start_date", "end_date", "closed", "closed_at", "closed_by_name", "note"]
+        # Closing is an action with its own permission, not a box to tick.
+        read_only_fields = ["closed", "closed_at"]
+
+
+class BudgetLineSerializer(serializers.ModelSerializer):
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    cost_centre_name = serializers.CharField(source="cost_centre.name", read_only=True, default="")
+
+    class Meta:
+        model = BudgetLine
+        fields = ["id", "budget", "account", "account_code", "account_name", "cost_centre", "cost_centre_name", "amount"]
+
+
+class BudgetSerializer(serializers.ModelSerializer):
+    lines = BudgetLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Budget
+        fields = ["id", "code", "name", "start_date", "end_date", "note", "is_active", "lines"]
+
+
+class RecurringJournalLineSerializer(serializers.ModelSerializer):
+    account_code = serializers.CharField(source="account.code", read_only=True)
+    account_name = serializers.CharField(source="account.name", read_only=True)
+    party_name = serializers.CharField(source="party.name", read_only=True, default="")
+    cost_centre_name = serializers.CharField(source="cost_centre.name", read_only=True, default="")
+
+    class Meta:
+        model = RecurringJournalLine
+        fields = ["id", "schedule", "account", "account_code", "account_name", "party", "party_name",
+                  "cost_centre", "cost_centre_name", "debit", "credit", "description"]
+
+
+class RecurringJournalSerializer(serializers.ModelSerializer):
+    lines = RecurringJournalLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = RecurringJournal
+        fields = ["id", "code", "memo", "interval", "interval_count", "start_date", "end_date", "next_run_date",
+                  "auto_post", "is_active", "lines"]
+        # Advanced by each run; set by hand it would skip or repeat a period.
+        read_only_fields = ["next_run_date"]
 
 
 class JournalLineSerializer(serializers.ModelSerializer):
@@ -62,8 +116,11 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "posted",
             "posted_at",
             "reverses",
+            "recurring_journal",
             "lines",
         ]
+        # Written by the schedule that takes the entry, never by hand.
+        read_only_fields = ["recurring_journal"]
         read_only_fields = ["posted", "posted_at"]
 
 

@@ -6,6 +6,7 @@ from rest_framework import viewsets
 from decimal import Decimal, InvalidOperation
 
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
@@ -20,6 +21,7 @@ from apps.core.audit import AuditableViewSetMixin
 from apps.inventory.models import Warehouse
 
 from django.http import HttpResponse
+from django.utils import timezone
 
 from django.db.models import Prefetch
 
@@ -769,12 +771,21 @@ class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewse
     filter_fields = ["customer", "is_active", "interval"]
     search_fields = ["code", "customer__name"]
     ordering_fields = ["next_run_date", "code"]
-    action_permission_map = {"run": "sales.add_invoice"}
+    # Issuing an invoice from the schedule is issuing an invoice; left
+    # unmapped, it took only the right to keep schedules.
+    action_permission_map = {"generate": "sales.add_invoice", "run": "sales.add_invoice"}
+
+    def _may_post(self, request, schedules):
+        # A schedule that posts what it issues posts as whoever runs it.
+        if any(schedule.auto_post for schedule in schedules) and not request.user.has_perm("sales.post_invoice"):
+            raise PermissionDenied("This schedule posts each invoice it issues, which takes the right to post "
+                                   "invoices.")
 
     @action(detail=True, methods=["post"])
     def generate(self, request, pk=None):
         """Issue the next invoice in this series."""
         schedule = self.get_object()
+        self._may_post(request, [schedule])
         try:
             invoice = schedule.generate_one(on_date=request.data.get("on_date"))
         except DjangoValidationError as exc:
@@ -784,7 +795,10 @@ class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewse
     @action(detail=False, methods=["post"])
     def run(self, request):
         """Issue every invoice now due across all active schedules."""
-        issued = generate_due_invoices(as_of=request.data.get("as_of"))
+        as_of = to_date(request.data.get("as_of")) or timezone.localdate()
+        self._may_post(request, [s for s in RecurringInvoice.objects.filter(is_active=True, auto_post=True)
+                                 if s.next_run_date and s.next_run_date <= as_of and not s.has_finished()])
+        issued = generate_due_invoices(as_of=as_of)
         return Response(InvoiceSerializer(issued, many=True).data)
 
 

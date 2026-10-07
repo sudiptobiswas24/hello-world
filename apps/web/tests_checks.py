@@ -60,6 +60,20 @@ class InboxTests(ChecksTestCase):
         self.assertNotIn("licences_due", stores)
         self.assertNotIn("bills_draft", stores)
 
+    def test_what_recurs_and_is_due_is_in_the_inbox_of_whoever_runs_it(self):
+        from apps.accounting.recurring import RecurringJournal
+        from apps.sales.models import RecurringInvoice
+
+        RecurringJournal.objects.create(code="RENT", memo="Rent", start_date=self.today - datetime.timedelta(days=3))
+        RecurringJournal.objects.create(code="LATER", memo="Not yet", start_date=self.today + datetime.timedelta(days=3))
+        RecurringInvoice.objects.create(code="AMC", customer=self.customer, receivable_account=self.ar,
+                                        interval="monthly", start_date=self.today)
+        controller = self.keys(self.person("Controller"))
+        self.assertEqual(controller.get("recurring_journals_due"), 1)
+        self.assertNotIn("recurring_invoices_due", controller)
+        self.assertEqual(self.keys(self.person("AR Manager")).get("recurring_invoices_due"), 1)
+        self.assertNotIn("recurring_journals_due", self.keys(self.person("Warehouse Staff")))
+
     def test_the_api_answers_the_login_itself(self):
         client = APIClient()
         client.force_authenticate(self.person("Controller"))

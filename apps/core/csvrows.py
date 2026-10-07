@@ -61,11 +61,15 @@ def date(row, column, required_=True):
         if required_:
             raise RowError(column, "is required.")
         return None
-    for shape in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+    for shape in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y", "%d %b %Y", "%d-%b-%Y", "%d %B %Y"):
         try:
-            return datetime.datetime.strptime(value, shape).date()
+            day = datetime.datetime.strptime(value, shape).date()
         except ValueError:
             continue
+        # strptime reads "01/01/26" with %Y as the year 26; a bank's
+        # two-digit year is the next shape's to read.
+        if day.year >= 1900:
+            return day
     raise RowError(column, f"{value!r} is not a date; give it as YYYY-MM-DD or DD-MM-YYYY.")
 
 
