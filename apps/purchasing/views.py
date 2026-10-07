@@ -207,7 +207,8 @@ class PurchaseOrderLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = _order_lines().select_related("order__vendor__tax_profile")
     serializer_class = PurchaseOrderLineSerializer
     # The orders a blanket or a requisition became, found from it.
-    filter_fields = ["order", "blanket_line__blanket", "requisition_line__requisition"]
+    filter_fields = ["order", "order__vendor", "order__status", "item", "blanket_line__blanket",
+                     "requisition_line__requisition"]
     action_permission_map = {"close_short": "purchasing.change_purchaseorder",
                              "reopen": "purchasing.change_purchaseorder"}
 
@@ -351,7 +352,7 @@ class BillLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "reference", "purchase_order__number", "purchase_order__vendor__code", "purchase_order__vendor__name"]
-    filter_fields = ["purchase_order", "posted", "reverses", "reverses__isnull"]
+    filter_fields = ["purchase_order", "purchase_order__vendor", "posted", "reverses", "reverses__isnull"]
     date_field = "receipt_date"
     ordering_fields = ["receipt_date", "number"]
 

@@ -233,20 +233,18 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
-    extra_params = ('run',)
+    # Narrowed like every list, and so refusing what it cannot narrow by: read
+    # by hand, ?employee= was ignored and one person's slips listed everyone's.
+    filter_fields = ["run", "employee"]
     queryset = Payslip.objects.select_related("employee__party", "run", "payment__journal_entry").prefetch_related(
         "payment__journal_entry__reversed_by", "lines__component")
     action_permission_map = {"pay": "hr.post_payrun"}
 
-    def get_queryset(self):
-        rows = super().get_queryset()
-        run = self.request.query_params.get("run")
-        return rows.filter(run_id=run) if run else rows
-
     def list(self, request):
         # Paged like every list: the first 500 and silence about the rest
         # was a pay run of 600 people missing a hundred slips.
-        slips = self.paginate_queryset(self.get_queryset().order_by("run_id", "employee__employee_number", "pk")
+        slips = self.paginate_queryset(self.filter_queryset(self.get_queryset())
+                                       .order_by("run_id", "employee__employee_number", "pk")
                                        .prefetch_related("lines__component"))
         return self.get_paginated_response([_slip(slip) for slip in slips])
 

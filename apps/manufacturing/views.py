@@ -1428,7 +1428,7 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "item__sku", "item__name"]
-    filter_fields = ["status", "item", "work_centre", "warehouse", "sales_order_line"]
+    filter_fields = ["status", "item", "work_centre", "warehouse", "sales_order_line", "sales_order_line__order"]
     date_field = "scheduled_start"
     ordering_fields = ["scheduled_start", "number"]
 

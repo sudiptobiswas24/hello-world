@@ -1,4 +1,5 @@
 import { useQueries } from "@tanstack/react-query";
+import { SmartButtons, type SmartDef } from "./SmartButtons";
 import { Trail, useKindOf } from "./Trail";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
@@ -154,6 +155,8 @@ export interface RecordScreenProps {
   below?: (record: Row, editable: boolean) => ReactNode;
   /** The kind of record for the keeper's custom fields ("inventory.item"), shown after its own. */
   extras?: string;
+  /** Counts of what the record has led to, under its header, each opening its list. */
+  smart?: (record: Row) => SmartDef[];
 }
 
 function blank(fields: FieldDef[]): Row {
@@ -317,7 +320,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl, extras } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl, extras, smart } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -390,6 +393,7 @@ export function RecordScreen(props: RecordScreenProps) {
           <ActionButton danger pending={act.pending} onClick={() => void remove()}>Delete</ActionButton>
         )}
       </DocHeader>
+      {saved && smart && <SmartButtons buttons={smart(saved)} />}
       {note?.(saved)}
       {asking && saved && (
         <ActionForm action={asking} record={saved} endpoint={endpoint} onClose={() => setAsking(null)} />

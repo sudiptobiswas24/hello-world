@@ -258,6 +258,26 @@ class SalesInTheBrowserTests(BrowserTestCase):
         self.assertEqual(Note.objects.count(), 2)
         self.assertEqual(self.problems, [])
 
+    def test_a_customers_counts_open_exactly_what_they_count(self):
+        from apps.core.models import PartyRoleAssignment
+
+        first, second = self.make_order(quantity="10"), self.make_order(quantity="5")
+        self.ship(first, "10")
+        other = Party.objects.create(code="C-90", name="Other Cement")
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.CUSTOMER)
+        SalesOrder.objects.create(customer=other, order_date=first.order_date)
+        page = self.sign_in(self.person("AR Manager"), f"/app/sales/customers/{self.customer.pk}")
+        related = page.get_by_role("navigation", name="Related")
+        expect(related.get_by_role("link", name=re.compile(r"^2\s*Orders"))).to_be_visible()
+        expect(related.get_by_role("link", name=re.compile(r"^1\s*To ship"))).to_be_visible()
+        # Deliveries are the store's: a count of what the AR Manager may not read is not offered.
+        expect(related.get_by_role("link", name=re.compile(r"Deliveries$"))).to_have_count(0)
+        related.get_by_role("link", name=re.compile(r"Orders$")).first.click()
+        page.wait_for_url(re.compile(rf"/sales/orders\?customer={self.customer.pk}$"))
+        expect(page.locator("table tbody tr")).to_have_count(2)
+        expect(page.get_by_text(second.number)).to_be_visible()
+        self.assertEqual(self.problems, [])
+
     def test_the_ar_manager_gives_a_customer_to_a_rep_who_then_sees_only_theirs(self):
         from apps.core.models import PartyRoleAssignment
         from apps.sales.models import CustomerProfile

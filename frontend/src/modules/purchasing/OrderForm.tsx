@@ -14,6 +14,8 @@ import { WarehouseChoice } from "../../forms/WarehouseChoice";
 import { aboveZero } from "../../lib/decimal";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { SmartButtons } from "../../views/SmartButtons";
+import { purchaseOrderButtons } from "./smart";
 
 interface PurchaseOrder {
   id: number;
@@ -128,6 +130,7 @@ export default function OrderForm() {
           <ActionButton pending={act.pending} onClick={() => void run("send", "Sent to the vendor")}>Email</ActionButton>
         )}
       </DocHeader>
+      {order && <SmartButtons buttons={purchaseOrderButtons(order.id)} />}
 
       {order && order.status !== "cancelled" && <Steps steps={["Draft", "Confirmed", "Received", "Billed"]} at={stage(order)} />}
       {order?.status === "draft" && waiting && (approval.data?.reasons.length ?? 0) > 0 && (
