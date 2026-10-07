@@ -11,8 +11,13 @@ from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.db.models import Count
+
+from apps.core.api import flag
+
 from . import einvoice, ewaybill
-from .serializers import EInvoiceSerializer, EwayBillSerializer
+from .gstr2b import Gstr2bStatement, keep, reconcile
+from .serializers import EInvoiceSerializer, EwayBillSerializer, Gstr2bStatementSerializer
 
 from .returns import gstr1, gstr1_json, gstr3b, month
 
@@ -73,6 +78,47 @@ class Itc04View(APIView):
             raise DRFValidationError(["Give start and end as YYYY-MM-DD."])
         try:
             return Response(itc04(start, end))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+
+
+class Gstr2bStatementViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin,
+                             viewsets.GenericViewSet):
+    """
+    The months' GSTR-2B files as kept. `upload` keeps one (POST text,
+    period, replace); a kept month is deleted to be taken again. The
+    returns' permission throughout: a 2B names every supplier's figures.
+    """
+
+    queryset = Gstr2bStatement.objects.select_related("created_by").annotate(line_count=Count("lines"))
+    serializer_class = Gstr2bStatementSerializer
+    permission_classes = [IsAuthenticated, CanCompileReturns]
+    filter_fields = ["period"]
+    ordering_fields = ["period"]
+
+    @action(detail=False, methods=["post"])
+    def upload(self, request):
+        text = request.data.get("text") or ""
+        if not text.strip():
+            raise DRFValidationError({"text": ["Give the file's text."]})
+        statement, skipped = keep(str(request.data.get("period") or ""), text, user=request.user,
+                                  replace=flag(request.data, "replace", False))
+        data = self.get_serializer(self.get_queryset().get(pk=statement.pk)).data
+        data["skipped"] = skipped
+        return Response(data, status=201)
+
+
+class Gstr2bMatchView(APIView):
+    """GET ?period=YYYY-MM: the month's 2B against the year's posted bills (gstr2b.reconcile)."""
+
+    permission_classes = [IsAuthenticated, CanCompileReturns]
+
+    def get(self, request):
+        period = request.query_params.get("period")
+        if not period:
+            raise DRFValidationError(["Give a period as YYYY-MM."])
+        try:
+            return Response(reconcile(period))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
 

@@ -777,6 +777,10 @@ export const MODULES: Module[] = [
         keywords: "gstr1 gstr3b tax return", load: () => import("../modules/accounts/GstReturns"),
       },
       {
+        path: "gstr2b", label: "Input credit against GSTR-2B", permission: "gst.compile_returns",
+        keywords: "gstr2b 2b itc input tax credit reconcile match supplier filed", load: () => import("../modules/accounts/Gstr2b"),
+      },
+      {
         path: "assets", label: "Fixed assets", permission: "assets.view_fixedasset",
         create: "assets.add_fixedasset",
         keywords: "machine building vehicle depreciation capital", load: () => import("../modules/accounts/Assets"),
