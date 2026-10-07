@@ -1,6 +1,7 @@
 import calendar
 import contextvars
 import datetime
+import re
 from decimal import Decimal
 
 from django.conf import settings
@@ -644,6 +645,7 @@ class PartyBankAccount(AuditModel):
     account_number = models.CharField(max_length=64, blank=True)
     iban = models.CharField(max_length=34, blank=True)
     swift_bic = models.CharField(max_length=11, blank=True)
+    ifsc = models.CharField(max_length=11, blank=True, help_text="The branch's IFSC, for NEFT and RTGS: HDFC0001234.")
     currency = models.ForeignKey(
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -677,6 +679,27 @@ class PartyBankAccount(AuditModel):
     def _check_number(self):
         if not self.account_number and not self.iban:
             raise ValidationError("Provide either an account number or an IBAN.")
+        self.ifsc = check_ifsc(self.ifsc)
+
+    def particulars(self):
+        """The account as a remittance names it: bank, number, IFSC."""
+        parts = [self.bank_name, f"A/c {self.account_number}" if self.account_number else f"IBAN {self.iban}"]
+        if self.ifsc:
+            parts.append(f"IFSC {self.ifsc}")
+        if self.swift_bic:
+            parts.append(f"SWIFT {self.swift_bic}")
+        return ", ".join(part for part in parts if part)
+
+
+IFSC = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+
+
+def check_ifsc(value):
+    """An IFSC as the RBI shapes it: four letters, a zero, six characters; blank stays blank."""
+    value = (value or "").strip().upper()
+    if value and not IFSC.match(value):
+        raise ValidationError({"ifsc": ["An IFSC is four letters, a zero and six characters: HDFC0001234."]})
+    return value
 
 
 class PaymentTerms(AuditModel):
@@ -982,6 +1005,10 @@ class Company(AuditModel):
     email = models.EmailField(blank=True)
     phone = models.CharField(max_length=32, blank=True)
     website = models.CharField(max_length=255, blank=True)
+    # Where customers pay: printed on the proforma and the invoice.
+    bank_name = models.CharField(max_length=255, blank=True, help_text="The bank and branch customers pay into.")
+    bank_account_number = models.CharField(max_length=64, blank=True)
+    bank_ifsc = models.CharField(max_length=11, blank=True)
     base_currency = models.ForeignKey(
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -1115,8 +1142,18 @@ class Company(AuditModel):
                 "is_base on it, or point the company at the one that is."
             )
 
+    def bank_particulars(self):
+        """Where to pay, as the proforma and the invoice print it; empty until the company says."""
+        if not self.bank_account_number:
+            return ""
+        parts = [self.bank_name, f"A/c {self.bank_account_number}"]
+        if self.bank_ifsc:
+            parts.append(f"IFSC {self.bank_ifsc}")
+        return ", ".join(part for part in parts if part)
+
     def save(self, *args, **kwargs):
         self._check_base_currency()
+        self.bank_ifsc = check_ifsc(self.bank_ifsc)
         existing = Company.objects.first()
         if self._state.adding and existing is not None:
             # Stay a singleton: fold this into the existing row rather than

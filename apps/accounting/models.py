@@ -1029,6 +1029,23 @@ class Payment(AuditModel):
             return True
         return bool(self.journal_entry_id) and self.journal_entry.reversed_by.exists()
 
+    def render_pdf(self):
+        """Remittance advice for money out, a receipt for money in."""
+        from .documents import render_payment_pdf
+
+        return render_payment_pdf(self)
+
+    def email_to_party(self, to=None, subject=None, body=None, user=None):
+        """The advice or the receipt to the party, once posted and standing. Returns the address used."""
+        from apps.core.mail import send_document
+
+        if not self.posted:
+            raise ValidationError("Only a posted payment is advised; post it first.")
+        if self.is_voided():
+            raise ValidationError("This payment is void; nothing of it is sent.")
+        what = "Remittance advice" if self.direction == PaymentDirection.DISBURSEMENT else "Payment receipt"
+        return send_document(self, self.party, what, to=to, subject=subject, body=body, user=user)
+
 
 class BankStatement(AuditModel):
     """

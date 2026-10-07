@@ -9,6 +9,7 @@ from decimal import Decimal
 from reportlab.lib.units import mm
 
 from apps.core.documents import money, render_document, rupees_in_words
+from apps.core.models import Company
 
 
 def render_invoice_pdf(invoice):
@@ -48,11 +49,55 @@ def render_invoice_pdf(invoice):
             f"Amounts shown in {currency.code}. Booked at {invoice.exchange_rate} "
             "to the reporting currency."
         )
+    particulars = Company.get().bank_particulars()
+    if particulars and not invoice.is_credit_note():
+        note = f"{note or ''} Please remit to {particulars}.".strip()
 
     return render_document(
         heading="Credit Note" if invoice.is_credit_note() else "Invoice",
         document=invoice, party=invoice.customer, address=invoice.billing_address,
         meta=meta, totals=totals, note=note, qr=qr,
+    )
+
+
+def _ship_to(order):
+    address = order.shipping_address
+    return address.formatted().replace("\n", ", ") if address else ""
+
+
+def order_note(order, proforma):
+    """What the paper says under its total: what it is and, on a proforma, where to pay."""
+    if proforma:
+        note = ("Proforma invoice: not a tax invoice, and no supply has been made under it. The tax invoice "
+                "follows the delivery.")
+        particulars = Company.get().bank_particulars()
+        if particulars:
+            note += f" Please remit to {particulars}."
+        return note
+    return ("We acknowledge your order as set out above and will advise dispatch. Prices and taxes are as "
+            "agreed; the tax invoice follows the delivery.")
+
+
+def render_order_pdf(order, proforma=False):
+    """The sales order as an acknowledgement, or as a proforma invoice asking for the money."""
+    meta = [
+        ["Number", order.number or "(draft)"],
+        ["Date", order.order_date.strftime("%d %b %Y") if order.order_date else ""],
+    ]
+    if order.reference:
+        meta.append(["Your order", order.reference])
+    if order.payment_terms_id:
+        meta.append(["Terms", order.payment_terms.name])
+    if _ship_to(order):
+        meta.append(["Ship to", _ship_to(order)])
+    totals = [["Subtotal", order.subtotal()]]
+    for tax, amount in sorted(order.tax_breakdown().items(), key=lambda pair: pair[0].code):
+        totals.append([tax.name, amount])
+    totals.append(["Total", order.total()])
+    return render_document(
+        heading="Proforma Invoice" if proforma else "Order Acknowledgement", document=order,
+        party=order.customer, address=order.billing_address, meta=meta, totals=totals,
+        party_label="BILL TO" if proforma else "ORDERED BY", note=order_note(order, proforma),
     )
 
 
