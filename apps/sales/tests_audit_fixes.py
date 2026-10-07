@@ -360,6 +360,25 @@ class QuotationDocumentTests(AuditTestCase):
         self.assertTrue(pdf.startswith(b"%PDF-"))
         self.assertGreater(len(pdf), 1000)
 
+    def test_only_a_draft_or_sent_quote_is_mailed(self):
+        # The mail asked only for lines: mailing an accepted quote set it back to sent, and it was
+        # then accepted into a second order. Declined came back to life; superseded stood twice.
+        for done in ("accepted", "declined", "superseded"):
+            with self.subTest(done=done):
+                quotation = self.make_quotation()
+                if done == "accepted":
+                    quotation.accept(order_date=datetime.date(2026, 3, 2))
+                else:
+                    quotation.mark_sent()
+                    quotation.decline() if done == "declined" else quotation.create_revision()
+                quotation.refresh_from_db()
+                mailed = len(mail.outbox)
+                with self.assertRaisesMessage(ValidationError, "quote cannot be sent"):
+                    quotation.email_to_customer()
+                self.assertEqual(Quotation.objects.get(pk=quotation.pk).status, done)
+                self.assertEqual(len(mail.outbox), mailed)
+        self.assertEqual(SalesOrder.objects.count(), 1)
+
     def test_emailing_sends_the_pdf_and_marks_it_sent(self):
         quotation = self.make_quotation()
         recipient = quotation.email_to_customer()

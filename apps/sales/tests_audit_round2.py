@@ -104,6 +104,29 @@ class SettlementDiscountTests(SalesTestCase):
         with self.assertRaises(ValidationError):
             invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 9))
 
+    def test_a_paid_invoice_is_not_discounted_into_credit(self):
+        # The bill refused a discount beyond what was owed; the invoice never asked, and one paid
+        # in full went to -20.00, a credit the customer was never owed.
+        invoice = self.bill(self.make_order("10", "100"))
+        payment = Payment.objects.create(
+            party=self.customer, direction=PaymentDirection.RECEIPT,
+            payment_date=datetime.date(2026, 3, 8), amount=Decimal("1000"),
+            currency=self.usd, bank_account=self.bank, counterpart_account=self.ar,
+        )
+        payment.post()
+        InvoicePayment.objects.create(invoice=invoice, payment=payment, amount=Decimal("1000"))
+        with self.assertRaisesMessage(ValidationError, "would take it below zero"):
+            invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 8))
+        self.assertEqual(invoice.amount_due(), Decimal("0.00"))
+
+    def test_forcing_waives_the_deadline_not_the_once(self):
+        # The once was asked only where force skips, so a forced second call wrote it off again.
+        invoice = self.bill(self.make_order("10", "100"))
+        invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 8))
+        with self.assertRaisesMessage(ValidationError, "taken already"):
+            invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 9), force=True)
+        self.assertEqual(invoice.amount_due(), Decimal("980.00"))
+
     def test_terms_with_no_discount_offer_none(self):
         plain = PaymentTerms.objects.create(code="NET30", name="Net 30", net_days=30)
         self.customer.payment_terms = plain
