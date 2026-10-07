@@ -1,7 +1,10 @@
 """The purchase order on paper, for the vendor: on the plant's shared layout (apps/core/documents.py)."""
 
+from apps.accounting.trade_terms import freight_meta
 from apps.core.documents import render_document
 from apps.core.models import Company
+
+from .models import VendorProfile
 
 
 def render_purchase_order_pdf(order):
@@ -11,6 +14,12 @@ def render_purchase_order_pdf(order):
     ]
     if order.reference:
         meta.append(["Reference", order.reference])
+    profile = VendorProfile.objects.filter(party_id=order.vendor_id).first()
+    if profile and profile.our_account_number:
+        meta.append(["Our account", profile.our_account_number])
+    if order.payment_terms_id:
+        meta.append(["Terms", order.payment_terms.name])
+    meta += freight_meta(order, "Port of loading")
     expected = sorted({line.expected_date for line in order.lines.all() if line.expected_date})
     if expected:
         meta.append(["Deliver by", expected[0].strftime("%d %b %Y") if len(expected) == 1

@@ -44,12 +44,14 @@ def resolve_purchase_price(item, vendor, quantity=None, currency=None, on_date=N
 
 
 def resolve_lead_time(item, vendor, quantity=None, currency=None, on_date=None):
-    """Days this vendor has agreed to take, or None."""
+    """Days this vendor has agreed to take for this item, else what they usually take, or None."""
+    from .models import VendorProfile
+
     prices = applicable_prices(item, vendor, quantity, currency, on_date)
     for price in prices:
         if price.lead_time_days:
             return price.lead_time_days
-    return None
+    return VendorProfile.objects.filter(party=vendor).values_list("lead_time_days", flat=True).first()
 
 
 def preferred_vendor(item, on_date=None):

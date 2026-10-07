@@ -27,6 +27,7 @@ from apps.accounting.models import (
     Tax,
     round_money,
 )
+from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
     Extensible,
@@ -109,6 +110,71 @@ def _while(document, statuses, change):
 def _whole_save(kwargs):
     """A save of every field, which a document's own steps never make: they name theirs."""
     return kwargs.get("update_fields") is None
+
+
+class VendorStanding(models.TextChoices):
+    APPROVED = "approved", "Approved"
+    TRIAL = "trial", "On trial: an order to them is approved first"
+    BLOCKED = "blocked", "Blocked: no new order"
+
+
+class VendorProfile(AuditModel):
+    """
+    Purchasing's settings for a vendor, the mirror of the customer's
+    profile in sales: whether we buy from them at all, whether their
+    money is held, how their goods travel to us, how long they take.
+    A vendor with no profile is approved, holds nothing and states none.
+    """
+
+    party = models.OneToOneField(Party, on_delete=models.CASCADE, related_name="vendor_profile")
+    standing = models.CharField(max_length=16, choices=VendorStanding.choices, default=VendorStanding.APPROVED)
+    standing_reason = models.CharField(max_length=255, blank=True,
+                                       help_text="Why they are on trial or blocked; whoever meets it is told.")
+    payment_hold = models.BooleanField(
+        default=False, help_text="Nothing is paid to them until it is lifted: a dispute, a quality claim.")
+    payment_hold_reason = models.CharField(max_length=255, blank=True)
+    lead_time_days = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text="How long they usually take, where no agreed price for the item says: planning reads it.")
+    # How their goods travel to us. A new order records them as they are that day, and its paper prints them.
+    freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
+    incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True, help_text="For an import.")
+    port_of_loading = models.CharField(max_length=64, blank=True, help_text="For an import: Shanghai.")
+    our_account_number = models.CharField(max_length=64, blank=True,
+                                          help_text="What they call us: printed on our orders to them.")
+
+    class Meta:
+        permissions = [
+            ("set_vendor_standing", "Can approve, put on trial or block a vendor"),
+            ("hold_vendor_payments", "Can hold or release a vendor's payments"),
+        ]
+
+    def __str__(self):
+        return f"Purchasing profile for {self.party}"
+
+    def save(self, *args, **kwargs):
+        self.standing_reason = self.standing_reason.strip()
+        self.payment_hold_reason = self.payment_hold_reason.strip()
+        if self.standing != VendorStanding.APPROVED and not self.standing_reason:
+            raise ValidationError({"standing_reason": ["Say why they are on trial or blocked."]})
+        if self.payment_hold and not self.payment_hold_reason:
+            raise ValidationError({"payment_hold_reason": ["Say why their payments are held."]})
+        super().save(*args, **kwargs)
+
+
+def vendor_profile(party_id):
+    return VendorProfile.objects.filter(party_id=party_id).first()
+
+
+def refuse_held_payment(payment):
+    """A payment out to a vendor whose payments are held: why it is refused, or None. Money in is taken."""
+    if payment.direction != PaymentDirection.DISBURSEMENT:
+        return None
+    reason = VendorProfile.objects.filter(party_id=payment.party_id, payment_hold=True).values_list(
+        "payment_hold_reason", flat=True).first()
+    if reason is None:
+        return None
+    return f"{payment.party}'s payments are held ({reason}): nothing is paid to them until purchasing lifts it."
 
 
 class VendorPrice(AuditModel):
@@ -1622,6 +1688,12 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         max_length=16, choices=BillPolicy.choices, default=BillPolicy.RECEIVED,
         help_text="Accept a bill for the whole order, or only for what has actually arrived.",
     )
+    # The terms the order was placed on, as the vendor's stood that day: facts of the order, printed on it,
+    # and what its bills take, never re-read from the vendor afterwards.
+    payment_terms = models.ForeignKey(PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+")
+    freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
+    incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True)
+    port_of_loading = models.CharField(max_length=64, blank=True)
 
     class Meta:
         ordering = ["-order_date", "-id"]
@@ -1662,12 +1734,28 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
 
     def save(self, *args, **kwargs):
         self._check_vendor()
-        if self._state.adding and self.vendor_id and not self.currency_id:
-            self.currency = self.vendor.default_currency
+        if self._state.adding and self.vendor_id:
+            if not self.currency_id:
+                self.currency = self.vendor.default_currency
+            self.payment_terms = self.payment_terms or self.vendor.payment_terms
+            profile = vendor_profile(self.vendor_id)
+            if profile:
+                self.freight_terms = self.freight_terms or profile.freight_terms
+                self.incoterm = self.incoterm or profile.incoterm
+                self.port_of_loading = self.port_of_loading or profile.port_of_loading
+        elif self.pk:
+            before = PurchaseOrder.objects.filter(pk=self.pk).values("freight_terms", "incoterm").first()
+            if (before and (before["freight_terms"], before["incoterm"]) != (self.freight_terms, self.incoterm)
+                    and GoodsReceipt.objects.filter(purchase_order=self, posted=True).exists()):
+                # Goods have travelled, and been paid for in the freight, on the terms the order printed.
+                raise ValidationError(f"{self} has goods in; its freight terms and Incoterm cannot change now.")
         super().save(*args, **kwargs)
 
     def approval_reasons(self):
         reasons = []
+        profile = vendor_profile(self.vendor_id)
+        if profile and profile.standing == VendorStanding.TRIAL:
+            reasons.append(f"{self.vendor} is on trial ({profile.standing_reason}): an order to them is approved first.")
         policy = PurchaseApprovalPolicy.active()
         if policy is None:
             return reasons
@@ -1744,8 +1832,13 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         """
         Commit to the order. Until this happens it is a shopping list, and
         goods arriving against a shopping list are goods nobody agreed to
-        buy — the purchasing mirror of confirming a sales order.
+        buy — the purchasing mirror of confirming a sales order, and like it
+        one at a time: two clicks confirmed twice and spent two numbers.
         """
+        profile = vendor_profile(self.vendor_id)
+        if profile and profile.standing == VendorStanding.BLOCKED:
+            raise ValidationError(f"{self.vendor} is blocked ({profile.standing_reason}): no new order is "
+                                  "placed with them until purchasing lifts it.")
         if self.status == OrderStatus.CONFIRMED:
             raise ValidationError("This order is already confirmed.")
         if self.status == OrderStatus.CANCELLED:
@@ -1877,6 +1970,8 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
             purchase_order=self,
             payable_account=payable_account,
             currency=self.currency,
+            # As the order agreed them, not as the vendor's stand today.
+            payment_terms=self.payment_terms,
         )
         for line, remaining in outstanding:
             bill_line = BillLine.objects.create(

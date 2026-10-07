@@ -1,13 +1,15 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.contrib.auth.models import Group
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .api import refused_by_database
 from .audit import AuditableViewSetMixin
 from .scoping import created, refuse_change, refuse_create, scoped, visible_parties
 from .models import (
@@ -105,6 +107,73 @@ def make_party(serializer, role, user):
             PartyRoleAssignment.objects.create(party=party, role=role, created_by=user, updated_by=user)
         created(party, role, user)
     return party
+
+
+class NewPartyViewSet(AuditableViewSetMixin, viewsets.GenericViewSet):
+    """
+    A new party in its trading role in one go: who they are (`party`),
+    where they are (`addresses`), whom to speak to (`contacts`), and the
+    sections the module adds (`ONES`: its tax standing, its terms, its
+    bank). Made together or not at all, so a refused GSTIN does not leave
+    a party with no tax standing behind it, and every refused section is
+    named at once. Each section takes the permission its own screen takes;
+    once made, the party is changed section by section on its page.
+    """
+
+    queryset = Party.objects.all()  # making one takes core.add_party
+    serializer_class = PartySerializer
+    role = None
+    LISTS = (("addresses", AddressSerializer, "core.add_address"),
+             ("contacts", ContactSerializer, "core.add_contact"),
+             ("bank_accounts", PartyBankAccountSerializer, "core.add_partybankaccount"))
+    # (name, serializer, permission, model): a module's one-per-party sections.
+    ONES = ()
+
+    def create(self, request):
+        user, data = request.user, request.data
+        for name, _, needed, *_ in self.LISTS + self.ONES:
+            if data.get(name) and not user.has_perm(needed):
+                raise PermissionDenied(f"Filling in {name} is not yours to do; leave it empty, and whoever "
+                                       f"keeps it fills it in on the {self.role}'s page.")
+        party_given = data.get("party")
+        if not isinstance(party_given, dict):
+            raise DRFValidationError({"party": [f"Say who the {self.role} is."]})
+        party_serializer = self.get_serializer(data=party_given)
+        if not party_serializer.is_valid():
+            raise DRFValidationError({"party": party_serializer.errors})
+        errors = {}
+        with transaction.atomic():
+            party = make_party(party_serializer, self.role, user)
+            context = self.get_serializer_context()
+            sections = [(f"{name}.{i}", serializer, None, row)
+                        for name, serializer, _ in self.LISTS for i, row in enumerate(data.get(name) or [])]
+            # A section the party's scope made already (a rep's own customer profile) is filled in, not made twice.
+            sections += [(name, serializer, model.objects.filter(party=party).first(), data[name])
+                         for name, serializer, _, model in self.ONES if data.get(name)]
+            for key, serializer_class, existing, given in sections:
+                if not isinstance(given, dict):
+                    errors[key] = ["Expected the section's fields."]
+                    continue
+                serializer = serializer_class(existing, data={**given, "party": party.pk},
+                                              partial=existing is not None, context=context)
+                if not serializer.is_valid():
+                    errors[key] = serializer.errors
+                    continue
+                try:
+                    with transaction.atomic():
+                        self.check_section(key.split(".")[0], serializer, existing)
+                        serializer.save(**({"updated_by": user} if existing else {"created_by": user, "updated_by": user}))
+                except DjangoValidationError as exc:
+                    errors[key] = exc.message_dict if hasattr(exc, "error_dict") else {"non_field_errors": exc.messages}
+                except IntegrityError as exc:
+                    errors[key] = {"non_field_errors": refused_by_database(exc)}
+            if errors:
+                # Nothing of it stays: the party and every section saved before the refusal go too.
+                raise DRFValidationError(errors)
+        return Response(self.get_serializer(Party.objects.get(pk=party.pk)).data, status=201)
+
+    def check_section(self, name, serializer, existing):
+        """Hook: refuse what this login may not set in a section, beyond the section's own permission."""
 
 
 class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

@@ -66,6 +66,7 @@ class PurchaseOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerial
         fields = [
             "id", "number", "vendor", "vendor_name", "order_date", "reference", "status",
             "currency", "bill_policy", "lines",
+            "payment_terms", "freight_terms", "incoterm", "port_of_loading",
             "shipping_note", "drop_ship_for", "subcontract_warehouse",
             "receipt_status", "bill_status", "subtotal", "tax_total", "total", "extra",
         ]

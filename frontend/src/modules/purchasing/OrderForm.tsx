@@ -4,6 +4,7 @@ import { Trail } from "../../views/Trail";
 import { useAct, useGet, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ExtraFields } from "../../forms/ExtraFields";
+import { FieldSection } from "../../forms/FieldSection";
 import { ActionButton, DocHeader, Sheet, Steps, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
@@ -14,6 +15,8 @@ import { WarehouseChoice } from "../../forms/WarehouseChoice";
 import { aboveZero } from "../../lib/decimal";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { useRefs } from "../../views/RecordScreen";
+import { orderTermFields } from "../parties/tradeTerms";
 import { SmartButtons } from "../../views/SmartButtons";
 import { purchaseOrderButtons } from "./smart";
 
@@ -39,6 +42,7 @@ interface Approval {
   reasons: string[];
 }
 
+const TERM_FIELDS = orderTermFields("buy");
 const ENDPOINT = "/api/purchasing/purchase-orders/";
 
 function stage(order: PurchaseOrder): number {
@@ -65,6 +69,7 @@ export default function OrderForm() {
   const act = useAct<PurchaseOrder>();
   const approval = useGet<Approval>(`${ENDPOINT}${order?.id}/approval/`, undefined, order?.status === "draft");
 
+  const refs = useRefs(TERM_FIELDS);
   if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   if (!isNew && !order) return <div className="loading">Opening…</div>;
 
@@ -158,6 +163,9 @@ export default function OrderForm() {
               : <output id={fid}>{order?.reference || "—"}</output>}
           </Field>
         </div>
+        {/* The order's own, taken from the party's terms when it was made: a new order has them once it is saved. */}
+        {!isNew && <FieldSection title="Terms" fields={TERM_FIELDS} value={value} set={(key, next) => draft.set(key, next as never)}
+          errors={draft.errors} editable={editable} refs={refs} />}
         <ExtraFields kind="purchasing.purchaseorder" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
 
