@@ -54,6 +54,12 @@ def _maintenance_due(day):
     return len(due_now(as_of=day))
 
 
+def _alerts_open(day):
+    from apps.manufacturing.alerts import AlertStatus, QualityAlert
+
+    return QualityAlert.objects.filter(status=AlertStatus.OPEN, raised_on__lte=day - datetime.timedelta(days=14)).count()
+
+
 def _calibration_due(day):
     from apps.quality.calibration import due
 
@@ -301,6 +307,8 @@ def _backup_stale(day):
 CHECKS = [
     Check("maintenance_due", "Maintenance due", ("manufacturing.view_maintenanceschedule",), "/plant/due",
           _maintenance_due),
+    Check("alerts_open", "Quality alerts open a fortnight or more", ("manufacturing.view_qualityalert",),
+          "/quality/alerts?status=open", _alerts_open),
     Check("calibration_due", "Instruments due for calibration within 30 days", ("quality.view_instrument",),
           "/quality/calibration-due", _calibration_due),
     Check("licences_due", "Licences to renew", ("core.view_licence",), "/settings/licences?renewed_by__isnull=true",

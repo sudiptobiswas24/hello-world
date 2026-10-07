@@ -448,6 +448,47 @@ def due_now(as_of=None, work_centre=None):
     return found
 
 
+def calendar_month(year, month, work_centre=None, today=None):
+    """
+    The month as the maintenance department reads it: each day with the
+    jobs due or done on it and the schedules whose calendar clock runs
+    out on it with no job raised yet. [{date, jobs: [...], due: [...]}].
+    """
+    import calendar
+
+    first = datetime.date(year, month, 1)
+    last = datetime.date(year, month, calendar.monthrange(year, month)[1])
+    today = to_date(today) or timezone.localdate()
+    jobs = MaintenanceJob.objects.filter(cancelled_at__isnull=True).filter(
+        Q(due_on__range=(first, last)) | Q(done_on__range=(first, last)),
+    ).select_related("schedule", "work_centre", "machine").order_by("due_on", "id")
+    schedules = MaintenanceSchedule.objects.filter(is_active=True).select_related("work_centre", "machine")
+    if work_centre is not None:
+        jobs = jobs.filter(work_centre=work_centre)
+        schedules = schedules.filter(work_centre=work_centre)
+    days = {first + datetime.timedelta(days=n): {"date": first + datetime.timedelta(days=n), "jobs": [], "due": []}
+            for n in range((last - first).days + 1)}
+    for job in jobs:
+        day = job.done_on if job.done_on and first <= job.done_on <= last else job.due_on
+        days[day]["jobs"].append({
+            "id": job.pk, "title": job.schedule.name if job.schedule_id else (job.fault or "Maintenance"),
+            "where": job.machine.code if job.machine_id else job.work_centre.code,
+            "is_breakdown": job.is_breakdown, "done": job.done_on is not None,
+            "overdue": job.done_on is None and job.due_on < today, "due_on": job.due_on,
+        })
+    for schedule in schedules:
+        if schedule.jobs.open().exists():
+            continue
+        due = schedule.due_on()
+        if due is not None and first <= due <= last:
+            days[due]["due"].append({
+                "id": schedule.pk, "name": schedule.name,
+                "where": schedule.machine.code if schedule.machine_id else schedule.work_centre.code,
+                "overdue": due < today,
+            })
+    return list(days.values())
+
+
 class MaintenanceLabour(AuditModel):
     """A fitter's time on a job, while it is open."""
 

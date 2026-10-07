@@ -630,6 +630,11 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/plant/StoppageForm"),
       },
       {
+        path: "calendar", label: "Maintenance calendar", permission: "manufacturing.view_maintenancejob",
+        also: ["manufacturing.view_maintenanceschedule"],
+        keywords: "calendar month maintenance due jobs service", load: () => import("../modules/plant/Calendar"),
+      },
+      {
         path: "due", label: "Maintenance due", permission: "manufacturing.view_maintenanceschedule",
         keywords: "preventive service overdue", load: () => import("../modules/plant/Due"),
       },
@@ -687,6 +692,12 @@ export const MODULES: Module[] = [
       {
         path: "batch-status", label: "Batch status", permission: "quality.view_inspection", also: ["inventory.view_lot"],
         keywords: "released held lot status", load: () => import("../modules/quality/BatchStatus"),
+      },
+      {
+        path: "alerts", label: "Quality alerts", permission: "manufacturing.view_qualityalert", create: "manufacturing.add_qualityalert",
+        also: ["manufacturing.view_correctiveaction"],
+        keywords: "alert nonconformance defect found floor hold", load: () => import("../modules/quality/Alerts"),
+        detail: () => import("../modules/quality/AlertForm"),
       },
       {
         path: "complaints", label: "Complaints", permission: "manufacturing.view_complaint", create: "manufacturing.add_complaint",

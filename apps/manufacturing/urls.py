@@ -8,7 +8,7 @@ from .tape_settings_api import TapeRunSettingViewSet
 
 from . import views
 from .station_views import LoomStationViewSet, ScaleReadingViewSet, StationReportViewSet
-from .complaint_views import ComplaintViewSet, CorrectiveActionViewSet
+from .complaint_views import ComplaintViewSet, CorrectiveActionViewSet, QualityAlertViewSet
 from .views import (
     BomSubstituteViewSet,
     CostVersionViewSet,
@@ -74,6 +74,7 @@ router.register("fabric-specifications", FabricSpecificationViewSet)
 router.register("bag-specifications", BagSpecificationViewSet)
 router.register("boms", BillOfMaterialsViewSet)
 router.register("bom-change-orders", BomChangeOrderViewSet)
+router.register("quality-alerts", QualityAlertViewSet)
 router.register("cost-versions", CostVersionViewSet)
 router.register("standard-costs", StandardCostViewSet)
 router.register("bom-components", BomComponentViewSet)

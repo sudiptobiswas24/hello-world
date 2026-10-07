@@ -19,6 +19,7 @@ from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
+from .alerts import QualityAlert
 from .complaints import Complaint, CorrectiveAction, complaints_by, overdue_actions
 
 
@@ -40,7 +41,7 @@ def _employee(pk):
 class CorrectiveActionSerializer(serializers.ModelSerializer):
     class Meta:
         model = CorrectiveAction
-        fields = ["id", "complaint", "kind", "description", "owner", "due_on", "done_on",
+        fields = ["id", "complaint", "alert", "kind", "description", "owner", "due_on", "done_on",
                   "done_note", "verified_on", "verified_by"]
         read_only_fields = ["done_on", "done_note", "verified_on", "verified_by"]
 
@@ -169,9 +170,9 @@ class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class CorrectiveActionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = CorrectiveAction.objects.select_related("complaint", "owner")
+    queryset = CorrectiveAction.objects.select_related("complaint", "alert", "owner")
     serializer_class = CorrectiveActionSerializer
-    filter_fields = ["complaint", "kind", "done_on__isnull"]
+    filter_fields = ["complaint", "alert", "kind", "done_on__isnull"]
     http_method_names = ["get", "post", "delete", "head", "options"]
     action_permission_map = {"done": "manufacturing.change_correctiveaction",
                              "verify": "manufacturing.change_correctiveaction"}
@@ -192,3 +193,74 @@ class CorrectiveActionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def overdue(self, request):
         on_date = parse_date(request.query_params.get("on_date") or "") or None
         return Response(self.get_serializer(overdue_actions(on_date), many=True).data)
+
+
+# --- quality alerts: what the plant finds before a customer does
+
+class QualityAlertSerializer(serializers.ModelSerializer):
+    actions = CorrectiveActionSerializer(many=True, read_only=True)
+    raised_by_name = serializers.CharField(source="raised_by.party.name", read_only=True, default="")
+    owner_name = serializers.CharField(source="owner.party.name", read_only=True, default="")
+    work_centre_code = serializers.CharField(source="work_centre.code", read_only=True, default="")
+    machine_code = serializers.CharField(source="machine.code", read_only=True, default="")
+    item_label = serializers.SerializerMethodField()
+    lot_code = serializers.CharField(source="lot.code", read_only=True, default="")
+    work_order_number = serializers.CharField(source="work_order.number", read_only=True, default="")
+    where = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = QualityAlert
+        fields = ["id", "number", "raised_on", "raised_by", "raised_by_name", "title", "description", "severity",
+                  "status", "work_centre", "work_centre_code", "machine", "machine_code", "item", "item_label",
+                  "lot", "lot_code", "work_order", "work_order_number", "quantity_affected", "owner", "owner_name",
+                  "root_cause", "decided_on", "decided_by", "cancelled_reason", "reopened_reason", "where",
+                  "actions", "created_at"]
+        read_only_fields = ["number", "status", "root_cause", "decided_on", "decided_by", "cancelled_reason",
+                            "reopened_reason"]
+        # Left out, today (QualityAlert.save).
+        extra_kwargs = {"raised_on": {"required": False, "allow_null": True}}
+
+    def get_item_label(self, alert):
+        return f"{alert.item.sku} · {alert.item.name}" if alert.item_id else ""
+
+
+class QualityAlertViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Raised by anyone on the floor; {id}/close/ {root_cause, by}, {id}/cancel/ {reason, by}, {id}/reopen/ {reason}."""
+
+    queryset = QualityAlert.objects.select_related(
+        "work_centre", "machine", "item", "lot", "work_order", "owner__party", "raised_by__party",
+    ).prefetch_related("actions")
+    serializer_class = QualityAlertSerializer
+    filter_fields = ["status", "severity", "work_centre", "machine", "item", "lot", "work_order", "owner"]
+    search_fields = ["number", "title", "description"]
+    date_field = "raised_on"
+    ordering_fields = ["raised_on", "number", "severity"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+    action_permission_map = {
+        "close": "manufacturing.change_qualityalert",
+        "cancel": "manufacturing.change_qualityalert",
+        "reopen": "manufacturing.change_qualityalert",
+    }
+
+    def _answer(self, alert):
+        return Response(self.get_serializer(self.get_queryset().get(pk=alert.pk)).data)
+
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        alert = self.get_object()
+        _run(alert.close, request.data.get("root_cause", ""), _employee(request.data.get("by")),
+             request.data.get("on_date"))
+        return self._answer(alert)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        alert = self.get_object()
+        _run(alert.cancel, request.data.get("reason", ""), _employee(request.data.get("by")),
+             request.data.get("on_date"))
+        return self._answer(alert)
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        alert = self.get_object()
+        _run(alert.reopen, request.data.get("reason", ""))
+        return self._answer(alert)
