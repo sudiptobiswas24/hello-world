@@ -30,7 +30,6 @@ from apps.accounting.models import (
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
     Extensible,
-    Extensible,
     AuditModel,
     Company,
     Currency,
@@ -361,6 +360,13 @@ class RequestForQuotation(AuditModel):
                 "who quoted the whole requirement, or split the RFQ."
             )
 
+        for line in lines:
+            asked = line.requisition_line
+            if asked is not None and line.quantity > asked.quantity - asked.quantity_ordered():
+                raise ValidationError(
+                    f"{asked.item} on {asked.requisition} was ordered in the meantime; "
+                    "cancel that order, or cancel this request.")
+
         order_date = to_date(order_date) or timezone.localdate()
         order = PurchaseOrder.objects.create(
             vendor=invitation.vendor, order_date=order_date,
@@ -384,6 +390,9 @@ class RequestForQuotation(AuditModel):
                     unit_price=quote.unit_price, min_quantity=line.quantity,
                     lead_time_days=quote.lead_time_days, valid_from=order_date,
                 )
+
+        for requisition in {line.requisition_line.requisition for line in lines if line.requisition_line_id}:
+            requisition.mark_ordered()
 
         invitation.awarded = True
         invitation.save(update_fields=["awarded", "updated_at"])
@@ -708,12 +717,22 @@ class PurchaseRequisition(AuditModel):
                 expected_date=self.needed_by,
             )
 
-        if all(
+        self.mark_ordered()
+        return order
+
+    def mark_ordered(self):
+        """Ordered once every line is, by an order made from it or a request awarded on it."""
+        if self.status == RequisitionStatus.APPROVED and all(
             line.quantity_ordered() >= line.quantity for line in self.lines.all()
         ):
             self.status = RequisitionStatus.ORDERED
             self.save(update_fields=["status", "updated_at"])
-        return order
+
+    @serialised("status")
+    def create_rfq(self, lines=None, issue_date=None, response_due=None):
+        """What is left of the approved request, out for quotes on one request for quotation."""
+        return request_quotes(lines if lines is not None else self.lines.all(),
+                              issue_date=issue_date, response_due=response_due)
 
 
 class PurchaseRequisitionLine(AuditModel):
@@ -776,6 +795,86 @@ class PurchaseRequisitionLine(AuditModel):
         return self.order_lines.exclude(
             order__status=OrderStatus.CANCELLED
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+
+    def quantity_quoting(self):
+        """How much of this request is out for quotes on a request not yet awarded or cancelled."""
+        return self.rfq_lines.filter(rfq__status__in=[RfqStatus.DRAFT, RfqStatus.SENT]).aggregate(
+            total=models.Sum("quantity"))["total"] or Decimal("0")
+
+    def quantity_open(self):
+        """What is left to order or to ask about: nothing or more."""
+        return max(self.quantity - self.quantity_ordered() - self.quantity_quoting(), Decimal("0"))
+
+
+def request_quotes(lines, issue_date=None, response_due=None):
+    """
+    One request for quotation for what is left of the approved
+    requisition lines given: not ordered yet, not already out for
+    quotes. The vendor each line had in mind, else the one with the
+    agreed price, is invited; the buyer asks others on the request.
+    Lines from several requisitions make one request, which then names
+    none of them as its own; each line still names its own.
+    """
+    lines = list(lines)
+    with transaction.atomic():
+        if lines:
+            lock_rows(*lines)
+        wanted = []
+        for line in lines:
+            requisition = line.requisition
+            if requisition.status != RequisitionStatus.APPROVED:
+                raise ValidationError(
+                    f"{requisition} is {requisition.get_status_display().lower()}; "
+                    "only an approved requisition is put out for quotes.")
+            left = line.quantity_open()
+            if left > 0:
+                wanted.append((line, left))
+        if not wanted:
+            raise ValidationError("Every line given is ordered already or out for quotes.")
+        requisitions = []
+        for line, _ in wanted:
+            if line.requisition not in requisitions:
+                requisitions.append(line.requisition)
+        rfq = RequestForQuotation.objects.create(
+            requisition=requisitions[0] if len(requisitions) == 1 else None,
+            issue_date=to_date(issue_date) or timezone.localdate(),
+            response_due=to_date(response_due),
+            currency=Currency.objects.filter(is_base=True).first(),
+            description="For " + ", ".join(requisition.number for requisition in requisitions),
+        )
+        vendors = []
+        for line, left in wanted:
+            RfqLine.objects.create(rfq=rfq, item=line.item, uom=line.uom, quantity=left,
+                                   requisition_line=line, notes=line.notes)
+            vendor = line.suggested_vendor or preferred_vendor(line.item, line.requisition.request_date)
+            if vendor is not None and vendor not in vendors:
+                vendors.append(vendor)
+        for vendor in vendors:
+            RfqInvitation.objects.create(rfq=rfq, vendor=vendor)
+    return rfq
+
+
+def open_requisition_lines():
+    """
+    Approved requisition lines with something left to order or to ask
+    about, soonest needed first: [{line, ordered, quoting, open, vendor}],
+    the vendor being the one the line had in mind or the agreed price's.
+    """
+    rows = []
+    lines = PurchaseRequisitionLine.objects.filter(
+        requisition__status=RequisitionStatus.APPROVED,
+    ).select_related("requisition__requested_by", "item", "uom", "suggested_vendor").order_by(
+        models.F("requisition__needed_by").asc(nulls_last=True), "requisition__number", "id")
+    for line in lines:
+        ordered, quoting = line.quantity_ordered(), line.quantity_quoting()
+        left = line.quantity - ordered - quoting
+        if left <= 0:
+            continue
+        rows.append({
+            "line": line, "ordered": ordered, "quoting": quoting, "open": left,
+            "vendor": line.suggested_vendor or preferred_vendor(line.item, line.requisition.request_date),
+        })
+    return rows
 
 
 class SubcontractComponent(AuditModel):
@@ -4671,16 +4770,19 @@ def vendor_performance(start=None, end=None, vendor=None):
     vendors = Party.objects.in_bulk(set(lines.values_list("order__vendor", flat=True)))
 
     rows = {}
-    for pk, vendor_id, quantity, unit_price, expected_date in lines.order_by("pk").values_list(
-            "pk", "order__vendor", "quantity", "unit_price", "expected_date"):
+    for pk, vendor_id, quantity, unit_price, expected_date, order_date in lines.order_by("pk").values_list(
+            "pk", "order__vendor", "quantity", "unit_price", "expected_date", "order__order_date"):
         row = rows.setdefault(vendor_id, {
             "vendor": vendors[vendor_id],
             "order_lines": 0,
             "quantity_ordered": Decimal("0"),
             "quantity_received": Decimal("0"),
+            "quantity_returned": Decimal("0"),
             "dated_quantity": Decimal("0"),
             "on_time_quantity": Decimal("0"),
             "late_days_weighted": Decimal("0"),
+            "lead_quantity": Decimal("0"),
+            "lead_days_weighted": Decimal("0"),
             "price_variance": Decimal("0"),
             "open_lines": 0,
         })
@@ -4691,6 +4793,16 @@ def vendor_performance(start=None, end=None, vendor=None):
         row["quantity_received"] += received
         if received < quantity:
             row["open_lines"] += 1
+
+        # What came back counts against the vendor whatever the reason;
+        # days to deliver run from the order to each delivery, weighted.
+        for receipt_date, returned, moved in receipts[pk]:
+            if returned:
+                row["quantity_returned"] += moved
+            else:
+                row["lead_quantity"] += moved
+                row["lead_days_weighted"] += (
+                    Decimal((to_date(receipt_date) - to_date(order_date)).days) * moved)
 
         if expected_date:
             for receipt_date, returned, moved in receipts[pk]:
@@ -4712,7 +4824,10 @@ def vendor_performance(start=None, end=None, vendor=None):
         dated = row.pop("dated_quantity")
         on_time = row.pop("on_time_quantity")
         late_weighted = row.pop("late_days_weighted")
+        lead_quantity = row.pop("lead_quantity")
+        lead_weighted = row.pop("lead_days_weighted")
         ordered = row["quantity_ordered"]
+        delivered = row["quantity_received"] + row["quantity_returned"]
         results.append({
             **row,
             # None rather than 100%: a vendor never given a date cannot be
@@ -4727,6 +4842,13 @@ def vendor_performance(start=None, end=None, vendor=None):
             "fill_rate": (
                 round_money(row["quantity_received"] / ordered * Decimal("100"))
                 if ordered else None
+            ),
+            "return_rate": (
+                round_money(row["quantity_returned"] / delivered * Decimal("100"))
+                if delivered else None
+            ),
+            "average_lead_days": (
+                round_money(lead_weighted / lead_quantity) if lead_quantity else None
             ),
         })
     return sorted(results, key=lambda row: -row["quantity_ordered"])
