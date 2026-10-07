@@ -28,6 +28,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
@@ -253,7 +254,11 @@ class ComplaintLot(AuditModel):
 
 
 class CorrectiveAction(AuditModel):
-    complaint = models.ForeignKey(Complaint, on_delete=models.PROTECT, related_name="actions")
+    """An action on a complaint or on a quality alert, one or the other: done by its owner, then checked by somebody else."""
+
+    complaint = models.ForeignKey(Complaint, null=True, blank=True, on_delete=models.PROTECT, related_name="actions")
+    alert = models.ForeignKey("manufacturing.QualityAlert", null=True, blank=True, on_delete=models.PROTECT,
+                              related_name="actions")
     kind = models.CharField(max_length=12, choices=ActionKind.choices)
     description = models.CharField(max_length=255)
     owner = models.ForeignKey("hr.Employee", on_delete=models.PROTECT, related_name="+")
@@ -265,15 +270,33 @@ class CorrectiveAction(AuditModel):
                                     on_delete=models.PROTECT, related_name="+", editable=False)
 
     class Meta:
-        ordering = ["complaint", "due_on", "id"]
+        ordering = ["complaint", "alert", "due_on", "id"]
+        constraints = [
+            models.CheckConstraint(
+                check=(Q(complaint__isnull=False, alert__isnull=True) | Q(complaint__isnull=True, alert__isnull=False)),
+                name="corrective_action_on_a_complaint_or_an_alert"),
+        ]
 
     def __str__(self):
-        return f"{self.get_kind_display()} on {self.complaint}: {self.description}"
+        return f"{self.get_kind_display()} on {self.parent()}: {self.description}"
+
+    def parent(self):
+        """The complaint or the alert this action is on, read afresh: its state decides what may change."""
+        if self.complaint_id:
+            return Complaint.objects.get(pk=self.complaint_id)
+        from .alerts import QualityAlert
+
+        return QualityAlert.objects.get(pk=self.alert_id)
+
+    def _check_parent(self):
+        if bool(self.complaint_id) == bool(self.alert_id):
+            raise ValidationError("An action is on a complaint or on a quality alert, one or the other.")
+        parent = self.parent()
+        if not parent.is_open():
+            raise ValidationError(f"{parent} is {parent.status}; reopen it to change it.")
 
     def save(self, *args, **kwargs):
-        complaint = Complaint.objects.get(pk=self.complaint_id)
-        if not complaint.is_open():
-            raise ValidationError(f"{complaint} is {complaint.status}; reopen it to change it.")
+        self._check_parent()
         if not _text(self.description):
             raise ValidationError("Say what the action is.")
         super().save(*args, **kwargs)
@@ -281,9 +304,7 @@ class CorrectiveAction(AuditModel):
     def delete(self, *args, **kwargs):
         if self.done_on is not None:
             raise ValidationError(f"{self} is done; it is part of the record.")
-        complaint = Complaint.objects.get(pk=self.complaint_id)
-        if not complaint.is_open():
-            raise ValidationError(f"{complaint} is {complaint.status}; reopen it to change it.")
+        self._check_parent()
         return super().delete(*args, **kwargs)
 
     @serialised("done_on")
@@ -317,11 +338,12 @@ class CorrectiveAction(AuditModel):
 
 
 def overdue_actions(on_date=None):
-    """Actions not done by their date, on complaints still open."""
+    """Actions not done by their date, on complaints and alerts still open."""
     on_date = to_date(on_date) or timezone.localdate()
     return list(CorrectiveAction.objects.filter(
-        done_on__isnull=True, due_on__lt=on_date, complaint__status=ComplaintStatus.OPEN,
-    ).select_related("complaint", "owner__party").order_by("due_on", "id"))
+        Q(complaint__status=ComplaintStatus.OPEN) | Q(alert__status="open"),
+        done_on__isnull=True, due_on__lt=on_date,
+    ).select_related("complaint", "alert", "owner__party").order_by("due_on", "id"))
 
 
 def complaints_by(start, end, field="category"):
