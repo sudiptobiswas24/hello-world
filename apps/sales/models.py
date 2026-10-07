@@ -70,6 +70,7 @@ from apps.accounting.settlement import (
     post_drawdown,
     post_settlement_fx,
     refuse_other_control_account,
+    settlement_discount_to_take,
 )
 
 from .pricing import resolve_price
@@ -1712,13 +1713,7 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         forever, and dunning chases them for it.
         """
         on_date = to_date(on_date) or timezone.localdate()
-        if not force and not self.discount_is_available(on_date):
-            raise ValidationError(
-                "No settlement discount is available on this invoice at that date."
-            )
-        amount = self.settlement_discount()
-        if amount <= 0:
-            raise ValidationError("These payment terms offer no settlement discount.")
+        amount = settlement_discount_to_take(self, on_date, force)
 
         account = Company.get().settlement_discount_account
         if account is None:
@@ -4614,12 +4609,12 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             return contact.email
         return self.customer.email or ""
 
+    @serialised("status", "number")
     def email_to_customer(self, to=None, subject=None, body=None):
         """Send the quote as a PDF and mark it sent."""
         from django.core.mail import EmailMessage
 
-        if not self.lines.exists():
-            raise ValidationError("Cannot send a quotation with no lines.")
+        self._refuse_unsendable()
         recipient = to or self.recipient_email()
         if not recipient:
             raise ValidationError(
@@ -4713,13 +4708,18 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         super(Quotation, self).save(update_fields=["number", "status", "updated_at"])
         return revision
 
-    @transaction.atomic
-    def mark_sent(self):
-        """Record that the quote went out by some other route (post, in person)."""
+    def _refuse_unsendable(self):
+        # One rule, mailed or marked. The mail asked only for lines, so mailing an accepted quote
+        # set it back to sent, and it could then be accepted into a second order.
         if self.status not in (QuotationStatus.DRAFT, QuotationStatus.SENT):
             raise ValidationError(f"A {self.get_status_display().lower()} quote cannot be sent.")
         if not self.lines.exists():
             raise ValidationError("Cannot send a quotation with no lines.")
+
+    @serialised("status", "number")
+    def mark_sent(self):
+        """Record that the quote went out by some other route (post, in person)."""
+        self._refuse_unsendable()
         self._assign_number()
         self.status = QuotationStatus.SENT
         self.sent_at = timezone.now()

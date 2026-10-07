@@ -424,8 +424,18 @@ class VendorSettlementDiscountTests(AuditTestCase):
     def test_it_cannot_be_taken_twice(self):
         bill = self.discounted_bill()
         bill.take_settlement_discount(on_date=datetime.date(2026, 1, 15))
-        with self.assertRaisesMessage(ValidationError, "No settlement discount is available"):
+        # Refused as taken, not as unavailable: the date was never the reason.
+        with self.assertRaisesMessage(ValidationError, "taken already"):
             bill.take_settlement_discount(on_date=datetime.date(2026, 1, 15))
+
+    def test_forcing_waives_the_deadline_not_the_once(self):
+        # The once was asked only where force skips, so a forced second call took it again.
+        bill = self.discounted_bill()
+        bill.take_settlement_discount(on_date=datetime.date(2026, 1, 15))
+        with self.assertRaisesMessage(ValidationError, "taken already"):
+            bill.take_settlement_discount(on_date=datetime.date(2026, 1, 15), force=True)
+        self.assertEqual(self.balance(self.discount_received), Decimal("-1.00"))
+        self.assertEqual(bill.amount_due(), Decimal("49.00"))
 
     def test_terms_with_no_discount_offer_none(self):
         order = self.make_order("10", "5")

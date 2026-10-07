@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Sum
 
 from apps.accounting.models import Account, AccountType, ChargeType, JournalLine
-from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment
+from apps.core.models import Company, Currency, ExchangeRate, Party, PartyRole, PartyRoleAssignment
 
 from .models import (
     Bill,
@@ -23,6 +23,8 @@ from .models import (
     PurchaseOrderLine,
     billed_not_held,
 )
+from apps.assets.models import AssetCategory
+
 from .tests_lifecycle import PurchasingLifecycleTestCase
 
 
@@ -393,3 +395,208 @@ class ThirdPartyLandedCostTests(ReturnTestCase):
         bill, charge = self.carrier_bill("80")
         with self.assertRaisesMessage(ValidationError, "Name the goods"):
             charge.allocate_landed_cost([])
+
+
+class OneChargeLandsOnceTests(ThirdPartyLandedCostTests):
+    """A freight bill could land on the goods and be capitalised onto a machine as well: 80.00
+    of freight became 80.00 of stock and 80.00 of asset, and the freight account went to -80.00."""
+
+    def setUp(self):
+        super().setUp()
+        accounts = {code: Account.objects.create(code=code, name=name, account_type=kind) for code, name, kind in (
+            ("1500", "Plant", AccountType.ASSET), ("1590", "Accumulated depreciation", AccountType.ASSET),
+            ("6100", "Depreciation", AccountType.EXPENSE), ("7100", "Disposals", AccountType.EXPENSE))}
+        self.category = AssetCategory.objects.create(
+            code="PLANT", name="Plant", asset_account=accounts["1500"], accumulated_account=accounts["1590"],
+            expense_account=accounts["6100"], disposal_account=accounts["7100"], default_life_months=12)
+
+    def test_landed_on_the_goods_it_is_not_also_a_machine(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        charge.allocate_landed_cost([receipt.lines.get()])
+        with self.assertRaisesMessage(ValidationError, "has been landed on stock"):
+            charge.capitalise_as_asset(self.category)
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.balance(self.category.asset_account), Decimal("0"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+
+    def test_on_a_machine_it_does_not_also_land_on_the_goods(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        charge.capitalise_as_asset(self.category)
+        with self.assertRaisesMessage(ValidationError, "is capitalised as a fixed asset"):
+            charge.allocate_landed_cost([receipt.lines.get()])
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.balance(self.category.asset_account), Decimal("80"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+
+    def test_undone_from_the_machine_it_may_land_on_the_goods(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        charge.capitalise_as_asset(self.category)[0].uncapitalise()
+        charge.allocate_landed_cost([receipt.lines.get()])
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.balance(self.category.asset_account), Decimal("0"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+
+    def test_released_from_the_goods_it_may_go_on_a_machine(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        charge.allocate_landed_cost([receipt.lines.get()])[0].release()
+        charge.capitalise_as_asset(self.category)
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.balance(self.category.asset_account), Decimal("80"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+
+
+class WhereTheFreightIsTests(OneChargeLandsOnceTests):
+    """
+    A freight charge's cost sits in one place at a time: the freight account
+    (billed alone), the goods (landed by its own bill, or later), or a
+    machine. A refund, a landing or a capitalisation takes it from where it
+    is. Each used to assume the freight account, at the bill's own figures:
+    a refunded charge still landed, one billed with its goods landed twice,
+    a refund of landed freight emptied an account that never held it, and
+    a euro bill put one figure on the ledger and another on the shelf.
+    """
+
+    def refund(self, bill, quantities=None):
+        return bill.create_debit_note(memo="Refunded", quantities=quantities)
+
+    def freight_in_two(self):
+        bill = Bill.objects.create(vendor=self.carrier, bill_date=datetime.date(2026, 2, 1),
+                                   payable_account=self.payable, currency=self.usd)
+        line = BillLine.objects.create(bill=bill, charge=self.freight, description="Ocean freight",
+                                       quantity=Decimal("2"), unit_price=Decimal("40"),
+                                       expense_account=self.freight_expense)
+        bill.post()
+        return bill, line
+
+    def with_its_goods(self):
+        order, receipt = self.goods_received("10", "5")
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        freight = BillLine.objects.create(bill=bill, charge=self.freight, description="Freight on this lot",
+                                          quantity=Decimal("1"), unit_price=Decimal("80"),
+                                          expense_account=self.freight_expense)
+        bill.post()
+        return bill, freight
+
+    def euro(self):
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("1.10"), valid_from=datetime.date(2026, 1, 1))
+        return eur
+
+    def test_a_refunded_charge_does_not_land(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        self.refund(bill)
+        with self.assertRaisesMessage(ValidationError, "allocated in full, or given back"):
+            charge.allocate_landed_cost([receipt.lines.get()])
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+
+    def test_what_is_left_of_a_part_refunded_charge_lands(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.freight_in_two()
+        self.refund(bill, {charge: Decimal("1")})
+        charge.allocate_landed_cost([receipt.lines.get()])
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("90.00"))
+
+    def test_a_landed_charge_is_released_before_it_is_refunded(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        (application,) = charge.allocate_landed_cost([receipt.lines.get()])
+        with self.assertRaisesMessage(ValidationError, "has been landed on stock. Release that first"):
+            self.refund(bill)
+        application.release()
+        self.refund(bill)
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+        self.assertEqual(self.balance(self.inventory), Decimal("50"))
+
+    def drafted_refund(self, bill, charge):
+        """A vendor's credit note typed in, and left in draft while the charge moves."""
+        note = Bill.objects.create(vendor=self.carrier, bill_date=datetime.date(2026, 2, 5), debits=bill,
+                                   payable_account=self.payable, currency=self.usd)
+        BillLine.objects.create(bill=note, debits_line=charge, charge=self.freight, description="Freight refund",
+                                quantity=Decimal("1"), unit_price=Decimal("80"), expense_account=self.freight_expense)
+        return note
+
+    def test_a_refund_drafted_before_the_landing_is_refused_as_it_posts(self):
+        order, receipt = self.goods_received("10", "5")
+        bill, charge = self.carrier_bill("80")
+        note = self.drafted_refund(bill, charge)
+        charge.allocate_landed_cost([receipt.lines.get()])
+        with self.assertRaisesMessage(ValidationError, "has been landed on stock"):
+            note.post()
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+
+    def test_a_refund_drafted_before_the_capitalising_is_refused_as_it_posts(self):
+        bill, charge = self.carrier_bill("80")
+        note = self.drafted_refund(bill, charge)
+        charge.capitalise_as_asset(self.category)
+        with self.assertRaisesMessage(ValidationError, "was capitalised as fixed assets"):
+            note.post()
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+
+    def test_a_euro_charge_lands_at_the_rate_it_was_booked(self):
+        eur = self.euro()
+        order, receipt = self.goods_received("10", "5")
+        bill = Bill.objects.create(vendor=self.carrier, bill_date=datetime.date(2026, 2, 1),
+                                   payable_account=self.payable, currency=eur)
+        charge = BillLine.objects.create(bill=bill, charge=self.freight, description="Ocean freight",
+                                         quantity=Decimal("1"), unit_price=Decimal("80"),
+                                         expense_account=self.freight_expense)
+        bill.post()
+        self.assertEqual(self.balance(self.freight_expense), Decimal("88.00"))
+        charge.allocate_landed_cost([receipt.lines.get()])
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("138.00"))
+        self.assertEqual(self.balance(self.inventory), Decimal("138.00"))
+
+    def test_a_charge_its_bill_landed_does_not_land_or_capitalise_again(self):
+        bill, freight = self.with_its_goods()
+        other_order, other_receipt = self.goods_received("10", "5")
+        with self.assertRaisesMessage(ValidationError, "when it posted; it is in their cost already"):
+            freight.allocate_landed_cost([other_receipt.lines.get()])
+        with self.assertRaisesMessage(ValidationError, "when it posted; its cost is in their stock value"):
+            freight.capitalise_as_asset(self.category)
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.balance(self.inventory), Decimal("180"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("180.00"))
+
+    def test_a_refund_of_freight_its_bill_landed_comes_off_the_goods(self):
+        bill, freight = self.with_its_goods()
+        self.refund(bill, {freight: Decimal("1")})
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+        self.assertEqual(self.balance(self.inventory), Decimal("50"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+        self.assertEqual(self.balance(self.payable), Decimal("-50"))
+
+    def test_a_full_refund_takes_the_landed_freight_off_the_shelf_too(self):
+        bill, freight = self.with_its_goods()
+        self.refund(bill)
+        self.assertEqual(self.balance(self.inventory), Decimal("50"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+
+    def test_a_euro_bills_landed_freight_is_one_figure_on_shelf_and_ledger(self):
+        self.vendor.default_currency = self.euro()
+        self.vendor.save()
+        self.with_its_goods()
+        self.assertEqual(self.balance(self.inventory), Decimal("143.00"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("143.00"))
+
+    def test_what_is_left_of_a_part_refunded_line_is_capitalised(self):
+        bill, charge = self.freight_in_two()
+        self.refund(bill, {charge: Decimal("1")})
+        (asset,) = charge.capitalise_as_asset(self.category)
+        self.assertEqual(asset.cost, Decimal("40.00"))
+        self.assertEqual(self.balance(self.freight_expense), Decimal("0"))
+
+    def test_a_line_refunded_in_full_is_not_capitalised(self):
+        bill, charge = self.carrier_bill("80")
+        self.refund(bill)
+        with self.assertRaisesMessage(ValidationError, "given back in full"):
+            charge.capitalise_as_asset(self.category)
+        self.assertEqual(self.balance(self.category.asset_account), Decimal("0"))

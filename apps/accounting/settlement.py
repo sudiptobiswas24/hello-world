@@ -307,6 +307,32 @@ def unapplied(payments):
     ).filter(unallocated__gt=0)
 
 
+def settlement_discount_to_take(document, on_date, force=False):
+    """
+    The early-settlement discount an invoice or a bill may take now: once,
+    whatever `force` says (forcing waives the deadline, not the once),
+    something, and no more than is still owed.
+
+    Each side kept its own copy and each lacked a rule the other had: a
+    forced second call took a discount twice, and an invoice already paid
+    in full was discounted into credit the customer was never owed.
+    """
+    if document.settlement_discount_entry_id is not None or document.settlement_discount_amount:
+        raise ValidationError(f"{document.number}'s settlement discount is taken already.")
+    if not force and not document.discount_is_available(on_date):
+        raise ValidationError(f"No settlement discount is available on {document.number} at that date.")
+    amount = document.settlement_discount()
+    if amount <= 0:
+        raise ValidationError("These payment terms offer no settlement discount.")
+    due = document.amount_due()
+    if amount > due:
+        raise ValidationError(
+            f"Only {due} is outstanding on {document.number}; a discount of {amount} would take it "
+            "below zero. Settle it without the discount."
+        )
+    return amount
+
+
 def refuse_other_control_account(payment, account, document):
     """
     A payment settles a document only through the account the document
