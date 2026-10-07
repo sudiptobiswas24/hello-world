@@ -1,8 +1,8 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 
-import { ApiError, list, type Page, type Query } from "../api/client";
+import { ApiError, get, list, type Page, type Query } from "../api/client";
 import { useAct } from "../api/hooks";
 import { csvText, downloadCsv } from "../lib/csv";
 import { count, date, money, quantity } from "../lib/format";
@@ -56,7 +56,96 @@ export interface ListAction {
 }
 
 const SIZES = [50, 100, 200];
-const RESERVED = new Set(["q", "page", "size", "ordering"]);
+// Not narrowings: where in the list one is, and how it is looked at. "group" is what it is grouped by.
+const RESERVED = new Set(["q", "page", "size", "ordering", "group"]);
+const SAVED = "/api/core/saved-filters/";
+
+interface SavedRow { id: number; name: string; query: Record<string, string> }
+
+/** What one narrowing reads as: "Customer: Acme", "From: 01 Mar 2026". */
+function described(key: string, value: string, labels: Record<string, string>, sample: Record<string, unknown> | undefined) {
+  const label = key === "from" ? "From" : key === "to" ? "To"
+    : labels[key] ?? key.replace(/__/g, " ").replace(/_/g, " ").replace(/^./, (first) => first.toUpperCase());
+  const named = sample?.[`${key}_name`];
+  const shown = key === "from" || key === "to" ? date(value)
+    : value === "true" ? "Yes" : value === "false" ? "No"
+    : typeof named === "string" && named ? named
+    : /^\d+$/.test(value) ? `#${value}` : value;
+  return `${label}: ${shown}`;
+}
+
+/**
+ * How the list is narrowed now, each removable, with a way back to all of
+ * it; and the person's own kept views of this list, opened with a click
+ * and kept from what is on the screen. A list narrowed from another page
+ * (a customer's orders) says so, rather than looking like the whole list.
+ */
+function Narrowing({ endpoint, loose, sample, filtered, keepable, onRemove }: {
+  endpoint: string;
+  loose: [string, string][];
+  sample: Record<string, unknown> | undefined;
+  filtered: boolean;
+  keepable: boolean;
+  onRemove: (key: string) => void;
+}) {
+  const [params, setParams] = useSearchParams();
+  const location = useLocation();
+  const act = useAct<unknown>();
+  const labelsQuery = useQuery({
+    queryKey: ["reference", "summary-labels", endpoint],
+    queryFn: async ({ signal }) => {
+      const reply = await get<{ by?: { key: string; label: string }[] }>("/api/web/summary/", { endpoint }, signal);
+      return Object.fromEntries((reply.by ?? []).map((entry) => [entry.key, entry.label]));
+    },
+    enabled: loose.length > 0,
+    staleTime: Infinity,
+  });
+  const saved = useQuery({
+    queryKey: ["list", SAVED, { screen: location.pathname }],
+    queryFn: async ({ signal }) => (await list<SavedRow>(SAVED, { screen: location.pathname, page_size: 200 }, signal)).rows,
+    staleTime: 60_000,
+  });
+  const [naming, setNaming] = useState<string | null>(null);
+  const keep = async () => {
+    const query = Object.fromEntries([...params.entries()].filter(([key]) => key !== "page"));
+    const outcome = await act.run("POST", SAVED, { screen: location.pathname, name: naming, query }, { done: "View kept" });
+    if (outcome.ok) setNaming(null);
+  };
+  const labels = labelsQuery.data ?? {};
+  const views = saved.data ?? [];
+  if (!filtered && views.length === 0) return null;
+  return (
+    <div className="narrowing" role="group" aria-label="How the list is narrowed">
+      {loose.map(([key, value]) => (
+        <span key={key} className="facet on chip">
+          {described(key, value, labels, sample)}
+          <button type="button" aria-label={`Stop narrowing by ${key}`} onClick={() => onRemove(key)}>×</button>
+        </span>
+      ))}
+      {filtered && (
+        <button type="button" className="facet clear" onClick={() => setParams(new URLSearchParams())}>Clear</button>
+      )}
+      {views.map((view) => (
+        <span key={view.id} className="facet saved">
+          <button type="button" className="link" onClick={() => setParams(new URLSearchParams(view.query))}>★ {view.name}</button>
+          <button type="button" aria-label={`Forget the view ${view.name}`}
+            onClick={() => void act.run("DELETE", `${SAVED}${view.id}/`, undefined, { done: "View forgotten" })}>×</button>
+        </span>
+      ))}
+      {keepable && naming === null && (
+        <button type="button" className="facet" onClick={() => setNaming("")}>Keep this view</button>
+      )}
+      {naming !== null && (
+        <form className="keep-view" onSubmit={(event) => { event.preventDefault(); void keep(); }}>
+          <input aria-label="Name of the view" value={naming} autoFocus placeholder="Unpaid over 60 days"
+            onChange={(event) => setNaming(event.target.value)} />
+          <button type="submit" className="btn primary" disabled={act.pending || !naming.trim()}>Keep</button>
+          <button type="button" className="btn" onClick={() => setNaming(null)}>Cancel</button>
+        </form>
+      )}
+    </div>
+  );
+}
 
 export function cell<T>(column: Column<T>, row: T): ReactNode {
   if (column.render) return column.render(row);
@@ -105,7 +194,8 @@ export function ListView<T>(props: ListViewProps<T>) {
   });
 
   const [typed, setTyped] = useState(q);
-  const [grouping, setGrouping] = useState(false);
+  const groupParam = params.get("group");
+  const grouping = groupParam !== null;
   useEffect(() => setTyped(q), [q]);
   useEffect(() => {
     if (typed === q) return;
@@ -198,6 +288,9 @@ export function ListView<T>(props: ListViewProps<T>) {
   const last = Math.min(page * size, total);
   const rows = result.data?.rows ?? [];
   const filtered = Boolean(q) || Object.keys(narrowing).length > 0;
+  // A narrowing a facet already shows as on is not said twice.
+  const shownByFacets = new Set(facets.filter((facet) => facetOn(facet)).flatMap((facet) => Object.keys(facet.params)));
+  const loose = Object.entries(narrowing).filter(([key]) => !shownByFacets.has(key));
   // Every row the list would show, page after page, as a file: what the
   // screen shows and nothing it does not.
   const [exporting, setExporting] = useState(false);
@@ -233,7 +326,7 @@ export function ListView<T>(props: ListViewProps<T>) {
           <button type="button" className="btn" disabled={exporting} onClick={() => void exportAll()}>CSV</button>
         )}
         {total > 0 && (
-          <button type="button" className="btn" aria-pressed={grouping} onClick={() => setGrouping((on) => !on)}>Group</button>
+          <button type="button" className="btn" aria-pressed={grouping} onClick={() => set({ group: grouping ? null : "*" })}>Group</button>
         )}
         <div className="search">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
@@ -274,14 +367,15 @@ export function ListView<T>(props: ListViewProps<T>) {
               {facet.label}
             </button>
           ))}
-          {filtered && (
-            <button type="button" className="facet clear" onClick={() => setParams(new URLSearchParams())}>
-              Clear
-            </button>
-          )}
         </div>
       )}
-      {grouping && <Grouped title={title} endpoint={endpoint} narrowing={{ ...fixed, ...narrowing, search: q }} />}
+      <Narrowing endpoint={endpoint} loose={loose} sample={rows[0] as Record<string, unknown> | undefined} filtered={filtered}
+        keepable={filtered || grouping} onRemove={(name) => set({ [name]: null })} />
+      {grouping && (
+        <Grouped title={title} endpoint={endpoint} narrowing={{ ...fixed, ...narrowing, search: q }}
+          by={groupParam && groupParam !== "*" ? groupParam : ""} onBy={(by) => set({ group: by || "*" })}
+          onDrill={(changes) => set({ ...changes, group: null })} />
+      )}
       <div className={result.isFetching && !result.isPending ? "progress on" : "progress"} />
       {result.isError ? (
         <ErrorPanel error={result.error} retry={() => void result.refetch()} />
