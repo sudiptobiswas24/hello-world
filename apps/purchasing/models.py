@@ -66,6 +66,7 @@ from apps.accounting.settlement import (
     booked_beside,
     settlement_discount_to_take,
     standing_on_account,
+    withdraw_discount,
     undone_by_note,
 )
 from apps.inventory.valuation import (
@@ -2871,6 +2872,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
     )
+    settlement_discount_withdrawn = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="Of the discount for paying early, what was taken back when the payment that earned it "
+                  "was returned.",
+    )
+    settlement_discount_withdrawal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+    )
     # On a debit note: the settlement discount on its bill it undid, rather than claim it back from
     # the vendor as cash we never paid. Facts of the note's posting.
     reversed_discount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"), editable=False)
@@ -3076,6 +3085,29 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return (to_date(as_of) or timezone.localdate()) <= deadline
 
+    def settlement_discount_standing(self):
+        """The discount for paying early, less what notes undid of it and what was withdrawn."""
+        undone = sum((note.reversed_discount for note in self.debit_notes.filter(posted=True)), Decimal("0"))
+        return (self.settlement_discount_amount or Decimal("0")) - undone - self.settlement_discount_withdrawn
+
+    @serialised("settlement_discount_withdrawn", "settlement_discount_withdrawal_entry")
+    def withdraw_unearned_discount(self, on_date=None):
+        """
+        Take back the discount for paying early once the payment that earned it is returned and the
+        bill owes again; None where nothing stands or other payments still settle it. Asked under the
+        lock: two returns at once take it back once.
+        """
+        standing = self.settlement_discount_standing()
+        if standing <= 0 or self.amount_due() <= 0:
+            return None
+        entry = withdraw_discount(self, self.payable_account, self.vendor, standing, to_date(on_date) or timezone.localdate(),
+                                  f"Settlement discount on {self.number} withdrawn: its payment was returned")
+        self.settlement_discount_withdrawn += standing
+        self.settlement_discount_withdrawal_entry = entry
+        super(Bill, self).save(update_fields=[
+            "settlement_discount_withdrawn", "settlement_discount_withdrawal_entry", "updated_at"])
+        return entry
+
     @serialised("settlement_discount_amount", "settlement_discount_entry")
     def take_settlement_discount(self, on_date=None, force=False):
         """
@@ -3188,7 +3220,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         taken = bill.settlement_discount_amount or Decimal("0")
         _, discount = undone_by_note(
             self.total(), self.amount_absorbed(), write_off=Decimal("0"),
-            discount=taken - sum((note.reversed_discount for note in earlier), Decimal("0")),
+            discount=taken - bill.settlement_discount_withdrawn
+            - sum((note.reversed_discount for note in earlier), Decimal("0")),
             discount_taken=taken, document_total=bill.total(),
             whole=sum((note.total() for note in earlier), self.total()) >= bill.total())
         if not discount:
@@ -3209,7 +3242,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """Paid, discounted, met from a prepayment or deducted as tax: not debited."""
         return (
             self.amount_paid()
-            + (self.settlement_discount_amount or Decimal("0"))
+            + (self.settlement_discount_amount or Decimal("0")) - self.settlement_discount_withdrawn
             + self.amount_prepaid()
             + self.amount_tds()
         )
@@ -4899,7 +4932,7 @@ def bills_still_owed(bills):
         notes=(Bill.objects.filter(posted=True), "debits"),
         drawdowns=[(PrepaymentApplication.objects.all(), "bill"),
                    (TdsDeduction.objects.filter(reversed_entry__isnull=True), "bill")],
-        reductions=("settlement_discount_amount",),
+        reductions=("settlement_discount_amount", "-settlement_discount_withdrawn"),
     )
     unrecorded = bills.filter(posted=True, debits__isnull=True, posted_total__isnull=True)
     asked = [bill.pk for bill in unrecorded.prefetch_related(*BILL_FIGURES) if bill.amount_due() > 0]
@@ -5193,6 +5226,13 @@ def vendor_balance(vendor):
     received, paid_out = standing_on_account(
         Payment.objects.filter(party=vendor, counterpart_account__in=payable_accounts()))
     return owed - refundable - paid_out + received
+
+
+def withdraw_discounts_a_void_unearned(payment, on_date):
+    """Our payment returned: each bill it settled with a discount for paying early, owing again, loses it."""
+    for allocation in payment.bill_allocations.select_related("bill"):
+        if allocation.bill.settlement_discount_entry_id:
+            allocation.bill.withdraw_unearned_discount(on_date=on_date)
 
 
 def payable_accounts():
