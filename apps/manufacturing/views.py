@@ -1935,13 +1935,14 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = JobWorkChallan.objects.select_related("job_worker").prefetch_related(
         "lines__operation__work_order")
-    action_permission_map = {"send": "manufacturing.change_jobworkchallan"}
     serializer_class = JobWorkChallanSerializer
     filter_fields = ["job_worker", "posted"]
     search_fields = ["number", "job_worker__name", "vehicle"]
     date_field = "challan_date"
     ordering_fields = ["challan_date", "number"]
+    # One map: a second assignment of it here dropped "send", which then took add_ rather than change_.
     action_permission_map = {
+        "send": "manufacturing.change_jobworkchallan",
         "post": "manufacturing.change_jobworkchallan",
         "void": "manufacturing.change_jobworkchallan",
     }

@@ -152,8 +152,10 @@ class DropShipReceiptTests(DropShipTestCase):
     def test_the_cost_goes_straight_to_cost_of_sales(self):
         sale, order = self.drop_shipped("10")
 
-        self.receive(order, "10")
+        receipt = self.receive(order, "10")
 
+        # Kept on the receipt, so it is returned rather than reversed from the journal.
+        self.assertEqual(receipt.journal_entry.lines.get(account=self.cogs).debit, Decimal("60.00"))
         self.assertEqual(self.balance(self.cogs), Decimal("60"))
         self.assertEqual(self.balance(self.inventory), Decimal("0"))
         self.assertEqual(self.balance(self.grni), Decimal("-60"))
