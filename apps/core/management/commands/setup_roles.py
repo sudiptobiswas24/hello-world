@@ -575,6 +575,22 @@ for _role, _permissions in ROLES.items():
         _permissions.append("sales.view_every_customer")
 
 
+# A vendor's purchasing terms are the buyers' to keep; whether we buy from
+# them at all is the approver's (and quality's), and whether their money is
+# held is accounts'. The clerk who keeps the freight does not unblock them.
+for _role, _extra in (
+        ("Purchasing Clerk", ["purchasing.view_vendorprofile", "purchasing.add_vendorprofile",
+                              "purchasing.change_vendorprofile"]),
+        ("AP Manager", ["purchasing.view_vendorprofile", "purchasing.add_vendorprofile", "purchasing.change_vendorprofile",
+                        "purchasing.set_vendor_standing", "purchasing.hold_vendor_payments"]),
+        ("Controller", ["purchasing.view_vendorprofile", "purchasing.add_vendorprofile", "purchasing.change_vendorprofile",
+                        "purchasing.delete_vendorprofile", "purchasing.set_vendor_standing",
+                        "purchasing.hold_vendor_payments"]),
+        ("Quality Manager", ["purchasing.view_vendorprofile", "purchasing.change_vendorprofile",
+                             "purchasing.set_vendor_standing"])):
+    ROLES[_role] = [*ROLES[_role], *_extra]
+
+
 # Files kept with a record are everyone's to read and add where they may
 # read the record (apps/core/attachments.py); removing another person's
 # is a manager's.

@@ -1,4 +1,5 @@
 import type { FieldDef } from "../../views/RecordScreen";
+import { freightTerms, INCOTERMS } from "../parties/tradeTerms";
 
 type Row = Record<string, unknown>;
 
@@ -8,15 +9,8 @@ export const INDUSTRIES: [string, string][] = [
   none, ["cement", "Cement"], ["fertiliser", "Fertiliser"], ["food_grain", "Food grain"], ["sugar", "Sugar"],
   ["salt", "Salt"], ["feed", "Animal feed"], ["chemicals", "Chemicals"], ["other", "Other"],
 ];
-export const FREIGHT_TERMS: [string, string][] = [
-  none, ["ex_works", "Ex works: they collect"], ["for_destination", "FOR destination: we deliver, the freight is ours"],
-  ["to_pay", "To pay: we send, they pay the transporter"],
-];
-export const INCOTERMS: [string, string][] = [
-  none, ["EXW", "EXW: ex works"], ["FCA", "FCA: free carrier"], ["FOB", "FOB: free on board"],
-  ["CFR", "CFR: cost and freight"], ["CIF", "CIF: cost, insurance and freight"], ["DAP", "DAP: delivered at place"],
-  ["DDP", "DDP: delivered duty paid"],
-];
+export const FREIGHT_TERMS = freightTerms("sell");
+export { INCOTERMS };
 
 const PRICE_LIST: FieldDef["ref"] = {
   endpoint: "/api/sales/price-lists/", permission: "sales.view_pricelist", label: (row: Row) => String(row.name),

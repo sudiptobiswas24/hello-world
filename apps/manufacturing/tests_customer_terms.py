@@ -16,7 +16,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
-from apps.sales.documents import freight_meta
+from apps.accounting.trade_terms import freight_meta
 from apps.sales.models import CustomerProfile, Delivery, DeliveryLine, SalesOrder, SalesOrderLine
 
 from .tests_bales import BaleTestCase
