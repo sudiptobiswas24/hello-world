@@ -333,6 +333,35 @@ def settlement_discount_to_take(document, on_date, force=False):
     return amount
 
 
+def undone_by_note(note_total, absorbed, write_off, discount, discount_taken, document_total, whole):
+    """
+    What a credit or debit note undoes of the settlements on its document
+    that moved no money: (write-off, discount).
+
+    A note first clears what is still owed (absorbed). Past that it undoes
+    a write-off standing, which is the unpaid part given up; then the
+    settlement discount, in proportion to what it gives back of the
+    document, since the discount was a price for paying early, and all of
+    what stands once the notes give back the whole (`whole`). Only the
+    rest is owed back as cash. Counted as paid, a written-off invoice
+    credited in full owed the customer the 1,000 they never paid, and a
+    discount came back as cash on top of what was paid, on either side.
+    """
+    rest = max(note_total - absorbed, Decimal("0"))
+    undo_write_off = min(rest, max(write_off, Decimal("0")))
+    rest -= undo_write_off
+    undo_discount = Decimal("0")
+    if discount > 0 and rest > 0:
+        share = discount if whole else round_money(rest * discount_taken / document_total)
+        undo_discount = min(share, discount, rest)
+    return undo_write_off, undo_discount
+
+
+def booked_beside(entry, control_account):
+    """Where an entry put its other side: the account a write-off or a discount went to, as it was booked."""
+    return next(line.account for line in entry.lines.select_related("account") if line.account_id != control_account.pk)
+
+
 def refuse_other_control_account(payment, account, document):
     """
     A payment settles a document only through the account the document

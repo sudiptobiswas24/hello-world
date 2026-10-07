@@ -506,3 +506,37 @@ class BilledNotHeldTests(AuditTestCase):
         receipt.create_return(debit_bills=False)
 
         self.assertEqual(bill.match_report()[0]["billed_not_held"], Decimal("10"))
+
+
+class DebitAfterDiscountTests(VendorSettlementDiscountTests):
+    """
+    A debit note on a bill paid with a discount: the vendor owes back what
+    we paid, and the discount is undone, in proportion to what the note
+    gives back. It used to claim the discount back as cash never paid.
+    """
+
+    def paid_with_discount(self):
+        from apps.accounting.models import Payment, PaymentDirection
+
+        from .models import BillPayment
+
+        bank = Account.objects.create(code="1011", name="Bank", account_type=AccountType.ASSET)
+        bill = self.discounted_bill()
+        payment = Payment.objects.create(party=self.vendor, direction=PaymentDirection.DISBURSEMENT,
+                                         amount=Decimal("49"), payment_date=datetime.date(2026, 1, 15),
+                                         bank_account=bank, counterpart_account=self.payable, currency=self.usd)
+        payment.post()
+        BillPayment.objects.create(bill=bill, payment=payment, amount=Decimal("49"))
+        bill.take_settlement_discount(on_date=datetime.date(2026, 1, 15))
+        return bill
+
+    def test_debited_in_full_the_vendor_owes_back_what_was_paid(self):
+        bill = self.paid_with_discount()
+        note = bill.create_debit_note(memo="All back")
+        self.assertEqual((note.reversed_discount, note.refund_due()), (Decimal("1.00"), Decimal("49.00")))
+        self.assertEqual((self.balance(self.payable), self.balance(self.discount_received)), (Decimal("49"), Decimal("0")))
+
+    def test_debited_in_part_the_discount_comes_back_in_proportion(self):
+        bill = self.paid_with_discount()
+        note = bill.create_debit_note(memo="One back", quantities={bill.lines.get(): Decimal("1")})
+        self.assertEqual((note.reversed_discount, note.refund_due()), (Decimal("0.10"), Decimal("4.90")))

@@ -63,7 +63,9 @@ from apps.accounting.settlement import (
     post_drawdown,
     post_settlement_fx,
     refuse_other_control_account,
+    booked_beside,
     settlement_discount_to_take,
+    undone_by_note,
 )
 from apps.inventory.valuation import (
     cogs_account_for,
@@ -2850,6 +2852,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
     )
+    # On a debit note: the settlement discount on its bill it undid, rather than claim it back from
+    # the vendor as cash we never paid. Facts of the note's posting.
+    reversed_discount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"), editable=False)
+    settlement_reversal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+    )
 
     class Meta:
         ordering = ["-bill_date", "-id"]
@@ -3134,7 +3142,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             (allocation.amount for allocation in self.payment_allocations.all()),
             Decimal("0"),
         )
-        return self.total() - self.amount_absorbed() - refunded
+        return self.total() - self.amount_absorbed() - self.reversed_discount - refunded
 
     def amount_due(self):
         if self.is_debit_note():
@@ -3146,6 +3154,37 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         paid = self._settled_otherwise()
         offset = min(self.amount_debited(), max(self.total() - paid, Decimal("0")))
         return self.total() - paid - offset
+
+    def _undo_settlements_without_money(self):
+        """
+        Past what it clears of its bill, a debit note undoes the settlement
+        discount still standing on it before the vendor owes anything back:
+        the discount was never paid, so it is not claimed back as cash.
+        The mirror of the credit note's. Dr where the discount was booked /
+        Cr payables, at the bill's rate.
+        """
+        bill = self.debits
+        lock_rows(bill)
+        earlier = list(bill.debit_notes.filter(posted=True).exclude(pk=self.pk))
+        taken = bill.settlement_discount_amount or Decimal("0")
+        _, discount = undone_by_note(
+            self.total(), self.amount_absorbed(), write_off=Decimal("0"),
+            discount=taken - sum((note.reversed_discount for note in earlier), Decimal("0")),
+            discount_taken=taken, document_total=bill.total(),
+            whole=sum((note.total() for note in earlier), self.total()) >= bill.total())
+        if not discount:
+            return
+        base = round_money(discount * (bill.exchange_rate or Decimal("1")))
+        memo = f"{self.number} undoes the discount taken on {bill.number}"
+        entry = JournalEntry.objects.create(date=self.bill_date, reference=self.number, memo=memo)
+        JournalLine.objects.create(entry=entry, account=booked_beside(bill.settlement_discount_entry, bill.payable_account),
+                                   party=self.vendor, debit=base, description=memo[:255])
+        JournalLine.objects.create(entry=entry, account=bill.payable_account, party=self.vendor, credit=base,
+                                   description=memo[:255])
+        entry.post()
+        self.reversed_discount = discount
+        self.settlement_reversal_entry = entry
+        super(Bill, self).save(update_fields=["reversed_discount", "settlement_reversal_entry", "updated_at"])
 
     def _settled_otherwise(self):
         """Paid, discounted, met from a prepayment or deducted as tax: not debited."""
@@ -3487,6 +3526,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         ])
 
         self._record_landed_cost()
+        if self.is_debit_note():
+            self._undo_settlements_without_money()
 
         # Draw down the order's prepayments automatically. Leaving it to
         # the caller means the day someone forgets, the vendor is paid the
