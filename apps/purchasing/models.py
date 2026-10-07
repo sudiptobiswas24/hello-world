@@ -3116,7 +3116,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     super(BillLine, line).save(update_fields=[
                         "accrued_doc", "accrued_base", "updated_at",
                     ])
-                debits.append((account, round_money(base), label))
+                debits.append((account, round_money(base), label, None))
                 variance_total += net - round_money(doc)
                 # What the accrual is worth at this bill's rate, against
                 # what it was booked at: the rate moved between the goods
@@ -3131,13 +3131,13 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 if not shares:
                     # Nothing on this bill to absorb it — a freight-only
                     # bill, say. Expense it rather than refuse.
-                    debits.append((account, round_money(net * rate), label))
+                    debits.append((account, round_money(net * rate), label, line.cost_centre))
                 else:
                     for item_pk, amount in shares.items():
                         account = inventory_account_for(Item.objects.get(pk=item_pk))
-                        debits.append((account, round_money(amount * rate), f"{label} (landed)"))
+                        debits.append((account, round_money(amount * rate), f"{label} (landed)", None))
             else:
-                debits.append((account, round_money(net * rate), label))
+                debits.append((account, round_money(net * rate), label, line.cost_centre))
 
         if variance_total:
             # Purchase price variance goes to the P&L rather than revaluing
@@ -3150,7 +3150,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     f"This bill differs from the agreed price by {variance_total} and the "
                     "company has no purchase price variance account configured."
                 )
-            debits.append((account, round_money(variance_total * rate), "Price variance"))
+            debits.append((account, round_money(variance_total * rate), "Price variance", None))
 
         if exchange_total:
             company = Company.get()
@@ -3166,7 +3166,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     f"{'loss' if exchange_total > 0 else 'gain'} account "
                     "configured to put it in."
                 )
-            debits.append((account, exchange_total, "Exchange difference"))
+            debits.append((account, exchange_total, "Exchange difference", None))
 
         # Input tax is an asset, not a cost: VAT paid to a vendor is
         # reclaimable, so it is debited to the tax's paid_account rather
@@ -3191,9 +3191,9 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     # nothing on what the vendor is paid.
                     tax_totals[tax.reverse_charge_account] -= amount
         for account, amount in tax_totals.items():
-            debits.append((account, round_money(amount * rate), "Tax"))
+            debits.append((account, round_money(amount * rate), "Tax", None))
 
-        payable_total = sum(amount for _, amount, _ in debits)
+        payable_total = sum(amount for _, amount, _, _ in debits)
         JournalLine.objects.create(
             entry=entry,
             account=self.payable_account,
@@ -3202,7 +3202,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             credit=Decimal("0") if reverse else payable_total,
             description=f"{'Debit note' if reverse else 'Bill'} {self.number}",
         )
-        for account, amount, description in debits:
+        for account, amount, description, centre in debits:
             if not amount:
                 continue
             # A favourable variance — the vendor billed less than agreed —
@@ -3214,7 +3214,7 @@ class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 entry=entry, account=account, party=self.vendor,
                 debit=negative if reverse else positive,
                 credit=positive if reverse else negative,
-                description=description,
+                description=description, cost_centre=centre,
             )
         return entry
 
@@ -3700,6 +3700,10 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where a line lands when it expenses. A stocked line that a "
                   "receipt accrued for clears GRNI instead and needs none.",
+    )
+    cost_centre = models.ForeignKey(
+        "accounting.CostCentre", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The centre this expense is for; carried onto the ledger line when the bill posts.",
     )
     posted_account = models.ForeignKey(
         Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",

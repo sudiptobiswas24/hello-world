@@ -11,6 +11,8 @@ import { minus, positive, sum } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 
+interface Centre { id: number; code: string; name: string }
+
 interface Line {
   id: number;
   account: number;
@@ -20,6 +22,8 @@ interface Line {
   debit: string;
   credit: string;
   description: string;
+  cost_centre?: number | null;
+  cost_centre_name?: string;
 }
 
 interface Entry {
@@ -58,6 +62,7 @@ export default function JournalForm() {
   const draft = useDraft<Entry>(isNew ? ({ date: today(), reference: "", memo: "" } as unknown as Entry) : entry);
   const act = useAct<Entry>();
   const [account, setAccount] = useState<number | null>(null);
+  const [centre, setCentre] = useState<number | null>(null);
   const [side, setSide] = useState<"debit" | "credit">("debit");
   const [amount, setAmount] = useState("");
   const [words, setWords] = useState("");
@@ -81,7 +86,7 @@ export default function JournalForm() {
   };
   const addLine = async () => {
     if (!entry || !account || !positive(amount || "0")) return;
-    const outcome = await act.run("POST", LINES, { entry: entry.id, account, [side]: amount, description: words }, { done: "Line added" });
+    const outcome = await act.run("POST", LINES, { entry: entry.id, account, [side]: amount, description: words, cost_centre: centre }, { done: "Line added" });
     if (outcome.ok) {
       setAccount(null);
       setAmount("");
@@ -134,13 +139,14 @@ export default function JournalForm() {
         {entry && (
           <div className="lines">
             <table>
-              <thead><tr><th scope="col">Account</th><th scope="col">Party</th><th scope="col">Line</th><th scope="col" className="k-money">Debit</th><th scope="col" className="k-money">Credit</th>{editable && <th />}</tr></thead>
+              <thead><tr><th scope="col">Account</th><th scope="col">Party</th><th scope="col">Line</th><th scope="col">Centre</th><th scope="col" className="k-money">Debit</th><th scope="col" className="k-money">Credit</th>{editable && <th />}</tr></thead>
               <tbody>
                 {entry.lines.map((line) => (
                   <tr key={line.id}>
                     <td><Link to={`/accounts/chart/${line.account}`}>{line.account_code}</Link> {line.account_name}</td>
                     <td>{line.party_name}</td>
                     <td>{line.description}</td>
+                    <td>{line.cost_centre_name || "—"}</td>
                     <td className="k-money">{positive(line.debit) ? money(line.debit) : ""}</td>
                     <td className="k-money">{positive(line.credit) ? money(line.credit) : ""}</td>
                     {editable && (
@@ -161,6 +167,10 @@ export default function JournalForm() {
                 </select>
                 <DecimalInput places={2} value={amount} onChange={setAmount} aria-label="Amount" className="qty" />
                 <input aria-label="Line description" placeholder="Line description" value={words} onChange={(e) => setWords(e.target.value)} />
+                {can("accounting.view_costcentre") && (
+                  <RecordPicker<Centre> endpoint="/api/accounting/cost-centres/" value={centre} onChange={(next) => setCentre(next)}
+                    label={(row) => `${row.code} · ${row.name}`} fixed={{ is_active: "true" }} placeholder="Cost centre" ariaLabel="Cost centre" />
+                )}
                 <button type="submit" className="btn" disabled={!account || !positive(amount || "0") || act.pending}>Add line</button>
               </form>
             )}

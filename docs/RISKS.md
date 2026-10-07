@@ -289,3 +289,11 @@ not cover, or is deleted with the commit that finishes it.
     `updated_by` and `updated_at` on the record and no line in its
     history; a mail shown as sent went to the mail server, which is not
     the same as being read.
+36. **A cost centre is stamped when a line posts, and only where
+    something named it.** A bill line's centre, a department's on its
+    wages, a hand journal's as typed. Stock postings, the work order's
+    conversion, depreciation and tax carry none and read as
+    unallocated on the costs-by-centre report rather than being spread
+    by a rule nobody agreed. The report foots to the profit and loss
+    account's expenses, so the unallocated figure is the honest size of
+    what the plant has not yet said who spent.

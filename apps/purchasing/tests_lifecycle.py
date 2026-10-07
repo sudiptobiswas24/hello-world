@@ -275,3 +275,22 @@ class BillTermsAndCurrencyTests(PurchasingLifecycleTestCase):
         self.assertEqual(
             note.journal_entry.lines.get(account=self.payable).debit, Decimal("60.00")
         )
+
+
+class CostCentreOnTheBillTests(PurchasingLifecycleTestCase):
+    def test_the_expense_line_carries_the_centre_it_names_and_the_payable_does_not(self):
+        from apps.accounting.analytic import CostCentre
+
+        loom = CostCentre.objects.create(code="LOOM", name="Loom shed")
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 10), payable_account=self.payable)
+        BillLine.objects.create(bill=bill, item=self.item, quantity=Decimal("2"), unit_price=Decimal("50"),
+                                expense_account=self.expense, cost_centre=loom)
+        BillLine.objects.create(bill=bill, item=self.item, quantity=Decimal("1"), unit_price=Decimal("10"),
+                                expense_account=self.expense)
+        bill.post()
+        lines = bill.journal_entry.lines.order_by("pk")
+        self.assertEqual([(line.account_id, line.debit, line.credit, line.cost_centre_id) for line in lines], [
+            (self.payable.pk, Decimal("0.00"), Decimal("110.00"), None),
+            (self.expense.pk, Decimal("100.00"), Decimal("0.00"), loom.pk),
+            (self.expense.pk, Decimal("10.00"), Decimal("0.00"), None),
+        ])

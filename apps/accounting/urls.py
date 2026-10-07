@@ -6,6 +6,7 @@ from .banking_api import BankStatementLineViewSet, BankStatementViewSet
 from .charges_api import ChargeTypeViewSet
 
 from .views import (
+    CostCentreViewSet,
     FinancialStatementViewSet,
     AccountViewSet,
     FiscalPositionTaxMappingViewSet,
@@ -20,6 +21,7 @@ from .views import (
 
 router = DefaultRouter()
 router.register("accounts", AccountViewSet)
+router.register("cost-centres", CostCentreViewSet)
 router.register("journal-entries", JournalEntryViewSet)
 router.register("journal-lines", JournalLineViewSet)
 router.register("taxes", TaxViewSet)

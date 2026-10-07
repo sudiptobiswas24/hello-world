@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from .analytic import CostCentre
 from .models import (
     Account,
     FiscalPosition,
@@ -21,15 +22,22 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "name", "account_type", "parent", "currency", "is_active"]
 
 
+class CostCentreSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CostCentre
+        fields = ["id", "code", "name", "is_active", "note"]
+
+
 class JournalLineSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
     party_name = serializers.CharField(source="party.name", read_only=True, default="")
+    cost_centre_name = serializers.CharField(source="cost_centre.name", read_only=True, default="")
 
     class Meta:
         model = JournalLine
         fields = ["id", "entry", "account", "account_code", "account_name", "party", "party_name",
-                  "debit", "credit", "description"]
+                  "debit", "credit", "description", "cost_centre", "cost_centre_name"]
 
     def validate(self, attrs):
         debit = attrs.get("debit", getattr(self.instance, "debit", 0)) or 0

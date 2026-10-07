@@ -1,4 +1,5 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
+import { COST_CENTRE } from "../accounts/refs";
 
 type Row = Record<string, unknown>;
 
@@ -20,6 +21,7 @@ export default function DepartmentForm() {
         { key: "name", label: "Name" },
         { key: "manager", label: "Manager", kind: "pick", pick: EMPLOYEE },
         { key: "cost_centre", label: "Cost centre", kind: "pick", pick: ACCOUNT, hint: "Where this department's payroll is charged" },
+        { key: "centre", label: "Analytic centre", kind: "pick", pick: COST_CENTRE, hint: "The cost centre its wages are read under; stamped on the ledger when a run posts" },
       ]}
     />
   );

@@ -192,7 +192,7 @@ export default function BillForm() {
         {bill && (
           <>
             <Lines lines={bill.lines} endpoint="/api/purchasing/bill-lines/" parent="bill" parentId={bill.id} side="purchase"
-              editable={!bill.posted && can("purchasing.change_bill")} />
+              editable={!bill.posted && can("purchasing.change_bill")} centres={can("accounting.view_costcentre")} />
             <Totals rows={[
               ["Untaxed", bill.subtotal], ["Tax", bill.tax_total], ["Total", bill.total, true],
               ...(bill.posted && !bill.debits ? [

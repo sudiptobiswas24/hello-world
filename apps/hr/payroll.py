@@ -547,13 +547,19 @@ class PayRun(AuditModel):
 
         debits, credits = {}, {}
 
-        def add(bucket, account, amount):
+        def add(bucket, key, amount):
+            # Debits are keyed (account, centre): wages read by the
+            # department's cost centre in the analytic view. Credits are
+            # what is owed, by account alone.
+            account = key[0] if isinstance(key, tuple) else key
             if account is None or not amount:
                 return
-            bucket[account] = bucket.get(account, Decimal("0")) + amount
+            bucket[key] = bucket.get(key, Decimal("0")) + amount
 
         net_total = Decimal("0")
         for slip in slips:
+            department = slip.employee.department
+            centre = department.centre if department is not None else None
             for line in slip.lines.all():
                 account = line.resolve_account()
                 # Where it landed is a fact from here on, not something a
@@ -574,11 +580,11 @@ class PayRun(AuditModel):
                                        "updated_at"]
                     )
                 if line.kind == ComponentKind.EARNING:
-                    add(debits, account, line.amount)
+                    add(debits, (account, centre), line.amount)
                 elif line.kind == ComponentKind.DEDUCTION:
                     add(credits, account, line.amount)
                 else:
-                    add(debits, account, line.amount)
+                    add(debits, (account, centre), line.amount)
                     add(credits, line.component.liability_account, line.amount)
             net_total += slip.net()
 
@@ -587,10 +593,10 @@ class PayRun(AuditModel):
         entry = JournalEntry.objects.create(
             date=self.pay_date, reference=self.number, memo=label[:255]
         )
-        for account, amount in debits.items():
+        for (account, centre), amount in debits.items():
             JournalLine.objects.create(
                 entry=entry, account=account, debit=round_money(amount),
-                description=label[:255],
+                description=label[:255], cost_centre=centre,
             )
         for account, amount in credits.items():
             JournalLine.objects.create(

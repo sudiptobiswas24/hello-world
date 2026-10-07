@@ -13,6 +13,7 @@ from apps.core.audit import AuditableViewSetMixin
 
 from decimal import Decimal, InvalidOperation
 
+from .analytic import CostCentre
 from .reports import balance_sheet, profit_and_loss, trial_balance
 from .models import (
     Account,
@@ -27,6 +28,7 @@ from .models import (
     compute_taxes,
 )
 from .serializers import (
+    CostCentreSerializer,
     AccountSerializer,
     FiscalPositionSerializer,
     FiscalPositionTaxMappingSerializer,
@@ -37,6 +39,23 @@ from .serializers import (
     TaxGroupSerializer,
     TaxSerializer,
 )
+
+
+class CostCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """The analytic dimension (analytic.py): the centres, and ?from=&to= `report/` of posted expenses by centre."""
+
+    search_fields = ["code", "name"]
+    filter_fields = ["is_active"]
+    ordering_fields = ["code", "name"]
+    queryset = CostCentre.objects.all()
+    serializer_class = CostCentreSerializer
+    action_permission_map = {"report": "accounting.view_journalentry"}
+
+    @action(detail=False, methods=["get"])
+    def report(self, request):
+        from .analytic import costs_by_centre
+
+        return Response(costs_by_centre(request.query_params.get("from") or None, request.query_params.get("to") or None))
 
 
 class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

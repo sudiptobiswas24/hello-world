@@ -77,12 +77,13 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 class BillLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     # What the line is called: its description, else its charge or item.
     label = serializers.CharField(read_only=True)
+    cost_centre_name = serializers.CharField(source="cost_centre.name", read_only=True, default="")
 
     class Meta:
         model = BillLine
         fields = [
             "id", "bill", "order_line", "item", "description", "quantity", "unit_price",
-            "discount_percent", "taxes", "expense_account",
+            "discount_percent", "taxes", "expense_account", "cost_centre", "cost_centre_name",
             "charge", "label",
             "gross_amount", "discount_amount", "net_amount", "tax_total", "total",
         ]

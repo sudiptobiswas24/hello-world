@@ -299,6 +299,7 @@ class JournalEntry(AuditModel):
                 debit=line.credit,
                 credit=line.debit,
                 description=line.description,
+                cost_centre=line.cost_centre,
             )
         reversal.post()
         return reversal
@@ -313,6 +314,10 @@ class JournalLine(AuditModel):
     debit = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
     credit = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"))
     description = models.CharField(max_length=255, blank=True)
+    cost_centre = models.ForeignKey(
+        "accounting.CostCentre", null=True, blank=True, on_delete=models.PROTECT, related_name="lines",
+        help_text="The centre that incurred a cost, stamped when the line was posted (analytic.py).",
+    )
 
     class Meta:
         constraints = [
@@ -1356,4 +1361,5 @@ class BankStatementLine(AuditModel):
 
 
 from .gst import GstSettings  # noqa: E402,F401
+from .analytic import CostCentre  # noqa: E402,F401
 from .tds import TdsSection  # noqa: E402,F401

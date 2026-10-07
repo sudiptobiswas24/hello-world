@@ -60,6 +60,11 @@ class Department(AuditModel):
         help_text="Where this department's payroll is charged. Falls back to the "
                   "company default when blank.",
     )
+    centre = models.ForeignKey(
+        "accounting.CostCentre", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The cost centre this department's wages are read under in the analytic view "
+                  "(accounting/analytic.py); stamped on the payroll's ledger lines when a run posts.",
+    )
 
     class Meta:
         ordering = ["code"]

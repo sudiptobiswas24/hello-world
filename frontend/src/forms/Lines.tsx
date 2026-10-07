@@ -44,6 +44,8 @@ export interface ExtraColumn {
   render: (line: TradeLine) => string;
 }
 
+interface Centre { id: number; code: string; name: string }
+
 /**
  * The lines of an order, a quotation or an invoice: the same arithmetic
  * on all three, so one editor. While the document is a draft a line is
@@ -53,7 +55,7 @@ export interface ExtraColumn {
  * A new line needs only an item and a quantity: the server resolves the
  * price from the price list, as it would for a line typed in elsewhere.
  */
-export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable }: {
+export function Lines({ lines, endpoint, parent, parentId, editable, extra = [], withUom, side = "sales", closable, centres }: {
   lines: TradeLine[];
   endpoint: string; // /api/sales/sales-order-lines/
   parent: string; // "order", "quotation", "invoice"
@@ -65,6 +67,8 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
   side?: "sales" | "purchase";
   /** A confirmed order's lines may be closed short (and reopened) by whoever may change it. */
   closable?: boolean;
+  /** Purchase lines name the cost centre their expense is for (accounting/analytic.py). */
+  centres?: boolean;
 }) {
   const act = useAct();
   const taxes = useReference<Tax>("/api/accounting/taxes/");
@@ -107,6 +111,7 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
             <th scope="col" className="k-quantity">Disc. %</th>
             <th scope="col">Taxes</th>
             {extra.map((column) => <th key={column.label} scope="col" className="k-quantity">{column.label}</th>)}
+            {centres && <th scope="col">Cost centre</th>}
             <th scope="col" className="k-money">Amount</th>
             {editable && <th scope="col" aria-label="Remove" />}
             {closable && <th scope="col">Rest</th>}
@@ -145,6 +150,15 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
                 ) : line.taxes.map(taxCode).join(", ")}
               </td>
               {extra.map((column) => <td key={column.label} className="k-quantity">{column.render(line)}</td>)}
+              {centres && (
+                <td>
+                  {editable ? (
+                    <RecordPicker<Centre> endpoint="/api/accounting/cost-centres/" value={(line.cost_centre as number | null) ?? null}
+                      onChange={(next) => patch(line, { cost_centre: next })} label={(row) => `${row.code} · ${row.name}`}
+                      fixed={{ is_active: "true" }} placeholder="Centre" ariaLabel={`Cost centre of ${line.label || line.description}`} />
+                  ) : String(line.cost_centre_name ?? "") || "—"}
+                </td>
+              )}
               <td className="k-money">{money(line.net_amount)}</td>
               {editable && (
                 <td>
@@ -169,7 +183,7 @@ export function Lines({ lines, endpoint, parent, parentId, editable, extra = [],
             </tr>
           ))}
           {lines.length === 0 && (
-            <tr><td colSpan={7 + extra.length + (closable ? 1 : 0)} className="empty-line">No lines yet.</td></tr>
+            <tr><td colSpan={7 + extra.length + (closable ? 1 : 0) + (centres ? 1 : 0)} className="empty-line">No lines yet.</td></tr>
           )}
         </tbody>
       </table>

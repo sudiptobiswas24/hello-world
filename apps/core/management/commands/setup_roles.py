@@ -25,7 +25,7 @@ REFERENCE = [
     *view("core", "currency", "exchangerate", "unitofmeasure", "country", "party",
           "address", "contact", "paymentterms", "paymenttermsline", "company"),
     *view("inventory", "item", "itemunit", "warehouse", "lot"),
-    *view("accounting", "account", "tax", "taxgroup", "fiscalposition", "partytaxprofile"),
+    *view("accounting", "account", "tax", "taxgroup", "fiscalposition", "partytaxprofile", "costcentre"),
 ]
 
 # What anyone on the floor or planning it reads: how things are made.
@@ -44,6 +44,7 @@ HOW_IT_IS_MADE = [
 # ledger or to stock.
 ROLES = {
     "Bookkeeper": [
+        *crud("accounting", "costcentre"),
         *REFERENCE,
         *crud("assets", "fixedasset", actions=("view",)),
         *crud("assets", "depreciationentry", actions=("view",)),
@@ -61,6 +62,7 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        *crud("accounting", "costcentre"),
         *REFERENCE,
         *crud("accounting", "account"),
         *crud("accounting", "journalentry"),

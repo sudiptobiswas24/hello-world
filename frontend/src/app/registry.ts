@@ -718,6 +718,16 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/accounts/Ledger"),
       },
       {
+        path: "cost-centres", label: "Cost centres", permission: "accounting.view_costcentre", create: "accounting.add_costcentre",
+        keywords: "cost centre analytic department shed line", load: () => import("../modules/accounts/CostCentres"),
+        detail: () => import("../modules/accounts/CostCentreForm"),
+      },
+      {
+        path: "costs-by-centre", label: "Costs by centre", permission: "accounting.view_journalentry",
+        also: ["accounting.view_costcentre"],
+        keywords: "cost centre expenses analytic report", load: () => import("../modules/accounts/CostsByCentre"),
+      },
+      {
         path: "journals", label: "Journal entries", permission: "accounting.view_journalentry", create: "accounting.add_journalentry",
         keywords: "journal voucher jv", load: () => import("../modules/accounts/Journals"),
         detail: () => import("../modules/accounts/JournalForm"),

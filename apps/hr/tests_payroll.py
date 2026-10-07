@@ -672,3 +672,21 @@ class SignConstraintTests(PayrollTestCase):
                 basis=ComponentBasis.FIXED, description="Negative",
                 rate=Decimal("1"), amount=Decimal("-50"),
             )
+
+
+class CostCentreOnWagesTests(PayrollTestCase):
+    def test_wages_carry_the_departments_centre_and_what_is_owed_carries_none(self):
+        from apps.accounting.analytic import CostCentre
+
+        loom = CostCentre.objects.create(code="LOOM", name="Loom shed")
+        weaving = Department.objects.create(code="WEAVE", name="Weaving", centre=loom)
+        office = Department.objects.create(code="OFF", name="Office")
+        weaver, clerk = self.employee("W1", department=weaving), self.employee("C1", department=office)
+        self.pay(weaver, self.salary, "5000")
+        self.pay(clerk, self.salary, "3000")
+        run = self.pay_run()
+        run.calculate()
+        entry = run.post()
+        debits = sorted((line.debit, line.cost_centre_id) for line in entry.lines.filter(debit__gt=0))
+        self.assertEqual(debits, [(Decimal("3000.00"), None), (Decimal("5000.00"), loom.pk)])
+        self.assertEqual({line.cost_centre_id for line in entry.lines.filter(credit__gt=0)}, {None})
