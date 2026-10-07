@@ -231,6 +231,7 @@ class Command(BaseCommand):
         "purchasing.PurchaseOrderLine.requisition_line": "set when a requisition is ordered",
         "purchasing.PurchaseOrderLine.sales_order_line": "set by drop-shipping a sale",
         "purchasing.PurchaseOrderLine.blanket_line": "set when a blanket order is called off",
+        "core.SavedFilter.user": "a kept view is its keeper's: whoever is signed in",
     }
 
     def unsettable_fields(self, labels):
