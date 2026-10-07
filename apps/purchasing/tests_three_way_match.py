@@ -49,6 +49,18 @@ class DrawdownTests(MatchTestCase):
         with self.assertRaisesMessage(ValidationError, "already fully billed"):
             order.create_bill(self.payable)
 
+    def test_billed_before_its_goods_it_cannot_be_cancelled(self):
+        # Cancelling asked only about goods: billed as ordered, the order was cancelled with its
+        # bill still owed. Sales refuses an invoiced order; a debit note clears the way.
+        order = self.make_order("10", "5")
+        order.bill_policy = BillPolicy.ORDERED
+        order.save()
+        bill = self.bill_from(order)
+        with self.assertRaisesMessage(ValidationError, "has been billed and the order cannot be cancelled"):
+            order.cancel()
+        bill.create_debit_note(memo="Order called off")
+        order.cancel()
+
     def test_a_partial_receipt_bills_only_what_arrived(self):
         order = self.make_order("10", "5")
         self.receive(order, "4")
