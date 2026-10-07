@@ -2853,6 +2853,10 @@ class InvoicePayment(AuditModel):
         related_name="+", editable=False,
         help_text="Realised exchange difference posted when this allocation was made.",
     )
+    fx_released_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Its payment returned: the exchange difference it realised, reversed on that day.",
+    )
 
     class Meta:
         ordering = ["-id"]
@@ -2959,11 +2963,23 @@ class InvoicePayment(AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.fx_entry_id:
+        if self.fx_entry_id and not self.fx_released_entry_id:
             self.fx_entry.create_reversal(
                 memo=f"Releasing exchange difference on {self}"
             )
         super().delete(*args, **kwargs)
+
+    def release_exchange_difference(self, on_date):
+        """
+        Its payment returned, the difference it realised never was: reversed on that day, once.
+        Left standing, the receivable kept it after the void, at a
+        rate the money never came at, and the gain or loss stayed in the profit and loss.
+        """
+        if self.fx_entry_id and not self.fx_released_entry_id:
+            self.fx_released_entry = self.fx_entry.create_reversal(
+                entry_date=on_date,
+                memo=f"Exchange difference on {self.invoice.number} released: {self.payment.number} returned")
+            super(InvoicePayment, self).save(update_fields=["fx_released_entry", "updated_at"])
 
 
 class DepositApplication(AuditModel):
@@ -3106,9 +3122,14 @@ def outstanding_balance(customer):
     return owed - sum((note.refund_due() for note in notes), Decimal("0")) - received + paid_out
 
 
-def withdraw_discounts_a_void_unearned(payment, on_date):
-    """A receipt returned: each invoice it settled with a discount for paying early, owing again, loses it."""
-    for allocation in payment.invoice_allocations.select_related("invoice"):
+def undo_what_it_settled(payment, on_date):
+    """
+    A receipt returned (Payment.void asks; accounting imports nothing here), on the void's day: the
+    exchange difference each allocation realised is released, and an invoice it settled with a
+    discount for paying early, owing again, loses the discount.
+    """
+    for allocation in payment.invoice_allocations.select_related("invoice", "fx_entry"):
+        allocation.release_exchange_difference(on_date)
         if allocation.invoice.settlement_discount_entry_id:
             allocation.invoice.withdraw_unearned_discount(on_date=on_date)
 
