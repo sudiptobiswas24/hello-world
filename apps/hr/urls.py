@@ -2,6 +2,7 @@ from rest_framework.routers import DefaultRouter
 
 from .attendance_api import AttendanceDayViewSet
 from .contract_labour_api import ContractWorkerViewSet, LabourContractorViewSet
+from .people_api import ApplicantViewSet, AppraisalViewSet, ExpenseClaimViewSet, ExpenseLineViewSet, JobOpeningViewSet
 
 from .payroll_views import (
     CompensationViewSet,
@@ -31,5 +32,10 @@ router.register("gratuity", GratuityView, basename="gratuity")
 router.register("labour-contractors", LabourContractorViewSet)
 router.register("contract-workers", ContractWorkerViewSet)
 router.register("attendance", AttendanceDayViewSet)
+router.register("expense-claims", ExpenseClaimViewSet)
+router.register("expense-lines", ExpenseLineViewSet)
+router.register("appraisals", AppraisalViewSet)
+router.register("job-openings", JobOpeningViewSet)
+router.register("applicants", ApplicantViewSet)
 
 urlpatterns = router.urls

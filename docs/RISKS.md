@@ -408,3 +408,10 @@ not cover, or is deleted with the commit that finishes it.
     the way a complaint does. The cost is that an alert closed on a root
     cause alone leaves nothing to verify later; the health board counts
     alerts open a fortnight, not alerts closed too easily.
+48. **An expense claim is paid by a journal, not through payables.**
+    The payment debits each line's expense account and credits the cash
+    or bank account chosen, on the claim; nothing sits in a creditors
+    control account, so a claim does not age and is not part of a
+    payment run. Paid from the wrong account, it is reversed and paid
+    again. And hiring an applicant makes a party whose code is the
+    employee number given: pick it as the office numbers its people.
