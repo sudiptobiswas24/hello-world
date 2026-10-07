@@ -27,13 +27,15 @@ class AttachmentsInTheBrowserTests(BrowserTestCase):
         carries_every_customer(rep)
         lead = Lead.objects.create(company_name="Shree Cement", source="exhibition")
         page = self.sign_in(rep, f"/app/sales/leads/{lead.pk}")
-        attachments = page.locator("section.related", has_text="Attachments")
+        # By the panel's name, as a person finds it: the trail's panels changed their look once, and a
+        # class this test leaned on went with it.
+        attachments = page.get_by_role("region", name="Attachments")
         expect(attachments).to_contain_text("None yet.")
         attachments.locator("input[type=file]").set_input_files({
             "name": "enquiry.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 twenty thousand sacks a month",
         })
         expect(attachments.locator("tbody")).to_contain_text("enquiry.pdf")
-        expect(page.locator("section.related", has_text="History").locator("tbody")).to_contain_text("Attached")
+        expect(page.get_by_role("region", name="History")).to_contain_text("Attached")
         kept = Attachment.objects.get()
         self.assertEqual((kept.name, kept.size, kept.created_by), ("enquiry.pdf", 38, rep))
         opened = page.request.get(f"{self.live_server_url}/api/core/attachments/{kept.pk}/download/")
