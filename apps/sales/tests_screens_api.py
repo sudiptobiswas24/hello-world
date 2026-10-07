@@ -380,6 +380,21 @@ class StillOwedAgreesWithAmountDueTests(ScreensTestCase):
         settled["deposit and cash"] = self.bill(order)
         self.allocate(self.receipt("500"), settled["deposit and cash"], "500")
 
+        from apps.accounting.models import Account, AccountType, TdsSection
+
+        goods = TdsSection.objects.create(
+            code="194Q", name="Purchase of goods", rate_percent=Decimal("0.1"), no_pan_rate_percent=Decimal("5"),
+            mode="excess", annual_threshold=Decimal("5000000"), receivable_account=Account.objects.create(
+                code="1450", name="TDS receivable", account_type=AccountType.ASSET))
+        settled["paid less tax withheld"] = invoice()
+        settled["paid less tax withheld"].record_tds(goods, "10")
+        self.allocate(self.receipt("990"), settled["paid less tax withheld"], "990")
+        owed["tax withheld and reversed"] = invoice()
+        reversed_later = owed["tax withheld and reversed"]
+        withheld = reversed_later.record_tds(goods, "10")
+        self.allocate(self.receipt("990"), reversed_later, "990")
+        withheld.reverse()
+
         answer = set(still_owed(Invoice.objects.all()).values_list("pk", flat=True))
         for name, document in owed.items():
             self.assertIn(document.pk, answer, f"{name}: due {document.amount_due()}")
