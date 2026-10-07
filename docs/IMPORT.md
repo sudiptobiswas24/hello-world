@@ -91,7 +91,9 @@ manager's employee number, in this file or already in), `job_title`,
 `email`, `username` (the login: made if new, linked if it exists and
 is no one else's), `roles` (role names separated by `;`, such as
 `Line Manager;Employee Self Service`; needs `username`), `sales_rep`
-(`yes` makes them a sales rep, who can then carry customers).
+(`yes` makes them a sales rep, who can then carry customers), `uan`
+(provident fund, twelve digits) and `esi_number` (the ESI IP number,
+ten digits): the monthly PF and ESI files name each person by these.
 
 With `--commit`, `--passwords-out <file>` is required: each new login's
 first password is written there, readable only by whoever ran the
