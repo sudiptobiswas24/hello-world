@@ -14,6 +14,7 @@ from decimal import Decimal
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.core.models import (
     Company,
@@ -334,3 +335,101 @@ class ReconcileTests(ReconciliationTestCase):
 
         with self.assertRaisesMessage(ValidationError, "already closed"):
             statement.close()
+
+
+class ReturnedPaymentTests(ReconciliationTestCase):
+    """
+    A cheque the bank returned unpaid: the payment is voided, and the
+    bank's line taking it back is matched as its return, on that month's
+    statement or a later one. Nothing could explain that line before:
+    matching refused a voided payment, and posting it took the money off
+    the books a second time, so the statement never closed.
+    """
+
+    def february(self, opening):
+        return BankStatement.objects.create(
+            bank_account=self.bank, start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
+            opening_balance=Decimal(opening), closing_balance=Decimal("0"))
+
+    def test_a_cheque_returned_on_next_months_statement(self):
+        cheque = self.receipt("1000")
+        january = self.statement(closing="1000")
+        self.line(january, "1000").match(cheque)
+        january.close()
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 2, 3))
+        february = self.february("1000")
+        returned = self.line(february, "-1000", on=datetime.date(2026, 2, 3))
+        returned.match(cheque)
+        self.assertEqual(returned.returned_payment, cheque)
+        february.close()
+        self.assertEqual(february.reconciliation()["difference"], Decimal("0"))
+
+    def test_a_transfer_recalled_the_other_way_round(self):
+        transfer = self.disbursement("500")
+        statement = self.statement(closing="0")
+        self.line(statement, "-500", on=datetime.date(2026, 1, 6)).match(transfer)
+        transfer.void(memo="Recalled", on_date=datetime.date(2026, 1, 9))
+        self.line(statement, "500", on=datetime.date(2026, 1, 9)).match(transfer)
+        statement.close()
+
+    def test_in_one_month_the_return_is_matched_before_the_cheque(self):
+        cheque = self.receipt("1000")
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 8))
+        statement = self.statement(closing="0")
+        paid_in = self.line(statement, "1000")
+        with self.assertRaisesMessage(ValidationError, "match the line that returned it first"):
+            paid_in.match(cheque)
+        returned = self.line(statement, "-1000", on=datetime.date(2026, 1, 8))
+        returned.match(cheque)
+        paid_in.match(cheque)
+        with self.assertRaisesMessage(ValidationError, "unmatch that line first"):
+            returned.unmatch()
+        paid_in.unmatch()
+        returned.unmatch()
+        returned.match(cheque)
+        paid_in.match(cheque)
+        statement.close()
+
+    def test_a_payment_voided_because_it_never_happened_matches_no_money_in(self):
+        mistake = self.receipt("1000")
+        mistake.void(memo="Keyed twice")
+        statement = self.statement(closing="1000")
+        with self.assertRaisesMessage(ValidationError, "A voided payment never reached the bank"):
+            self.line(statement, "1000").match(mistake)
+
+    def test_a_return_is_matched_once_and_can_be_unmatched(self):
+        cheque = self.receipt("1000")
+        cheque.void(memo="Returned unpaid")
+        statement = self.statement(closing="-1000")
+        first = self.line(statement, "-1000", on=datetime.date(2026, 1, 8))
+        first.match(cheque)
+        with self.assertRaisesMessage(ValidationError, "already matched"):
+            self.line(statement, "-1000", on=datetime.date(2026, 1, 9)).match(cheque)
+        first.unmatch()
+        first.refresh_from_db()
+        self.assertFalse(first.is_resolved())
+
+    def test_matched_through_the_api(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        cheque = self.receipt("1000")
+        cheque.void(memo="Returned unpaid")
+        statement = self.statement(closing="-1000")
+        returned = self.line(statement, "-1000", on=datetime.date(2026, 1, 8))
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("controller"))
+        answer = client.post(f"/api/accounting/bank-statements/{statement.pk}/match/",
+                             {"line": returned.pk, "payment": cheque.pk}, format="json")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        row = client.get(f"/api/accounting/bank-statement-lines/{returned.pk}/").json()
+        self.assertEqual(row["returned_payment_number"], cheque.number)
+
+    def test_a_void_is_dated_the_day_the_bank_returned_it(self):
+        cheque = self.receipt("1000")
+        with self.assertRaisesMessage(ValidationError, "not voided before the day it was made"):
+            cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 4))
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            cheque.void(memo="Returned unpaid", on_date=timezone.localdate() + datetime.timedelta(days=1))
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 8))
+        self.assertEqual(cheque.voided_entry.date, datetime.date(2026, 1, 8))
