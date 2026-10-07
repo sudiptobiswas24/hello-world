@@ -1,10 +1,15 @@
+import { useParams } from "react-router";
+
 import { RelatedList } from "../../forms/Related";
 import { date, money } from "../../lib/format";
 import { PartyForm } from "../parties/PartyForm";
+import NewCustomer from "./NewCustomer";
 import { SalesTerms } from "./SalesTerms";
 
-/** A customer: who they are, their open orders and what they owe. */
+/** A customer: who they are, their terms, their open orders and what they owe. Made in one form. */
 export default function CustomerForm() {
+  const { id } = useParams();
+  if (id === "new") return <NewCustomer />;
   return (
     <PartyForm role="customer" base="/sales/customers" plural="Customers" related={(party) => (
       <>

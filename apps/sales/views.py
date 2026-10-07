@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 
@@ -16,7 +16,12 @@ from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
 from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
-from apps.core.models import Party, to_date
+from apps.accounting.models import PartyTaxProfile
+from apps.accounting.serializers import PartyTaxProfileSerializer
+from apps.core.api import refused_by_database
+from apps.core.models import Party, PartyRole, to_date
+from apps.core.serializers import AddressSerializer, ContactSerializer, PartySerializer
+from apps.core.views import make_party
 
 from apps.accounting.defaults import chosen_or_default
 from apps.core.audit import AuditableViewSetMixin
@@ -446,7 +451,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
 
     @action(detail=False, methods=["get"])
     def revenue(self, request):
-        """Net revenue, grouped by ?group_by=customer|item|month."""
+        """Net revenue, grouped by ?group_by=customer|item|month|rep|industry."""
         try:
             rows = revenue_report(
                 date_from=request.query_params.get("from"),
@@ -730,6 +735,67 @@ class CustomerProfileViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewset
             "credit_limit": profile.credit_limit,
             "available": (profile.credit_limit - owed) if profile.credit_limit is not None else None,
         })
+
+
+class NewCustomerViewSet(AuditableViewSetMixin, viewsets.GenericViewSet):
+    """
+    A new customer in one go: who they are (`party`), where they are
+    (`addresses`), whom to speak to (`contacts`), their tax standing
+    (`tax`) and the terms they trade on (`terms`). Made together or not at
+    all, so a refused GSTIN does not leave a customer with no tax standing
+    behind it. Each section takes the permission its own screen takes, so
+    the rep who opens the account does not set its credit limit; once made,
+    the customer is changed section by section on its page.
+    """
+
+    queryset = Party.objects.all()  # making one takes core.add_party
+    serializer_class = PartySerializer
+    LISTS = (("addresses", AddressSerializer, "core.add_address"),
+             ("contacts", ContactSerializer, "core.add_contact"))
+    ONES = (("tax", PartyTaxProfileSerializer, "accounting.add_partytaxprofile", PartyTaxProfile),
+            ("terms", CustomerProfileSerializer, "sales.add_customerprofile", CustomerProfile))
+
+    def create(self, request):
+        user, data = request.user, request.data
+        for name, _, needed, *_ in self.LISTS + self.ONES:
+            if data.get(name) and not user.has_perm(needed):
+                raise PermissionDenied(f"Filling in {name} is not yours to do; leave it empty, and whoever "
+                                       "keeps it fills it in on the customer's page.")
+        party_given = data.get("party")
+        if not isinstance(party_given, dict):
+            raise DRFValidationError({"party": ["Say who the customer is."]})
+        party_serializer = self.get_serializer(data=party_given)
+        if not party_serializer.is_valid():
+            raise DRFValidationError({"party": party_serializer.errors})
+        errors = {}
+        with transaction.atomic():
+            party = make_party(party_serializer, PartyRole.CUSTOMER, user)
+            context = self.get_serializer_context()
+            sections = [(f"{name}.{i}", serializer, None, row)
+                        for name, serializer, _ in self.LISTS for i, row in enumerate(data.get(name) or [])]
+            sections += [(name, serializer, model.objects.filter(party=party).first(), data[name])
+                         for name, serializer, _, model in self.ONES if data.get(name)]
+            for key, serializer_class, existing, given in sections:
+                if not isinstance(given, dict):
+                    errors[key] = ["Expected the section's fields."]
+                    continue
+                # The rep's own profile is already made (SalesScope.created): filled in, not made twice.
+                serializer = serializer_class(existing, data={**given, "party": party.pk},
+                                              partial=existing is not None, context=context)
+                if not serializer.is_valid():
+                    errors[key] = serializer.errors
+                    continue
+                try:
+                    with transaction.atomic():
+                        serializer.save(**({"updated_by": user} if existing else {"created_by": user, "updated_by": user}))
+                except DjangoValidationError as exc:
+                    errors[key] = exc.message_dict if hasattr(exc, "error_dict") else {"non_field_errors": exc.messages}
+                except IntegrityError as exc:
+                    errors[key] = {"non_field_errors": refused_by_database(exc)}
+            if errors:
+                # Nothing of it stays: the party and every section saved before the refusal go too.
+                raise DRFValidationError(errors)
+        return Response(self.get_serializer(Party.objects.get(pk=party.pk)).data, status=201)
 
 
 class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):

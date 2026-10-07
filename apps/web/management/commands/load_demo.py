@@ -325,6 +325,8 @@ class Command(BaseCommand):
                             ("Bhavesh", "Joshi", "Sales"), "sales@shaktithread.example")
             spares = party("V-SPAR", "Loomtech Spares", "vendor", "Coimbatore", "641018", "33AAKFL4407F1Z", net30,
                            ("Senthil", "Kumar", "Service"), "service@loomtech.example")
+            roadways = party("V-SRW", "Sharma Roadways", "vendor", "Pune", "411019", "27AAKFS5521G1Z", net15,
+                             ("Manoj", "Sharma", "Bookings"), "bookings@sharmaroadways.example")
             for vendor, it, price, lead in ((granule, virgin, "112", 7), (western, filler, "38", 5), (western, uv, "310", 5),
                                             (inks, ink, "420", 4), (liner, liner_film, "125", 3), (threads, thread, "260", 6),
                                             (spares, bearing, "240", 10), (spares, heater, "1850", 10)):
@@ -394,10 +396,19 @@ class Command(BaseCommand):
             for rep, team in ((rep_rohit, west), (rep_imran, west), (rep_priya, south)):
                 rep.team = team
                 rep.save()
-            for customer, rep, limit in ((sahyadri, imran, "12000000"), (konkan, imran, "2500000"),
-                                         (narmada, rohit, "5000000"), (malwa, imran, "1500000"),
-                                         (godavari, priya, "6000000"), (kaveri, priya, "3000000"), (gulf, priya, "12000000")):
-                M("sales.CustomerProfile").objects.create(party=customer, sales_rep=rep.party, credit_limit=D(limit))
+            # What they fill, how the goods travel and how they are packed: each new order records them.
+            for customer, rep, limit, trade, carriage, bale, extra in (
+                    (sahyadri, imran, "12000000", "cement", "for_destination", 500,
+                     {"transporter": roadways, "marking": "Brand and batch on the front; month of manufacture on the back"}),
+                    (konkan, imran, "2500000", "food_grain", "ex_works", 250, {}),
+                    (narmada, rohit, "5000000", "sugar", "for_destination", 500, {"transporter": roadways}),
+                    (malwa, imran, "1500000", "food_grain", "ex_works", 250, {}),
+                    (godavari, priya, "6000000", "fertiliser", "to_pay", 500, {"marking": "Batch number on the gusset"}),
+                    (kaveri, priya, "3000000", "feed", "for_destination", 500, {}),
+                    (gulf, priya, "12000000", "other", "", 1000, {"incoterm": "CIF", "port_of_discharge": "Jebel Ali"})):
+                M("sales.CustomerProfile").objects.create(party=customer, sales_rep=rep.party, credit_limit=D(limit),
+                                                          industry=trade, freight_terms=carriage, sacks_per_bale=bale,
+                                                          **extra)
             quarter = (s.month_span(2026, 7)[0], s.month_span(2026, 9)[1])
             this_month = s.month_span(2026, 10)
             for who, span, amount in (({"team": west}, quarter, "7500000"), ({"team": south}, quarter, "5500000"),

@@ -26,6 +26,8 @@
       <dt>Into</dt><dd>{{ t.warehouse }}</dd>
       {% if t.scheduled_start or t.scheduled_end %}<dt>Scheduled</dt><dd>{{ t.scheduled_start|default:"" }} to {{ t.scheduled_end|default:"" }}</dd>{% endif %}
       {% if t.customer_order %}<dt>For</dt><dd>{{ t.customer_order.customer }}, order {{ t.customer_order.number }}</dd>{% endif %}
+      {% if t.customer_order.sacks_per_bale %}<dt>Packing</dt><dd>{{ t.customer_order.sacks_per_bale }} sacks a bale</dd>{% endif %}
+      {% if t.customer_order.marking %}<dt>Marking</dt><dd>{{ t.customer_order.marking|linebreaksbr }}</dd>{% endif %}
       {% if t.rework_of %}<dt>Rework of</dt><dd>{{ t.rework_of }}</dd>{% endif %}
       {% if t.tools %}<dt>Tools</dt><dd>{{ t.tools|join:", " }}</dd>{% endif %}
       {% if t.specification %}<dt>Specification</dt><dd>{{ t.specification }}{% if t.construction %} &middot; {{ t.construction }}{% endif %}</dd>{% endif %}

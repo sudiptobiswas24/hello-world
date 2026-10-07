@@ -29,6 +29,7 @@ from apps.core.models import (
     DocumentSequence,
     Party,
     PartyRole,
+    PartyRoleAssignment,
     PaymentTerms,
     UnitOfMeasure,
     lock_rows,
@@ -210,6 +211,33 @@ class ApprovalPolicy(AuditModel):
         return cls.objects.filter(is_active=True).first()
 
 
+class Industry(models.TextChoices):
+    CEMENT = "cement", "Cement"
+    FERTILISER = "fertiliser", "Fertiliser"
+    FOOD_GRAIN = "food_grain", "Food grain and pulses"
+    SUGAR = "sugar", "Sugar"
+    SALT = "salt", "Salt"
+    FEED = "feed", "Animal feed"
+    CHEMICALS = "chemicals", "Chemicals and polymers"
+    OTHER = "other", "Other"
+
+
+class FreightTerms(models.TextChoices):
+    EX_WORKS = "ex_works", "Ex works: they collect"
+    FOR_DESTINATION = "for_destination", "FOR destination: we deliver, the freight is ours"
+    TO_PAY = "to_pay", "To pay: we send, they pay the transporter"
+
+
+class Incoterm(models.TextChoices):
+    EXW = "EXW", "EXW: ex works"
+    FCA = "FCA", "FCA: free carrier"
+    FOB = "FOB", "FOB: free on board"
+    CFR = "CFR", "CFR: cost and freight"
+    CIF = "CIF", "CIF: cost, insurance and freight"
+    DAP = "DAP", "DAP: delivered at place"
+    DDP = "DDP", "DDP: delivered duty paid"
+
+
 class CustomerProfile(AuditModel):
     """
     Sales-side settings for a Party. Held here rather than on core.Party for
@@ -267,12 +295,31 @@ class CustomerProfile(AuditModel):
         help_text="The rep whose customer this is. A rep sees their own customers "
                   "and nobody else's; a new order takes them as its rep.",
     )
+    industry = models.CharField(max_length=16, choices=Industry.choices, blank=True,
+                                help_text="What they fill the sacks with; the sales report groups by it.")
+    # How the goods travel. A new order records them as they are that day, and its papers print them.
+    freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
+    incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True,
+                                help_text="For an export customer.")
+    port_of_discharge = models.CharField(max_length=64, blank=True, help_text="For an export customer: Jebel Ali.")
+    transporter = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Who usually carries their goods; a new delivery takes them.",
+    )
+    credit_hold = models.BooleanField(
+        default=False, help_text="No order is confirmed and nothing is dispatched to them until it is lifted.")
+    credit_hold_reason = models.CharField(max_length=255, blank=True)
+    # How they want the sacks packed and marked. A new order records them; its runs' cards print them.
+    sacks_per_bale = models.PositiveIntegerField(null=True, blank=True, help_text="Bales of 500, say.")
+    marking = models.TextField(blank=True, help_text="Marking and printing instructions: batch, date, brand.")
 
     class Meta:
         permissions = [
             ("view_every_customer", "Can see every customer, not only one's own as a rep"),
         ]
         constraints = [
+            models.CheckConstraint(check=Q(sacks_per_bale__isnull=True) | Q(sacks_per_bale__gt=0),
+                                   name="customer_bales_hold_some_sacks"),
             models.CheckConstraint(
                 check=(Q(max_filler_percent__isnull=True)
                        | (Q(max_filler_percent__gte=0) & Q(max_filler_percent__lte=100)))
@@ -290,11 +337,18 @@ class CustomerProfile(AuditModel):
         # nobody limited to their own, and paid commission to nobody.
         # Asked when the rep is set or changed: a rep who has since left
         # must not stop accounts changing the customer's credit limit.
-        before = (None if self._state.adding else
-                  CustomerProfile.objects.filter(pk=self.pk).values_list("sales_rep_id", flat=True).first())
+        before, transporter_before = (None, None) if self._state.adding else (
+            CustomerProfile.objects.filter(pk=self.pk).values_list("sales_rep_id", "transporter_id").first())
         if self.sales_rep_id and self.sales_rep_id != before and not SalesRep.objects.filter(
                 party_id=self.sales_rep_id, is_active=True).exists():
             raise ValidationError({"sales_rep": [f"{self.sales_rep} is not an active sales rep."]})
+        self.credit_hold_reason = self.credit_hold_reason.strip()
+        if self.credit_hold and not self.credit_hold_reason:
+            # Whoever meets the refusal at the gate has to know why, and whom to ask.
+            raise ValidationError({"credit_hold_reason": ["Say why they are on hold."]})
+        if self.transporter_id and self.transporter_id != transporter_before and not PartyRoleAssignment.objects.filter(
+                party_id=self.transporter_id, role=PartyRole.VENDOR).exists():
+            raise ValidationError({"transporter": [f"{self.transporter} is not a vendor; a transporter is one we deal with."]})
         super().save(*args, **kwargs)
 
     def has_material_rules(self):
@@ -322,6 +376,14 @@ def register_invoice_stamp(provider):
 
 def invoice_stamps(invoice):
     return [stamp for stamp in (provider(invoice) for provider in INVOICE_STAMPS) if stamp]
+
+
+def refuse_credit_hold(customer, refused):
+    """A customer on credit hold has nothing confirmed or dispatched to them until accounts lift it."""
+    reason = CustomerProfile.objects.filter(party=customer, credit_hold=True).values_list(
+        "credit_hold_reason", flat=True).first()
+    if reason is not None:
+        raise ValidationError(f"{customer} is on credit hold ({reason}): {refused} until accounts lift it.")
 
 
 def register_material_checker(checker):
@@ -452,6 +514,13 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                   "Blank takes the customer's setting when the order is written; "
                   "fixed once anything has shipped on it.",
     )
+    # How the goods travel and are packed, as the customer's terms stood when the order was written: a fact
+    # of the order, printed on its papers and its runs' cards, never re-read from the customer afterwards.
+    freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
+    incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True)
+    port_of_discharge = models.CharField(max_length=64, blank=True)
+    sacks_per_bale = models.PositiveIntegerField(null=True, blank=True)
+    marking = models.TextField(blank=True)
 
     class Meta:
         ordering = ["-order_date", "-id"]
@@ -464,7 +533,9 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
             # can only apply once one has been assigned.
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="unique_sales_order_number"
-            )
+            ),
+            models.CheckConstraint(check=Q(sacks_per_bale__isnull=True) | Q(sacks_per_bale__gt=0),
+                                   name="sales_order_bales_hold_some_sacks"),
         ]
 
     def __str__(self):
@@ -483,7 +554,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
             self._apply_customer_defaults()
         else:
             before = SalesOrder.objects.filter(pk=self.pk).values(
-                "status", "is_job_work", "third_party_inspection").first()
+                "status", "is_job_work", "third_party_inspection", "freight_terms", "incoterm").first()
             if (before and before["status"] != OrderStatus.DRAFT
                     and before["is_job_work"] != self.is_job_work):
                 # Whether the customer supplies the material decides who
@@ -500,6 +571,10 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                     f"{self} has shipped; whether its goods wait for the customer's "
                     "inspector cannot change now."
                 )
+            if (before and (before["freight_terms"], before["incoterm"]) != (self.freight_terms, self.incoterm)
+                    and Delivery.objects.filter(sales_order=self, posted=True).exists()):
+                # Goods have travelled, and been billed, on the terms the papers printed.
+                raise ValidationError(f"{self} has shipped; its freight terms and Incoterm cannot change now.")
         super().save(*args, **kwargs)
 
     def supplies(self, item):
@@ -519,6 +594,12 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
             self.third_party_inspection = bool(profile and profile.third_party_inspection)
         if not self.sales_rep_id and profile and profile.sales_rep_id:
             self.sales_rep_id = profile.sales_rep_id
+        if profile:
+            self.freight_terms = self.freight_terms or profile.freight_terms
+            self.incoterm = self.incoterm or profile.incoterm
+            self.port_of_discharge = self.port_of_discharge or profile.port_of_discharge
+            self.sacks_per_bale = self.sacks_per_bale or profile.sacks_per_bale
+            self.marking = self.marking or profile.marking
 
     def credit_limit_breach(self):
         """
@@ -695,6 +776,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 f"{self} is job work and names nothing the customer supplies. List "
                 "what they send, or make it an ordinary sale."
             )
+        refuse_credit_hold(self.customer, "no order of theirs is confirmed")
         # No bypass flag. The old ignore_credit_limit= was reachable by
         # anyone who could confirm an order at all — which is the rep whose
         # discount the limit exists to check — and left no record that
@@ -3480,6 +3562,10 @@ class Delivery(AuditModel):
             )
         if self._state.adding and not self.shipping_address_id and self.sales_order_id:
             self.shipping_address = self.sales_order.shipping_address
+        if self._state.adding and not self.transporter_id and self.sales_order_id:
+            # Who usually carries their goods; the gate changes it when another lorry comes.
+            self.transporter_id = CustomerProfile.objects.filter(
+                party_id=self.sales_order.customer_id).values_list("transporter_id", flat=True).first()
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -3511,6 +3597,9 @@ class Delivery(AuditModel):
             raise ValidationError(
                 f"Only a confirmed order can be shipped; this one is {self.sales_order.status}."
             )
+        if not is_return:
+            # Goods coming back are taken whatever the hold; goods going out wait for it to lift.
+            refuse_credit_hold(self.sales_order.customer, "nothing is dispatched to them")
 
         if not is_return:
             for line in lines:
@@ -4278,6 +4367,10 @@ def sales_between(date_from=None, date_to=None, invoices=None):
     return invoices
 
 
+def industry_label(industry):
+    return Industry(industry).label if industry else "Not set"
+
+
 def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=None):
     """
     Net revenue over a period, from posted invoices less credit notes.
@@ -4287,7 +4380,7 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
     """
     invoices = sales_between(date_from, date_to, invoices)
 
-    if group_by not in ("customer", "item", "month", "rep"):
+    if group_by not in ("customer", "item", "month", "rep", "industry"):
         raise ValueError(f"Unsupported grouping: {group_by}")
 
     totals = defaultdict(lambda: {"net": Decimal("0"), "tax": Decimal("0"), "quantity": Decimal("0")})
@@ -4301,7 +4394,9 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
     by = {"customer": ["invoice__customer"],
           "item": ["item", "charge", "description"],
           "month": ["invoice__invoice_date"],
-          "rep": ["invoice__sales_rep"]}[group_by]
+          "rep": ["invoice__sales_rep"],
+          # The customer's trade as it stands: a classification of who they are, not a fact of the sale.
+          "industry": ["invoice__customer__customer_profile__industry"]}[group_by]
     customers = items = charges = reps = {}
     if group_by == "customer":
         customers = Party.objects.in_bulk(set(recorded.values_list("invoice__customer", flat=True)))
@@ -4317,6 +4412,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
             return str(customers[row["invoice__customer"]])
         if group_by == "rep":
             return rep_label(row["invoice__sales_rep"], reps)
+        if group_by == "industry":
+            return industry_label(row["invoice__customer__customer_profile__industry"])
         if group_by == "item":
             if row["item"]:
                 return str(items[row["item"]])
@@ -4355,6 +4452,9 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
                 key = str(invoice.customer)
             elif group_by == "rep":
                 key = rep_label(invoice.sales_rep_id)
+            elif group_by == "industry":
+                key = industry_label(CustomerProfile.objects.filter(
+                    party_id=invoice.customer_id).values_list("industry", flat=True).first())
             elif group_by == "item":
                 # A charge groups under the charge, not its free-text
                 # description, so "Shipping" and "Shipping (expedited)"

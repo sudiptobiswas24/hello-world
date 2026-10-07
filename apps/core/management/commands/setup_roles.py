@@ -202,6 +202,10 @@ ROLES = {
         *crud("accounting", "chargetype"),
         *crud("sales", "approvalpolicy"),
         *crud("sales", "customerprofile"),
+        # Accounts opens a customer's account as a rep does, terms and all, in one form.
+        *crud("core", "party", actions=("add", "change", "view")),
+        *crud("core", "address", actions=("add", "change", "view")),
+        *crud("core", "contact", actions=("add", "change", "view")),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
         *crud("manufacturing", "costsheet", actions=("add", "delete", "view")),

@@ -3,6 +3,11 @@ import { useBeforeUnload, useBlocker } from "react-router";
 
 import { ApiError } from "../api/client";
 
+// Every draft open on the page. The router consults only the last guard
+// made, so a page with two (a customer and their terms) guarded one of
+// them: each guard asks after all of them instead.
+const open = new Set<{ current: boolean }>();
+
 /**
  * The header of a document being edited: what was read, what the person
  * changed, and what the server said about it.
@@ -47,7 +52,22 @@ export function useDraft<T extends Record<string, unknown>>(saved: T | undefined
     if (error instanceof ApiError) setErrors(error.fields);
   }, []);
 
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => unsaved.current && currentLocation.pathname !== nextLocation.pathname);
+  useLeaveGuard(unsaved);
+
+  return { value, changes, set, dirty, reset, errors, failed };
+}
+
+/**
+ * Leaving with changes not saved asks first, within the application and on
+ * closing the tab. `unsaved` is a ref, read at the moment of leaving.
+ */
+export function useLeaveGuard(unsaved: { current: boolean }) {
+  useEffect(() => {
+    open.add(unsaved);
+    return () => { open.delete(unsaved); };
+  }, [unsaved]);
+  const blocker = useBlocker(({ currentLocation, nextLocation }) =>
+    [...open].some((draft) => draft.current) && currentLocation.pathname !== nextLocation.pathname);
   useEffect(() => {
     if (blocker.state === "blocked") {
       if (window.confirm("You have changes that are not saved. Leave and lose them?")) blocker.proceed();
@@ -56,7 +76,5 @@ export function useDraft<T extends Record<string, unknown>>(saved: T | undefined
   }, [blocker]);
   useBeforeUnload(useCallback((event) => {
     if (unsaved.current) event.preventDefault();
-  }, []));
-
-  return { value, changes, set, dirty, reset, errors, failed };
+  }, [unsaved]));
 }
