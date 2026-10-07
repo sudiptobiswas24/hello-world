@@ -29,7 +29,7 @@ class FixedAssetSerializer(serializers.ModelSerializer):
         model = FixedAsset
         fields = ["id", "number", "name", "category", "vendor", "bill_line",
                   "acquisition_date", "in_service_date", "cost",
-                  "salvage_value", "life_months", "status", "disposed_on",
+                  "salvage_value", "life_months", "depreciated_before", "opening_depreciation", "status", "disposed_on",
                   "capitalisation_entry", "disposal_entry", "accumulated",
                   "net_book_value", "monthly_charge", "category_name", "vendor_name"]
         read_only_fields = ["number", "bill_line", "status", "disposed_on",

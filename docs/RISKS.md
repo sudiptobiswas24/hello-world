@@ -311,3 +311,13 @@ not cover, or is deleted with the commit that finishes it.
     is passed over row by row, so a file re-exported after the bank
     reworded a narration adds that row again: check the difference the
     import reports against the closing balance.
+38. **An import is one person's and one file's.** Everything made while a
+    file is kept is stamped as made by whoever kept it, through a save
+    signal that holds for the length of the run, so a second file kept
+    in the same server process at the same instant would carry the same
+    name (gunicorn's workers take one request at a time, so it does not
+    happen there). An asset brought in carries the old system's
+    depreciation as an opening figure on the asset, with no journal of
+    its own: the opening balances hold that side, and if they do not,
+    the register and the ledger disagree by exactly that figure. Cut
+    over at a month end, or the go-live month is charged in full here.

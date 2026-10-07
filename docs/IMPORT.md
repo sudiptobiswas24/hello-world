@@ -1,8 +1,8 @@
 # Bringing the old system's records in
 
 Once, at go-live, from CSV files saved out of the old system or a
-spreadsheet (UTF-8; a spreadsheet's byte-order mark is fine). Eight
-kinds, brought in in this order, because each needs the one before:
+spreadsheet (UTF-8; a spreadsheet's byte-order mark is fine). Brought in
+in this order, because each needs the ones before:
 
 | Order | Kind | What it makes |
 |---|---|---|
@@ -10,10 +10,22 @@ kinds, brought in in this order, because each needs the one before:
 | 2 | `employees` | Employees with department and manager, and their logins and roles |
 | 3 | `customer_reps` | Which rep each customer belongs to |
 | 4 | `items` | Items with their unit, HSN and costing |
-| 5 | `opening_stock` | One posted stock adjustment a warehouse |
-| 6 | `open_invoices` | Posted invoices still owed, one per old invoice |
-| 7 | `open_bills` | Posted bills still owing, one per old bill |
-| 8 | `opening_balances` | One posted journal entry for every other balance |
+| 5 | `tape_specs`, `fabric_specs`, `bag_specs` | What the plant makes, each building its bill of materials and inspection plan (`film_specs`, `liner_specs` likewise) |
+| 6 | `opening_stock` | One posted stock adjustment a warehouse |
+| 7 | `open_invoices` | Posted invoices still owed, one per old invoice |
+| 8 | `open_bills` | Posted bills still owing, one per old bill |
+| 9 | `opening_balances` | One posted journal entry for every other balance |
+| 10 | `open_sales_orders`, `open_purchase_orders` | The order book: what is still to deliver and to receive, confirmed |
+| 11 | `fixed_assets` | The asset register, with what the old system had depreciated |
+| 12 | `compensation` | Each employee's pay components |
+| 13 | `price_lists`, `vendor_prices` | Customer price lists and what vendors charge |
+| 14 | `shipment_history` | Months shipped from the old system, for the forecast |
+
+**From the office:** Settings, *Bring old records in*. Choose the kind,
+download its blank file, fill it, choose it back in (or paste its rows),
+*Check*, then *Keep*. The controller holds the right (`core.import_records`);
+what is kept is stamped with who brought it in. The command below does the
+same from the server.
 
 ```bash
 python manage.py import_csv parties parties.csv --template   # a blank file to fill in
@@ -44,7 +56,7 @@ Receivables, payables and stock come in as invoices, bills and a stock
 adjustment, so they age, can be paid and allocated, and reconcile to the
 ledger like anything else. Each posts against one **opening-balance
 account** (an equity account, say `3900 Opening balances`), and so does
-the journal entry for everything else. Once all six are in, that account
+the journal entry for everything else. Once the opening position is in, that account
 holds the old system's equity; if it does not, something was left out.
 
 Make, before the opening position:
@@ -132,6 +144,59 @@ loans, fixed assets, GST ledgers, and the opening-balance account
 itself, so the file balances. The receivable, payable, inventory and
 goods-received accounts are refused here: they come in as documents.
 
+### tape_specs, fabric_specs, bag_specs, film_specs, liner_specs
+
+The columns are the specification's own fields, in the template's order;
+`code*` and the items and specifications it names are required, the rest
+take the model's defaults. An item is named by its `sku`, a tape or
+fabric specification by its `code`, a routing by its `code`. Choices are
+the system's words (`tubular`, `valve`); yes-or-no columns take yes or no.
+Each specification builds its bill of materials and inspection plan as it
+is kept, so tapes come before the fabrics woven from them and fabrics
+before the bags cut from them. A weighed item must be stocked in the base
+weight unit (kg); a bag item in a count.
+
+### open_sales_orders and open_purchase_orders
+
+One row per line; rows with the same `customer*` (or `vendor*`) and
+`reference*` (the old order's number) make one order, dated `date*`, in
+`currency` (default the party's) and, for sales, on `payment_terms`
+(default the customer's). Each line: `sku*`, `description`, `quantity*`
+(what is still to deliver or receive, above nothing), `uom` (default the
+item's), `unit_price*`, `delivery_date` / `expected_date`, `warehouse`
+(code), `taxes` (codes separated by `;`). An order is confirmed once all
+its rows are in, under the same rules as one typed in — an approval the
+policy would ask for is reported as a problem, not skipped. Deliveries
+already made in the old system are not brought in: the quantity is what
+is left.
+
+### fixed_assets — needs `--date`
+
+`name*`, `category*` (code), `vendor` (code), `acquisition_date*`,
+`in_service_date` (default the acquisition date; on or before the
+go-live date), `cost*`, `salvage_value` (default 0), `life_months`
+(default the category's), `depreciated_to_date` (what the old system
+had charged by the go-live date). The asset goes into service with that
+figure recorded against it and no journal entry of its own — the
+opening balances already carry the cost and the accumulated
+depreciation — and this system charges only the months after the
+go-live date. Cut over at a month end, so no month is split between the
+two systems.
+
+### compensation
+
+`employee_number*`, `component*` (pay component code), `amount*`,
+`effective_from*`, `effective_to`, `note`.
+
+### price_lists and vendor_prices
+
+`price_lists`: `price_list*` (code; made on first sight with
+`price_list_name` and `currency`), `sku*`, `min_quantity` (the volume
+break, default 1), `unit_price*`. `vendor_prices`: `vendor*` (code),
+`sku*`, `unit_price*`, `currency` (default the vendor's), `min_quantity`,
+`vendor_item_code`, `lead_time_days`, `valid_from`, `valid_to`,
+`is_preferred`.
+
 ### shipment_history
 
 `sku*`, `warehouse*` (code), `month*` (`2025-04` or `2025-04-01`),
@@ -149,8 +214,8 @@ The planner also sees and keeps it under Planning, Shipment history.
 - It does not update a record that exists; it only adds.
 - It does not bring in history: old paid invoices, past stock movements
   or past orders. Look them up in the old system.
-- Open sales and purchase orders are not imported; enter them as new
-  orders.
+- Deliveries and receipts already made against an open order are not
+  brought in; the order comes in at what is left of it.
 - An opening invoice or bill is dated in a period the old system
   already filed GST for. Do not compile GSTR-1 or GSTR-3B for periods
   before go-live in this system: they would list the opening invoices
