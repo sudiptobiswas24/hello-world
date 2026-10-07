@@ -9,6 +9,7 @@ from .errors_api import ServerErrorViewSet
 from .history_api import HistoryView
 from .licences_api import LicenceViewSet
 from .numbering_api import DocumentSequenceViewSet
+from .saved_filters import SavedFilterViewSet
 from .users_api import UserViewSet
 from .views import (
     AddressViewSet,
@@ -49,6 +50,7 @@ router.register("custom-fields", CustomFieldViewSet)
 router.register("attachments", AttachmentViewSet, basename="attachment")
 router.register("notes", NoteViewSet, basename="note")
 router.register("follow-ups", FollowUpViewSet, basename="follow-up")
+router.register("saved-filters", SavedFilterViewSet, basename="saved-filter")
 
 urlpatterns = [path("me/", MeView.as_view(), name="me"), path("history/", HistoryView.as_view({"get": "list"}), name="history"),
                path("endpoints/", EndpointsView.as_view(), name="endpoints"),

@@ -7,6 +7,7 @@ database, not just from the screen.
 Then the refusals a screen must show rather than swallow.
 """
 
+import datetime
 import re
 from decimal import Decimal
 
@@ -276,6 +277,41 @@ class SalesInTheBrowserTests(BrowserTestCase):
         page.wait_for_url(re.compile(rf"/sales/orders\?customer={self.customer.pk}$"))
         expect(page.locator("table tbody tr")).to_have_count(2)
         expect(page.get_by_text(second.number)).to_be_visible()
+        self.assertEqual(self.problems, [])
+
+    def test_a_list_grouped_opens_a_group_and_is_kept_as_a_view(self):
+        from apps.core.models import PartyRoleAssignment
+        from apps.core.saved_filters import SavedFilter
+
+        self.make_order(quantity="10")
+        self.make_order(quantity="5")
+        other = Party.objects.create(code="C-90", name="Other Cement")
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.CUSTOMER)
+        SalesOrder.objects.create(customer=other, order_date=datetime.date(2026, 3, 2))
+        person = self.person("AR Manager")
+        page = self.sign_in(person, "/app/sales/orders")
+        expect(page.locator("table tbody tr")).to_have_count(3)
+        page.get_by_role("button", name="Group").click()
+        page.get_by_label("Group by").select_option(label="Customer")
+        grouped = page.get_by_role("region", name="Orders, grouped")
+        grouped.get_by_role("button", name=self.customer.name).click()
+        page.wait_for_url(re.compile(rf"/sales/orders\?customer={self.customer.pk}$"))
+        expect(page.locator(".list table tbody tr")).to_have_count(2)
+        narrowing = page.get_by_role("group", name="How the list is narrowed")
+        expect(narrowing).to_contain_text(f"Customer: {self.customer.name}")
+        narrowing.get_by_role("button", name="Keep this view").click()
+        narrowing.get_by_label("Name of the view").fill("Acme's orders")
+        narrowing.get_by_role("button", name="Keep", exact=True).click()
+        expect(narrowing.get_by_role("button", name="★ Acme's orders")).to_be_visible()
+        self.assertEqual(SavedFilter.objects.get(user=person).query, {"customer": str(self.customer.pk)})
+        narrowing.get_by_role("button", name="Clear").click()
+        expect(page.locator(".list table tbody tr")).to_have_count(3)
+        page.get_by_role("button", name="★ Acme's orders").click()
+        expect(page.locator(".list table tbody tr")).to_have_count(2)
+        # The grouping is in the address: a link or a refresh keeps it.
+        page.goto(f"{self.live_server_url}/app/sales/orders?group=customer")
+        expect(page.get_by_label("Group by")).to_have_value("customer")
+        expect(page.get_by_role("region", name="Orders, grouped")).to_contain_text("Other Cement")
         self.assertEqual(self.problems, [])
 
     def test_the_ar_manager_gives_a_customer_to_a_rep_who_then_sees_only_theirs(self):

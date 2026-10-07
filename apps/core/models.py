@@ -1263,4 +1263,5 @@ from .customfields import CustomField  # noqa: E402,F401
 from .errors import ServerError  # noqa: E402,F401
 from .history import RecordEvent  # noqa: E402,F401
 from .chatter import FollowUp, Note  # noqa: E402,F401
+from .saved_filters import SavedFilter  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401

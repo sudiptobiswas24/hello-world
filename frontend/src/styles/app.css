@@ -240,6 +240,13 @@ kbd {
 .facet:hover { border-color: var(--ink-3); color: var(--ink); }
 .facet.on { background: var(--ink); border-color: var(--ink); color: #fff; }
 .facet.clear { border-style: dashed; }
+/* How a list is narrowed now, and the person's kept views of it. */
+.narrowing { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.narrowing .chip, .narrowing .saved { display: inline-flex; align-items: center; gap: 6px; }
+.narrowing .chip button, .narrowing .saved button:last-child { background: none; border: 0; color: inherit; cursor: pointer; padding: 0 2px; }
+.narrowing .saved .link { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; }
+.narrowing .keep-view { display: inline-flex; gap: 6px; }
+button.link { background: none; border: 0; padding: 0; color: var(--accent, inherit); text-decoration: underline; cursor: pointer; }
 
 .progress { height: 2px; background: transparent; overflow: hidden; border-radius: 2px; }
 .progress.on { background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: slide 0.9s linear infinite; }
