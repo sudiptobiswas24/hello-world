@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { HistoryPanel } from "../../views/HistoryPanel";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { useAct, useRecord, useReference } from "../../api/hooks";
@@ -179,6 +180,11 @@ export default function DeliveryForm() {
           <ActionButton pending={act.pending} onClick={() => setReturning({})}>Take goods back</ActionButton>
         )}
         <a className="btn" href={`${ENDPOINT}${delivery.id}/pdf/`} target="_blank" rel="noopener">PDF</a>
+        {delivery.posted && can("sales.change_delivery") && (
+          <ActionButton pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${delivery.id}/send/`, {}, {
+            done: (result) => `Sent to ${(result as unknown as { sent_to: string }).sent_to}`,
+          })}>Email</ActionButton>
+        )}
       </DocHeader>
 
       <Sheet>
@@ -238,6 +244,7 @@ export default function DeliveryForm() {
       {delivery.posted && !delivery.reverses && (
         <Received key={`${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />
       )}
+      {delivery && <HistoryPanel model="sales.delivery" id={delivery.id} />}
     </article>
   );
 }

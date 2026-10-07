@@ -282,3 +282,10 @@ not cover, or is deleted with the commit that finishes it.
     rep types one, and the pipeline's weighted value is only as honest
     as those. A rep sees their own and the leads nobody owns; the
     manager sees all.
+35. **A record's history is the API's.** Every page shows who made the
+    record, which fields were changed, each action taken (posted,
+    voided, sent to whom) and when, as the office application did them.
+    A change made in the Django admin or by a script leaves only
+    `updated_by` and `updated_at` on the record and no line in its
+    history; a mail shown as sent went to the mail server, which is not
+    the same as being read.

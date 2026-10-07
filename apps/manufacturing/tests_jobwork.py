@@ -399,3 +399,21 @@ class ChallanPdfTests(JobWorkTestCase):
         response = client.get(f"/api/manufacturing/job-work-challans/{challan.pk}/pdf/")
         self.assertEqual((response.status_code, response["Content-Type"]), (200, "application/pdf"))
         self.assertIn(challan.number, response["Content-Disposition"])
+
+    def test_an_issued_challan_goes_to_the_job_worker_by_mail(self):
+        from django.contrib.auth.models import User
+        from django.core import mail
+        from django.test import override_settings
+        from rest_framework.test import APIClient
+
+        challan = self.challan("10")
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("sender"))
+        with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+            self.assertEqual(client.post(f"/api/manufacturing/job-work-challans/{challan.pk}/send/").status_code, 400)
+            sent = client.post(f"/api/manufacturing/job-work-challans/{challan.pk}/send/", {"to": "lam@example.com"},
+                               format="json")
+        self.assertEqual((sent.status_code, sent.json()), (200, {"sent_to": "lam@example.com"}))
+        self.assertEqual(mail.outbox[0].attachments[0][0], f"{challan.number}.pdf")
+        rows = client.get("/api/core/history/", {"model": "manufacturing.jobworkchallan", "id": challan.pk}).json()
+        self.assertEqual((rows[0]["label"], rows[0]["summary"]), ("Sent", "Job-work challan to lam@example.com"))

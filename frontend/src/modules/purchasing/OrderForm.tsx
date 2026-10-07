@@ -1,4 +1,5 @@
 import { useNavigate, useParams } from "react-router";
+import { HistoryPanel } from "../../views/HistoryPanel";
 
 import { useAct, useGet, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
@@ -122,6 +123,9 @@ export default function OrderForm() {
           </ActionButton>
         )}
         {order && <a className="btn" href={`${ENDPOINT}${order.id}/pdf/`} target="_blank" rel="noopener">PDF</a>}
+        {order && order.status === "confirmed" && can("purchasing.change_purchaseorder") && (
+          <ActionButton pending={act.pending} onClick={() => void run("send", "Sent to the vendor")}>Email</ActionButton>
+        )}
       </DocHeader>
 
       {order && order.status !== "cancelled" && <Steps steps={["Draft", "Confirmed", "Received", "Billed"]} at={stage(order)} />}
@@ -177,6 +181,7 @@ export default function OrderForm() {
             cells={(row) => [String(row.number || "Draft"), date(String(row.bill_date)), money(String(row.total))]} />
         </div>
       )}
+      {order && <HistoryPanel model="purchasing.purchaseorder" id={order.id} />}
     </article>
   );
 }

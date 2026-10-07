@@ -13,6 +13,7 @@ const issued = (row: Row) => Boolean(row.posted) && !row.voided_at;
 export default function JobWorkForm() {
   return (
     <RecordScreen
+      history="manufacturing.jobworkchallan"
       endpoint="/api/manufacturing/job-work-challans/"
       links={[{ label: "PDF", href: (row) => `/api/manufacturing/job-work-challans/${String(row.id)}/pdf/` }]}
       back="/stores/job-work"
@@ -33,6 +34,8 @@ export default function JobWorkForm() {
         { key: "job_worker_state", label: "Their state", readOnly: true },
       ]}
       actions={[
+        { label: "Email", path: "send", permission: "manufacturing.change_jobworkchallan", when: (row) => Boolean(row.posted) && !row.voided_at,
+          done: "Sent", fields: [{ key: "to", label: "To", hint: "Blank sends to the job worker's contact" }] },
         { label: "Post", path: "post", permission: "manufacturing.change_jobworkchallan", when: draft, primary: true, done: "Posted" },
         { label: "Void", path: "void", permission: "manufacturing.change_jobworkchallan", danger: true,
           when: (row) => Boolean(row.posted) && !row.voided_at, done: "Voided" },

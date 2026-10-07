@@ -70,6 +70,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ).prefetch_related(Prefetch("lines", queryset=_order_lines()))
     serializer_class = PurchaseOrderSerializer
     action_permission_map = {
+        "send": "purchasing.change_purchaseorder",
         "receive": "purchasing.add_goodsreceipt",
         "approve": "purchasing.approve_purchaseorder",
         "create_bill": "purchasing.add_bill",
@@ -91,6 +92,14 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         response = HttpResponse(document.render_pdf(), content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{document.number or f"draft-{document.pk}"}.pdf"'
         return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email the PDF; {"to", "subject", "body"} override the party's address and the wording."""
+        document = self.get_object()
+        recipient = document.email_to_vendor(to=request.data.get("to") or None, subject=request.data.get("subject") or None,
+                                 body=request.data.get("body") or None, user=request.user)
+        return Response({"sent_to": recipient})
 
     @action(detail=True, methods=["post"])
     def receive(self, request, pk=None):

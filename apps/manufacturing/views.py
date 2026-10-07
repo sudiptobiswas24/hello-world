@@ -1900,6 +1900,7 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = JobWorkChallan.objects.select_related("job_worker").prefetch_related(
         "lines__operation__work_order")
+    action_permission_map = {"send": "manufacturing.change_jobworkchallan"}
     serializer_class = JobWorkChallanSerializer
     filter_fields = ["job_worker", "posted"]
     search_fields = ["number", "job_worker__name", "vehicle"]
@@ -1927,6 +1928,14 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         response = HttpResponse(document.render_pdf(), content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{document.number or f"draft-{document.pk}"}.pdf"'
         return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email the PDF; {"to", "subject", "body"} override the party's address and the wording."""
+        document = self.get_object()
+        recipient = document.email_to_job_worker(to=request.data.get("to") or None, subject=request.data.get("subject") or None,
+                                 body=request.data.get("body") or None, user=request.user)
+        return Response({"sent_to": recipient})
 
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):

@@ -20,3 +20,39 @@ class NotConfiguredBackend(BaseEmailBackend):
             "Whoever looks after the server sets EMAIL_HOST and the lines "
             "under it in .env (RUNBOOK.md, 'Email')."
         )
+
+
+def recipient_for(party):
+    """Where a party's documents go: its primary contact's address, else the party's own."""
+    contact = party.primary_contact()
+    if contact and contact.email:
+        return contact.email
+    return party.email or ""
+
+
+def send_document(document, party, what, *, to=None, subject=None, body=None, user=None):
+    """
+    Mail a document's PDF to its party ("Delivery challan DN-7 from Deccan
+    Polysacks"), to `to` or the party's address, and write it in the
+    document's history with who it went to. Returns the address used.
+    """
+    from django.core.mail import EmailMessage
+
+    from .history import EventKind, record
+    from .models import Company
+
+    recipient = to or recipient_for(party)
+    if not recipient:
+        raise ValidationError(f"{party} has no email address on the party or its primary contact.")
+    company = Company.get()
+    number = getattr(document, "number", "") or ""
+    message = EmailMessage(
+        subject=subject or " ".join(part for part in (what, number, "from", company.name) if part),
+        body=body or (f"Dear {party.name},\n\nPlease find {what.lower()} {number} attached.\n\n"
+                      f"Regards,\n{company.name}\n"),
+        to=[recipient],
+    )
+    message.attach(f"{number or what}.pdf", document.render_pdf(), "application/pdf")
+    message.send()
+    record(document, user, EventKind.MAIL, action="send", summary=f"{what} to {recipient}")
+    return recipient

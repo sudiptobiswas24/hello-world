@@ -90,6 +90,14 @@ class JobWorkChallan(AuditModel):
 
         return render_challan_pdf(self)
 
+    def email_to_job_worker(self, to=None, subject=None, body=None, user=None):
+        """The challan to the job worker, once issued and while it stands. Returns the address used."""
+        from apps.core.mail import send_document
+
+        if not self.posted or self.voided_at:
+            raise ValidationError("Only an issued challan that stands is sent.")
+        return send_document(self, self.job_worker, "Job-work challan", to=to, subject=subject, body=body, user=user)
+
     def save(self, *args, **kwargs):
         # Issuing and voiding write through the base save; anything else
         # touching an issued challan is an edit, and a challan is paper

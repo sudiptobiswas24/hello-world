@@ -1531,6 +1531,14 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
 
         return render_purchase_order_pdf(self)
 
+    def email_to_vendor(self, to=None, subject=None, body=None, user=None):
+        """The order to the vendor, once confirmed. Returns the address used."""
+        from apps.core.mail import send_document
+
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order is sent to the vendor.")
+        return send_document(self, self.vendor, "Purchase order", to=to, subject=subject, body=body, user=user)
+
     def __str__(self):
         return f"{self.number or f'PO-draft-{self.pk}'} {self.vendor}"
 

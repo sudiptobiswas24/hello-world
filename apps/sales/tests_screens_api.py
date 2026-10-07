@@ -9,6 +9,8 @@ and a customer made in one step with its role. The refusals come first.
 import datetime
 from decimal import Decimal
 
+from django.test import override_settings
+
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from rest_framework.test import APIClient
@@ -553,3 +555,30 @@ class DeliveryChallanPdfTests(ScreensTestCase):
 
         draft = Delivery.objects.create(sales_order=self.make_order(), delivery_date=datetime.date(2026, 3, 3))
         self.assertTrue(draft.render_pdf().startswith(b"%PDF-"))
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class DeliveryMailAndHistoryTests(ScreensTestCase):
+    """The challan goes to the customer by mail once shipped, and the delivery's page says what happened to it."""
+
+    def test_shipping_and_sending_are_the_deliverys_history(self):
+        from django.core import mail
+
+        from .models import Delivery, DeliveryLine
+
+        order = self.make_order()
+        delivery = Delivery.objects.create(sales_order=order, delivery_date=datetime.date(2026, 3, 3))
+        DeliveryLine.objects.create(delivery=delivery, order_line=order.lines.filter(charge__isnull=True).first(),
+                                    warehouse=self.warehouse, quantity_shipped=Decimal("10"))
+        warehouse = self.as_("Warehouse Staff")
+        self.assertEqual(warehouse.post(f"/api/sales/deliveries/{delivery.pk}/send/").status_code, 400)
+        self.assertEqual(warehouse.post(f"/api/sales/deliveries/{delivery.pk}/post_delivery/").status_code, 200)
+        sent = warehouse.post(f"/api/sales/deliveries/{delivery.pk}/send/")
+        self.assertEqual((sent.status_code, sent.json()), (200, {"sent_to": "ap@acme.example"}))
+        delivery.refresh_from_db()
+        self.assertEqual([message.attachments[0][0] for message in mail.outbox], [f"{delivery.number}.pdf"])
+        self.assertEqual(mail.outbox[0].subject, f"Delivery challan {delivery.number} from Test Co")
+        rows = warehouse.get("/api/core/history/", {"model": "sales.delivery", "id": delivery.pk}).json()
+        self.assertEqual([(row["label"], row["summary"]) for row in rows],
+                         [("Sent", "Delivery challan to ap@acme.example"), ("Posted delivery", "")])
+        self.assertEqual(self.as_("Payroll Officer").post(f"/api/sales/deliveries/{delivery.pk}/send/").status_code, 403)

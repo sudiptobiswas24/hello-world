@@ -491,6 +491,7 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         "customer_return": "sales.post_delivery",
         "transport": "sales.change_delivery",
         "received": "sales.change_delivery",
+        "send": "sales.change_delivery",
         "unacknowledged": "sales.view_delivery",
     }
 
@@ -516,6 +517,14 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         response = HttpResponse(document.render_pdf(), content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{document.number or f"draft-{document.pk}"}.pdf"'
         return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email the PDF; {"to", "subject", "body"} override the party's address and the wording."""
+        document = self.get_object()
+        recipient = document.email_to_customer(to=request.data.get("to") or None, subject=request.data.get("subject") or None,
+                                 body=request.data.get("body") or None, user=request.user)
+        return Response({"sent_to": recipient})
 
     @action(detail=True, methods=["post"])
     def transport(self, request, pk=None):

@@ -150,12 +150,28 @@ class BrowserMixin:
         super().setUp()
         call_command("setup_roles", verbosity=0)
         self.problems = []
+        self.contexts = []
         self.page = self.new_page()
+
+    def tearDown(self):
+        # Let every page's last requests finish before the database is
+        # flushed. A write still inside its transaction when the flush's
+        # TRUNCATE arrives deadlocks on PostgreSQL, and the next test's
+        # setUp fails on the wreck: two of a gate's browser tests, both
+        # ending on an action whose answer refetches the whole screen.
+        for context in self.contexts:
+            for page in context.pages:
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15_000)
+                except Exception:  # noqa: BLE001 - a page already gone, or one that never settles
+                    pass
+        super().tearDown()
 
     def new_page(self):
         """A browser of its own: a second person signs in beside the first."""
         context = self.browser.new_context(viewport={"width": 1366, "height": 860})
         self.addCleanup(context.close)
+        self.contexts.append(context)
         self.context = context
         page = context.new_page()
         page.on("console", lambda message: message.type == "error" and self.problems.append(message.text))

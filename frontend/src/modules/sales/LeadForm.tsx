@@ -12,6 +12,7 @@ const open = (row: Row) => row.status === "new" || row.status === "working";
 export default function LeadForm() {
   return (
     <RecordScreen
+      history="sales.lead"
       endpoint="/api/sales/leads/"
       back="/sales/leads"
       backLabel="Leads"

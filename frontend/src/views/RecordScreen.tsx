@@ -1,4 +1,5 @@
 import { useQueries } from "@tanstack/react-query";
+import { HistoryPanel } from "./HistoryPanel";
 import { useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 
@@ -135,6 +136,8 @@ export interface RecordScreenProps {
   actions?: ActionDef[];
   /** Pages the record opens in a new tab: its PDF, a printed card. */
   links?: LinkDef[];
+  /** The record's kind as app.model, for its history panel. */
+  history?: string;
   panels?: PanelDef[];
   permissions: { add?: string; change?: string; delete?: string };
   /** Whether the record may still be edited in its present state. */
@@ -309,7 +312,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], panels = [], permissions, editable, afterCreate, note, below, createUrl } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], history, panels = [], permissions, editable, afterCreate, note, below, createUrl } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -399,6 +402,7 @@ export function RecordScreen(props: RecordScreenProps) {
       </Sheet>
       {saved && panels.map((panel) => <RecordPanel key={panel.title} panel={panel} record={saved} />)}
       {saved && below?.(saved, Boolean(permissions.change && can(permissions.change)) && (!editable || editable(saved)))}
+      {saved && history && <HistoryPanel model={history} id={saved.id} />}
     </article>
   );
 }

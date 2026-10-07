@@ -150,8 +150,9 @@ with their employee PIN.
 
 ## Email
 
-Invoices, quotations, customer statements and payment reminders go by
-email. Until a mail server is named, sending is refused with a message
+Invoices, quotations, customer statements, payment reminders, delivery
+challans, purchase orders and job-work challans go by email, and each
+record's page lists what went out and to whom. Until a mail server is named, sending is refused with a message
 saying so, and nothing is recorded as sent. To turn it on, add to
 `.env` and run `docker compose up -d`:
 

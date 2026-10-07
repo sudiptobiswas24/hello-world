@@ -20,6 +20,7 @@ from apps.accounting.models import (
         round_money,
 )
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
+from apps.core.history import EventKind, record
 from apps.core.models import (
     Address,
     AuditModel,
@@ -1568,6 +1569,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         )
         message.attach(f"{self.number}.pdf", self.render_pdf(), "application/pdf")
         message.send()
+        record(self, None, EventKind.MAIL, action="send", summary=f"{kind} to {recipient}")
 
         self.sent_at = timezone.now()
         super(Invoice, self).save(update_fields=["sent_at", "updated_at"])
@@ -3397,6 +3399,15 @@ class Delivery(AuditModel):
 
         return render_delivery_pdf(self)
 
+    def email_to_customer(self, to=None, subject=None, body=None, user=None):
+        """The challan to the customer, once it has shipped. Returns the address used."""
+        from apps.core.mail import send_document
+
+        if not self.posted:
+            raise ValidationError("Only a shipped delivery is sent.")
+        return send_document(self, self.sales_order.customer, "Return" if self.reverses_id else "Delivery challan",
+                             to=to, subject=subject, body=body, user=user)
+
     def __str__(self):
         kind = "RET" if self.reverses_id else "DO"
         return f"{self.number or f'{kind}-draft-{self.pk}'} for {self.sales_order}"
@@ -4458,6 +4469,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         )
         message.attach(f"{self.number}.pdf", self.render_pdf(), "application/pdf")
         message.send()
+        record(self, None, EventKind.MAIL, action="send", summary=f"Quotation to {recipient}")
 
         self.status = QuotationStatus.SENT
         self.sent_at = timezone.now()

@@ -1,4 +1,5 @@
 import { Link, useNavigate, useParams } from "react-router";
+import { HistoryPanel } from "../../views/HistoryPanel";
 
 import { useAct, useRecord, useRows } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
@@ -229,6 +230,7 @@ export default function InvoiceForm() {
           ) : <p className="muted">{allocations.isPending ? "…" : "None yet."}</p>}
         </section>
       )}
+      {invoice && <HistoryPanel model="sales.invoice" id={invoice.id} />}
     </article>
   );
 }

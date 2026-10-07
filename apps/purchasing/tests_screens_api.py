@@ -6,6 +6,7 @@ debit notes, batches named on arrival, and names on every list.
 Refusals first.
 """
 
+from django.test import override_settings
 import datetime
 from decimal import Decimal
 
@@ -452,3 +453,23 @@ class PurchaseOrderPdfTests(ScreensTestCase):
 
     def test_a_draft_prints_as_a_draft(self):
         self.assertTrue(self.make_order(confirm=False).render_pdf().startswith(b"%PDF-"))
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class PurchaseOrderMailTests(ScreensTestCase):
+    def test_a_confirmed_order_goes_to_the_vendor_and_a_draft_does_not(self):
+        from django.core import mail
+
+        clerk = self.as_("Purchasing Clerk")
+        draft = self.make_order(confirm=False)
+        self.assertEqual(clerk.post(f"/api/purchasing/purchase-orders/{draft.pk}/send/", {"to": "buy@vendor.example"},
+                                    format="json").status_code, 400)
+        order = self.make_order()
+        refused = clerk.post(f"/api/purchasing/purchase-orders/{order.pk}/send/")
+        self.assertEqual(refused.status_code, 400, refused.content)  # the vendor has no address on file
+        sent = clerk.post(f"/api/purchasing/purchase-orders/{order.pk}/send/", {"to": "buy@vendor.example"}, format="json")
+        self.assertEqual((sent.status_code, sent.json()), (200, {"sent_to": "buy@vendor.example"}))
+        self.assertEqual([(m.subject, m.attachments[0][0]) for m in mail.outbox],
+                         [(f"Purchase order {order.number} from Test Co", f"{order.number}.pdf")])
+        rows = clerk.get("/api/core/history/", {"model": "purchasing.purchaseorder", "id": order.pk}).json()
+        self.assertEqual((rows[0]["label"], rows[0]["summary"]), ("Sent", "Purchase order to buy@vendor.example"))
