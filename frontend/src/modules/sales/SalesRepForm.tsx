@@ -1,5 +1,5 @@
 import { RecordScreen } from "../../views/RecordScreen";
-import { EMPLOYEE_PARTY, PLAN } from "./extraRefs";
+import { EMPLOYEE_PARTY, PLAN, TEAM } from "./extraRefs";
 
 /**
  * An employee who carries customers, and the plan their commission is
@@ -18,6 +18,7 @@ export default function SalesRepForm() {
       fields={[
         { key: "party", label: "Employee", kind: "pick", pick: EMPLOYEE_PARTY, createOnly: true, show: (row) => String(row.name ?? "") },
         { key: "plan", label: "Commission plan", kind: "ref", ref: PLAN },
+        { key: "team", label: "Team", kind: "ref", ref: TEAM, hint: "Whose target this rep's sales count to" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
       ]}
     />

@@ -31,3 +31,9 @@ export const INDEX: FieldDef["ref"] = {
 export const PLAN: FieldDef["ref"] = {
   endpoint: "/api/sales/commission-plans/", permission: "sales.view_commissionplan", label: (row: Row) => `${String(row.code)} · ${String(row.name)}`,
 };
+export const REP: FieldDef["ref"] = {
+  endpoint: "/api/sales/sales-reps/", permission: "sales.view_salesrep", label: (row: Row) => String(row.name),
+};
+export const TEAM: FieldDef["ref"] = {
+  endpoint: "/api/sales/sales-teams/", permission: "sales.view_salesteam", label: (row: Row) => `${String(row.code)} · ${String(row.name)}`,
+};

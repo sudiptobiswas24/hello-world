@@ -373,3 +373,13 @@ not cover, or is deleted with the commit that finishes it.
     switched off keeps its values unseen; a key never changes, so a
     misspelt one is switched off and made again. Lists export a record's
     own columns, not yet its custom ones.
+43. **A target is read against the rep an invoice carries, and a
+    team against its reps as they stand.** An invoice takes the
+    customer's rep when it is made and keeps it, so moving a customer to
+    another rep moves no past sale; but a rep moved to another team
+    takes every past invoice to the new team's number, since a team's
+    actual is the sum of its members' today. Set the team before the
+    period starts, or read the month's report before the move. A target
+    reads each invoice in rupees at the rate it posted at; the Sales
+    report still reads each invoice's own figures, so a dollar
+    customer's row there is in dollars and its total mixes the two.

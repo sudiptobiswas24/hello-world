@@ -14,7 +14,7 @@ interface Row {
   quantity: string;
 }
 
-const GROUPS: [string, string][] = [["customer", "Customer"], ["item", "Item"], ["month", "Month"]];
+const GROUPS: [string, string][] = [["customer", "Customer"], ["item", "Item"], ["month", "Month"], ["rep", "Rep"]];
 
 /** The Indian financial year began on 1 April, in the plant's own date. */
 function financialYearStart(): string {

@@ -23,8 +23,9 @@ from apps.inventory.models import Warehouse
 from django.http import HttpResponse
 from django.utils import timezone
 
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch
 
+from .teams import SalesTarget, SalesTeam, targets_report
 from .models import (
     INVOICE_FIGURES,
     SuppliedItem,
@@ -61,6 +62,8 @@ from .models import (
 )
 from .scoping import CustomerScopedMixin
 from .serializers import (
+    SalesTargetSerializer,
+    SalesTeamSerializer,
     SuppliedItemSerializer,
     ThirdPartyReleaseSerializer,
     CommissionPlanSerializer,
@@ -796,10 +799,33 @@ class CommissionPlanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class SalesRepViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = SalesRep.objects.select_related("party", "plan")
-    filter_fields = ["is_active"]
+    queryset = SalesRep.objects.select_related("party", "plan", "team")
+    filter_fields = ["is_active", "team"]
     search_fields = ["party__code", "party__name"]
     serializer_class = SalesRepSerializer
+
+
+class SalesTeamViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = SalesTeam.objects.select_related("leader__party").annotate(member_count=Count("members"))
+    serializer_class = SalesTeamSerializer
+    filter_fields = ["is_active", "leader"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["code", "name"]
+
+
+class SalesTargetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Targets, and `report` (?from&to): each against what was posted in its own span."""
+
+    queryset = SalesTarget.objects.select_related("team", "rep__party")
+    serializer_class = SalesTargetSerializer
+    filter_fields = ["team", "rep"]
+    date_field = "period_start"
+    ordering_fields = ["period_start", "amount"]
+
+    @action(detail=False, methods=["get"])
+    def report(self, request):
+        return Response(targets_report(date_from=request.query_params.get("from"),
+                                       date_to=request.query_params.get("to")))
 
 
 class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):

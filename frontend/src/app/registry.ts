@@ -187,6 +187,22 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/sales/SalesRepForm"),
       },
       {
+        path: "teams", label: "Sales teams", permission: "sales.view_salesteam",
+        create: "sales.add_salesteam",
+        keywords: "team leader reps territory", load: () => import("../modules/sales/Teams"),
+        detail: () => import("../modules/sales/TeamForm"),
+      },
+      {
+        path: "targets", label: "Sales targets", permission: "sales.view_salestarget",
+        create: "sales.add_salestarget",
+        keywords: "target quota goal month quarter", load: () => import("../modules/sales/Targets"),
+        detail: () => import("../modules/sales/TargetForm"),
+      },
+      {
+        path: "targets-report", label: "Targets against sales", permission: "sales.view_salestarget",
+        keywords: "target achieved shortfall rep team", load: () => import("../modules/sales/TargetsReport"),
+      },
+      {
         path: "commission-plans", label: "Commission plans", permission: "sales.view_commissionplan",
         create: "sales.add_commissionplan",
         keywords: "commission percent basis", load: () => import("../modules/sales/CommissionPlans"),
