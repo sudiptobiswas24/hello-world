@@ -190,6 +190,24 @@ class LedgerTests(TdsTestCase):
         self.assertEqual(self.balance(self.payable), Decimal("-40600.00"))
         self.assertEqual(self.balance(self.tds_payable), Decimal("-700.00"))
 
+    def test_paid_net_of_the_tax_it_is_off_every_open_list(self):
+        from apps.accounting.models import Payment, PaymentDirection
+
+        from .models import BillPayment, bills_still_owed
+
+        party = self.contractor(pan="AAAPL1234C")
+        bill = self.bill("35000", vendor=party)
+        deduction = bill.deduct_tds()
+        paying = Payment.objects.create(party=party, direction=PaymentDirection.DISBURSEMENT, payment_date=DAY,
+                                        amount=Decimal("34300"), bank_account=self.bank,
+                                        counterpart_account=self.payable)
+        paying.post()
+        BillPayment.objects.create(bill=bill, payment=paying, amount=Decimal("34300"))
+        self.assertEqual(Bill.objects.get(pk=bill.pk).amount_due(), Decimal("0.00"))
+        self.assertFalse(bills_still_owed(Bill.objects.filter(pk=bill.pk)).exists())
+        deduction.reverse()
+        self.assertTrue(bills_still_owed(Bill.objects.filter(pk=bill.pk)).exists())
+
     def test_reversed_until_a_challan_pays_it(self):
         party = self.contractor(pan="AAAPL1234C")
         deduction = self.bill("35000", vendor=party).deduct_tds()
