@@ -42,7 +42,7 @@ COLUMNS = {
                 "gstin", "gst_state", "gst_registration", "credit_limit", "address_line1",
                 "address_line2", "city", "state", "postal_code", "country"],
     "employees": ["employee_number", "name", "party_code", "hire_date", "department", "manager",
-                  "job_title", "email", "username", "roles", "sales_rep"],
+                  "job_title", "email", "username", "roles", "sales_rep", "uan", "esi_number"],
     "customer_reps": ["customer", "rep"],
     "items": ["sku", "name", "uom", "item_type", "hsn_code", "track_inventory", "costing_method",
               "tracking", "sale_price", "standard_cost", "stock_class"],
@@ -195,8 +195,9 @@ def _employees(rows, report, options):
                     party=party, employee_number=employee_number, hire_date=date(row, "hire_date"),
                     department=by_code(Department, row, "department", required_=False),
                     job_title=row.get("job_title", ""),
+                    uan=row.get("uan", ""), esi_number=row.get("esi_number", ""),
                 )
-                clean(employee, {"hire_date": "hire_date"})
+                clean(employee, {"hire_date": "hire_date", "uan": "uan", "esi_number": "esi_number"})
                 username = row.get("username", "")
                 password = None
                 if username:

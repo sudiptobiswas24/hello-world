@@ -321,3 +321,13 @@ not cover, or is deleted with the commit that finishes it.
     its own: the opening balances hold that side, and if they do not,
     the register and the ledger disagree by exactly that figure. Cut
     over at a month end, or the go-live month is charged in full here.
+39. **The PF and ESI files read the posted slip, and what they cannot
+    name stops them.** A component is a statutory line only when it is
+    marked as one; an unmarked PF component leaves everyone out of the
+    ECR with no complaint, so check the first month's file against the
+    old system's. Where the plant keeps one employer PF component, the
+    pension share is 8.33% of pension wages (capped at 15,000) and the
+    EPF share is the rest; a plant that splits them keeps a named EPS
+    component instead. The ECR layout is EPFO's eleven-field text file
+    and the ESI file the portal's six-column template; a change on either
+    portal is a change here.

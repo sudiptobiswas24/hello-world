@@ -95,6 +95,12 @@ export default function PayRunForm() {
         {run?.status === "calculated" && can("hr.post_payrun") && (
           <ActionButton primary pending={act.pending} onClick={() => void run_("post", "Posted to the ledger")}>Post</ActionButton>
         )}
+        {run?.status === "posted" && can("hr.view_payslip") && (
+          <>
+            <a className="btn" href={`${ENDPOINT}${run.id}/ecr/`}>PF ECR file</a>
+            <a className="btn" href={`${ENDPOINT}${run.id}/esi/`}>ESI file</a>
+          </>
+        )}
         {run?.status === "posted" && can("hr.post_payrun") && (
           <ActionButton danger pending={act.pending} onClick={() => {
             const day = window.prompt("Void as of which date? (YYYY-MM-DD, blank for today)");

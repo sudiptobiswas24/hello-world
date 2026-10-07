@@ -127,6 +127,16 @@ class Employee(AuditModel):
         help_text="A keyed digest of the person's shop-floor PIN, never the PIN. "
                   "Unique, because a station knows who you are from the PIN alone.",
     )
+    uan = models.CharField(
+        max_length=12, blank=True,
+        help_text="The provident fund's Universal Account Number, twelve digits: what the "
+                  "monthly ECR file names the person by.",
+    )
+    esi_number = models.CharField(
+        max_length=17, blank=True,
+        help_text="The ESI insurance number (IP number), ten digits: what the monthly "
+                  "contribution file names the person by.",
+    )
 
     class Meta:
         ordering = ["employee_number"]
@@ -211,7 +221,14 @@ class Employee(AuditModel):
             node = node.manager
         return chain
 
+    def _check_statutory_ids(self):
+        if self.uan and not (self.uan.isdigit() and len(self.uan) == 12):
+            raise ValidationError({"uan": ["A UAN is twelve digits."]})
+        if self.esi_number and not (self.esi_number.isdigit() and len(self.esi_number) in (10, 17)):
+            raise ValidationError({"esi_number": ["An ESI number is ten digits (seventeen with its sub-code)."]})
+
     def clean(self):
+        self._check_statutory_ids()
         # Django lets an ISO string be assigned to a DateField and does not
         # coerce it until a refresh, so every comparison below would be a
         # string against a date. Normalising here rather than at each use
@@ -330,6 +347,7 @@ class Employee(AuditModel):
             )
 
     def save(self, *args, **kwargs):
+        self._check_statutory_ids()
         # In save() and not only clean(), because Django never calls
         # full_clean() for you and nothing here is created through a form.
         # Every rule this class claimed to enforce was decorative until a
