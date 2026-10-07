@@ -48,7 +48,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.gst import STATES
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, serialised, to_date
 
 from . import particulars as p
 
@@ -154,6 +154,7 @@ class EwayBill(AuditModel):
         return super().delete(*args, **kwargs)
 
     @transaction.atomic
+    @serialised("number")
     def record(self, number, generated_at, valid_until=None):
         if self.number:
             raise ValidationError(f"This is already e-way bill {self.number}.")
@@ -171,6 +172,7 @@ class EwayBill(AuditModel):
         super().save(update_fields=["number", "generated_at", "valid_until", "updated_at"])
 
     @transaction.atomic
+    @serialised("number", "cancelled_at")
     def cancel(self, reason, remarks="", now=None):
         if not self.number:
             raise ValidationError("It was never generated; delete it instead.")

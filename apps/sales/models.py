@@ -726,6 +726,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                              pdf=self.render_pdf(proforma=proforma),
                              filename=f"{what} {self.number or 'draft'}.pdf")
 
+    @serialised("status")
     def cancel(self):
         """Cancel an order that hasn't been acted on yet."""
         if self.status == OrderStatus.CANCELLED:
@@ -894,6 +895,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
         carrying taxes and discounts across. Calling it twice bills the
         remainder, not the whole order again.
         """
+        lock_rows(self)  # twice at once, the second waits for the first and bills what is left after it
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can be invoiced.")
 
@@ -982,6 +984,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
         This is also the only honest way to bill ahead on an order that
         invoices on delivery.
         """
+        lock_rows(self)  # what is already billed ahead is read below, and another down payment could be adding to it
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can take a down payment.")
         if (amount is None) == (percent is None):
@@ -1703,7 +1706,7 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
             return False
         return (to_date(as_of) or timezone.localdate()) <= deadline
 
-    @transaction.atomic
+    @serialised("settlement_discount_amount", "settlement_discount_entry")
     def apply_settlement_discount(self, on_date=None, force=False):
         """
         Write off the early-settlement discount.
@@ -3903,7 +3906,7 @@ class Delivery(AuditModel):
                 outstanding[line.order_line] = remaining
         return outstanding
 
-    @transaction.atomic
+    @serialised("posted")
     def create_backorder(self, delivery_date=None):
         """Raise a draft delivery for whatever this shipment left behind."""
         if not self.posted:
@@ -4661,7 +4664,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
                 "sales.quotation", self.quotation_date, name="Quotations", prefix="QT-"
             )
 
-    @transaction.atomic
+    @serialised("status", "number")
     def create_revision(self, quotation_date=None, valid_until=None):
         """
         Supersede this quote with a fresh, editable copy. Resending with
@@ -4725,7 +4728,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
         self.sent_at = timezone.now()
         self.save(update_fields=["number", "status", "sent_at", "updated_at"])
 
-    @transaction.atomic
+    @serialised("status")
     def decline(self):
         if self.status in (QuotationStatus.ACCEPTED, QuotationStatus.DECLINED):
             raise ValidationError(
@@ -4756,8 +4759,11 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             )
         return self._convert_to_order(order_date, approve_as)
 
-    @transaction.atomic
+    @serialised("status", "number")
     def _convert_to_order(self, order_date, approve_as=None):
+        # Asked again under the lock: two accepts at once both passed accept()'s checks and made two orders.
+        if self.status in (QuotationStatus.ACCEPTED, QuotationStatus.DECLINED, QuotationStatus.SUPERSEDED):
+            raise ValidationError(f"This quotation is already {self.get_status_display().lower()}.")
         self._assign_number()
         order = SalesOrder.objects.create(
             customer=self.customer,

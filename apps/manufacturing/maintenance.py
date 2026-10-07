@@ -204,7 +204,7 @@ class MaintenanceSchedule(AuditModel):
         left = self.hours_remaining(as_of)
         return left is not None and left <= 0
 
-    @transaction.atomic
+    @serialised()
     def raise_job(self, due_on=None, as_of=None):
         """
         Put a dated occurrence on the board.

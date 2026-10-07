@@ -190,6 +190,7 @@ class Timesheet(AuditModel):
         return self
 
     @transaction.atomic
+    @serialised("status")
     def send_back(self, note=""):
         """
         Put an approved or rejected sheet back in the author's hands.

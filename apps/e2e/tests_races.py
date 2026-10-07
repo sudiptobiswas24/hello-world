@@ -19,6 +19,7 @@ PostgreSQL only: SQLite serialises every writer behind one lock, so the
 window never opens there and the tests would prove nothing.
 """
 
+import contextlib
 import datetime
 import threading
 import unittest
@@ -55,8 +56,14 @@ from apps.sales.models import (
 from apps.sales import tests_base as sales_fixture
 
 
-def race(sender, *calls):
-    """Run `calls` at once, each held at `sender`'s pre_save until all arrive."""
+def race(sender, *calls, atomic=True):
+    """
+    Run `calls` at once, each held at `sender`'s pre_save until all arrive.
+
+    Each in a transaction of its own, as a request's write is; `atomic=False`
+    for a step whose endpoint runs it outside one, so what it commits before
+    refusing stays committed.
+    """
     barrier = threading.Barrier(len(calls), timeout=3)
     local = threading.local()
 
@@ -74,7 +81,7 @@ def race(sender, *calls):
     def run(index, call):
         local.armed = True
         try:
-            with transaction.atomic():
+            with transaction.atomic() if atomic else contextlib.nullcontext():
                 call()
             outcomes[index] = "done"
         except Exception as exc:
@@ -89,6 +96,17 @@ def race(sender, *calls):
         thread.join(30)
     pre_save.disconnect(sender=sender, dispatch_uid="race")
     return outcomes
+
+
+def fixture(test, cls):
+    """
+    `cls`'s own setUp, run as a `cls`: its helpers and what it builds, for
+    a fixture whose setUp calls super() and so cannot be borrowed.
+    """
+    made = cls()
+    made.setUp()
+    test.addCleanup(made.doCleanups)
+    return made
 
 
 class RaceCase(TransactionTestCase):
@@ -387,3 +405,151 @@ class RunRaceTests(RaceCase):
         order.refresh_from_db()
         self.assertEqual(order.status, WorkOrderStatus.CLOSED)
         self.assertEqual(self.balance(self.wip), Decimal("0.00"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class OneDecisionAtATimeRaceTests(RaceCase):
+    """
+    The steps the audit's lock check found once it asked every public step
+    rather than a list of verbs: each read its state, decided and wrote,
+    with nothing to stop a second press doing the same in between.
+    """
+
+    def test_a_quote_is_accepted_into_one_order(self):
+        from apps.sales.models import Quotation, SalesOrder
+        from apps.sales import tests_audit_fixes
+
+        quotation = fixture(self, tests_audit_fixes.AcceptedQuotationTests).make_quotation()
+        self.once(race(SalesOrder, *[lambda: Quotation.objects.get(pk=quotation.pk).accept(
+            order_date=datetime.date(2026, 3, 2))] * 2))
+        self.assertEqual(SalesOrder.objects.count(), 1)
+
+    def test_a_settlement_discount_is_written_off_once(self):
+        from apps.sales import tests_audit_round2
+
+        made = fixture(self, tests_audit_round2.SettlementDiscountTests)
+        invoice = made.bill(made.make_order("10", "100"))
+        self.once(race(JournalEntry, *[lambda: Invoice.objects.get(pk=invoice.pk).apply_settlement_discount(
+            on_date=datetime.date(2026, 3, 8))] * 2))
+        self.assertEqual(Invoice.objects.get(pk=invoice.pk).amount_due(), Decimal("980.00"))
+
+    def test_a_vendor_settlement_discount_is_taken_once(self):
+        from apps.purchasing import tests_audit
+
+        made = fixture(self, tests_audit.VendorSettlementDiscountTests)
+        bill = made.discounted_bill()
+        self.once(race(JournalEntry, *[lambda: Bill.objects.get(pk=bill.pk).take_settlement_discount(
+            on_date=datetime.date(2026, 1, 15))] * 2))
+        self.assertEqual(made.balance(made.discount_received), Decimal("-1.00"))
+
+    def landed(self):
+        from apps.purchasing import tests_returns_and_landed
+
+        made = fixture(self, tests_returns_and_landed.OneChargeLandsOnceTests)
+        order, receipt = made.goods_received("10", "5")
+        bill, charge = made.carrier_bill("80")
+        return made, receipt.lines.get(), charge
+
+    def test_a_charge_is_capitalised_once(self):
+        from apps.purchasing.models import BillLine
+
+        made, _, charge = self.landed()
+        self.once(race(FixedAsset, *[
+            lambda: BillLine.objects.get(pk=charge.pk).capitalise_as_asset(made.category)] * 2))
+        self.assertEqual(made.balance(made.category.asset_account), Decimal("80.00"))
+
+    def test_a_charge_lands_on_the_goods_once(self):
+        from apps.purchasing.models import BillLine, GoodsReceiptLine, LandedCostApplication
+
+        made, line, charge = self.landed()
+        self.once(race(LandedCostApplication, *[lambda: BillLine.objects.get(pk=charge.pk).allocate_landed_cost(
+            [GoodsReceiptLine.objects.get(pk=line.pk)])] * 2))
+        self.assertEqual(made.balance(made.freight_expense), Decimal("0.00"))
+        self.assertEqual(made.item.stock_value_at(made.warehouse), Decimal("130.00"))
+
+    def test_a_charge_goes_on_the_goods_or_a_machine_not_both(self):
+        """Either wins; together they put 80.00 of freight in two places."""
+        from apps.purchasing.models import BillLine, GoodsReceiptLine
+
+        made, line, charge = self.landed()
+        self.once(race(JournalEntry,
+                       lambda: BillLine.objects.get(pk=charge.pk).allocate_landed_cost(
+                           [GoodsReceiptLine.objects.get(pk=line.pk)]),
+                       lambda: BillLine.objects.get(pk=charge.pk).capitalise_as_asset(made.category)))
+        self.assertEqual(made.balance(made.freight_expense), Decimal("0.00"))
+        self.assertEqual(made.balance(made.category.asset_account) + made.item.stock_value_at(made.warehouse),
+                         Decimal("130.00"))
+
+    def test_a_transfer_leaves_the_shelf_once(self):
+        from apps.inventory.models import StockMovement, StockTransfer
+        from apps.inventory import tests_transfers
+
+        made = fixture(self, tests_transfers.TransferTestCase)
+        made.stock("100", "5")
+        move = made.transfer("30", transit=True)
+        self.once(race(StockMovement, *[lambda: StockTransfer.objects.get(pk=move.pk).dispatch()] * 2))
+        self.assertEqual(made.item.on_hand_at(made.north), Decimal("70"))
+
+    def test_a_delivery_leaves_one_backorder(self):
+        from apps.sales.models import Delivery
+        from apps.sales import tests_lifecycle
+
+        made = fixture(self, tests_lifecycle.BackorderTests)
+        made.stock_up()
+        delivery = made.ship(made.make_order("10"), "4")
+        self.once(race(Delivery, *[lambda: Delivery.objects.get(pk=delivery.pk).create_backorder()] * 2))
+        self.assertEqual(Delivery.objects.filter(backorder_of=delivery).count(), 1)
+
+    def test_an_order_is_confirmed_once_on_one_number(self):
+        from apps.purchasing.models import PurchaseOrder
+        from apps.purchasing import tests_lifecycle
+
+        made = fixture(self, tests_lifecycle.PurchasingLifecycleTestCase)
+        order = made.make_order(confirm=False)
+        self.once(race(PurchaseOrder, *[lambda: PurchaseOrder.objects.get(pk=order.pk).confirm()] * 2))
+        later = made.make_order(confirm=False)
+        later.confirm()
+        self.assertEqual((PurchaseOrder.objects.get(pk=order.pk).number, later.number),
+                         ("PO-2026-00001", "PO-2026-00002"))
+
+    def test_a_week_is_committed_into_one_run(self):
+        from apps.planning.mps import MasterScheduleEntry
+        from apps.planning import tests_mps
+
+        entry = fixture(self, tests_mps.ScheduleTestCase).entry()
+        self.once(race(WorkOrder, *[
+            lambda: MasterScheduleEntry.objects.get(pk=entry.pk).commit(on_date=tests_mps.TODAY)] * 2))
+        self.assertEqual(WorkOrder.objects.count(), 1)
+
+    def test_a_schedule_puts_one_job_on_the_board(self):
+        from apps.manufacturing.maintenance import MaintenanceJob, MaintenanceSchedule
+        from apps.manufacturing import tests_maintenance
+
+        schedule = fixture(self, tests_maintenance.MaintenanceTestCase).schedule(days=90)
+        self.once(race(MaintenanceJob, *[lambda: MaintenanceSchedule.objects.get(pk=schedule.pk).raise_job(
+            as_of=run_fixture.TODAY)] * 2))
+        self.assertEqual(MaintenanceJob.objects.count(), 1)
+
+    def test_a_station_counts_each_guess_before_weighing_the_next(self):
+        """
+        Four wrong PINs, then two more at once. Weighed together, both
+        read four and both are tried: a sixth guess the lock should have
+        stopped, and with more at once, as many as are sent.
+        """
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+        from apps.manufacturing.station import LoomStation, StationAttempt
+        from apps.manufacturing import tests_station
+
+        made = fixture(self, tests_station.StationTestCase)
+        pin = made.operator.issue_pin()
+        wrong, now = ("000000" if pin != "000000" else "111111"), timezone.now()
+        for _ in range(4):
+            with self.assertRaises(ValidationError):
+                made.station.identify(wrong, now=now)
+        outcomes = race(StationAttempt, *[
+            lambda: LoomStation.objects.get(pk=made.station.pk).identify(wrong, now=now)] * 2, atomic=False)
+        self.assertEqual(StationAttempt.objects.filter(station=made.station).count(), 5, outcomes)
+        self.assertTrue(any("locked" in outcome for outcome in outcomes), outcomes)

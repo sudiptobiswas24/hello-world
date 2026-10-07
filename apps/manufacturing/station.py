@@ -38,7 +38,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, serialised
+from apps.core.models import AuditModel, lock_rows, serialised
 from apps.core.windows import covers
 
 ONE_HUNDRED = Decimal("100")
@@ -148,12 +148,17 @@ class LoomStation(AuditModel):
         from apps.hr.models import Employee
 
         now = now or timezone.now()
-        if self.is_locked(now):
-            raise ValidationError(
-                "Too many wrong PINs. This station is locked for ten minutes."
-            )
-        person = Employee.by_pin(pin, on_date=timezone.localtime(now).date())
-        StationAttempt.objects.create(station=self, at=now, succeeded=person is not None)
+        # One guess at a time per station, each counted before the next is weighed: five sent at
+        # once all read "not locked", and the lock was five guesses late. Committed before the
+        # refusal below, which would otherwise take the wrong guess's record back with it.
+        with transaction.atomic():
+            lock_rows(self, refresh=False)
+            if self.is_locked(now):
+                raise ValidationError(
+                    "Too many wrong PINs. This station is locked for ten minutes."
+                )
+            person = Employee.by_pin(pin, on_date=timezone.localtime(now).date())
+            StationAttempt.objects.create(station=self, at=now, succeeded=person is not None)
         if person is None:
             raise ValidationError("That PIN is not recognised.")
         return person

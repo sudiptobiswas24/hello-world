@@ -451,6 +451,7 @@ class Activity(AuditModel):
         _check_owner(self.owner)
         super().save(*args, **kwargs)
 
+    @serialised("done_on")
     def done(self, on_date=None):
         if self.done_on is not None:
             raise ValidationError(f"{self} was done on {self.done_on}.")
