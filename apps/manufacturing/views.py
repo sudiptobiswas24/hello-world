@@ -996,7 +996,23 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     def get_serializer_class(self):
         return MaintenanceJobDetailSerializer if self.action == "retrieve" else MaintenanceJobSerializer
-    action_permission_map = {"complete": "manufacturing.change_maintenancejob",
+    @action(detail=False, methods=["get"])
+    def calendar(self, request):
+        """The month (?year=&month=, this one by default; ?work_centre= to keep to one) day by day: jobs due or done, schedules running out."""
+        from .maintenance import calendar_month
+
+        today = timezone.localdate()
+        try:
+            year, month = int(request.query_params.get("year") or today.year), int(request.query_params.get("month") or today.month)
+            if not 1 <= month <= 12 or not 2000 <= year <= 2100:
+                raise ValueError
+        except ValueError:
+            raise DRFValidationError({"month": ["Say the year and the month as numbers."]})
+        centre = record_or_404(WorkCentre, request.query_params.get("work_centre"), "work_centre", optional=True)
+        return Response({"year": year, "month": month, "days": calendar_month(year, month, centre)})
+
+    action_permission_map = {"calendar": "manufacturing.view_maintenancejob",
+                             "complete": "manufacturing.change_maintenancejob",
                              "cancel": "manufacturing.change_maintenancejob",
                              "labour": "manufacturing.change_maintenancejob",
                              "breakdown": "manufacturing.add_maintenancejob",

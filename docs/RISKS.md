@@ -402,3 +402,9 @@ not cover, or is deleted with the commit that finishes it.
     right by another change order, not by editing the versions back.
     And the run board reads what a run has done, so a run with time
     booked by mistake reads as running until the booking is corrected.
+47. **A quality alert may close with no action; a complaint may not.**
+    A roll scrapped on the spot needs a root cause written down and
+    nothing else, so the alert does not insist on a corrective action
+    the way a complaint does. The cost is that an alert closed on a root
+    cause alone leaves nothing to verify later; the health board counts
+    alerts open a fortnight, not alerts closed too easily.

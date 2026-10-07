@@ -342,6 +342,7 @@ ROLES = {
         *view("hr", "employee"),
         *crud("manufacturing", "workorder", actions=("add", "change", "view")),
         *view("manufacturing", "bomchangeorder"),
+        *crud("manufacturing", "qualityalert", actions=("add", "view")),
         *full("manufacturing", "workorderoperation", "workordercomponent",
               "workordersubstitute", "materialissue", "materialissueline",
               "productionentry", "productionscrap", "productionbyproduct", "timebooking",
@@ -432,6 +433,9 @@ ROLES = {
         *crud("quality", "inspection", actions=("add", "change", "view")),
         *crud("quality", "reading", actions=("add", "change", "view")),
         *crud("quality", "calibration", actions=("add", "view")),
+        # What the floor finds wrong is written down where the manager will see it.
+        *crud("manufacturing", "qualityalert", actions=("add", "change", "view")),
+        *crud("manufacturing", "correctiveaction", actions=("add", "change", "view")),
         *view("quality", "instrument", "characteristic", "inspectionplan", "planline"),
         *crud("manufacturing", "coatingcheck", actions=("add", "view")),
         *crud("manufacturing", "testcertificate", actions=("add", "view")),
@@ -443,14 +447,17 @@ ROLES = {
         *view("inventory", "stockmovement"),
         # deliberately NOT the plans, the limits or the instruments: whoever
         # takes the reading does not also set the pass mark.
+        # Who owns an action, who decided: picked from the employees.
+        *view("hr", "employee"),
     ],
     "Quality Manager": [
         *REFERENCE,
+        *view("hr", "employee"),
         *HOW_IT_IS_MADE,
         *full("quality", "inspection", "reading", "calibration", "instrument",
               "characteristic", "inspectionplan", "planline"),
         *crud("quality", "qualitysettings", actions=("change", "view")),
-        *full("manufacturing", "complaint", "complaintlot", "correctiveaction",
+        *full("manufacturing", "complaint", "complaintlot", "correctiveaction", "qualityalert",
               "coatingcheck", "testcertificate"),
         *full("purchasing", "receiptinspection"),
         *full("sales", "thirdpartyrelease", "thirdpartyreleaseline"),
