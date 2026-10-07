@@ -334,8 +334,16 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/production/WorkOrderForm"),
       },
       {
+        path: "board", label: "Run board", permission: "manufacturing.view_workorder",
+        keywords: "kanban board runs running waiting close", load: () => import("../modules/production/Board"),
+      },
+      {
         path: "schedule", label: "Machine schedule", permission: "manufacturing.view_workorder",
         keywords: "dispatch loom extruder queue", load: () => import("../modules/production/Schedule"),
+      },
+      {
+        path: "gantt", label: "Machine Gantt", permission: "manufacturing.view_workorder",
+        keywords: "gantt timeline machines bars schedule", load: () => import("../modules/production/Gantt"),
       },
       {
         path: "issues", label: "Material issues", permission: "manufacturing.view_materialissue",
@@ -461,6 +469,11 @@ export const MODULES: Module[] = [
         create: "manufacturing.add_billofmaterials",
         keywords: "bom recipe formula inputs components", load: () => import("../modules/making/Boms"),
         detail: () => import("../modules/making/BomForm"),
+      },
+      {
+        path: "change-orders", label: "BOM change orders", permission: "manufacturing.view_bomchangeorder",
+        keywords: "eco engineering change recipe version effective", load: () => import("../modules/making/ChangeOrders"),
+        detail: () => import("../modules/making/ChangeOrderForm"),
       },
       {
         path: "routings", label: "Routings", permission: "manufacturing.view_routing",

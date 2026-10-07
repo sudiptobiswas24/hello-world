@@ -395,3 +395,10 @@ not cover, or is deleted with the commit that finishes it.
     bins it names for the second delivery were chosen as if the first had
     not been picked. Where that matters (one batch nearly used up), post
     the first delivery before reading the route for the second.
+46. **A change order applied is not undone.** It closes the old
+    version's window the day before and makes the new one the default
+    from its first day, and moves draft runs due from that day across;
+    runs already released keep what they froze. A wrong change is put
+    right by another change order, not by editing the versions back.
+    And the run board reads what a run has done, so a run with time
+    booked by mistake reads as running until the booking is corrected.

@@ -36,6 +36,14 @@ export default function BomForm() {
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "notes", label: "Notes", kind: "textarea" },
       ]}
+      actions={[
+        { label: "Raise a change order", path: "change-order", permission: "manufacturing.add_bomchangeorder",
+          when: (row) => row.is_active !== false && row.is_computed !== true,
+          done: "Change order raised: edit the new version, then apply it", fields: [
+            { key: "effective_from", label: "From", kind: "date", hint: "The first day output is made to the new version" },
+            { key: "reason", label: "Why", kind: "textarea" },
+          ], then: (made) => `/making/change-orders/${String(made.id)}` },
+      ]}
       panels={[
         {
           title: "Inputs", permission: "manufacturing.view_bomcomponent", endpoint: "", query: () => ({}),

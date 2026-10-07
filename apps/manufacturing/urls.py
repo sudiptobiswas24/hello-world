@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
+from .changes_api import BomChangeOrderViewSet
 from .packing_api import PackingLineViewSet
 from .positions_api import MachinePositionViewSet
 from .settings_api import ManufacturingSettingsViewSet
@@ -72,6 +73,7 @@ router.register("liner-specifications", LinerSpecificationViewSet)
 router.register("fabric-specifications", FabricSpecificationViewSet)
 router.register("bag-specifications", BagSpecificationViewSet)
 router.register("boms", BillOfMaterialsViewSet)
+router.register("bom-change-orders", BomChangeOrderViewSet)
 router.register("cost-versions", CostVersionViewSet)
 router.register("standard-costs", StandardCostViewSet)
 router.register("bom-components", BomComponentViewSet)

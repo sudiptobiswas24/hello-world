@@ -770,6 +770,16 @@ class BillOfMaterialsViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = BillOfMaterialsSerializer
     filter_fields = ["item", "is_active", "is_default", "routing", "is_phantom"]
     search_fields = ["item__sku", "item__name", "name"]
+    action_permission_map = {"change_order": "manufacturing.add_bomchangeorder"}
+
+    @action(detail=True, methods=["post"], url_path="change-order")
+    def change_order(self, request, pk=None):
+        """{effective_from, reason}: a new version to edit, and the order that will put it in force."""
+        from .changes import raise_change
+
+        order = raise_change(self.get_object(), request.data.get("effective_from"),
+                             str(request.data.get("reason", "")), by=request.user)
+        return Response({"id": order.pk, "draft": order.draft_id}, status=201)
 
     @action(detail=True, methods=["get"])
     def explosion(self, request, pk=None):
@@ -1419,7 +1429,15 @@ class WorkOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "close": "manufacturing.change_workorder",
         "reopen": "manufacturing.change_workorder",
         "cancel": "manufacturing.change_workorder",
+        "board": "manufacturing.view_workorder",
     }
+
+    @action(detail=False, methods=["get"])
+    def board(self, request):
+        """The runs in columns: not released, waiting, running, output complete, closed this week."""
+        from .board import board
+
+        return Response(board())
 
     @action(detail=True, methods=["get"])
     def waste(self, request, pk=None):
