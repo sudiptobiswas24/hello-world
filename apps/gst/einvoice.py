@@ -166,6 +166,9 @@ def needs_irn(invoice):
         return False, f"{invoice.number} is dated before e-invoicing began."
     if invoice.is_down_payment or (invoice.credits_id and invoice.credits.is_down_payment):
         return False, f"{invoice.number} is a down payment, which carries no tax."
+    if invoice.is_opening_balance or (invoice.credits_id and invoice.credits.is_opening_balance
+                                      and not invoice.corrects_old_supply):
+        return False, f"{invoice.number} is the old system's invoice, registered from there if at all."
     if not invoice.party_gstin and invoice.party_registration != "overseas":
         return False, (f"{invoice.number} is to an unregistered buyer; those are not "
                        "e-invoiced.")

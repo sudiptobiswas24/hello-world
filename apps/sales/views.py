@@ -276,7 +276,7 @@ class SuppliedItemViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.M
 
 
 class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
-    extra_params = ('open',)
+    extra_params = ("open", "without_irn")
     search_fields = ["number", "reference", "customer__code", "customer__name", "sales_order__number"]
     filter_fields = ["customer", "posted", "credits", "credits__isnull", "is_down_payment",
                      "sales_order", "receivable_account", "currency"]
@@ -294,6 +294,12 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         # reckons it.
         if flag(self.request.query_params, "open", False):
             queryset = still_owed(queryset)
+        # ?without_irn=true: those e-invoicing covers that the portal has
+        # not registered (the morning check's list).
+        if flag(self.request.query_params, "without_irn", False):
+            from apps.web.checks import invoices_without_irn
+
+            queryset = invoices_without_irn(queryset)
         return queryset
     action_permission_map = {
         "post_invoice": "sales.post_invoice",

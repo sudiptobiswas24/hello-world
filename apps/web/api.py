@@ -7,12 +7,14 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.core.api import flag
 from apps.core.permissions import RequiredPermission
 
 from django.utils import timezone
 
 from .bank import stock_statement
 from .checks import inbox
+from .health import integrity, server
 from .search import search
 from .summary import groupings, list_view, summarise
 
@@ -34,6 +36,24 @@ class InboxView(viewsets.ViewSet):
 
     def list(self, request):
         return Response({"day": timezone.localdate(), "rows": inbox(request.user)})
+
+
+class HealthView(viewsets.ViewSet):
+    """
+    Whether the system agrees with itself: the books against themselves
+    (health.integrity), the server (health.server) and every morning
+    check this login may read, with its count. `?fresh=true` runs the
+    probes again rather than serving the last ten minutes' answer.
+    """
+
+    permission_classes = [IsAuthenticated, RequiredPermission]
+    required_permission = "core.check_health"
+
+    def list(self, request):
+        day = timezone.localdate()
+        report = integrity(day, fresh=flag(request.query_params, "fresh", False))
+        return Response({"day": day, "checked_at": report["checked_at"], "books": report["findings"],
+                         "server": server(), "checks": inbox(request.user, day, everything=True)})
 
 
 class SummaryView(viewsets.ViewSet):

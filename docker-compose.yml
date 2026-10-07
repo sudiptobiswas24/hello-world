@@ -44,9 +44,23 @@ services:
       EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
       EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
       DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-}
+      # Mailed when a request fails on the server; needs EMAIL_HOST.
+      DJANGO_ADMINS: ${DJANGO_ADMINS:-}
+      # Where the backup container writes, read here for their age.
+      BACKUP_DIR: /backups
     volumes:
       - ./imports:/app/imports
       - media:/app/media
+      - ./backups:/backups:ro
+    # The application asks itself whether the database answers, the schema
+    # is current, the disk has room and last night's backup exists;
+    # `docker compose ps` shows the answer as (healthy) or (unhealthy).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz/', timeout=10)"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
 
   proxy:
     image: caddy:2

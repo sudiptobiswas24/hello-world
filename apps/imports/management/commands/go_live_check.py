@@ -160,24 +160,16 @@ def _making(add):
 
 
 def _books(add):
-    from apps.accounting.reports import trial_balance
-    from apps.inventory.reports import negative_stock, reconcile_to_ledger
+    # The same probes the Health screen runs every day after go-live.
+    from apps.web.health import integrity
 
-    balance = trial_balance()
-    if balance.get("balanced", True):
-        add(OK, "Trial balance", "debits equal credits")
-    else:
-        add(FAIL, "Trial balance", "Debits and credits differ: the ledger is broken. Stop and find out why.")
-    stock = reconcile_to_ledger()
-    if stock.get("balanced", True):
-        add(OK, "Stock against the ledger", "agrees")
-    else:
-        add(FAIL, "Stock against the ledger",
-            "The stock's value and the inventory accounts differ: see the stock reconciliation report.")
-    unexpected = negative_stock()["unexpected"]
-    if unexpected:
-        add(WARN, "Negative stock", f"{len(unexpected)} shelf position(s) hold less than nothing "
-            "where the warehouse does not allow it.")
+    for finding in integrity(fresh=True)["findings"]:
+        if finding["ok"] is True:
+            add(OK, finding["label"], finding["detail"])
+        elif finding["ok"] is None:
+            add(WARN, finding["label"], finding["detail"])
+        else:
+            add(FAIL, finding["label"], finding["detail"] + " Stop and find out why before going live.")
 
 
 def _settings(add):

@@ -331,3 +331,21 @@ not cover, or is deleted with the commit that finishes it.
     component instead. The ECR layout is EPFO's eleven-field text file
     and the ESI file the portal's six-column template; a change on either
     portal is a change here.
+40. **The health checks prove the base currency and say so for the
+    rest.** A control account is matched against its open documents at
+    the ledger's own figures, which is exact for documents booked at a
+    rate of one. An open invoice or payment in another currency clears
+    its account at its own rate, allocation by allocation, each rounded,
+    so the account cannot be re-derived from the documents to the paisa;
+    such an account reads "not proved" rather than "agrees" or "does
+    not", and is checked by hand at the month end. The stock and trial
+    balance probes replay the whole ledger: on a year of data they take
+    seconds, so the inbox keeps their answer for ten minutes and the
+    Health screen's "Check again" runs them live. A failure the
+    middleware records goes into the database that may itself be what
+    failed; then the log line carries "not recorded" and the mail (with
+    `DJANGO_ADMINS`) still goes, the reference shown to the person
+    saying so. That mail is Django's own error report: the traceback
+    with the request's headers and cookies, passwords and tokens
+    blanked, the session cookie not. It goes over the company's mail
+    server to the people who keep the system, and to nobody else.

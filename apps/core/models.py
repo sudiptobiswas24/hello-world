@@ -1089,6 +1089,7 @@ class Company(AuditModel):
         verbose_name_plural = "company"
         permissions = [
             ("import_records", "Can bring the old system's records in"),
+            ("check_health", "Can read whether the books agree and the server is well"),
         ]
 
     def __str__(self):
@@ -1163,5 +1164,6 @@ class Company(AuditModel):
 
 
 from .attachments import Attachment  # noqa: E402,F401
+from .errors import ServerError  # noqa: E402,F401
 from .history import RecordEvent  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401

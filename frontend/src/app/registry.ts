@@ -1046,6 +1046,15 @@ export const MODULES: Module[] = [
         keywords: "import csv go-live cutover opening balances old system migrate upload", load: () => import("../modules/settings/ImportRecords"),
       },
       {
+        path: "health", label: "Health", permission: "core.check_health",
+        keywords: "health checks books agree trial balance backup disk server integrity sweep", load: () => import("../modules/settings/Health"),
+      },
+      {
+        path: "problems", label: "Problems people hit", permission: "core.view_servererror",
+        keywords: "errors problems server error reference traceback failed went wrong", load: () => import("../modules/settings/Problems"),
+        detail: () => import("../modules/settings/ProblemForm"),
+      },
+      {
         path: "company", label: "Company", permission: "core.view_company",
         keep: "core.change_company",
         keywords: "base currency default accounts fiscal year gstin", load: () => import("../modules/settings/CompanyList"),

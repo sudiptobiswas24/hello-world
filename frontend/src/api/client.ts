@@ -112,6 +112,13 @@ const PLAIN: Record<number, string> = {
 const SERVER =
   "Something went wrong on the server. It has been logged. Try again, and tell the administrator if it keeps happening.";
 
+/** The reference the server logged the failure under (apps/core/errors.py), to quote when asking for help. */
+function errorRef(body: unknown): string {
+  if (!body || typeof body !== "object") return "";
+  const ref = (body as { error_id?: unknown }).error_id;
+  return typeof ref === "string" ? ref : "";
+}
+
 let signingIn = false;
 
 function sendToSignIn(): void {
@@ -200,7 +207,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const { messages } = readErrors(body);
     throw new ApiError(status, "forbidden", messages.length ? messages : ["You do not have permission to do that."]);
   }
-  if (status >= 500) throw new ApiError(status, "server", [SERVER]);
+  if (status >= 500) {
+    const ref = errorRef(body);
+    throw new ApiError(status, "server", [ref ? `${SERVER} Quote its reference, ${ref}.` : SERVER]);
+  }
   if (status === 400) {
     const { messages, fields } = readErrors(body);
     throw new ApiError(status, "invalid", messages.length ? messages : ["The server refused that."], fields);
