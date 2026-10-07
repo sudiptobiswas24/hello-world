@@ -123,6 +123,18 @@ export default function OrderForm() {
             Invoice
           </ActionButton>
         )}
+        {order && order.status !== "cancelled" && order.lines.length > 0 && !draft.dirty && (
+          <>
+            {order.status === "confirmed" && <a className="btn" href={`${ENDPOINT}${order.id}/pdf/?kind=acknowledgement`} target="_blank" rel="noopener">Acknowledgement PDF</a>}
+            <a className="btn" href={`${ENDPOINT}${order.id}/pdf/?kind=proforma`} target="_blank" rel="noopener">Proforma PDF</a>
+            {can("sales.change_salesorder") && order.status === "confirmed" && (
+              <ActionButton pending={act.pending} onClick={() => void run("send", "Acknowledgement sent", undefined, { kind: "acknowledgement" })}>Email acknowledgement</ActionButton>
+            )}
+            {can("sales.change_salesorder") && (
+              <ActionButton pending={act.pending} onClick={() => void run("send", "Proforma sent", undefined, { kind: "proforma" })}>Email proforma</ActionButton>
+            )}
+          </>
+        )}
         {order && order.status !== "cancelled" && can("sales.change_salesorder") && (
           <ActionButton danger pending={act.pending} onClick={() => {
             if (window.confirm(`Cancel ${order.number || "this order"}? It cannot be undone.`)) void run("cancel", "Order cancelled");

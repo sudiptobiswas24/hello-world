@@ -618,6 +618,30 @@ class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
         return True
 
     @serialised("status")
+    def render_pdf(self, proforma=False):
+        """The order as an acknowledgement, or as a proforma invoice."""
+        from .documents import render_order_pdf
+
+        return render_order_pdf(self, proforma=proforma)
+
+    def email_to_customer(self, to=None, subject=None, body=None, user=None, proforma=False):
+        """
+        The acknowledgement (once confirmed) or the proforma (any time
+        before cancelling) to the customer as a PDF. Returns the address.
+        """
+        from apps.core.mail import send_document
+
+        if not self.lines.exists():
+            raise ValidationError("The order has no lines yet; there is nothing to send.")
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("This order is cancelled; nothing of it is sent.")
+        if not proforma and self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("An order is acknowledged once it is confirmed. Send a proforma before that.")
+        what = "Proforma invoice" if proforma else "Order acknowledgement"
+        return send_document(self, self.customer, what, to=to, subject=subject, body=body, user=user,
+                             pdf=self.render_pdf(proforma=proforma),
+                             filename=f"{what} {self.number or 'draft'}.pdf")
+
     def cancel(self):
         """Cancel an order that hasn't been acted on yet."""
         if self.status == OrderStatus.CANCELLED:

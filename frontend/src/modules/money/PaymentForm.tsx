@@ -125,6 +125,16 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
         {payment && !payment.posted && !draft.dirty && can("accounting.post_payment") && (
           <ActionButton primary pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${payment.id}/post_payment/`, {}, { done: "Posted to the bank" })}>Post</ActionButton>
         )}
+        {payment?.posted && !payment.voided && (
+          <>
+            <a className="btn" href={`${ENDPOINT}${payment.id}/pdf/`} target="_blank" rel="noopener">{config.direction === "disbursement" ? "Remittance advice" : "Receipt"} PDF</a>
+            {can("accounting.change_payment") && (
+              <ActionButton pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${payment.id}/send/`, {}, {
+                done: (reply) => `${config.direction === "disbursement" ? "Remittance advice" : "Receipt"} sent to ${(reply as unknown as { sent_to: string }).sent_to}`,
+              })}>Email {config.direction === "disbursement" ? "remittance advice" : "receipt"}</ActionButton>
+            )}
+          </>
+        )}
         {payment?.posted && !payment.voided && can("accounting.post_payment") && (
           <ActionButton danger pending={act.pending} onClick={() => {
             const memo = window.prompt("Why is it void? (a bounced cheque, a recalled transfer)");
