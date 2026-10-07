@@ -349,3 +349,15 @@ not cover, or is deleted with the commit that finishes it.
     with the request's headers and cookies, passwords and tokens
     blanked, the session cookie not. It goes over the company's mail
     server to the people who keep the system, and to nobody else.
+41. **The 2B match reads numbers the way a clerk types them.** A
+    supplier's INV/2026-27/0012 and the clerk's INV-2026-27-12 are one
+    number here (letters and digit runs, separators and leading zeros
+    dropped); GSTN compares exactly, so a bill matched here can still be
+    the portal's mismatch, and the figures beside it are what decide.
+    A number that matches nothing falls back to the same supplier's
+    document of the same day for the same value. Composition and SEZ
+    suppliers' bills are outside the 2B's supplier tables and are said
+    to be, not matched; ISD, import and e-commerce tables of the file
+    are counted and not read. Nothing here changes GSTR-3B: 4(A)(5)
+    stays what the books booked, and the waiting figure is what the
+    officer holds back by hand until the supplier files.

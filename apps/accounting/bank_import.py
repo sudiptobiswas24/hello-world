@@ -12,7 +12,6 @@ passed over, so the same file twice adds nothing; two identical rows in
 one file are two transactions, as the bank says.
 """
 
-import re
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -36,12 +35,6 @@ ROLES = {
 }
 
 
-def _says(key, word):
-    """Whether a heading says `word`: as a word of its own ("Ref No."), or inside a longer one ("Particulars")."""
-    tokens = re.split(r"[^a-z0-9]+", key)
-    return word in tokens or (len(word) > 3 and word in key)
-
-
 def columns_of(keys):
     """Which heading plays which role; the date is the one that must be there."""
     found = {}
@@ -49,9 +42,9 @@ def columns_of(keys):
         for key in keys:
             # "balance" columns never play a part, and an "amount" heading
             # that says deposit or withdrawal is that side, not the signed one.
-            if "balance" in key or (role == "amount" and any(_says(key, w) for w in ROLES["money_in"] + ROLES["money_out"])):
+            if "balance" in key or (role == "amount" and any(csvrows.says(key, w) for w in ROLES["money_in"] + ROLES["money_out"])):
                 continue
-            if any(_says(key, word) for word in words):
+            if any(csvrows.says(key, word) for word in words):
                 found[role] = key
                 break
     if "date" not in found:
