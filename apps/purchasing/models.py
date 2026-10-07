@@ -4617,6 +4617,10 @@ class BillPayment(AuditModel):
         related_name="+", editable=False,
         help_text="Realised exchange difference posted when this allocation was made.",
     )
+    fx_released_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Its payment returned: the exchange difference it realised, reversed on that day.",
+    )
 
     class Meta:
         ordering = ["-id"]
@@ -4728,11 +4732,23 @@ class BillPayment(AuditModel):
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.fx_entry_id:
+        if self.fx_entry_id and not self.fx_released_entry_id:
             self.fx_entry.create_reversal(
                 memo=f"Releasing exchange difference on {self}"
             )
         super().delete(*args, **kwargs)
+
+    def release_exchange_difference(self, on_date):
+        """
+        Its payment returned, the difference it realised never was: reversed on that day, once.
+        Left standing, the payable kept it after the void, at a
+        rate the money never came at, and the gain or loss stayed in the profit and loss.
+        """
+        if self.fx_entry_id and not self.fx_released_entry_id:
+            self.fx_released_entry = self.fx_entry.create_reversal(
+                entry_date=on_date,
+                memo=f"Exchange difference on {self.bill.number} released: {self.payment.number} returned")
+            super(BillPayment, self).save(update_fields=["fx_released_entry", "updated_at"])
 
 
 @transaction.atomic
@@ -5228,9 +5244,14 @@ def vendor_balance(vendor):
     return owed - refundable - paid_out + received
 
 
-def withdraw_discounts_a_void_unearned(payment, on_date):
-    """Our payment returned: each bill it settled with a discount for paying early, owing again, loses it."""
-    for allocation in payment.bill_allocations.select_related("bill"):
+def undo_what_it_settled(payment, on_date):
+    """
+    Our payment returned (Payment.void asks), on the void's day: the exchange difference each
+    allocation realised is released, and a bill it settled with a discount for paying early, owing
+    again, loses the discount. The mirror of sales'.
+    """
+    for allocation in payment.bill_allocations.select_related("bill", "fx_entry"):
+        allocation.release_exchange_difference(on_date)
         if allocation.bill.settlement_discount_entry_id:
             allocation.bill.withdraw_unearned_discount(on_date=on_date)
 
