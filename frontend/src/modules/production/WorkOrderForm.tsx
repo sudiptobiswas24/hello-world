@@ -9,6 +9,7 @@ import { ErrorPanel } from "../../shell/ErrorPanel";
 import { RecordPanel } from "../../views/RecordScreen";
 
 import { TAPE_SETTINGS_PANEL } from "./tapeSettings";
+import { Trail } from "../../views/Trail";
 
 interface Component {
   id: number;
@@ -148,6 +149,7 @@ export default function WorkOrderForm() {
       {order.status !== "draft" && order.status !== "cancelled" && (
         <RecordPanel panel={TAPE_SETTINGS_PANEL} record={order as unknown as Record<string, unknown> & { id: number }} />
       )}
+      {order && <Trail model="manufacturing.workorder" id={order.id} />}
     </article>
   );
 }

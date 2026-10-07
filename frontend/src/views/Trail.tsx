@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { ApiError, request } from "../api/client";
+import { ApiError, get, request } from "../api/client";
 import { useGet } from "../api/hooks";
 import { useAccess } from "../auth/me";
 import { dateTime } from "../lib/format";
+import { FollowUpsPanel, NotesPanel } from "./Chatter";
 import { HistoryPanel } from "./HistoryPanel";
 
 interface AttachmentRow { id: number; name: string; size: number; by: string; at: string; mine: boolean }
@@ -63,8 +64,8 @@ export function AttachmentsPanel({ model, id }: { model: string; id: number }) {
   const mayAdd = can("core.add_attachment");
   if (!rows.data?.length && !mayAdd) return null;
   return (
-    <section className="related" aria-label="Attachments">
-      <h2 className="section-title">Attachments</h2>
+    <section className="related-list chatter" aria-label="Attachments">
+      <h2>Attachments</h2>
       {rows.data?.length ? (
         <table className="data">
           <tbody>
@@ -95,12 +96,30 @@ export function AttachmentsPanel({ model, id }: { model: string; id: number }) {
   );
 }
 
-/** What a record carries with it and what happened to it: its attachments and its history. */
+/**
+ * What a record carries with it and what happened to it: what is planned
+ * on it, what people said, its files and its history.
+ */
 export function Trail({ model, id }: { model: string; id: number }) {
   return (
     <>
+      <FollowUpsPanel model={model} id={id} />
+      <NotesPanel model={model} id={id} />
       <AttachmentsPanel model={model} id={id} />
       <HistoryPanel model={model} id={id} />
     </>
   );
+}
+
+/**
+ * The record kind a screen's address serves, from the server's own routes:
+ * a record screen knows where it reads, not what it is.
+ */
+export function useKindOf(endpoint: string): string | undefined {
+  const kinds = useQuery({
+    queryKey: ["reference", "/api/core/endpoints/"],
+    queryFn: ({ signal }) => get<Record<string, string>>("/api/core/endpoints/", undefined, signal),
+    staleTime: Infinity,
+  });
+  return kinds.data?.[endpoint];
 }

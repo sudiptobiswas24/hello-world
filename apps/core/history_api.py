@@ -2,10 +2,11 @@
 
 from django.apps import apps
 from rest_framework import viewsets
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .endpoints import may_read
 from .history import history
 
 
@@ -22,4 +23,8 @@ class HistoryView(viewsets.ViewSet):
             raise ValidationError({"id": ["Name the record by its id."]})
         if not request.user.has_perm(f"{model._meta.app_label}.view_{model._meta.model_name}"):
             raise PermissionDenied(f"Reading {model._meta.verbose_name_plural} is not yours.")
+        # Not only the kind but the record: a rep reads the history of their own customers' orders.
+        # A deleted record's history is read by whoever may read its kind; nobody's screen shows it.
+        if model._default_manager.filter(pk=int(pk)).exists() and not may_read(request.user, model, int(pk)):
+            raise NotFound()
         return Response(history(model, int(pk)))

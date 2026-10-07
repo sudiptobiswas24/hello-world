@@ -14,6 +14,7 @@ import { PARTY_PANELS } from "./panels";
 import { PARTY_FIELDS } from "./partyFields";
 
 import type { PartyRole } from "../../forms/PartyPicker";
+import { Trail } from "../../views/Trail";
 
 interface Party {
   id: number;
@@ -86,6 +87,7 @@ export function PartyForm({ role, base, plural, related }: PartyConfig) {
       </Sheet>
       {party && PARTY_PANELS.map((panel) => <RecordPanel key={panel.title} panel={panel} record={party} />)}
       {party && related && <div className="related">{related(party)}</div>}
+      {party && <Trail model="core.party" id={party.id} />}
     </article>
   );
 }

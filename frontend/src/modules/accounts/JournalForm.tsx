@@ -10,6 +10,7 @@ import { useDraft } from "../../forms/useDraft";
 import { minus, positive, sum } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { Trail } from "../../views/Trail";
 
 interface Centre { id: number; code: string; name: string }
 
@@ -178,6 +179,7 @@ export default function JournalForm() {
           </div>
         )}
       </Sheet>
+      {entry && <Trail model="accounting.journalentry" id={entry.id} />}
     </article>
   );
 }

@@ -479,6 +479,14 @@ tbody tr:last-child td { border-bottom: 0; }
 .related-list li { display: flex; gap: 14px; }
 .related-list li span { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .related-list li span:last-child { margin-left: auto; }
+/* Notes and follow-ups: a card each, full width, under the record. */
+.chatter { margin-top: 14px; }
+.chatter table.data { width: 100%; margin-bottom: 10px; }
+.chatter table.data td { vertical-align: top; }
+.chatter .note-form { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+.chatter .note-form textarea { flex: 1; }
+.chatter ul.notes li { display: block; border-top: 1px solid var(--line); padding-top: 8px; }
+.chatter ul.notes p { margin: 4px 0 0; white-space: pre-wrap; }
 
 .return-box { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: var(--sunk); border-radius: 8px; padding: 10px 14px; }
 .check { display: flex; gap: 8px; align-items: center; }
