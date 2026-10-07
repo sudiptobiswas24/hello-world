@@ -28,6 +28,44 @@ backup.
 - A UPS. PostgreSQL survives a power cut; a disk that dies mid-write
   sometimes does not.
 
+## Trying it on a laptop first
+
+To see it working before a server is bought: install Docker Desktop
+(Windows or Mac) or Docker Engine (Linux), then
+
+```sh
+git clone https://github.com/sudiptobiswas24/hello-world.git erp
+cd erp
+cp .env.example .env
+```
+
+and set these lines in `.env`; leave the rest as they are:
+
+| setting | on a laptop |
+|---|---|
+| `POSTGRES_PASSWORD`, `DJANGO_SECRET_KEY` | 64 hex characters each: `openssl rand -hex 32`, or `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `ERP_SITE` | `http://localhost` |
+| `ERP_TLS` | empty |
+| `DJANGO_ALLOWED_HOSTS` | `localhost` |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | `http://localhost` |
+| `DJANGO_HTTPS` | `false`. Nothing leaves the laptop, so plain HTTP is safe here, and only here. |
+
+Then start it and load the demo plant:
+
+```sh
+docker compose up -d --build
+docker compose logs -f web    # wait for "Listening at: http://0.0.0.0:8000", then Ctrl-C
+docker compose run --rm web python manage.py load_demo
+```
+
+Open <http://localhost>. `load_demo` makes Deccan Polysacks, a woven-sack
+plant with three months of sales, purchases, production, quality,
+maintenance, payroll and the CRM, and prints a login for each role, all
+with one password; `--password` sets it, or one is made up and printed.
+It refuses a database that already holds records, so it never reaches
+real books. `docker compose down -v` stops everything and deletes the
+database with it, to start again from nothing.
+
 ## First installation
 
 ```sh
