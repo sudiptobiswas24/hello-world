@@ -269,6 +269,10 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/purchasing/RequisitionForm"),
       },
       {
+        path: "to-quote", label: "To quote", permission: "purchasing.add_requestforquotation",
+        keywords: "open requisition lines ask quotes rfq", load: () => import("../modules/purchasing/ToQuote"),
+      },
+      {
         path: "rfqs", label: "Requests for quotation", permission: "purchasing.view_requestforquotation", create: "purchasing.add_requestforquotation",
         also: ["purchasing.view_rfqline", "purchasing.view_rfqinvitation"],
         keywords: "rfq quotation tender compare quotes award", load: () => import("../modules/purchasing/Rfqs"),
@@ -284,6 +288,10 @@ export const MODULES: Module[] = [
         path: "vendor-prices", label: "Vendor prices", permission: "purchasing.view_vendorprice", create: "purchasing.add_vendorprice",
         keywords: "agreed price break lead time preferred vendor", load: () => import("../modules/purchasing/VendorPrices"),
         detail: () => import("../modules/purchasing/VendorPriceForm"),
+      },
+      {
+        path: "vendor-scorecard", label: "Vendor scorecard", permission: "purchasing.view_purchaseorder",
+        keywords: "vendor performance on time fill rate returns lead time late", load: () => import("../modules/purchasing/VendorScorecard"),
       },
       {
         path: "reorder", label: "What to reorder", permission: "purchasing.view_purchaseorder",

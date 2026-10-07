@@ -228,3 +228,27 @@ class ScopeTests(PerformanceTestCase):
         order.add_charge(freight, Decimal("50"))
 
         self.assertEqual(self.row_for()["order_lines"], 1)
+
+
+class QualityAndLeadTimeTests(PerformanceTestCase):
+    def test_what_came_back_counts_against_the_vendor(self):
+        order = self.order(expected=datetime.date(2026, 1, 20))
+        receipt = self.receive_on(order, "100", datetime.date(2026, 1, 20))
+        receipt.create_return({receipt.lines.get(): Decimal("40")})
+
+        row = self.row_for()
+        self.assertEqual((row["quantity_received"], row["quantity_returned"], row["return_rate"]),
+                         (Decimal("60"), Decimal("40"), Decimal("40.00")))
+
+    def test_days_to_deliver_run_from_the_order_weighted_by_quantity(self):
+        order = self.order(expected=datetime.date(2026, 1, 20))  # ordered 1 January
+        self.receive_on(order, "60", datetime.date(2026, 1, 10))  # 9 days
+        self.receive_on(order, "40", datetime.date(2026, 1, 20))  # 19 days
+        # (60 × 9 + 40 × 19) / 100 = (540 + 760) / 100
+        self.assertEqual(self.row_for()["average_lead_days"], Decimal("13.00"))
+
+    def test_nothing_received_has_no_days_and_no_return_rate(self):
+        self.order()
+        row = self.row_for()
+        self.assertEqual((row["average_lead_days"], row["return_rate"], row["quantity_returned"]),
+                         (None, None, Decimal("0")))

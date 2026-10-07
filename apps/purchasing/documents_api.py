@@ -47,24 +47,47 @@ def _order_made(order):
     return Response({"order": order.pk, "number": order.number}, status=201)
 
 
+def _rfq_made(rfq):
+    return Response({"rfq": rfq.pk, "number": rfq.number}, status=201)
+
+
+def _named_lines(requisition, data):
+    """The requisition's lines `data["lines"]` names, or None for all of them."""
+    if not data.get("lines"):
+        return None
+    wanted = {str(line_id) for line_id in data["lines"]}
+    lines = [line for line in requisition.lines.all() if str(line.pk) in wanted]
+    if len(lines) != len(wanted):
+        raise DRFValidationError({"lines": ["A line named is not on this requisition."]})
+    return lines
+
+
 # --- requisitions
 
 class PurchaseRequisitionLineSerializer(serializers.ModelSerializer):
     item_label = serializers.SerializerMethodField()
     quantity_ordered = serializers.SerializerMethodField()
+    quantity_quoting = serializers.SerializerMethodField()
+    quantity_open = serializers.SerializerMethodField()
     estimated_value = serializers.SerializerMethodField()
 
     class Meta:
         model = PurchaseRequisitionLine
         fields = ["id", "requisition", "item", "uom", "quantity", "estimated_price", "expense_account",
                   "suggested_vendor", "notes", "warehouse", "item_label", "quantity_ordered",
-                  "estimated_value"]
+                  "quantity_quoting", "quantity_open", "estimated_value"]
 
     def get_item_label(self, obj):
         return _item_label(obj.item)
 
     def get_quantity_ordered(self, obj):
         return _quantity(obj.quantity_ordered())
+
+    def get_quantity_quoting(self, obj):
+        return _quantity(obj.quantity_quoting())
+
+    def get_quantity_open(self, obj):
+        return _quantity(obj.quantity_open())
 
     def get_estimated_value(self, obj):
         return obj.estimated_value()
@@ -100,6 +123,7 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "approve": "purchasing.decide_purchaserequisition",
         "reject": "purchasing.decide_purchaserequisition",
         "order": "purchasing.add_purchaseorder",
+        "rfq": "purchasing.add_requestforquotation",
     }
 
     def _answer(self, requisition):
@@ -135,14 +159,17 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """{vendor, order_date?, lines?: [ids]}: what is left of it, on one order to one vendor."""
         requisition = self.get_object()
         vendor = get_object_or_404(Party, pk=request.data.get("vendor"))
-        lines = None
-        if request.data.get("lines"):
-            wanted = {str(line_id) for line_id in request.data["lines"]}
-            lines = [line for line in requisition.lines.all() if str(line.pk) in wanted]
-            if len(lines) != len(wanted):
-                raise DRFValidationError({"lines": ["A line named is not on this requisition."]})
         return _order_made(requisition.create_order(vendor, order_date=request.data.get("order_date"),
-                                                    lines=lines))
+                                                    lines=_named_lines(requisition, request.data)))
+
+    @action(detail=True, methods=["post"])
+    def rfq(self, request, pk=None):
+        """{response_due?, issue_date?, lines?: [ids]}: what is left of it, out for quotes on one request."""
+        requisition = self.get_object()
+        rfq = requisition.create_rfq(lines=_named_lines(requisition, request.data),
+                                     issue_date=request.data.get("issue_date"),
+                                     response_due=request.data.get("response_due"))
+        return _rfq_made(rfq)
 
 
 class PurchaseRequisitionLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -155,10 +182,11 @@ class PurchaseRequisitionLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSe
 
 class RfqLineSerializer(serializers.ModelSerializer):
     item_label = serializers.SerializerMethodField()
+    requisition_number = serializers.CharField(source="requisition_line.requisition.number", read_only=True, default="")
 
     class Meta:
         model = RfqLine
-        fields = ["id", "rfq", "item", "uom", "quantity", "requisition_line", "notes", "item_label"]
+        fields = ["id", "rfq", "item", "uom", "quantity", "requisition_line", "notes", "item_label", "requisition_number"]
 
     def get_item_label(self, obj):
         return _item_label(obj.item)
@@ -184,17 +212,18 @@ class RfqInvitationSerializer(serializers.ModelSerializer):
 class RequestForQuotationSerializer(serializers.ModelSerializer):
     lines = RfqLineSerializer(many=True, read_only=True)
     invited = RfqInvitationSerializer(many=True, read_only=True)
+    requisition_number = serializers.CharField(source="requisition.number", read_only=True, default="")
 
     class Meta:
         model = RequestForQuotation
-        fields = ["id", "number", "requisition", "issue_date", "response_due", "currency", "description",
-                  "status", "lines", "invited"]
+        fields = ["id", "number", "requisition", "requisition_number", "issue_date", "response_due", "currency",
+                  "description", "status", "lines", "invited"]
         read_only_fields = ["status"]
 
 
 class RequestForQuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = RequestForQuotation.objects.prefetch_related(
-        "lines__item", "invited__vendor", "invited__quotes")
+    queryset = RequestForQuotation.objects.select_related("requisition").prefetch_related(
+        "lines__item", "lines__requisition_line__requisition", "invited__vendor", "invited__quotes")
     serializer_class = RequestForQuotationSerializer
     filter_fields = ["status", "requisition"]
     search_fields = ["number", "description", "invited__vendor__name"]
