@@ -111,7 +111,38 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         "approve": "sales.approve_order",
         "confirm": "sales.change_salesorder",
         "cancel": "sales.change_salesorder",
+        "send": "sales.change_salesorder",
     }
+
+    @staticmethod
+    def _proforma(data):
+        kind = str(data.get("kind") or "acknowledgement")
+        if kind not in ("acknowledgement", "proforma"):
+            raise DRFValidationError({"kind": ["The order prints as an acknowledgement or a proforma."]})
+        return kind == "proforma"
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """?kind=acknowledgement (the default) or proforma."""
+        order = self.get_object()
+        proforma = self._proforma(request.query_params)
+        response = HttpResponse(order.render_pdf(proforma=proforma), content_type="application/pdf")
+        name = f"{'proforma' if proforma else 'acknowledgement'}-{order.number or f'draft-{order.pk}'}"
+        response["Content-Disposition"] = f'inline; filename="{name}.pdf"'
+        return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email the acknowledgement or the proforma ({"kind"}); {"to", "subject", "body"} override the wording."""
+        order = self.get_object()
+        try:
+            recipient = order.email_to_customer(to=request.data.get("to") or None,
+                                                subject=request.data.get("subject") or None,
+                                                body=request.data.get("body") or None, user=request.user,
+                                                proforma=self._proforma(request.data))
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"sent_to": recipient})
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)

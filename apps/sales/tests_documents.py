@@ -9,6 +9,7 @@ from django.test import TestCase, override_settings
 
 from apps.accounting.models import Account, AccountType, Tax
 from apps.core.models import (
+    PartyBankAccount,
     Address,
     AddressType,
     Company,
@@ -470,3 +471,87 @@ class TotalInWordsTests(SalesDocumentTestCase):
         self.assertEqual(words, f"Total in words: {rupees_in_words(invoice.total())}.")
         self.assertTrue(words.startswith("Total in words: Rupees ") and words.endswith(" only."), words)
         self.assertTrue(invoice.render_pdf().startswith(b"%PDF-"))
+
+
+class OrderPaperTests(SalesDocumentTestCase):
+    """
+    The order on paper twice: acknowledged once confirmed, and as a
+    proforma asking for the money before that, with where to pay when
+    the company has said.
+    """
+
+    def make_order(self, confirm=True):
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd, reference="PO-ACME-77")
+        line = SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                             unit_price=Decimal("10"), revenue_account=self.revenue)
+        line.taxes.set([self.vat])
+        if confirm:
+            order.confirm()
+        return order
+
+    def test_both_papers_render(self):
+        from .documents import order_note
+
+        order = self.make_order()
+        self.assertTrue(order.render_pdf().startswith(b"%PDF-"))
+        self.assertTrue(order.render_pdf(proforma=True).startswith(b"%PDF-"))
+        self.assertIn("We acknowledge your order", order_note(order, proforma=False))
+        self.assertEqual(order_note(order, proforma=True),
+                         "Proforma invoice: not a tax invoice, and no supply has been made under it. The tax invoice "
+                         "follows the delivery.")
+        company = Company.get()
+        company.bank_name, company.bank_account_number, company.bank_ifsc = "HDFC Bank, Chakan", "50100123456789", "hdfc0001234"
+        company.save()
+        self.assertTrue(order_note(order, proforma=True).endswith(
+            "Please remit to HDFC Bank, Chakan, A/c 50100123456789, IFSC HDFC0001234."))
+        # The invoice says where to pay too, once the company does.
+        invoice = self.make_invoice()
+        self.assertTrue(invoice.render_pdf().startswith(b"%PDF-"))
+
+    def test_an_ifsc_is_checked(self):
+        company = Company.get()
+        company.bank_ifsc = "HDFC1234"
+        with self.assertRaisesMessage(ValidationError, "four letters, a zero and six characters"):
+            company.save()
+        account = PartyBankAccount(party=self.customer, account_name="Acme", account_number="1", ifsc="icic0000001")
+        account.save()
+        self.assertEqual((account.ifsc, account.particulars()), ("ICIC0000001", "A/c 1, IFSC ICIC0000001"))
+
+    def test_acknowledged_once_confirmed_and_a_proforma_before(self):
+        from apps.core.history import RecordEvent
+
+        order = self.make_order(confirm=False)
+        with self.assertRaisesMessage(ValidationError, "acknowledged once it is confirmed"):
+            order.email_to_customer()
+        self.assertEqual(order.email_to_customer(proforma=True), "ap@acme.example")
+        name, content, mimetype = mail.outbox[0].attachments[0]
+        self.assertEqual((name, mimetype, content[:5]), ("Proforma invoice draft.pdf", "application/pdf", b"%PDF-"))
+        self.assertIn("Proforma invoice", mail.outbox[0].subject)
+        order.confirm()
+        order.email_to_customer()
+        self.assertEqual(mail.outbox[1].attachments[0][0], f"Order acknowledgement {order.number}.pdf")
+        self.assertEqual([event.summary for event in RecordEvent.objects.filter(object_id=order.pk, kind="mail").order_by("id")],
+                         ["Proforma invoice to ap@acme.example", "Order acknowledgement to ap@acme.example"])
+        order.cancel()
+        with self.assertRaisesMessage(ValidationError, "cancelled"):
+            order.email_to_customer(proforma=True)
+
+    def test_from_the_office(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        order = self.make_order()
+        rep = User.objects.create_user("rep")
+        rep.groups.add(Group.objects.get(name="AR Manager"))
+        client = APIClient()
+        client.force_authenticate(rep)
+        paper = client.get(f"/api/sales/sales-orders/{order.pk}/pdf/", {"kind": "proforma"})
+        self.assertEqual((paper.status_code, paper["Content-Type"]), (200, "application/pdf"))
+        self.assertIn("proforma-", paper["Content-Disposition"])
+        self.assertEqual(client.get(f"/api/sales/sales-orders/{order.pk}/pdf/", {"kind": "receipt"}).status_code, 400)
+        sent = client.post(f"/api/sales/sales-orders/{order.pk}/send/", {"kind": "acknowledgement"}, format="json")
+        self.assertEqual((sent.status_code, sent.json()), (200, {"sent_to": "ap@acme.example"}), sent.content)
+        self.assertEqual(len(mail.outbox), 1)

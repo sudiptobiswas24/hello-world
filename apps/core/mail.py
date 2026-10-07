@@ -30,11 +30,14 @@ def recipient_for(party):
     return party.email or ""
 
 
-def send_document(document, party, what, *, to=None, subject=None, body=None, user=None):
+def send_document(document, party, what, *, to=None, subject=None, body=None, user=None, pdf=None,
+                  filename=None):
     """
     Mail a document's PDF to its party ("Delivery challan DN-7 from Deccan
     Polysacks"), to `to` or the party's address, and write it in the
     document's history with who it went to. Returns the address used.
+    `pdf` is the bytes to attach when the document renders more than one
+    paper (an order's proforma), under `filename`.
     """
     from django.core.mail import EmailMessage
 
@@ -52,7 +55,8 @@ def send_document(document, party, what, *, to=None, subject=None, body=None, us
                       f"Regards,\n{company.name}\n"),
         to=[recipient],
     )
-    message.attach(f"{number or what}.pdf", document.render_pdf(), "application/pdf")
+    message.attach(filename or f"{number or what}.pdf", document.render_pdf() if pdf is None else pdf,
+                   "application/pdf")
     message.send()
     record(document, user, EventKind.MAIL, action="send", summary=f"{what} to {recipient}")
     return recipient

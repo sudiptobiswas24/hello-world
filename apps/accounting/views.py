@@ -1,5 +1,6 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Prefetch
+from django.http import HttpResponse
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -364,7 +365,28 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post_payment": "accounting.post_payment",
         "void": "accounting.post_payment",
+        "send": "accounting.change_payment",
     }
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """The remittance advice (money out) or the receipt (money in)."""
+        payment = self.get_object()
+        response = HttpResponse(payment.render_pdf(), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{payment.number or f"draft-{payment.pk}"}.pdf"'
+        return response
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """Email it to the party; {"to", "subject", "body"} override the address and the wording."""
+        payment = self.get_object()
+        try:
+            recipient = payment.email_to_party(to=request.data.get("to") or None,
+                                               subject=request.data.get("subject") or None,
+                                               body=request.data.get("body") or None, user=request.user)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response({"sent_to": recipient})
 
     @action(detail=True, methods=["post"])
     def post_payment(self, request, pk=None):
