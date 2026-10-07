@@ -73,7 +73,9 @@ class BudgetsInTheBrowserTests(BrowserTestCase):
         form = page.get_by_role("form", name="Close the period")
         form.get_by_label("Note").fill("Signed off by the auditors")
         form.get_by_role("button", name="Close the period").click()
-        expect(page.locator("main")).to_contain_text("Closed")
+        # Not the word "Closed": the page reads "Closed by" before anything is closed, and the
+        # database was read while the close was still on its way. Reopen is offered only after.
+        expect(page.get_by_role("button", name="Reopen")).to_be_visible()
         period = AccountingPeriod.objects.get()
         self.assertEqual((period.closed, period.note, period.closed_by.username.startswith("controller")),
                          (True, "Signed off by the auditors", True))
