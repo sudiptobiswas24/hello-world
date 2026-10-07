@@ -11,9 +11,9 @@ class SalesConfig(AppConfig):
         from apps.accounting.settlement import register_allocation_model
         from apps.core.scoping import register_party_scope
 
-        from .models import InvoicePayment, withdraw_discounts_a_void_unearned
+        from .models import InvoicePayment, undo_what_it_settled
         from .scoping import SalesScope
 
         register_allocation_model(InvoicePayment)
-        register_void_follow_up(withdraw_discounts_a_void_unearned)
+        register_void_follow_up(undo_what_it_settled)
         register_party_scope(SalesScope())
