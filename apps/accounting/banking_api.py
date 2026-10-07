@@ -40,14 +40,15 @@ class BankStatementSerializer(serializers.ModelSerializer):
 
 class BankStatementLineSerializer(serializers.ModelSerializer):
     payment_number = serializers.CharField(source="payment.number", read_only=True, default=None)
+    returned_payment_number = serializers.CharField(source="returned_payment.number", read_only=True, default=None)
     resolved = serializers.BooleanField(source="is_resolved", read_only=True)
 
     class Meta:
         model = BankStatementLine
         fields = ["id", "statement", "date", "description", "reference", "amount", "payment",
-                  "payment_number", "journal_entry", "resolved"]
+                  "payment_number", "returned_payment", "returned_payment_number", "journal_entry", "resolved"]
         # Set by matching and posting, which check what they set.
-        read_only_fields = ["payment", "journal_entry"]
+        read_only_fields = ["payment", "returned_payment", "journal_entry"]
 
 
 def _payment_row(payment):
@@ -148,9 +149,9 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 
 class BankStatementLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = BankStatementLine.objects.select_related("statement", "payment")
+    queryset = BankStatementLine.objects.select_related("statement", "payment", "returned_payment")
     serializer_class = BankStatementLineSerializer
-    filter_fields = ["statement", "payment__isnull", "journal_entry__isnull"]
+    filter_fields = ["statement", "payment__isnull", "journal_entry__isnull", "returned_payment__isnull"]
     search_fields = ["description", "reference"]
     # Matched and posted through the statement, which asks which line;
     # undone here, where the line is all there is to say.
