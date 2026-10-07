@@ -898,6 +898,16 @@ def register_payment_check(check):
         PAYMENT_CHECKS.append(check)
 
 
+# What else a void takes back, asked of the side that knows which documents the money settled
+# (accounting imports neither): a discount for paying early, once the payment is returned.
+VOID_FOLLOW_UPS = []
+
+
+def register_void_follow_up(follow_up):
+    if follow_up not in VOID_FOLLOW_UPS:
+        VOID_FOLLOW_UPS.append(follow_up)
+
+
 class Payment(AuditModel):
     """
     Money actually moving, posted to the ledger. Deliberately generic and
@@ -1078,6 +1088,8 @@ class Payment(AuditModel):
         )
         self.voided_entry = entry
         super(Payment, self).save(update_fields=["voided_entry", "updated_at"])
+        for follow_up in VOID_FOLLOW_UPS:
+            follow_up(self, on_date)
         return entry
 
     def base_amount(self):
