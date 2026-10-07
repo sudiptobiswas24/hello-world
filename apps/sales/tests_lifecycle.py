@@ -397,6 +397,16 @@ class RecurringInvoiceTests(LifecycleTestCase):
         self.assertTrue(invoice.posted)
         self.assertTrue(invoice.number.startswith("INV-"))
 
+    def test_a_second_run_that_finds_it_issued_issues_nothing_early(self):
+        # Two runs at once: the second issued February's on the 15th of January.
+        schedule = self.make_schedule()
+        read_by_the_second = RecurringInvoice.objects.get(pk=schedule.pk)
+        self.assertIsNotNone(schedule.generate_one(due_by=datetime.date(2026, 1, 15)))
+        self.assertIsNone(read_by_the_second.generate_one(due_by=datetime.date(2026, 1, 15)))
+        self.assertEqual(Invoice.objects.filter(reference="SUB-1").count(), 1)
+        with self.assertRaisesMessage(ValidationError, "the next is due on 2026-02-15"):
+            read_by_the_second.generate_one(expected=datetime.date(2026, 1, 15))
+
     def test_a_late_run_catches_up_one_invoice_per_period(self):
         self.make_schedule(start=datetime.date(2026, 1, 15))
         issued = generate_due_invoices(as_of=datetime.date(2026, 4, 20))

@@ -21,7 +21,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import AuditModel, serialised, to_date
-from apps.core.recurrence import RecurrenceInterval, add_interval
+from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 
 ZERO = Decimal("0")
 
@@ -68,12 +68,18 @@ class RecurringJournal(AuditModel):
         return bool(self.is_active and self.next_run_date and self.next_run_date <= day and not self.has_finished())
 
     @serialised("next_run_date", "is_active")
-    def generate_one(self, on_date=None):
-        """Take the next entry from the schedule and advance it; the entry, a draft unless the schedule posts."""
+    def generate_one(self, on_date=None, due_by=None, expected=None):
+        """
+        Take the next entry from the schedule and advance it; the entry, a draft unless the schedule
+        posts. A run says what it is due by and is answered None when another took it; a person may
+        say which one they meant (still_to_take).
+        """
         from .models import JournalEntry, JournalLine
 
         if not self.is_active:
             raise ValidationError("This schedule is stopped.")
+        if not still_to_take(self, due_by, expected):
+            return None
         lines = list(self.lines.select_related("account", "party", "cost_centre"))
         if not lines:
             raise ValidationError("This schedule has no lines to post.")
@@ -148,8 +154,11 @@ def generate_due_journals(as_of=None):
     for schedule in RecurringJournal.objects.filter(is_active=True).prefetch_related("lines"):
         while schedule.is_due(as_of):
             try:
-                made.append(schedule.generate_one())
+                entry = schedule.generate_one(due_by=as_of)
             except ValidationError as why:
                 refused.append((schedule.code, " ".join(why.messages)))
                 break
+            if entry is None:
+                break  # another run took it
+            made.append(entry)
     return made, refused
