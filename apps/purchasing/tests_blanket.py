@@ -195,3 +195,41 @@ class BlanketClosingTests(BlanketTestCase):
         blanket.close()
         with self.assertRaisesMessage(ValidationError, "already closed"):
             blanket.close()
+
+
+class WhatAShortReleaseGivesBackTests(BlanketTestCase):
+    """
+    1,000 agreed; 100 called off, 60 came and the rest was closed short.
+    The 40 never bought go back to the agreement: 940 left, and all 940 can
+    be called off. Reopened once they are, the short line would call off 40
+    more than the agreement holds, and is refused.
+    """
+
+    def short_release(self):
+        blanket = self.agreement("1000", "4")
+        order = blanket.release({self.line: Decimal("100")}, order_date=datetime.date(2026, 2, 1))
+        order.confirm()
+        self.receive(order, "60")
+        line = order.lines.get()
+        line.close_short("Vendor out of granules")
+        return blanket, line
+
+    def test_what_never_came_is_called_off_again(self):
+        blanket, _ = self.short_release()
+        self.assertEqual(self.line.quantity_remaining(), Decimal("940"))
+        blanket.release({self.line: Decimal("940")}, order_date=datetime.date(2026, 3, 1))
+        self.assertEqual(self.line.quantity_remaining(), Decimal("0"))
+
+    def test_reopened_it_must_fit_what_the_agreement_has_left(self):
+        blanket, line = self.short_release()
+        blanket.release({self.line: Decimal("930")}, order_date=datetime.date(2026, 3, 1))
+        with self.assertRaisesMessage(ValidationError, "has 10 of WDG-1 - Widget left to call off; reopened, "
+                                                       "this line would call off 40 more"):
+            line.reopen()
+        line.refresh_from_db()
+        self.assertTrue(line.is_closed_short())
+
+    def test_reopened_where_it_fits_the_rest_is_called_off_again(self):
+        _, line = self.short_release()
+        line.reopen()
+        self.assertEqual(self.line.quantity_remaining(), Decimal("900"))
