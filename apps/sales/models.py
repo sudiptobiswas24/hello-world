@@ -71,7 +71,9 @@ from apps.accounting.settlement import (
     post_drawdown,
     post_settlement_fx,
     refuse_other_control_account,
+    booked_beside,
     settlement_discount_to_take,
+    undone_by_note,
 )
 
 from .pricing import resolve_price
@@ -1596,6 +1598,13 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
         help_text="Receivable judged uncollectable and charged to bad debt.",
     )
+    # On a credit note: what it undid of its invoice's settlements that moved no money, rather than
+    # owe it back as cash. Facts of the note's posting: a later recovery or note reads them.
+    reversed_write_off = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"), editable=False)
+    reversed_discount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"), editable=False)
+    settlement_reversal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+    )
 
     class Meta:
         ordering = ["-invoice_date", "-id"]
@@ -1807,6 +1816,12 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         lock_rows(write_off)
         if write_off.recovered_entry_id:
             raise ValidationError("That write-off has already been recovered.")
+        # A credit note that undid the write-off already took it back off bad debt: recovered as well,
+        # it would come off twice.
+        undone = sum((note.reversed_write_off for note in self.credit_notes.filter(posted=True)), Decimal("0"))
+        if write_off.amount > self.amount_written_off() - undone:
+            raise ValidationError(f"Credit notes have undone {undone} of what was written off on {self.number}; "
+                                  "that is not recovered again.")
 
         entry = write_off.journal_entry.create_reversal(
             entry_date=to_date(on_date) or timezone.localdate(),
@@ -1817,6 +1832,48 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         self.written_off_amount = self.written_off_amount - write_off.amount
         super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
         return entry
+
+    def _undo_settlements_without_money(self):
+        """
+        Past what it clears of its invoice, a credit note undoes the write-off
+        and the settlement discount still standing on it before it owes the
+        customer anything: neither was paid, so neither comes back as cash.
+        Dr receivables / Cr where each was booked, at the invoice's rate.
+        """
+        invoice = self.credits
+        lock_rows(invoice)
+        earlier = list(invoice.credit_notes.filter(posted=True).exclude(pk=self.pk))
+        taken = invoice.settlement_discount_amount or Decimal("0")
+        write_off, discount = undone_by_note(
+            self.total(), self.amount_absorbed(),
+            write_off=invoice.amount_written_off() - sum((note.reversed_write_off for note in earlier), Decimal("0")),
+            discount=taken - sum((note.reversed_discount for note in earlier), Decimal("0")),
+            discount_taken=taken, document_total=invoice.total(),
+            whole=sum((note.total() for note in earlier), self.total()) >= invoice.total())
+        undone = {kind: amount for kind, amount in (("write_off", write_off), ("discount", discount)) if amount}
+        if not undone:
+            return
+        booked = {
+            "discount": invoice.settlement_discount_entry,
+            "write_off": next((row.journal_entry for row in invoice.write_offs.filter(recovered_entry__isnull=True)
+                               .order_by("-pk")), None),
+        }
+        rate = invoice.exchange_rate or Decimal("1")
+        memo = f"{self.number} undoes what settled {invoice.number} without money"
+        entry = JournalEntry.objects.create(date=self.invoice_date, reference=self.number, memo=memo)
+        for kind, amount in undone.items():
+            base = round_money(amount * rate)
+            JournalLine.objects.create(entry=entry, account=invoice.receivable_account, party=self.customer,
+                                       debit=base, description=memo[:255])
+            JournalLine.objects.create(entry=entry, account=booked_beside(booked[kind], invoice.receivable_account),
+                                       party=self.customer, credit=base, description=memo[:255])
+        entry.post()
+        self.reversed_write_off = undone.get("write_off", Decimal("0"))
+        self.reversed_discount = undone.get("discount", Decimal("0"))
+        self.settlement_reversal_entry = entry
+        super(Invoice, self).save(update_fields=[
+            "reversed_write_off", "reversed_discount", "settlement_reversal_entry", "updated_at",
+        ])
 
     def amount_written_off(self):
         return self.written_off_amount or Decimal("0")
@@ -2005,7 +2062,8 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         """
         if not self.is_credit_note():
             return Decimal("0")
-        return self.total() - self.amount_absorbed() - self.amount_paid()
+        return (self.total() - self.amount_absorbed() - self.reversed_write_off - self.reversed_discount
+                - self.amount_paid())
 
     def amount_due(self):
         if self.is_credit_note():
@@ -2278,6 +2336,9 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
                 "place_of_supply", "posted_total", "updated_at",
             ]
         )
+
+        if self.is_credit_note():
+            self._undo_settlements_without_money()
 
         # Draw down the order's deposits automatically. Leaving this to the
         # caller means the day someone forgets, the customer is billed the
