@@ -172,3 +172,15 @@ class BaleApiTests(BaleTestCase):
         response = client.post(f"/api/manufacturing/bales/{bale['id']}/break/",
                                {"reason": "x"}, format="json")
         self.assertEqual(response.status_code, 400)
+
+
+class ScannedLabelTests(BaleTestCase):
+    def test_a_scanned_label_finds_its_bale_and_an_unknown_one_says_so(self):
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("gate"))
+        bale = self.bale()
+        found = client.get("/api/manufacturing/bales/scan/", {"number": bale.number.lower()})
+        self.assertEqual((found.status_code, found.json()["id"], found.json()["bags"]), (200, bale.pk, "1000"))
+        missing = client.get("/api/manufacturing/bales/scan/", {"number": "BL-NOWHERE"})
+        self.assertEqual((missing.status_code, missing.json()["detail"]), (404, "No bale is numbered 'BL-NOWHERE'."))
+        self.assertEqual(client.get("/api/manufacturing/bales/scan/").status_code, 404)

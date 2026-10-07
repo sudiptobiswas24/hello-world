@@ -16,6 +16,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.graphics.barcode import code128
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -79,10 +80,16 @@ def render_document(*, heading, document, party, address, meta, totals,
         author=company.name,
     )
 
+    shown_number = number or getattr(document, "number", "") or ""
+    title = [Paragraph(heading, style["title"])]
+    if shown_number:
+        # The number as Code 128, so the paper scans back into the system
+        # (a purchase order at the gate, a challan at dispatch).
+        title.append(code128.Code128(shown_number, barHeight=9 * mm, barWidth=0.3 * mm, humanReadable=False,
+                                     quiet=False))
     story = [
         Table(
-            [[Paragraph(letterhead(company), style["body"]),
-              Paragraph(heading, style["title"])]],
+            [[Paragraph(letterhead(company), style["body"]), title]],
             colWidths=[95 * mm, 79 * mm],
             style=TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),

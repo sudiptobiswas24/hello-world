@@ -223,6 +223,11 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/purchasing/GoodsReceiptForm"),
       },
       {
+        path: "receive-by-scan", label: "Receive by scan", permission: "purchasing.add_goodsreceipt",
+        also: ["purchasing.view_purchaseorder", "inventory.view_warehouse"],
+        keywords: "scan barcode gate receive purchase order", load: () => import("../modules/purchasing/ReceiveByScan"),
+      },
+      {
         path: "bills", label: "Bills", permission: "purchasing.view_bill", create: "purchasing.add_bill",
         keywords: "vendor invoice debit note payable", load: () => import("../modules/purchasing/Bills"),
         detail: () => import("../modules/purchasing/BillForm"),

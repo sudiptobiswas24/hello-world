@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -2110,6 +2111,15 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
 
         bale = self.get_object()
         _run(break_bale, bale, str(request.data.get("reason", "")))
+        return Response(self._row(bale))
+
+    @action(detail=False, methods=["get"])
+    def scan(self, request):
+        """?number=: the bale whose label was scanned, as its row; 404 where no bale carries that number."""
+        number = (request.query_params.get("number") or "").strip()
+        bale = self.get_queryset().filter(number__iexact=number).first() if number else None
+        if bale is None:
+            raise NotFound(f"No bale is numbered {number!r}.")
         return Response(self._row(bale))
 
     @action(detail=False, methods=["post"])

@@ -22,6 +22,7 @@ from apps.purchasing.models import (
     GoodsReceipt,
     PurchaseApprovalPolicy,
     PurchaseOrder,
+    PurchaseOrderLine,
 )
 
 from .tests_browser import BrowserTestCase
@@ -270,4 +271,21 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         self.sign_in(self.person("Warehouse Staff"), f"/app/purchasing/orders/{order.pk}", page=store)
         expect(store.locator(".lines tbody tr", has_text="Widget")).to_be_visible()
         expect(store.get_by_role("button", name=re.compile("short$"))).to_have_count(0)
+        self.assertEqual(self.problems, [])
+
+    def test_a_purchase_order_scanned_at_the_gate_opens_a_draft_receipt(self):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                         unit_price=Decimal("5"))
+        order.confirm()
+        gate = self.sign_in(self.person("Warehouse Staff"), "/app/purchasing/receive-by-scan")
+        box = gate.get_by_label("Purchase order")
+        box.fill("PO-NOWHERE")
+        box.press("Enter")
+        expect(gate.get_by_role("alert")).to_contain_text("No purchase order is numbered PO-NOWHERE.")
+        box.fill(order.number)
+        box.press("Enter")
+        gate.wait_for_url(re.compile(r"/purchasing/goods-in/\d+$"))
+        receipt = GoodsReceipt.objects.get(purchase_order=order)
+        self.assertEqual((receipt.posted, receipt.lines.count()), (False, 1))
         self.assertEqual(self.problems, [])

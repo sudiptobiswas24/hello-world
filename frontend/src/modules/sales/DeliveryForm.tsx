@@ -2,9 +2,11 @@ import { useState } from "react";
 import { Trail } from "../../views/Trail";
 import { Link, useNavigate, useParams } from "react-router";
 
+import { ApiError, get } from "../../api/client";
 import { useAct, useRecord, useReference } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
+import { ScanBox } from "../../views/ScanBox";
 import { CommitDecimal, DecimalInput, Field } from "../../forms/fields";
 import { aboveZero } from "../../lib/decimal";
 import { date, quantity } from "../../lib/format";
@@ -40,6 +42,29 @@ interface Delivery {
   received_on: string | null;
   received_by: string;
   receipt_reference: string;
+}
+
+/** Bales scanned onto a draft delivery, one label at a time: the bale's bundles become its lines. */
+function LoadBales({ delivery }: { delivery: Delivery }) {
+  const act = useAct<unknown>();
+  const [problem, setProblem] = useState<string | null>(null);
+  const scanned = async (code: string) => {
+    setProblem(null);
+    try {
+      const bale = await get<{ id: number; number: string }>("/api/manufacturing/bales/scan/", { number: code });
+      await act.run("POST", "/api/manufacturing/bales/load/", { delivery: delivery.id, bales: [bale.id] },
+        { done: `${bale.number} loaded` });
+    } catch (error) {
+      setProblem(error instanceof ApiError ? error.messages.join(" ") : `${code} could not be loaded.`);
+    }
+  };
+  return (
+    <section className="related-list" aria-label="Load bales">
+      <h2>Load bales</h2>
+      <ScanBox label="Scan a bale label" onScan={scanned} busy={act.pending} />
+      {problem && <p className="form-error" role="alert">{problem}</p>}
+    </section>
+  );
 }
 
 /** What the customer signed for, and when: cement plants pay from their own receipt. */
@@ -228,6 +253,7 @@ export default function DeliveryForm() {
             </tbody>
           </table>
         </div>
+        {editable && !delivery.reverses && can("manufacturing.change_bale") && <LoadBales delivery={delivery} />}
         {returning !== null && (
           <div className="return-box">
             <label className="check">

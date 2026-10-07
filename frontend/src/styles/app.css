@@ -563,3 +563,9 @@ small.bad, .bad { color: var(--bad); }
 /* ---------- leave ---------- */
 form.refuse { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
 form.refuse input { min-width: 260px; }
+
+/* Where a barcode is read: the typed code, the Read button, the camera where there is one. */
+.scan-box { display: flex; flex-wrap: wrap; align-items: end; gap: 0.5rem; }
+.scan-box label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; min-width: 16rem; }
+.scan-box input { font-size: 1.1rem; padding: 0.4rem 0.6rem; }
+.scan-video { width: 100%; max-width: 28rem; border-radius: 0.5rem; }
