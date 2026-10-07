@@ -4,7 +4,8 @@ import { Link } from "react-router";
 import { get, list, type Query } from "../../api/client";
 import { MODULES, offered, screenUrl } from "../../app/registry";
 import { useAccess } from "../../auth/me";
-import { count } from "../../lib/format";
+import { count, date } from "../../lib/format";
+import type { FollowUpRow } from "../../views/Chatter";
 import { Icon } from "../../shell/Icon";
 
 function greeting(hour: number): string {
@@ -80,6 +81,33 @@ function Inbox() {
   );
 }
 
+/** The follow-ups planned for this login and not yet done, late ones first, each leading to its record. */
+function MyFollowUps() {
+  const rows = useQuery({
+    queryKey: ["get", "/api/core/follow-ups/", { mine: "true" }],
+    queryFn: ({ signal }) => get<FollowUpRow[]>("/api/core/follow-ups/", { mine: "true" }, signal),
+    staleTime: 30_000,
+  });
+  if (!rows.data?.length) return null;
+  return (
+    <>
+      <h2 className="section-title">Your follow-ups</h2>
+      <table className="data" aria-label="Your follow-ups">
+        <tbody>
+          {rows.data.map((row) => (
+            <tr key={row.id} className={row.state === "overdue" ? "bad" : undefined}>
+              <td>{date(row.due_on)}{row.state !== "planned" && <span className={`pill ${row.state === "overdue" ? "bad" : "info"}`}>{row.state === "overdue" ? "Late" : "Today"}</span>}</td>
+              <td>{row.kind_label}</td>
+              <td>{row.link ? <Link to={row.link}>{row.summary}</Link> : row.summary}</td>
+              <td className="muted">{row.record_kind} · {row.record}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
 /** Where a person starts: what is waiting on them, then everything their roles open. */
 export default function Home() {
   const { me, can } = useAccess();
@@ -93,6 +121,7 @@ export default function Home() {
     <section className="home">
       <h1>{greeting(new Date().getHours())}, {me.name.split(" ")[0]}</h1>
       <Inbox />
+      <MyFollowUps />
       {waiting.length > 0 && (
         <>
           <h2 className="section-title">Waiting today</h2>

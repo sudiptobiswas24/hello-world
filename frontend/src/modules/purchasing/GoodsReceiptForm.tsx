@@ -11,6 +11,7 @@ import { ErrorPanel } from "../../shell/ErrorPanel";
 import { RecordPanel } from "../../views/RecordScreen";
 
 import { INSPECTION_PANELS } from "./inspection";
+import { Trail } from "../../views/Trail";
 
 interface ReceiptLine {
   id: number;
@@ -167,6 +168,7 @@ export default function GoodsReceiptForm() {
       {receipt.posted && INSPECTION_PANELS.map((panel) => (
         <RecordPanel key={panel.title} panel={panel} record={receipt as unknown as Record<string, unknown> & { id: number }} />
       ))}
+      {receipt && <Trail model="purchasing.goodsreceipt" id={receipt.id} />}
     </article>
   );
 }

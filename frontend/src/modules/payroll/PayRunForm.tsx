@@ -10,6 +10,7 @@ import { Pager } from "../../forms/Pager";
 import { useDraft } from "../../forms/useDraft";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { Trail } from "../../views/Trail";
 
 interface Run {
   id: number;
@@ -143,6 +144,7 @@ export default function PayRunForm() {
           </>
         )}
       </Sheet>
+      {run && <Trail model="hr.payrun" id={run.id} />}
     </article>
   );
 }

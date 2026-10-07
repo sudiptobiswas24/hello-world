@@ -5,7 +5,7 @@ decision still owed, or a place the tests do not reach. Each says what
 would go wrong, how likely it is here, and what to do about it. Remove
 an entry only in the commit that removes the risk.
 
-Last reviewed: 2026-10-06.
+Last reviewed: 2026-10-07.
 
 ## Before the first real day
 
@@ -421,3 +421,17 @@ not cover, or is deleted with the commit that finishes it.
     capped at 100, never stored, with the reasons beside the number. It
     orders a morning's calls; it does not know the customer. The points
     are in `Lead.score_reasons` to change as the plant learns what warms.
+50. **Notes and follow-ups sit beside the CRM's calls and visits, not in
+    place of them.** A lead or an opportunity keeps its own activities
+    (sales.Activity: an owner who is a rep, read by lead scoring); every
+    other record has notes and follow-ups (apps/core/chatter.py). A call
+    logged on the customer's page is a follow-up there, not an activity
+    the pipeline counts. *Do:* if the two are to be one, move the CRM's
+    onto follow-ups and have scoring read those, in one change.
+51. **Who may read a record is asked of its own screens' lists.** History,
+    files, notes and follow-ups are shown only where the record is among
+    those a screen serving its kind shows the login (apps/core/endpoints.py).
+    A kind no screen serves is limited by its view permission alone, and
+    so is the history of a record since deleted: a rep may read what
+    happened to another rep's deleted order. *Do:* nothing unless a
+    deleted record's history turns out to say more than its kind's.
