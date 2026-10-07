@@ -11,9 +11,9 @@ class PurchasingConfig(AppConfig):
         from apps.accounting.settlement import register_allocation_model
         from apps.sales.models import register_awaited_provider
 
-        from .models import BillPayment, drop_ship_awaited, refuse_held_payment, withdraw_discounts_a_void_unearned
+        from .models import BillPayment, drop_ship_awaited, refuse_held_payment, undo_what_it_settled
 
         register_awaited_provider(drop_ship_awaited)
         register_allocation_model(BillPayment)
         register_payment_check(refuse_held_payment)
-        register_void_follow_up(withdraw_discounts_a_void_unearned)
+        register_void_follow_up(undo_what_it_settled)

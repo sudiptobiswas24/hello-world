@@ -135,6 +135,41 @@ class ArithmeticTests(TestCase):
         )
 
 
+class ReturnedForeignPaymentTests(FxSettlementTestCase):
+    """
+    1,000 EUR booked at 1.20 and settled at 1.25: 50 realised. The money
+    comes back on the 20th of February: the 50 was never realised, and the
+    receivable or payable stands at the 1,200 the document was booked at
+    again. A later delete of the allocation releases nothing twice.
+    """
+
+    def test_a_returned_receipt_realised_nothing(self):
+        from apps.sales.models import InvoicePayment
+
+        invoice = self.euro_invoice("1000")
+        self.rate_moves_to("1.25")
+        receipt = self.euro_payment(PaymentDirection.RECEIPT, "1000")
+        allocation = InvoicePayment.objects.create(invoice=invoice, payment=receipt, amount=Decimal("1000"))
+        self.assertEqual(self.balance(self.gain), Decimal("-50.00"))
+        receipt.void(memo="Returned unpaid", on_date=datetime.date(2026, 2, 20))
+        self.assertEqual((self.balance(self.ar), self.balance(self.gain)), (Decimal("1200.00"), Decimal("0")))
+        allocation.refresh_from_db()
+        self.assertEqual(allocation.fx_released_entry.date, datetime.date(2026, 2, 20))
+        allocation.delete()
+        self.assertEqual(self.balance(self.gain), Decimal("0"))
+
+    def test_a_recalled_payment_realised_nothing(self):
+        from apps.purchasing.models import BillPayment
+
+        bill = self.euro_bill("1000")
+        self.rate_moves_to("1.25")
+        paying = self.euro_payment(PaymentDirection.DISBURSEMENT, "1000")
+        BillPayment.objects.create(bill=bill, payment=paying, amount=Decimal("1000"))
+        self.assertEqual(self.balance(self.loss), Decimal("50.00"))
+        paying.void(memo="Recalled", on_date=datetime.date(2026, 2, 20))
+        self.assertEqual((self.balance(self.ap), self.balance(self.loss)), (Decimal("-1200.00"), Decimal("0")))
+
+
 class ReceivableFxTests(FxSettlementTestCase):
     def settle(self, rate):
         from apps.sales.models import InvoicePayment
