@@ -6,7 +6,7 @@ longer sign in. Nobody deletes a login or changes their own standing; a
 bookkeeper sees no logins; superusers are not in the list.
 """
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
 from django.test import Client, TestCase
 from rest_framework.test import APIClient
@@ -55,7 +55,12 @@ class UsersApiTests(TestCase):
         self.assertEqual((gone.status_code, gone.json()["is_active"]), (200, False))
         self.assertFalse(Client().login(username="asha", password="printing-line-9"))
         self.assertEqual(hr.post(f"{USERS}{pk}/reactivate/", {}, format="json").json()["is_active"], True)
-        self.assertEqual(hr.delete(f"{USERS}{pk}/").status_code, 400)
+        # Nobody holds the right to delete a login; given it anyway, the answer is still no.
+        self.assertEqual(hr.delete(f"{USERS}{pk}/").status_code, 403)
+        hr.user.user_permissions.add(Permission.objects.get(codename="delete_user"))
+        deleter = APIClient()
+        deleter.force_authenticate(User.objects.get(pk=hr.user.pk))
+        self.assertEqual(deleter.delete(f"{USERS}{pk}/").status_code, 400)
         self.assertTrue(User.objects.filter(pk=pk).exists())
 
     def test_what_is_refused(self):

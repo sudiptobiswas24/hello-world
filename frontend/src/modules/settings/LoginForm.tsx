@@ -40,7 +40,7 @@ export default function LoginForm() {
       panels={[
         {
           title: "Roles", permission: "auth.view_user", endpoint: "", query: () => ({}),
-          rows: (record) => ((record.roles as string[]) ?? []).map((name) => ({ id: name, name })),
+          rows: (record) => ((record.roles as string[]) ?? []).map((name, index) => ({ id: index, name })),
           columns: [{ key: "name", label: "Role" }],
           adder: {
             label: "Give a role", permission: "auth.change_user", url: (record) => `/api/core/users/${String(record.id)}/grant/`,
@@ -49,7 +49,7 @@ export default function LoginForm() {
           },
           rowActions: [
             { label: "Take away", permission: "auth.change_user", method: "POST", done: "Role taken away",
-              url: (row, record) => `/api/core/users/${String(record.id)}/revoke/`, body: (row) => ({ role: row.name }) },
+              url: (_row, record) => `/api/core/users/${String(record.id)}/revoke/`, body: (row) => ({ role: row.name }) },
           ],
         },
       ]}
