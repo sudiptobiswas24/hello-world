@@ -93,8 +93,21 @@ export function date(value: string | null | undefined): string {
   return month ? `${match[3]} ${month} ${match[1]}` : value;
 }
 
+// The plant's time zone, as the server keeps it: told on sign-in (setPlantTimeZone), and Kolkata
+// until then. Assumed here, the screens asked for tomorrow's work from 18:30 to midnight GMT on
+// any server whose day is not Kolkata's.
+let plantZone = "Asia/Kolkata";
+
+export function setPlantTimeZone(zone: string): void {
+  plantZone = zone;
+}
+
+export function plantTimeZone(): string {
+  return plantZone;
+}
+
 /** A moment, in the plant's own time. */
-export function dateTime(value: string | null | undefined, timeZone = "Asia/Kolkata"): string {
+export function dateTime(value: string | null | undefined, timeZone = plantTimeZone()): string {
   if (!value) return "";
   const moment = new Date(value);
   if (Number.isNaN(moment.getTime())) return value;

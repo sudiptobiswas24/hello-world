@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { count, date, dateTime, isNegative, money, quantity } from "./format";
+import { today } from "../forms/fields";
+import { count, date, dateTime, isNegative, money, plantTimeZone, quantity, setPlantTimeZone } from "./format";
 
 describe("money", () => {
   it("groups in lakhs and crores", () => {
@@ -70,5 +71,21 @@ describe("dates", () => {
   it("counts rows the same way", () => {
     expect(count(25000)).toBe("25,000");
     expect(count(1234567)).toBe("12,34,567");
+  });
+});
+
+describe("the plant's day", () => {
+  it("is the server's, once it has said which zone that is", () => {
+    // Twenty-five hours apart, never on the same date: whichever the server names is what today is.
+    const before = plantTimeZone();
+    try {
+      setPlantTimeZone("Pacific/Kiritimati");
+      const east = today();
+      setPlantTimeZone("Pacific/Pago_Pago");
+      const west = today();
+      expect(east > west).toBe(true);
+    } finally {
+      setPlantTimeZone(before);
+    }
   });
 });
