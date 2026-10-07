@@ -74,6 +74,19 @@ def prefetched(instance, relation):
 _COMPANY = contextvars.ContextVar("company_for_this_request", default=None)
 
 
+def row_lock_query(model, pk):
+    """
+    The query that locks one row, and only that row.
+
+    Without the model's ordering: an ordering through a relation joins its
+    table, PostgreSQL will not lock the nullable side of an outer join, and
+    on an inner join it locks the related row as well. Closing a complaint,
+    whose actions sort by their alert, failed there and nowhere else:
+    SQLite takes no row locks at all.
+    """
+    return model._base_manager.select_for_update().filter(pk=pk).order_by().values_list("pk", flat=True)
+
+
 def lock_rows(*instances, refresh=True):
     """
     Hold these rows until the transaction ends, in one fixed order, and
@@ -93,8 +106,7 @@ def lock_rows(*instances, refresh=True):
         raise RuntimeError("lock_rows() outside a transaction locks nothing.")
     for instance in sorted((i for i in instances if i is not None and i.pk is not None),
                            key=lambda i: (i._meta.label_lower, i.pk)):
-        list(type(instance)._base_manager.select_for_update()
-             .filter(pk=instance.pk).values_list("pk", flat=True))
+        list(row_lock_query(type(instance), instance.pk))
         if refresh:
             instance.refresh_from_db()
 
