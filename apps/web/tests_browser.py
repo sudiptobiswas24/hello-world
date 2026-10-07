@@ -10,6 +10,7 @@ Playwright can launch; skipped, saying which, where either is missing.
 import contextlib
 import datetime
 import os
+import pickle
 import sqlite3
 import threading
 import time
@@ -111,6 +112,19 @@ class BrowserMixin:
     A browser on the running server, and people to sign in as. Put in
     front of whichever fixture a test needs, then StaticLiveServerTestCase.
     """
+
+    def __getstate__(self):
+        # A failed subtest is sent back to the parallel runner with its test
+        # attached, and the page and browser context cannot be pickled: the
+        # runner died reporting nothing for the whole lane. What can travel does.
+        state = {}
+        for key, value in self.__dict__.items():
+            try:
+                pickle.dumps(value)
+            except Exception:  # noqa: BLE001 - whatever cannot be pickled stays behind
+                continue
+            state[key] = value
+        return state
 
     @classmethod
     def _databases_support_transactions(cls):
