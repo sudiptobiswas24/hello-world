@@ -62,6 +62,7 @@ from apps.accounting.settlement import (
     post_drawdown,
     post_settlement_fx,
     refuse_other_control_account,
+    settlement_discount_to_take,
 )
 from apps.inventory.valuation import (
     cogs_account_for,
@@ -2955,18 +2956,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         Dr Accounts payable / Cr settlement discount received.
         """
         on_date = to_date(on_date) or timezone.localdate()
-        if not force and not self.discount_is_available(on_date):
-            raise ValidationError(
-                "No settlement discount is available on this bill at that date."
-            )
-        amount = self.settlement_discount()
-        if amount <= 0:
-            raise ValidationError("These payment terms offer no settlement discount.")
-        if amount > self.amount_due():
-            raise ValidationError(
-                f"Only {self.amount_due()} is outstanding; a discount of {amount} would "
-                "take the bill below zero. Pay less, or settle the bill first."
-            )
+        amount = settlement_discount_to_take(self, on_date, force)
 
         account = Company.get().settlement_discount_received_account
         if account is None:
@@ -3183,8 +3173,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # not an expense: the freight is part of what the stock cost to get
         # here, and cost of sales is wrong by that amount if it is not.
         landed = defaultdict(Decimal)
-        for charge_line, item, _warehouse, amount in self.landed_cost_allocations():
-            landed[(charge_line.pk, item.pk)] += amount
+        for charge_line, item, _warehouse, base in self.landed_in_base(rate):
+            landed[(charge_line.pk, item.pk)] += base
 
         debits = []
         variance_total = Decimal("0")
@@ -3234,9 +3224,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     # bill, say. Expense it rather than refuse.
                     debits.append((account, round_money(net * rate), label, line.cost_centre))
                 else:
-                    for item_pk, amount in shares.items():
+                    for item_pk, base in shares.items():
                         account = inventory_account_for(Item.objects.get(pk=item_pk))
-                        debits.append((account, round_money(amount * rate), f"{label} (landed)", None))
+                        debits.append((account, base, f"{label} (landed)", None))
             else:
                 debits.append((account, round_money(net * rate), label, line.cost_centre))
 
@@ -3357,6 +3347,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             original = self.debits
             if not original.posted or not original.journal_entry_id:
                 raise ValidationError("Cannot post a debit note against an unposted bill.")
+            # Asked again as the note posts, under the lines' locks: a note drafted before the
+            # charge was landed or capitalised was refused nowhere, being saved before either.
+            given_back = list(self.lines.filter(debits_line__isnull=False).select_related("debits_line"))
+            lock_rows(*(line.debits_line for line in given_back))
+            for line in given_back:
+                line.refuse_giving_back_what_moved()
             # Debit at the rate the bill was booked at, never today's, so
             # correcting an old foreign-currency bill can't book an FX gain.
             self.exchange_rate = original.exchange_rate or Decimal("1")
@@ -3383,8 +3379,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             "place_of_supply", "posted_total", "updated_at",
         ])
 
-        if not self.is_debit_note():
-            self._record_landed_cost()
+        self._record_landed_cost()
 
         # Draw down the order's prepayments automatically. Leaving it to
         # the caller means the day someone forgets, the vendor is paid the
@@ -3402,18 +3397,54 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         derives valuation to avoid — and the next sale would post a COGS
         that disagrees with the inventory it relieved.
         """
-        for charge_line, item, warehouse, amount in self.landed_cost_allocations():
+        # A debit note takes off the goods what it gives back: skipped for
+        # notes, the ledger lost the freight and the shelf kept it.
+        sign = Decimal("-1") if self.is_debit_note() else Decimal("1")
+        for charge_line, item, warehouse, base in self.landed_in_base(self.exchange_rate):
             StockMovement.objects.create(
                 item=item,
                 warehouse=warehouse,
                 movement_type=MovementType.ADJUSTMENT,
                 uom=item.uom,
                 quantity=Decimal("0"),
-                value_adjustment=amount,
+                value_adjustment=sign * base,
                 reference=self.number,
                 occurred_at=timezone.now(),
                 notes=f"Landed cost from {self.number}: {charge_line.label()}",
             )
+
+    def _landed_cost_given_back(self, charges):
+        """
+        A debit note follows what its original lines did: a charge the
+        bill landed on its goods comes back off those goods, in the shares
+        it went on, as much of it as the note gives back. Spread afresh
+        over the note's own lines, a freight refund with no goods on the
+        note fell back to the freight account, which the landing had left
+        empty, and the stock kept the freight.
+        """
+        original = [row for row in self.debits.landed_cost_allocations()] if charges else []
+        rows = []
+        for line in charges:
+            mine = [row for row in original if row[0].pk == line.debits_line_id]
+            whole, given = line.debits_line.net_amount() if line.debits_line_id else Decimal("0"), line.net_amount()
+            remaining = given
+            for index, (_charge, item, warehouse, amount) in enumerate(mine):
+                share = remaining if index == len(mine) - 1 else round_money(given * amount / whole)
+                remaining -= share
+                if share:
+                    rows.append((line, item, warehouse, share))
+        return rows
+
+    def landed_in_base(self, rate):
+        """
+        The landed shares at the rate the bill is booked at, each rounded
+        once, for the ledger and the shelf alike. The shelf took the bill's
+        own figures: a euro bill's landed freight put 88.00 in the
+        inventory account and 80.00 on the stock.
+        """
+        rate = rate or Decimal("1")
+        return [(line, item, warehouse, round_money(amount * rate))
+                for line, item, warehouse, amount in self.landed_cost_allocations()]
 
     def landed_cost_lines(self):
         """Charge lines on this bill that capitalise into stock value."""
@@ -3439,6 +3470,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         bill says nothing about would be worse.
         """
         charges = self.landed_cost_lines()
+        if self.is_debit_note():
+            return self._landed_cost_given_back(charges)
         if not charges:
             return []
 
@@ -3849,7 +3882,48 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         )
 
     def landed_cost_unallocated(self):
-        return self.net_amount() - self.landed_cost_allocated()
+        """What is left of the charge to land on other goods: see amount_in_its_account()."""
+        return self.amount_in_its_account()
+
+    def landed_by_its_bill(self):
+        """
+        Whether posting its bill landed this charge on the goods the bill
+        brought in. Asked of what the posting recorded: once a bill has
+        posted, which of its lines cleared receipts is read from their
+        posted_account, so the bill spreads its charges now as it did then.
+        """
+        if not (self.bill.posted and not self.bill.is_debit_note() and self.is_charge()
+                and self.charge.capitalise_into_inventory):
+            return False
+        return any(charge_line.pk == self.pk for charge_line, *_ in self.bill.landed_cost_allocations())
+
+    def booked_amount(self):
+        """What posting this line put in its account, in base: at the rate its bill was booked at."""
+        return round_money(self.net_amount() * (self.bill.exchange_rate or Decimal("1")))
+
+    def amount_given_back(self):
+        """What posted debit notes have given back of this line, in base, each at its own booked rate."""
+        return sum((line.booked_amount() for line in self.debit_lines.filter(bill__posted=True).select_related("bill")),
+                   Decimal("0"))
+
+    def amount_in_its_account(self):
+        """
+        What of this line's cost still sits in the account it posted to, in
+        base currency: all that landing it on goods, or capitalising it, may
+        take out. Nothing if its own bill landed it on the goods; otherwise
+        what the bill put there, less what debit notes have given back, what
+        stands landed on other goods, and what stands capitalised.
+
+        Each of those used to measure the line for itself: a refunded charge
+        still landed on stock, a charge billed with its goods landed twice,
+        and a euro charge landed its euro figure as if it were base.
+        """
+        from apps.assets.models import AssetStatus
+
+        if self.landed_by_its_bill():
+            return Decimal("0")
+        capitalised = sum((asset.cost for asset in self.assets.exclude(status=AssetStatus.CANCELLED)), Decimal("0"))
+        return self.booked_amount() - self.amount_given_back() - self.landed_cost_allocated() - capitalised
 
     @transaction.atomic
     def allocate_landed_cost(self, receipt_lines, on_date=None):
@@ -3872,6 +3946,20 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             raise ValidationError(
                 f"'{self.label()}' is not a charge that capitalises into stock."
             )
+        from apps.assets.models import AssetStatus
+
+        # The same cost cannot sit on a machine and on the goods: both credit the expense the
+        # bill put it in, and an 80.00 freight bill landed 80.00 on stock and 80.00 on an asset.
+        if self.assets.exclude(status=AssetStatus.CANCELLED).exists():
+            raise ValidationError(
+                f"'{self.label()}' is capitalised as a fixed asset; un-capitalise it before "
+                "landing its cost on stock."
+            )
+        if self.landed_by_its_bill():
+            raise ValidationError(
+                f"'{self.label()}' was landed on the goods on {self.bill.number} when it posted; "
+                "it is in their cost already."
+            )
 
         lines = [line for line in receipt_lines]
         for line in lines:
@@ -3887,9 +3975,10 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         if not lines:
             raise ValidationError("Name the goods this cost should land on.")
 
+        # In base, and net of what debit notes gave back: what the freight account still holds.
         total = self.landed_cost_unallocated()
         if total <= 0:
-            raise ValidationError("This charge has already been allocated in full.")
+            raise ValidationError("This charge has already been allocated in full, or given back.")
 
         values = [
             round_money(line.quantity_received * (line.order_line.unit_price or Decimal("0")))
@@ -3964,7 +4053,21 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             raise ValidationError("Only a posted bill can be capitalised.")
         if self.assets.exists():
             raise ValidationError("This line has already been capitalised.")
-        if self.quantity != self.quantity.to_integral_value():
+        if any(not application.is_released() for application in self.landed_cost_applications.all()):
+            raise ValidationError(
+                f"'{self.label()}' has been landed on stock; release that before capitalising "
+                "it, or its cost is counted twice."
+            )
+        if self.landed_by_its_bill():
+            raise ValidationError(
+                f"'{self.label()}' was landed on the goods on {self.bill.number} when it posted; "
+                "its cost is in their stock value, not on a machine."
+            )
+        # What debit notes gave back is not capitalised: a refunded line made an asset of nothing.
+        units = self.quantity_debitable()
+        if units <= 0:
+            raise ValidationError("This line has been given back in full; there is nothing to capitalise.")
+        if units != units.to_integral_value():
             raise ValidationError(
                 "Capitalise whole units; a fraction of an asset cannot be disposed of."
             )
@@ -3973,15 +4076,14 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # what the bill put in the account this takes it out of. At the
         # bill's own figures a foreign machine went onto the asset
         # account at its euro price and left the difference behind.
-        rate = self.bill.exchange_rate or Decimal("1")
-        total = round_money(self.net_amount() * rate)
-        unit_cost = round_money(total / self.quantity)
+        total = self.booked_amount() - self.amount_given_back()
+        unit_cost = round_money(total / units)
         memo = f"Capitalised from {self.bill.number}"
         source = self.posted_account or self.expense_account
 
         created = []
         remaining = total
-        count = int(self.quantity)
+        count = int(units)
         for index in range(count):
             cost = remaining if index == count - 1 else unit_cost
             remaining -= cost
@@ -4213,19 +4315,32 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "Cannot modify a line on a posted bill. Issue a debit note instead."
             )
-        if self.debits_line_id and self.debits_line.assets.exclude(
-            status="cancelled"
-        ).exists():
+        if self.debits_line_id:
+            self.refuse_giving_back_what_moved()
+        super().save(*args, **kwargs)
+
+    def refuse_giving_back_what_moved(self):
+        """
+        A debit note line takes its cost back out of the account its
+        original put it in, so that cost must still be there.
+        """
+        original = self.debits_line
+        if original.assets.exclude(status="cancelled").exists():
             # The line's cost has moved onto the asset account, so a
             # debit note crediting the line's own account would take it
             # out of an account that no longer holds it — below nothing —
             # while the asset stayed on the books at full cost.
             raise ValidationError(
-                f"{self.debits_line.label()} was capitalised as fixed assets. "
+                f"{original.label()} was capitalised as fixed assets. "
                 "Un-capitalise them first, or, once in service, dispose of "
                 "them — then the bill can be debited."
             )
-        super().save(*args, **kwargs)
+        if any(not application.is_released() for application in original.landed_cost_applications.all()):
+            # The same, landed on other goods: the freight account it would credit is empty.
+            raise ValidationError(
+                f"{original.label()} has been landed on stock. Release that first, then the bill "
+                "can be debited."
+            )
 
     def delete(self, *args, **kwargs):
         if self.bill.posted:
