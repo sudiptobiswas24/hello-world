@@ -1,5 +1,5 @@
 import { useQueries } from "@tanstack/react-query";
-import { Trail } from "./Trail";
+import { Trail, useKindOf } from "./Trail";
 import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 
@@ -139,7 +139,7 @@ export interface RecordScreenProps {
   actions?: ActionDef[];
   /** Pages the record opens in a new tab: its PDF, a printed card. */
   links?: LinkDef[];
-  /** The record's kind as app.model, for its attachments and history. */
+  /** The record's kind as app.model, for its trail; read off its endpoint when not given. */
   trail?: string;
   panels?: PanelDef[];
   permissions: { add?: string; change?: string; delete?: string };
@@ -324,6 +324,9 @@ export function RecordScreen(props: RecordScreenProps) {
   const { can } = useAccess();
   const record = useRecord<Row>(endpoint, id);
   const saved = record.data;
+  // Every record screen carries its trail: named by the screen when it says, else by its address.
+  const kind = useKindOf(endpoint);
+  const model = trail ?? kind;
   const draft = useDraft<Row>(isNew ? blank(fields) : saved);
   const refs = useRefs(fields);
   const act = useAct<Row>();
@@ -412,7 +415,7 @@ export function RecordScreen(props: RecordScreenProps) {
       </Sheet>
       {saved && panels.map((panel) => <RecordPanel key={panel.title} panel={panel} record={saved} />)}
       {saved && below?.(saved, Boolean(permissions.change && can(permissions.change)) && (!editable || editable(saved)))}
-      {saved && trail && <Trail model={trail} id={saved.id} />}
+      {saved && model && <Trail model={model} id={saved.id} />}
     </article>
   );
 }

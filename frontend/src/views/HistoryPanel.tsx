@@ -12,8 +12,8 @@ export function HistoryPanel({ model, id }: { model: string; id: number }) {
   const rows = useGet<HistoryRow[]>("/api/core/history/", { model, id: String(id) });
   if (!rows.data?.length) return null;
   return (
-    <section className="related" aria-label="History">
-      <h2 className="section-title">History</h2>
+    <section className="related-list chatter" aria-label="History">
+      <h2>History</h2>
       <table className="data">
         <tbody>
           {rows.data.map((row) => (

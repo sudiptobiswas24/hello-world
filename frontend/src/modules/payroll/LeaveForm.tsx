@@ -8,6 +8,7 @@ import { Field } from "../../forms/fields";
 import { useDraft } from "../../forms/useDraft";
 import { date, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { Trail } from "../../views/Trail";
 
 interface Leave {
   id: number;
@@ -172,6 +173,7 @@ export default function LeaveForm() {
           </form>
         )}
       </Sheet>
+      {leave && <Trail model="hr.leaverequest" id={leave.id} />}
     </article>
   );
 }

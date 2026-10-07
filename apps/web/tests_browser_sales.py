@@ -15,6 +15,8 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
+from django.utils import timezone
+
 from apps.accounting.models import Payment
 from apps.core.models import Company, Party, PartyRole
 from apps.sales.models import Delivery, Invoice, SalesOrder
@@ -223,6 +225,38 @@ class SalesInTheBrowserTests(BrowserTestCase):
         self.assertFalse(Party.objects.filter(code="KFL").exists())
         self.assertTrue(page.url.endswith("/sales/customers/new"))
         expect(page.get_by_label("Name", exact=True)).to_have_value("Konkan Fertilisers")
+
+    def test_a_rep_notes_an_order_plans_a_call_and_closes_it_from_home(self):
+        from apps.core.chatter import FollowUp, Note
+
+        order = self.make_order(quantity="10", price="100")
+        rep = self.sign_in(self.person("Sales Rep"), f"/app/sales/orders/{order.pk}")
+        notes = rep.get_by_role("region", name="Notes")
+        notes.get_by_label("A note").fill("Wants 50-kg sacks next time")
+        notes.get_by_role("button", name="Add note").click()
+        expect(notes.get_by_text("Wants 50-kg sacks next time")).to_be_visible()
+        plans = rep.get_by_role("region", name="Follow-ups")
+        plans.get_by_role("button", name="Plan a follow-up").click()
+        plans.get_by_label("About").fill("Ask about the October schedule")
+        plans.get_by_role("button", name="Plan it").click()
+        expect(plans.get_by_text("Ask about the October schedule")).to_be_visible()
+        planned = FollowUp.objects.get()
+        self.assertEqual((planned.kind, planned.link), ("call", f"/sales/orders/{order.pk}"))
+        # Due on the plant's day (not the browser's tomorrow less one, which the hour would decide):
+        # it heads the rep's home page, and leads back to the order.
+        FollowUp.objects.filter(pk=planned.pk).update(due_on=timezone.localdate())
+        rep.goto(f"{self.live_server_url}/app/")
+        mine = rep.get_by_role("table", name="Your follow-ups")
+        expect(mine).to_contain_text("Today")
+        mine.get_by_role("link", name="Ask about the October schedule").click()
+        rep.wait_for_url(re.compile(rf"/sales/orders/{order.pk}$"))
+        plans = rep.get_by_role("region", name="Follow-ups")
+        plans.get_by_role("button", name="Done").click()
+        plans.get_by_label("How it went").fill("They confirm 40,000 sacks")
+        plans.get_by_role("button", name="Mark done").click()
+        expect(rep.get_by_role("region", name="Notes")).to_contain_text("Call done: Ask about the October schedule. They confirm 40,000 sacks")
+        self.assertEqual(Note.objects.count(), 2)
+        self.assertEqual(self.problems, [])
 
     def test_the_ar_manager_gives_a_customer_to_a_rep_who_then_sees_only_theirs(self):
         from apps.core.models import PartyRoleAssignment

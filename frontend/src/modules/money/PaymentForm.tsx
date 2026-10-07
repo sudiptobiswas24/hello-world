@@ -11,6 +11,7 @@ import { least, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { PartyPicker, type PartyRole } from "../../forms/PartyPicker";
+import { Trail } from "../../views/Trail";
 
 interface Payment {
   id: number;
@@ -172,6 +173,7 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
       {payment?.posted && !payment.voided && can(`${config.app}.view_${config.field}payment`) && can(`${config.app}.view_${config.field}`) && (
         <Apply config={config} payment={payment} highlight={Number(params.get(config.field)) || null} />
       )}
+      {payment && <Trail model="accounting.payment" id={payment.id} />}
     </article>
   );
 }

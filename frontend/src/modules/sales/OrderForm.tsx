@@ -13,6 +13,7 @@ import { aboveZero } from "../../lib/decimal";
 import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { RelatedList } from "../../forms/Related";
+import { Trail } from "../../views/Trail";
 
 export interface Order {
   id: number;
@@ -205,6 +206,7 @@ export default function OrderForm() {
             cells={(row) => [String(row.number || "Draft"), date(String(row.invoice_date)), money(String(row.total))]} />
         </div>
       )}
+      {order && <Trail model="sales.salesorder" id={order.id} />}
     </article>
   );
 }

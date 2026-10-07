@@ -16,6 +16,7 @@ from rest_framework.response import Response
 
 from .api import record_or_404
 from .attachments import Attachment, attach, attachments_of, detach
+from .endpoints import may_read
 
 
 def _record(request, data):
@@ -27,7 +28,10 @@ def _record(request, data):
         raise ValidationError({"model": ["Name the record's kind as app.model."]})
     if not request.user.has_perm(f"{model._meta.app_label}.view_{model._meta.model_name}"):
         raise PermissionDenied(f"Reading {model._meta.verbose_name_plural} is not yours.")
-    return record_or_404(model, pk, "id")
+    kept = record_or_404(model, pk, "id")
+    if not may_read(request.user, model, kept.pk):
+        raise NotFound()  # as its own screen answers: one the login may not see is not there
+    return kept
 
 
 def _row(attachment, user):
@@ -59,6 +63,8 @@ class AttachmentViewSet(viewsets.ViewSet):
         model = attachment.content_type.model_class()
         if model is None or not request.user.has_perm(f"{model._meta.app_label}.view_{model._meta.model_name}"):
             raise PermissionDenied("Reading this record is not yours.")
+        if not may_read(request.user, model, attachment.object_id):
+            raise NotFound()
         return attachment
 
     @action(detail=True, methods=["get"])

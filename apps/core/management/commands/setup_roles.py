@@ -580,9 +580,13 @@ for _role, _permissions in ROLES.items():
 # is a manager's.
 for _role in ROLES:
     ROLES[_role] = [*ROLES[_role], "core.view_attachment", "core.add_attachment"]
+# Notes and follow-ups the same: written by whoever may read the record;
+# changing or removing someone else's follow-up is a manager's.
+for _role in ROLES:
+    ROLES[_role] = [*ROLES[_role], "core.view_note", "core.add_note", "core.view_followup", "core.add_followup"]
 for _role in ("Controller", "AR Manager", "AP Manager", "Stores Manager", "Quality Manager", "HR Admin",
               "Production Planner", "GST Officer"):
-    ROLES[_role] = [*ROLES[_role], "core.delete_attachment"]
+    ROLES[_role] = [*ROLES[_role], "core.delete_attachment", "core.change_followup", "core.delete_followup"]
 
 
 class Command(BaseCommand):
