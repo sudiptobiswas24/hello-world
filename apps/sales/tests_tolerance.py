@@ -255,18 +255,21 @@ class LinesAlreadyTakenMigrate(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
         apps = executor.loader.project_state(self.before).apps
-        uom = apps.get_model("core", "UnitOfMeasure").objects.create(code="each", name="Each")
-        party = apps.get_model("core", "Party").objects.create(code="C", name="C")
-        account = apps.get_model("accounting", "Account").objects.create(
+        # Only sales is taken back. What its lines point at is made as it stands now and pointed
+        # at by id: a party made by core's old model missed the columns core has gained since.
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        uom = now.get_model("core", "UnitOfMeasure").objects.create(code="each", name="Each")
+        party = now.get_model("core", "Party").objects.create(code="C", name="C")
+        account = now.get_model("accounting", "Account").objects.create(
             code="4000", name="Revenue", account_type="income")
-        item = apps.get_model("inventory", "Item").objects.create(sku="W", name="W", uom=uom)
-        charge = apps.get_model("accounting", "ChargeType").objects.create(
+        item = now.get_model("inventory", "Item").objects.create(sku="W", name="W", uom=uom)
+        charge = now.get_model("accounting", "ChargeType").objects.create(
             code="FRT", name="Freight", revenue_account=account)
-        order = apps.get_model("sales", "SalesOrder").objects.create(customer=party,
+        order = apps.get_model("sales", "SalesOrder").objects.create(customer_id=party.pk,
                                                                      order_date=DAY)
         line = apps.get_model("sales", "SalesOrderLine")
-        line.objects.create(order=order, item=item, uom=uom, quantity=10, unit_price=1)
-        line.objects.create(order=order, charge=charge, quantity=1, unit_price=5)
+        line.objects.create(order=order, item_id=item.pk, uom_id=uom.pk, quantity=10, unit_price=1)
+        line.objects.create(order=order, charge_id=charge.pk, quantity=1, unit_price=5)
         executor = MigrationExecutor(connection)
         executor.migrate(self.after)
         line = executor.loader.project_state(self.after).apps.get_model(

@@ -434,17 +434,20 @@ class LinesAlreadyPostedMigrate(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
         apps = executor.loader.project_state(self.before).apps
-        account = apps.get_model("accounting", "Account")
+        # Only payroll is taken back. What it points at is made as it stands now and pointed at by
+        # id: a party made by core's old model missed the columns core has gained since.
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        account = now.get_model("accounting", "Account")
         wages = account.objects.create(code="6000", name="Wages", account_type="expense")
         pf = account.objects.create(code="2310", name="PF", account_type="liability")
         component = apps.get_model("hr", "PayComponent")
         deduction = component.objects.create(code="PF", name="PF", kind="deduction",
-                                             liability_account=pf)
+                                             liability_account_id=pf.pk)
         employer = component.objects.create(code="PF-ER", name="PF ER", kind="employer_cost",
-                                            expense_account=wages, liability_account=pf)
-        party = apps.get_model("core", "Party").objects.create(code="E", name="E")
+                                            expense_account_id=wages.pk, liability_account_id=pf.pk)
+        party = now.get_model("core", "Party").objects.create(code="E", name="E")
         person = apps.get_model("hr", "Employee").objects.create(
-            party=party, employee_number="E", hire_date=datetime.date(2020, 1, 1))
+            party_id=party.pk, employee_number="E", hire_date=datetime.date(2020, 1, 1))
         run = apps.get_model("hr", "PayRun")
         slip = apps.get_model("hr", "Payslip")
         line = apps.get_model("hr", "PayslipLine")
@@ -454,10 +457,10 @@ class LinesAlreadyPostedMigrate(TransactionTestCase):
             payslip = slip.objects.create(employee=person, run=made)
             line.objects.create(payslip=payslip, component=deduction, kind="deduction",
                                 basis="percent", description="PF", rate=12, amount=1800,
-                                posted_account=pf if status == "posted" else None)
+                                posted_account_id=pf.pk if status == "posted" else None)
             line.objects.create(payslip=payslip, component=employer, kind="employer_cost",
                                 basis="percent", description="PF ER", rate=12, amount=1800,
-                                posted_account=wages if status == "posted" else None)
+                                posted_account_id=wages.pk if status == "posted" else None)
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.after)
