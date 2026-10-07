@@ -964,6 +964,10 @@ export const MODULES: Module[] = [
         keywords: "stock ledger in out", load: () => import("../modules/stores/Movements"),
       },
       {
+        path: "picking", label: "Pick list", permission: "sales.view_delivery",
+        keywords: "pick list route bins batches today's deliveries dispatch", load: () => import("../modules/stores/Picking"),
+      },
+      {
         path: "items", label: "Items", permission: "inventory.view_item", create: "inventory.add_item",
         keywords: "product sku material", load: () => import("../modules/stores/Items"),
         detail: () => import("../modules/stores/ItemForm"),

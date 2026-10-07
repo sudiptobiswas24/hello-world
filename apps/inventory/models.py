@@ -993,6 +993,7 @@ from .reports import (  # noqa: E402,F401
     stock_valuation,
 )
 from .picking import (  # noqa: E402,F401
+    pick_list,
     describe_plan,
     plan_issue,
     plan_putaway,

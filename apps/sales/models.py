@@ -44,6 +44,7 @@ from apps.inventory.models import (
     StockReservation,
     Warehouse,
         lock_positions,
+    pick_list,
     plan_issue,
     release_for,
 )
@@ -3488,6 +3489,10 @@ class Delivery(AuditModel):
             )
         super().delete(*args, **kwargs)
 
+    def pick_list(self):
+        """The route through the shelves for this draft shipment, before anything moves."""
+        return pick_list_for([self])
+
     @serialised("posted")
     def post(self):
         if self.posted:
@@ -3916,6 +3921,35 @@ class Delivery(AuditModel):
             customer_return._credit_returned_goods() if credit_invoices else []
         )
         return customer_return
+
+
+def pick_list_for(deliveries, warehouse=None):
+    """
+    One route for the draft shipments given (lines at `warehouse`, or
+    anywhere), merged by shelf, in walking order. A delivery shipped or
+    a return has nothing to pick and is refused in words.
+    """
+    needs, days = [], set()
+    for delivery in deliveries:
+        if delivery.reverses_id or delivery.posted:
+            raise ValidationError(
+                f"{delivery} is {'a return' if delivery.reverses_id else 'shipped already'}; "
+                "a pick list is for a draft shipment.")
+        days.add(delivery.delivery_date)
+        for line in delivery.lines.select_related("order_line__item", "warehouse", "lot", "bin"):
+            if warehouse is not None and line.warehouse_id != warehouse.pk:
+                continue
+            needs.append((line.order_line.item, line.warehouse, line.quantity_shipped, line.lot, line.bin,
+                          delivery.number or f"Draft {delivery.pk}"))
+    return pick_list(needs, on_date=days.pop() if len(days) == 1 else None)
+
+
+def deliveries_to_pick(day, warehouse=None):
+    """The draft shipments dated `day`, at `warehouse` or anywhere, oldest first."""
+    deliveries = Delivery.objects.filter(posted=False, reverses__isnull=True, delivery_date=to_date(day)).order_by("id")
+    if warehouse is not None:
+        deliveries = deliveries.filter(lines__warehouse=warehouse).distinct()
+    return deliveries
 
 
 class DeliveryLine(AuditModel):

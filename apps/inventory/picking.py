@@ -20,6 +20,7 @@ so the documents can ask instead of demanding an answer.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db.models import Sum
 
 from .bins import bins_holding, suggest_pick, suggest_putaway, unbinned
 from .tracking import allocate
@@ -127,3 +128,70 @@ def describe_plan(plan):
             where.append(f"bin {storage_bin.code}")
         parts.append(f"{quantity}" + (f" from {' in '.join(where)}" if where else ""))
     return "; ".join(parts)
+
+
+def pick_list(needs, on_date=None):
+    """
+    One route for several withdrawals: what to take from where, in
+    walking order, merged where two needs come off the same shelf.
+
+    `needs` is [(item, warehouse, quantity, lot, storage_bin, reference)].
+    Returns [{item, warehouse, lot, bin, quantity, for, problem}] sorted
+    by warehouse, bin walking order, item and batch. A need the shelf
+    cannot meet is still a row, its problem said in words, rather than
+    the whole list refusing to print. Each need is planned against the
+    whole shelf, so two off one shelf can add up to more than is there:
+    that is said too.
+    """
+    merged, order = {}, []
+
+    def row_for(item, warehouse, lot, storage_bin):
+        key = (warehouse.pk, storage_bin.pk if storage_bin else None, item.pk, lot.pk if lot else None)
+        if key not in merged:
+            merged[key] = {"item": item, "warehouse": warehouse, "lot": lot, "bin": storage_bin,
+                           "quantity": Decimal("0"), "for": [], "problem": ""}
+            order.append(key)
+        return merged[key]
+
+    for item, warehouse, quantity, lot, storage_bin, reference in needs:
+        try:
+            plan = plan_issue(item, warehouse, quantity, lot=lot, storage_bin=storage_bin, on_date=on_date)
+        except ValidationError as error:
+            row = row_for(item, warehouse, lot, storage_bin)
+            row["quantity"] += Decimal(quantity)
+            row["problem"] = " ".join(error.messages)
+            plan = []
+        else:
+            row = None
+        for chosen_lot, chosen_bin, chosen_quantity in plan:
+            row = row_for(item, warehouse, chosen_lot, chosen_bin)
+            row["quantity"] += chosen_quantity
+            if reference not in row["for"]:
+                row["for"].append(reference)
+        if row is not None and not plan and reference not in row["for"]:
+            row["for"].append(reference)
+
+    rows = [merged[key] for key in order]
+    for row in rows:
+        if row["problem"]:
+            continue
+        there = _on_the_shelf(row)
+        if row["quantity"] > there:
+            row["problem"] = (f"Only {format(there.normalize(), 'f')} here; "
+                              f"{format((row['quantity'] - there).normalize(), 'f')} short.")
+    rows.sort(key=lambda row: (
+        row["warehouse"].code, row["bin"] is None,
+        row["bin"].sequence if row["bin"] else 0, row["bin"].code if row["bin"] else "",
+        row["item"].sku, row["lot"].code if row["lot"] else "",
+    ))
+    return rows
+
+
+def _on_the_shelf(row):
+    """What the ledger says is where the row sends the picker."""
+    movements = row["item"].movements.filter(warehouse=row["warehouse"])
+    if row["lot"] is not None:
+        movements = movements.filter(lot=row["lot"])
+    if row["bin"] is not None:
+        movements = movements.filter(bin=row["bin"])
+    return movements.aggregate(total=Sum("quantity"))["total"] or Decimal("0")
