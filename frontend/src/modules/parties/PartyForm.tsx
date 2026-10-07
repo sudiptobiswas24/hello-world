@@ -12,6 +12,7 @@ import type { ReactNode } from "react";
 
 import { PARTY_PANELS } from "./panels";
 import { PARTY_FIELDS } from "./partyFields";
+import { SmartButtons, type SmartDef } from "../../views/SmartButtons";
 
 import type { PartyRole } from "../../forms/PartyPicker";
 import { Trail } from "../../views/Trail";
@@ -36,10 +37,12 @@ export interface PartyConfig {
   plural: string; // "Customers"
   /** What has passed between us: lists of their documents. */
   related?: (party: { id: number }) => ReactNode;
+  /** The same as counts under the header, each opening its list. */
+  smart?: (party: { id: number }) => SmartDef[];
 }
 
 /** A customer or a vendor: who they are, and what has passed between us. */
-export function PartyForm({ role, base, plural, related }: PartyConfig) {
+export function PartyForm({ role, base, plural, related, smart }: PartyConfig) {
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -79,6 +82,7 @@ export function PartyForm({ role, base, plural, related }: PartyConfig) {
           </ActionButton>
         )}
       </DocHeader>
+      {party && smart && <SmartButtons buttons={smart(party)} />}
       <Sheet>
         <FieldSection fields={PARTY_FIELDS} value={value} set={(key, next) => draft.set(key, next as never)}
           errors={draft.errors} editable={editable} refs={refs} />

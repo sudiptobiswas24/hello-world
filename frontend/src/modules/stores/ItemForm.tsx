@@ -1,4 +1,5 @@
 import { RecordScreen, type FieldDef, type PanelDef } from "../../views/RecordScreen";
+import type { SmartDef } from "../../views/SmartButtons";
 import { ACCOUNT } from "../accounts/refs";
 import { ITEM } from "./refs";
 
@@ -25,12 +26,23 @@ const PACKING_PANEL: PanelDef = {
 };
 const UNITOFMEASURE: FieldDef["ref"] = { endpoint: "/api/core/units-of-measure/", permission: "core.view_unitofmeasure", label: (row: Row) => String(row.code) };
 
+/** Where an item is and what moved it, each opening its list. */
+function itemButtons(id: number): SmartDef[] {
+  const item = String(id);
+  return [
+    { label: "Batches", endpoint: "/api/inventory/lots/", query: { item, is_active: "true" }, permission: "inventory.view_lot", screen: "/stores/batches" },
+    { label: "Movements", endpoint: "/api/inventory/stock-movements/", query: { item }, permission: "inventory.view_stockmovement", screen: "/stores/movements" },
+    { label: "Runs", endpoint: "/api/manufacturing/work-orders/", query: { item }, permission: "manufacturing.view_workorder", screen: "/production/work-orders" },
+  ];
+}
+
 /** Something bought, made, kept or sold: how it is counted, tracked and valued, and where its value posts. */
 export default function ItemForm() {
   return (
     <RecordScreen
       endpoint="/api/inventory/items/"
       extras="inventory.item"
+      smart={(row) => itemButtons(Number(row.id))}
       back="/stores/items"
       backLabel="Items"
       newTitle="New item"

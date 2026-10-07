@@ -14,6 +14,8 @@ import { date, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { RelatedList } from "../../forms/Related";
 import { Trail } from "../../views/Trail";
+import { SmartButtons } from "../../views/SmartButtons";
+import { orderButtons } from "./smart";
 
 export interface Order {
   id: number;
@@ -145,6 +147,7 @@ export default function OrderForm() {
           </ActionButton>
         )}
       </DocHeader>
+      {order && <SmartButtons buttons={orderButtons(order.id)} />}
 
       {order && order.status !== "cancelled" && <Steps steps={["Draft", "Confirmed", "Shipped", "Invoiced"]} at={stage(order)} />}
       {order?.status === "draft" && waiting && (approval.data?.reasons.length ?? 0) > 0 && (

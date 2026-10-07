@@ -89,6 +89,17 @@ class ARunThroughTheApiTests(PayrollApiTestCase):
         response = self.client.get("/api/hr/payslips/", {"run": run.pk})
         self.assertEqual(len(response.json()), 1)
 
+    def test_one_persons_slips_and_nothing_it_cannot_narrow_by(self):
+        other = self.employee("P2")
+        self.pay(other, self.salary, "4000")
+        run = self.pay_run()
+        run.calculate()
+        mine = self.client.get("/api/hr/payslips/", {"employee": self.person.pk})
+        self.assertEqual([slip["employee"] for slip in mine.json()], ["P1"])
+        # Read by hand once, an unknown narrowing listed every slip.
+        refused = self.client.get("/api/hr/payslips/", {"meter": "5"})
+        self.assertEqual(refused.status_code, 400)
+
     def test_posting_needs_the_permission(self):
         clerk = User.objects.create_user("clerk")
         clerk.user_permissions.add(*Permission.objects.filter(
