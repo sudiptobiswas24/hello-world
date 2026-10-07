@@ -121,6 +121,34 @@ class RemindersAndRecurringTests(ExtrasTestCase):
         self.assertEqual((row["customer_name"], row["next_run_date"]), ("Acme Co", "2026-10-01"))
         self.assertEqual(self.ar.get("/api/sales/dunning-notices/", {"invoice__customer": self.acme.pk}).status_code, 200)
 
+    def test_issuing_from_a_schedule_is_issuing_an_invoice_and_posting_from_one_is_posting(self):
+        from django.contrib.auth.models import Permission, User
+
+        from apps.sales.models import RecurringInvoice, RecurringInvoiceLine
+        from apps.sales.tests_base import carries_every_customer
+
+        schedule = RecurringInvoice.objects.create(code="RENT2", customer=self.acme, receivable_account=self.receivable,
+                                                   interval="monthly", start_date=datetime.date(2026, 10, 1))
+        RecurringInvoiceLine.objects.create(schedule=schedule, item=self.item, quantity=1, unit_price=100,
+                                            revenue_account=self.revenue)
+        # Keeps schedules and may add invoices, but may not post them.
+        preparer = User.objects.create_user("preparer")
+        preparer.user_permissions.add(*Permission.objects.filter(codename__in=[
+            "view_recurringinvoice", "add_recurringinvoice", "change_recurringinvoice", "add_invoice", "view_invoice",
+            "view_party"]))
+        carries_every_customer(preparer)
+        client = self.as_user(preparer)
+        url = f"/api/sales/recurring-invoices/{schedule.pk}/"
+        self.assertEqual(client.post(f"{url}generate/", {}, format="json").status_code, 200)
+        self.assertEqual(client.patch(url, {"auto_post": True}, format="json").status_code, 200)
+        self.assertEqual(client.post(f"{url}generate/", {}, format="json").status_code, 403)
+        self.assertEqual(client.post("/api/sales/recurring-invoices/run/", {"as_of": "2026-12-01"},
+                                     format="json").status_code, 403)
+        # Without the right to add invoices there is no issuing at all, schedule or no schedule.
+        preparer.user_permissions.remove(Permission.objects.get(codename="add_invoice"))
+        self.assertEqual(self.as_user(preparer).post(f"{url}generate/", {}, format="json").status_code, 403)
+        self.assertEqual(self.ar.post(f"{url}generate/", {}, format="json").status_code, 200)
+
     def test_the_commission_report_takes_its_span(self):
         response = self.ar.get("/api/sales/commission-plans/report/", {"from": "2026-09-01", "to": "2026-09-30"})
         self.assertEqual(response.status_code, 200, response.content)

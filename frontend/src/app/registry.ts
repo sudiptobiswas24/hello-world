@@ -733,6 +733,34 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/accounts/JournalForm"),
       },
       {
+        path: "recurring-journals", label: "Recurring journals", permission: "accounting.view_recurringjournal",
+        create: "accounting.add_recurringjournal", also: ["accounting.view_recurringjournalline"],
+        keywords: "recurring journal schedule accrual rent provision monthly entry", load: () => import("../modules/accounts/RecurringJournals"),
+        detail: () => import("../modules/accounts/RecurringJournalForm"),
+      },
+      {
+        path: "periods", label: "Accounting periods", permission: "accounting.view_accountingperiod",
+        create: "accounting.add_accountingperiod",
+        keywords: "period close month lock books closed reopen", load: () => import("../modules/accounts/Periods"),
+        detail: () => import("../modules/accounts/PeriodForm"),
+      },
+      {
+        path: "budgets", label: "Budgets", permission: "accounting.view_budget", create: "accounting.add_budget",
+        also: ["accounting.view_budgetline"],
+        keywords: "budget plan spend target variance", load: () => import("../modules/accounts/Budgets"),
+        detail: () => import("../modules/accounts/BudgetForm"),
+      },
+      {
+        path: "budget-report", label: "Budget against the books", permission: "accounting.view_journalentry",
+        also: ["accounting.view_budget"],
+        keywords: "budget actual variance report", load: () => import("../modules/accounts/BudgetReport"),
+      },
+      {
+        path: "bank-import", label: "Import a bank statement", permission: "accounting.add_bankstatementline",
+        also: ["accounting.view_bankstatement"], hidden: true,
+        keywords: "bank statement import csv file", load: () => import("../modules/accounts/StatementImport"),
+      },
+      {
         path: "trial-balance", label: "Trial balance", permission: "accounting.view_journalentry",
         keywords: "tb balances", load: () => import("../modules/accounts/TrialBalance"),
       },

@@ -43,6 +43,7 @@ export default function BankStatementForm() {
         { key: "opening_balance", label: "Opening balance", kind: "money", negative: true },
         { key: "closing_balance", label: "Closing balance", kind: "money", negative: true },
       ]}
+      links={[{ label: "Import the bank's file", same: true, href: (row) => `/accounts/bank-import?statement=${String(row.id)}`, when: (row) => !row.closed }]}
       actions={[
         { label: "Match the obvious", path: "auto_match", permission: "accounting.change_bankstatementline", when: (row) => !row.closed,
           done: "Matched what had one payment of the same amount nearby" },

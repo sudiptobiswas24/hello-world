@@ -8,7 +8,7 @@ Nothing here runs by itself: cron runs the command each morning, and the
 page asks when it opens. A check that has nothing to say is left out,
 so an empty inbox is an empty inbox.
 
-Seventeen of the questions are the plant's and have one answer a day,
+Nineteen of the questions are the plant's and have one answer a day,
 whoever asks; `inbox()` takes a dict to remember them in, so the command
 counts each once for every login. The one that is a person's own (their
 follow-ups) is marked `per_login` and counted for each.
@@ -129,6 +129,19 @@ def _complaint_actions_overdue(day):
     return len(overdue_actions(on_date=day))
 
 
+def _recurring_journals_due(day):
+    from apps.accounting.recurring import RecurringJournal
+
+    return sum(1 for schedule in RecurringJournal.objects.filter(is_active=True) if schedule.is_due(day))
+
+
+def _recurring_invoices_due(day):
+    from apps.sales.models import RecurringInvoice
+
+    return sum(1 for schedule in RecurringInvoice.objects.filter(is_active=True)
+               if schedule.next_run_date and schedule.next_run_date <= day and not schedule.has_finished())
+
+
 CHECKS = [
     Check("maintenance_due", "Maintenance due", ("manufacturing.view_maintenanceschedule",), "/plant/due",
           _maintenance_due),
@@ -164,6 +177,10 @@ CHECKS = [
           _meters_unread),
     Check("complaint_actions_overdue", "Complaint actions overdue", ("manufacturing.view_complaint",),
           "/quality/complaints", _complaint_actions_overdue),
+    Check("recurring_journals_due", "Recurring journal entries due", ("accounting.view_recurringjournal",),
+          "/accounts/recurring-journals?is_active=true", _recurring_journals_due),
+    Check("recurring_invoices_due", "Recurring invoices due", ("sales.view_recurringinvoice",),
+          "/sales/recurring?is_active=true", _recurring_invoices_due),
     Check("follow_ups_due", "Follow-ups due", ("sales.view_activity",), "/sales/activities?done_on__isnull=true",
           _follow_ups_due, per_login=True),
 ]
