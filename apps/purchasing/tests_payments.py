@@ -194,6 +194,21 @@ class ApAgingTests(PaymentTestCase):
         total = sum(bucket["total"] for bucket in aging.values())
         self.assertEqual(total, vendor_balance(self.vendor))
 
+    def test_paid_ahead_of_the_bill_is_off_what_is_owed_until_it_bounces(self):
+        from django.db.models import Sum
+
+        from apps.accounting.models import JournalLine
+
+        def payable():
+            lines = JournalLine.objects.filter(account=self.payable, party=self.vendor, entry__posted=True)
+            return lines.aggregate(owed=Sum("credit") - Sum("debit"))["owed"]
+
+        self.posted_bill("10", "5")
+        ahead = self.disbursement("20")
+        self.assertEqual((vendor_balance(self.vendor), payable()), (Decimal("30"), Decimal("30")))
+        ahead.void(on_date=datetime.date(2026, 1, 25))
+        self.assertEqual((vendor_balance(self.vendor), payable()), (Decimal("50"), Decimal("50")))
+
 
 class PaymentRunTests(PaymentTestCase):
     def test_it_lists_what_is_due_by_a_date(self):

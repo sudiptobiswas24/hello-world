@@ -65,6 +65,7 @@ from apps.accounting.settlement import (
     refuse_other_control_account,
     booked_beside,
     settlement_discount_to_take,
+    standing_on_account,
     undone_by_note,
 )
 from apps.inventory.valuation import (
@@ -5168,7 +5169,19 @@ def vendor_balance(vendor):
         vendor=vendor, posted=True, debits__isnull=False
     ).prefetch_related(*BILL_FIGURES, *(f"debits__{f}" for f in BILL_FIGURES))
     refundable = sum((note.refund_due() for note in notes), Decimal("0"))
-    return owed - refundable
+    # Paid ahead of the bill, or refunded to us before a debit note took it: in payables all the
+    # same, and the mirror of what a customer's balance counts.
+    received, paid_out = standing_on_account(
+        Payment.objects.filter(party=vendor, counterpart_account__in=payable_accounts()))
+    return owed - refundable - paid_out + received
+
+
+def payable_accounts():
+    """Where what is owed to vendors is: every account a posted bill is payable on, and the company's default."""
+    accounts = Account.objects.filter(models.Exists(
+        Bill.objects.filter(posted=True, payable_account=models.OuterRef("pk"))))
+    default = Company.get().default_payable_account_id
+    return accounts | Account.objects.filter(pk=default) if default else accounts
 
 
 AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
