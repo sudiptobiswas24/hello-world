@@ -249,6 +249,10 @@ class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "reverse": "accounting.post_journalentry",
     }
 
+    def get_serializer_context(self):
+        # Which document keeps an entry is asked of every model that can: one page's worth, not a list's.
+        return {**super().get_serializer_context(), "one": self.action == "retrieve"}
+
     @action(detail=True, methods=["post"])
     def post_entry(self, request, pk=None):
         entry = self.get_object()
@@ -262,7 +266,7 @@ class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def reverse(self, request, pk=None):
         entry = self.get_object()
         try:
-            reversal = entry.create_reversal(memo=request.data.get("memo", ""))
+            reversal = entry.reverse_by_hand(memo=request.data.get("memo", ""))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(reversal).data)

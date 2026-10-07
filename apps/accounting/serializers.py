@@ -105,6 +105,7 @@ class JournalLineSerializer(serializers.ModelSerializer):
 
 class JournalEntrySerializer(serializers.ModelSerializer):
     lines = JournalLineSerializer(many=True, read_only=True)
+    posted_by = serializers.SerializerMethodField()
 
     class Meta:
         model = JournalEntry
@@ -117,11 +118,20 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "posted_at",
             "reverses",
             "recurring_journal",
+            "posted_by",
             "lines",
         ]
-        # Written by the schedule that takes the entry, never by hand.
-        read_only_fields = ["recurring_journal"]
-        read_only_fields = ["posted", "posted_at"]
+        # Posting, reversing and the schedule that takes an entry write these, never a person: the
+        # second of two assignments here left both writable, so an entry made by hand could claim
+        # to reverse a payment's and block its void.
+        read_only_fields = ["posted", "posted_at", "reverses", "recurring_journal"]
+
+    def get_posted_by(self, entry):
+        """On one entry's page, the document that keeps it, where it is corrected; a list does not ask."""
+        if not self.context.get("one"):
+            return None
+        document = entry.recorded_by()
+        return None if document is None else f"{document._meta.verbose_name.capitalize()} {document}"
 
 
 class TaxGroupSerializer(serializers.ModelSerializer):

@@ -95,6 +95,7 @@ class Command(BaseCommand):
         findings += self.greenwich_dates(labels, sources)
         findings += self.unsettable_fields(labels)
         findings += self.admin_only_rules(labels)
+        findings += self.dead_class_attributes(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -407,6 +408,52 @@ class Command(BaseCommand):
                             "use timezone.localdate() or to_date().",
                         ))
         return findings
+
+    def dead_class_attributes(self, labels, sources):
+        """
+        A class body that says one name twice keeps only the second, and
+        whatever the first said is not so. The journal entry serializer
+        assigned its read-only fields twice, the second without the ones
+        the first protected, so an entry made by hand could claim to
+        reverse a payment's and block its void; a viewset lost an action's
+        permission the same way. A test class that names two tests alike
+        runs one of them.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "migrations" in path.parts:
+                    continue
+                for node in ast.walk(ast.parse(text)):
+                    if not isinstance(node, ast.ClassDef):
+                        continue
+                    said = {}
+                    for statement in node.body:
+                        for name in self._names_bound(statement):
+                            if name in said:
+                                findings.append((
+                                    "dead class attribute",
+                                    f"{label}/{path.name}:{said[name]} {node.name}.{name} is said again at line "
+                                    f"{statement.lineno}, and only the second counts.",
+                                ))
+                            said[name] = statement.lineno
+        return findings
+
+    @staticmethod
+    def _names_bound(statement):
+        if isinstance(statement, ast.Assign):
+            return [target.id for target in statement.targets if isinstance(target, ast.Name)]
+        if isinstance(statement, ast.AnnAssign) and statement.value is not None and isinstance(statement.target, ast.Name):
+            return [statement.target.id]
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # A property's setter, and an overload, name the function again on purpose.
+            for decorator in statement.decorator_list:
+                if isinstance(decorator, ast.Attribute) and decorator.attr in ("setter", "deleter", "getter"):
+                    return []
+                if (decorator.id if isinstance(decorator, ast.Name) else getattr(decorator, "attr", "")) == "overload":
+                    return []
+            return [statement.name]
+        return []
 
     def unread_settings(self, code):
         """

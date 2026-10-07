@@ -62,6 +62,21 @@ class BooksInTheBrowserTests(BrowserTestCase):
         expect(controller.locator("tbody tr", has_text="Cash sale banked")).to_contain_text("500.00")
         self.assertEqual(self.problems, [])
 
+    def test_an_invoices_entry_is_corrected_on_the_invoice_and_one_made_by_hand_here(self):
+        import datetime
+
+        invoice = self.invoice(self.customer, datetime.date(2026, 3, 1), "500")
+        made = JournalEntry.objects.create(date="2026-03-02", reference="ADJ-3", memo="Accrued rent")
+        made.lines.create(account=self.revenue, debit=Decimal("10"))
+        made.lines.create(account=self.bank, credit=Decimal("10"))
+        made.post()
+        page = self.sign_in(self.person("Controller"), f"/app/accounts/journals/{invoice.journal_entry_id}")
+        expect(page.locator("main")).to_contain_text(f"Invoice {invoice}")
+        expect(page.get_by_role("button", name="Reverse")).to_have_count(0)
+        page.goto(self.url(f"/accounts/journals/{made.pk}"))
+        expect(page.get_by_role("button", name="Reverse")).to_be_visible()
+        self.assertEqual(self.problems, [])
+
     def test_an_entry_out_of_balance_cannot_be_posted(self):
         entry = JournalEntry.objects.create(date="2026-03-01", reference="ADJ-2")
         entry.lines.create(account=self.bank, debit=Decimal("100"))
