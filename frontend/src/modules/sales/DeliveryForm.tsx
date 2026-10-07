@@ -3,7 +3,7 @@ import { Trail } from "../../views/Trail";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { ApiError, get } from "../../api/client";
-import { useAct, useRecord, useReference } from "../../api/hooks";
+import { useAct, useGet, useRecord, useReference } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { ScanBox } from "../../views/ScanBox";
@@ -63,6 +63,36 @@ function LoadBales({ delivery }: { delivery: Delivery }) {
       <h2>Load bales</h2>
       <ScanBox label="Scan a bale label" onScan={scanned} busy={act.pending} />
       {problem && <p className="form-error" role="alert">{problem}</p>}
+    </section>
+  );
+}
+
+interface PickRow { id: number; warehouse: string; bin: string; item: string; lot: string; quantity: string; for: string[]; problem: string }
+
+/** The route through the shelves before anything moves: which bin, which batch, how much, in walking order. */
+function PickList({ delivery }: { delivery: Delivery }) {
+  const list = useGet<{ rows: PickRow[] }>(`${ENDPOINT}${delivery.id}/pick-list/`);
+  return (
+    <section className="related-list" aria-label="Pick list">
+      <h2>Pick list</h2>
+      {list.isError ? <p className="muted">Could not plan it: {list.error.message}</p>
+        : !list.data ? <p className="muted">Planning…</p>
+        : list.data.rows.length === 0 ? <p className="muted">Nothing to pick.</p> : (
+        <table>
+          <thead>
+            <tr><th scope="col">Bin</th><th scope="col">Goods</th><th scope="col">Batch</th><th scope="col" className="k-quantity">Quantity</th><th scope="col">Problem</th></tr>
+          </thead>
+          <tbody>
+            {list.data.rows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.bin || "—"}</td><td>{row.item}</td><td>{row.lot || "—"}</td>
+                <td className="k-quantity">{quantity(row.quantity)}</td><td>{row.problem}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <a className="btn" href={`${ENDPOINT}${delivery.id}/pick-list/pdf/`} target="_blank" rel="noopener">Pick list PDF</a>
     </section>
   );
 }
@@ -163,6 +193,10 @@ export default function DeliveryForm() {
   const act = useAct<Delivery>();
   const [returning, setReturning] = useState<Record<number, string> | null>(null);
   const [credit, setCredit] = useState(true);
+  // Shipping takes the pick list away before the answer comes: the write
+  // refreshes every open panel, and a pick list asked for once the goods
+  // have gone is refused.
+  const [shipping, setShipping] = useState(false);
 
   if (record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   const delivery = record.data;
@@ -172,9 +206,13 @@ export default function DeliveryForm() {
   const warehouseName = (wid: number) => warehouses.data?.find((w) => w.id === wid)?.code ?? `#${wid}`;
   const state = delivery.reverses ? "Return" : delivery.posted ? "Shipped" : "Draft";
 
-  const post = () => act.run("POST", `${ENDPOINT}${delivery.id}/post_delivery/`, {}, {
-    done: (result) => `${(result as Delivery).number} shipped`,
-  });
+  const post = async () => {
+    setShipping(true);
+    const outcome = await act.run("POST", `${ENDPOINT}${delivery.id}/post_delivery/`, {}, {
+      done: (result) => `${(result as Delivery).number} shipped`,
+    });
+    if (!outcome.ok) setShipping(false);
+  };
   const backorder = async () => {
     const outcome = await act.run("POST", `${ENDPOINT}${delivery.id}/backorder/`, {}, { done: "Backorder drafted" });
     if (outcome.ok) navigate(`/sales/deliveries/${outcome.data.id}`);
@@ -266,6 +304,7 @@ export default function DeliveryForm() {
         )}
       </Sheet>
 
+      {!delivery.posted && !shipping && !delivery.reverses && delivery.lines.length > 0 && <PickList key={`pick-${delivery.id}-${delivery.lines.length}`} delivery={delivery} />}
       {!delivery.reverses && <Transport key={`${delivery.id}-${delivery.lr_number}`} delivery={delivery} editable={can("sales.change_delivery")} />}
       {delivery.posted && !delivery.reverses && (
         <Received key={`${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />

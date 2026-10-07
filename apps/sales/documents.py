@@ -225,3 +225,19 @@ def render_delivery_pdf(delivery):
         table=(header, rows, [92 * mm, 32 * mm, 28 * mm, 22 * mm]),
         note="Received the above goods in good condition." if not delivery.reverses_id else None,
     )
+
+
+def render_pick_list_pdf(rows, *, heading, document, meta, where):
+    """The route a picker carries: bin, goods, batch, quantity and which delivery each is for, in walking order."""
+    header = ["Bin", "Goods", "Batch", "Quantity", "For"]
+    body = [[row["bin"].code if row["bin"] else "—", f"{row['item'].sku} {row['item'].name}",
+             row["lot"].code if row["lot"] else "—",
+             f"{row['quantity']:,.2f}" + (f" ({row['problem']})" if row["problem"] else ""),
+             ", ".join(row["for"])] for row in rows]
+    if not body:
+        body.append(["Nothing to pick", "", "", "", ""])
+    return render_document(
+        heading=heading, document=document, party=where, address=None, party_label="PICK AT",
+        meta=meta, totals=[["Lines", str(len(rows))]],
+        table=(header, body, [22 * mm, 60 * mm, 26 * mm, 34 * mm, 32 * mm]),
+    )

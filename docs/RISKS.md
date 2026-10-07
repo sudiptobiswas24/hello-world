@@ -389,3 +389,9 @@ not cover, or is deleted with the commit that finishes it.
     list until the request is awarded or cancelled: a draft nobody sends
     hides the need. And a return counts against the vendor whatever its
     reason, a wrong order of ours included.
+45. **A pick list is planned one delivery at a time against the whole
+    shelf.** The day's list merges what two deliveries take off one
+    shelf and says when the sum is more than is there, but the lots and
+    bins it names for the second delivery were chosen as if the first had
+    not been picked. Where that matters (one batch nearly used up), post
+    the first delivery before reading the route for the second.
