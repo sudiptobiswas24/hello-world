@@ -20,7 +20,7 @@ from apps.accounting.models import (
 from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.history import EventKind, record
-from apps.core.recurrence import RecurrenceInterval, add_interval
+from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 from apps.core.models import (
     Extensible,
     Address,
@@ -5173,11 +5173,20 @@ class RecurringInvoice(AuditModel):
     def has_finished(self):
         return bool(self.end_date and self.next_run_date and self.next_run_date > self.end_date)
 
+    def is_due(self, on_date=None):
+        day = to_date(on_date) or timezone.localdate()
+        return bool(self.is_active and self.next_run_date and self.next_run_date <= day and not self.has_finished())
+
     @serialised("next_run_date", "is_active")
-    def generate_one(self, on_date=None):
-        """Issue the next invoice in the series and advance the schedule."""
+    def generate_one(self, on_date=None, due_by=None, expected=None):
+        """
+        Issue the next invoice in the series and advance the schedule. A run says what it is due by
+        and is answered None when another issued it; a person may say which one they meant.
+        """
         if not self.is_active:
             raise ValidationError("This schedule is not active.")
+        if not still_to_take(self, due_by, expected):
+            return None
         if not self.lines.exists():
             raise ValidationError("This schedule has no lines to invoice.")
         if self.has_finished():
@@ -5245,12 +5254,11 @@ def generate_due_invoices(as_of=None):
     for schedule in RecurringInvoice.objects.filter(is_active=True).prefetch_related("lines"):
         if not schedule.lines.exists():
             continue
-        while (
-            schedule.next_run_date
-            and schedule.next_run_date <= as_of
-            and not schedule.has_finished()
-        ):
-            issued.append(schedule.generate_one())
+        while schedule.is_due(as_of):
+            invoice = schedule.generate_one(due_by=as_of)
+            if invoice is None:
+                break  # another run issued it
+            issued.append(invoice)
     return issued
 
 

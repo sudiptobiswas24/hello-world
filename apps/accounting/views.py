@@ -144,7 +144,8 @@ class RecurringJournalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """Take the next entry from this schedule ({"on_date"} dates it other than its due day)."""
         schedule = self.get_object()
         self._may_post(request, [schedule])
-        entry = schedule.generate_one(on_date=request.data.get("on_date") or None)
+        entry = schedule.generate_one(on_date=request.data.get("on_date") or None,
+                                      expected=request.data.get("next_run_date") or None)
         return Response(JournalEntrySerializer(entry).data)
 
     @action(detail=False, methods=["post"])

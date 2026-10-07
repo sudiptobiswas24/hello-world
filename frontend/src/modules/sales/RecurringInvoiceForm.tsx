@@ -39,7 +39,9 @@ export default function RecurringInvoiceForm() {
       ]}
       actions={[
         { label: "Issue the next invoice", path: "generate", permission: "sales.add_invoice", primary: true,
-          when: (row) => Boolean(row.is_active), done: "Invoice issued", then: (invoice) => `/sales/invoices/${String(invoice.id)}` },
+          when: (row) => Boolean(row.is_active), done: "Invoice issued", then: (invoice) => `/sales/invoices/${String(invoice.id)}`,
+          // The one this page showed: two people at once would otherwise take two.
+          body: (_values, schedule) => ({ next_run_date: schedule.next_run_date }) },
       ]}
       below={(schedule, editable) => (
         <section className="related">

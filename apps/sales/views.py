@@ -939,7 +939,8 @@ class RecurringInvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewse
         schedule = self.get_object()
         self._may_post(request, [schedule])
         try:
-            invoice = schedule.generate_one(on_date=request.data.get("on_date"))
+            invoice = schedule.generate_one(on_date=request.data.get("on_date"),
+                                            expected=request.data.get("next_run_date") or None)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(InvoiceSerializer(invoice).data)
