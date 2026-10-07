@@ -12,6 +12,7 @@ import { RecordPicker } from "../forms/RecordPicker";
 import { useDraft } from "../forms/useDraft";
 import { date, money, quantity } from "../lib/format";
 import { ErrorPanel } from "../shell/ErrorPanel";
+import { ExtraFields } from "../forms/ExtraFields";
 import { DataTable, type Column } from "./DataTable";
 
 type Row = Record<string, unknown> & { id: number };
@@ -151,6 +152,8 @@ export interface RecordScreenProps {
   note?: (record: Row | undefined) => ReactNode;
   /** Below the panels: an editor the record shares with a document (its trade lines). */
   below?: (record: Row, editable: boolean) => ReactNode;
+  /** The kind of record for the keeper's custom fields ("inventory.item"), shown after its own. */
+  extras?: string;
 }
 
 function blank(fields: FieldDef[]): Row {
@@ -314,7 +317,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl, extras } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -344,6 +347,7 @@ export function RecordScreen(props: RecordScreenProps) {
       if (field.readOnly || (isNew && field.existingOnly)) continue;
       if (field.key in source) body[field.key] = source[field.key];
     }
+    if (extras && "extra" in source) body.extra = source.extra;
     const outcome = isNew
       ? await act.run("POST", createUrl ?? endpoint, body, { done: "Saved" })
       : await act.run("PATCH", `${endpoint}${saved!.id}/`, body, { done: "Saved" });
@@ -400,6 +404,10 @@ export function RecordScreen(props: RecordScreenProps) {
             </Field>
           ))}
         </div>
+        {extras && (
+          <ExtraFields kind={extras} value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)}
+            errors={draft.errors} editable={mayEdit} />
+        )}
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
       </Sheet>
       {saved && panels.map((panel) => <RecordPanel key={panel.title} panel={panel} record={saved} />)}

@@ -29,6 +29,8 @@ from apps.accounting.models import (
 )
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
+    Extensible,
+    Extensible,
     AuditModel,
     Company,
     Currency,
@@ -1483,7 +1485,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
+class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()
@@ -2560,7 +2562,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return max(self.quantity_billed() - self.quantity_received(), Decimal("0"))
 
 
-class Bill(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
+class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
     a balanced JournalEntry (Dr Expense per line / Cr Accounts Payable)

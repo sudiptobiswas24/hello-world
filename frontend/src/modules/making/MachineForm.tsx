@@ -28,6 +28,7 @@ export default function MachineForm() {
   return (
     <RecordScreen
       endpoint="/api/manufacturing/machines/"
+      extras="manufacturing.machine"
       back="/making/machines"
       backLabel="Machines"
       newTitle="New machine"

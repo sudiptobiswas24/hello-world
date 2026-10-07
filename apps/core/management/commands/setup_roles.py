@@ -26,6 +26,8 @@ REFERENCE = [
           "address", "contact", "paymentterms", "paymenttermsline", "company"),
     *view("inventory", "item", "itemunit", "warehouse", "lot"),
     *view("accounting", "account", "tax", "taxgroup", "fiscalposition", "partytaxprofile", "costcentre"),
+    # Which custom fields a screen shows: read by every role that opens a record.
+    *view("core", "customfield"),
 ]
 
 # What anyone on the floor or planning it reads: how things are made.
@@ -71,6 +73,7 @@ ROLES = {
         # Reads whether the books agree with themselves and the server is
         # well; the errors people hit, and what was done about each.
         "core.check_health", "core.view_servererror", "core.change_servererror",
+        *crud("core", "customfield"),
         *crud("accounting", "costcentre"),
         # Closes the month and reopens it; sets the budgets; keeps and
         # runs the recurring entries.
@@ -474,6 +477,8 @@ ROLES = {
         "auth.view_user", "auth.add_user", "auth.change_user", "auth.view_group",
         # Keeps the logins, so is who people ask when something failed.
         "core.view_servererror", "core.change_servererror",
+        # The columns the office asked for, on any kind of record.
+        *crud("core", "customfield"),
         # The factory licence and the boards' consents are the personnel office's to renew.
         *crud("core", "licence"),
         *full("hr", "attendanceday"),

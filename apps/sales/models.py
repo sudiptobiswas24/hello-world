@@ -21,6 +21,8 @@ from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval
 from apps.core.models import (
+    Extensible,
+    Extensible,
     Address,
     AuditModel,
     Company,
@@ -411,7 +413,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class SalesOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
+class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
     order_date = models.DateField()
@@ -1425,7 +1427,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return self.quantity_invoiced() >= self.invoice_limit()
 
 
-class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
+class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Sales invoice. Posting creates a balanced JournalEntry (Dr Accounts
     Receivable / Cr Revenue / Cr tax accounts) via Accounting — Sales

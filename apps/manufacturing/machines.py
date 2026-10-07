@@ -39,14 +39,14 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
 
-from apps.core.models import AuditModel
+from apps.core.models import Extensible, AuditModel
 from apps.hr.calendars import WorkingCalendar, parse_working_days
 
 MINUTES_PER_HOUR = Decimal("60")
 ZERO = Decimal("0")
 
 
-class Machine(AuditModel):
+class Machine(Extensible, AuditModel):
     """
     A named machine inside a work centre.
 

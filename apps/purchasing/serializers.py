@@ -14,6 +14,7 @@ from .models import (
     PurchaseOrderLine,
     SubcontractComponent,
 )
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class SubcontractComponentSerializer(serializers.ModelSerializer):
@@ -50,7 +51,7 @@ class PurchaseOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSer
         return obj.quantity_billed()
 
 
-class PurchaseOrderSerializer(serializers.ModelSerializer):
+class PurchaseOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     lines = PurchaseOrderLineSerializer(many=True, read_only=True)
     # Named, so a list can say who without asking for every vendor.
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -66,7 +67,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
             "id", "number", "vendor", "vendor_name", "order_date", "reference", "status",
             "currency", "bill_policy", "lines",
             "shipping_note", "drop_ship_for", "subcontract_warehouse",
-            "receipt_status", "bill_status", "subtotal", "tax_total", "total",
+            "receipt_status", "bill_status", "subtotal", "tax_total", "total", "extra",
         ]
         # Status moves by confirm/cancel, which ask what they ask. Written
         # here, a clerk confirmed past the approval tiers. Sales always had
@@ -98,7 +99,7 @@ class BillPaymentSerializer(serializers.ModelSerializer):
         fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount"]
 
 
-class BillSerializer(serializers.ModelSerializer):
+class BillSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     lines = BillLineSerializer(many=True, read_only=True)
     # What is owed on it, as the invoice has always said: without these an
     # AP clerk could post a bill and not read back what it came to.
@@ -150,7 +151,7 @@ class BillSerializer(serializers.ModelSerializer):
             "is_prepayment",
             "is_opening_balance",
             "corrects_old_supply",
-            "old_bill_value",
+            "old_bill_value", "extra",
         ]
         read_only_fields = [
             "number", "due_date", "debits", "journal_entry", "posted", "posted_at",
