@@ -5,6 +5,7 @@ import { useAccess } from "../../auth/me";
 import { DocHeader, Sheet } from "../../forms/Document";
 import { count, date, dateTime, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
+import { Trail } from "../../views/Trail";
 
 interface Run {
   id: number;
@@ -171,6 +172,7 @@ export default function RunForm() {
           </table>
         </section>
       )}
+      {r && <Trail model="planning.planningrun" id={r.id} />}
     </article>
   );
 }
