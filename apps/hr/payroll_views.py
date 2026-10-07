@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
@@ -52,7 +53,7 @@ class PayComponentSerializer(serializers.ModelSerializer):
                   "liability_account", "measure", "is_taxable", "reduces_for_unpaid_leave",
                   "sequence", "is_active", "base_components", "base_ceiling",
                   "coverage_components", "coverage_ceiling", "coverage_period_months",
-                  "rounding", "remit_by_day"]
+                  "rounding", "remit_by_day", "statutory"]
 
     def validate(self, attrs):
         # ModelSerializer does not run model.clean(); save() does, and its
@@ -160,7 +161,33 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "calculate": "hr.change_payrun",
         "post": "hr.post_payrun",
         "void": "hr.post_payrun",
+        # The files list every member's wages: reading payslips.
+        "ecr": "hr.view_payslip",
+        "esi": "hr.view_payslip",
     }
+
+    def _file(self, request, pk, build, name, extension, content_type):
+        from .statutory_files import period_code
+
+        run = self.get_object()
+        text = _run(build, run)
+        response = HttpResponse(text, content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{name}_{period_code(run)}.{extension}"'
+        return response
+
+    @action(detail=True, methods=["get"])
+    def ecr(self, request, pk=None):
+        """EPFO's ECR text file for this posted run, one line a member."""
+        from .statutory_files import ecr_text
+
+        return self._file(request, pk, ecr_text, "ECR", "txt", "text/plain; charset=utf-8")
+
+    @action(detail=True, methods=["get"])
+    def esi(self, request, pk=None):
+        """ESIC's monthly contribution file for this posted run, one row an insured person."""
+        from .statutory_files import esi_csv
+
+        return self._file(request, pk, esi_csv, "ESI", "csv", "text/csv; charset=utf-8")
 
     @action(detail=True, methods=["post"])
     def calculate(self, request, pk=None):

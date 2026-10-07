@@ -32,6 +32,8 @@ export default function PayComponentForm() {
         { key: "coverage_period_months", label: "Coverage period months", kind: "integer", initial: 1, hint: "Coverage is decided by the first slip in each block of this many months from April,…" },
         { key: "rounding", label: "Rounding", kind: "choice", choices: [["paisa", "To the paisa"], ["rupee", "To the nearest rupee"], ["rupee_up", "Up to the next rupee"]], initial: "paisa" },
         { key: "remit_by_day", label: "Remit by day", kind: "integer", hint: "Day of the following month what is owed must be paid over" },
+        { key: "statutory", label: "Statutory line", kind: "choice", initial: "", choices: [["", "Not a statutory line"], ["pf", "Provident fund, the employee's share"], ["pf_employer", "Provident fund, the employer's share"], ["eps", "Pension (EPS), the employer's share on its own"], ["esi", "ESI, the employee's share"], ["esi_employer", "ESI, the employer's share"], ["pt", "Professional tax"]],
+          hint: "So the month's PF ECR and ESI files know which lines to read" },
       ]}
       panels={[{
         // For a slab component: the band its base falls in decides the

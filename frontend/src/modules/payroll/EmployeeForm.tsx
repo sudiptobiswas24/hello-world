@@ -33,6 +33,8 @@ export default function EmployeeForm() {
         { key: "working_days", label: "Working days", initial: "12345", hint: "ISO weekday numbers this person works" },
         { key: "holiday_region", label: "Holiday region", hint: "Which public holidays apply" },
         { key: "paid_by_attendance", label: "Paid by attendance", kind: "bool", initial: false, hint: "A day-rated worker: the pay run waits until every working day of theirs is on the register" },
+        { key: "uan", label: "UAN", hint: "Provident fund, twelve digits: the ECR names them by it" },
+        { key: "esi_number", label: "ESI number", hint: "The IP number, ten digits: the ESI file names them by it" },
       ]}
       panels={[{
         // What they are paid, component by component, from a date: a

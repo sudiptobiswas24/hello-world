@@ -75,6 +75,18 @@ class Rounding(models.TextChoices):
     RUPEE_UP = "rupee_up", "Up to the next rupee"
 
 
+class Statutory(models.TextChoices):
+    """Which statutory line a component is, for the monthly files (statutory_files.py)."""
+
+    NONE = "", "Not a statutory line"
+    PF = "pf", "Provident fund, the employee's share"
+    PF_EMPLOYER = "pf_employer", "Provident fund, the employer's share (pension inside it unless named)"
+    EPS = "eps", "Pension (EPS), the employer's share named on its own"
+    ESI = "esi", "ESI, the employee's share"
+    ESI_EMPLOYER = "esi_employer", "ESI, the employer's share"
+    PT = "pt", "Professional tax"
+
+
 # What piece work can be counted in, registered by the modules that record
 # output (manufacturing registers metres and kilograms woven), so payroll
 # imports none of them. code -> (label, counter); counter(employee, up_to)
@@ -171,6 +183,11 @@ class PayComponent(AuditModel):
     )
     rounding = models.CharField(max_length=8, choices=Rounding.choices,
                                 default=Rounding.PAISA)
+    statutory = models.CharField(
+        max_length=16, choices=Statutory.choices, blank=True, default="",
+        help_text="Which statutory line this is, so the monthly PF and ESI files know "
+                  "which of the slip's lines to read.",
+    )
     remit_by_day = models.PositiveSmallIntegerField(
         null=True, blank=True,
         help_text="Day of the following month what is owed must be paid over: 15 for "
