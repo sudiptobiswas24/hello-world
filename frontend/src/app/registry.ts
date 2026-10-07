@@ -77,6 +77,10 @@ export const MODULES: Module[] = [
         keywords: "pipeline stages weighted value crm forecast", load: () => import("../modules/sales/Pipeline"),
       },
       {
+        path: "board", label: "Pipeline board", permission: "sales.view_opportunity",
+        keywords: "kanban board opportunities stages crm", load: () => import("../modules/sales/OpportunityBoard"),
+      },
+      {
         path: "activities", label: "Calls and visits", permission: "sales.view_activity", create: "sales.add_activity",
         keywords: "activity call visit follow-up crm note", load: () => import("../modules/sales/Activities"),
         detail: () => import("../modules/sales/ActivityForm"),

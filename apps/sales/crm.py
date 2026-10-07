@@ -18,7 +18,7 @@ Converted and lost are closed: what they said then stands.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Count, F, Q, Sum
 from django.utils import timezone
 
@@ -219,6 +219,70 @@ class Lead(AuditModel):
         self.converted_on = to_date(on_date) or timezone.localdate()
         self._close(LeadStatus.CONVERTED, ["converted_party", "converted_on"])
         return party, opportunity
+
+    # How warm a lead is, read from its facts each time and never stored:
+    # where it came from, whether it can be reached, whether it said what
+    # it wants, what has been done about it, and how long it has sat.
+    SOURCE_POINTS = {"referral": 25, "exhibition": 20, "campaign": 15, "web": 10, "walk_in": 10, "phone": 10, "other": 0}
+
+    def score_reasons(self, today=None):
+        """[(points, why)], the points adding to the score before it is capped at 0 to 100; nothing once closed."""
+        if not self.is_open():
+            return []
+        today = today or timezone.localdate()
+        reasons = [(self.SOURCE_POINTS.get(self.source, 0), f"from {self.get_source_display().lower()}")]
+        if self.phone:
+            reasons.append((10, "a phone number"))
+        if self.email:
+            reasons.append((10, "an email address"))
+        if self.contact_name:
+            reasons.append((5, "a named contact"))
+        if self.interest:
+            reasons.append((15, "said what they want"))
+        if self.campaign_id:
+            reasons.append((5, "from a campaign"))
+        if self.owner_id:
+            reasons.append((5, "a rep on it"))
+        # A list annotates `done_count` once for the page; one lead asks.
+        done = getattr(self, "done_count", None)
+        if done is None:
+            done = self.activities.filter(done_on__isnull=False).count() if self.pk else 0
+        if done:
+            reasons.append((min(done, 4) * 5, f"{done} call{'s' if done != 1 else ''} or visit{'s' if done != 1 else ''} made"))
+        age = (today - to_date(self.created_at)).days if self.created_at else 0
+        if age <= 14:
+            reasons.append((10, "fresh: asked within a fortnight"))
+        elif age > 90:
+            reasons.append((-15, f"stale: {age} days without becoming a customer"))
+        return reasons
+
+    def score(self, today=None):
+        return max(0, min(100, sum(points for points, _ in self.score_reasons(today))))
+
+    def score_summary(self, today=None):
+        if not self.is_open():
+            return f"not scored: {self.get_status_display().lower()}"
+        return ", ".join(f"{why} {points:+d}" for points, why in self.score_reasons(today))
+
+    def email_them(self, subject, body, user=None):
+        """
+        A mail to the lead's address, written in its history and as an
+        email activity done today. The activity is written first, so a
+        refusal (the lead's rep no longer active) sends nothing, and a
+        mail that fails to go takes the activity with it.
+        """
+        from apps.core.mail import deliver
+
+        if not self.email:
+            raise ValidationError({"email": [f"{self} has no email address."]})
+        subject = " ".join(subject.split())
+        if not subject:
+            raise ValidationError({"subject": ["A mail has a subject."]})
+        with transaction.atomic():
+            Activity.objects.create(kind=ActivityKind.EMAIL, lead=self, summary=subject[:255], notes=body or "",
+                                    owner=owner_for(user, self.owner) if user is not None else self.owner,
+                                    done_on=timezone.localdate())
+            return deliver(self, self.email, subject, body, user=user, what=f"Mail '{subject}'")
 
     @serialised("status")
     def lose(self, reason):
