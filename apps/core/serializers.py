@@ -14,6 +14,7 @@ from .models import (
     PaymentTerms,
     UnitOfMeasure,
 )
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class CountrySerializer(serializers.ModelSerializer):
@@ -97,7 +98,7 @@ class PartyRoleAssignmentSerializer(serializers.ModelSerializer):
         fields = ["id", "party", "role"]
 
 
-class PartySerializer(serializers.ModelSerializer):
+class PartySerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     roles = serializers.SerializerMethodField()
     addresses = AddressSerializer(many=True, read_only=True)
     contacts = ContactSerializer(many=True, read_only=True)
@@ -107,7 +108,7 @@ class PartySerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "legal_name", "email", "phone", "tax_id",
             "default_currency", "payment_terms", "tags", "is_active",
-            "roles", "addresses", "contacts",
+            "roles", "addresses", "contacts", "extra",
         ]
 
     def get_roles(self, obj):

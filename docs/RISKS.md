@@ -361,3 +361,15 @@ not cover, or is deleted with the commit that finishes it.
     are counted and not read. Nothing here changes GSTR-3B: 4(A)(5)
     stays what the books booked, and the waiting figure is what the
     officer holds back by hand until the supplier files.
+42. **A custom field is a column on the record and nothing more.** Its
+    values live in the record's own `extra` and no posting, ledger,
+    stock figure, report, filter or printed paper reads them, which is
+    what keeps a keeper's field from moving a number; it also means a
+    field that should drive something (a customer's credit hold, an
+    item's tax) is a developer's field, not a custom one. "Required"
+    holds for what the office types; the system's own saves (an import,
+    a posting, a renumbering) never fail on a custom field, so a record
+    the system made can be missing one until somebody opens it. A field
+    switched off keeps its values unseen; a key never changes, so a
+    misspelt one is switched off and made again. Lists export a record's
+    own columns, not yet its custom ones.

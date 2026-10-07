@@ -5,7 +5,7 @@ from django.utils import timezone
 from django.db import models, transaction
 from django.db.models import Q, Sum
 
-from apps.core.models import AuditModel, UnitOfMeasure, to_date
+from apps.core.models import Extensible, AuditModel, UnitOfMeasure, to_date
 
 
 class Warehouse(AuditModel):
@@ -190,7 +190,7 @@ class StockClass(models.TextChoices):
     FINISHED = "finished", "Finished goods"
 
 
-class Item(AuditModel):
+class Item(Extensible, AuditModel):
     template = models.ForeignKey(
         "ItemTemplate", null=True, blank=True, on_delete=models.PROTECT,
         related_name="variants",

@@ -2,6 +2,7 @@ import { useNavigate, useParams } from "react-router";
 
 import { useAct, useGet, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { ExtraFields } from "../../forms/ExtraFields";
 import { ActionButton, DocHeader, Sheet, Steps, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
@@ -170,6 +171,7 @@ export default function OrderForm() {
               : <output id={fid}>{order?.reference || "—"}</output>}
           </Field>
         </div>
+        <ExtraFields kind="sales.salesorder" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
 
         {order && (

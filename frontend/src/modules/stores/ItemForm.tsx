@@ -30,6 +30,7 @@ export default function ItemForm() {
   return (
     <RecordScreen
       endpoint="/api/inventory/items/"
+      extras="inventory.item"
       back="/stores/items"
       backLabel="Items"
       newTitle="New item"

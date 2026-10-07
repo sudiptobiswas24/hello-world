@@ -25,7 +25,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Party, PartyRole, lock_rows, serialised, to_date
+from apps.core.models import Extensible, AuditModel, Party, PartyRole, lock_rows, serialised, to_date
 
 from .calendars import (  # noqa: F401
     DEFAULT_WORKING_DAYS,
@@ -79,7 +79,7 @@ def pin_digest(pin):
     ).hexdigest()
 
 
-class Employee(AuditModel):
+class Employee(Extensible, AuditModel):
     """
     An Employee is always backed by a core.Party with the EMPLOYEE role —
     HR doesn't invent its own idea of "a person" any more than Sales

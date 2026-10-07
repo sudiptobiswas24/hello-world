@@ -12,6 +12,7 @@ export default function EmployeeForm() {
   return (
     <RecordScreen
       endpoint="/api/hr/employees/"
+      extras="hr.employee"
       back="/payroll/employees"
       backLabel="Employees"
       newTitle="New employee"

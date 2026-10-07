@@ -31,7 +31,7 @@ from apps.accounting.models import (
     JournalLine,
     round_money,
 )
-from apps.core.models import AuditModel, DocumentSequence, Party, serialised, to_date
+from apps.core.models import Extensible, AuditModel, DocumentSequence, Party, serialised, to_date
 
 
 class DepreciationMethod(models.TextChoices):
@@ -90,7 +90,7 @@ class AssetCategory(AuditModel):
         return self.name
 
 
-class FixedAsset(AuditModel):
+class FixedAsset(Extensible, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     name = models.CharField(max_length=255)
     category = models.ForeignKey(

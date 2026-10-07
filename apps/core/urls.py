@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .attachments_api import AttachmentViewSet
+from .customfields import CustomFieldViewSet
 from .errors_api import ServerErrorViewSet
 from .history_api import HistoryView
 from .licences_api import LicenceViewSet
@@ -42,6 +43,7 @@ router.register("users", UserViewSet)
 router.register("document-sequences", DocumentSequenceViewSet)
 router.register("licences", LicenceViewSet)
 router.register("errors", ServerErrorViewSet)
+router.register("custom-fields", CustomFieldViewSet)
 router.register("attachments", AttachmentViewSet, basename="attachment")
 
 urlpatterns = [path("me/", MeView.as_view(), name="me"), path("history/", HistoryView.as_view({"get": "list"}), name="history"),

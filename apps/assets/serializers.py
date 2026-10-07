@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import AssetCategory, DepreciationEntry, FixedAsset
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class AssetCategorySerializer(serializers.ModelSerializer):
@@ -18,7 +19,7 @@ class DepreciationEntrySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class FixedAssetSerializer(serializers.ModelSerializer):
+class FixedAssetSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
     accumulated = serializers.SerializerMethodField()
@@ -31,7 +32,7 @@ class FixedAssetSerializer(serializers.ModelSerializer):
                   "acquisition_date", "in_service_date", "cost",
                   "salvage_value", "life_months", "depreciated_before", "opening_depreciation", "status", "disposed_on",
                   "capitalisation_entry", "disposal_entry", "accumulated",
-                  "net_book_value", "monthly_charge", "category_name", "vendor_name"]
+                  "net_book_value", "monthly_charge", "category_name", "vendor_name", "extra"]
         read_only_fields = ["number", "bill_line", "status", "disposed_on",
                             "capitalisation_entry", "disposal_entry"]
 

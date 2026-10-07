@@ -1050,6 +1050,13 @@ export const MODULES: Module[] = [
         keywords: "import csv go-live cutover opening balances old system migrate upload", load: () => import("../modules/settings/ImportRecords"),
       },
       {
+        path: "custom-fields", label: "Custom fields", permission: "core.view_customfield",
+        keep: "core.change_customfield",
+        create: "core.add_customfield",
+        keywords: "custom field column extra attribute add a field user defined", load: () => import("../modules/settings/CustomFields"),
+        detail: () => import("../modules/settings/CustomFieldForm"),
+      },
+      {
         path: "health", label: "Health", permission: "core.check_health",
         keywords: "health checks books agree trial balance backup disk server integrity sweep", load: () => import("../modules/settings/Health"),
       },
