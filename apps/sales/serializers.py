@@ -27,6 +27,8 @@ from .models import (
 )
 from apps.core.customfields import ExtensibleSerializerMixin
 
+from .teams import SalesTarget, SalesTeam
+
 
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
     # What the line is called: its description, else its charge or item.
@@ -282,10 +284,35 @@ class CommissionPlanSerializer(serializers.ModelSerializer):
 class SalesRepSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="party.name", read_only=True)
     plan_name = serializers.CharField(source="plan.name", read_only=True, default="")
+    team_name = serializers.CharField(source="team.name", read_only=True, default="")
 
     class Meta:
         model = SalesRep
-        fields = ["id", "party", "name", "plan", "is_active", "plan_name"]
+        fields = ["id", "party", "name", "plan", "team", "team_name", "is_active", "plan_name"]
+
+
+class SalesTeamSerializer(serializers.ModelSerializer):
+    leader_name = serializers.CharField(source="leader.party.name", read_only=True, default="")
+    # Annotated on the list; a team just made or saved counts its own.
+    member_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalesTeam
+        fields = ["id", "code", "name", "leader", "leader_name", "member_count", "is_active"]
+
+    def get_member_count(self, team):
+        count = getattr(team, "member_count", None)
+        return team.members.count() if count is None else count
+
+
+class SalesTargetSerializer(serializers.ModelSerializer):
+    who = serializers.CharField(read_only=True)
+    team_name = serializers.CharField(source="team.name", read_only=True, default="")
+    rep_name = serializers.CharField(source="rep.party.name", read_only=True, default="")
+
+    class Meta:
+        model = SalesTarget
+        fields = ["id", "team", "team_name", "rep", "rep_name", "who", "period_start", "period_end", "amount", "note"]
 
 
 class RecurringInvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):

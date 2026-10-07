@@ -22,7 +22,6 @@ from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval
 from apps.core.models import (
     Extensible,
-    Extensible,
     Address,
     AuditModel,
     Company,
@@ -4228,6 +4227,23 @@ def run_dunning(as_of=None, send=True):
     return notices
 
 
+def sales_between(date_from=None, date_to=None, invoices=None):
+    """
+    The posted invoices and credit notes that are sales, between two
+    dates. A down payment credits a liability, not revenue: counting it
+    would book the sale twice, once on the deposit and once on the
+    invoice that draws it down. A deposit returned is no more a sale
+    than the deposit was.
+    """
+    invoices = (Invoice.objects.all() if invoices is None else invoices).filter(
+        posted=True, is_down_payment=False).exclude(credits__is_down_payment=True)
+    if date_from:
+        invoices = invoices.filter(invoice_date__gte=to_date(date_from))
+    if date_to:
+        invoices = invoices.filter(invoice_date__lte=to_date(date_to))
+    return invoices
+
+
 def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=None):
     """
     Net revenue over a period, from posted invoices less credit notes.
@@ -4235,21 +4251,9 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
     Reads the documents rather than the ledger so it can group by customer
     or item, which the ledger doesn't record per line.
     """
-    date_from = to_date(date_from)
-    date_to = to_date(date_to)
+    invoices = sales_between(date_from, date_to, invoices)
 
-    # A down payment credits a liability, not revenue — counting it here
-    # would book the sale twice, once on the deposit and once on the
-    # invoice that draws it down.
-    # A deposit returned is no more a sale than the deposit was.
-    invoices = (Invoice.objects.all() if invoices is None else invoices).filter(
-        posted=True, is_down_payment=False).exclude(credits__is_down_payment=True)
-    if date_from:
-        invoices = invoices.filter(invoice_date__gte=date_from)
-    if date_to:
-        invoices = invoices.filter(invoice_date__lte=date_to)
-
-    if group_by not in ("customer", "item", "month"):
+    if group_by not in ("customer", "item", "month", "rep"):
         raise ValueError(f"Unsupported grouping: {group_by}")
 
     totals = defaultdict(lambda: {"net": Decimal("0"), "tax": Decimal("0"), "quantity": Decimal("0")})
@@ -4262,10 +4266,13 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
         invoice__in=invoices, invoice__taxes_recorded=True, posted_net__isnull=False)
     by = {"customer": ["invoice__customer"],
           "item": ["item", "charge", "description"],
-          "month": ["invoice__invoice_date"]}[group_by]
-    customers = items = charges = {}
+          "month": ["invoice__invoice_date"],
+          "rep": ["invoice__sales_rep"]}[group_by]
+    customers = items = charges = reps = {}
     if group_by == "customer":
         customers = Party.objects.in_bulk(set(recorded.values_list("invoice__customer", flat=True)))
+    elif group_by == "rep":
+        reps = Party.objects.in_bulk(set(recorded.exclude(invoice__sales_rep=None).values_list("invoice__sales_rep", flat=True)))
     elif group_by == "item":
         items = Item.objects.in_bulk(set(recorded.exclude(item=None).values_list("item", flat=True)))
         charges = ChargeType.objects.in_bulk(
@@ -4274,6 +4281,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
     def key_for(row):
         if group_by == "customer":
             return str(customers[row["invoice__customer"]])
+        if group_by == "rep":
+            return rep_label(row["invoice__sales_rep"], reps)
         if group_by == "item":
             if row["item"]:
                 return str(items[row["item"]])
@@ -4310,6 +4319,8 @@ def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=N
                 continue  # summed above
             if group_by == "customer":
                 key = str(invoice.customer)
+            elif group_by == "rep":
+                key = rep_label(invoice.sales_rep_id)
             elif group_by == "item":
                 # A charge groups under the charge, not its free-text
                 # description, so "Shipping" and "Shipping (expedited)"
@@ -4770,6 +4781,10 @@ class SalesRep(AuditModel):
     plan = models.ForeignKey(
         CommissionPlan, null=True, blank=True, on_delete=models.PROTECT, related_name="reps"
     )
+    # A team with reps in it is not deleted from under them: move them or
+    # deactivate it.
+    team = models.ForeignKey("sales.SalesTeam", null=True, blank=True, on_delete=models.PROTECT,
+                             related_name="members", help_text="The team whose target this rep's sales count to.")
     is_active = models.BooleanField(default=True)
 
     def __str__(self):
@@ -5041,3 +5056,4 @@ def claims(start, end):
 
 
 from .crm import Activity, Campaign, Lead, Opportunity  # noqa: E402,F401
+from .teams import SalesTarget, SalesTeam, rep_label  # noqa: E402,F401

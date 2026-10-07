@@ -5,6 +5,7 @@ type Row = Record<string, unknown> & { id: number };
 const columns: Column<Row>[] = [
   { key: "name", label: "Rep" },
   { key: "plan_name", label: "Commission plan" },
+  { key: "team_name", label: "Team" },
   { key: "is_active", label: "", width: "6rem", render: (row) => (row.is_active ? "" : "Inactive") },
 ];
 
