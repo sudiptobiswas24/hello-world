@@ -1,8 +1,8 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
+import { SECTION } from "./refs";
 
 type Row = Record<string, unknown>;
 
-const SECTION: FieldDef["ref"] = { endpoint: "/api/accounting/tds-sections/", permission: "accounting.view_tdssection", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
 const INVOICE: FieldDef["pick"] = { endpoint: "/api/sales/invoices/", permission: "sales.view_invoice", query: { posted: "true" },
   label: (row: Row) => `${String(row.number)} · ${String(row.customer_name)} · ${String(row.amount_due)} due` };
 

@@ -5,7 +5,6 @@ reads their own (and leads nobody owns), writes only as themselves, and
 opens an opportunity only on a customer they carry.
 """
 
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -20,15 +19,6 @@ from apps.core.scoping import scoped
 from .crm import Activity, Campaign, Lead, Opportunity, follow_ups_due, for_rep, owner_for, pipeline
 
 
-def _run(callable_, *args, **kwargs):
-    try:
-        return callable_(*args, **kwargs)
-    except DjangoValidationError as exc:
-        if hasattr(exc, "error_dict"):
-            raise DRFValidationError({field: messages for field, messages in exc.message_dict.items()})
-        raise DRFValidationError(exc.messages)
-
-
 class OwnedMixin:
     """Rows the login may see, and the owner it may set."""
 
@@ -39,7 +29,7 @@ class OwnedMixin:
 
     def _owner(self, serializer, current=None):
         given = serializer.validated_data.get("owner", current)
-        return _run(owner_for, self.request.user, given)
+        return owner_for(self.request.user, given)
 
     def perform_create(self, serializer):
         serializer.save(owner=self._owner(serializer))
@@ -97,7 +87,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
         if not request.user.has_perm("core.add_party"):
             raise PermissionDenied("Converting a lead makes a customer, which you may not.")
         lead = self.get_object()
-        party, opportunity = _run(lead.convert, request.user, request.data.get("code"), request.data.get("name"),
+        party, opportunity = lead.convert(request.user, request.data.get("code"), request.data.get("name"),
                                   request.data.get("on_date"))
         return Response({"party": party.pk, "party_code": party.code, "opportunity": opportunity.pk,
                          "opportunity_number": opportunity.number, "lead": self.get_serializer(lead).data})
@@ -105,7 +95,7 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def lose(self, request, pk=None):
         lead = self.get_object()
-        _run(lead.lose, request.data.get("reason", ""))
+        lead.lose(request.data.get("reason", ""))
         return Response(self.get_serializer(lead).data)
 
     @action(detail=True, methods=["post"])
@@ -114,11 +104,11 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
         lead = self.get_object()
         if lead.owner_id is not None:
             raise DRFValidationError([f"{lead} is {lead.owner.name}'s already."])
-        rep = _run(owner_for, request.user, None)
+        rep = owner_for(request.user, None)
         if rep is None:
             raise DRFValidationError(["You see every lead; a lead is taken by the rep who will carry it, or given an owner."])
         lead.owner = rep
-        _run(lead.save, update_fields=["owner", "updated_at"])
+        lead.save(update_fields=["owner", "updated_at"])
         return Response(self.get_serializer(lead).data)
 
 
@@ -173,7 +163,7 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
     @action(detail=True, methods=["post"])
     def quote(self, request, pk=None):
         opportunity = self.get_object()
-        quotation = _run(opportunity.quote, request.data.get("quotation_date"), request.data.get("valid_until"))
+        quotation = opportunity.quote(request.data.get("quotation_date"), request.data.get("valid_until"))
         return Response({"quotation": quotation.pk, "quotation_number": quotation.number,
                          "opportunity": self.get_serializer(opportunity).data}, status=201)
 
@@ -183,14 +173,14 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
 
         opportunity = self.get_object()
         given = request.data.get("sales_order")
-        order = record_or_404(SalesOrder, given, "sales_order") if given else None
-        _run(opportunity.win, order, request.data.get("on_date"))
+        order = record_or_404(SalesOrder, given, "sales_order", optional=True)
+        opportunity.win(order, request.data.get("on_date"))
         return Response(self.get_serializer(opportunity).data)
 
     @action(detail=True, methods=["post"])
     def lose(self, request, pk=None):
         opportunity = self.get_object()
-        _run(opportunity.lose, request.data.get("reason", ""), request.data.get("on_date"))
+        opportunity.lose(request.data.get("reason", ""), request.data.get("on_date"))
         return Response(self.get_serializer(opportunity).data)
 
     @action(detail=False, methods=["get"])
@@ -224,7 +214,7 @@ class ActivityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def done(self, request, pk=None):
         activity = self.get_object()
-        _run(activity.done, request.data.get("on_date"))
+        activity.done(request.data.get("on_date"))
         return Response(self.get_serializer(activity).data)
 
     @action(detail=False, methods=["get"])

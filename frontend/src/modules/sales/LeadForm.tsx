@@ -1,5 +1,5 @@
 import { RecordScreen } from "../../views/RecordScreen";
-import { activitiesPanel, CAMPAIGN_REF, REP_PICK, SOURCES } from "./crmRefs";
+import { activitiesPanel, CAMPAIGN_REF, LEAD_TONES, REP_PICK, SOURCES } from "./crmRefs";
 
 type Row = Record<string, unknown> & { id: number };
 const open = (row: Row) => row.status === "new" || row.status === "working";
@@ -17,7 +17,7 @@ export default function LeadForm() {
       backLabel="Leads"
       newTitle="New lead"
       heading={(row) => `${String(row.number ?? "")} · ${String(row.company_name ?? "")}`}
-      state={(row) => (row.status ? { label: String(row.status), tone: row.status === "converted" ? "done" : row.status === "lost" ? "cancelled" : row.status === "working" ? "open" : "draft" } : null)}
+      state={(row) => (row.status ? { label: String(row.status), tone: LEAD_TONES[String(row.status)] ?? "draft" } : null)}
       permissions={{ add: "sales.add_lead", change: "sales.change_lead", delete: "sales.delete_lead" }}
       editable={open}
       fields={[

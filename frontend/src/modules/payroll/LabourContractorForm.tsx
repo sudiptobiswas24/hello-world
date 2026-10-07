@@ -1,9 +1,6 @@
 import { today } from "../../forms/fields";
-import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-
-type Row = Record<string, unknown>;
-
-const PARTY: FieldDef["pick"] = { endpoint: "/api/core/parties/", permission: "core.view_party", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
+import { RecordScreen } from "../../views/RecordScreen";
+import { PARTY } from "../accounts/refs";
 
 /** Who supplies labour to the plant, under what licence and for how many at once: the register of contractors (Form XII), with the workers each brought (Form XIII). */
 export default function LabourContractorForm() {

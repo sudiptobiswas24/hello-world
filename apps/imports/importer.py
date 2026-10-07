@@ -20,14 +20,13 @@ adjustment. Receivables, payables and stock may therefore not appear in
 the balances file; their control accounts are refused there.
 """
 
-import csv
-import datetime
-import io
 from dataclasses import dataclass, field
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+
+from apps.core.csvrows import RowError, date, decimal, read, required, yes_no
 
 KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
          "open_bills", "opening_balances", "shipment_history")
@@ -70,75 +69,6 @@ class Report:
 
     def refuse(self, row, column, message):
         self.errors.append((row, column, str(message)))
-
-
-class RowError(Exception):
-    def __init__(self, column, message):
-        super().__init__(message)
-        self.column, self.message = column, message
-
-
-def read(text):
-    """Rows of a CSV, as dicts with trimmed keys and values; the header names the columns."""
-    if text.startswith("﻿"):  # saved from a spreadsheet
-        text = text[1:]
-    reader = csv.DictReader(io.StringIO(text))
-    return [
-        {(key or "").strip().lower(): (value or "").strip() for key, value in row.items()}
-        for row in reader
-    ]
-
-
-# -- reading a cell ------------------------------------------------------
-
-
-def required(row, column):
-    value = row.get(column, "")
-    if not value:
-        raise RowError(column, "is required.")
-    return value
-
-
-def decimal(row, column, places=None, required_=False):
-    value = row.get(column, "")
-    if not value:
-        if required_:
-            raise RowError(column, "is required.")
-        return None
-    try:
-        number = Decimal(value.replace(",", ""))
-    except InvalidOperation:
-        raise RowError(column, f"{value!r} is not a number.") from None
-    if not number.is_finite():
-        raise RowError(column, f"{value!r} is not a number.")
-    if places is not None and number != number.quantize(Decimal(1).scaleb(-places)):
-        raise RowError(column, f"{value!r} has more than {places} decimal places.")
-    return number
-
-
-def date(row, column, required_=True):
-    value = row.get(column, "")
-    if not value:
-        if required_:
-            raise RowError(column, "is required.")
-        return None
-    for shape in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
-        try:
-            return datetime.datetime.strptime(value, shape).date()
-        except ValueError:
-            continue
-    raise RowError(column, f"{value!r} is not a date; give it as YYYY-MM-DD or DD-MM-YYYY.")
-
-
-def yes_no(row, column, default):
-    value = row.get(column, "").lower()
-    if not value:
-        return default
-    if value in ("yes", "y", "true", "1"):
-        return True
-    if value in ("no", "n", "false", "0"):
-        return False
-    raise RowError(column, f"{value!r} is not yes or no.")
 
 
 def by_code(model, row, column, field_name="code", required_=True, **extra):
@@ -501,14 +431,8 @@ def _shipment_history(row, options):
     from apps.inventory.models import Item, Warehouse
     from apps.planning.history import ShipmentHistory, parse_month
 
-    sku = required(row, "sku")
-    item = Item.objects.filter(sku=sku).first()
-    if item is None:
-        raise RowError("sku", f"No item {sku!r}.")
-    code = required(row, "warehouse")
-    warehouse = Warehouse.objects.filter(code=code).first()
-    if warehouse is None:
-        raise RowError("warehouse", f"No warehouse {code!r}.")
+    item = by_code(Item, row, "sku", field_name="sku")
+    warehouse = by_code(Warehouse, row, "warehouse")
     month = parse_month(required(row, "month"))
     if month is None:
         raise RowError("month", f"{row['month']!r} is not a month; give it as YYYY-MM.")

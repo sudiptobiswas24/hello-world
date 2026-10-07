@@ -2,10 +2,6 @@ import type { FieldDef, PanelDef } from "../../views/RecordScreen";
 
 type Row = Record<string, unknown> & { id: number };
 
-export const CUSTOMER_PICK: FieldDef["pick"] = {
-  endpoint: "/api/core/parties/", permission: "core.view_party", query: { role_assignments__role: "customer" },
-  label: (row: Row) => `${String(row.code)} · ${String(row.name)}`,
-};
 /** A rep is an employee party; the server holds a limited rep to themselves and checks the pick is an active rep. */
 export const REP_PICK: FieldDef["pick"] = {
   endpoint: "/api/core/parties/", permission: "core.view_party", query: { role_assignments__role: "employee" },
@@ -17,6 +13,8 @@ export const CAMPAIGN_REF: FieldDef["ref"] = {
 export const KINDS: [string, string][] = [["call", "Call"], ["visit", "Visit"], ["email", "Email or message"], ["note", "Note"], ["follow_up", "Follow-up"]];
 export const SOURCES: [string, string][] = [["referral", "Referral"], ["walk_in", "Walked in"], ["phone", "Phone or WhatsApp"], ["web", "Website"], ["exhibition", "Exhibition"], ["campaign", "Campaign"], ["other", "Other"]];
 export const STAGE_TONES: Record<string, string> = { new: "draft", qualified: "open", quoted: "confirmed", won: "done", lost: "cancelled" };
+export const LEAD_TONES: Record<string, string> = { new: "draft", working: "open", converted: "done", lost: "cancelled" };
+export const CHANNELS: [string, string][] = [["exhibition", "Exhibition"], ["print", "Print"], ["digital", "Digital"], ["field", "Field visits"], ["referral", "Referral drive"], ["other", "Other"]];
 
 /** The calls, visits and notes against one lead, opportunity or customer, and a follow-up to add. */
 export function activitiesPanel(about: "lead" | "opportunity" | "party", openWhen?: (record: Row) => boolean): PanelDef {

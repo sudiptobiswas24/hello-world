@@ -1,4 +1,3 @@
-import { money } from "../../lib/format";
 import { ReportView } from "../../views/ReportView";
 
 type Row = Record<string, unknown> & { id: number };
@@ -14,8 +13,8 @@ export default function Pipeline() {
       columns={[
         { key: "label", label: "Stage", width: "10rem" },
         { key: "count", label: "How many", kind: "quantity", width: "8rem", render: (row) => String(row.count) },
-        { key: "value", label: "Worth", kind: "money", width: "12rem", render: (row) => money(row.value as string) },
-        { key: "weighted", label: "At its chance", kind: "money", width: "12rem", render: (row) => money(row.weighted as string) },
+        { key: "value", label: "Worth", kind: "money", width: "12rem" },
+        { key: "weighted", label: "At its chance", kind: "money", width: "12rem" },
       ]}
       empty="Nothing in play."
     />

@@ -32,25 +32,35 @@ THOUSANDTH = Decimal("0.001")
 
 def kilogramme():
     """The plant's kilogramme: the weight unit coded kg, if it keeps one."""
-    unit = UnitOfMeasure.objects.filter(code__iexact="kg", category=UnitOfMeasureCategory.WEIGHT).first()
-    return unit
+    return UnitOfMeasure.objects.filter(code__iexact="kg", category=UnitOfMeasureCategory.WEIGHT).first()
 
 
-def kilograms_of(entry, kg, day):
-    """What an entry weighs, or None where nothing says."""
+def weighed(entries):
+    """{entry id: kg} from what was weighed off each entry: its rolls, or its doffs where no roll was."""
+    rolls = dict(FabricRoll.objects.filter(entry__in=entries).values_list("entry").annotate(kg=Sum("net_weight_kg")))
+    doffs = dict(TapeDoff.objects.filter(entry__in=entries).values_list("entry").annotate(kg=Sum("net_kg")))
+    return {**doffs, **rolls}
+
+
+def kilograms_of(entry, kg, day, per_kg, scale):
+    """
+    What an entry weighs, or None where nothing says: from the item's own
+    conversion where it has one (`per_kg` remembers each item's), else
+    from the scale (`weighed()`).
+    """
     item = entry.work_order.item
     if kg is not None:
-        try:
-            per_kg = item.unit_factor(kg, day)  # item units in one kilogramme
-            in_item_units = entry.uom.convert_to(entry.quantity_produced, item.uom)
-        except ValidationError:
-            per_kg = None
-        if per_kg:
-            return in_item_units / per_kg
-    weighed = FabricRoll.objects.filter(entry=entry).aggregate(kg=Sum("net_weight_kg"))["kg"]
-    if weighed is None:
-        weighed = TapeDoff.objects.filter(entry=entry).aggregate(kg=Sum("net_kg"))["kg"]
-    return weighed
+        if item.pk not in per_kg:
+            try:
+                per_kg[item.pk] = item.unit_factor(kg, day)  # item units in one kilogramme
+            except ValidationError:
+                per_kg[item.pk] = None
+        if per_kg[item.pk]:
+            try:
+                return entry.uom.convert_to(entry.quantity_produced, item.uom) / per_kg[item.pk]
+            except ValidationError:
+                pass
+    return scale.get(entry.pk)
 
 
 def _energy_by_centre(day):
@@ -74,20 +84,23 @@ def daily_production(day):
         posted=True, voided_at__isnull=True, entry_date=day,
     ).select_related("work_order__item__uom", "uom")
     by_centre_unit = defaultdict(lambda: {"made": ZERO, "scrapped": ZERO, "kg": ZERO, "weighed": False})
+    per_kg, scale = {}, weighed(entries)
     for entry in entries:
         cell = by_centre_unit[(entry.work_centre_id, entry.uom.code)]
         cell["made"] += entry.quantity_produced
         cell["scrapped"] += entry.quantity_scrapped
-        weight = kilograms_of(entry, kg, day)
+        weight = kilograms_of(entry, kg, day, per_kg, scale)
         if weight is not None:
             cell["kg"] += weight
             cell["weighed"] = True
     energy = _energy_by_centre(day)
 
+    cells_of = defaultdict(list)
+    for (centre_id, unit), cell in sorted(by_centre_unit.items(), key=lambda kv: kv[0][1]):
+        cells_of[centre_id].append((unit, cell))
     rows = []
     for centre in WorkCentre.objects.filter(is_active=True).order_by("code"):
-        cells = [(unit, cell) for (centre_id, unit), cell in sorted(by_centre_unit.items(), key=lambda kv: kv[0][1])
-                 if centre_id == centre.pk] or [("", None)]
+        cells = cells_of.get(centre.pk) or [("", None)]
         drew = energy.get(centre.pk)
         for unit, cell in cells:
             made = cell["made"] if cell else ZERO

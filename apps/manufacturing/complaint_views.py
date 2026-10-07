@@ -64,7 +64,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
 
     def get_settled(self, obj):
         return [{"note": row.credit_note_id, "number": row.credit_note.number, "net": row.credit_note.subtotal(),
-                 "reason": row.credit_note.claim_reason} for row in obj.settlements.select_related("credit_note")]
+                 "reason": row.credit_note.claim_reason} for row in obj.settlements.all()]
 
     def get_cost(self, obj):
         return obj.cost()
@@ -76,7 +76,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
 
 
 class ComplaintViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Complaint.objects.select_related("customer").prefetch_related("actions")
+    queryset = Complaint.objects.select_related("customer").prefetch_related("actions", "settlements__credit_note__lines")
     serializer_class = ComplaintSerializer
     filter_fields = ["status", "category", "customer"]
     search_fields = ["number", "customer__name", "description"]

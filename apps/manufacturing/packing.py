@@ -59,12 +59,12 @@ class BalePacking(AuditModel):
 
     def lines(self):
         """[(packing item, quantity drawn)]."""
-        return [(line.item, -line.quantity) for line in self.adjustment.lines.select_related("item")]
+        return [(line.item, -line.quantity) for line in self.adjustment.lines.all()]
 
     def cost(self):
         """What the packing cost at the moment it was drawn, as the movements recorded it."""
         return sum((-line.quantity * line.movement.unit_cost
-                    for line in self.adjustment.lines.select_related("movement") if line.movement_id),
+                    for line in self.adjustment.lines.all() if line.movement_id),
                    ZERO).quantize(PAISA)
 
 

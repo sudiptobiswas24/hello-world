@@ -10,6 +10,7 @@ against, not a replacement for it.
 """
 
 import datetime
+from collections import defaultdict
 from decimal import Decimal
 
 from django.db.models import Sum
@@ -57,19 +58,22 @@ def gratuity_due(on_date, components, provision_account=None):
     from .payroll import EmployeeCompensation
 
     on_date = to_date(on_date)
+    people = [employee for employee in Employee.objects.filter(hire_date__lte=on_date).select_related("party")
+              .order_by("employee_number") if employee.is_employed_on(on_date)]
+    wages_of = defaultdict(lambda: Decimal("0"))
+    for row in EmployeeCompensation.objects.filter(
+            employee__in=people, component__in=components, effective_from__lte=on_date):
+        if row.covers(on_date):
+            wages_of[row.employee_id] += row.amount
     rows = []
-    for employee in Employee.objects.filter(hire_date__lte=on_date).select_related("party").order_by(
-            "employee_number"):
-        if not employee.is_employed_on(on_date):
-            continue
-        wages = sum((row.amount for row in EmployeeCompensation.objects.filter(
-            employee=employee, component__in=components, effective_from__lte=on_date)
-            if row.covers(on_date)), Decimal("0"))
-        years = counted_years(to_date(employee.hire_date), on_date)
+    for employee in people:
+        wages = wages_of[employee.pk]
+        hired = to_date(employee.hire_date)
+        years = counted_years(hired, on_date)
         owed = min(round_money(wages * 15 / 26 * years), CEILING)
-        completed, _months = service(to_date(employee.hire_date), on_date)
+        completed, _months = service(hired, on_date)
         rows.append({"employee": employee.pk, "number": employee.employee_number, "name": employee.party.name,
-                     "hired": to_date(employee.hire_date), "years": years, "wages": wages, "owed": owed,
+                     "hired": hired, "years": years, "wages": wages, "owed": owed,
                      "payable": completed >= 5})
     total = sum((row["owed"] for row in rows), Decimal("0"))
     provided = None

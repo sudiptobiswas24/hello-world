@@ -13,15 +13,14 @@ A day inside a posted pay run is what that run paid on. It is not
 changed, added or taken off until the run is voided.
 """
 
-import csv
 import datetime
-import io
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Sum
 
+from apps.core.csvrows import RowError, date, read
 from apps.core.models import AuditModel
 
 from .calendars import holidays_between, parse_working_days
@@ -53,6 +52,11 @@ def minutes_late(starts_at, clocked_in):
     return 0 if after > 12 * 60 else after
 
 
+
+class AttendanceSource(models.TextChoices):
+    MANUAL = "manual", "Entered"
+    IMPORT = "import", "From the punch file"
+
 class AttendanceStatus(models.TextChoices):
     PRESENT = "present", "Present"
     HALF_DAY = "half_day", "Half a day"
@@ -74,8 +78,8 @@ class AttendanceDay(AuditModel):
         default=0, help_text="Worked out from the shift's start where the shift and the time in are known.")
     overtime_hours = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0"),
                                          help_text="Overtime agreed for the day, paid at the overtime rate.")
-    source = models.CharField(max_length=16, default="manual", editable=False,
-                              choices=[("manual", "Entered"), ("import", "From the punch file")])
+    source = models.CharField(max_length=16, default=AttendanceSource.MANUAL, editable=False,
+                              choices=AttendanceSource.choices)
     note = models.CharField(max_length=255, blank=True)
 
     class Meta:
@@ -168,6 +172,17 @@ def unmarked_days(employee, start, end):
     return days
 
 
+def unmarked_report(start, end):
+    """Each day-rated person with days unmarked in the span, and the days: what a pay run would refuse on."""
+    rows = []
+    for employee in Employee.objects.filter(paid_by_attendance=True).select_related("party"):
+        days = unmarked_days(employee, start, end)
+        if days:
+            rows.append({"employee": employee.pk, "employee_number": employee.employee_number,
+                         "employee_name": employee.party.name, "days": days})
+    return rows
+
+
 def overtime_hours(employee, start, end):
     return AttendanceDay.objects.filter(employee=employee, on__range=(start, end)).aggregate(
         hours=Sum("overtime_hours"))["hours"] or Decimal("0")
@@ -187,10 +202,7 @@ def import_punches(text, commit=False):
 
     Returns {"rows", "created", "updated", "kept", "to_enter", "errors": [(row, column, message)]}.
     """
-    if text.startswith("﻿"):
-        text = text[1:]
-    rows = [{(key or "").strip().lower(): (value or "").strip() for key, value in row.items()}
-            for row in csv.DictReader(io.StringIO(text))]
+    rows = read(text)
     report = {"rows": len(rows), "created": 0, "updated": 0, "kept": [], "to_enter": [], "errors": []}
     employees = {row.employee_number: row for row in Employee.objects.filter(
         employee_number__in={row.get("employee_number", "") for row in rows})}
@@ -198,19 +210,13 @@ def import_punches(text, commit=False):
         for number, row in enumerate(rows, start=2):
             try:
                 _punch(row, number, employees, report)
-            except _RowError as error:
+            except RowError as error:
                 report["errors"].append((number, error.column, error.message))
             except ValidationError as error:
                 report["errors"].append((number, "", " ".join(error.messages)))
         if report["errors"] or not commit:
             transaction.set_rollback(True)
     return report
-
-
-class _RowError(Exception):
-    def __init__(self, column, message):
-        super().__init__(message)
-        self.column, self.message = column, message
 
 
 def _time(row, column):
@@ -220,32 +226,27 @@ def _time(row, column):
     try:
         return datetime.time.fromisoformat(value if len(value) > 4 else value.zfill(5))
     except ValueError:
-        raise _RowError(column, f"{value!r} is not a time; give it as HH:MM.") from None
+        raise RowError(column, f"{value!r} is not a time; give it as HH:MM.") from None
 
 
 def _punch(row, number, employees, report):
     employee = employees.get(row.get("employee_number", ""))
     if employee is None:
-        raise _RowError("employee_number", f"No employee numbered {row.get('employee_number')!r}.")
-    try:
-        day = datetime.date.fromisoformat(row.get("date", ""))
-    except ValueError:
-        raise _RowError("date", f"{row.get('date')!r} is not a date; give it as YYYY-MM-DD.") from None
+        raise RowError("employee_number", f"No employee numbered {row.get('employee_number')!r}.")
+    day = date(row, "date")
     time_in, time_out = _time(row, "in"), _time(row, "out")
     if time_in is None and time_out is None:
-        raise _RowError("in", "A punch row has a time in, a time out or both.")
+        raise RowError("in", "A punch row has a time in, a time out or both.")
     if time_in is None or time_out is None:
         report["to_enter"].append((number, f"{employee} on {day} punched {'in' if time_in else 'out'} only."))
         return
     existing = AttendanceDay.objects.filter(employee=employee, on=day).first()
-    if existing is not None and existing.source == "manual":
+    if existing is not None and existing.source == AttendanceSource.MANUAL:
         report["kept"].append((number, f"{employee} on {day} was entered by hand and is kept as entered."))
         return
     values = dict(status=AttendanceStatus.PRESENT, shift=row.get("shift", ""), time_in=time_in, time_out=time_out)
     if existing is None:
-        day_ = AttendanceDay(employee=employee, on=day, **values)
-        day_.source = "import"
-        day_.save()
+        AttendanceDay(employee=employee, on=day, source=AttendanceSource.IMPORT, **values).save()
         report["created"] += 1
     else:
         for name, value in values.items():

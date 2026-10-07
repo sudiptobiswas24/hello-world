@@ -10,7 +10,7 @@ a worker leaves, a contractor stops.
 import datetime
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -67,8 +67,6 @@ class ContractWorker(AuditModel):
         return f"{self.name} through {self.contractor.party.name}"
 
     def save(self, *args, **kwargs):
-        from django.db import transaction
-
         self.joined_on, self.left_on = to_date(self.joined_on), to_date(self.left_on)
         if self.left_on and self.left_on < self.joined_on:
             raise ValidationError({"left_on": "A worker leaves after joining."})

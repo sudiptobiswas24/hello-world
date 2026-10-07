@@ -38,7 +38,6 @@ already forecast, or proposed at nothing, is reported as skipped with
 the reason.
 """
 
-import calendar
 import datetime
 from collections import OrderedDict
 from decimal import ROUND_HALF_UP, Decimal
@@ -46,6 +45,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
+
+from .history import month_end
 
 ZERO = Decimal("0")
 THOUSANDTH = Decimal("0.001")
@@ -63,10 +64,6 @@ def _add_months(first, count):
     return datetime.date(first.year + month // 12, month % 12 + 1, 1)
 
 
-def _month_end(first):
-    return first.replace(day=calendar.monthrange(first.year, first.month)[1])
-
-
 def monthly_shipments(item, warehouse, first, last):
     """{first of month: shipped less returned, in stock units}, every month from first to last."""
     from apps.sales.models import DeliveryLine
@@ -79,7 +76,7 @@ def monthly_shipments(item, warehouse, first, last):
     lines = DeliveryLine.objects.filter(
         order_line__item=item, warehouse=warehouse, delivery__posted=True,
         delivery__sales_order__is_job_work=False,
-        delivery__delivery_date__gte=first, delivery__delivery_date__lte=_month_end(last),
+        delivery__delivery_date__gte=first, delivery__delivery_date__lte=month_end(last),
     ).select_related("delivery", "order_line__uom", "order_line__item")
     for line in lines:
         quantity = item.to_stock_quantity(line.quantity_shipped, line.order_line.uom)
@@ -202,7 +199,7 @@ def propose(item, warehouse, as_of=None, months_ahead=6, with_trend=False):
     rows = []
     for ahead in range(months_ahead):
         month = _add_months(first, ahead)
-        rows.append({"starts_on": month, "ends_on": _month_end(month),
+        rows.append({"starts_on": month, "ends_on": month_end(month),
                      "quantity": _forecast(level, indices, growth, last, month, with_trend)})
     return {
         "item": item, "warehouse": warehouse,

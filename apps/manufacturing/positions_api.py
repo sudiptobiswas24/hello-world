@@ -8,13 +8,11 @@ from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
 
+from apps.core.api import plain
+
 from .positions import MachinePosition, critical_spares
 
 TENTH = Decimal("0.1")
-
-
-def _plain(value):
-    return format(value.normalize(), "f")
 
 
 class MachinePositionSerializer(serializers.ModelSerializer):
@@ -45,7 +43,7 @@ class MachinePositionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response({
             "position": str(position),
             "life_days": None if life is None else life.quantize(TENTH),
-            "placements": [{"on": day, "item": item.sku, "quantity": _plain(quantity), "days_since_previous": days}
+            "placements": [{"on": day, "item": item.sku, "quantity": plain(quantity), "days_since_previous": days}
                            for day, item, quantity, days in position.history()],
         })
 
@@ -54,7 +52,7 @@ class MachinePositionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """Every critical position, its spare, what is on any shelf, and whether that is nothing."""
         return Response([{
             "position_id": row["position"].pk, "position": str(row["position"]), "machine": row["machine"].code,
-            "item": row["item"].sku, "item_name": row["item"].name, "on_hand": _plain(row["on_hand"]),
+            "item": row["item"].sku, "item_name": row["item"].name, "on_hand": plain(row["on_hand"]),
             "short": row["short"],
             "life_days": None if row["life_days"] is None else row["life_days"].quantize(TENTH),
         } for row in critical_spares()])

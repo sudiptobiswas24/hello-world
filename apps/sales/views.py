@@ -57,7 +57,7 @@ from .models import (
     run_dunning,
     still_owed,
 )
-from .scoping import UNLIMITED, CustomerScopedMixin, carried_by, rep_limit
+from .scoping import CustomerScopedMixin
 from .serializers import (
     SuppliedItemSerializer,
     ThirdPartyReleaseSerializer,
@@ -125,7 +125,7 @@ class SalesOrderViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mod
         warehouse = request.data.get("warehouse")
         delivery = order.create_delivery(
             delivery_date=request.data.get("delivery_date"),
-            warehouse=record_or_404(Warehouse, warehouse, "warehouse") if warehouse else None,
+            warehouse=record_or_404(Warehouse, warehouse, "warehouse", optional=True),
         )
         return Response(DeliverySerializer(delivery).data, status=201)
 
@@ -312,11 +312,8 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         net = money_amount(request.data, "net")
         if net is None:
             raise DRFValidationError({"net": ["Say how much, before tax, is given back."]})
-        try:
-            note = invoice.credit_claim(net, request.data.get("reason") or "", memo=request.data.get("memo") or "",
-                                        on_date=request.data.get("date") or None)
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+        note = invoice.credit_claim(net, request.data.get("reason") or "", memo=request.data.get("memo") or "",
+                                    on_date=request.data.get("date") or None)
         return Response(self.get_serializer(note).data, status=201)
 
     @action(detail=False, methods=["get"])
@@ -501,12 +498,8 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     def received(self, request, pk=None):
         """The customer's acknowledgement: {received_on, received_by, reference}."""
         delivery = self.get_object()
-        try:
-            delivery.record_receipt(request.data.get("received_on"), request.data.get("received_by") or "",
-                                    request.data.get("reference") or "")
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
-        delivery.refresh_from_db()
+        delivery.record_receipt(request.data.get("received_on"), request.data.get("received_by") or "",
+                                request.data.get("reference") or "")
         return Response(self.get_serializer(delivery).data)
 
     @action(detail=False, methods=["get"])
@@ -522,13 +515,9 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         """Who carried it: {transporter, lr_number, lr_date, vehicle_number}, after it shipped too."""
         delivery = self.get_object()
         given = request.data.get("transporter")
-        transporter = record_or_404(Party, given, "transporter") if given not in (None, "") else None
-        try:
-            delivery.record_transport(transporter, request.data.get("lr_number") or "",
-                                      request.data.get("lr_date") or None, request.data.get("vehicle_number") or "")
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages)
-        delivery.refresh_from_db()
+        transporter = record_or_404(Party, given, "transporter", optional=True)
+        delivery.record_transport(transporter, request.data.get("lr_number") or "",
+                                  request.data.get("lr_date") or None, request.data.get("vehicle_number") or "")
         return Response(self.get_serializer(delivery).data)
 
     @action(detail=True, methods=["post"])

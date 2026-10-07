@@ -1,10 +1,9 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
+import { PARTY, SECTION } from "../accounts/refs";
 
 type Row = Record<string, unknown>;
 
 const FISCALPOSITION: FieldDef["ref"] = { endpoint: "/api/accounting/fiscal-positions/", permission: "accounting.view_fiscalposition", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
-const SECTION: FieldDef["ref"] = { endpoint: "/api/accounting/tds-sections/", permission: "accounting.view_tdssection", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
-const PARTY: FieldDef["pick"] = { endpoint: "/api/core/parties/", permission: "core.view_party", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
 
 /** A party's GST registration: what an e-invoice, GSTR-1 and the place of supply read. */
 export default function GstRegistrationForm() {

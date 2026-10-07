@@ -310,7 +310,7 @@ class GratuityView(viewsets.ViewSet):
         components = list(PayComponent.objects.filter(code__in=codes))
         unknown = sorted(set(codes) - {component.code for component in components})
         provision = request.query_params.get("provision")
-        provision = record_or_404(Account, provision, "provision") if provision else None
+        provision = record_or_404(Account, provision, "provision", optional=True)
         found = gratuity_due(as_of, components, provision)
         if unknown:
             # A report, not a form: a code the plant does not use counts nothing and says so.

@@ -122,14 +122,29 @@ def refused_by_database(error):
     return {"non_field_errors": [f"Refused: that breaks {rule}."]}
 
 
-def record_or_404(model, value, field):
+def required(data, *names, message="This field is required."):
+    """Refuse, beside each one, the fields in `names` the request left blank."""
+    missing = [name for name in names if not data.get(name)]
+    if missing:
+        raise DRFValidationError({name: [message] for name in missing})
+
+
+def plain(value):
+    """A quantity as people write it: 1000, not 1E+3 (normalize() alone) or 1000.0000; None stays None."""
+    return None if value is None else format(Decimal(value).normalize(), "f")
+
+
+def record_or_404(model, value, field, optional=False):
     """
     The `model` row a request names by id in `field`. An id that is not a
     number is refused beside the field; get_object_or_404 alone raised
-    ValueError on "MAIN" or an account code, which was a 500.
+    ValueError on "MAIN" or an account code, which was a 500. `optional`:
+    None for a field left blank.
     """
     from django.shortcuts import get_object_or_404
 
+    if optional and value in (None, ""):
+        return None
     try:
         pk = int(str(value).strip())
     except ValueError:

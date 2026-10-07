@@ -20,7 +20,7 @@ from django.db import models, transaction
 from django.db.models import Q
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, TdsSection
-from apps.accounting.tds import deduction_terms, financial_year
+from apps.accounting.tds import ThresholdMode, deduction_terms, financial_year
 from apps.core.models import AuditModel, Company, lock_rows, serialised, to_date
 
 
@@ -119,10 +119,10 @@ def deduct(bill, section=None, on_date=None):
         covered = set(_live(TdsDeduction.objects.filter(section=section, covered_bills__in=earlier))
                       .values_list("covered_bills", flat=True))
         untaxed = [other for other in earlier if other.pk not in covered]
-        this = taxable_net(bill)
+        nets = {other.pk: taxable_net(other) for other in earlier}
         base, amount = section.owed(
-            rate, this, sum((taxable_net(other) for other in earlier), Decimal("0")),
-            sum((taxable_net(other) for other in untaxed), Decimal("0")))
+            rate, taxable_net(bill), sum(nets.values(), Decimal("0")),
+            sum((nets[other.pk] for other in untaxed), Decimal("0")))
         if amount <= 0:
             raise ValidationError(
                 f"Nothing to deduct under {section.code}: {bill.vendor}'s bills this year have not "
@@ -146,8 +146,7 @@ def deduct(bill, section=None, on_date=None):
         deduction = TdsDeduction.objects.create(
             bill=bill, section=section, base=base, rate_percent=rate, pan=pan, amount=amount,
             date=day, journal_entry=entry)
-        catch_up = section.mode == "whole"
-        deduction.covered_bills.set([bill, *(untaxed if catch_up else [])])
+        deduction.covered_bills.set([bill, *untaxed] if section.mode == ThresholdMode.WHOLE else [bill])
         return deduction
 
 

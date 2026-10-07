@@ -1,3 +1,4 @@
+import datetime
 from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -13,10 +14,11 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.core.api import record_or_404
+from apps.core.api import plain, record_or_404
 from apps.core.audit import AuditableViewSetMixin
+from apps.core.models import to_date
 from apps.core.permissions import ActionPermission, RequiredPermission
-from apps.inventory.models import Item, Lot, Warehouse
+from apps.inventory.models import Item, Lot, StockAdjustmentLine, Warehouse
 from apps.sales.models import SalesOrderLine
 
 from .bom import (
@@ -53,7 +55,7 @@ from . import certificates, quoting
 from .certificates import TestCertificate
 from . import energy
 from .energy import EnergyMeter, EnergyTariff, MeterReading
-from .bales import Bale
+from .bales import Bale, BaleLine
 from . import inward
 from .inward import (
     CustomerMaterialReceipt,
@@ -1256,16 +1258,9 @@ class WorkCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def daily(self, request):
         """?day= (yesterday if not given): each section's output, scrap, kWh and kWh a kilogramme."""
-        import datetime
-
-        from django.utils import timezone
-
         from .daily import daily_production
 
-        raw = request.query_params.get("day") or ""
-        day = parse_date(raw) if raw else timezone.localdate() - datetime.timedelta(days=1)
-        if day is None:
-            raise DRFValidationError(["Give day as YYYY-MM-DD."])
+        day = to_date(request.query_params.get("day")) or timezone.localdate() - datetime.timedelta(days=1)
         return Response(daily_production(day))
 
     @action(detail=True, methods=["get"])
@@ -2039,11 +2034,6 @@ class DispatchViewSet(viewsets.ViewSet):
         return Response({"committed": _run(commit, build())})
 
 
-def _plain(value):
-    """A quantity as people write it: 1000, not 1E+3, which normalize() alone gives."""
-    return format(Decimal(value).normalize(), "f")
-
-
 class BaleViewSet(viewsets.ReadOnlyModelViewSet):
     """
     Bales: POST pack/ {warehouse, packed_by, lines: [{lot, quantity}], gross_kg} presses
@@ -2052,7 +2042,12 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
     one off; {id}/label/ is the 100 x 75 mm label; {id}/trace/ reads it both ways.
     """
 
-    queryset = Bale.objects.select_related("item", "warehouse", "packed_by__party", "delivery")
+    queryset = Bale.objects.select_related(
+        "item", "warehouse", "packed_by__party", "delivery", "packing__adjustment",
+    ).prefetch_related(
+        Prefetch("lines", queryset=BaleLine.objects.select_related("lot")),
+        Prefetch("packing__adjustment__lines", queryset=StockAdjustmentLine.objects.select_related("item", "movement")),
+    )
     action_permission_map = {
         "break_": "manufacturing.change_bale",
         "load": "manufacturing.change_bale",
@@ -2064,14 +2059,12 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
             "id": bale.pk, "number": bale.number, "item": bale.item.sku,
             "warehouse": bale.warehouse.code, "packed_on": bale.packed_on,
             "packed_by": bale.packed_by.employee_number, "status": bale.status(),
-            "bags": _plain(bale.bags()), "nominal_kg": str(bale.nominal_kg()),
-            "gross_kg": None if bale.gross_kg is None else str(bale.gross_kg),
+            "bags": plain(bale.bags()), "nominal_kg": bale.nominal_kg(), "gross_kg": bale.gross_kg,
             "delivery": bale.delivery.number if bale.delivery_id else None,
-            "lines": [{"lot": line.lot.code, "bags": _plain(line.quantity)}
-                      for line in bale.lines.select_related("lot")],
-            "packing": [{"item": item.sku, "quantity": _plain(quantity)} for item, quantity in bale.packing.lines()]
+            "lines": [{"lot": line.lot.code, "bags": plain(line.quantity)} for line in bale.lines.all()],
+            "packing": [{"item": item.sku, "quantity": plain(quantity)} for item, quantity in bale.packing.lines()]
             if hasattr(bale, "packing") else [],
-            "packing_cost": str(bale.packing.cost()) if hasattr(bale, "packing") else None,
+            "packing_cost": bale.packing.cost() if hasattr(bale, "packing") else None,
         }
 
     def list(self, request):
@@ -2129,9 +2122,9 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
         from .bales import trace
 
         found = trace(self.get_object())
-        found["bags"] = _plain(found["bags"])
+        found["bags"] = plain(found["bags"])
         for bundle in found["bundles"]:
-            bundle["bags"] = _plain(bundle["bags"])
+            bundle["bags"] = plain(bundle["bags"])
             for key in ("mean_grams", "target_grams"):
                 bundle[key] = None if bundle[key] is None else str(bundle[key])
         return Response(found)
@@ -2146,7 +2139,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
         bale = self.get_object()
         if bale.broken_at is not None:
             raise DRFValidationError([f"{bale} was broken; it has no label."])
-        bundles = ", ".join(f"{line.lot.code} x {_plain(line.quantity)}"
+        bundles = ", ".join(f"{line.lot.code} x {plain(line.quantity)}"
                             for line in bale.lines.select_related("lot"))
         page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>{escape(bale.number)}</title>
@@ -2162,7 +2155,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
 <body><div class="label">
 <div class="bars">{barcode.svg(bale.number)}</div>
 <div class="code">{escape(bale.number)}</div>
-<div class="big">{escape(bale.item.name)} &middot; {_plain(bale.bags())} bags</div>
+<div class="big">{escape(bale.item.name)} &middot; {plain(bale.bags())} bags</div>
 <div>Nominal {bale.nominal_kg()} kg{f" &middot; weighed {bale.gross_kg} kg" if bale.gross_kg else ""}
  &middot; packed {bale.packed_on:%d %b %Y} by {escape(bale.packed_by.employee_number)}</div>
 <div>Bundles: {escape(bundles)}</div>

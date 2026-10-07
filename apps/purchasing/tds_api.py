@@ -3,24 +3,16 @@ TDS on what the company owes: deducted on a bill, reversed, paid over by
 challan, and listed for the quarter's return.
 """
 
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.accounting.models import Account, TdsSection
-from apps.core.api import record_or_404
+from apps.core.api import record_or_404, required
 from apps.core.models import to_date
 
 from .tds import TdsChallan, TdsDeduction, tds_return
-
-
-def _refused(call):
-    try:
-        return call()
-    except DjangoValidationError as exc:
-        raise DRFValidationError(exc.messages)
 
 
 class TdsDeductionSerializer(serializers.ModelSerializer):
@@ -28,7 +20,7 @@ class TdsDeductionSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="bill.vendor.name", read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
     challan_label = serializers.SerializerMethodField()
-    reversed = serializers.SerializerMethodField()
+    reversed = serializers.BooleanField(source="reversed_entry_id", read_only=True)
 
     class Meta:
         model = TdsDeduction
@@ -39,9 +31,6 @@ class TdsDeductionSerializer(serializers.ModelSerializer):
 
     def get_challan_label(self, row):
         return str(row.challan) if row.is_paid_over() else ""
-
-    def get_reversed(self, row):
-        return bool(row.reversed_entry_id)
 
 
 class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
@@ -58,8 +47,7 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"])
     def reverse(self, request, pk=None):
         deduction = self.get_object()
-        _refused(lambda: deduction.reverse(on_date=request.data.get("date") or None))
-        deduction.refresh_from_db()
+        deduction.reverse(on_date=request.data.get("date") or None)
         return Response(self.get_serializer(deduction).data)
 
     @action(detail=False, methods=["get"])
@@ -73,16 +61,13 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
 
 class TdsChallanSerializer(serializers.ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
-    voided = serializers.SerializerMethodField()
+    voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
 
     class Meta:
         model = TdsChallan
         fields = ["id", "section", "section_code", "month", "date", "bank_account", "challan_number", "bsr_code",
                   "amount", "journal_entry", "voided_entry", "voided"]
         read_only_fields = fields
-
-    def get_voided(self, row):
-        return bool(row.voided_entry_id)
 
 
 class TdsChallanViewSet(viewsets.ReadOnlyModelViewSet):
@@ -99,16 +84,13 @@ class TdsChallanViewSet(viewsets.ReadOnlyModelViewSet):
         data = request.data
         section = record_or_404(TdsSection, data.get("section"), "section")
         bank = record_or_404(Account, data.get("bank_account"), "bank_account")
-        missing = [name for name in ("month", "date", "challan_number", "bsr_code") if not data.get(name)]
-        if missing:
-            raise DRFValidationError({name: ["This field is required."] for name in missing})
-        challan = _refused(lambda: TdsChallan.pay(section, data["month"], data["date"], bank,
-                                                  str(data["challan_number"]).strip(), str(data["bsr_code"]).strip()))
+        required(data, "month", "date", "challan_number", "bsr_code")
+        challan = TdsChallan.pay(section, data["month"], data["date"], bank,
+                                 str(data["challan_number"]).strip(), str(data["bsr_code"]).strip())
         return Response(self.get_serializer(challan).data, status=201)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
         challan = self.get_object()
-        _refused(lambda: challan.void(on_date=request.data.get("date") or None))
-        challan.refresh_from_db()
+        challan.void(on_date=request.data.get("date") or None)
         return Response(self.get_serializer(challan).data)

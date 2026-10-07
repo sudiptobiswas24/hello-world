@@ -1,5 +1,6 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-import { activitiesPanel, CAMPAIGN_REF, CUSTOMER_PICK, REP_PICK, STAGE_TONES } from "./crmRefs";
+import { activitiesPanel, CAMPAIGN_REF, REP_PICK, STAGE_TONES } from "./crmRefs";
+import { CUSTOMER } from "./extraRefs";
 
 type Row = Record<string, unknown> & { id: number };
 const open = (row: Row) => row.stage === "new" || row.stage === "qualified" || row.stage === "quoted";
@@ -21,7 +22,7 @@ export default function OpportunityForm() {
       permissions={{ add: "sales.add_opportunity", change: "sales.change_opportunity", delete: "sales.delete_opportunity" }}
       editable={open}
       fields={[
-        { key: "customer", label: "Customer", kind: "pick", pick: CUSTOMER_PICK, createOnly: true, show: (row) => String(row.customer_name ?? "") },
+        { key: "customer", label: "Customer", kind: "pick", pick: CUSTOMER, createOnly: true, show: (row) => String(row.customer_name ?? "") },
         { key: "title", label: "The business", wide: true, hint: "20,000 cement sacks a month" },
         { key: "stage", label: "Stage", kind: "choice", choices: [["new", "New"], ["qualified", "Qualified"], ["quoted", "Quoted"]], initial: "new", hint: "Won and lost are said with the buttons" },
         { key: "value", label: "Worth, before tax", kind: "money" },

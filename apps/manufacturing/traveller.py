@@ -22,13 +22,10 @@ from decimal import Decimal
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.utils import timezone
 
+from apps.core.api import plain
+
 from . import barcode
 from .orders import WorkOrderStatus
-
-
-def _plain(value):
-    """1000, not 1E+3 or 1000.0000."""
-    return None if value is None else format(Decimal(value).normalize(), "f")
 
 
 def _at(value, places):
@@ -87,8 +84,8 @@ def traveller(order):
         "barcode": barcode.svg(order.number),
         "status": order.get_status_display(),
         "item": {"sku": order.item.sku, "name": order.item.name},
-        "quantity_ordered": _plain(order.quantity_ordered),
-        "quantity_to_start": _plain(order.quantity_to_start),
+        "quantity_ordered": plain(order.quantity_ordered),
+        "quantity_to_start": plain(order.quantity_to_start),
         "uom": order.uom.code,
         "warehouse": order.warehouse.code,
         "scheduled_start": order.scheduled_start,
@@ -106,17 +103,17 @@ def traveller(order):
             "where": ("Outside" if step.is_outside
                       else step.work_centre.code if step.work_centre_id else ""),
             "machine": step.machine.code if step.machine_id else "",
-            "setup_minutes": _plain(step.setup_minutes),
-            "planned_minutes": _plain(step.planned_minutes),
+            "setup_minutes": plain(step.setup_minutes),
+            "planned_minutes": plain(step.planned_minutes),
             "planned_start": step.planned_start,
         } for step in order.operations.select_related("work_centre", "machine")],
         "materials": [{
             "sku": line.item.sku,
             "name": line.item.name,
             # To the gramme: the card is read by a storeman with a scale.
-            "quantity": _plain(Decimal(line.quantity_required).quantize(Decimal("0.001"))),
+            "quantity": plain(Decimal(line.quantity_required).quantize(Decimal("0.001"))),
             "uom": line.uom.code,
-            "waste_percent": _plain(line.waste_percent),
+            "waste_percent": plain(line.waste_percent),
         } for line in order.components.select_related("item", "uom")],
         "printed_at": timezone.now(),
     }

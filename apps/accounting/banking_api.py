@@ -113,7 +113,7 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         line = self._line(statement, request)
         account = record_or_404(Account, request.data.get("account"), "account")
         party = request.data.get("party")
-        party = record_or_404(Party, party, "party") if party not in (None, "") else None
+        party = record_or_404(Party, party, "party", optional=True)
         _refused(lambda: line.post_to(account, party=party, memo=request.data.get("memo", "")))
         return Response(self.get_serializer(statement).data)
 

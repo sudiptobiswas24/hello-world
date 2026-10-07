@@ -1,14 +1,5 @@
-import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-
-type Row = Record<string, unknown>;
-
-const ITEM: FieldDef["pick"] = {
-  endpoint: "/api/inventory/items/", permission: "inventory.view_item",
-  label: (row: Row) => `${String(row.sku)} · ${String(row.name)}`,
-};
-const WAREHOUSE: FieldDef["ref"] = {
-  endpoint: "/api/inventory/warehouses/", permission: "inventory.view_warehouse", label: (row: Row) => String(row.name || row.code),
-};
+import { RecordScreen } from "../../views/RecordScreen";
+import { ITEM, WAREHOUSE } from "../stores/refs";
 
 /** One month the old system shipped an item from a warehouse: a month that has ended and that this system did not ship in itself. */
 export default function ShipmentHistoryForm() {

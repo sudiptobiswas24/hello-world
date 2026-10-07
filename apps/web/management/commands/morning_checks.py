@@ -21,23 +21,27 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         mailed, quiet, printed = 0, 0, 0
+        counted = {}  # the plant-wide answers, found once and told to everyone they are for
         for user in get_user_model().objects.filter(is_active=True).order_by("username"):
-            rows = inbox(user)
+            rows = inbox(user, counted=counted)
             if not rows:
                 quiet += 1
                 continue
             lines = [f"{row['label']}: {row['count']}" for row in rows]
-            text = "\n".join(lines)
-            if options["dry_run"] or not user.email:
+
+            def show():
+                nonlocal printed
                 self.stdout.write(f"{user.username}:\n  " + "\n  ".join(lines))
                 printed += 1
+
+            if options["dry_run"] or not user.email:
+                show()
                 continue
             try:
-                EmailMessage(subject="Yours to act on today", body=text, to=[user.email]).send()
+                EmailMessage(subject="Yours to act on today", body="\n".join(lines), to=[user.email]).send()
                 mailed += 1
             except ValidationError as refused:
                 # No mail server: say so once, and print what would have gone.
                 self.stdout.write(" ".join(refused.messages))
-                self.stdout.write(f"{user.username}:\n  " + "\n  ".join(lines))
-                printed += 1
+                show()
         self.stdout.write(f"{mailed} mailed, {printed} printed, {quiet} with nothing waiting.")

@@ -135,8 +135,7 @@ class Complaint(AuditModel):
 
     def cost(self):
         """What settling it has given back, before tax."""
-        return sum((row.credit_note.subtotal() for row in self.settlements.select_related("credit_note")),
-                   Decimal("0"))
+        return sum((row.credit_note.subtotal() for row in self.settlements.all()), Decimal("0"))
 
     def add_lot(self, lot, quantity=None):
         return ComplaintLot.objects.create(complaint=self, lot=lot,

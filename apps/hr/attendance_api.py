@@ -1,6 +1,5 @@
 """The attendance register through the API: marked a day at a time, read in from the punch file, and the gaps."""
 
-import datetime
 
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
@@ -8,10 +7,10 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from apps.core.api import flag
+from apps.core.models import to_date
 from apps.core.audit import AuditableViewSetMixin
 
-from .attendance import AttendanceDay, import_punches, unmarked_days
-from .models import Employee
+from .attendance import AttendanceDay, import_punches, unmarked_report
 
 
 class AttendanceDaySerializer(serializers.ModelSerializer):
@@ -46,20 +45,12 @@ class AttendanceDayViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             # Asked to keep it and it cannot be: the refusal, row by row, beside the file.
             raise ValidationError({"text": [f"Row {row}{', ' + column if column else ''}: {message}"
                                             for row, column, message in report["errors"]]})
-        return Response({**report, "committed": commit and not report["errors"]})
+        return Response({**report, "committed": commit})
 
     @action(detail=False, methods=["get"])
     def unmarked(self, request):
         """Working days of day-rated people with no mark and no leave in a span: what a pay run would refuse on."""
-        try:
-            start = datetime.date.fromisoformat(request.query_params.get("start", ""))
-            end = datetime.date.fromisoformat(request.query_params.get("end", ""))
-        except ValueError:
+        start, end = to_date(request.query_params.get("start")), to_date(request.query_params.get("end"))
+        if not start or not end:
             raise ValidationError({"start": ["Give start and end as YYYY-MM-DD."]})
-        rows = []
-        for employee in Employee.objects.filter(paid_by_attendance=True).select_related("party"):
-            days = unmarked_days(employee, start, end)
-            if days:
-                rows.append({"employee": employee.pk, "employee_number": employee.employee_number,
-                             "employee_name": employee.party.name, "days": days})
-        return Response(rows)
+        return Response(unmarked_report(start, end))

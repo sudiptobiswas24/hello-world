@@ -30,10 +30,10 @@ def msme_due(bill):
     return start + datetime.timedelta(days=days)
 
 
-def _paid_by(bill, day):
-    """Paid against the bill by payments made by `day` that still stand."""
-    return sum((row.amount for row in bill.payment_allocations.all()
-                if not row.payment.is_voided() and to_date(row.payment.payment_date) <= day), Decimal("0"))
+def _standing(bill, day):
+    """[(paid on, amount)] of payments against the bill made by `day` that still stand."""
+    return [(to_date(row.payment.payment_date), row.amount) for row in bill.payment_allocations.all()
+            if not row.payment.is_voided() and to_date(row.payment.payment_date) <= day]
 
 
 def msme_bills(start, end, as_of=None):
@@ -55,19 +55,17 @@ def msme_bills(start, end, as_of=None):
         due = msme_due(bill)
         # What settles it other than money paid out (debit notes, tax
         # deducted, a discount) is counted whenever it happened.
-        other = bill.total() - bill.amount_due() - bill.amount_paid()
-        unpaid = max(bill.total() - other - _paid_by(bill, as_of), Decimal("0"))
-        paid_on = None
-        if unpaid <= 0:
-            dates = sorted(to_date(row.payment.payment_date) for row in bill.payment_allocations.all()
-                           if not row.payment.is_voided() and to_date(row.payment.payment_date) <= as_of)
-            paid_on = dates[-1] if dates else None
+        total = bill.total()
+        other = total - bill.amount_due() - bill.amount_paid()
+        paid = _standing(bill, as_of)
+        unpaid = max(total - other - sum((amount for _, amount in paid), Decimal("0")), Decimal("0"))
+        paid_on = max(day for day, _ in paid) if unpaid <= 0 and paid else None
         last = paid_on or as_of
         late = max((last - due).days, 0)
         rows.append({
             "bill": bill.pk, "number": bill.number, "vendor": bill.vendor.name,
             "category": bill.vendor.tax_profile.msme_category, "udyam": bill.vendor.tax_profile.udyam_number,
-            "bill_date": to_date(bill.bill_date), "total": bill.total(), "due": due, "paid_on": paid_on,
+            "bill_date": to_date(bill.bill_date), "total": total, "due": due, "paid_on": paid_on,
             "days_late": late, "unpaid": unpaid,
             "at_risk": unpaid if unpaid > 0 and as_of > due else Decimal("0"),
         })

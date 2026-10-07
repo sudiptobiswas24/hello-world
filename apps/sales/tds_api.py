@@ -1,6 +1,5 @@
 """Tax customers deducted: recorded from the invoice, confirmed against Form 26AS, or reversed."""
 
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -18,16 +17,13 @@ class CustomerTdsSerializer(serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
-    reversed = serializers.SerializerMethodField()
+    reversed = serializers.BooleanField(source="reversed_entry_id", read_only=True)
 
     class Meta:
         model = CustomerTds
         fields = ["id", "invoice", "invoice_number", "customer_name", "section", "section_code", "amount", "date",
                   "certificate", "confirmed_on", "journal_entry", "reversed_entry", "reversed"]
         read_only_fields = fields
-
-    def get_reversed(self, row):
-        return bool(row.reversed_entry_id)
 
 
 class CustomerTdsViewSet(CustomerScopedMixin, viewsets.ReadOnlyModelViewSet):
@@ -53,20 +49,13 @@ class CustomerTdsViewSet(CustomerScopedMixin, viewsets.ReadOnlyModelViewSet):
         amount = money_amount(data, "amount")
         if amount is None:
             raise DRFValidationError({"amount": ["Say how much the customer deducted."]})
-        try:
-            row = invoice.record_tds(section, amount, on_date=data.get("date") or None,
-                                     certificate=data.get("certificate") or "")
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages)
+        row = invoice.record_tds(section, amount, on_date=data.get("date") or None,
+                                 certificate=data.get("certificate") or "")
         return Response(self.get_serializer(row).data, status=201)
 
     def _do(self, call):
         row = self.get_object()
-        try:
-            call(row)
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages)
-        row.refresh_from_db()
+        call(row)
         return Response(self.get_serializer(row).data)
 
     @action(detail=True, methods=["post"])

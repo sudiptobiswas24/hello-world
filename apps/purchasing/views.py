@@ -91,7 +91,7 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         warehouse = request.data.get("warehouse")
         receipt = order.create_receipt(
             receipt_date=request.data.get("receipt_date"),
-            warehouse=record_or_404(Warehouse, warehouse, "warehouse") if warehouse else None,
+            warehouse=record_or_404(Warehouse, warehouse, "warehouse", optional=True),
         )
         return Response(GoodsReceiptSerializer(receipt).data, status=201)
 
@@ -235,20 +235,12 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """A delivery this freight bill charges for ({"delivery"}), or one taken off it (DELETE ?delivery=)."""
         from apps.sales.models import Delivery
 
-        from .freight import FreightDelivery, carry
+        from .freight import carry, uncarry
 
         bill = self.get_object()
         given = request.data.get("delivery") if request.method == "POST" else request.query_params.get("delivery")
         delivery = record_or_404(Delivery, given, "delivery")
-        if request.method == "POST":
-            try:
-                carry(bill, delivery)
-            except DjangoValidationError as exc:
-                raise DRFValidationError(exc.messages)
-        else:
-            gone, _ = FreightDelivery.objects.filter(bill=bill, delivery=delivery).delete()
-            if not gone:
-                raise DRFValidationError({"delivery": [f"{delivery.number} is not on this bill."]})
+        (carry if request.method == "POST" else uncarry)(bill, delivery)
         return Response(self.get_serializer(self.get_queryset().get(pk=bill.pk)).data)
 
     @action(detail=True, methods=["post"])
@@ -258,11 +250,8 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
         bill = self.get_object()
         section = request.data.get("section")
-        section = record_or_404(TdsSection, section, "section") if section not in (None, "") else None
-        try:
-            bill.deduct_tds(section=section, on_date=request.data.get("date") or None)
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages)
+        section = record_or_404(TdsSection, section, "section", optional=True)
+        bill.deduct_tds(section=section, on_date=request.data.get("date") or None)
         return Response(self.get_serializer(self.get_queryset().get(pk=bill.pk)).data)
 
     @action(detail=True, methods=["post"])
@@ -505,7 +494,7 @@ class PurchasingReportViewSet(viewsets.ViewSet):
         from .freight import unbilled_freight
 
         given = request.query_params.get("transporter")
-        return Response(unbilled_freight(record_or_404(Party, given, "transporter") if given else None))
+        return Response(unbilled_freight(record_or_404(Party, given, "transporter", optional=True)))
 
     @action(detail=False, methods=["get"])
     def msme(self, request):

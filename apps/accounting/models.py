@@ -1,10 +1,14 @@
 from decimal import ROUND_HALF_UP, Decimal
 
+import re
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import models
 from django.db.models import Q, Sum
 from django.utils import timezone
+
+UDYAM = re.compile(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$")
 
 from apps.core.models import (
     AuditModel,
@@ -786,11 +790,9 @@ class PartyTaxProfile(AuditModel):
                                                            "else is on file."})
 
     def _check_msme(self):
-        import re
-
         if self.udyam_number:
             self.udyam_number = self.udyam_number.strip().upper()
-            if not re.match(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$", self.udyam_number):
+            if not UDYAM.match(self.udyam_number):
                 raise ValidationError({"udyam_number": f"{self.udyam_number!r} is not a Udyam number: "
                                                        "UDYAM-, the state, two digits, seven digits."})
         if self.msme_category and not self.udyam_number:

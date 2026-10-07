@@ -1,8 +1,5 @@
-import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-
-type Row = Record<string, unknown>;
-
-const ACCOUNT: FieldDef["pick"] = { endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
+import { RecordScreen } from "../../views/RecordScreen";
+import { ACCOUNT } from "../accounts/refs";
 
 /** The sections tax is deducted under: each one's rate, its rate without a PAN, its threshold and where the tax is owed or claimed. Kept by the plant; they change with every budget. */
 export default function TdsSectionForm() {

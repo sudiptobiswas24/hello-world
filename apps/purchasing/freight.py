@@ -36,6 +36,15 @@ def carry(bill, delivery):
         return FreightDelivery.objects.create(bill=bill, delivery=delivery)
 
 
+def uncarry(bill, delivery):
+    """Take a delivery off a freight bill it was charged for on; refused where it was not."""
+    with transaction.atomic():
+        lock_rows(delivery)
+        gone, _ = FreightDelivery.objects.filter(bill=bill, delivery=delivery).delete()
+        if not gone:
+            raise ValidationError({"delivery": f"{delivery.number} is not on this bill."})
+
+
 def unbilled_freight(transporter=None):
     """Posted deliveries out, with a transporter, that no freight bill names yet."""
     from apps.sales.models import Delivery

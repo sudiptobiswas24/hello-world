@@ -2,7 +2,8 @@
 
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+
+from apps.core.api import required
 from rest_framework.response import Response
 
 from .audit import AuditableViewSetMixin
@@ -38,9 +39,7 @@ class LicenceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def renew(self, request, pk=None):
         licence = self.get_object()
-        missing = [name for name in ("licence_number", "valid_from", "valid_to") if not request.data.get(name)]
-        if missing:
-            raise ValidationError({name: ["Say what the renewed licence reads."] for name in missing})
+        required(request.data, "licence_number", "valid_from", "valid_to", message="Say what the renewed licence reads.")
         renewal = licence.renew(request.data["licence_number"], request.data["valid_from"], request.data["valid_to"],
                                 request.data.get("note") or "")
         return Response(self.get_serializer(renewal).data, status=201)

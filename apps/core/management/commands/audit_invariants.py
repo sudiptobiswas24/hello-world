@@ -116,6 +116,7 @@ class Command(BaseCommand):
         "inventory.describe_plan": "for a pick list a UI will render",
         "inventory.hours_by_account": "a report, for whatever asks",
         "planning.parse_month": "called by the CSV importer in apps/imports, which is not audited",
+        "core.yes_no": "a CSV cell reader (csvrows.py) the importer in apps/imports uses; the punch file does not",
     }
 
     # -- shape 2: inert feature ------------------------------------------

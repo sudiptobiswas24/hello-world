@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import Q, Sum
 
 from apps.core.models import AuditModel
 
@@ -95,13 +95,15 @@ def place(issue, rows):
 
 def critical_spares():
     """Every critical position, with how much of its spare is on any shelf, and whether that is nothing."""
-    from apps.inventory.models import Warehouse
+    from apps.inventory.models import StockMovement
 
-    shelves = list(Warehouse.objects.all())
+    positions = list(MachinePosition.objects.filter(is_critical=True, machine__is_active=True)
+                     .select_related("machine", "spare_item"))
+    held = {row["item_id"]: row["total"] for row in StockMovement.objects.filter(
+        item_id__in={position.spare_item_id for position in positions}).values("item_id").annotate(total=Sum("quantity"))}
     rows = []
-    for position in MachinePosition.objects.filter(is_critical=True, machine__is_active=True).select_related(
-            "machine", "spare_item"):
-        on_hand = sum((position.spare_item.on_hand_at(shelf) for shelf in shelves), ZERO)
+    for position in positions:
+        on_hand = held.get(position.spare_item_id) or ZERO
         rows.append({"position": position, "machine": position.machine, "item": position.spare_item,
                      "on_hand": on_hand, "short": on_hand <= 0, "life_days": position.life_days()})
     return rows

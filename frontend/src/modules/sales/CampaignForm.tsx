@@ -1,5 +1,5 @@
-import { money } from "../../lib/format";
 import { RecordScreen } from "../../views/RecordScreen";
+import { CHANNELS } from "./crmRefs";
 
 type Row = Record<string, unknown> & { id: number };
 
@@ -16,8 +16,7 @@ export default function CampaignForm() {
       fields={[
         { key: "code", label: "Code" },
         { key: "name", label: "Name" },
-        { key: "channel", label: "Channel", kind: "choice", initial: "other",
-          choices: [["exhibition", "Exhibition"], ["print", "Print"], ["digital", "Digital"], ["field", "Field visits"], ["referral", "Referral drive"], ["other", "Other"]] },
+        { key: "channel", label: "Channel", kind: "choice", initial: "other", choices: CHANNELS },
         { key: "starts_on", label: "From", kind: "date" },
         { key: "ends_on", label: "To", kind: "date" },
         { key: "budget", label: "Budget", kind: "money", initial: "0" },
@@ -30,9 +29,9 @@ export default function CampaignForm() {
           { key: "leads", label: "Leads", kind: "quantity", width: "7rem", render: (row) => String(row.leads) },
           { key: "converted", label: "Became customers", kind: "quantity", width: "10rem", render: (row) => String(row.converted) },
           { key: "opportunities", label: "Opportunities", kind: "quantity", width: "9rem", render: (row) => String(row.opportunities) },
-          { key: "open_value", label: "In play", kind: "money", width: "11rem", render: (row) => money(row.open_value as string) },
+          { key: "open_value", label: "In play", kind: "money", width: "11rem" },
           { key: "won", label: "Won", kind: "quantity", width: "6rem", render: (row) => String(row.won) },
-          { key: "won_value", label: "Won, worth", kind: "money", width: "11rem", render: (row) => money(row.won_value as string) },
+          { key: "won_value", label: "Won, worth", kind: "money", width: "11rem" },
         ],
       }]}
     />

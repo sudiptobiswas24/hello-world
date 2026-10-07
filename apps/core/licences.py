@@ -17,7 +17,7 @@ from django.db import models, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
-from .models import AuditModel, serialised
+from .models import AuditModel, serialised, to_date
 
 
 class LicenceKind(models.TextChoices):
@@ -73,20 +73,16 @@ class Licence(AuditModel):
     def renew(self, number, valid_from, valid_to, note=""):
         if self.renewed_by_id:
             raise ValidationError(f"{self} was renewed by {self.renewed_by}; renew that one.")
-        valid_from = _date(valid_from)
+        valid_from = to_date(valid_from)
         if valid_from <= self.valid_from:
             raise ValidationError({"valid_from": f"A renewal starts after {self.valid_from}, when this one began."})
         with transaction.atomic():
             renewal = Licence.objects.create(kind=self.kind, licence_number=number, issued_by=self.issued_by,
-                                             covers=self.covers, valid_from=valid_from, valid_to=_date(valid_to),
+                                             covers=self.covers, valid_from=valid_from, valid_to=to_date(valid_to),
                                              remind_days=self.remind_days, note=note)
             self.renewed_by = renewal
             super().save(update_fields=["renewed_by"])
         return renewal
-
-
-def _date(value):
-    return datetime.date.fromisoformat(value) if isinstance(value, str) else value
 
 
 def licences_due(on=None):

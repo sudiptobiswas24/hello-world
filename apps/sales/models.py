@@ -4,7 +4,6 @@ import logging
 from collections import defaultdict
 from decimal import Decimal
 
-from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import models, transaction
 from django.db.models import Q
@@ -18,8 +17,7 @@ from apps.accounting.models import (
     Payment,
     PaymentDirection,
     Tax,
-    compute_taxes,
-    round_money,
+        round_money,
 )
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
@@ -44,8 +42,7 @@ from apps.inventory.models import (
     StockMovement,
     StockReservation,
     Warehouse,
-    lock_position,
-    lock_positions,
+        lock_positions,
     plan_issue,
     release_for,
 )
@@ -2197,6 +2194,15 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if apply_deposits:
             self.apply_available_deposits(on_date=self.invoice_date)
 
+
+    def _credit_note(self, on_date=None, **extra):
+        """A credit note against this invoice, carrying its terms, addresses and rep; the lines are the caller's."""
+        return Invoice.objects.create(
+            customer=self.customer, invoice_date=to_date(on_date) or timezone.localdate(), reference=self.reference,
+            receivable_account=self.receivable_account, currency=self.currency, payment_terms=self.payment_terms,
+            billing_address=self.billing_address, shipping_address=self.shipping_address, sales_rep=self.sales_rep,
+            credits=self, **extra)
+
     @serialised("posted")
     def create_credit_note(self, memo="", quantities=None, amount=None):
         """
@@ -2233,18 +2239,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not selected:
             raise ValidationError("Nothing to credit.")
 
-        credit_note = Invoice.objects.create(
-            customer=self.customer,
-            invoice_date=timezone.localdate(),
-            reference=self.reference,
-            receivable_account=self.receivable_account,
-            currency=self.currency,
-            payment_terms=self.payment_terms,
-            billing_address=self.billing_address,
-            shipping_address=self.shipping_address,
-            sales_rep=self.sales_rep,
-            credits=self,
-        )
+        credit_note = self._credit_note()
         for line, quantity in selected:
             credit_line = InvoiceLine.objects.create(
                 invoice=credit_note,
@@ -2290,13 +2285,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 raise ValidationError({"net": f"Only {left} of {self.number} before tax is left to credit."})
             lines = [line for line in self.lines.all() if line.net_amount() > 0]
             whole = sum((line.net_amount() for line in lines), Decimal("0"))
-            note = Invoice.objects.create(
-                customer=self.customer, invoice_date=to_date(on_date) or timezone.localdate(),
-                reference=self.reference, receivable_account=self.receivable_account, currency=self.currency,
-                payment_terms=self.payment_terms, billing_address=self.billing_address,
-                shipping_address=self.shipping_address, sales_rep=self.sales_rep, credits=self,
-                claim_reason=reason,
-            )
+            note = self._credit_note(on_date, claim_reason=reason)
             used = Decimal("0")
             for index, line in enumerate(lines):
                 share = net - used if index == len(lines) - 1 else round_money(net * line.net_amount() / whole)
@@ -2336,14 +2325,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 raise ValidationError(
                     f"{self.customer} is unregistered: say what the old invoice was for in "
                     "all, which decides whether the note is reported as a large one.")
-            note = Invoice.objects.create(
-                customer=self.customer, invoice_date=to_date(on_date) or timezone.localdate(),
-                reference=self.reference, receivable_account=self.receivable_account,
-                currency=self.currency, payment_terms=self.payment_terms,
-                billing_address=self.billing_address, shipping_address=self.shipping_address,
-                sales_rep=self.sales_rep, credits=self, corrects_old_supply=True,
-                old_invoice_value=old_value,
-            )
+            note = self._credit_note(on_date, corrects_old_supply=True, old_invoice_value=old_value)
             for fields, taxes in checked:
                 line = InvoiceLine.objects.create(invoice=note, **fields)
                 line.taxes.set(taxes)
@@ -2444,18 +2426,7 @@ class Invoice(PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             amount = left
         net = self.advance_net_for(amount)
         line = self.lines.get()  # One, by _check_deposit_shape().
-        credit_note = Invoice.objects.create(
-            customer=self.customer,
-            invoice_date=timezone.localdate(),
-            reference=self.reference,
-            receivable_account=self.receivable_account,
-            currency=self.currency,
-            payment_terms=self.payment_terms,
-            billing_address=self.billing_address,
-            shipping_address=self.shipping_address,
-            sales_rep=self.sales_rep,
-            credits=self,
-        )
+        credit_note = self._credit_note()
         returned = InvoiceLine.objects.create(
             invoice=credit_note,
             credits_line=line,
@@ -5047,10 +5018,11 @@ def claims(start, end):
         "lines__taxes", "lines__recorded_taxes__tax")
     rows = []
     for note in notes.order_by("invoice_date", "pk"):
+        net, tax = note.subtotal(), note.tax_total()
         rows.append({
             "note": note.pk, "number": note.number, "date": to_date(note.invoice_date),
             "customer": note.customer.name, "invoice": note.credits.number, "reason": note.claim_reason,
-            "net": note.subtotal(), "tax": note.tax_total(), "total": note.total(),
+            "net": net, "tax": tax, "total": net + tax,
             "complaint": _settled_complaint(note),
         })
     return rows

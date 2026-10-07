@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import F, Q, Sum
+from django.db.models import Count, F, Q, Sum
 from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, Party, PartyRole, PartyRoleAssignment, serialised, to_date
@@ -116,15 +116,18 @@ class Campaign(AuditModel):
 
     def results(self):
         """What it brought: leads, how many became customers, the business opened and the business won."""
-        opened = self.opportunities.all()
-        won = opened.filter(stage=Stage.WON)
+        leads = self.leads.aggregate(
+            leads=Count("id"), converted=Count("id", filter=Q(status=LeadStatus.CONVERTED)))
+        business = self.opportunities.aggregate(
+            opportunities=Count("id"), won=Count("id", filter=Q(stage=Stage.WON)),
+            open_value=Sum("value", filter=Q(stage__in=OPEN_STAGES)), won_value=Sum("value", filter=Q(stage=Stage.WON)))
         return {
-            "leads": self.leads.count(),
-            "converted": self.leads.filter(status=LeadStatus.CONVERTED).count(),
-            "opportunities": opened.count(),
-            "open_value": (opened.filter(stage__in=OPEN_STAGES).aggregate(v=Sum("value"))["v"] or ZERO).quantize(PAISA),
-            "won": won.count(),
-            "won_value": (won.aggregate(v=Sum("value"))["v"] or ZERO).quantize(PAISA),
+            "leads": leads["leads"],
+            "converted": leads["converted"],
+            "opportunities": business["opportunities"],
+            "open_value": (business["open_value"] or ZERO).quantize(PAISA),
+            "won": business["won"],
+            "won_value": (business["won_value"] or ZERO).quantize(PAISA),
             "budget": self.budget,
         }
 
@@ -165,17 +168,24 @@ class Lead(AuditModel):
         if not self.company_name.strip():
             raise ValidationError({"company_name": "Who asked?"})
         _check_owner(self.owner)
+        closing = getattr(self, "_closing", False)
         if self._state.adding:
             self.number = DocumentSequence.next_for("sales.lead", timezone.localdate(), name="Leads", prefix="LD-")
-            if self.status not in (LeadStatus.NEW, LeadStatus.WORKING):
-                raise ValidationError({"status": "A lead is converted with convert() and lost with lose()."})
-        elif not getattr(self, "_closing", False):
+        elif not closing:
             before = Lead.objects.get(pk=self.pk)
             if not before.is_open():
                 raise ValidationError(f"{self} is {before.get_status_display().lower()}; what it said then stands.")
-            if self.status not in (LeadStatus.NEW, LeadStatus.WORKING):
-                raise ValidationError({"status": "A lead is converted with convert() and lost with lose()."})
+        if not closing and not self.is_open():
+            raise ValidationError({"status": "A lead is converted with convert() and lost with lose()."})
         super().save(*args, **kwargs)
+
+    def _close(self, status, fields):
+        self.status = status
+        self._closing = True
+        try:
+            self.save(update_fields=[*fields, "status", "updated_at"])
+        finally:
+            self._closing = False
 
     def delete(self, *args, **kwargs):
         if not self.is_open():
@@ -205,14 +215,9 @@ class Lead(AuditModel):
         opportunity = Opportunity.objects.create(
             customer=party, title=self.interest or f"First business with {party.name}", lead=self,
             campaign=self.campaign, owner=self.owner, created_by=user, updated_by=user)
-        self.status = LeadStatus.CONVERTED
         self.converted_party = party
         self.converted_on = to_date(on_date) or timezone.localdate()
-        self._closing = True
-        try:
-            self.save(update_fields=["status", "converted_party", "converted_on", "updated_at"])
-        finally:
-            self._closing = False
+        self._close(LeadStatus.CONVERTED, ["converted_party", "converted_on"])
         return party, opportunity
 
     @serialised("status")
@@ -221,13 +226,8 @@ class Lead(AuditModel):
             raise ValidationError(f"{self} is {self.get_status_display().lower()}.")
         if not (reason or "").strip():
             raise ValidationError({"reason": "Say why it was lost; the next rep reads it."})
-        self.status = LeadStatus.LOST
         self.lost_reason = reason.strip()
-        self._closing = True
-        try:
-            self.save(update_fields=["status", "lost_reason", "updated_at"])
-        finally:
-            self._closing = False
+        self._close(LeadStatus.LOST, ["lost_reason"])
 
 
 class Opportunity(AuditModel):
@@ -428,14 +428,13 @@ def owner_for(user, owner):
 
 def pipeline(user):
     """Each stage's count, value and weighted value, over what the login may see."""
-    rows = []
-    for stage in Stage:
-        found = for_rep(Opportunity.objects.filter(stage=stage), user)
-        value = found.aggregate(v=Sum("value"))["v"] or ZERO
-        weighted = sum((row.weighted_value() for row in found), ZERO)
-        rows.append({"stage": stage.value, "label": stage.label, "count": found.count(),
-                     "value": value.quantize(PAISA), "weighted": weighted.quantize(PAISA)})
-    return rows
+    by_stage = {stage: [] for stage in Stage}
+    for row in for_rep(Opportunity.objects.all(), user):
+        by_stage[Stage(row.stage)].append(row)
+    return [{"stage": stage.value, "label": stage.label, "count": len(found),
+             "value": sum((row.value for row in found), ZERO).quantize(PAISA),
+             "weighted": sum((row.weighted_value() for row in found), ZERO).quantize(PAISA)}
+            for stage, found in by_stage.items()]
 
 
 def follow_ups_due(user, day=None):

@@ -1,9 +1,5 @@
-import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-
-type Row = Record<string, unknown>;
-
-const SECTION: FieldDef["ref"] = { endpoint: "/api/accounting/tds-sections/", permission: "accounting.view_tdssection", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
-const ACCOUNT: FieldDef["pick"] = { endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
+import { RecordScreen } from "../../views/RecordScreen";
+import { ACCOUNT, SECTION } from "./refs";
 
 /**
  * A month's deductions under one section paid over: everything deducted

@@ -1,10 +1,10 @@
 import { RecordScreen, type FieldDef, type PanelDef } from "../../views/RecordScreen";
+import { ACCOUNT } from "../accounts/refs";
+import { ITEM } from "./refs";
 
 type Row = Record<string, unknown>;
 
-const ACCOUNT: FieldDef["pick"] = { endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: (row: Row) => `${String(row.code)} · ${String(row.name)}` };
 const REASON: FieldDef["ref"] = { endpoint: "/api/inventory/adjustment-reasons/", permission: "inventory.view_adjustmentreason", label: (row: Row) => String(row.name || row.code) };
-const PACKING: FieldDef["pick"] = { endpoint: "/api/inventory/items/", permission: "inventory.view_item", label: (row: Row) => `${String(row.sku)} · ${String(row.name)}` };
 /** What a bale of this sack takes from stores when it is pressed: the cover, the straps, the label. */
 const PACKING_PANEL: PanelDef = {
   title: "A bale of it takes", permission: "manufacturing.view_packingline",
@@ -17,7 +17,7 @@ const PACKING_PANEL: PanelDef = {
   ],
   adder: { label: "Add packing", permission: "manufacturing.add_packingline", url: () => "/api/manufacturing/packing-lines/",
     fields: [
-      { key: "packing_item", label: "Material", kind: "pick", pick: PACKING },
+      { key: "packing_item", label: "Material", kind: "pick", pick: ITEM },
       { key: "quantity", label: "A bale takes", kind: "decimal", places: 4 },
     ],
     body: (values, item) => ({ item: item.id, packing_item: values.packing_item, quantity: values.quantity }) },
