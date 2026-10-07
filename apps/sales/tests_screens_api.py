@@ -395,6 +395,14 @@ class StillOwedAgreesWithAmountDueTests(ScreensTestCase):
         self.allocate(self.receipt("990"), reversed_later, "990")
         withheld.reverse()
 
+        # Paid again less the discount once the first payment came back: the 20 is owed.
+        lost = owed["discounted, returned, paid again less the discount"] = invoice()
+        returned = self.receipt("980")
+        self.allocate(returned, lost, "980")
+        lost.apply_settlement_discount(force=True)
+        returned.void(memo="Returned unpaid")
+        self.allocate(self.receipt("980"), lost, "980")
+
         answer = set(still_owed(Invoice.objects.all()).values_list("pk", flat=True))
         for name, document in owed.items():
             self.assertIn(document.pk, answer, f"{name}: due {document.amount_due()}")
@@ -405,6 +413,7 @@ class StillOwedAgreesWithAmountDueTests(ScreensTestCase):
         self.assertEqual(answer, {each.pk for each in everything
                                   if each.posted and not each.credits_id and each.amount_due() > 0})
         self.assertEqual(owed["part credited"].amount_due(), Decimal("700.00"))
+        self.assertEqual(lost.amount_due(), Decimal("20.00"))
         self.assertEqual(owed["part met from a deposit"].amount_due(), Decimal("700.00"))
 
 
