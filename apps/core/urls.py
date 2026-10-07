@@ -5,6 +5,7 @@ from .attachments_api import AttachmentViewSet
 from .history_api import HistoryView
 from .licences_api import LicenceViewSet
 from .numbering_api import DocumentSequenceViewSet
+from .users_api import UserViewSet
 from .views import (
     AddressViewSet,
     CompanyViewSet,
@@ -36,6 +37,7 @@ router.register("units-of-measure", UnitOfMeasureViewSet)
 router.register("payment-terms", PaymentTermsViewSet)
 router.register("company", CompanyViewSet)
 router.register("roles", RoleViewSet)
+router.register("users", UserViewSet)
 router.register("document-sequences", DocumentSequenceViewSet)
 router.register("licences", LicenceViewSet)
 router.register("attachments", AttachmentViewSet, basename="attachment")

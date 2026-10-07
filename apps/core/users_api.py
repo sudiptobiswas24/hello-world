@@ -36,6 +36,11 @@ class UserSerializer(serializers.ModelSerializer):
                   "roles", "employee_number", "employee_name", "password"]
         read_only_fields = ["last_login", "date_joined"]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data["roles"] = sorted(instance.groups.values_list("name", flat=True))
+        return data
+
     def validate_roles(self, names):
         groups = list(Group.objects.filter(name__in=names))
         missing = sorted(set(names) - {group.name for group in groups})
@@ -88,6 +93,13 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "deactivate": "auth.change_user",
         "reactivate": "auth.change_user",
     }
+
+    # A login has no created_by of its own; the history line is still written.
+    def perform_create(self, serializer):
+        serializer.save()
+
+    def perform_update(self, serializer):
+        serializer.save()
 
     def perform_destroy(self, instance):
         raise DRFValidationError({"non_field_errors": [

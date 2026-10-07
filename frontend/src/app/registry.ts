@@ -1036,6 +1036,12 @@ export const MODULES: Module[] = [
     icon: "settings",
     screens: [
       {
+        path: "logins", label: "Logins and roles", permission: "auth.view_user", create: "auth.add_user",
+        also: ["auth.view_group"],
+        keywords: "users logins roles password access sign in deactivate leaver", load: () => import("../modules/settings/Logins"),
+        detail: () => import("../modules/settings/LoginForm"),
+      },
+      {
         path: "import", label: "Bring old records in", permission: "core.import_records",
         keywords: "import csv go-live cutover opening balances old system migrate upload", load: () => import("../modules/settings/ImportRecords"),
       },

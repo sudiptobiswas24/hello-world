@@ -92,6 +92,8 @@ ROLES = {
         # Go-live: the old system's records, through the screen or the
         # command. Posts invoices and confirms orders, so the controller's.
         "core.import_records",
+        # Reads who may sign in, and as what; HR keeps it.
+        "auth.view_user", "auth.view_group",
         # Reference data the books depend on: where parties are and how
         # they are grouped, and what quantities are counted in.
         *full("core", "country", "partytag", "unitofmeasure"),
@@ -463,6 +465,10 @@ ROLES = {
     ],
     "HR Admin": [
         *REFERENCE,
+        # Logins and their roles: who may sign in, as what. Taking somebody
+        # on or letting them go is the personnel office's; superusers stay
+        # the admin's. A login is deactivated, never deleted.
+        "auth.view_user", "auth.add_user", "auth.change_user", "auth.view_group",
         # The factory licence and the boards' consents are the personnel office's to renew.
         *crud("core", "licence"),
         *full("hr", "attendanceday"),
