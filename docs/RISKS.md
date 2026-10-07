@@ -415,3 +415,9 @@ not cover, or is deleted with the commit that finishes it.
     payment run. Paid from the wrong account, it is reversed and paid
     again. And hiring an applicant makes a party whose code is the
     employee number given: pick it as the office numbers its people.
+49. **A lead's score is a rule of thumb, read from its facts.** Where it
+    came from, whether it can be reached, whether it said what it wants,
+    what has been done about it, how long it has sat: points added and
+    capped at 100, never stored, with the reasons beside the number. It
+    orders a morning's calls; it does not know the customer. The points
+    are in `Lead.score_reasons` to change as the plant learns what warms.

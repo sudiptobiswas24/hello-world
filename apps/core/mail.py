@@ -39,9 +39,6 @@ def send_document(document, party, what, *, to=None, subject=None, body=None, us
     `pdf` is the bytes to attach when the document renders more than one
     paper (an order's proforma), under `filename`.
     """
-    from django.core.mail import EmailMessage
-
-    from .history import EventKind, record
     from .models import Company
 
     recipient = to or recipient_for(party)
@@ -49,14 +46,34 @@ def send_document(document, party, what, *, to=None, subject=None, body=None, us
         raise ValidationError(f"{party} has no email address on the party or its primary contact.")
     company = Company.get()
     number = getattr(document, "number", "") or ""
-    message = EmailMessage(
-        subject=subject or " ".join(part for part in (what, number, "from", company.name) if part),
-        body=body or (f"Dear {party.name},\n\nPlease find {what.lower()} {number} attached.\n\n"
-                      f"Regards,\n{company.name}\n"),
-        to=[recipient],
+    return deliver(
+        document, recipient,
+        subject or " ".join(part for part in (what, number, "from", company.name) if part),
+        body or (f"Dear {party.name},\n\nPlease find {what.lower()} {number} attached.\n\n"
+                 f"Regards,\n{company.name}\n"),
+        user=user, what=what,
+        attachment=(filename or f"{number or what}.pdf", document.render_pdf() if pdf is None else pdf),
     )
-    message.attach(filename or f"{number or what}.pdf", document.render_pdf() if pdf is None else pdf,
-                   "application/pdf")
+
+
+def deliver(document, recipient, subject, body, *, user=None, what="Mail", attachment=None):
+    """
+    One mail, sent and written in the record's history with who it went
+    to: a document's paper (`attachment` is (filename, pdf bytes)), or a
+    note with none (a reply to a lead). Returns the address used.
+    """
+    from django.core.mail import EmailMessage
+
+    from .history import EventKind, record
+
+    subject = " ".join((subject or "").split())
+    if not recipient:
+        raise ValidationError("Say who it goes to: there is no email address.")
+    if not subject:
+        raise ValidationError({"subject": ["A mail has a subject."]})
+    message = EmailMessage(subject=subject, body=body or "", to=[recipient])
+    if attachment is not None:
+        message.attach(attachment[0], attachment[1], "application/pdf")
     message.send()
-    record(document, user, EventKind.MAIL, action="send", summary=f"{what} to {recipient}")
+    record(document, user, EventKind.MAIL, action="send", summary=f"{what} to {recipient}"[:255])
     return recipient
