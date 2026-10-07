@@ -5054,3 +5054,6 @@ def claims(start, end):
             "complaint": _settled_complaint(note),
         })
     return rows
+
+
+from .crm import Activity, Campaign, Lead, Opportunity  # noqa: E402,F401

@@ -205,11 +205,11 @@ can prove.
     position, as the fitters recorded them.** An issue not told the
     position leaves no gap to read. The critical list counts the spare
     on every shelf, not the maintenance store alone.
-33. **The morning checks know seventeen questions.** Maintenance and
+33. **The morning checks know eighteen questions.** Maintenance and
     calibration due, licences, MSME days, attendance, deliveries
     unsigned, freight unbilled, invoices and bills past due, four kinds
     of draft over two days, stock under level, meters unread, complaint
-    actions overdue. Anything else still waits to be asked. The mail
+    actions overdue, a rep's follow-ups due. Anything else still waits to be asked. The mail
     needs a mail server named (RUNBOOK.md) and a cron line; the home
     page needs neither.
 
@@ -274,3 +274,11 @@ not cover, or is deleted with the commit that finishes it.
 - ~~L6 A second role for a party already made~~ — done: given on the
   party's page (`parties/<id>/roles/`), asked as making the party is
   asked; a rep claims no vendor, and a role a document names stays.
+34. **The CRM is the rep's own notebook, kept here.** Nothing reads
+    mail or WhatsApp; a call is logged by hand. A lead converts to a
+    customer only by the rep's hand, and a lead is one company, so two
+    reps writing the same enquiry down make two leads. An
+    opportunity's chance is its stage's figure (10, 30, 60) unless the
+    rep types one, and the pipeline's weighted value is only as honest
+    as those. A rep sees their own and the leads nobody owns; the
+    manager sees all.

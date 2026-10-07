@@ -29,37 +29,37 @@ class Check:
     count: Callable
 
 
-def _maintenance_due(day):
+def _maintenance_due(day, user=None):
     from apps.manufacturing.maintenance import due_now
 
     return len(due_now(as_of=day))
 
 
-def _calibration_due(day):
+def _calibration_due(day, user=None):
     from apps.quality.calibration import due
 
     return len(due(within_days=30, on_date=day))
 
 
-def _licences_due(day):
+def _licences_due(day, user=None):
     from apps.core.licences import licences_due
 
     return len(licences_due(day))
 
 
-def _contractor_licences(day):
+def _contractor_licences(day, user=None):
     from apps.hr.contract_labour import licences_due
 
     return len(licences_due(within_days=30, on_date=day))
 
 
-def _msme_at_risk(day):
+def _msme_at_risk(day, user=None):
     from apps.purchasing.msme import msme_bills
 
     return sum(1 for row in msme_bills(day - 365 * DAY, day, as_of=day) if row["at_risk"] > 0)
 
 
-def _attendance_unmarked(day):
+def _attendance_unmarked(day, user=None):
     from apps.hr.attendance import unmarked_days
     from apps.hr.models import Employee
 
@@ -68,33 +68,33 @@ def _attendance_unmarked(day):
                for person in Employee.objects.filter(paid_by_attendance=True))
 
 
-def _deliveries_unsigned(day):
+def _deliveries_unsigned(day, user=None):
     from apps.sales.models import Delivery
 
     return Delivery.objects.filter(posted=True, reverses__isnull=True, received_on__isnull=True,
                                    delivery_date__lte=day - UNSIGNED_FOR).count()
 
 
-def _unbilled_freight(day):
+def _unbilled_freight(day, user=None):
     from apps.purchasing.freight import unbilled_freight
 
     return len(unbilled_freight())
 
 
-def _invoices_overdue(day):
+def _invoices_overdue(day, user=None):
     from apps.sales.models import ar_aging
 
     return sum(bucket["count"] for key, bucket in ar_aging(as_of=day).items() if key != "current")
 
 
-def _bills_overdue(day):
+def _bills_overdue(day, user=None):
     from apps.purchasing.models import ap_aging
 
     return sum(bucket["count"] for key, bucket in ap_aging(as_of=day).items() if key != "current")
 
 
 def _drafts(load, date_field):
-    def count(day):
+    def count(day, user=None):
         return load().filter(posted=False, **{f"{date_field}__lte": day - DRAFT_FOR}).count()
     return count
 
@@ -123,20 +123,26 @@ def _deliveries():
     return Delivery.objects
 
 
-def _stock_under_level(day):
+def _stock_under_level(day, user=None):
     from apps.purchasing.models import reorder_suggestions
 
     return len(reorder_suggestions(on_date=day))
 
 
-def _meters_unread(day):
+def _meters_unread(day, user=None):
     from apps.manufacturing.energy import summary
 
     yesterday = day - DAY
     return sum(1 for row in summary(yesterday, yesterday) if row["days_unread"])
 
 
-def _complaint_actions_overdue(day):
+def _follow_ups_due(day, user=None):
+    from apps.sales.crm import follow_ups_due
+
+    return follow_ups_due(user, day)
+
+
+def _complaint_actions_overdue(day, user=None):
     from apps.manufacturing.complaints import overdue_actions
 
     return len(overdue_actions(on_date=day))
@@ -177,6 +183,8 @@ CHECKS = [
           _meters_unread),
     Check("complaint_actions_overdue", "Complaint actions overdue", ("manufacturing.view_complaint",),
           "/quality/complaints", _complaint_actions_overdue),
+    Check("follow_ups_due", "Follow-ups due", ("sales.view_activity",), "/sales/activities?done_on__isnull=true",
+          _follow_ups_due),
 ]
 
 
@@ -187,7 +195,7 @@ def inbox(user, day=None):
     for check in CHECKS:
         if not all(user.has_perm(permission) for permission in check.permissions):
             continue
-        count = check.count(day)
+        count = check.count(day, user)
         if count:
             rows.append({"key": check.key, "label": check.label, "count": count, "href": check.href})
     return rows

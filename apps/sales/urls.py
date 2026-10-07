@@ -10,6 +10,7 @@ from .price_variation_views import (
     PriceIndexViewSet,
     PriceVariationBillViewSet,
 )
+from .crm_api import ActivityViewSet, CampaignViewSet, LeadViewSet, OpportunityViewSet
 from .views import (
     ThirdPartyReleaseViewSet,
     SuppliedItemViewSet,
@@ -62,5 +63,9 @@ router.register("call-offs", CallOffViewSet)
 router.register("price-indices", PriceIndexViewSet)
 router.register("price-clauses", PriceClauseViewSet)
 router.register("price-variation-bills", PriceVariationBillViewSet, basename="price-variation-bill")
+router.register("leads", LeadViewSet)
+router.register("opportunities", OpportunityViewSet)
+router.register("activities", ActivityViewSet)
+router.register("campaigns", CampaignViewSet)
 
 urlpatterns = router.urls

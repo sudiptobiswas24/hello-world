@@ -145,10 +145,14 @@ ROLES = {
         # material on the orders they took; billing the variation is accounts'.
         *full("sales", "calloff", "pricevariationclause", "supplieditem"),
         *view("sales", "priceindex", "priceindexvalue"),
+        # Before the order: the rep's own leads, opportunities and calls; campaigns are the manager's.
+        *full("sales", "lead", "opportunity", "activity"),
+        *view("sales", "campaign"),
         # deliberately NOT sales.post_invoice
     ],
     "AR Manager": [
         *REFERENCE,
+        *full("sales", "lead", "opportunity", "activity", "campaign"),
         *crud("sales", "salesorder"),
         *crud("sales", "salesorderline"),
         *crud("sales", "invoice"),
