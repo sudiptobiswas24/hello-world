@@ -74,7 +74,8 @@ class ExpenseClaim(AuditModel):
         return self.status in (ClaimStatus.DRAFT, ClaimStatus.SUBMITTED)
 
     def total(self):
-        return self.lines.aggregate(total=models.Sum("amount"))["total"] or ZERO
+        # At the paisa on either database: SQLite sums to whatever places the figures had.
+        return (self.lines.aggregate(total=models.Sum("amount"))["total"] or ZERO).quantize(Decimal("0.01"))
 
     LINES_FIXED = "its lines change while it is a draft; what is submitted is what is decided."
 

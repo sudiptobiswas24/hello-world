@@ -911,6 +911,28 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/LeaveForm"),
       },
       {
+        path: "claims", label: "Expense claims", permission: "hr.view_expenseclaim", create: "hr.add_expenseclaim",
+        also: ["hr.view_expenseline"],
+        keywords: "expense claim reimbursement travel conveyance spent", load: () => import("../modules/payroll/Claims"),
+        detail: () => import("../modules/payroll/ClaimForm"),
+      },
+      {
+        path: "appraisals", label: "Appraisals", permission: "hr.view_appraisal", create: "hr.add_appraisal",
+        keywords: "appraisal review rating performance", load: () => import("../modules/payroll/Appraisals"),
+        detail: () => import("../modules/payroll/AppraisalForm"),
+      },
+      {
+        path: "openings", label: "Job openings", permission: "hr.view_jobopening", create: "hr.add_jobopening",
+        also: ["hr.view_applicant"],
+        keywords: "recruitment vacancy opening hiring", load: () => import("../modules/payroll/Openings"),
+        detail: () => import("../modules/payroll/OpeningForm"),
+      },
+      {
+        path: "applicants", label: "Applicants", permission: "hr.view_applicant", create: "hr.add_applicant",
+        keywords: "applicant candidate interview offer hire", load: () => import("../modules/payroll/Applicants"),
+        detail: () => import("../modules/payroll/ApplicantForm"),
+      },
+      {
         path: "runs", label: "Pay runs", permission: "hr.view_payrun", create: "hr.add_payrun",
         keywords: "salary wages payslip", load: () => import("../modules/payroll/PayRuns"),
         detail: () => import("../modules/payroll/PayRunForm"),

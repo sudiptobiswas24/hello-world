@@ -859,3 +859,6 @@ from .payroll import (  # noqa: E402,F401
 
 from .attendance import AttendanceDay  # noqa: E402,F401
 from .contract_labour import ContractWorker, LabourContractor  # noqa: E402,F401
+from .expenses import ClaimStatus, ExpenseClaim, ExpenseLine  # noqa: E402,F401
+from .appraisals import Appraisal, AppraisalStatus  # noqa: E402,F401
+from .recruitment import Applicant, JobOpening, OpeningStatus, Source, Stage  # noqa: E402,F401

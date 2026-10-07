@@ -46,6 +46,9 @@ HOW_IT_IS_MADE = [
 # ledger or to stock.
 ROLES = {
     "Bookkeeper": [
+        # Pays approved expense claims: one journal each, from the cash or bank account chosen.
+        *view("hr", "expenseclaim", "expenseline"),
+        "hr.view_every_expenseclaim", "hr.pay_expenseclaim",
         *crud("accounting", "costcentre"),
         # Sees which months are closed and what was budgeted; keeps the
         # schedules of recurring entries, which run as drafts for the
@@ -70,6 +73,8 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        *view("hr", "expenseclaim", "expenseline"),
+        "hr.view_every_expenseclaim", "hr.pay_expenseclaim",
         # Reads whether the books agree with themselves and the server is
         # well; the errors people hit, and what was done about each.
         "core.check_health", "core.view_servererror", "core.change_servererror",
@@ -508,8 +513,15 @@ ROLES = {
         # The contract labour registers the inspector reads.
         *crud("hr", "labourcontractor", actions=("add", "change", "view")),
         *crud("hr", "contractworker", actions=("add", "change", "view")),
+        # Expense claims, appraisals and recruitment are the personnel office's.
+        *crud("hr", "expenseclaim"), *crud("hr", "expenseline"),
+        "hr.decide_expenseclaim", "hr.decide_any_expenseclaim", "hr.view_every_expenseclaim",
+        *crud("hr", "appraisal"), "hr.view_every_appraisal",
+        *crud("hr", "jobopening"), *crud("hr", "applicant"),
     ],
     "Payroll Officer": [
+        *view("hr", "expenseclaim", "expenseline"),
+        "hr.view_every_expenseclaim",
         *REFERENCE,
         *full("hr", "attendanceday"),
         *view("hr", "department", "employee", "leaverequest", "leavepolicy", "payslip", "payslipline",
@@ -526,6 +538,12 @@ ROLES = {
     "Line Manager": [
         *view("hr", "department", "employee", "leaverequest", "leavepolicy"),
         "hr.decide_leaverequest",
+        # Their reports' claims to decide, their appraisals to write, the openings to read.
+        *view("accounting", "account"),
+        *view("hr", "expenseclaim", "expenseline"),
+        "hr.decide_expenseclaim",
+        *crud("hr", "appraisal", actions=("add", "change", "view")),
+        *view("hr", "jobopening", "applicant"),
     ],
     "Employee Self Service": [
         *crud("purchasing", "purchaserequisition", actions=("add", "change", "view")),
@@ -535,6 +553,13 @@ ROLES = {
         *crud("hr", "leaverequest", actions=("add", "view")),
         *view("hr", "leavepolicy"),
         # deliberately NOT hr.decide_leaverequest
+        # One's own expenses, and one's own appraisal to read and acknowledge.
+        # The expense accounts, to say what a line was for.
+        *view("accounting", "account"),
+        *crud("hr", "expenseclaim", actions=("add", "change", "view")),
+        *crud("hr", "expenseline"),
+        *view("hr", "appraisal"),
+        "hr.acknowledge_appraisal",
     ],
 }
 
