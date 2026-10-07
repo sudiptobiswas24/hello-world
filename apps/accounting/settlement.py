@@ -252,8 +252,9 @@ def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
     note_rows, note_pointer = notes
     settled = (models.F("standing_paid") + models.F("corrected_total")
                + models.F("drawn_total"))
-    for name in reductions:
-        settled = settled + Coalesce(models.F(name), zero, output_field=money)
+    for name in reductions:  # "-name" puts one back: a discount withdrawn
+        amount = Coalesce(models.F(name.lstrip("-")), zero, output_field=money)
+        settled = settled - amount if name.startswith("-") else settled + amount
     drawn = Value(Decimal("0"), output_field=money)
     for rows, pointer in drawdowns:
         drawn = drawn + total_of(rows, pointer, "amount")
@@ -375,6 +376,25 @@ def undone_by_note(note_total, absorbed, write_off, discount, discount_taken, do
         share = discount if whole else round_money(rest * discount_taken / document_total)
         undo_discount = min(share, discount, rest)
     return undo_write_off, undo_discount
+
+
+def withdraw_discount(document, control_account, party, amount, on_date, memo):
+    """
+    Put `amount` of `document`'s settlement discount back on it: the
+    discount's own entry turned round, at the document's rate, on the day
+    the payment that earned it came back. Returns the entry.
+    """
+    taken = document.settlement_discount_entry
+    credited = any(line.credit for line in taken.lines.all() if line.account_id == control_account.pk)
+    base = round_money(amount * (document.exchange_rate or Decimal("1")))
+    to_control, to_other = (base, Decimal("0")) if credited else (Decimal("0"), base)
+    entry = JournalEntry.objects.create(date=on_date, reference=document.number, memo=memo)
+    JournalLine.objects.create(entry=entry, account=control_account, party=party, debit=to_control,
+                               credit=to_other, description=memo[:255])
+    JournalLine.objects.create(entry=entry, account=booked_beside(taken, control_account), party=party,
+                               debit=to_other, credit=to_control, description=memo[:255])
+    entry.post()
+    return entry
 
 
 def booked_beside(entry, control_account):
