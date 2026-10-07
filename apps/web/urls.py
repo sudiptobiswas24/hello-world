@@ -5,6 +5,7 @@ from . import views
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/app/", permanent=False)),
+    path("healthz/", views.healthz, name="healthz"),
     path("app/", views.shell, name="web-shell"),
     re_path(r"^app/(?P<path>.*)$", views.shell),
 ]

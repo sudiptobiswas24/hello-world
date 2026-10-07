@@ -286,6 +286,27 @@ def allocated_on(payment, excluding=None):
     return total
 
 
+def unapplied(payments):
+    """
+    The `payments` with money applied to nothing yet, each annotated with
+    `unallocated`. Asked in the database, through the allocation models
+    each trading side registered, so a list over a year does not build
+    every payment to find the few still open.
+    """
+    from django.db.models import DecimalField, ExpressionWrapper, F, OuterRef, Subquery, Sum, Value
+    from django.db.models.functions import Coalesce
+
+    money = DecimalField(max_digits=18, decimal_places=2)
+    applied = Value(Decimal("0"), output_field=money)
+    for model in ALLOCATION_MODELS:
+        total = (model.objects.filter(payment=OuterRef("pk")).order_by().values("payment")
+                 .annotate(total=Sum("amount")).values("total"))
+        applied = applied + Coalesce(Subquery(total, output_field=money), Value(Decimal("0"), output_field=money))
+    return payments.annotate(
+        unallocated=ExpressionWrapper(F("amount") - applied, output_field=money)
+    ).filter(unallocated__gt=0)
+
+
 def refuse_other_control_account(payment, account, document):
     """
     A payment settles a document only through the account the document

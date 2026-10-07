@@ -84,6 +84,9 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name", "legal_name", "email", "phone", "tax_id"]
     filter_fields = ["is_active", "role_assignments__role"]
     ordering_fields = ["code", "name"]
+    # ?gst=unknown: customers whose GST standing nobody has recorded, or
+    # registered with no GSTIN (the morning check's list).
+    extra_params = ("gst",)
 
     queryset = Party.objects.prefetch_related("role_assignments", "addresses", "contacts", "tags")
     serializer_class = PartySerializer
@@ -96,6 +99,14 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return scoped(super().get_queryset(), self.request.user)
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        if self.request.query_params.get("gst") == "unknown":
+            from apps.web.checks import customers_without_gst
+
+            queryset = customers_without_gst(queryset)
+        return queryset
 
     def perform_create(self, serializer):
         role = self.request.data.get("role")

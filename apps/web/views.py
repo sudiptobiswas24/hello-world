@@ -10,7 +10,8 @@ permissions on each request whatever the page chose to show them.
 
 from django.contrib.auth.decorators import login_required
 from django.contrib.staticfiles import finders
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
+from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import ensure_csrf_cookie
 
 # What the page may load, run and talk to: only this server. Styles set
@@ -56,3 +57,17 @@ def shell(request, path=""):
     response["Content-Security-Policy"] = POLICY
     response["Referrer-Policy"] = "same-origin"
     return response
+
+
+@never_cache
+def healthz(request):
+    """
+    For the container and whatever watches it: 200 when the database
+    answers, the schema is current, the disk has room and last night's
+    backup exists; 503 naming what does not, in words that give nothing
+    away. Nobody signs in to ask it. The Health screen says the rest.
+    """
+    from .health import server
+
+    state = server()
+    return JsonResponse({"ok": state["ok"], "problems": state["problems"]}, status=200 if state["ok"] else 503)

@@ -50,6 +50,23 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["department", "employment_status", "manager"]
     search_fields = ["employee_number", "party__name", "job_title"]
     ordering_fields = ["employee_number", "hire_date"]
+    # ?missing=uan or esi_number: members of that scheme today with the
+    # number blank (the morning check's list).
+    extra_params = ("missing",)
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        missing = self.request.query_params.get("missing")
+        if missing:
+            from apps.hr.payroll import Statutory
+            from apps.web.checks import members_without
+
+            kinds = {"uan": (Statutory.PF, Statutory.PF_EMPLOYER),
+                     "esi_number": (Statutory.ESI, Statutory.ESI_EMPLOYER)}.get(missing)
+            if kinds is None:
+                raise DRFValidationError({"missing": ["Ask for uan or esi_number."]})
+            queryset = members_without(queryset, missing, kinds, timezone.localdate())
+        return queryset
 
     @action(detail=True, methods=["get"], url_path="leave")
     def leave(self, request, pk=None):

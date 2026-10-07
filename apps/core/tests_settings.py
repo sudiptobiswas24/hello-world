@@ -82,9 +82,10 @@ class ThePlantsServerTests(SimpleTestCase):
     def test_safe_by_default(self):
         found = self.production(DJANGO_ALLOWED_HOSTS=" erp.example.in, 192.168.1.10 ",
                                 DJANGO_CSRF_TRUSTED_ORIGINS="https://erp.example.in")
+        # The container's own names come after the plant's, for /healthz/.
         self.assertEqual((found["debug"], found["redirect"], found["secure_cookie"],
                           found["whitenoise"], found["hosts"], found["origins"]),
-                         (False, True, True, True, ["erp.example.in", "192.168.1.10"],
+                         (False, True, True, True, ["erp.example.in", "192.168.1.10", "localhost", "127.0.0.1"],
                           ["https://erp.example.in"]))
 
     def test_plain_http_only_when_asked(self):
