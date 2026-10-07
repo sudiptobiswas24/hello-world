@@ -1,6 +1,7 @@
 import { ListView, type Column } from "../../views/ListView";
 
 type Row = Record<string, unknown> & { id: number };
+const open = (row: Row) => row.status === "new" || row.status === "working";
 
 const columns: Column<Row>[] = [
   { key: "number", label: "No.", sort: "created_at", width: "9rem" },
@@ -9,6 +10,7 @@ const columns: Column<Row>[] = [
   { key: "city", label: "City", width: "8rem" },
   { key: "source", label: "From", kind: "status", width: "8rem" },
   { key: "owner_name", label: "Rep", width: "10rem" },
+  { key: "score", label: "Warm", width: "6rem", render: (row) => (open(row) ? `${String(row.score)} / 100` : "") },
   { key: "status", label: "", kind: "status", width: "8rem" },
 ];
 
@@ -21,6 +23,7 @@ export default function Leads() {
       endpoint="/api/sales/leads/"
       columns={columns}
       facets={[
+        { label: "Hot", params: { min_score: "60" } },
         { label: "New", params: { status: "new" } },
         { label: "Being worked", params: { status: "working" } },
         { label: "Converted", params: { status: "converted" } },

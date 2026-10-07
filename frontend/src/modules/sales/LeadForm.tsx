@@ -33,12 +33,19 @@ export default function LeadForm() {
         { key: "interest", label: "What they asked for", wide: true, hint: "50 kg cement sacks, twenty thousand a month" },
         { key: "owner", label: "Rep", kind: "pick", pick: REP_PICK, hint: "A rep's leads are their own; empty, any rep may take it", show: (row) => String(row.owner_name || "Nobody yet") },
         { key: "status", label: "Status", kind: "choice", choices: [["new", "New"], ["working", "Being worked"]], initial: "new" },
+        { key: "score_summary", label: "How warm", readOnly: true, existingOnly: true, wide: true,
+          show: (row) => (open(row) ? `${String(row.score ?? "")} of 100: ${String(row.score_summary ?? "")}` : String(row.score_summary ?? "")) },
         { key: "converted_party_name", label: "Became", readOnly: true, existingOnly: true },
         { key: "converted_on", label: "On", kind: "date", readOnly: true, existingOnly: true },
         { key: "lost_reason", label: "Lost because", readOnly: true, existingOnly: true },
       ]}
       actions={[
         { label: "Take it", path: "take", permission: "sales.change_lead", when: (row) => open(row) && !row.owner, done: "Yours" },
+        { label: "Email them", path: "send", permission: "sales.change_lead", when: (row) => open(row) && Boolean(row.email),
+          done: "Sent", fields: [
+            { key: "subject", label: "Subject", kind: "text" },
+            { key: "body", label: "Message", kind: "textarea", wide: true },
+          ] },
         { label: "Convert to a customer", path: "convert", permission: "sales.add_opportunity", when: open, primary: true,
           done: "Customer made, with its first opportunity",
           fields: [

@@ -5,6 +5,7 @@ reads their own (and leads nobody owns), writes only as themselves, and
 opens an opportunity only on a customer they carry.
 """
 
+from django.db.models import Count, Q
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -62,23 +63,33 @@ class LeadSerializer(serializers.ModelSerializer):
     owner_name = serializers.CharField(source="owner.name", read_only=True, default="")
     campaign_name = serializers.CharField(source="campaign.name", read_only=True, default="")
     converted_party_name = serializers.CharField(source="converted_party.name", read_only=True, default="")
+    score = serializers.SerializerMethodField()
+    score_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = Lead
         fields = ["id", "number", "company_name", "contact_name", "phone", "email", "city", "state", "source",
                   "campaign", "campaign_name", "interest", "owner", "owner_name", "status", "converted_party",
-                  "converted_party_name", "converted_on", "lost_reason"]
+                  "converted_party_name", "converted_on", "lost_reason", "score", "score_summary"]
         read_only_fields = ["number", "status", "converted_party", "converted_on", "lost_reason"]
+
+    def get_score(self, lead):
+        return lead.score()
+
+    def get_score_summary(self, lead):
+        return lead.score_summary()
 
 
 class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
-    queryset = Lead.objects.select_related("owner", "campaign", "converted_party")
+    # The calls and visits made, counted once for the page: the score reads it.
+    queryset = Lead.objects.select_related("owner", "campaign", "converted_party").annotate(
+        done_count=Count("activities", filter=Q(activities__done_on__isnull=False)))
     serializer_class = LeadSerializer
     unowned_too = True
     filter_fields = ["status", "owner", "campaign", "source"]
     search_fields = ["number", "company_name", "contact_name", "phone", "email", "city"]
     ordering_fields = ["created_at", "company_name"]
-    action_permission_map = {"convert": "sales.add_opportunity", "lose": "sales.change_lead",
+    action_permission_map = {"convert": "sales.add_opportunity", "lose": "sales.change_lead", "send": "sales.change_lead",
                              "take": "sales.change_lead"}
 
     @action(detail=True, methods=["post"])
@@ -97,6 +108,28 @@ class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
         lead = self.get_object()
         lead.lose(request.data.get("reason", ""))
         return Response(self.get_serializer(lead).data)
+
+    # ?min_score=60: the warm ones. Read from each lead's facts, so it is
+    # filtered here rather than in the database.
+    extra_params = ("min_score",)
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        floor = self.request.query_params.get("min_score")
+        if floor not in (None, ""):
+            try:
+                floor = int(floor)
+            except ValueError:
+                raise DRFValidationError({"min_score": ["A score is a whole number."]})
+            queryset = queryset.filter(pk__in=[lead.pk for lead in queryset if lead.score() >= floor])
+        return queryset
+
+    @action(detail=True, methods=["post"])
+    def send(self, request, pk=None):
+        """{subject, body}: a mail to the lead's address, in its history and as an activity done today."""
+        lead = self.get_object()
+        sent_to = lead.email_them(str(request.data.get("subject", "")), str(request.data.get("body", "")), user=request.user)
+        return Response({"sent_to": sent_to})
 
     @action(detail=True, methods=["post"])
     def take(self, request, pk=None):
@@ -182,6 +215,23 @@ class OpportunityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSe
         opportunity = self.get_object()
         opportunity.lose(request.data.get("reason", ""), request.data.get("on_date"))
         return Response(self.get_serializer(opportunity).data)
+
+    @action(detail=False, methods=["get"])
+    def board(self, request):
+        """The open opportunities as columns by stage, each card what a rep needs to pick the next call."""
+        from .crm import OPEN_STAGES, Stage
+
+        columns = {stage: [] for stage in OPEN_STAGES}
+        rows = self.filter_queryset(self.get_queryset()).filter(stage__in=OPEN_STAGES).select_related(
+            "customer", "owner").order_by("expected_on", "id")
+        for row in rows:
+            columns[Stage(row.stage)].append({
+                "id": row.pk, "number": row.number, "customer": row.customer.name, "title": row.title,
+                "value": row.value, "chance": row.chance(), "weighted": row.weighted_value(),
+                "expected_on": row.expected_on, "owner": row.owner.name if row.owner_id else "",
+                "quotation": row.quotation_id,
+            })
+        return Response([{"stage": stage.value, "label": stage.label, "cards": cards} for stage, cards in columns.items()])
 
     @action(detail=False, methods=["get"])
     def pipeline(self, request):
