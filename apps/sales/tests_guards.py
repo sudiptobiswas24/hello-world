@@ -295,8 +295,11 @@ class PaymentDirectionTests(SalesGuardTestCase):
                                           amount=Decimal("50"))
         InvoicePayment.objects.create(invoice=credit_note, payment=refund,
                                       amount=Decimal("40"))
+        # The other 10 of the refund no note took is ours, with them: the
+        # receivable says 100 - 40 - 100 + 50. The balance read 0 while
+        # money paid on account counted for nothing.
         self.assertEqual((credit_note.amount_due(), outstanding_balance(self.customer)),
-                         (Decimal("0"), Decimal("0")))
+                         (Decimal("0"), Decimal("10")))
 
     def test_a_partial_credit_on_an_unpaid_invoice_leaves_the_rest_due(self):
         order = self.make_order("10", "10")

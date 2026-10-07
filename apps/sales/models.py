@@ -73,7 +73,9 @@ from apps.accounting.settlement import (
     refuse_other_control_account,
     booked_beside,
     settlement_discount_to_take,
+    standing_on_account,
     undone_by_note,
+    unapplied,
 )
 
 from .pricing import resolve_price
@@ -3064,7 +3066,19 @@ def outstanding_balance(customer):
     notes = Invoice.objects.filter(
         customer=customer, posted=True, credits__isnull=False
     ).prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES))
-    return owed - sum((note.refund_due() for note in notes), Decimal("0"))
+    # Money they sent that no invoice has taken yet is theirs against what they owe: left out, a
+    # customer who paid on account read as owing it, and their orders were held for credit.
+    received, paid_out = standing_on_account(
+        Payment.objects.filter(party=customer, counterpart_account__in=receivable_accounts()))
+    return owed - sum((note.refund_due() for note in notes), Decimal("0")) - received + paid_out
+
+
+def receivable_accounts():
+    """Where customers' money is: every account a posted invoice is receivable on, and the company's default."""
+    accounts = Account.objects.filter(models.Exists(
+        Invoice.objects.filter(posted=True, receivable_account=models.OuterRef("pk"))))
+    default = Company.get().default_receivable_account_id
+    return accounts | Account.objects.filter(pk=default) if default else accounts
 
 
 def not_paid_in_full(invoices):
@@ -3207,6 +3221,24 @@ class StatementEntry:
         return f"<{self.kind} {self.reference} {self.debit or -self.credit}>"
 
 
+def _payment_entries(payment, amount, description, as_of):
+    """
+    `amount` of `payment` as the statement shows it: in on its day, and
+    back out on the day it was voided. A bounced cheque left on as paid
+    read as nothing owed, and the statement run passed the customer by.
+    """
+    paid_on = to_date(payment.payment_date)
+    if paid_on > as_of:
+        return []
+    received = payment.is_receipt()
+    kind, side, back = ("Payment", "credit", "debit") if received else ("Refund", "debit", "credit")
+    rows = [StatementEntry(paid_on, kind, payment.number or "", description, **{side: amount})]
+    if payment.voided_entry_id and to_date(payment.voided_entry.date) <= as_of:
+        rows.append(StatementEntry(to_date(payment.voided_entry.date), f"{kind} returned",
+                                   payment.number or "", description, **{back: amount}))
+    return rows
+
+
 def _statement_currency(customer, currency):
     """
     A statement adds up movements, so they all have to be in one currency.
@@ -3218,6 +3250,10 @@ def _statement_currency(customer, currency):
         return currency
     used = set(
         Invoice.objects.filter(customer=customer, posted=True)
+        .values_list("currency_id", flat=True)
+        .distinct()
+    ) | set(
+        Payment.objects.filter(party=customer, posted=True, counterpart_account__in=receivable_accounts())
         .values_list("currency_id", flat=True)
         .distinct()
     )
@@ -3251,8 +3287,9 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
     entries = []
     invoices = (
         Invoice.objects.filter(customer=customer, posted=True, currency=currency)
+        .select_related("credits", "settlement_reversal_entry")
         .prefetch_related(
-            "lines__taxes", "payment_allocations__payment", "write_offs",
+            "lines__taxes", "payment_allocations__payment__voided_entry", "write_offs",
             "deposit_applications__deposit", "tds_withheld__section", "tds_withheld__reversed_entry",
         )
     )
@@ -3265,6 +3302,18 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
                 date, "Credit note", invoice.number,
                 f"Credit against {invoice.credits.number}", credit=invoice.total(),
             ))
+            # What the note undid of a write-off or a settlement discount is owed again before
+            # anything comes back as cash: the ledger puts it back in receivables on the note's day.
+            undone_on = (to_date(invoice.settlement_reversal_entry.date)
+                         if invoice.settlement_reversal_entry_id else None)
+            for kind, amount in (("Write-off undone", invoice.reversed_write_off),
+                                 ("Discount undone", invoice.reversed_discount)):
+                if amount and undone_on <= as_of:
+                    entries.append(StatementEntry(undone_on, kind, invoice.number,
+                                                  f"On {invoice.credits.number}", debit=amount))
+            for allocation in invoice.payment_allocations.all():
+                entries.extend(_payment_entries(allocation.payment, allocation.amount,
+                                                f"Of {invoice.number}", as_of))
             continue
 
         kind = "Down payment" if invoice.is_down_payment else "Invoice"
@@ -3273,13 +3322,8 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
         ))
 
         for allocation in invoice.payment_allocations.all():
-            paid_on = to_date(allocation.payment.payment_date)
-            if paid_on > as_of:
-                continue
-            entries.append(StatementEntry(
-                paid_on, "Payment", allocation.payment.number or "",
-                f"Against {invoice.number}", credit=allocation.amount,
-            ))
+            entries.extend(_payment_entries(allocation.payment, allocation.amount,
+                                            f"Against {invoice.number}", as_of))
         for application in invoice.deposit_applications.all():
             if to_date(application.date) > as_of:
                 continue
@@ -3318,6 +3362,14 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
                     discounted_on, "Settlement discount", invoice.number, "",
                     credit=invoice.settlement_discount_amount,
                 ))
+
+    # Money in or out that no document has taken yet is in receivables all the same: left off, the
+    # statement told a customer who paid on account that they owed it.
+    on_account = unapplied(Payment.objects.filter(
+        party=customer, posted=True, currency=currency, counterpart_account__in=receivable_accounts(),
+    )).select_related("voided_entry")
+    for payment in on_account:
+        entries.extend(_payment_entries(payment, payment.unallocated, "On account", as_of))
 
     entries.sort(key=lambda entry: (entry.date, entry.kind, entry.reference))
 
