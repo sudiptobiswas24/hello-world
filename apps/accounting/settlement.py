@@ -24,7 +24,7 @@ from django.db import transaction
 
 from apps.core.models import Company
 
-from .models import JournalEntry, JournalLine, round_money
+from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
 
 def settlement_difference(amount, document_rate, payment_rate):
@@ -305,6 +305,23 @@ def unapplied(payments):
     return payments.annotate(
         unallocated=ExpressionWrapper(F("amount") - applied, output_field=money)
     ).filter(unallocated__gt=0)
+
+
+def standing_on_account(payments):
+    """
+    Of `payments`, the money no document has taken and still stands, as
+    (received, paid out): a customer's receipt not yet matched to its
+    invoices, a payment to a vendor ahead of the bill. It sits in the
+    control account all the same, so a balance that leaves it out tells the
+    party they owe what they have paid.
+    """
+    received = paid_out = Decimal("0")
+    for payment in unapplied(payments.filter(posted=True, voided_entry__isnull=True)):
+        if payment.direction == PaymentDirection.RECEIPT:
+            received += payment.unallocated
+        else:
+            paid_out += payment.unallocated
+    return received, paid_out
 
 
 def settlement_discount_to_take(document, on_date, force=False):
