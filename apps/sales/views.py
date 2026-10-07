@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from django.shortcuts import get_object_or_404
@@ -26,7 +28,10 @@ from django.utils import timezone
 from django.db.models import Count, Prefetch
 
 from .teams import SalesTarget, SalesTeam, targets_report
+from .documents import render_pick_list_pdf
 from .models import (
+    deliveries_to_pick,
+    pick_list_for,
     INVOICE_FIGURES,
     SuppliedItem,
     ThirdPartyRelease,
@@ -516,6 +521,29 @@ class InvoicePaymentViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets
             raise DRFValidationError(exc.messages)
 
 
+def _pick_rows(rows):
+    """A pick list as the office reads it: codes and labels, the quantity exact."""
+    return [{
+        "id": index, "warehouse": row["warehouse"].code,
+        "bin": row["bin"].code if row["bin"] else "", "bin_id": row["bin"].pk if row["bin"] else None,
+        "item": f"{row['item'].sku} · {row['item'].name}", "item_id": row["item"].pk,
+        "lot": row["lot"].code if row["lot"] else "", "lot_id": row["lot"].pk if row["lot"] else None,
+        "quantity": row["quantity"], "for": row["for"], "problem": row["problem"],
+    } for index, row in enumerate(rows, start=1)]
+
+
+def _where(lines):
+    """The warehouse a delivery picks at, or a name for several."""
+    warehouses = {line.warehouse for line in lines}
+    return warehouses.pop() if len(warehouses) == 1 else SimpleNamespace(name="Several warehouses")
+
+
+def _paper(pdf, filename):
+    response = HttpResponse(pdf, content_type="application/pdf")
+    response["Content-Disposition"] = f'inline; filename="{filename}"'
+    return response
+
+
 class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     customer_path = "sales_order__customer"
     search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name",
@@ -535,7 +563,51 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         "received": "sales.change_delivery",
         "send": "sales.change_delivery",
         "unacknowledged": "sales.view_delivery",
+        "pick_list": "sales.view_delivery",
+        "pick_list_pdf": "sales.view_delivery",
+        "day_pick_list": "sales.view_delivery",
+        "day_pick_list_pdf": "sales.view_delivery",
     }
+
+    # Named "picking", not "pick-list": a route name ending in -list reads as a collection.
+    @action(detail=True, methods=["get"], url_path="pick-list", url_name="picking")
+    def pick_list(self, request, pk=None):
+        """The route through the shelves for this draft shipment, in walking order."""
+        delivery = self.get_object()
+        return Response({"delivery": delivery.pk, "number": delivery.number, "rows": _pick_rows(delivery.pick_list())})
+
+    @action(detail=True, methods=["get"], url_path="pick-list/pdf", url_name="picking-pdf")
+    def pick_list_pdf(self, request, pk=None):
+        delivery = self.get_object()
+        paper = render_pick_list_pdf(
+            delivery.pick_list(), heading="Pick List", document=delivery, where=_where(delivery.lines.all()),
+            meta=[["Delivery", delivery.number or "(draft)"], ["Date", f"{delivery.delivery_date:%d %b %Y}"],
+                  ["Customer", delivery.sales_order.customer.name], ["Order", delivery.sales_order.number or ""]])
+        return _paper(paper, f"pick-{delivery.number or f'draft-{delivery.pk}'}.pdf")
+
+    def _days_picking(self, request):
+        day = to_date(request.query_params.get("date")) or timezone.localdate()
+        warehouse = record_or_404(Warehouse, request.query_params.get("warehouse"), "warehouse", optional=True)
+        deliveries = list(deliveries_to_pick(day, warehouse).filter(
+            pk__in=self.filter_queryset(self.get_queryset()).values("pk")))
+        return day, warehouse, deliveries, pick_list_for(deliveries, warehouse=warehouse)
+
+    @action(detail=False, methods=["get"], url_path="pick-list", url_name="day-picking")
+    def day_pick_list(self, request):
+        """One route for the day's draft shipments (?date=, today by default; ?warehouse= to keep to one)."""
+        day, warehouse, deliveries, rows = self._days_picking(request)
+        return Response({"date": day, "warehouse": warehouse.pk if warehouse else None,
+                         "deliveries": [delivery.number or f"Draft {delivery.pk}" for delivery in deliveries],
+                         "rows": _pick_rows(rows)})
+
+    @action(detail=False, methods=["get"], url_path="pick-list/pdf", url_name="day-picking-pdf")
+    def day_pick_list_pdf(self, request):
+        day, warehouse, deliveries, rows = self._days_picking(request)
+        paper = render_pick_list_pdf(
+            rows, heading="Pick List", document=SimpleNamespace(number="", lines=[]),
+            where=warehouse or SimpleNamespace(name="Every warehouse"),
+            meta=[["Date", f"{day:%d %b %Y}"], ["Deliveries", str(len(deliveries))]])
+        return _paper(paper, f"pick-{day:%Y-%m-%d}.pdf")
 
     @action(detail=True, methods=["post"])
     def received(self, request, pk=None):
