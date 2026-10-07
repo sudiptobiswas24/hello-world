@@ -8,6 +8,7 @@ and the punch file both read this way.
 import csv
 import datetime
 import io
+import re
 from decimal import Decimal, InvalidOperation
 
 
@@ -26,6 +27,12 @@ def read(text):
         {(key or "").strip().lower(): (value or "").strip() for key, value in row.items()}
         for row in reader
     ]
+
+
+def says(key, word):
+    """Whether a heading says `word`: as a word of its own ("Ref No."), or inside a longer one ("Particulars")."""
+    tokens = re.split(r"[^a-z0-9]+", key)
+    return word in tokens or (len(word) > 3 and word in key)
 
 
 # -- reading a cell ------------------------------------------------------
