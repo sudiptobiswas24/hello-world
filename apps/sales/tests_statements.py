@@ -5,6 +5,15 @@ Dunning chases one invoice at a time. A customer with forty open items
 wants one document that adds up, and the property worth testing is
 exactly that: the running balance has to foot to what they owe, under
 every settlement path the system supports.
+
+  And to the ledger, after every correction. A cheque that bounced is
+  owed again from the day it came back; before then it stood. A refund of
+  a credit note is shown. What a credit note undid of a write-off or a
+  discount is owed again before anything comes back as cash. Money
+  received on account, or sent them on account, is theirs against what
+  they owe; a customer who has only paid ahead is sent a statement in
+  that money. Each of these read differently from the receivable, and a
+  bounced cheque read as nothing owed, so no statement went at all.
 """
 
 import datetime
@@ -12,9 +21,11 @@ from decimal import Decimal
 
 from django.core import mail
 from django.core.exceptions import ValidationError
+from django.db.models import Sum
 from django.test import override_settings
 
-from apps.core.models import Currency, Party, PartyRole, PartyRoleAssignment
+from apps.accounting.models import JournalLine, Payment, PaymentDirection
+from apps.core.models import Company, Currency, Party, PartyRole, PartyRoleAssignment
 
 from .models import customer_statement, email_statement, outstanding_balance, send_statements
 from .tests_base import SalesTestCase
@@ -23,10 +34,25 @@ from .tests_base import SalesTestCase
 class StatementBalanceTests(SalesTestCase):
     """Every path that clears a receivable must show up, or it won't foot."""
 
-    def assert_foots(self, as_of=datetime.date(2026, 12, 31)):
+    def assert_foots(self, as_of=datetime.date(2099, 12, 31)):
+        # Past anything a test dates, today included: a credit note is dated the day it is made, and
+        # an as-of in 2026 would leave it off once the calendar passed it.
         statement = customer_statement(self.customer, as_of=as_of)
-        self.assertEqual(statement["closing_balance"], outstanding_balance(self.customer))
+        receivable = JournalLine.objects.filter(account=self.ar, party=self.customer, entry__posted=True).aggregate(
+            owed=Sum("debit") - Sum("credit"))["owed"] or Decimal("0")
+        self.assertEqual((statement["closing_balance"], outstanding_balance(self.customer)), (receivable, receivable))
         return statement
+
+    def money_out(self, amount, on):
+        refund = Payment.objects.create(
+            party=self.customer, direction=PaymentDirection.DISBURSEMENT, payment_date=on,
+            amount=Decimal(amount), currency=self.usd, bank_account=self.bank, counterpart_account=self.ar,
+        )
+        refund.post()
+        return refund
+
+    def kinds(self, statement):
+        return [(entry.kind, entry.debit or -entry.credit) for entry in statement["entries"]]
 
     def test_a_plain_invoice(self):
         self.bill(self.make_order("10", "100"))
@@ -91,6 +117,66 @@ class StatementBalanceTests(SalesTestCase):
                       invoice, Decimal("200"))
         invoice.write_off(Decimal("100"), on_date=datetime.date(2026, 6, 1))
         self.assert_foots()
+
+
+    def test_a_bounced_cheque_is_owed_again_from_the_day_it_came_back(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        cheque = self.receipt(Decimal("1000"), on=datetime.date(2026, 3, 10))
+        self.allocate(cheque, invoice, Decimal("1000"))
+        cheque.void(on_date=datetime.date(2026, 3, 20))
+        statement = self.assert_foots()
+        self.assertEqual(self.kinds(statement), [("Invoice", Decimal("1000")), ("Payment", Decimal("-1000")),
+                                                 ("Payment returned", Decimal("1000"))])
+        self.assertEqual(customer_statement(self.customer, as_of=datetime.date(2026, 3, 15))["closing_balance"],
+                         Decimal("0"))
+        sent, _ = send_statements(as_of=datetime.date(2026, 12, 31), customers=[self.customer], send=False)
+        self.assertEqual([each["closing_balance"] for each in sent], [Decimal("1000")])
+
+    def test_a_refund_of_a_credit_note(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        self.allocate(self.receipt(Decimal("1000")), invoice, Decimal("1000"))
+        note = invoice.create_credit_note()
+        self.allocate(self.money_out("1000", on=note.invoice_date), note, Decimal("1000"))
+        statement = self.assert_foots()
+        self.assertEqual(statement["closing_balance"], Decimal("0"))
+        self.assertIn(("Refund", Decimal("1000")), self.kinds(statement))
+
+    def test_a_write_off_a_credit_note_undid_is_owed_again(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        self.allocate(self.receipt(Decimal("700")), invoice, Decimal("700"))
+        invoice.write_off(on_date=datetime.date(2026, 4, 1), reason="The rest")
+        invoice.create_credit_note()
+        statement = self.assert_foots()
+        self.assertEqual(statement["closing_balance"], Decimal("-700"))
+        self.assertIn(("Write-off undone", Decimal("300")), self.kinds(statement))
+
+    def test_a_discount_a_credit_note_undid_is_owed_again(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        self.allocate(self.receipt(Decimal("980"), on=datetime.date(2026, 3, 8)), invoice, Decimal("980"))
+        invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 8))
+        invoice.create_credit_note()
+        statement = self.assert_foots()
+        self.assertEqual(statement["closing_balance"], Decimal("-980"))
+        self.assertIn(("Discount undone", Decimal("20")), self.kinds(statement))
+
+    def test_money_on_account_is_theirs_until_it_bounces(self):
+        self.bill(self.make_order("10", "100"))
+        received = self.receipt(Decimal("500"))
+        self.money_out("50", on=datetime.date(2026, 3, 12))
+        statement = self.assert_foots()
+        self.assertEqual(statement["closing_balance"], Decimal("550"))
+        self.assertEqual([(entry.kind, entry.description) for entry in statement["entries"][1:]],
+                         [("Payment", "On account"), ("Refund", "On account")])
+        received.void(on_date=datetime.date(2026, 3, 20))
+        self.assertEqual(self.assert_foots()["closing_balance"], Decimal("1050"))
+
+    def test_a_customer_who_has_only_paid_ahead_is_sent_a_statement_in_that_money(self):
+        company = Company.get()
+        company.default_receivable_account = self.ar
+        company.save()
+        self.receipt(Decimal("500"))
+        statement = self.assert_foots()
+        self.assertEqual((statement["currency"], statement["closing_balance"]), (self.usd, Decimal("-500")))
 
 
 class StatementShapeTests(SalesTestCase):
