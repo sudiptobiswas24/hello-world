@@ -1,4 +1,5 @@
 import type { FieldDef } from "../../views/RecordScreen";
+import { SECTION } from "../accounts/refs";
 
 type Row = Record<string, unknown>;
 
@@ -55,4 +56,20 @@ export const GST_FIELDS: FieldDef[] = [
   { key: "gstin", label: "GSTIN", hint: "Checked character by character; its state and PAN are read off it" },
   { key: "gst_state", label: "GST state code", hint: "Only for an unregistered party: 27 for Maharashtra" },
   { key: "pan", label: "PAN", hint: "Only without a GSTIN" },
+];
+
+/** A vendor's MSME and TDS standing, kept on its tax profile beside the GSTIN. */
+export const MSME_TDS_FIELDS: FieldDef[] = [
+  { key: "msme_category", label: "MSME", kind: "choice", choices: [["", "—"], ["micro", "Micro"], ["small", "Small"], ["medium", "Medium"]],
+    hint: "As their Udyam registration says; micro and small are paid within 45 days" },
+  { key: "udyam_number", label: "Udyam number", hint: "UDYAM-XX-00-0000000" },
+  { key: "tds_section", label: "TDS section", kind: "ref", ref: SECTION, hint: "What their bills are deducted under" },
+];
+
+/** The account a vendor is paid into. */
+export const BANK_FIELDS: FieldDef[] = [
+  { key: "account_name", label: "In the name of" },
+  { key: "bank_name", label: "Bank" },
+  { key: "account_number", label: "Account number" },
+  { key: "ifsc", label: "IFSC", hint: "The branch's code for NEFT and RTGS: HDFC0001234" },
 ];

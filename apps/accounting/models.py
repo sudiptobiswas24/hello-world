@@ -850,6 +850,18 @@ class PaymentDirection(models.TextChoices):
     DISBURSEMENT = "disbursement", "Disbursement (money out)"
 
 
+# What a trading module refuses of a payment with one of its parties
+# (a vendor whose payments are held), registered when it loads:
+# `check(payment) -> the reason in words, or None`. Accounting imports
+# neither module, so each says its own.
+PAYMENT_CHECKS = []
+
+
+def register_payment_check(check):
+    if check not in PAYMENT_CHECKS:
+        PAYMENT_CHECKS.append(check)
+
+
 class Payment(AuditModel):
     """
     Money actually moving, posted to the ledger. Deliberately generic and
@@ -949,6 +961,10 @@ class Payment(AuditModel):
     def post(self):
         if self.posted:
             raise ValidationError("This payment is already posted.")
+        for check in PAYMENT_CHECKS:
+            said = check(self)
+            if said:
+                raise ValidationError(said)
 
         self.payment_date = to_date(self.payment_date)
         if not self.number:

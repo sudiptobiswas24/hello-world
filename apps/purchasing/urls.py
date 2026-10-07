@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
+from .vendors_api import NewVendorViewSet, VendorProfileViewSet
 from .tds_api import TdsChallanViewSet, TdsDeductionViewSet
 
 from .documents_api import (
@@ -43,6 +44,8 @@ router.register("bill-lines", BillLineViewSet)
 router.register("goods-receipts", GoodsReceiptViewSet)
 router.register("goods-receipt-lines", GoodsReceiptLineViewSet)
 router.register("vendor-prices", VendorPriceViewSet)
+router.register("vendor-profiles", VendorProfileViewSet)
+router.register("vendors", NewVendorViewSet, basename="new-vendor")
 router.register("reorder-rules", ReorderRuleViewSet)
 router.register("budgets", BudgetViewSet)
 router.register("approval-policies", PurchaseApprovalPolicyViewSet)

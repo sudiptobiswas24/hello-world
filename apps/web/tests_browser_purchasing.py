@@ -289,3 +289,76 @@ class PurchasingInTheBrowserTests(BrowserTestCase):
         receipt = GoodsReceipt.objects.get(purchase_order=order)
         self.assertEqual((receipt.posted, receipt.lines.count()), (False, 1))
         self.assertEqual(self.problems, [])
+
+    def test_a_vendor_made_in_one_form_and_blocked_by_accounts_not_the_buyer(self):
+        """
+        The buyer adds a vendor with the bank they are paid into and what we
+        buy on, and orders from them on those terms. Blocking a vendor is not
+        the buyer's: on the vendor's page it is shown and not offered. The AP
+        Manager blocks them there, saying why, and the buyer's order is then
+        refused with that reason.
+        """
+        from apps.core.models import PartyBankAccount
+        from apps.purchasing.models import VendorProfile
+
+        buyer = self.sign_in(self.person("Purchasing Clerk"), "/app/purchasing/vendors/new")
+        expect(buyer.get_by_role("region", name="Terms: standing")).to_have_count(0)
+        buyer.get_by_label("Code", exact=True).fill("V-BOPP")
+        buyer.get_by_label("Name", exact=True).fill("Gujarat BOPP Films")
+        address = buyer.get_by_role("region", name="Address")
+        address.get_by_label("Line 1").fill("GIDC Plot 4")
+        address.get_by_label("City").fill("Vapi")
+        bank = buyer.get_by_role("region", name="Where they are paid")
+        bank.get_by_label("In the name of").fill("Gujarat BOPP Films")
+        bank.get_by_label("Bank", exact=True).fill("SBI")
+        bank.get_by_label("Account number").fill("30012345678")
+        bank.get_by_label("IFSC").fill("SBIN0001234")
+        buyer.get_by_label("Usual lead time, days").fill("14")
+        buyer.get_by_label("Freight").select_option(label="Ex works: we collect")
+        buyer.get_by_role("button", name="Add vendor").click()
+        buyer.wait_for_url(re.compile(r"/purchasing/vendors/\d+$"))
+        made = Party.objects.get(code="V-BOPP")
+        self.assertEqual(PartyBankAccount.objects.get(party=made).ifsc, "SBIN0001234")
+        terms = VendorProfile.objects.get(party=made)
+        self.assertEqual((terms.lead_time_days, terms.freight_terms, terms.standing), (14, "ex_works", "approved"))
+        page_terms = buyer.get_by_role("region", name="Purchase terms")
+        expect(page_terms.get_by_label("Usual lead time, days")).to_have_value("14")
+        expect(page_terms.get_by_role("combobox", name="Standing")).to_have_count(0)
+
+        # The order to them takes their terms, and the buyer may still change them while it is a draft.
+        buyer.goto(self.url("/purchasing/orders/new"))
+        buyer.get_by_role("combobox", name="Vendor").fill("Gujarat")
+        buyer.get_by_role("option", name=re.compile("Gujarat BOPP Films")).click()
+        buyer.get_by_role("button", name="Create", exact=True).click()
+        buyer.wait_for_url(re.compile(r"/purchasing/orders/\d+$"))
+        expect(buyer.get_by_role("region", name="Terms").get_by_label("Freight")).to_have_value("ex_works")
+        buyer.get_by_role("combobox", name="Item to add").fill("WDG")
+        buyer.get_by_role("option", name=re.compile("WDG-1")).click()
+        buyer.get_by_label("Quantity to add").fill("10")
+        buyer.get_by_label("Unit price to add").fill("4")
+        buyer.get_by_role("button", name="Add line").click()
+        expect(buyer.locator(".lines tbody tr", has_text="Widget")).to_have_count(1)
+        order = PurchaseOrder.objects.get(pk=int(buyer.url.rsplit("/", 1)[1]))
+
+        # Accounts block them on their page, and must say why.
+        ap = self.new_page()
+        self.sign_in(self.person("AP Manager"), f"/app/purchasing/vendors/{made.pk}", page=ap)
+        region = ap.get_by_role("region", name="Purchase terms")
+        region.get_by_role("combobox", name="Standing").select_option(label="Blocked: no new order")
+        region.get_by_role("button", name="Save terms").click()
+        expect(region.locator(".field-error")).to_contain_text("Say why they are on trial or blocked.")
+        region.get_by_label("Why", exact=True).fill("Short-weight film twice")
+        region.get_by_role("button", name="Save terms").click()
+        expect(region.get_by_role("button", name="Save terms")).to_have_count(0)
+        terms.refresh_from_db()
+        self.assertEqual((terms.standing, terms.standing_reason), ("blocked", "Short-weight film twice"))
+
+        buyer.reload()
+        buyer.get_by_role("button", name="Confirm", exact=True).click()
+        expect(buyer.get_by_text(re.compile("is blocked \\(Short-weight film twice\\)")).first).to_be_visible()
+        order.refresh_from_db()
+        self.assertEqual(order.status, "draft")
+        # The two refusals asked for, a block without a reason and the order to a blocked
+        # vendor, are each a 400 the browser logs; anything else is a problem.
+        refused = [problem for problem in self.problems if "status of 400" in problem]
+        self.assertEqual((len(refused), [problem for problem in self.problems if problem not in refused]), (2, []))

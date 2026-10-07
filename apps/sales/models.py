@@ -17,6 +17,7 @@ from apps.accounting.models import (
     Tax,
         round_money,
 )
+from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval
@@ -221,22 +222,6 @@ class Industry(models.TextChoices):
     FEED = "feed", "Animal feed"
     CHEMICALS = "chemicals", "Chemicals and polymers"
     OTHER = "other", "Other"
-
-
-class FreightTerms(models.TextChoices):
-    EX_WORKS = "ex_works", "Ex works: they collect"
-    FOR_DESTINATION = "for_destination", "FOR destination: we deliver, the freight is ours"
-    TO_PAY = "to_pay", "To pay: we send, they pay the transporter"
-
-
-class Incoterm(models.TextChoices):
-    EXW = "EXW", "EXW: ex works"
-    FCA = "FCA", "FCA: free carrier"
-    FOB = "FOB", "FOB: free on board"
-    CFR = "CFR", "CFR: cost and freight"
-    CIF = "CIF", "CIF: cost, insurance and freight"
-    DAP = "DAP", "DAP: delivered at place"
-    DDP = "DDP", "DDP: delivered duty paid"
 
 
 class CustomerProfile(AuditModel):

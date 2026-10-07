@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from reportlab.lib.units import mm
 
+from apps.accounting.trade_terms import freight_meta
 from apps.core.documents import money, render_document, rupees_in_words
 from apps.core.models import Company
 
@@ -60,19 +61,6 @@ def render_invoice_pdf(invoice):
         document=invoice, party=invoice.customer, address=invoice.billing_address,
         meta=meta, totals=totals, note=note, qr=qr,
     )
-
-
-def freight_meta(order):
-    """How the goods travel, as the order recorded it; fixed on the order once anything has shipped."""
-    meta = []
-    if order.freight_terms:
-        meta.append(["Freight", order.get_freight_terms_display().split(":")[0]])
-    if order.incoterm:
-        # Not "FOB Jebel Ali": an F-term names the port of loading, so the discharge port goes on its own line.
-        meta.append(["Incoterm", order.incoterm])
-    if order.port_of_discharge:
-        meta.append(["Port of discharge", order.port_of_discharge])
-    return meta
 
 
 def _ship_to(order):
