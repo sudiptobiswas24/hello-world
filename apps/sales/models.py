@@ -3111,9 +3111,11 @@ def still_owed(invoices):
 
     Decided in the database. amount_due() is the total less what was
     settled otherwise (paid by payments that stand, discounted, written
-    off, met from a deposit) less what was credited, the credit taken
-    only down to nothing; so it is above nothing exactly when the total
-    is more than all of those together. The total is posted_total, the
+    off, met from a deposit, withheld as tax) less what was credited,
+    the credit taken only down to nothing; so it is above nothing exactly
+    when the total is more than all of those together. Tax withheld was
+    left out here once, and an invoice paid net of it stayed on every
+    open list at nothing due. The total is posted_total, the
     figure the invoice was posted at and cannot move from. An invoice
     with none recorded is asked amount_due() itself.
 
@@ -3124,7 +3126,8 @@ def still_owed(invoices):
     owed = owed_beyond(
         not_paid_in_full(invoices.filter(posted=True, credits__isnull=True)),
         notes=(Invoice.objects.filter(posted=True), "credits"),
-        drawdowns=(DepositApplication.objects.all(), "invoice"),
+        drawdowns=[(DepositApplication.objects.all(), "invoice"),
+                   (CustomerTds.objects.filter(reversed_entry__isnull=True), "invoice")],
         reductions=("written_off_amount", "settlement_discount_amount"),
     )
     unrecorded = invoices.filter(posted=True, credits__isnull=True, posted_total__isnull=True)

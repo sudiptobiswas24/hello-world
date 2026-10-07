@@ -4897,7 +4897,8 @@ def bills_still_owed(bills):
     owed = owed_beyond(
         not_paid_in_full(bills.filter(posted=True, debits__isnull=True)),
         notes=(Bill.objects.filter(posted=True), "debits"),
-        drawdowns=(PrepaymentApplication.objects.all(), "bill"),
+        drawdowns=[(PrepaymentApplication.objects.all(), "bill"),
+                   (TdsDeduction.objects.filter(reversed_entry__isnull=True), "bill")],
         reductions=("settlement_discount_amount",),
     )
     unrecorded = bills.filter(posted=True, debits__isnull=True, posted_total__isnull=True)

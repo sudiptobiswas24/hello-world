@@ -232,9 +232,10 @@ def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
     together.
 
     `candidates` comes annotated with `standing_paid` (each side's
-    not_paid_in_full); `notes` and `drawdowns` are (queryset, field
-    pointing at the document). Documents with no posted total recorded
-    are left out: their side asks amount_due() of each itself.
+    not_paid_in_full); `notes` is (queryset, field pointing at the
+    document), and `drawdowns` a list of them: a deposit or prepayment
+    drawn down, tax withheld. Documents with no posted total recorded are
+    left out: their side asks amount_due() of each itself.
     """
     from django.db import models
     from django.db.models import DecimalField, OuterRef, Subquery, Value
@@ -249,14 +250,16 @@ def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
         return Coalesce(Subquery(summed), zero, output_field=money)
 
     note_rows, note_pointer = notes
-    drawn_rows, drawn_pointer = drawdowns
     settled = (models.F("standing_paid") + models.F("corrected_total")
                + models.F("drawn_total"))
     for name in reductions:
         settled = settled + Coalesce(models.F(name), zero, output_field=money)
+    drawn = Value(Decimal("0"), output_field=money)
+    for rows, pointer in drawdowns:
+        drawn = drawn + total_of(rows, pointer, "amount")
     return candidates.annotate(
         corrected_total=total_of(note_rows, note_pointer, "posted_total"),
-        drawn_total=total_of(drawn_rows, drawn_pointer, "amount"),
+        drawn_total=models.ExpressionWrapper(drawn, output_field=money),
     ).filter(posted_total__isnull=False, posted_total__gt=settled)
 
 
