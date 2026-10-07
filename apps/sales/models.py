@@ -3570,6 +3570,10 @@ class Delivery(AuditModel):
                   "customer's inspector's release, as their profile said when it was "
                   "posted. Recorded, so changing the profile later does not rewrite it.",
     )
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="What shipping it posted: cost of sales out of stock, or back in on a return.",
+    )
     # How it went: often known only after the truck left, so kept apart
     # from what the delivery moved and recorded after posting too.
     transporter = models.ForeignKey(
@@ -3931,7 +3935,9 @@ class Delivery(AuditModel):
             profile = CustomerProfile.objects.filter(party=self.sales_order.customer).first()
             self.returned_under_release = bool(profile and profile.release_covers_returns)
 
-        post_inventory_entry(
+        # Kept, as every document keeps what it posted: it is corrected by a return, never by
+        # reversing its entry from the journal (JournalEntry.recorded_by).
+        self.journal_entry = post_inventory_entry(
             valued,
             date=self.delivery_date,
             reference=self.number,
@@ -3947,7 +3953,7 @@ class Delivery(AuditModel):
         self.posted_at = timezone.now()
         super(Delivery, self).save(
             update_fields=["number", "delivery_date", "posted", "posted_at",
-                           "returned_under_release", "updated_at"]
+                           "returned_under_release", "journal_entry", "updated_at"]
         )
         # Met inside its tolerance: what is still held for a line is held
         # for nobody. Asked once this shipment counts as shipped.

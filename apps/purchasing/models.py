@@ -5304,6 +5304,16 @@ class GoodsReceipt(AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    # Kept, as every document keeps what it posted: corrected by a return, never by reversing its
+    # entries from the journal (JournalEntry.recorded_by).
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="What receiving it posted: stock in, or out on a return; cost of sales on a drop-ship.",
+    )
+    price_difference_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="On a return at a price other than the shelf's: the difference, to price variance.",
+    )
 
     class Meta:
         ordering = ["-receipt_date", "-id"]
@@ -5547,7 +5557,7 @@ class GoodsReceipt(AuditModel):
                 line.quantity_received, line.order_line.uom
             )
 
-        post_inventory_entry(
+        self.journal_entry = post_inventory_entry(
             valued,
             date=self.receipt_date,
             reference=self.reference or self.number,
@@ -5557,14 +5567,14 @@ class GoodsReceipt(AuditModel):
             quantities=received,
         )
         if price_differences:
-            self._post_return_price_difference(price_differences)
+            self.price_difference_entry = self._post_return_price_difference(price_differences)
 
         self.posted = True
         self.posted_at = timezone.now()
         super(GoodsReceipt, self).save(
             update_fields=[
                 "number", "receipt_date", "exchange_rate", "posted",
-                "posted_at", "updated_at",
+                "posted_at", "journal_entry", "price_difference_entry", "updated_at",
             ]
         )
 
@@ -5682,6 +5692,7 @@ class GoodsReceipt(AuditModel):
                 description=memo[:255],
             )
             entry.post()
+            self.journal_entry = entry
 
         sales_lines = [line for line in lines if line.order_line.sales_order_line_id]
         if sales_lines and is_return:
@@ -5712,7 +5723,7 @@ class GoodsReceipt(AuditModel):
         super(GoodsReceipt, self).save(
             update_fields=[
                 "number", "receipt_date", "exchange_rate", "posted",
-                "posted_at", "updated_at",
+                "posted_at", "journal_entry", "updated_at",
             ]
         )
 

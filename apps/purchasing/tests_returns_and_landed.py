@@ -127,7 +127,8 @@ class ReturnedAtTheShelfsCostTests(ReturnTestCase):
         self.receive(self.make_order("500", "4"), "500")
         order = self.make_order("20", "5")
         receipt = self.receive(order, "20")
-        receipt.create_return(debit_bills=False)
+        returned = receipt.create_return(debit_bills=False)
+        self.assertEqual(returned.price_difference_entry.lines.get(account=self.ppv).credit, Decimal("19.23"))
         report = reconcile_to_ledger()
         self.assertEqual((report["total_stock_value"], report["difference"]),
                          (Decimal("2019.23"), Decimal("0.00")))

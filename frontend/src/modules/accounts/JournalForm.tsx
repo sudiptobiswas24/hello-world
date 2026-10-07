@@ -34,6 +34,8 @@ interface Entry {
   memo: string;
   posted: boolean;
   reverses: number | null;
+  /** The document that posted it and keeps it, on the entry's own page: corrected there, not here. */
+  posted_by?: string | null;
   lines: Line[];
   [key: string]: unknown;
 }
@@ -106,7 +108,7 @@ export default function JournalForm() {
           <ActionButton primary pending={act.pending} disabled={entry.lines.length < 2 || positive(out) || positive(minus("0", out))}
             onClick={() => void act.run("POST", `${ENDPOINT}${entry.id}/post_entry/`, {}, { done: "Posted" })}>Post</ActionButton>
         )}
-        {entry?.posted && !entry.reverses && can("accounting.post_journalentry") && (
+        {entry?.posted && !entry.reverses && !entry.posted_by && can("accounting.post_journalentry") && (
           <ActionButton danger pending={act.pending} onClick={async () => {
             const memo = window.prompt("Why is it reversed?");
             if (memo === null) return;
@@ -133,6 +135,7 @@ export default function JournalForm() {
               ? <input id={fid} value={String(value.memo ?? "")} onChange={(e) => draft.set("memo", e.target.value as never)} />
               : <output id={fid}>{entry?.memo || "—"}</output>}
           </Field>
+          {entry?.posted_by && <Field label="Posted by" hint="Corrected there: a credit note, a void, a return">{(fid) => <output id={fid}>{entry.posted_by}</output>}</Field>}
           {entry?.reverses && <Field label="Reverses">{(fid) => <output id={fid}><Link to={`/accounts/journals/${entry.reverses}`}>The original entry</Link></output>}</Field>}
         </div>
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
