@@ -89,6 +89,7 @@ from .inward import (  # noqa: F401
 )
 from .jobwork import JobWorkChallan, JobWorkLine, JobWorkLoss  # noqa: F401
 from .changeover import ChangeoverRule, SetupFamily  # noqa: F401
+from .changes import BomChangeOrder, ChangeStatus, raise_change  # noqa: F401
 from .station import (  # noqa: F401
     CoreType,
     LoomStation,
