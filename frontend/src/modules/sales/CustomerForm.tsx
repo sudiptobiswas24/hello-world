@@ -5,13 +5,14 @@ import { date, money } from "../../lib/format";
 import { PartyForm } from "../parties/PartyForm";
 import NewCustomer from "./NewCustomer";
 import { SalesTerms } from "./SalesTerms";
+import { customerButtons } from "./smart";
 
 /** A customer: who they are, their terms, their open orders and what they owe. Made in one form. */
 export default function CustomerForm() {
   const { id } = useParams();
   if (id === "new") return <NewCustomer />;
   return (
-    <PartyForm role="customer" base="/sales/customers" plural="Customers" related={(party) => (
+    <PartyForm role="customer" base="/sales/customers" plural="Customers" smart={(party) => customerButtons(party.id)} related={(party) => (
       <>
         <SalesTerms party={party.id} />
         <RelatedList title="Open orders" endpoint="/api/sales/sales-orders/" permission="sales.view_salesorder"
