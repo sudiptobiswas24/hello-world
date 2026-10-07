@@ -341,6 +341,7 @@ ROLES = {
         *view("inventory", "stockmovement", "stockposition", "storagebin"),
         *view("hr", "employee"),
         *crud("manufacturing", "workorder", actions=("add", "change", "view")),
+        *view("manufacturing", "bomchangeorder"),
         *full("manufacturing", "workorderoperation", "workordercomponent",
               "workordersubstitute", "materialissue", "materialissueline",
               "productionentry", "productionscrap", "productionbyproduct", "timebooking",
@@ -390,6 +391,9 @@ ROLES = {
         *full("manufacturing", "billofmaterials", "bomcomponent", "bombyproduct", "bomsubstitute",
               "routing", "routingoperation", "alternaterouting", "workcentre", "machine", "shift",
               "tool", "scrapreason", "downtimereason", "setupfamily", "changeoverrule"),
+        # A recipe in use changes by a change order: a new version with a first day.
+        *full("manufacturing", "bomchangeorder"),
+        "manufacturing.apply_bomchangeorder",
         # What the customer's sack is made of and printed with: the
         # specifications write the recipes, so they are the engineer's.
         *full("manufacturing", "bagspecification", "fabricspecification", "tapespecification",
@@ -410,6 +414,7 @@ ROLES = {
         *crud("manufacturing", "workorder", actions=("add", "change", "view")),
         *crud("manufacturing", "workorderoperation", actions=("change", "view")),
         *full("manufacturing", "changeoverrule", "setupfamily", "alternaterouting"),
+        *view("manufacturing", "bomchangeorder"),
         *crud("manufacturing", "tool", actions=("change", "view")),
         *view("manufacturing", "crewassignment", "maintenancejob", "maintenanceschedule",
               "productionentry", "downtime"),
