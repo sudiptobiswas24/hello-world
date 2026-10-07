@@ -383,3 +383,9 @@ not cover, or is deleted with the commit that finishes it.
     reads each invoice in rupees at the rate it posted at; the Sales
     report still reads each invoice's own figures, so a dollar
     customer's row there is in dollars and its total mixes the two.
+44. **A request for quotation holds the need while it is out, and the
+    scorecard counts every return.** A requisition line on a draft or
+    issued request is not asked about again and is not on the To quote
+    list until the request is awarded or cancelled: a draft nobody sends
+    hides the need. And a return counts against the vendor whatever its
+    reason, a wrong order of ours included.

@@ -33,6 +33,9 @@ export default function RfqForm() {
         { key: "response_due", label: "Answers by", kind: "date" },
         { key: "currency", label: "Currency", kind: "ref", ref: CURRENCY },
       ]}
+      links={[
+        { label: "The requisition", href: (row) => `/purchasing/requisitions/${String(row.requisition)}`, when: (row) => Boolean(row.requisition), same: true },
+      ]}
       actions={[
         { label: "Send it out", path: "issue", permission: "purchasing.change_requestforquotation", when: is("draft"), primary: true, done: "Sent out" },
         { label: "Cancel", path: "cancel", permission: "purchasing.change_requestforquotation", when: is("draft", "sent"), danger: true, done: "Cancelled" },
@@ -43,6 +46,7 @@ export default function RfqForm() {
         columns: [
           { key: "item_label", label: "Item" },
           { key: "quantity", label: "Quantity", kind: "quantity", width: "9rem" },
+          { key: "requisition_number", label: "For", width: "9rem" },
           { key: "notes", label: "Notes" },
         ],
         adder: { label: "Add a line", permission: "purchasing.add_rfqline", when: is("draft"),

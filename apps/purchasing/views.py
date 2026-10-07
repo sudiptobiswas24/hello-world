@@ -26,19 +26,23 @@ from .models import (
     GoodsReceiptLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    PurchaseRequisitionLine,
     ap_aging,
     billed_not_held,
     bills_still_owed,
     consignment_on_hand,
     draw_consignment,
+    open_requisition_lines,
     orders_to_receive,
     payment_run,
     raise_reorder_requisition,
     reorder_suggestions,
+    request_quotes,
     vendor_balance,
     vendor_performance,
     with_line_figures,
 )
+from .documents_api import _item_label
 from .serializers import (
     BillPaymentSerializer,
     BillLineSerializer,
@@ -488,7 +492,9 @@ class PurchasingReportViewSet(viewsets.ViewSet):
     required_permission = "purchasing.view_purchaseorder"
 
     action_permission_map = {"draw": "purchasing.post_bill", "raise_reorder": "purchasing.add_purchaserequisition",
-                             "msme": "purchasing.view_bill", "unbilled_freight": "purchasing.view_bill"}
+                             "msme": "purchasing.view_bill", "unbilled_freight": "purchasing.view_bill",
+                             "to_quote": "purchasing.view_purchaserequisitionline",
+                             "ask_quotes": "purchasing.add_requestforquotation"}
 
     def list(self, request):
         return Response({
@@ -501,7 +507,39 @@ class PurchasingReportViewSet(viewsets.ViewSet):
             "vendor-balance": "vendor-balance/",
             "msme": "msme/",
             "unbilled-freight": "unbilled-freight/",
+            "open-requisition-lines": "open-requisition-lines/",
+            "request-quotes": "request-quotes/",
         })
+
+    @action(detail=False, methods=["get"], url_path="open-requisition-lines")
+    def to_quote(self, request):
+        """Approved requisition lines with something left to order or to ask for, soonest needed first."""
+        rows = []
+        for row in open_requisition_lines():
+            line, vendor = row["line"], row["vendor"]
+            rows.append({
+                "id": line.pk, "requisition": line.requisition_id, "requisition_number": line.requisition.number,
+                "requested_by": line.requisition.requested_by.name, "needed_by": line.requisition.needed_by,
+                "item": line.item_id, "item_label": _item_label(line.item), "uom": line.uom.code,
+                "quantity": line.quantity, "ordered": row["ordered"], "quoting": row["quoting"], "open": row["open"],
+                "estimated_price": line.estimated_price,
+                "vendor": vendor.pk if vendor else None, "vendor_name": vendor.name if vendor else "",
+            })
+        return Response(rows)
+
+    @action(detail=False, methods=["post"], url_path="request-quotes")
+    def ask_quotes(self, request):
+        """{lines: [requisition line ids], issue_date?, response_due?}: one request for quotation for what is left of them."""
+        try:
+            ids = {int(line_id) for line_id in (request.data.get("lines") or [])}
+        except (TypeError, ValueError):
+            ids = set()
+        lines = list(PurchaseRequisitionLine.objects.filter(pk__in=ids).select_related("requisition"))
+        if not ids or len(lines) != len(ids):
+            raise DRFValidationError({"lines": ["Name the requisition lines to ask about."]})
+        rfq = request_quotes(lines, issue_date=request.data.get("issue_date"),
+                             response_due=request.data.get("response_due"))
+        return Response({"rfq": rfq.pk, "number": rfq.number}, status=201)
 
     @action(detail=False, methods=["get"], url_path="unbilled-freight")
     def unbilled_freight(self, request):
@@ -529,9 +567,13 @@ class PurchasingReportViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["get"], url_path="vendor-performance")
     def performance(self, request):
+        """Each vendor's on-time, fill, return and price record over ?start= to ?end=, or ?vendor='s alone."""
+        from apps.core.models import Party
+
         rows = vendor_performance(
             start=request.query_params.get("start"),
             end=request.query_params.get("end"),
+            vendor=record_or_404(Party, request.query_params.get("vendor"), "vendor", optional=True),
         )
         return Response([
             {**row, "vendor": str(row["vendor"])} for row in rows

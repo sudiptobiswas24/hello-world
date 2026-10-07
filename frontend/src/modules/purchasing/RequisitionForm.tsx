@@ -39,6 +39,10 @@ export default function RequisitionForm() {
             { key: "vendor", label: "From", kind: "pick", pick: VENDOR },
             { key: "order_date", label: "Ordered on", kind: "date" },
           ], then: (made) => `/purchasing/orders/${String(made.order)}` },
+        { label: "Ask for quotes", path: "rfq", permission: "purchasing.add_requestforquotation", when: is("approved"),
+          done: "Out for quotes", fields: [
+            { key: "response_due", label: "Answers by", kind: "date" },
+          ], then: (made) => `/purchasing/rfqs/${String(made.rfq)}` },
         { label: "Cancel", path: "cancel", permission: "purchasing.change_purchaserequisition", when: is("draft", "submitted", "approved", "rejected"),
           danger: true, done: "Cancelled" },
       ]}
@@ -51,6 +55,7 @@ export default function RequisitionForm() {
           { key: "estimated_price", label: "About", kind: "money", width: "8rem" },
           { key: "estimated_value", label: "Comes to", kind: "money", width: "9rem" },
           { key: "quantity_ordered", label: "Ordered", kind: "quantity", width: "8rem" },
+          { key: "quantity_quoting", label: "Out for quotes", kind: "quantity", width: "8rem" },
         ],
         adder: { label: "Add a line", permission: "purchasing.add_purchaserequisitionline", when: is("draft"),
           url: () => "/api/purchasing/requisition-lines/",
