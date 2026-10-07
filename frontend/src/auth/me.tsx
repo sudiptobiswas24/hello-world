@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, type ReactNode } from "react";
 
 import { get } from "../api/client";
+import { setPlantTimeZone } from "../lib/format";
 
 export interface Me {
   id: number;
@@ -11,6 +12,8 @@ export interface Me {
   roles: string[];
   permissions: string[];
   company: string;
+  /** The plant's time zone: what "today" means on every screen, as it does on the server. */
+  time_zone: string;
   /** The employee this login is (hr), or null: what "my leave" means. */
   employee?: number | null;
   employee_name?: string;
@@ -41,6 +44,7 @@ export function AccessProvider({ children, fallback }: { children: ReactNode; fa
   });
   if (error) throw error;
   if (!data) return <>{fallback}</>;
+  setPlantTimeZone(data.time_zone);
   const held = new Set(data.permissions);
   const can = (permission: string) => data.is_superuser || held.has(permission);
   const value: Access = { me: data, can, canAny: (list) => list.some(can) };

@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.contrib.auth.models import Group
@@ -308,6 +309,8 @@ class MeView(APIView):
             "roles": sorted(user.groups.values_list("name", flat=True)),
             "permissions": sorted(user.get_all_permissions()),
             "company": Company.get().name,
+            # What "today" means: the screens count the plant's day as timezone.localdate() does.
+            "time_zone": settings.TIME_ZONE,
         }
         for provider in ME_EXTRAS:
             answer.update(provider(user))

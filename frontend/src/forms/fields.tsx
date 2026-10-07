@@ -1,5 +1,7 @@
 import { useId, useState, type ReactNode } from "react";
 
+import { plantTimeZone } from "../lib/format";
+
 /**
  * One box on a form: its label, the box, and what the server said is
  * wrong with it, tied together for screen readers.
@@ -111,7 +113,7 @@ export function CommitText({ value, onCommit, label, placeholder }: {
   );
 }
 
-export function today(timeZone = "Asia/Kolkata"): string {
-  // The plant's date, not the browser's idea of Greenwich: en-CA writes ISO.
+export function today(timeZone = plantTimeZone()): string {
+  // The plant's date, as the server counts it, not the browser's: en-CA writes ISO.
   return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }

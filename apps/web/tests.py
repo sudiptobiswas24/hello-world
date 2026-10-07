@@ -121,6 +121,14 @@ class MeTests(ShellTestCase):
         self.assertNotIn("accounting.view_journalentry", me["permissions"])
         self.assertNotIn("hr.view_payslip", me["permissions"])
 
+    def test_the_screens_are_told_the_plants_time_zone(self):
+        # What "today" means on every screen: the server's, which production sets to the plant's.
+        from django.test import override_settings
+
+        self.client.force_login(self.person("Sales Rep"))
+        with override_settings(TIME_ZONE="America/Chicago"):
+            self.assertEqual(self.client.get("/api/core/me/").json()["time_zone"], "America/Chicago")
+
     def test_a_login_with_no_role_may_do_nothing(self):
         self.client.force_login(self.person())
         self.assertEqual(self.client.get("/api/core/me/").json()["permissions"], [])
