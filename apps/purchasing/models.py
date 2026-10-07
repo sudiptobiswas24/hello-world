@@ -476,6 +476,7 @@ class RfqInvitation(AuditModel):
         if _names_another(self, "vendor"):
             _require_vendor_role(self.vendor)
 
+    @serialised("declined")
     def decline(self, note=""):
         """A vendor saying no is an answer, and worth keeping."""
         _while(self.rfq, [RfqStatus.SENT], "a vendor declines while the request is out.")
@@ -486,6 +487,7 @@ class RfqInvitation(AuditModel):
         self.notes = note[:255] or self.notes
         self.save(update_fields=["declined", "responded_at", "notes", "updated_at"])
 
+    @serialised("declined", "responded_at")
     def quote(self, line, unit_price, lead_time_days=None, notes=""):
         if self.declined:
             raise ValidationError("This vendor declined to quote.")
@@ -532,7 +534,14 @@ class RfqQuote(AuditModel):
         # A quote given while the request was out; after the award it is the
         # record of how the vendor was chosen, and moves no more.
         _while(self.invitation.rfq, [RfqStatus.SENT], "quotes are given while the request is out.")
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            # The mirror of decline(), which refuses once there is a quote: under the invitation's lock,
+            # so a decline and a quote arriving together cannot both stand.
+            lock_rows(self.invitation)
+            if self.invitation.declined:
+                raise ValidationError(f"{self.invitation.vendor} declined this request; a quote from them is not "
+                                      "taken on it.")
+            super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         _while(self.invitation.rfq, [RfqStatus.SENT], "quotes are given while the request is out.")
@@ -1730,6 +1739,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
             )
 
     @serialised("status")
+    @serialised("status")
     def confirm(self):
         """
         Commit to the order. Until this happens it is a shopping list, and
@@ -1831,7 +1841,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                                             quantity_received=quantity)
         return receipt
 
-    @transaction.atomic
+    @serialised("status")
     def create_bill(self, payable_account, bill_date=None, reference=""):
         """
         Draft a bill for whatever this order still owes the vendor,
@@ -1839,7 +1849,8 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
 
         Calling it twice bills the remainder, not the whole order again —
         the same drawdown Sales needed after an order was billed three
-        times for one delivery.
+        times for one delivery. Twice at once, the second waits for the
+        first and bills what is left after it.
         """
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can be billed.")
@@ -2060,6 +2071,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         on receipt — the mirror of the customer deposit on the sales side,
         and for the same reason.
         """
+        lock_rows(self)  # what is already prepaid is read below, and another prepayment could be adding to it
         if self.status != OrderStatus.CONFIRMED:
             raise ValidationError("Only a confirmed order can take a prepayment.")
         if (amount is None) == (percent is None):
@@ -2358,7 +2370,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 "charged."
             )
 
-    @transaction.atomic
+    @serialised()
     def rebuild_components(self):
         """
         Make the component rows say what the bill of materials says.
@@ -2942,7 +2954,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return (to_date(as_of) or timezone.localdate()) <= deadline
 
-    @transaction.atomic
+    @serialised("settlement_discount_amount", "settlement_discount_entry")
     def take_settlement_discount(self, on_date=None, force=False):
         """
         Take the early-payment discount the vendor's terms offer.
@@ -3939,6 +3951,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         was nothing on that bill to absorb it, so this moves it: Dr
         inventory / Cr the expense it landed in.
         """
+        # One allocation at a time per charge, each reading what the last left: two at once both
+        # read the whole charge as unallocated and put it into stock twice.
+        lock_rows(self)
         on_date = to_date(on_date) or timezone.localdate()
         if not self.bill.posted:
             raise ValidationError("Only a posted bill can be allocated.")
@@ -4049,6 +4064,8 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         """
         from apps.assets.models import AssetCategory, FixedAsset
 
+        # One at a time per line, reading what the last did: two at once both found no asset.
+        lock_rows(self)
         if not self.bill.posted:
             raise ValidationError("Only a posted bill can be capitalised.")
         if self.assets.exists():
@@ -6217,6 +6234,7 @@ class LandedCostApplication(AuditModel):
         return bool(self.released_entry_id)
 
     @transaction.atomic
+    @serialised("released_entry")
     def release(self, on_date=None):
         """
         Undo the allocation: take the value back out of stock and return

@@ -292,7 +292,7 @@ class Employee(Extensible, AuditModel):
         )
         return leave, hours
 
-    @transaction.atomic
+    @serialised("termination_date", "employment_status")
     def terminate(self, on_date, cancel_future=False):
         """
         Set a leaving date, having dealt with what lies beyond it.

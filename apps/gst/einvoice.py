@@ -50,7 +50,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, serialised
 
 from . import particulars as p
 
@@ -103,6 +103,7 @@ class EInvoice(AuditModel):
         return []
 
     @transaction.atomic
+    @serialised("irn")
     def record(self, irn, ack_number, ack_date, signed_qr):
         """Keep what the portal answered, once it is shown to be this invoice's."""
         if self.irn:
