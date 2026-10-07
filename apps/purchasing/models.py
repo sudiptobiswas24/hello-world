@@ -1873,6 +1873,14 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                     "Goods have been received against this order and it cannot be cancelled. "
                     "Return them instead."
                 )
+            # Billed before anything came (an order billed as ordered, a freight charge): the bill
+            # is owed whatever the order says. Sales refuses an invoiced order the same way; this
+            # side asked only about goods, and a blanket agreement got back volume it had billed.
+            if line.quantity_billed():
+                raise ValidationError(
+                    f"{line.label()} has been billed and the order cannot be cancelled. Raise a debit "
+                    "note on the bill first."
+                )
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
         # What a requisition asked for is no longer on order, so it is open
