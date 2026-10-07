@@ -553,8 +553,8 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     customer_path = "sales_order__customer"
     search_fields = ["number", "reference", "sales_order__number", "sales_order__customer__code", "sales_order__customer__name",
                      "lr_number", "vehicle_number"]
-    filter_fields = ["sales_order", "posted", "reverses", "reverses__isnull", "transporter", "freight_charge__isnull",
-                     "received_on__isnull"]
+    filter_fields = ["sales_order", "sales_order__customer", "posted", "reverses", "reverses__isnull", "transporter",
+                     "freight_charge__isnull", "received_on__isnull"]
     date_field = "delivery_date"
     ordering_fields = ["delivery_date", "number"]
 

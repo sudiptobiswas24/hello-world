@@ -199,6 +199,42 @@ class EveryAddressAScreenAsksForExistsTests(TestCase):
         self.assertEqual(missing, [])
 
 
+class EverySmartButtonNarrowsItsListTests(TestCase):
+    """
+    A count on a record's header is its list asked with a narrowing; a
+    narrowing the list does not take is refused, and the count reads "—"
+    on every page it is on. Each one named in the office application must
+    be one its list takes, and its screen must be a screen.
+    """
+
+    def test_every_count_asks_its_list_what_it_can_answer(self):
+        import pathlib
+        import re
+
+        from django.urls import resolve
+
+        from apps.core.api import FieldFilter
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
+        found = []
+        for path in source.rglob("*.ts*"):
+            for endpoint, query, screen in re.findall(
+                    r'endpoint: "(/api/[^"]+)", query: \{([^}]*)\},[^}]*?screen: "([^"]+)"', path.read_text(), re.S):
+                keys = {part.split(":")[0].strip() for part in query.split(",") if part.strip()}
+                found.append((path.name, endpoint, keys, screen))
+        self.assertGreater(len(found), 15)
+        screens = pathlib.Path(source / "app" / "registry.ts").read_text()
+        wrong = []
+        for name, endpoint, keys, screen in found:
+            view = resolve(endpoint).func.cls
+            allowed = set(FieldFilter.ALWAYS) | set(getattr(view, "filter_fields", ())) | set(getattr(view, "extra_params", ()))
+            wrong += [f"{name}: {endpoint} by {key}" for key in sorted(keys - allowed)]
+            module, _, screen_path = screen.strip("/").partition("/")
+            if f'key: "{module}"' not in screens or f'path: "{screen_path}"' not in screens:
+                wrong.append(f"{name}: no screen {screen}")
+        self.assertEqual(wrong, [])
+
+
 class EveryCollectionIsKeptOnAScreenTests(TestCase):
     """
     The mirror of the test above. Fifty collections had an API and no
