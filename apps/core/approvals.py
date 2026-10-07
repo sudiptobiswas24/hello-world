@@ -22,6 +22,8 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
+from .models import serialised
+
 
 class ApprovalStatus(models.TextChoices):
     NOT_REQUIRED = "not_required", "Not required"
@@ -79,8 +81,14 @@ class ApprovableMixin(models.Model):
         """
         return
 
+    @serialised("approved_at")
     def approve(self, by=None, note=""):
-        """Record that someone accepted the breach."""
+        """
+        Record that someone accepted the breach: one at a time, and against
+        the document as it stands under the lock, so a line added while the
+        approver read waits and then withdraws the approval it would have
+        slipped under.
+        """
         if not self.can_be_approved():
             raise ValidationError("This document cannot be approved in its current state.")
         self.check_approver(by)
@@ -93,6 +101,7 @@ class ApprovableMixin(models.Model):
         self.approval_note = note or "; ".join(self.approval_reasons())[:255]
         self.save(update_fields=["approved_by", "approved_at", "approval_note", "updated_at"])
 
+    @serialised("approved_at")
     def withdraw_approval(self):
         """
         Drop an approval so a changed document has to be looked at again.

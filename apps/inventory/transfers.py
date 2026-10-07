@@ -107,7 +107,7 @@ class StockTransfer(AuditModel):
 
     # -- the outbound half ------------------------------------------------
 
-    @transaction.atomic
+    @serialised("status")
     def dispatch(self, occurred_at=None):
         """Take the stock off the source shelf and put it in transit."""
         if not self.is_two_step():

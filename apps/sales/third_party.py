@@ -46,7 +46,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -110,7 +110,7 @@ class ThirdPartyRelease(AuditModel):
     def is_standing(self):
         return self.posted and self.voided_at is None
 
-    @transaction.atomic
+    @serialised("posted")
     def post(self):
         from .models import _require_customer_role
 
@@ -147,7 +147,7 @@ class ThirdPartyRelease(AuditModel):
         self.posted, self.posted_at = True, timezone.now()
         self._write(["number", "their_reference", "inspected_on", "posted", "posted_at"])
 
-    @transaction.atomic
+    @serialised("posted", "voided_at")
     def void(self, reason):
         from apps.inventory.models import Lot
 

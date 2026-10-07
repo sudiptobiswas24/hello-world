@@ -164,15 +164,21 @@ class AccountingPeriod(AuditModel):
         super().delete(*args, **kwargs)
 
     @classmethod
-    def blocking(cls, on_date):
-        """The closed period covering this date, if any."""
+    def blocking(cls, on_date, lock=False):
+        """
+        The closed period covering this date, if any. `lock`: the periods
+        covering it held until the caller's transaction ends, so a close
+        cannot land between a posting's check and its commit.
+        """
         on_date = to_date(on_date)
         if on_date is None:
             return None
-        return cls.objects.filter(
-            closed=True, start_date__lte=on_date, end_date__gte=on_date
-        ).first()
+        covering = cls.objects.filter(start_date__lte=on_date, end_date__gte=on_date)
+        if lock:
+            covering = covering.select_for_update()
+        return next((period for period in covering.order_by("pk") if period.closed), None)
 
+    @serialised("closed")
     def close(self, by=None, note=""):
         if self.closed:
             raise ValidationError("This period is already closed.")
@@ -182,6 +188,7 @@ class AccountingPeriod(AuditModel):
         self.note = note[:255] or self.note
         self.save(update_fields=["closed", "closed_at", "closed_by", "note", "updated_at"])
 
+    @serialised("closed")
     def reopen(self, by=None, note=""):
         """
         Unlock a closed period.
@@ -266,7 +273,7 @@ class JournalEntry(AuditModel):
         # The one chokepoint every module posts through, so the period
         # lock only has to be enforced here. A guard per document type
         # would be six guards, and the seventh would be forgotten.
-        blocking = AccountingPeriod.blocking(self.date)
+        blocking = AccountingPeriod.blocking(self.date, lock=True)
         if blocking is not None:
             raise ValidationError(
                 f"{blocking} is closed; nothing further can be posted into it. "

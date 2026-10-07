@@ -31,7 +31,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, lock_rows, serialised, to_date
 
 ZERO = Decimal("0")
 WEEK = datetime.timedelta(days=7)
@@ -137,7 +137,7 @@ class MasterScheduleEntry(AuditModel):
             day += datetime.timedelta(days=1)
         return list(rows.values())
 
-    @transaction.atomic
+    @serialised("committed_at", "withdrawn_at", "work_order")
     def commit(self, accept_overload="", on_date=None):
         from apps.manufacturing.orders import WorkOrder
 
@@ -166,7 +166,7 @@ class MasterScheduleEntry(AuditModel):
         self.reason = self.reason.strip()
         self._write(["work_order", "overload_accepted", "committed_at", "reason"])
 
-    @transaction.atomic
+    @serialised("committed_at", "withdrawn_at", "work_order")
     def withdraw(self, reason):
         from apps.manufacturing.orders import WorkOrderStatus
 
@@ -175,6 +175,8 @@ class MasterScheduleEntry(AuditModel):
         if not (reason or "").strip():
             raise ValidationError("Say why it is withdrawn.")
         order = self.work_order
+        # Held and read again: released on the floor since it was read, it is the floor's to cancel.
+        lock_rows(order)
         if order.status != WorkOrderStatus.DRAFT:
             raise ValidationError(f"{order} has been released; cancel or close it on the "
                                   "floor.")

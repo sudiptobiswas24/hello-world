@@ -21,6 +21,7 @@ from .models import (
     RequestForQuotation,
     RfqInvitation,
     RfqLine,
+    RfqQuote,
     RfqStatus,
     VendorPrice,
 )
@@ -120,6 +121,14 @@ class QuotingTests(RfqTestCase):
         self.invitations[2].decline()
         with self.assertRaisesMessage(ValidationError, "declined to quote"):
             self.invitations[2].quote(self.line, "4")
+
+    def test_nor_is_a_quote_entered_against_their_decline(self):
+        # Entered as a quote rather than through quote(): refused by the quote's own save.
+        rfq = self.rfq()
+        self.invitations[2].decline()
+        with self.assertRaisesMessage(ValidationError, "declined this request"):
+            RfqQuote.objects.create(invitation=self.invitations[2], line=self.line, unit_price=Decimal("4"))
+        self.assertFalse(self.line.quotes.exists())
 
     def test_a_vendor_who_quoted_cannot_then_decline(self):
         rfq = self.rfq()
