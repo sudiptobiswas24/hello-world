@@ -1221,15 +1221,17 @@ class BlanketOrderLine(TaxedLineMixin, AuditModel):
 
     def quantity_released(self):
         """
-        Committed volume already called off, net of cancelled releases.
+        Committed volume already called off, net of cancelled releases and
+        of what a release closed short never brought.
 
         A cancelled release gives its volume back: the agreement is a
         commitment to buy, and an order that was called off and then
-        called back off again was never bought.
+        called back off again was never bought. Nor was the rest of one
+        the vendor closed short: 60 of 100 came, and the agreement went on
+        counting all 100, so the 40 could never be called off again.
         """
-        return self.order_lines.exclude(
-            order__status=OrderStatus.CANCELLED
-        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        return sum((line.volume_called_off() for line in self.order_lines.exclude(
+            order__status=OrderStatus.CANCELLED)), Decimal("0"))
 
     def quantity_remaining(self):
         return self.quantity - self.quantity_released()
@@ -2377,13 +2379,13 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             previous = PurchaseOrderLine.objects.filter(pk=self.pk).first()
             if previous is not None:
                 if self.blanket_line_id:
-                    # quantity_released() already counts this line's stored
-                    # value, so compare against the agreement net of it.
-                    others = self.blanket_line.quantity_released() - previous.quantity
-                    if others + self.quantity > self.blanket_line.quantity:
+                    # quantity_released() already counts this line as stored,
+                    # so compare against the agreement net of it.
+                    others = self.blanket_line.quantity_released() - previous.volume_called_off()
+                    if others + self.volume_called_off() > self.blanket_line.quantity:
                         raise ValidationError(
                             f"The agreement commits {self.blanket_line.quantity} of "
-                            f"{self.item}; releasing {others + self.quantity} would "
+                            f"{self.item}; releasing {others + self.volume_called_off()} would "
                             "exceed it."
                         )
                 committed = max(self.quantity_received(), self.quantity_billed())
@@ -2634,6 +2636,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     def is_closed_short(self):
         return self.closed_short_at is not None
 
+    def volume_called_off(self):
+        """What this line takes from its blanket agreement: all of it, or once closed short what came."""
+        return self.quantity_received() if self.is_closed_short() else self.quantity
+
     def quantity_open(self):
         """What is still to come from the vendor: nothing for a charge or once closed short."""
         if self.charge_id is not None or self.is_closed_short():
@@ -2680,6 +2686,18 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             # Reopened, it is awaited again: refused where the customer's
             # line is already being met another way.
             self._check_drop_ship_quantity(reopening=True)
+        if self.blanket_line_id is not None:
+            # Reopened, the rest is called off its agreement again: refused where the agreement has
+            # since called it off on another order. Under the agreement's lock, as a release is.
+            from apps.core.api import plain
+
+            blanket = self.blanket_line.blanket
+            lock_rows(blanket)
+            back, left = self.quantity - self.quantity_received(), self.blanket_line.quantity_remaining()
+            if back > left:
+                raise ValidationError(
+                    f"{blanket.number} has {plain(left)} of {self.item} left to call off; reopened, this "
+                    f"line would call off {plain(back)} more.")
         self.closed_short_at, self.closed_short_reason = None, ""
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
         if self.sales_order_line_id is not None:
