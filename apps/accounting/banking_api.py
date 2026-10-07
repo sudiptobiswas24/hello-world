@@ -13,11 +13,12 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
-from apps.core.api import record_or_404
+from apps.core.api import flag, record_or_404
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party
 
 from .models import Account, BankStatement, BankStatementLine, Payment, round_money
+from .bank_import import import_lines
 
 
 def _refused(call):
@@ -67,7 +68,23 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "post_line": "accounting.post_journalentry",
         "close": "accounting.close_bankstatement",
         "reopen": "accounting.close_bankstatement",
+        "import_lines": "accounting.add_bankstatementline",
     }
+
+    @action(detail=True, methods=["post"])
+    def import_lines(self, request, pk=None):
+        """The bank's export ({"text"}, CSV), checked whole; its lines kept only with commit=true and no errors."""
+        statement = self.get_object()
+        text = request.data.get("text") or ""
+        if not text.strip():
+            raise DRFValidationError({"text": ["Paste the file's rows, headings first."]})
+        commit = flag(request.data, "commit", False)
+        report = import_lines(statement, text, commit=commit)
+        if commit and report["errors"]:
+            # Asked to keep it and it cannot be: the refusal, row by row, beside the file.
+            raise DRFValidationError({"text": [f"Row {row}{', ' + column if column else ''}: {message}"
+                                               for row, column, message in report["errors"]]})
+        return Response(report)
 
     @action(detail=True, methods=["get"])
     def reconciliation(self, request, pk=None):

@@ -297,3 +297,17 @@ not cover, or is deleted with the commit that finishes it.
     by a rule nobody agreed. The report foots to the profit and loss
     account's expenses, so the unallocated figure is the honest size of
     what the plant has not yet said who spent.
+37. **A budget line without a centre is the account's whole, and a
+    recurring journal runs only when something runs it.** The budget
+    report counts centred spend inside an uncentred line, so a budget
+    with both an account line and a centre line of the same account
+    reads the centre twice; it lists what posted under no line as
+    unbudgeted rather than spreading it. Recurring entries are taken by
+    `generate_recurring` (cron, with the morning checks) or by hand from
+    the screen; until it runs, the inbox counts them as due, and a
+    schedule that cannot run (unbalanced, dated into a closed month) is
+    named in the command's output and the screen's, and skipped, not
+    forced. A bank file whose rows match lines already on the statement
+    is passed over row by row, so a file re-exported after the bank
+    reworded a narration adds that row again: check the difference the
+    import reports against the closing balance.

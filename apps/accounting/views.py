@@ -2,6 +2,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Prefetch
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 
@@ -14,9 +15,12 @@ from apps.core.audit import AuditableViewSetMixin
 from decimal import Decimal, InvalidOperation
 
 from .analytic import CostCentre
+from .budgets import Budget, BudgetLine, budget_report
+from .recurring import RecurringJournal, RecurringJournalLine, generate_due_journals
 from .reports import balance_sheet, profit_and_loss, trial_balance
 from .models import (
     Account,
+    AccountingPeriod,
     FiscalPosition,
     FiscalPositionTaxMapping,
     JournalEntry,
@@ -28,7 +32,12 @@ from .models import (
     compute_taxes,
 )
 from .serializers import (
+    AccountingPeriodSerializer,
+    BudgetLineSerializer,
+    BudgetSerializer,
     CostCentreSerializer,
+    RecurringJournalLineSerializer,
+    RecurringJournalSerializer,
     AccountSerializer,
     FiscalPositionSerializer,
     FiscalPositionTaxMappingSerializer,
@@ -56,6 +65,101 @@ class CostCentreViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from .analytic import costs_by_centre
 
         return Response(costs_by_centre(request.query_params.get("from") or None, request.query_params.get("to") or None))
+
+
+class AccountingPeriodViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """The months and years the books are reported for, and which are closed against posting."""
+
+    search_fields = ["name", "note"]
+    filter_fields = ["closed"]
+    date_field = "end_date"
+    ordering_fields = ["start_date", "end_date", "name"]
+    queryset = AccountingPeriod.objects.select_related("closed_by")
+    serializer_class = AccountingPeriodSerializer
+    action_permission_map = {
+        "close": "accounting.close_accountingperiod",
+        "reopen": "accounting.close_accountingperiod",
+    }
+
+    @action(detail=True, methods=["post"])
+    def close(self, request, pk=None):
+        """Lock the period: nothing further posts into it ({"note"} says why or by whose sign-off)."""
+        period = self.get_object()
+        period.close(by=request.user, note=str(request.data.get("note") or ""))
+        return Response(self.get_serializer(period).data)
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        period = self.get_object()
+        period.reopen(by=request.user, note=str(request.data.get("note") or ""))
+        return Response(self.get_serializer(period).data)
+
+
+class BudgetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Budgets (budgets.py), and each one's `report/?as_of=` against what posted."""
+
+    search_fields = ["code", "name"]
+    filter_fields = ["is_active"]
+    date_field = "start_date"
+    ordering_fields = ["start_date", "code", "name"]
+    queryset = Budget.objects.prefetch_related("lines__account", "lines__cost_centre")
+    serializer_class = BudgetSerializer
+    action_permission_map = {"report": "accounting.view_journalentry"}
+
+    @action(detail=True, methods=["get"])
+    def report(self, request, pk=None):
+        return Response(budget_report(self.get_object(), request.query_params.get("as_of") or None))
+
+
+class BudgetLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    filter_fields = ["budget", "account", "cost_centre"]
+    queryset = BudgetLine.objects.select_related("budget", "account", "cost_centre")
+    serializer_class = BudgetLineSerializer
+
+
+class RecurringJournalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """Schedules of journal entries (recurring.py): `generate/` takes one's next entry, `run/` every entry due."""
+
+    search_fields = ["code", "memo"]
+    filter_fields = ["is_active", "interval", "auto_post"]
+    date_field = "next_run_date"
+    ordering_fields = ["next_run_date", "code"]
+    queryset = RecurringJournal.objects.prefetch_related("lines__account", "lines__party", "lines__cost_centre")
+    serializer_class = RecurringJournalSerializer
+    action_permission_map = {
+        "generate": "accounting.add_journalentry",
+        "run": "accounting.add_journalentry",
+    }
+
+    def _may_post(self, request, schedules):
+        # A schedule that posts what it makes posts as whoever runs it.
+        if any(schedule.auto_post for schedule in schedules) and not request.user.has_perm(
+                "accounting.post_journalentry"):
+            raise PermissionDenied("This schedule posts each entry it makes, which takes the right to post "
+                                   "journal entries.")
+
+    @action(detail=True, methods=["post"])
+    def generate(self, request, pk=None):
+        """Take the next entry from this schedule ({"on_date"} dates it other than its due day)."""
+        schedule = self.get_object()
+        self._may_post(request, [schedule])
+        entry = schedule.generate_one(on_date=request.data.get("on_date") or None)
+        return Response(JournalEntrySerializer(entry).data)
+
+    @action(detail=False, methods=["post"])
+    def run(self, request):
+        """Take every entry now due across the active schedules ({"as_of"} runs as of another day)."""
+        as_of = request.data.get("as_of") or None
+        self._may_post(request, [s for s in RecurringJournal.objects.filter(is_active=True) if s.is_due(as_of)])
+        made, refused = generate_due_journals(as_of=as_of)
+        return Response({"made": JournalEntrySerializer(made, many=True).data,
+                         "refused": [{"code": code, "why": why} for code, why in refused]})
+
+
+class RecurringJournalLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    filter_fields = ["schedule"]
+    queryset = RecurringJournalLine.objects.select_related("schedule", "account", "party", "cost_centre")
+    serializer_class = RecurringJournalLineSerializer
 
 
 class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -132,7 +236,7 @@ class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["reference", "memo"]
-    filter_fields = ["posted"]
+    filter_fields = ["posted", "recurring_journal"]
     date_field = "date"
     ordering_fields = ["date"]
 

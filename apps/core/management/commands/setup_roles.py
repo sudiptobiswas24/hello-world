@@ -45,6 +45,12 @@ HOW_IT_IS_MADE = [
 ROLES = {
     "Bookkeeper": [
         *crud("accounting", "costcentre"),
+        # Sees which months are closed and what was budgeted; keeps the
+        # schedules of recurring entries, which run as drafts for the
+        # controller to post.
+        *view("accounting", "accountingperiod", "budget", "budgetline"),
+        *crud("accounting", "recurringjournal"),
+        *crud("accounting", "recurringjournalline"),
         *REFERENCE,
         *crud("assets", "fixedasset", actions=("view",)),
         *crud("assets", "depreciationentry", actions=("view",)),
@@ -63,6 +69,14 @@ ROLES = {
     ],
     "Controller": [
         *crud("accounting", "costcentre"),
+        # Closes the month and reopens it; sets the budgets; keeps and
+        # runs the recurring entries.
+        *crud("accounting", "accountingperiod"),
+        "accounting.close_accountingperiod",
+        *crud("accounting", "budget"),
+        *crud("accounting", "budgetline"),
+        *crud("accounting", "recurringjournal"),
+        *crud("accounting", "recurringjournalline"),
         *REFERENCE,
         *crud("accounting", "account"),
         *crud("accounting", "journalentry"),

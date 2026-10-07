@@ -1,7 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { Trail } from "./Trail";
 import { useState, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 
 import { list, type Query } from "../api/client";
 import { useAct, useGet, useRecord } from "../api/hooks";
@@ -79,6 +79,8 @@ export interface LinkDef {
   label: string;
   href: (record: Row) => string;
   when?: (record: Row) => boolean;
+  /** Another screen of the application, opened here; otherwise a file (a PDF) in a new tab. */
+  same?: boolean;
 }
 
 /** Something done to one row of a panel: return these spares. */
@@ -374,9 +376,9 @@ export function RecordScreen(props: RecordScreenProps) {
             {action.label}
           </ActionButton>
         ))}
-        {saved && links.filter((link) => !link.when || link.when(saved)).map((link) => (
-          <a key={link.label} className="btn" href={link.href(saved)} target="_blank" rel="noopener">{link.label}</a>
-        ))}
+        {saved && links.filter((link) => !link.when || link.when(saved)).map((link) => link.same
+          ? <Link key={link.label} className="btn" to={link.href(saved)}>{link.label}</Link>
+          : <a key={link.label} className="btn" href={link.href(saved)} target="_blank" rel="noopener">{link.label}</a>)}
         {saved && permissions.delete && can(permissions.delete) && (!editable || editable(saved)) && (
           <ActionButton danger pending={act.pending} onClick={() => void remove()}>Delete</ActionButton>
         )}
