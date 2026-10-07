@@ -347,6 +347,15 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["party", "direction", "posted", "bank_account"]
     date_field = "payment_date"
     ordering_fields = ["payment_date", "number", "amount"]
+    extra_params = ("unapplied",)  # ?unapplied=true: posted, standing, with money applied to nothing
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        if flag(self.request.query_params, "unapplied", False):
+            from .settlement import unapplied
+
+            queryset = unapplied(queryset.filter(posted=True, voided_entry__isnull=True))
+        return queryset
 
     queryset = Payment.objects.select_related(
         "party", "bank_account", "counterpart_account", "journal_entry"

@@ -21,6 +21,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
+from apps.core.api import flag
 from apps.core.audit import AuditableViewSetMixin
 
 from .models import (
@@ -97,10 +98,17 @@ class ItemUnitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["sku", "name", "hsn_code"]
     filter_fields = ["item_type", "is_active", "tracking"]
+    extra_params = ("without_hsn",)  # ?without_hsn=true: the morning check's list
     ordering_fields = ["sku", "name"]
 
     queryset = Item.objects.all()
     serializer_class = ItemSerializer
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        if flag(self.request.query_params, "without_hsn", False):
+            queryset = queryset.filter(hsn_code="")
+        return queryset
     action_permission_map = {"set_standard_cost": "accounting.post_journalentry"}
 
     @action(detail=True, methods=["get"])

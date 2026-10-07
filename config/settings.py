@@ -46,6 +46,15 @@ DEBUG = os.environ.get("DJANGO_DEBUG", "false" if PRODUCTION else "true").lower(
 ALLOWED_HOSTS = _env_list("DJANGO_ALLOWED_HOSTS")
 if PRODUCTION and not ALLOWED_HOSTS:
     raise ImproperlyConfigured("DJANGO_ALLOWED_HOSTS is not set: name the server's host names.")
+# The container asks itself /healthz/ (docker-compose.yml): by a name no
+# one outside the machine can use, which is why it is safe to answer to.
+ALLOWED_HOSTS += [host for host in ("localhost", "127.0.0.1") if host not in ALLOWED_HOSTS]
+# Who is mailed when a request fails on the server (apps/core/errors.py):
+# addresses, comma-separated. Needs the mail settings below.
+ADMINS = [(address, address) for address in _env_list("DJANGO_ADMINS")]
+# Where the nightly backups land (deploy/backup.sh), for the health checks
+# to read their age. Unset, the checks say so rather than guessing.
+BACKUP_DIR = os.environ.get("BACKUP_DIR") or None
 CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 
 # Signing in from the address bar lands on the office application; the
@@ -87,6 +96,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.RequestMemo",
+    "apps.core.errors.ErrorCapture",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -206,6 +216,8 @@ if PRODUCTION:
     if os.environ.get("DJANGO_HTTPS", "true").lower() == "true":
         SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
         SECURE_SSL_REDIRECT = True
+        # The container's own health check comes in over plain HTTP.
+        SECURE_REDIRECT_EXEMPT = [r"^healthz/$"]
         SESSION_COOKIE_SECURE = True
         CSRF_COOKIE_SECURE = True
         SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", "3600"))
@@ -248,6 +260,9 @@ if os.environ.get("EMAIL_HOST"):
     EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
     EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
     DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", EMAIL_HOST_USER)
+    # The error mails to ADMINS go from the same address; Django's own
+    # default (root@localhost) is one most providers refuse to send.
+    SERVER_EMAIL = DEFAULT_FROM_EMAIL
 elif PRODUCTION:
     EMAIL_BACKEND = "apps.core.mail.NotConfiguredBackend"
 

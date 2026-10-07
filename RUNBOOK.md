@@ -86,6 +86,7 @@ the fortnight before that.
 | `DJANGO_HTTPS` | `true`. See "Plain HTTP" below before changing it. |
 | `DJANGO_TRUSTED_PROXIES` | set to `1` by docker-compose.yml for the Caddy in front. Only change it if another proxy is added in front of Caddy (then `2`): the sign-in lock reads each caller's address through them. |
 | `BACKUP_AT`, `BACKUP_KEEP_DAYS` | when the nightly backup runs (plant time) and how many days of them to keep. |
+| `DJANGO_ADMINS` | who is mailed when a request fails on the server (needs `EMAIL_HOST`). See "When something goes wrong". |
 
 ### HTTPS on the plant network
 
@@ -195,6 +196,48 @@ It prints what it issued and names any schedule it could not run (lines
 that do not balance, a date in a closed month) rather than forcing it.
 Until it runs, each login's inbox counts what is due.
 
+The same inbox also counts what was left incomplete and would otherwise
+carry forward unseen: customers with no GST standing or GSTIN, items
+with no HSN, PF or ESI members with no number, money received or paid a
+week ago and applied to nothing, bank lines a week old nobody explained,
+last month's depreciation or wages not posted, invoices the e-invoice
+portal has not registered. Each is a link to exactly those records.
+
+## When something goes wrong
+
+**Every failure has a reference.** When a request fails on the server,
+the person sees "Something went wrong on the server … quote its
+reference, E-7K3QM". The Controller and the HR Admin find that
+reference under Settings → Problems people hit, with who hit it, where,
+and the traceback; once it is dealt with they say what was done, and it
+leaves the open list. With `DJANGO_ADMINS` set in `.env`, the same
+traceback is mailed as it happens.
+
+**The books are checked against themselves every day.** Settings →
+Health (the Controller) runs the checks that must always hold: the
+trial balance balances; every posted entry balances; each receivable and
+payable control account holds exactly what its open invoices and bills
+say; the stock's value is the inventory accounts' balance; no shelf is
+below nothing; nothing was posted into a closed month after it closed;
+invoice numbers run without a gap. One that does not hold shows on the
+Controller's home page and in the morning mail as "Books that do not
+agree with themselves" until it is found. The same screen shows the
+server: the database, whether the schema is current, the disk, and how
+old the newest backup is (`BACKUP_DIR`, set by docker-compose.yml).
+
+The same checks from the command line, for a cron line somebody is
+paged on; it exits 1 when anything is wrong:
+
+```
+30 6 * * * cd /srv/erp && docker compose run --rm web python manage.py check_health
+```
+
+`docker compose ps` shows `web` as healthy or unhealthy by the same
+test: `/healthz/` answers 200 when the database answers, the schema is
+current, the disk has room and there is a backup from the last day, and
+503 naming what does not, in words that give nothing away (it needs no
+sign-in). Point whatever monitoring the plant has at it.
+
 ## Backups
 
 Every night at `BACKUP_AT` the `backup` container writes
@@ -271,6 +314,7 @@ previous version (`git checkout <previous tag>`), and rebuild.
 | read the application's log | `docker compose logs --tail 200 web` |
 | restart the application | `docker compose restart web` |
 | run a command (MRP, an import) | `docker compose run --rm web python manage.py <command>` |
+| check the books agree and the server is well | `docker compose run --rm web python manage.py check_health` |
 | open a database prompt | `docker compose exec db psql -U erp` |
 
 ## What it does not do
