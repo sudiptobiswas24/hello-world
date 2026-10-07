@@ -71,6 +71,7 @@ class SalesOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerialize
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
             "third_party_inspection",
+            "freight_terms", "incoterm", "port_of_discharge", "sacks_per_bale", "marking",
             "invoice_policy", "extra",
         ]
         read_only_fields = ["number", "status"]
@@ -214,6 +215,7 @@ class PriceListSerializer(serializers.ModelSerializer):
 class CustomerProfileSerializer(serializers.ModelSerializer):
     sales_rep_name = serializers.CharField(source="sales_rep.name", read_only=True, default="")
     price_list_name = serializers.CharField(source="price_list.name", read_only=True, default="")
+    transporter_name = serializers.CharField(source="transporter.name", read_only=True, default="")
 
     class Meta:
         model = CustomerProfile
@@ -221,6 +223,8 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
                   "max_filler_percent", "min_uv_percent", "third_party_inspection",
                   "release_covers_returns",
             "over_delivery_percent", "under_delivery_percent", "sales_rep", "sales_rep_name",
+            "industry", "freight_terms", "incoterm", "port_of_discharge", "transporter", "transporter_name",
+            "credit_hold", "credit_hold_reason", "sacks_per_bale", "marking",
         ]
 
 

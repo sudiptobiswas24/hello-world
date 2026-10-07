@@ -80,6 +80,33 @@ class UnitOfMeasureViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name"]
 
 
+# Given with a new party, the role it is made in, made with it or not at
+# all: a customer saved without its role would be in no customer list.
+# Trading roles only; making someone an employee is not a clerk's to do
+# from a sales screen.
+TRADING_ROLES = {PartyRole.CUSTOMER, PartyRole.VENDOR}
+
+
+def make_party(serializer, role, user):
+    """
+    A party made from the office, in a trading role or none: asked what
+    the login's scope asks of a new one, and handed to it once made.
+    """
+    if role is not None and role not in TRADING_ROLES:
+        raise DRFValidationError({"role": [f"A new party can be made a customer or a vendor here, not {role!r}."]})
+    said = refuse_create(user, role)
+    if said:
+        raise DRFValidationError([said])
+    with transaction.atomic():
+        # Who made it, as AuditableViewSetMixin would have said: an
+        # override had once dropped it for every party made in the office.
+        party = serializer.save(created_by=user, updated_by=user)
+        if role is not None:
+            PartyRoleAssignment.objects.create(party=party, role=role, created_by=user, updated_by=user)
+        created(party, role, user)
+    return party
+
+
 class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name", "legal_name", "email", "phone", "tax_id"]
     filter_fields = ["is_active", "role_assignments__role"]
@@ -90,12 +117,6 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     queryset = Party.objects.prefetch_related("role_assignments", "addresses", "contacts", "tags")
     serializer_class = PartySerializer
-
-    # Given with a new party, the role it is made in, made with it or not
-    # at all: a customer saved without its role would be in no customer
-    # list. Trading roles only; making someone an employee is not a
-    # clerk's to do from a sales screen.
-    TRADING_ROLES = {PartyRole.CUSTOMER, PartyRole.VENDOR}
 
     def get_queryset(self):
         return scoped(super().get_queryset(), self.request.user)
@@ -109,20 +130,7 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        role = self.request.data.get("role")
-        if role is not None and role not in self.TRADING_ROLES:
-            raise DRFValidationError({"role": [f"A new party can be made a customer or a vendor here, not {role!r}."]})
-        user = self.request.user
-        said = refuse_create(user, role)
-        if said:
-            raise DRFValidationError([said])
-        with transaction.atomic():
-            # Who made it, as AuditableViewSetMixin would have said: this
-            # override had dropped it for every party made in the office.
-            party = serializer.save(created_by=user, updated_by=user)
-            if role is not None:
-                PartyRoleAssignment.objects.create(party=party, role=role, created_by=user, updated_by=user)
-            created(party, role, user)
+        make_party(serializer, self.request.data.get("role"), self.request.user)
 
     def perform_update(self, serializer):
         said = refuse_change(self.request.user, serializer.instance)
@@ -148,7 +156,7 @@ class PartyViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         party = self.get_object()
         role = request.data.get("role") if request.method == "POST" else request.query_params.get("role")
-        if role not in self.TRADING_ROLES:
+        if role not in TRADING_ROLES:
             raise DRFValidationError({"role": [f"A party can be made a customer or a vendor here, not {role!r}."]})
         user = request.user
         said = refuse_change(user, party)

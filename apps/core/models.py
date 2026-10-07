@@ -447,6 +447,16 @@ class Party(Extensible, AuditModel):
     )
     tags = models.ManyToManyField(PartyTag, blank=True, related_name="parties")
     is_active = models.BooleanField(default=True)
+    website = models.URLField(blank=True)
+    cin = models.CharField("CIN", max_length=21, blank=True,
+                           help_text="Corporate identity number, for a company: U25209MH2015PTC123456.")
+    iec = models.CharField("IEC", max_length=10, blank=True,
+                           help_text="Importer-exporter code, for a party trading across the border.")
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="group_members",
+        help_text="The group or head company it belongs to: a cement group's several plants.",
+    )
+    notes = models.TextField(blank=True, help_text="What the office should know that no field holds.")
 
     class Meta:
         verbose_name_plural = "parties"
@@ -454,6 +464,22 @@ class Party(Extensible, AuditModel):
 
     def __str__(self):
         return f"{self.code} - {self.name}"
+
+    def save(self, *args, **kwargs):
+        self.cin, self.iec = self.cin.strip().upper(), self.iec.strip().upper()
+        if self.cin and not CIN_SHAPE.match(self.cin):
+            raise ValidationError({"cin": [f"{self.cin} is not the shape of a CIN: L or U, five digits, the "
+                                           "state's two letters, the year, three letters, six digits."]})
+        if self.iec and not IEC_SHAPE.match(self.iec):
+            raise ValidationError({"iec": [f"{self.iec} is not an IEC: ten letters and digits."]})
+        # A group is a tree: it cannot belong to itself, or to one of its own members.
+        node, seen = self.parent, set()
+        while node is not None and node.pk not in seen:
+            if self.pk is not None and node.pk == self.pk:
+                raise ValidationError({"parent": [f"{self.name} cannot belong to itself or to one of its own members."]})
+            seen.add(node.pk)
+            node = node.parent
+        super().save(*args, **kwargs)
 
     def primary_address(self, address_type=None):
         addresses = self.addresses.filter(is_active=True)
@@ -470,6 +496,10 @@ class Party(Extensible, AuditModel):
 
     def primary_contact(self):
         return self.contacts.filter(is_active=True).order_by("-is_primary").first()
+
+
+CIN_SHAPE = re.compile(r"^[LU][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}$")
+IEC_SHAPE = re.compile(r"^[A-Z0-9]{10}$")
 
 
 class PartyRole(models.TextChoices):

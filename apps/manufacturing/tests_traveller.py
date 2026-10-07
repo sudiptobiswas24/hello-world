@@ -12,7 +12,7 @@ from django.core.exceptions import ValidationError
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 from apps.inventory.models import Lot
-from apps.sales.models import SalesOrder, SalesOrderLine
+from apps.sales.models import CustomerProfile, SalesOrder, SalesOrderLine
 
 from .orders import WorkOrder, WorkOrderStatus
 from .tests_orders import TODAY
@@ -80,7 +80,12 @@ class TravellerTests(CoatingTestCase):
     def test_who_it_is_for_and_what_it_puts_right(self):
         customer = Party.objects.create(code="DCM", name="Deccan Cement")
         PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
+        profile = CustomerProfile.objects.create(party=customer, sacks_per_bale=500,
+                                                 marking="Batch and month on the back")
         order = SalesOrder.objects.create(customer=customer, order_date=TODAY)
+        # Packed as the order was taken, whatever the customer asks of the next one.
+        profile.sacks_per_bale, profile.marking = 250, "Nothing"
+        profile.save()
         line = SalesOrderLine.objects.create(order=order, item=self.lam_bag, uom=self.pcs,
                                              warehouse=self.plant, quantity=Decimal("5000"),
                                              unit_price=Decimal("14"))
@@ -91,7 +96,8 @@ class TravellerTests(CoatingTestCase):
         card = traveller(self.lam_run)
         order.refresh_from_db()
         self.assertEqual((card["customer_order"], card["rework_of"]),
-                         ({"number": order.number, "customer": str(customer)}, "OLD-1"))
+                         ({"number": order.number, "customer": str(customer), "sacks_per_bale": 500,
+                           "marking": "Batch and month on the back"}, "OLD-1"))
 
     def test_not_a_draft_nor_a_cancelled_run(self):
         draft = WorkOrder.objects.create(item=self.lam_bag, bom=self.lam_spec.bom,

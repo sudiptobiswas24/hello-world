@@ -19,6 +19,7 @@ from .views import (
     SalesReportViewSet,
     CommissionPlanViewSet,
     CustomerProfileViewSet,
+    NewCustomerViewSet,
     DeliveryLineViewSet,
     DunningLevelViewSet,
     DunningNoticeViewSet,
@@ -52,6 +53,7 @@ router.register("delivery-lines", DeliveryLineViewSet)
 router.register("price-lists", PriceListViewSet)
 router.register("price-list-items", PriceListItemViewSet)
 router.register("customer-profiles", CustomerProfileViewSet)
+router.register("customers", NewCustomerViewSet, basename="new-customer")
 router.register("quotations", QuotationViewSet)
 router.register("quotation-lines", QuotationLineViewSet)
 router.register("dunning-levels", DunningLevelViewSet)
