@@ -531,6 +531,24 @@ class OneDecisionAtATimeRaceTests(RaceCase):
             as_of=run_fixture.TODAY)] * 2))
         self.assertEqual(MaintenanceJob.objects.count(), 1)
 
+    def test_two_runs_at_once_take_one_month_not_two(self):
+        from apps.accounting import tests_recurring
+        from apps.accounting.recurring import generate_due_journals
+
+        schedule = fixture(self, tests_recurring.RecurringTestCase).schedule()
+        outcomes = race(JournalEntry, *[lambda: generate_due_journals(as_of=datetime.date(2026, 1, 31))] * 2)
+        self.assertEqual(outcomes, ["done", "done"])
+        self.assertEqual(JournalEntry.objects.filter(recurring_journal=schedule).count(), 1)
+
+    def test_two_runs_at_once_issue_one_months_invoice_not_two(self):
+        from apps.sales import tests_lifecycle
+        from apps.sales.models import generate_due_invoices
+
+        fixture(self, tests_lifecycle.RecurringInvoiceTests).make_schedule()
+        outcomes = race(Invoice, *[lambda: generate_due_invoices(as_of=datetime.date(2026, 1, 15))] * 2)
+        self.assertEqual(outcomes, ["done", "done"])
+        self.assertEqual(Invoice.objects.filter(reference="SUB-1").count(), 1)
+
     def test_a_station_counts_each_guess_before_weighing_the_next(self):
         """
         Four wrong PINs, then two more at once. Weighed together, both

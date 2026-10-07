@@ -130,6 +130,34 @@ class RunTests(RecurringTestCase):
             schedule.delete()
 
 
+class TakenOnceTests(RecurringTestCase):
+    """
+    Two runs at once, each due by the 31st of January: the second found the
+    first had taken January and took February, a month early. Two people
+    pressing Take the next on the same page took two. Each is now asked
+    again under the schedule's lock: the run is given nothing, the person
+    is told the next is due on the 28th of February.
+    """
+
+    def test_a_second_run_that_finds_it_taken_takes_nothing_early(self):
+        schedule = self.schedule()
+        read_by_the_second = RecurringJournal.objects.get(pk=schedule.pk)
+        self.assertIsNotNone(schedule.generate_one(due_by=datetime.date(2026, 1, 31)))
+        self.assertIsNone(read_by_the_second.generate_one(due_by=datetime.date(2026, 1, 31)))
+        self.assertEqual(JournalEntry.objects.filter(recurring_journal=schedule).count(), 1)
+        self.assertEqual(RecurringJournal.objects.get(pk=schedule.pk).next_run_date, datetime.date(2026, 2, 28))
+
+    def test_the_one_a_page_showed_is_taken_once(self):
+        schedule = self.schedule()
+        books = self.as_("Bookkeeper")
+        url = f"/api/accounting/recurring-journals/{schedule.pk}/generate/"
+        self.assertEqual(books.post(url, {"next_run_date": "2026-01-31"}, format="json").status_code, 200)
+        again = books.post(url, {"next_run_date": "2026-01-31"}, format="json")
+        self.assertEqual(again.status_code, 400)
+        self.assertIn("the next is due on 2026-02-28", str(again.json()))
+        self.assertEqual(JournalEntry.objects.filter(recurring_journal=schedule).count(), 1)
+
+
 class ApiTests(RecurringTestCase):
     def test_the_bookkeeper_keeps_the_schedule_and_takes_a_draft_from_it(self):
         books = self.as_("Bookkeeper")

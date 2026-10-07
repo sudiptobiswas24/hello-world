@@ -32,7 +32,9 @@ export default function RecurringJournalForm() {
       ]}
       actions={[
         { label: "Take the next entry", path: "generate", permission: "accounting.add_journalentry", primary: true,
-          when: (row) => Boolean(row.is_active), done: "Entry taken", then: (entry) => `/accounts/journals/${String(entry.id)}` },
+          when: (row) => Boolean(row.is_active), done: "Entry taken", then: (entry) => `/accounts/journals/${String(entry.id)}`,
+          // The one this page showed: two people at once would otherwise take two.
+          body: (_values, schedule) => ({ next_run_date: schedule.next_run_date }) },
       ]}
       panels={[
         {

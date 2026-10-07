@@ -39,3 +39,21 @@ def add_interval(start, interval, count=1, anchor_day=None):
     month = month_index % 12 + 1
     day = min(anchor_day or start.day, calendar.monthrange(year, month)[1])
     return datetime.date(year, month, day)
+
+
+def still_to_take(schedule, due_by=None, expected=None):
+    """
+    Whether `schedule`, read again under its lock, still holds what the
+    caller came to take. A run takes what is due by its day: a second run
+    at the same moment found the first had taken it and took the next
+    period's instead, a month early. A person takes the one their screen
+    showed: two at once took two. The run is answered "nothing left", the
+    person in words.
+    """
+    from django.core.exceptions import ValidationError
+
+    from apps.core.models import to_date
+
+    if expected is not None and schedule.next_run_date != to_date(expected):
+        raise ValidationError(f"That one is taken already: the next is due on {schedule.next_run_date}.")
+    return due_by is None or schedule.is_due(due_by)
