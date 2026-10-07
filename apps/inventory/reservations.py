@@ -152,6 +152,7 @@ class StockReservation(AuditModel):
         return self.quantity - self.consumed
 
     @transaction.atomic
+    @serialised("consumed", "released_at")
     def consume(self, quantity):
         """
         Draw the reservation down as the goods actually leave.

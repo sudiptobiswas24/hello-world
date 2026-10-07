@@ -99,7 +99,7 @@ class CostVersion(AuditModel):
 
     # -- rolling it up ---------------------------------------------------
 
-    @transaction.atomic
+    @serialised("published_on")
     def roll_up(self, items=None):
         """
         Work out every made item's cost from the bought ones underneath

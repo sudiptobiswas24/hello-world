@@ -26,7 +26,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q, Sum
 
-from apps.core.models import AuditModel, UnitOfMeasure
+from apps.core.models import AuditModel, UnitOfMeasure, serialised
 
 
 class ItemAttribute(AuditModel):
@@ -148,7 +148,7 @@ class ItemTemplate(AuditModel):
             groups.append(values)
         return list(product(*groups)) if groups else []
 
-    @transaction.atomic
+    @serialised()
     def generate_variants(self, only=None, sku_prefix=None):
         """
         Create the variants this template implies, skipping any that

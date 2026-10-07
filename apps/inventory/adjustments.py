@@ -608,7 +608,7 @@ class StockCount(AuditModel):
         """The adjustment this count raised, if it raised one."""
         return self.adjustments.first()
 
-    @transaction.atomic
+    @serialised("posted")
     def add(self, item, counted, uom=None, lot=None, storage_bin=None):
         """
         Put an item on the sheet, freezing what the system says right now.

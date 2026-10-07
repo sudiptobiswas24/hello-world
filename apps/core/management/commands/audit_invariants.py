@@ -87,6 +87,7 @@ class Command(BaseCommand):
         findings += self.unread_settings(all_code)
         findings += self.uncalled_helpers(labels, sources, all_code)
         findings += self.unlocked_stock_writers(labels, sources)
+        findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
         findings += self.unconstrained_numbers(labels)
@@ -207,6 +208,102 @@ class Command(BaseCommand):
                     f"{key} writes stock movements and never holds a position — "
                     "two documents can read the same shelf and both post.",
                 ))
+        return findings
+
+    # Not state changes: the guards themselves, and what Python calls.
+    NOT_A_STEP = re.compile(r"^(save|delete|clean|clean_fields|full_clean|validate_\w*|__\w+__)$")
+    # State changes that take no row lock of their own, and why that is right.
+    SERIALISED_ELSEWHERE = {
+        "accounting.PostedTaxDocumentMixin.record_taxes": "the last step of its document's post, which holds the lock",
+        "hr.Employee.issue_pin": "the database's unique key on the PIN's digest refuses a shared PIN",
+        "inventory.StockAdjustmentLine.post": "called only by its adjustment's post, which holds the adjustment",
+        "inventory.StockAdjustmentLine.reverse": "called only by its adjustment's void, which holds the adjustment",
+        "inventory.StockTransferLine.move": "called only by its transfer's dispatch and receive, which hold the transfer "
+                                            "and lock every shelf it moves between",
+        "inventory.StockTransferStep.reverse": "called only by its transfer's cancel, which holds the transfer",
+        "manufacturing.Complaint.settle": "the credit note is credit_claim's, which holds the invoice and its room",
+        "manufacturing.MaterialIssueLine.post": "called only by its issue's post, which holds the issue",
+        "purchasing.GoodsReceiptLine.advance": "decides only on stock: it holds every shelf on the route before reading "
+                                               "what is where, and changes nothing on the line",
+        "sales.Invoice.email_to_customer": "decides nothing a send changes: a second press is a second mail",
+        "sales.Lead.email_them": "decides nothing a send changes: a second press is a second mail",
+        "sales.Delivery.record_receipt": "the customer's own receipt, written as given: a second writes the same fact",
+        "sales.Delivery.record_transport": "the lorry's papers, written as given: a second writes the same fact",
+        "sales.Quotation.accept": "its conversion, _convert_to_order, holds the quote and asks again",
+    }
+
+    def unserialised_state_changes(self, labels, sources):
+        """
+        A step a record takes that reads its state and then writes, with
+        no row lock.
+
+        Two people pressing the same button both read "not yet" and both
+        go: two orders from one accepted quote, two backorders from one
+        delivery, a transfer's stock taken off the shelf twice, a
+        settlement discount written off twice. A test suite is single
+        threaded and never sees it, so this asks the code: a state change
+        must be @serialised, take lock_rows itself, or say here why not.
+        """
+        findings, exempted = [], set()
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                tree = ast.parse(text)
+                for cls in (node for node in tree.body if isinstance(node, ast.ClassDef)):
+                    bases = {getattr(base, "id", getattr(base, "attr", "")) for base in cls.bases}
+                    if not any(base in ("AuditModel", "Model") or base.endswith(("Model", "Mixin")) for base in bases) \
+                            or any(base.endswith(("ViewSet", "Serializer", "Admin")) for base in bases):
+                        continue
+                    methods = {node.name: node for node in cls.body if isinstance(node, ast.FunctionDef)}
+                    text_of = {name: ast.unparse(node) for name, node in methods.items()}
+
+                    def locked(name):
+                        decorators = {ast.unparse(d.func if isinstance(d, ast.Call) else d)
+                                      for d in methods[name].decorator_list}
+                        # Not lock_positions: it holds shelves, not the record, and dispatch() read its own
+                        # status before taking it.
+                        return "serialised" in decorators or "lock_rows(" in text_of[name]
+
+                    # What writes with no lock, counting what a method hands to the class's own
+                    # helpers: dispatch() wrote nothing itself and everything through
+                    # _move_out(), and was missed for it. A helper that locks is a locked write,
+                    # whoever calls it: reject() decides nothing _decide() does not ask again.
+                    writes = {name for name in methods if not locked(name) and re.search(
+                        r"\.(save|create|update|post|delete|bulk_create)\(", text_of[name])}
+                    grew = True
+                    while grew:
+                        grew = False
+                        for name in methods:
+                            if name not in writes and not locked(name) and any(
+                                    re.search(rf"\bself\.{callee}\(", text_of[name]) for callee in writes):
+                                writes.add(name)
+                                grew = True
+                    for fn in methods.values():
+                        # Every public step, whatever it is called: a list of verbs let commit() by.
+                        # A private helper is asked through the steps that call it.
+                        if fn.name.startswith("_") or self.NOT_A_STEP.match(fn.name):
+                            continue
+                        decorators = {ast.unparse(d.func if isinstance(d, ast.Call) else d) for d in fn.decorator_list}
+                        if decorators & {"property", "classmethod", "staticmethod"}:
+                            continue
+                        # Decides (refuses on what it read) and writes: a step that only adds a
+                        # line decides nothing, and the line's own save guards it.
+                        if fn.name not in writes or "raise " not in text_of[fn.name]:
+                            continue
+                        key = f"{label}.{cls.name}.{fn.name}"
+                        if key in self.SERIALISED_ELSEWHERE:
+                            exempted.add(key)
+                            continue
+                        findings.append((
+                            "unserialised state change",
+                            f"{key} ({path.name}:{fn.lineno}) decides and writes with no row lock — two "
+                            "presses of the same button both go. @serialised it, lock_rows, or say why not.",
+                        ))
+        # And a reason outlives nothing: an exemption for a step no longer found is taken off the list.
+        findings += [("stale exemption", f"{key} is exempted from the row lock but is no longer a step that needs one.")
+                     for key in sorted(set(self.SERIALISED_ELSEWHERE) - exempted)
+                     if key.split(".")[0] in labels]
         return findings
 
     # Fields the API deliberately does not take, with the reason. Anything

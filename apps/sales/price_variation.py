@@ -40,7 +40,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, DocumentSequence, to_date
+from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
 ZERO = Decimal("0")
 HUNDRED = Decimal("100")
@@ -166,7 +166,7 @@ class PriceVariationBill(AuditModel):
     def total(self):
         return sum((line.amount for line in self.lines.all()), ZERO)
 
-    @transaction.atomic
+    @serialised("cancelled_at", "invoice", "credit_note")
     def cancel(self):
         """Only while its documents are drafts; frees its deliveries."""
         if self.cancelled_at is not None:
