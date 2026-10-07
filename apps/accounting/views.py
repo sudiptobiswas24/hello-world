@@ -401,7 +401,7 @@ class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def void(self, request, pk=None):
         payment = self.get_object()
         try:
-            payment.void(memo=request.data.get("memo", ""))
+            payment.void(memo=request.data.get("memo", ""), on_date=request.data.get("date") or None)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(payment).data)

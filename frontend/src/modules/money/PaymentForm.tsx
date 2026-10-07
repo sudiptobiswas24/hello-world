@@ -139,7 +139,10 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
         {payment?.posted && !payment.voided && can("accounting.post_payment") && (
           <ActionButton danger pending={act.pending} onClick={() => {
             const memo = window.prompt("Why is it void? (a bounced cheque, a recalled transfer)");
-            if (memo !== null) void act.run("POST", `${ENDPOINT}${payment.id}/void/`, { memo }, { done: `Voided: the ${config.field}s it paid are owed again` });
+            if (memo === null) return;
+            // The day the bank took it back, so that month's statement reconciles.
+            const date = window.prompt("On which day? (the day the bank returned it)", today());
+            if (date !== null) void act.run("POST", `${ENDPOINT}${payment.id}/void/`, { memo, date }, { done: `Voided: the ${config.field}s it paid are owed again` });
           }}>Void</ActionButton>
         )}
       </DocHeader>
