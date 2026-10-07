@@ -8,6 +8,7 @@ import { csvText, downloadCsv } from "../lib/csv";
 import { count, date, money, quantity } from "../lib/format";
 import { useAccess } from "../auth/me";
 import { ErrorPanel } from "../shell/ErrorPanel";
+import { Grouped } from "./Grouped";
 
 export type Kind = "text" | "money" | "quantity" | "date" | "status";
 
@@ -104,6 +105,7 @@ export function ListView<T>(props: ListViewProps<T>) {
   });
 
   const [typed, setTyped] = useState(q);
+  const [grouping, setGrouping] = useState(false);
   useEffect(() => setTyped(q), [q]);
   useEffect(() => {
     if (typed === q) return;
@@ -230,6 +232,9 @@ export function ListView<T>(props: ListViewProps<T>) {
         {total > 0 && (
           <button type="button" className="btn" disabled={exporting} onClick={() => void exportAll()}>CSV</button>
         )}
+        {total > 0 && (
+          <button type="button" className="btn" aria-pressed={grouping} onClick={() => setGrouping((on) => !on)}>Group</button>
+        )}
         <div className="search">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
           <input
@@ -276,6 +281,7 @@ export function ListView<T>(props: ListViewProps<T>) {
           )}
         </div>
       )}
+      {grouping && <Grouped title={title} endpoint={endpoint} narrowing={{ ...fixed, ...narrowing, search: q }} />}
       <div className={result.isFetching && !result.isPending ? "progress on" : "progress"} />
       {result.isError ? (
         <ErrorPanel error={result.error} retry={() => void result.refetch()} />
