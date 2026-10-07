@@ -156,7 +156,7 @@ class ThirdPartyRelease(AuditModel):
         if not (reason or "").strip():
             raise ValidationError("Say why the release is withdrawn.")
         lots = [line.lot for line in self.lines.select_related("lot")]
-        list(Lot.objects.select_for_update().filter(pk__in=[lot.pk for lot in lots]))
+        list(Lot.objects.select_for_update().order_by().filter(pk__in=[lot.pk for lot in lots]))
         for lot in lots:
             fits, _ = _fits(self.customer, lot, exclude_release=self)
             if not fits:
@@ -312,7 +312,7 @@ def refuse_uncovered(delivery, lines):
             continue
         for lot in taken:
             lots[lot.pk] = lot
-    list(Lot.objects.select_for_update().filter(pk__in=list(lots)))
+    list(Lot.objects.select_for_update().order_by().filter(pk__in=list(lots)))
     for lot in lots.values():
         fits, spare = _fits(customer, lot, adding=delivery)
         if not fits:
