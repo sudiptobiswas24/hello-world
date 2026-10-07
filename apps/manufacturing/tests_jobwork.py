@@ -417,3 +417,21 @@ class ChallanPdfTests(JobWorkTestCase):
         self.assertEqual(mail.outbox[0].attachments[0][0], f"{challan.number}.pdf")
         rows = client.get("/api/core/history/", {"model": "manufacturing.jobworkchallan", "id": challan.pk}).json()
         self.assertEqual((rows[0]["label"], rows[0]["summary"]), ("Sent", "Job-work challan to lam@example.com"))
+
+    def test_sending_a_challan_takes_the_right_to_change_it_not_to_add_one(self):
+        from django.contrib.auth.models import Permission, User
+        from django.test import override_settings
+        from rest_framework.test import APIClient
+
+        challan = self.challan("10")
+        for codename, answered in (("add_jobworkchallan", 403), ("change_jobworkchallan", 200)):
+            with self.subTest(holds=codename):
+                person = User.objects.create_user(codename)
+                person.user_permissions.add(*Permission.objects.filter(
+                    content_type__app_label="manufacturing", codename__in=("view_jobworkchallan", codename)))
+                client = APIClient()
+                client.force_authenticate(person)
+                with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"):
+                    sent = client.post(f"/api/manufacturing/job-work-challans/{challan.pk}/send/",
+                                       {"to": "lam@example.com"}, format="json")
+                self.assertEqual(sent.status_code, answered, sent.content)

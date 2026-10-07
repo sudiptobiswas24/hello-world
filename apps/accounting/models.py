@@ -250,11 +250,40 @@ class JournalEntry(AuditModel):
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        if self.posted:
+        if self.posted or self._was_posted_in_db():
             raise ValidationError(
                 "Posted journal entries cannot be deleted. Create a reversing entry instead."
             )
         super().delete(*args, **kwargs)
+
+    def recorded_by(self):
+        """
+        The document that posted this entry and keeps it, if any: it is
+        corrected there, by a credit note, a void or a return. Reversed
+        from the journal, an invoice still read as owed while receivables
+        said nothing was, and a payment could no longer be voided.
+
+        Asked of every model that points at an entry, so a document added
+        later is covered the day it keeps its entry.
+        """
+        for relation in self._meta.get_fields(include_hidden=True):
+            if not relation.auto_created or relation.concrete or relation.related_model in (JournalEntry, JournalLine):
+                continue
+            found = relation.related_model._base_manager.filter(**{relation.field.name: self}).first()
+            if found is not None:
+                return found
+        return None
+
+    @serialised("posted")
+    def reverse_by_hand(self, memo=""):
+        """A person's reversal, from the journal: only of an entry no document keeps."""
+        document = self.recorded_by()
+        if document is not None:
+            raise ValidationError(
+                f"JE-{self.pk} was posted by {document._meta.verbose_name} {document}: correct it there "
+                "(a credit note, a void, a return), not by reversing its entry."
+            )
+        return self.create_reversal(memo=memo)
 
     def total_debit(self):
         return self.lines.aggregate(total=Sum("debit"))["total"] or Decimal("0")
@@ -358,15 +387,22 @@ class JournalLine(AuditModel):
         if not self.debit and not self.credit:
             raise ValidationError("A journal line must have either a debit or a credit.")
 
+    def _on_a_posted_entry(self):
+        """Where it is going and where it has been, both asked of the database: moved out of a
+        posted entry into a draft, a line left an invoice's entry unbalanced and its amount off the
+        ledger."""
+        return (bool(self.entry_id) and JournalEntry.objects.filter(pk=self.entry_id, posted=True).exists()) or (
+            bool(self.pk) and JournalLine.objects.filter(pk=self.pk, entry__posted=True).exists())
+
     def save(self, *args, **kwargs):
-        if self.entry_id and JournalEntry.objects.filter(pk=self.entry_id, posted=True).exists():
+        if self._on_a_posted_entry():
             raise ValidationError(
                 "Cannot modify a line on a posted journal entry. Create a reversing entry instead."
             )
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        if self.entry.posted:
+        if self._on_a_posted_entry():
             raise ValidationError(
                 "Cannot delete a line on a posted journal entry. Create a reversing entry instead."
             )
