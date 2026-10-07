@@ -205,21 +205,25 @@ class BrowserMixin:
         return page
 
     @contextlib.contextmanager
-    def answering(self, page, reply):
-        """The one question the next step asks, answered with `reply`; any other is still a fault."""
+    def answering(self, page, *replies):
+        """The questions the next step asks, answered in turn with `replies`; any other is still a fault."""
         asked = []
 
         def answer(dialog):
+            if len(asked) == len(replies):
+                page._unexpected_dialog(dialog)
+                return
             asked.append(dialog.message)
-            dialog.accept(reply)
+            dialog.accept(replies[len(asked) - 1])
 
         page.remove_listener("dialog", page._unexpected_dialog)
-        page.once("dialog", answer)
+        page.on("dialog", answer)
         try:
             yield asked
         finally:
+            page.remove_listener("dialog", answer)
             page.on("dialog", page._unexpected_dialog)
-        self.assertEqual(len(asked), 1, "the step asked nothing")
+        self.assertEqual(len(asked), len(replies), "the step asked fewer questions than were answered")
 
     def invoice(self, customer, day, price, post=True):
         invoice = Invoice.objects.create(customer=customer, invoice_date=day,

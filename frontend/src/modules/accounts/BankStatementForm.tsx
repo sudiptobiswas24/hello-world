@@ -9,7 +9,7 @@ const lineLabel = (row: Row) => `${String(row.date)} · ${String(row.description
 /** The statement's lines nothing explains yet: a match or a posting is for one of these. */
 const unexplained = (statement: Row): FieldDef["ref"] => ({
   endpoint: "/api/accounting/bank-statement-lines/", permission: "accounting.view_bankstatementline", label: lineLabel,
-  query: { statement: String(statement.id), payment__isnull: "true", journal_entry__isnull: "true" },
+  query: { statement: String(statement.id), payment__isnull: "true", journal_entry__isnull: "true", returned_payment__isnull: "true" },
 });
 
 const FIGURES: [string, string][] = [
@@ -17,7 +17,9 @@ const FIGURES: [string, string][] = [
   ["statement_balance", "What the bank says"], ["statement_difference", "The statement's own lines, off by"],
   ["difference", "Unexplained"],
 ];
-const resolution = (row: Row) => (row.payment_number ? `Payment ${String(row.payment_number)}` : row.journal_entry ? `Posted, JE-${String(row.journal_entry)}` : "");
+const resolution = (row: Row) => (row.payment_number ? `Payment ${String(row.payment_number)}`
+  : row.returned_payment_number ? `Returned: payment ${String(row.returned_payment_number)}`
+  : row.journal_entry ? `Posted, JE-${String(row.journal_entry)}` : "");
 
 /**
  * A month of a bank account as the bank reports it, matched line by line
@@ -103,7 +105,7 @@ export default function BankStatementForm() {
             when: (statement) => !statement.closed },
           rowActions: [
             { label: "Unmatch", permission: "accounting.change_bankstatementline", method: "POST", done: "Unmatched",
-              when: (row) => Boolean(row.payment), url: (row) => `/api/accounting/bank-statement-lines/${String(row.id)}/unmatch/` },
+              when: (row) => Boolean(row.payment || row.returned_payment), url: (row) => `/api/accounting/bank-statement-lines/${String(row.id)}/unmatch/` },
             { label: "Reverse", permission: "accounting.post_journalentry", method: "POST", done: "Posting reversed",
               confirm: "Reverse this line's posting? The entry stays, reversed on its own date.",
               when: (row) => Boolean(row.journal_entry), url: (row) => `/api/accounting/bank-statement-lines/${String(row.id)}/reverse_posting/` },

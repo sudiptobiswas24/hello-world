@@ -8,6 +8,7 @@ from the database.
   closing 950 = 1,000 - 50; nothing left unexplained once the charge is posted.
 """
 
+import datetime
 import re
 from decimal import Decimal
 
@@ -72,6 +73,44 @@ class ReconciliationInTheBrowserTests(BrowserTestCase):
         self.assertEqual(BankStatementLine.objects.get(amount=Decimal("-50")).journal_entry.lines.get(
             account=self.charges).debit, Decimal("50.00"))
 
+        controller.get_by_role("button", name="Close", exact=True).click()
+        expect(controller.locator("main")).to_contain_text("Closed")
+        statement.refresh_from_db()
+        self.assertTrue(statement.closed)
+        self.assertEqual(self.problems, [])
+
+    def test_a_cheque_the_bank_returned_is_voided_on_its_day_and_matched(self):
+        """
+        books: receipt 1,000 (10 Mar). bank: +1,000 (10 Mar), -1,000 returned unpaid (14 Mar); closing 0.
+        The controller voids the receipt on the 14th, the day the bank returned it; the bookkeeper
+        matches the return, then the cheque, and the month closes with nothing posted.
+        """
+        statement = BankStatement.objects.create(
+            bank_account=self.bank, start_date=datetime.date(2026, 3, 1), end_date=datetime.date(2026, 3, 31),
+            opening_balance=Decimal("0"), closing_balance=Decimal("0"))
+        for day, words, amount in ((10, "Cheque Acme", "1000"), (14, "Cheque returned unpaid", "-1000")):
+            BankStatementLine.objects.create(statement=statement, date=datetime.date(2026, 3, day), description=words,
+                                             amount=Decimal(amount))
+        controller = self.sign_in(self.person("Controller"), f"/app/sales/receipts/{self.received.pk}")
+        with self.answering(controller, "Returned unpaid", "2026-03-14"):
+            controller.get_by_role("button", name="Void").click()
+            expect(controller.locator(".toast", has_text="Voided").first).to_be_visible()
+        self.received.refresh_from_db()
+        self.assertEqual(self.received.voided_entry.date, datetime.date(2026, 3, 14))
+
+        page = self.sign_in(self.person("Bookkeeper"), f"/app/accounts/bank-statements/{statement.pk}", page=self.new_page())
+        for line, shown in (("2026-03-14 · Cheque returned unpaid · -1000.00", f"Returned: payment {self.received.number}"),
+                            ("2026-03-10 · Cheque Acme · 1000.00", f"Payment {self.received.number}")):
+            form = self.open_form(page, "Match a line")
+            form.get_by_label("Line").select_option(label=line)
+            form.get_by_role("combobox", name="Payment").fill(self.received.number)
+            page.get_by_role("option", name=re.compile(self.received.number)).click()
+            form.get_by_role("button", name="Match a line").click()
+            expect(self.panel(page, "Lines")).to_contain_text(shown)
+            # The panel reads the match before the form closes: the next line waits for it.
+            expect(form).to_have_count(0)
+
+        controller.goto(f"{self.live_server_url}/app/accounts/bank-statements/{statement.pk}")
         controller.get_by_role("button", name="Close", exact=True).click()
         expect(controller.locator("main")).to_contain_text("Closed")
         statement.refresh_from_db()

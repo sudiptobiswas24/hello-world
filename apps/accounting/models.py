@@ -1005,7 +1005,7 @@ class Payment(AuditModel):
         )
 
     @serialised("posted", "voided_entry")
-    def void(self, memo=""):
+    def void(self, memo="", on_date=None):
         """
         Reverse a posted payment — a bounced cheque, a recalled transfer.
 
@@ -1028,8 +1028,17 @@ class Payment(AuditModel):
         if self.voided_entry_id or JournalEntry.objects.filter(reverses_id=self.journal_entry_id).exists():
             raise ValidationError("This payment has already been voided.")
 
+        # On the day the bank returned it, not the day someone keyed it in: dated today, a cheque
+        # returned on the 3rd and voided next month left that month's books holding the money, and
+        # its statement could not be reconciled.
+        on_date = to_date(on_date) or timezone.localdate()
+        if on_date < to_date(self.payment_date):
+            raise ValidationError("A payment is not voided before the day it was made.")
+        # Ahead of the ledger, the documents would read it unpaid from now and the books paid until then.
+        if on_date > timezone.localdate():
+            raise ValidationError("A payment is voided on the day the bank returned it, and that day has not come.")
         entry = self.journal_entry.create_reversal(
-            memo=memo or f"Void of payment {self.number}"
+            entry_date=on_date, memo=memo or f"Void of payment {self.number}"
         )
         self.voided_entry = entry
         super(Payment, self).save(update_fields=["voided_entry", "updated_at"])
@@ -1283,6 +1292,10 @@ class BankStatementLine(AuditModel):
         related_name="+", editable=False,
         help_text="Set when this line was posted directly — bank charges, interest.",
     )
+    returned_payment = models.OneToOneField(
+        Payment, null=True, blank=True, on_delete=models.PROTECT, related_name="returned_line",
+        help_text="The payment the bank took back on this line: a cheque returned unpaid, a transfer recalled.",
+    )
 
     class Meta:
         ordering = ["date", "id"]
@@ -1295,7 +1308,7 @@ class BankStatementLine(AuditModel):
         return f"{self.date:%d %b %Y} {self.description} {self.amount}"
 
     def is_resolved(self):
-        return bool(self.payment_id or self.journal_entry_id)
+        return bool(self.payment_id or self.journal_entry_id or self.returned_payment_id)
 
     def save(self, *args, **kwargs):
         if self.statement_id and BankStatement.objects.filter(
@@ -1309,7 +1322,7 @@ class BankStatementLine(AuditModel):
             before = BankStatementLine.objects.get(pk=self.pk)
             moved = (before.amount, before.date, before.statement_id) != (
                 self.amount, to_date(self.date), self.statement_id)
-            if moved and (before.payment_id or before.journal_entry_id):
+            if moved and before.is_resolved():
                 raise ValidationError("This line is explained already; unmatch or reverse it before "
                                       "changing it.")
         super().save(*args, **kwargs)
@@ -1321,17 +1334,32 @@ class BankStatementLine(AuditModel):
             raise ValidationError("This line was posted to the ledger; reverse it first.")
         super().delete(*args, **kwargs)
 
-    @serialised("payment", "journal_entry")
+    @serialised("payment", "journal_entry", "returned_payment")
     def match(self, payment):
         """Say this line is that payment."""
         if self.is_resolved():
             raise ValidationError("This line is already explained.")
         if not payment.posted:
             raise ValidationError("Only a posted payment can be matched.")
-        if payment.is_voided():
-            raise ValidationError("A voided payment never reached the bank.")
         if payment.bank_account_id != self.statement.bank_account_id:
             raise ValidationError("That payment went through a different bank account.")
+        if payment.is_voided():
+            returned = BankStatementLine.objects.filter(returned_payment=payment).select_related("statement").first()
+            # The bank taking it back: a cheque returned unpaid, the payment's own amount the other
+            # way. Matched nowhere, a bounce reported after its cheque's statement closed could
+            # never be explained: posted instead, it took the money off the books a second time.
+            if self.amount == -payment.signed_base_amount():
+                if returned is not None:
+                    raise ValidationError(f"The bank's return of that payment is already matched, on {returned.statement}.")
+                if to_date(self.date) < to_date(payment.payment_date):
+                    raise ValidationError("A payment is not returned before it was made.")
+                self.returned_payment = payment
+                self.save(update_fields=["returned_payment", "updated_at"])
+                return self
+            # Voided because it never happened, it never reached the bank; one the bank returned did.
+            if returned is None:
+                raise ValidationError("A voided payment never reached the bank, unless the bank returned it: "
+                                      "match the line that returned it first.")
         elsewhere = BankStatementLine.objects.filter(payment=payment).select_related("statement").first()
         if elsewhere is not None:
             raise ValidationError(f"That payment is already matched, on the statement {elsewhere.statement}.")
@@ -1344,16 +1372,20 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["payment", "updated_at"])
         return self
 
-    @serialised("payment", "journal_entry")
+    @serialised("payment", "journal_entry", "returned_payment")
     def unmatch(self):
         if self.journal_entry_id:
             raise ValidationError("This line was posted, not matched. Reverse it instead.")
-        if not self.payment_id:
+        if not (self.payment_id or self.returned_payment_id):
             raise ValidationError("This line is not matched.")
-        self.payment = None
-        self.save(update_fields=["payment", "updated_at"])
+        # The return comes off after the payment's own line, as it went on before it: alone, that
+        # line says a voided payment reached the bank and nothing says the bank gave it back.
+        if self.returned_payment_id and BankStatementLine.objects.filter(payment_id=self.returned_payment_id).exists():
+            raise ValidationError("That payment's own line is still matched to it; unmatch that line first.")
+        self.payment = self.returned_payment = None
+        self.save(update_fields=["payment", "returned_payment", "updated_at"])
 
-    @serialised("payment", "journal_entry")
+    @serialised("payment", "journal_entry", "returned_payment")
     def post_to(self, account, party=None, memo=""):
         """
         Explain a line that is not a payment at all — a bank charge,
@@ -1390,7 +1422,7 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["journal_entry", "updated_at"])
         return entry
 
-    @serialised("payment", "journal_entry")
+    @serialised("payment", "journal_entry", "returned_payment")
     def reverse_posting(self, on_date=None):
         """
         Take back a line posted to the wrong account. `unmatch` said to
