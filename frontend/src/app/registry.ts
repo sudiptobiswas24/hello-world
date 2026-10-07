@@ -1036,6 +1036,10 @@ export const MODULES: Module[] = [
     icon: "settings",
     screens: [
       {
+        path: "import", label: "Bring old records in", permission: "core.import_records",
+        keywords: "import csv go-live cutover opening balances old system migrate upload", load: () => import("../modules/settings/ImportRecords"),
+      },
+      {
         path: "company", label: "Company", permission: "core.view_company",
         keep: "core.change_company",
         keywords: "base currency default accounts fiscal year gstin", load: () => import("../modules/settings/CompanyList"),

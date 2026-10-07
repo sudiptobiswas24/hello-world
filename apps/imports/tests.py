@@ -311,16 +311,15 @@ class TemplatesTests(ImportTestCase):
     def test_each_kind_has_a_blank_file_that_reads_back_as_no_rows(self):
         import os
 
-        from .importer import COLUMNS, KINDS, read
+        from .importer import KINDS, columns_of, read
 
-        self.assertEqual(set(COLUMNS), set(KINDS))
         with tempfile.TemporaryDirectory() as folder:
             for kind in KINDS:
                 path = os.path.join(folder, f"{kind}.csv")
                 call_command("import_csv", kind, path, "--template", stdout=StringIO())
                 with open(path) as handle:
                     text = handle.read()
-                self.assertEqual(text.strip().split(","), COLUMNS[kind])
+                self.assertEqual(text.strip().split(","), columns_of(kind))
                 self.assertEqual(read(text), [])
             with self.assertRaisesMessage(CommandError, "never written over"):
                 call_command("import_csv", "items", os.path.join(folder, "items.csv"), "--template",

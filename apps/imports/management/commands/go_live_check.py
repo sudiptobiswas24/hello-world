@@ -145,6 +145,20 @@ def _reps(add, users):
             "on the customer's sales terms.")
 
 
+def _making(add):
+    from apps.inventory.models import Item
+    from apps.manufacturing.bom import BillOfMaterials
+
+    made = set(BillOfMaterials.objects.values_list("item_id", flat=True))
+    without = sorted(Item.objects.filter(stock_class__in=("finished", "semi_finished"), is_active=True)
+                     .exclude(pk__in=made).values_list("sku", flat=True))
+    if without:
+        add(WARN, "Items made here with no recipe",
+            f"{', '.join(without[:12])}{', …' if len(without) > 12 else ''}: nothing can be planned or "
+            "costed for them until their specification is in (bag_specs, fabric_specs, tape_specs) or a "
+            "bill of materials is typed.")
+
+
 def _books(add):
     from apps.accounting.reports import trial_balance
     from apps.inventory.reports import negative_stock, reconcile_to_ledger

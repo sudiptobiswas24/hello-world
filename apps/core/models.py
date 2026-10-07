@@ -1087,6 +1087,9 @@ class Company(AuditModel):
 
     class Meta:
         verbose_name_plural = "company"
+        permissions = [
+            ("import_records", "Can bring the old system's records in"),
+        ]
 
     def __str__(self):
         return self.name

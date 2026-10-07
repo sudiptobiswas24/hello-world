@@ -89,6 +89,9 @@ ROLES = {
         *crud("core", "documentsequence"),
         *crud("core", "licence"),
         *crud("core", "company", actions=("change", "view")),
+        # Go-live: the old system's records, through the screen or the
+        # command. Posts invoices and confirms orders, so the controller's.
+        "core.import_records",
         # Reference data the books depend on: where parties are and how
         # they are grouped, and what quantities are counted in.
         *full("core", "country", "partytag", "unitofmeasure"),

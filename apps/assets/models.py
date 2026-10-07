@@ -131,6 +131,17 @@ class FixedAsset(AuditModel):
                   "account, when it came from a bill — kept so that it can be "
                   "reversed rather than left behind.",
     )
+    depreciated_before = models.DateField(
+        null=True, blank=True,
+        help_text="Depreciation to this date was taken in the old system and is carried "
+                  "in the opening balances; the months after it are this system's. Set "
+                  "when the register is brought in at go-live, and never after.",
+    )
+    opening_depreciation = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"),
+        help_text="What the old system had depreciated by that date, counted in what is "
+                  "accumulated here; its journal side is in the opening balances.",
+    )
 
     class Meta:
         ordering = ["-acquisition_date", "-id"]
@@ -165,7 +176,7 @@ class FixedAsset(AuditModel):
     # already posted computed from figures the asset no longer has.
     FIXED_IN_SERVICE = (
         "category_id", "acquisition_date", "in_service_date", "cost",
-        "salvage_value", "life_months",
+        "salvage_value", "life_months", "depreciated_before", "opening_depreciation",
     )
 
     def save(self, *args, **kwargs):
@@ -209,6 +220,19 @@ class FixedAsset(AuditModel):
         if self.in_service_date and self.acquisition_date:
             if self.in_service_date < self.acquisition_date:
                 raise ValidationError("An asset cannot be in service before it was acquired.")
+        self.depreciated_before = to_date(self.depreciated_before)
+        if self.depreciated_before and self.in_service_date and self.depreciated_before < self.in_service_date:
+            raise ValidationError("Nothing was depreciated before the asset was in service.")
+        if self.opening_depreciation:
+            if self.opening_depreciation < 0:
+                raise ValidationError("Opening depreciation cannot be below nothing.")
+            if not self.depreciated_before:
+                raise ValidationError("Opening depreciation needs the date it was taken to.")
+            if self.cost is not None and self.salvage_value is not None and \
+                    self.opening_depreciation > self.cost - self.salvage_value:
+                raise ValidationError(
+                    f"Opening depreciation of {self.opening_depreciation} is more than the "
+                    f"{self.cost - self.salvage_value} there is to depreciate.")
 
     def depreciable_base(self):
         return self.cost - self.salvage_value
@@ -228,7 +252,11 @@ class FixedAsset(AuditModel):
         entries = self.depreciation_entries.filter(reversal__isnull=True)
         if as_of is not None:
             entries = entries.filter(period_end__lte=to_date(as_of))
-        return sum((entry.amount for entry in entries), Decimal("0"))
+        charged = sum((entry.amount for entry in entries), Decimal("0"))
+        # What the old system took, from the day it was taken to.
+        if self.opening_depreciation and (as_of is None or to_date(self.depreciated_before) <= to_date(as_of)):
+            charged += self.opening_depreciation
+        return charged
 
     def net_book_value(self, as_of=None):
         return self.cost - self.accumulated(as_of)
@@ -267,13 +295,17 @@ class FixedAsset(AuditModel):
             to_date(entry.period_end) for entry in self.depreciation_entries.all()
         }
         periods, cursor = [], to_date(self.in_service_date)
+        # The old system's months are not this one's to charge again.
+        taken_until = to_date(self.depreciated_before)
+        if taken_until and taken_until >= cursor:
+            cursor = taken_until.replace(day=1)
         while True:
             last = datetime.date(
                 cursor.year, cursor.month, calendar.monthrange(cursor.year, cursor.month)[1]
             )
             if last > through:
                 break
-            if last not in charged:
+            if last not in charged and not (taken_until and last <= taken_until):
                 periods.append(last)
             cursor = last + datetime.timedelta(days=1)
         return periods

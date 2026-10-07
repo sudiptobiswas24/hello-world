@@ -1,10 +1,11 @@
 """
 Bringing the old system's records in, from CSV files, once, at go-live.
 
-Six kinds, in the order they depend on each other: parties, items, then
-the opening position (stock on hand, invoices still owed, bills still
-owing, and every other balance on the trial balance). docs/IMPORT.md
-gives each file's columns.
+In the order they depend on each other: parties, items, then the
+opening position (stock on hand, invoices still owed, bills still owing,
+and every other balance on the trial balance) here, and in cutover.py
+what the plant makes, the order book, the asset register, pay and
+prices. docs/IMPORT.md gives each file's columns.
 
 Every row is built through the models, so it meets the rules a record
 typed in would: a GSTIN is checked, a unit of measure must exist, an
@@ -20,20 +21,22 @@ adjustment. Receivables, payables and stock may therefore not appear in
 the balances file; their control accounts are refused there.
 """
 
-from dataclasses import dataclass, field
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from apps.core.csvrows import RowError, date, decimal, read, required, yes_no
+from .base import Report, by_code, clean, date, decimal, read, required, stamped_by, yes_no  # noqa: F401
+from .base import RowError
+from .cutover import CUTOVER, CUTOVER_PER_ROW, CUTOVER_WHOLE_FILE, cutover_columns
 
 KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
-         "open_bills", "opening_balances", "shipment_history")
+         "open_bills", "opening_balances", "shipment_history", *CUTOVER)
 
 
 # Each kind's columns, in the order a template gives them; docs/IMPORT.md
-# says which are required and what each takes.
+# says which are required and what each takes. The cutover kinds' are
+# read off their models (cutover.py).
 COLUMNS = {
     "parties": ["code", "name", "roles", "legal_name", "email", "phone", "currency", "payment_terms",
                 "gstin", "gst_state", "gst_registration", "credit_limit", "address_line1",
@@ -50,49 +53,25 @@ COLUMNS = {
     "shipment_history": ["sku", "warehouse", "month", "quantity", "note"],
 }
 
+# What a kind needs beside its file: the go-live date, the opening-balance
+# account, the opening-stock reason, a memo; the screen asks for these and
+# the command has a flag for each.
+NEEDS = {
+    "opening_stock": ("date", "reason", "memo"),
+    "opening_balances": ("date", "memo"),
+    "open_invoices": ("against",),
+    "open_bills": ("against",),
+    "fixed_assets": ("date",),
+}
+
+
+def columns_of(kind):
+    return COLUMNS.get(kind) or cutover_columns(kind)
+
 
 def template(kind):
     """The header row of a blank file of `kind`."""
-    return ",".join(COLUMNS[kind]) + "\n"
-
-
-@dataclass
-class Report:
-    kind: str
-    rows: int = 0
-    created: int = 0
-    errors: list = field(default_factory=list)  # (row number, column, message)
-    committed: bool = False
-    # (user name, first password) for each login an employees file made:
-    # handed out once, and changed at the first sign-in.
-    passwords: list = field(default_factory=list)
-
-    def refuse(self, row, column, message):
-        self.errors.append((row, column, str(message)))
-
-
-def by_code(model, row, column, field_name="code", required_=True, **extra):
-    value = row.get(column, "")
-    if not value:
-        if required_:
-            raise RowError(column, "is required.")
-        return None
-    found = model.objects.filter(**{field_name: value}, **extra).first()
-    if found is None:
-        raise RowError(column, f"no {model._meta.verbose_name} {value!r}.")
-    return found
-
-
-def clean(instance, columns=None):
-    """full_clean(), its complaints put on the columns they came from."""
-    try:
-        instance.full_clean()
-    except ValidationError as error:
-        if hasattr(error, "error_dict"):
-            name, messages = next(iter(error.error_dict.items()))
-            column = (columns or {}).get(name, name if name != "__all__" else "")
-            raise RowError(column, " ".join(m for e in messages for m in e.messages)) from None
-        raise RowError("", " ".join(error.messages)) from None
+    return ",".join(columns_of(kind)) + "\n"
 
 
 # -- the kinds -----------------------------------------------------------
@@ -450,19 +429,20 @@ PER_ROW = {
     "customer_reps": _customer_rep,
     "open_invoices": lambda row, options: _open_document(row, options, "sales"),
     "open_bills": lambda row, options: _open_document(row, options, "purchasing"),
+    **CUTOVER_PER_ROW,
 }
 WHOLE_FILE = {"employees": _employees, "opening_stock": _opening_stock,
-              "opening_balances": _opening_balances}
+              "opening_balances": _opening_balances, **CUTOVER_WHOLE_FILE}
 
 
-def run(kind, text, *, commit=False, **options):
-    """Bring in one file of `kind`; a Report of what it did or would do."""
+def run(kind, text, *, commit=False, user=None, **options):
+    """Bring in one file of `kind`; a Report of what it did or would do. What is kept says `user` made it."""
     if kind not in KINDS:
         raise ValueError(f"{kind!r} is not one of {', '.join(KINDS)}.")
     report = Report(kind=kind)
     rows = list(enumerate(read(text), start=2))  # row 1 is the header
     report.rows = len(rows)
-    with transaction.atomic():
+    with transaction.atomic(), stamped_by(user):
         if kind in PER_ROW:
             for number, row in rows:
                 try:
