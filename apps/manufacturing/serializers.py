@@ -44,6 +44,7 @@ from apps.sales.models import Quotation
 from .woven import (
     FOLD_ALLOWANCE_CM, BagSpecification, FabricSpecification, TapeSpecification,
 )
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class TapeSpecificationSerializer(serializers.ModelSerializer):
@@ -779,7 +780,7 @@ class ChangeoverRuleSerializer(serializers.ModelSerializer):
                   "purge_kg", "notes", "work_centre_name"]
 
 
-class MachineSerializer(serializers.ModelSerializer):
+class MachineSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     work_centre_name = serializers.CharField(source="work_centre.name", read_only=True)
 
     class Meta:
@@ -789,7 +790,7 @@ class MachineSerializer(serializers.ModelSerializer):
                   "hours_per_day", "days_pattern", "is_active", "notes",
                   "min_width_cm", "max_width_cm", "min_length_cm", "max_length_cm",
                   "max_colours", "inserts_liner",
-            "contractor",
+            "contractor", "extra",
         ]
 
     hours_per_day = serializers.SerializerMethodField()

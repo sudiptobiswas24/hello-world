@@ -4,6 +4,7 @@ from rest_framework import serializers
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
 from .models import Department, Employee, LeavePolicy, LeaveRequest
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class DepartmentSerializer(serializers.ModelSerializer):
@@ -14,7 +15,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
         ]
 
 
-class EmployeeSerializer(serializers.ModelSerializer):
+class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     name = serializers.CharField(source="party.name", read_only=True)
     department_name = serializers.CharField(source="department.name", read_only=True, default="")
     # HR makes the person with the employee: whoever keeps employees need
@@ -52,7 +53,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "termination_date",
             "employment_status",
             "working_days", "holiday_region", "paid_by_attendance", "uan", "esi_number", "user", "name",
-            "department_name", "new_name",
+            "department_name", "new_name", "extra",
         ]
         extra_kwargs = {"party": {"required": False}}
 

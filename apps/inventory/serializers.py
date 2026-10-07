@@ -19,6 +19,7 @@ from .models import (
     StorageBin,
     Warehouse,
 )
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class WarehouseSerializer(serializers.ModelSerializer):
@@ -44,14 +45,14 @@ class ItemUnitSerializer(serializers.ModelSerializer):
         fields = ["id", "item", "uom", "factor", "uom_code"]
 
 
-class ItemSerializer(serializers.ModelSerializer):
+class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = Item
         fields = [
             "id", "sku", "name", "description", "item_type", "stock_class", "uom",
             "track_inventory", "tracking", "costing_method", "standard_cost",
             "sale_price", "inventory_account", "cogs_account", "is_active",
-            "hsn_code",
+            "hsn_code", "extra",
         ]
         # A standard cost cannot be assigned: changing it revalues the
         # stock on hand, which is a posting. set_standard_cost() does it.

@@ -3,6 +3,7 @@ import { Trail } from "../../views/Trail";
 
 import { useAct, useRecord, useRows } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { ExtraFields } from "../../forms/ExtraFields";
 import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
@@ -182,6 +183,7 @@ export default function InvoiceForm() {
             <Field label="Credits">{(fid) => <output id={fid}><Link to={`/sales/invoices/${invoice.credits}`}>Open the invoice</Link></output>}</Field>
           )}
         </div>
+        <ExtraFields kind="sales.invoice" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {draft.errors.receivable_account && <p className="form-error" role="alert">{draft.errors.receivable_account.join(" ")}</p>}
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
 

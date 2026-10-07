@@ -3,6 +3,7 @@ import { Trail } from "../../views/Trail";
 
 import { useAct, useRecord, useRows } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { ExtraFields } from "../../forms/ExtraFields";
 import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
@@ -185,6 +186,7 @@ export default function BillForm() {
             <Field label="Debits">{(fid) => <output id={fid}><Link to={`/purchasing/bills/${bill.debits}`}>Open the bill</Link></output>}</Field>
           )}
         </div>
+        <ExtraFields kind="purchasing.bill" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {["payable_account", "non_field_errors"].map((key) => draft.errors[key] && (
           <p key={key} className="form-error" role="alert">{draft.errors[key]!.join(" ")}</p>
         ))}

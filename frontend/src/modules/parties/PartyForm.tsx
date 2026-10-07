@@ -2,6 +2,7 @@ import { useNavigate, useParams } from "react-router";
 
 import { useAct, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
+import { ExtraFields } from "../../forms/ExtraFields";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
 import { Field } from "../../forms/fields";
 import { useDraft } from "../../forms/useDraft";
@@ -93,6 +94,7 @@ export function PartyForm({ role, base, plural, related }: PartyConfig) {
             </Field>
           ))}
         </div>
+        <ExtraFields kind="core.party" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
       </Sheet>
       {party && PARTY_PANELS.map((panel) => <RecordPanel key={panel.title} panel={panel} record={party} />)}

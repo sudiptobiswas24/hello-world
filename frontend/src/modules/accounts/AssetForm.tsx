@@ -19,6 +19,7 @@ export default function AssetForm() {
   return (
     <RecordScreen
       endpoint="/api/assets/assets/"
+      extras="assets.fixedasset"
       back="/accounts/assets"
       backLabel="Fixed assets"
       newTitle="New fixed asset"

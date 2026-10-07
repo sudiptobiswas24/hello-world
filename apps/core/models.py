@@ -21,6 +21,22 @@ class TimeStampedModel(models.Model):
         abstract = True
 
 
+class Extensible(models.Model):
+    """A record that takes the keeper's custom fields (customfields.py), in `extra`."""
+
+    # db_default too: a row written by a migration's older model, which knows no `extra`, still gets {}.
+    extra = models.JSONField(default=dict, db_default={}, blank=True, help_text="The custom fields' values, by key.")
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        from .customfields import check_extra
+
+        self.extra = check_extra(self._meta.label_lower, self.extra)
+        super().save(*args, **kwargs)
+
+
 class AuditModel(TimeStampedModel):
     """
     Abstract base for anything that needs a who-changed-it trail, not just a
@@ -409,7 +425,7 @@ class PartyTag(TimeStampedModel):
         return self.name
 
 
-class Party(AuditModel):
+class Party(Extensible, AuditModel):
     """
     A single legal/physical entity the business deals with. One Party can hold
     multiple roles (customer, vendor, employee) via PartyRoleAssignment instead
@@ -1201,6 +1217,7 @@ class Company(AuditModel):
 
 
 from .attachments import Attachment  # noqa: E402,F401
+from .customfields import CustomField  # noqa: E402,F401
 from .errors import ServerError  # noqa: E402,F401
 from .history import RecordEvent  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401

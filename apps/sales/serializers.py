@@ -25,6 +25,7 @@ from .models import (
     SalesOrderLine,
     SalesRep,
 )
+from apps.core.customfields import ExtensibleSerializerMixin
 
 
 class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerializer):
@@ -50,7 +51,7 @@ class SalesOrderLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerial
         ]
 
 
-class SalesOrderSerializer(serializers.ModelSerializer):
+class SalesOrderSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     lines = SalesOrderLineSerializer(many=True, read_only=True)
     # Named, so a list can say who without asking for every customer.
     customer_name = serializers.CharField(source="customer.name", read_only=True)
@@ -68,7 +69,7 @@ class SalesOrderSerializer(serializers.ModelSerializer):
             "lines", "subtotal", "tax_total", "total",
             "invoice_status", "delivery_status", "is_job_work", "supplied_items",
             "third_party_inspection",
-            "invoice_policy",
+            "invoice_policy", "extra",
         ]
         read_only_fields = ["number", "status"]
 
@@ -108,7 +109,7 @@ class InvoiceLineSerializer(MoneyLineSerializerMixin, serializers.ModelSerialize
         extra_kwargs = {"revenue_account": {"required": False}}
 
 
-class InvoiceSerializer(serializers.ModelSerializer):
+class InvoiceSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     lines = InvoiceLineSerializer(many=True, read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     subtotal = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
@@ -129,7 +130,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
             "is_down_payment", "is_opening_balance", "corrects_old_supply", "old_invoice_value",
-            "party_gstin",
+            "party_gstin", "extra",
         ]
         read_only_fields = [
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
