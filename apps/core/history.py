@@ -66,7 +66,8 @@ def words_for(action):
             "ship": "Shipped", "pay": "Paid", "allocate": "Allocated", "break": "Broken", "load": "Loaded",
             "unload": "Unloaded", "convert": "Converted", "lose": "Lost", "win": "Won", "take": "Taken",
             "quote": "Quoted", "done": "Done", "renew": "Renewed", "settle": "Settled", "withdraw": "Withdrawn",
-            "submit": "Submitted", "issue": "Issued", "return": "Returned", "mark": "Marked"}
+            "submit": "Submitted", "issue": "Issued", "return": "Returned", "mark": "Marked", "attach": "Attached",
+            "detach": "Removed"}
     verb = past.get(head.rstrip("_"), head.replace("_", " ").capitalize())
     return f"{verb} {rest.replace('_', ' ')}".strip()
 

@@ -199,6 +199,12 @@ For a backup right now (before an update, before an import):
 docker compose run --rm backup now
 ```
 
+Files attached to records (a PO copy, an LR scan) are not in the
+database: they live in the `media` volume. Back it up with the dumps
+(`docker compose cp web:/app/media backups/media`, or copy the volume
+with the same tool that copies `backups/`); a restore without it leaves
+every record saying "attached" with nothing to open.
+
 **These backups sit on the same disk as the database.** They protect
 against a bad import or a mistaken deletion. They do not protect against
 the disk failing, fire or theft. Copy `backups/` off the machine every

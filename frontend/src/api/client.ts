@@ -154,7 +154,8 @@ export interface RequestOptions {
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<Reply<T>> {
   const method = (options.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  const form = options.body instanceof FormData;
+  if (options.body !== undefined && !form) headers["Content-Type"] = "application/json";
   if (UNSAFE.has(method)) headers["X-CSRFToken"] = csrfToken();
 
   let response: Response;
@@ -163,7 +164,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       method,
       headers,
       credentials: "same-origin",
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body: options.body === undefined ? undefined : form ? (options.body as FormData) : JSON.stringify(options.body),
       signal: options.signal,
     });
   } catch (error) {

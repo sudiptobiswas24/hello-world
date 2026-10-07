@@ -27,8 +27,8 @@ COPY . .
 COPY --from=office /build/apps/web/static/web /app/apps/web/static/web
 
 RUN useradd --system --home /app erp \
-    && mkdir -p /app/staticfiles /app/imports \
-    && chown -R erp /app/staticfiles /app/imports
+    && mkdir -p /app/staticfiles /app/imports /app/media \
+    && chown -R erp /app/staticfiles /app/imports /app/media
 USER erp
 
 EXPOSE 8000

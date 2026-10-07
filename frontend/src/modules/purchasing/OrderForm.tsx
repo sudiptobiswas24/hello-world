@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from "react-router";
-import { HistoryPanel } from "../../views/HistoryPanel";
+import { Trail } from "../../views/Trail";
 
 import { useAct, useGet, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
@@ -181,7 +181,7 @@ export default function OrderForm() {
             cells={(row) => [String(row.number || "Draft"), date(String(row.bill_date)), money(String(row.total))]} />
         </div>
       )}
-      {order && <HistoryPanel model="purchasing.purchaseorder" id={order.id} />}
+      {order && <Trail model="purchasing.purchaseorder" id={order.id} />}
     </article>
   );
 }

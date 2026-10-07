@@ -46,6 +46,7 @@ services:
       DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-}
     volumes:
       - ./imports:/app/imports
+      - media:/app/media
 
   proxy:
     image: caddy:2
@@ -80,3 +81,4 @@ services:
 volumes:
   pgdata:
   caddy_data:
+  media:

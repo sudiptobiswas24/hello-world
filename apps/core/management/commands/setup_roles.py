@@ -496,6 +496,16 @@ for _role, _permissions in ROLES.items():
         _permissions.append("sales.view_every_customer")
 
 
+# Files kept with a record are everyone's to read and add where they may
+# read the record (apps/core/attachments.py); removing another person's
+# is a manager's.
+for _role in ROLES:
+    ROLES[_role] = [*ROLES[_role], "core.view_attachment", "core.add_attachment"]
+for _role in ("Controller", "AR Manager", "AP Manager", "Stores Manager", "Quality Manager", "HR Admin",
+              "Production Planner", "GST Officer"):
+    ROLES[_role] = [*ROLES[_role], "core.delete_attachment"]
+
+
 class Command(BaseCommand):
     help = "Create or update the default role groups and their permissions."
 

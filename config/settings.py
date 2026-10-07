@@ -193,6 +193,9 @@ STATIC_URL = "static/"
 # none, the header is the caller's own and is ignored.
 TRUSTED_PROXIES = int(os.environ.get("DJANGO_TRUSTED_PROXIES", "0"))
 STATIC_ROOT = Path(os.environ.get("DJANGO_STATIC_ROOT", BASE_DIR / "staticfiles"))
+# Attachments (apps/core/attachments.py). Served through the API under the
+# record's own permission, never by URL, so no MEDIA_URL is published.
+MEDIA_ROOT = Path(os.environ.get("DJANGO_MEDIA_ROOT", BASE_DIR / "media"))
 
 if PRODUCTION:
     # Behind the reverse proxy, which terminates TLS. DJANGO_HTTPS=false is

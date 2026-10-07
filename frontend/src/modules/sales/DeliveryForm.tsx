@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { HistoryPanel } from "../../views/HistoryPanel";
+import { Trail } from "../../views/Trail";
 import { Link, useNavigate, useParams } from "react-router";
 
 import { useAct, useRecord, useReference } from "../../api/hooks";
@@ -244,7 +244,7 @@ export default function DeliveryForm() {
       {delivery.posted && !delivery.reverses && (
         <Received key={`${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />
       )}
-      {delivery && <HistoryPanel model="sales.delivery" id={delivery.id} />}
+      {delivery && <Trail model="sales.delivery" id={delivery.id} />}
     </article>
   );
 }

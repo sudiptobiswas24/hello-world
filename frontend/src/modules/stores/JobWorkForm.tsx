@@ -13,7 +13,7 @@ const issued = (row: Row) => Boolean(row.posted) && !row.voided_at;
 export default function JobWorkForm() {
   return (
     <RecordScreen
-      history="manufacturing.jobworkchallan"
+      trail="manufacturing.jobworkchallan"
       endpoint="/api/manufacturing/job-work-challans/"
       links={[{ label: "PDF", href: (row) => `/api/manufacturing/job-work-challans/${String(row.id)}/pdf/` }]}
       back="/stores/job-work"

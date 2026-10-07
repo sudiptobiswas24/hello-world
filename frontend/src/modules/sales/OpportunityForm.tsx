@@ -13,7 +13,7 @@ const open = (row: Row) => row.stage === "new" || row.stage === "qualified" || r
 export default function OpportunityForm() {
   return (
     <RecordScreen
-      history="sales.opportunity"
+      trail="sales.opportunity"
       endpoint="/api/sales/opportunities/"
       back="/sales/opportunities"
       backLabel="Opportunities"

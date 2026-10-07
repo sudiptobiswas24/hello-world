@@ -1159,5 +1159,6 @@ class Company(AuditModel):
         return start, end
 
 
+from .attachments import Attachment  # noqa: E402,F401
 from .history import RecordEvent  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401

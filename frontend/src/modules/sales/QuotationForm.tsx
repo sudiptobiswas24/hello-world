@@ -1,5 +1,5 @@
 import { Link, useNavigate, useParams } from "react-router";
-import { HistoryPanel } from "../../views/HistoryPanel";
+import { Trail } from "../../views/Trail";
 
 import { useAct, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
@@ -131,7 +131,7 @@ export default function QuotationForm() {
         )}
         {isNew && <p className="muted">Create the quotation, then add its lines.</p>}
       </Sheet>
-      {quote && <HistoryPanel model="sales.quotation" id={quote.id} />}
+      {quote && <Trail model="sales.quotation" id={quote.id} />}
     </article>
   );
 }

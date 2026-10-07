@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .attachments_api import AttachmentViewSet
 from .history_api import HistoryView
 from .licences_api import LicenceViewSet
 from .numbering_api import DocumentSequenceViewSet
@@ -37,6 +38,7 @@ router.register("company", CompanyViewSet)
 router.register("roles", RoleViewSet)
 router.register("document-sequences", DocumentSequenceViewSet)
 router.register("licences", LicenceViewSet)
+router.register("attachments", AttachmentViewSet, basename="attachment")
 
 urlpatterns = [path("me/", MeView.as_view(), name="me"), path("history/", HistoryView.as_view({"get": "list"}), name="history"),
                *router.urls]
