@@ -73,6 +73,13 @@ export interface ActionDef {
   then?: (result: Row) => string;
 }
 
+/** A page a record opens in a new tab, served by the API under the record's own read permission. */
+export interface LinkDef {
+  label: string;
+  href: (record: Row) => string;
+  when?: (record: Row) => boolean;
+}
+
 /** Something done to one row of a panel: return these spares. */
 export interface RowAction {
   label: string;
@@ -126,6 +133,8 @@ export interface RecordScreenProps {
   state?: (record: Row) => { label: string; tone: string } | null;
   fields: FieldDef[];
   actions?: ActionDef[];
+  /** Pages the record opens in a new tab: its PDF, a printed card. */
+  links?: LinkDef[];
   panels?: PanelDef[];
   permissions: { add?: string; change?: string; delete?: string };
   /** Whether the record may still be edited in its present state. */
@@ -300,7 +309,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], panels = [], permissions, editable, afterCreate, note, below, createUrl } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], panels = [], permissions, editable, afterCreate, note, below, createUrl } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -361,6 +370,9 @@ export function RecordScreen(props: RecordScreenProps) {
               { done: action.done, onDone: (result) => { if (action.then) navigate(action.then(result)); } }))}>
             {action.label}
           </ActionButton>
+        ))}
+        {saved && links.filter((link) => !link.when || link.when(saved)).map((link) => (
+          <a key={link.label} className="btn" href={link.href(saved)} target="_blank" rel="noopener">{link.label}</a>
         ))}
         {saved && permissions.delete && can(permissions.delete) && (!editable || editable(saved)) && (
           <ActionButton danger pending={act.pending} onClick={() => void remove()}>Delete</ActionButton>

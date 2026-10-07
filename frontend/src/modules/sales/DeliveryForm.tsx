@@ -178,6 +178,7 @@ export default function DeliveryForm() {
         {delivery.posted && !delivery.reverses && can("sales.post_delivery") && returning === null && (
           <ActionButton pending={act.pending} onClick={() => setReturning({})}>Take goods back</ActionButton>
         )}
+        <a className="btn" href={`${ENDPOINT}${delivery.id}/pdf/`} target="_blank" rel="noopener">PDF</a>
       </DocHeader>
 
       <Sheet>

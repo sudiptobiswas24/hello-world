@@ -1921,6 +1921,13 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             raise DRFValidationError([f"{instance} is issued. Void it instead."])
         instance.delete()
 
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        document = self.get_object()
+        response = HttpResponse(document.render_pdf(), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{document.number or f"draft-{document.pk}"}.pdf"'
+        return response
+
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
         challan = self.get_object()

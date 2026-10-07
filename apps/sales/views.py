@@ -510,6 +510,13 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         return Response([{"id": row.pk, "number": row.number, "date": row.delivery_date,
                           "customer": row.sales_order.customer.name, "lr_number": row.lr_number} for row in rows])
 
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        document = self.get_object()
+        response = HttpResponse(document.render_pdf(), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{document.number or f"draft-{document.pk}"}.pdf"'
+        return response
+
     @action(detail=True, methods=["post"])
     def transport(self, request, pk=None):
         """Who carried it: {transporter, lr_number, lr_date, vehicle_number}, after it shipped too."""

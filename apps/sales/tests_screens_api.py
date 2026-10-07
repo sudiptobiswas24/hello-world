@@ -535,3 +535,21 @@ class PartOfADepositThroughTheApiTests(ScreensTestCase):
         self.assertEqual(given.json()["total"], "90.00")
         deposit.refresh_from_db()
         self.assertEqual(deposit.deposit_unapplied(), Decimal("210.00"))
+
+
+class DeliveryChallanPdfTests(ScreensTestCase):
+    """The challan the lorry carries, read by whoever may read the delivery and nobody else."""
+
+    def test_the_challan_prints_for_the_warehouse_and_not_for_payroll(self):
+        delivery = self.ship(self.make_order(), "10")
+        response = self.as_("Warehouse Staff").get(f"/api/sales/deliveries/{delivery.pk}/pdf/")
+        self.assertEqual((response.status_code, response["Content-Type"]), (200, "application/pdf"))
+        self.assertTrue(response.content.startswith(b"%PDF-"))
+        self.assertIn(delivery.number, response["Content-Disposition"])
+        self.assertEqual(self.as_("Payroll Officer").get(f"/api/sales/deliveries/{delivery.pk}/pdf/").status_code, 403)
+
+    def test_a_draft_with_no_lines_prints_too(self):
+        from .models import Delivery
+
+        draft = Delivery.objects.create(sales_order=self.make_order(), delivery_date=datetime.date(2026, 3, 3))
+        self.assertTrue(draft.render_pdf().startswith(b"%PDF-"))

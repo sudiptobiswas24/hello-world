@@ -3392,6 +3392,11 @@ class Delivery(AuditModel):
             )
         ]
 
+    def render_pdf(self):
+        from .documents import render_delivery_pdf
+
+        return render_delivery_pdf(self)
+
     def __str__(self):
         kind = "RET" if self.reverses_id else "DO"
         return f"{self.number or f'{kind}-draft-{self.pk}'} for {self.sales_order}"

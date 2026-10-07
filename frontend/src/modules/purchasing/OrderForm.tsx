@@ -121,6 +121,7 @@ export default function OrderForm() {
             Cancel order
           </ActionButton>
         )}
+        {order && <a className="btn" href={`${ENDPOINT}${order.id}/pdf/`} target="_blank" rel="noopener">PDF</a>}
       </DocHeader>
 
       {order && order.status !== "cancelled" && <Steps steps={["Draft", "Confirmed", "Received", "Billed"]} at={stage(order)} />}

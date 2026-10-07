@@ -1526,6 +1526,11 @@ class PurchaseOrder(TaxedDocumentMixin, ApprovableMixin, AuditModel):
             )
         ]
 
+    def render_pdf(self):
+        from .documents import render_purchase_order_pdf
+
+        return render_purchase_order_pdf(self)
+
     def __str__(self):
         return f"{self.number or f'PO-draft-{self.pk}'} {self.vendor}"
 

@@ -383,3 +383,19 @@ class JobWorkApiTests(JobWorkTestCase):
             "line": issued["lines"][0]["id"], "loss_date": "2026-06-05", "quantity": "700",
         }, format="json")
         self.assertEqual(too_much.status_code, 400)
+
+
+class ChallanPdfTests(JobWorkTestCase):
+    """The rule 55 delivery challan that goes with the goods, printed from the record."""
+
+    def test_an_issued_and_a_voided_challan_both_print(self):
+        challan = self.challan("10")
+        self.assertTrue(challan.render_pdf().startswith(b"%PDF-"))
+        from rest_framework.test import APIClient
+        from django.contrib.auth.models import User
+
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("printer"))
+        response = client.get(f"/api/manufacturing/job-work-challans/{challan.pk}/pdf/")
+        self.assertEqual((response.status_code, response["Content-Type"]), (200, "application/pdf"))
+        self.assertIn(challan.number, response["Content-Disposition"])

@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -83,6 +84,13 @@ class PurchaseOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         if flag(self.request.query_params, "to_receive", False):
             queryset = queryset.filter(pk__in=orders_to_receive(queryset))
         return queryset
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        document = self.get_object()
+        response = HttpResponse(document.render_pdf(), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{document.number or f"draft-{document.pk}"}.pdf"'
+        return response
 
     @action(detail=True, methods=["post"])
     def receive(self, request, pk=None):

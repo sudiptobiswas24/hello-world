@@ -454,3 +454,19 @@ class QuotationTests(SalesDocumentTestCase):
         quotation.mark_sent()
         with self.assertRaises(ValidationError):
             quotation.accept(order_date=datetime.date(2026, 3, 5))
+
+
+class TotalInWordsTests(SalesDocumentTestCase):
+    def test_a_rupee_invoice_says_its_total_in_words_and_a_dollar_one_does_not(self):
+        from apps.core.documents import rupees_in_words
+        from apps.core.models import Currency
+
+        from .documents import total_in_words
+
+        invoice = self.make_invoice()
+        self.assertIsNone(total_in_words(invoice))
+        invoice.currency = Currency.objects.create(code="INR", name="Rupee", symbol="₹")
+        words = total_in_words(invoice)
+        self.assertEqual(words, f"Total in words: {rupees_in_words(invoice.total())}.")
+        self.assertTrue(words.startswith("Total in words: Rupees ") and words.endswith(" only."), words)
+        self.assertTrue(invoice.render_pdf().startswith(b"%PDF-"))

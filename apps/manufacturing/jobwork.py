@@ -85,6 +85,11 @@ class JobWorkChallan(AuditModel):
     def __str__(self):
         return self.number or f"Draft challan {self.pk}"
 
+    def render_pdf(self):
+        from .documents import render_challan_pdf
+
+        return render_challan_pdf(self)
+
     def save(self, *args, **kwargs):
         # Issuing and voiding write through the base save; anything else
         # touching an issued challan is an edit, and a challan is paper

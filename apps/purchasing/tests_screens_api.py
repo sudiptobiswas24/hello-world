@@ -438,3 +438,17 @@ class ApprovalOverTheApiTests(ScreensTestCase):
         self.assertEqual(clerk.post(f"/api/purchasing/purchase-orders/{order.pk}/confirm/").status_code, 200)
         order.refresh_from_db()
         self.assertEqual((order.status, order.approval_note), ("confirmed", "Monsoon stock"))
+
+
+class PurchaseOrderPdfTests(ScreensTestCase):
+    """The order the vendor is sent, read by purchasing and nobody else."""
+
+    def test_the_order_prints_for_purchasing_and_not_for_payroll(self):
+        order = self.make_order()
+        response = self.as_("Purchasing Clerk").get(f"/api/purchasing/purchase-orders/{order.pk}/pdf/")
+        self.assertEqual((response.status_code, response["Content-Type"]), (200, "application/pdf"))
+        self.assertTrue(response.content.startswith(b"%PDF-"))
+        self.assertEqual(self.as_("Payroll Officer").get(f"/api/purchasing/purchase-orders/{order.pk}/pdf/").status_code, 403)
+
+    def test_a_draft_prints_as_a_draft(self):
+        self.assertTrue(self.make_order(confirm=False).render_pdf().startswith(b"%PDF-"))

@@ -14,6 +14,7 @@ export default function JobWorkForm() {
   return (
     <RecordScreen
       endpoint="/api/manufacturing/job-work-challans/"
+      links={[{ label: "PDF", href: (row) => `/api/manufacturing/job-work-challans/${String(row.id)}/pdf/` }]}
       back="/stores/job-work"
       backLabel="Job-work challans"
       newTitle="New job-work challan"
