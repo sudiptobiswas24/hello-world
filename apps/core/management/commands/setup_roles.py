@@ -167,6 +167,7 @@ ROLES = {
         *crud("sales", "customerprofile", actions=("view",)),
         *crud("sales", "quotation"),
         *crud("sales", "quotationline"),
+        *view("sales", "salesteam", "salestarget"),
         *view("manufacturing", "costsheet"),
         # A rep books their customer's schedule, index clause and supplied
         # material on the orders they took; billing the variation is accounts'.
@@ -202,6 +203,8 @@ ROLES = {
         *crud("sales", "dunninglevel"),
         *crud("sales", "commissionplan"),
         *crud("sales", "salesrep"),
+        *crud("sales", "salesteam"),
+        *crud("sales", "salestarget"),
         *crud("sales", "recurringinvoice"),
         *crud("sales", "recurringinvoiceline"),
         *crud("sales", "dunningnotice", actions=("view",)),

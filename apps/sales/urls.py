@@ -12,6 +12,8 @@ from .price_variation_views import (
 )
 from .crm_api import ActivityViewSet, CampaignViewSet, LeadViewSet, OpportunityViewSet
 from .views import (
+    SalesTargetViewSet,
+    SalesTeamViewSet,
     ThirdPartyReleaseViewSet,
     SuppliedItemViewSet,
     SalesReportViewSet,
@@ -56,6 +58,8 @@ router.register("dunning-levels", DunningLevelViewSet)
 router.register("dunning-notices", DunningNoticeViewSet)
 router.register("commission-plans", CommissionPlanViewSet)
 router.register("sales-reps", SalesRepViewSet)
+router.register("sales-teams", SalesTeamViewSet)
+router.register("sales-targets", SalesTargetViewSet)
 router.register("sales-reports", SalesReportViewSet, basename="sales-report")
 router.register("recurring-invoices", RecurringInvoiceViewSet)
 router.register("recurring-invoice-lines", RecurringInvoiceLineViewSet)
