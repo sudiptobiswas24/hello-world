@@ -296,3 +296,128 @@ class CountingABinTests(BinTestCase):
         )
         line = sheet.add(self.item, "95")
         self.assertEqual(line.system_quantity, Decimal("100"))
+
+
+class TakenOnlyFromWhatABinHoldsTests(BinTestCase):
+    """
+    A-01 holds two and A-02 twenty. A transfer of ten out of A-01 was
+    refused; a write-off of ten from it was not, and left it at minus
+    eight beside a shelf that still read twenty-two in all.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.put(self.a1, "2")
+        self.put(self.a2, "20")
+
+    def write_off(self, storage_bin, quantity):
+        from .models import StockAdjustment, StockAdjustmentLine
+
+        adjustment = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 6, 1),
+                                                    warehouse=self.north, reason=self.reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.item, uom=self.each,
+                                           bin=storage_bin, quantity=-Decimal(quantity))
+        adjustment.post()
+        return adjustment
+
+    def test_a_write_off_takes_no_more_from_a_bin_than_it_holds(self):
+        with self.assertRaisesMessage(ValidationError, "in N/A-01; cannot move 10"):
+            self.write_off(self.a1, "10")
+        self.assertEqual(self.a1.on_hand(self.item), Decimal("2"))
+
+    def test_what_the_bin_holds_may_be_written_off(self):
+        self.write_off(self.a1, "2")
+        self.assertEqual(self.a1.on_hand(self.item), Decimal("0"))
+
+    def test_a_backorder_warehouse_may_take_a_bin_below_zero(self):
+        self.north.allow_negative_stock = True
+        self.north.save()
+        self.write_off(self.a1, "10")
+        self.assertEqual(self.a1.on_hand(self.item), Decimal("-8"))
+
+    def test_a_delivery_naming_the_bin_ships_no_more_than_it_holds(self):
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.sales.models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
+
+        customer = Party.objects.create(code="C-1", name="Acme", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
+        revenue = Account.objects.create(code="4000", name="Revenue", account_type=AccountType.INCOME)
+        order = SalesOrder.objects.create(customer=customer, order_date=datetime.date(2026, 6, 1),
+                                          currency=self.usd)
+        line = SalesOrderLine.objects.create(order=order, item=self.item, uom=self.each,
+                                             quantity=Decimal("10"), unit_price=Decimal("9"),
+                                             revenue_account=revenue)
+        order.confirm()
+        delivery = Delivery.objects.create(sales_order=order, delivery_date=datetime.date(2026, 6, 1))
+        DeliveryLine.objects.create(delivery=delivery, order_line=line, warehouse=self.north,
+                                    bin=self.a1, quantity_shipped=Decimal("10"))
+        with self.assertRaisesMessage(ValidationError, "in N/A-01; cannot move 10"):
+            delivery.post()
+        self.assertEqual(self.a1.on_hand(self.item), Decimal("2"))
+
+
+class CountingEachPlaceOnceTests(BinTestCase):
+    """
+    One sheet counting the whole warehouse at eight and its only bin at
+    eight, against ten on the books: each line wrote its two off, and the
+    books read six where eight were found.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.put(self.a1, "10")
+        self.sheet = StockCount.objects.create(count_date=datetime.date(2026, 6, 1),
+                                               warehouse=self.north, reason=self.reason)
+
+    def test_a_bin_on_a_sheet_counting_the_whole_warehouse_is_refused(self):
+        self.sheet.add(self.item, "8")
+        with self.assertRaisesMessage(ValidationError, "is on this sheet already"):
+            self.sheet.add(self.item, "8", storage_bin=self.a1)
+        self.sheet.post()
+        self.assertEqual(self.item.on_hand_at(self.north), Decimal("8"))
+
+    def test_the_whole_warehouse_on_a_sheet_counting_a_bin_is_refused(self):
+        self.sheet.add(self.item, "8", storage_bin=self.a1)
+        with self.assertRaisesMessage(ValidationError, "is on this sheet already in N/A-01"):
+            self.sheet.add(self.item, "8")
+
+    def test_a_bin_inside_an_aisle_already_counted_is_refused(self):
+        from .models import StockCountLine
+
+        StockCountLine.objects.create(count=self.sheet, item=self.item, uom=self.each, bin=self.aisle,
+                                      counted_quantity=Decimal("8"), system_quantity=Decimal("10"))
+        with self.assertRaisesMessage(ValidationError, "is on this sheet already"):
+            self.sheet.add(self.item, "8", storage_bin=self.a1)
+
+    def test_two_bins_side_by_side_are_each_counted(self):
+        self.put(self.a2, "5")
+        self.sheet.add(self.item, "8", storage_bin=self.a1)
+        self.sheet.add(self.item, "5", storage_bin=self.a2)
+        self.sheet.post()
+        self.assertEqual((self.a1.on_hand(self.item), self.a2.on_hand(self.item)),
+                         (Decimal("8"), Decimal("5")))
+
+    def test_a_line_moved_onto_stock_another_counts_is_refused(self):
+        self.put(self.a2, "5")
+        self.sheet.add(self.item, "8", storage_bin=self.a1)
+        line = self.sheet.add(self.item, "5", storage_bin=self.a2)
+        line.bin = None
+        with self.assertRaisesMessage(ValidationError, "is on this sheet already"):
+            line.save()
+
+    def test_a_store_hand_adding_it_through_the_api_is_refused(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        hand = User.objects.create_user("store_hand")
+        hand.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(hand)
+        self.sheet.add(self.item, "8")
+        response = client.post(f"/api/inventory/stock-counts/{self.sheet.pk}/add/",
+                               {"item": self.item.pk, "counted_quantity": "8", "bin": self.a1.pk},
+                               format="json")
+        self.assertEqual(response.status_code, 400, response.content[:300])
+        self.assertIn("is on this sheet already", str(response.json()))

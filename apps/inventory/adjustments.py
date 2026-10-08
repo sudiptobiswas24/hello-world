@@ -53,6 +53,37 @@ def _system_quantity(item, warehouse, lot=None, storage_bin=None):
     return item.on_hand_at(warehouse)
 
 
+def _same_stock(line, other):
+    """
+    Whether two lines of one count sheet look at any of the same stock:
+    the same item, batches that meet (none named is every batch), places
+    that meet (no bin is the whole warehouse, a bin everything inside it).
+    """
+    if line.item_id != other.item_id:
+        return False
+    if line.lot_id and other.lot_id and line.lot_id != other.lot_id:
+        return False
+    if line.bin_id and other.bin_id:
+        return (line.bin_id in {place.pk for place in other.bin.descendants()}
+                or other.bin_id in {place.pk for place in line.bin.descendants()})
+    return True
+
+
+def _refuse_counting_twice(line, others):
+    for other in others:
+        if other.pk == line.pk or (other.lot_id, other.bin_id) == (line.lot_id, line.bin_id):
+            # The very same slice twice is the database's to refuse: the
+            # sheet's constraints already say one line per place.
+            continue
+        if _same_stock(line, other):
+            where = f" in {other.bin}" if other.bin_id else ""
+            raise ValidationError(
+                f"{other.item} is on this sheet already{where}, over some of the same "
+                "stock. Each line's difference is written off on its own, so counting "
+                "it twice writes the difference off twice: count each place once."
+            )
+
+
 class AdjustmentDirection(models.TextChoices):
     INCREASE = "increase", "Increase only"
     DECREASE = "decrease", "Decrease only"
@@ -680,6 +711,12 @@ class StockCount(AuditModel):
                 name="Stock Counts", prefix="CNT-",
             )
 
+        # Asked again here for a sheet written before it was asked as lines
+        # were added: the whole warehouse at eight and its only bin at eight
+        # wrote the two short off twice, and the books read six.
+        for line in lines:
+            _refuse_counting_twice(line, lines)
+
         stale = [
             line for line in lines if line.current_system_quantity() != line.system_quantity
         ]
@@ -816,6 +853,9 @@ class StockCountLine(AuditModel):
     def save(self, *args, **kwargs):
         if self.count_id and StockCount.objects.filter(pk=self.count_id, posted=True).exists():
             raise ValidationError("Cannot modify a line on a posted count.")
+        if self.count_id and self.item_id:
+            _refuse_counting_twice(self, StockCountLine.objects.filter(
+                count_id=self.count_id, item_id=self.item_id).select_related("bin", "item"))
         if self.uom_id is None and self.item_id:
             self.uom = self.item.uom
         if self.item_id and self.uom_id:
