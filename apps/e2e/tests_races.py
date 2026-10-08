@@ -1133,3 +1133,44 @@ class FloorRaceTests(RaceCase):
         self.once(outcomes)
         load.refresh_from_db()
         self.assertEqual(load.voided_at is None, drawn_by_output(made.run, made.doffs["D-1"]) > 0)
+
+    def test_two_challans_do_not_both_send_past_the_run(self):
+        """
+        Two challans of 600 issued at once for a run that holds 1,100. Each
+        read the other unissued without holding the run, and 1,200 went
+        out. Holding the run first, the second finds the first.
+        """
+        from apps.manufacturing import tests_jobwork
+        from apps.manufacturing.jobwork import JobWorkChallan
+
+        made = fixture(self, tests_jobwork.JobWorkTestCase)
+        drafts = [made.challan("600", post=False) for _ in range(2)]
+        outcomes = race(JobWorkChallan, *[
+            lambda pk=draft.pk: JobWorkChallan.objects.get(pk=pk).post() for draft in drafts])
+        self.once(outcomes)
+        self.assertEqual(JobWorkChallan.objects.filter(posted=True).count(), 1)
+
+    def test_a_challan_is_not_withdrawn_as_the_vendors_work_comes_back(self):
+        """
+        600 and 400 out; the 400 withdrawn as 700 comes back. The
+        withdrawal read nothing back without holding the run while the
+        receipt counted the 400 as sent: 700 back against 600 out. Holding
+        the run first, one of the two finds the other.
+        """
+        from apps.manufacturing import tests_jobwork
+        from apps.manufacturing.jobwork import JobWorkChallan
+
+        made = fixture(self, tests_jobwork.JobWorkTestCase)
+        made.challan("600")
+        second = made.challan("400")
+        receipt = OutsideMovement.objects.create(
+            operation=made.coat, movement_date=run_fixture.TODAY,
+            quantity=Decimal("700"), value=Decimal("1400"), credit_account=made.grni,
+        )
+        outcomes = race(
+            (JobWorkChallan, OutsideMovement),
+            lambda: JobWorkChallan.objects.get(pk=second.pk).void(),
+            lambda: OutsideMovement.objects.get(pk=receipt.pk).post())
+        self.once(outcomes)
+        withdrawn = JobWorkChallan.objects.get(pk=second.pk).voided_at is not None
+        self.assertEqual(withdrawn, not OutsideMovement.objects.get(pk=receipt.pk).posted)
