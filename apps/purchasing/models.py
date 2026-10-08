@@ -70,6 +70,7 @@ from apps.accounting.settlement import (
     withdraw_discount,
     undone_by_note,
 )
+from apps.inventory.availability import check_available
 from apps.inventory.valuation import (
     cogs_account_for,
     grni_account,
@@ -5653,14 +5654,16 @@ class GoodsReceipt(AuditModel):
             return self._post_drop_ship(lines, is_return=is_return)
 
         # Every shelf this receipt touches. Subcontract lines read the
-        # components before consuming them, and a receipt into a routed
-        # warehouse lands somewhere other than the line names.
+        # components before consuming them, a receipt into a routed
+        # warehouse lands somewhere other than the line names, and a
+        # return takes the goods off the step they are on.
         lock_positions(
             pair
             for line in lines
             for pair in (
                 (line.order_line.item, line.warehouse),
                 (line.order_line.item, line.warehouse.first_receipt_step()),
+                (line.order_line.item, line.arrived_at()),
                 *(
                     (component.item, self.purchase_order.subcontract_warehouse)
                     for component in line.order_line.components.all()
@@ -5687,6 +5690,18 @@ class GoodsReceipt(AuditModel):
                 raise ValidationError(
                     f"{line.warehouse} holds {line.warehouse.held_for}'s material. What "
                     "the company buys goes into its own stock."
+                )
+            if is_return:
+                # Only what is still on the shelf can go back, as a delivery
+                # has always asked. Ten sent back after eight had shipped
+                # left the shelf at minus eight, in a warehouse that refuses
+                # to go below nothing. Asked under the position lock above.
+                check_available(
+                    line.order_line.item,
+                    line.warehouse if line.warehouse.consignment_vendor_id else line.arrived_at(),
+                    line.order_line.item.to_stock_quantity(
+                        line.quantity_received, line.order_line.uom),
+                    lot=line.lot, action="send back",
                 )
             if line.warehouse.consignment_vendor_id:
                 self._move_consignment(line, is_return)

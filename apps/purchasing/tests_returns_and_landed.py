@@ -142,6 +142,48 @@ class ReturnedAtTheShelfsCostTests(ReturnTestCase):
         self.assertEqual(self.balance(self.ppv), Decimal("0"))
 
 
+class ReturnsOnlyWhatIsOnTheShelfTests(ReturnTestCase):
+    """
+    Ten received, eight shipped, two left. A delivery has always asked
+    the shelf before taking from it; the return to vendor did not, and
+    sending the ten back left the shelf at minus eight in a warehouse
+    that refuses to go below nothing.
+    """
+
+    def shipped_eight_of_ten(self):
+        from django.utils import timezone
+
+        from apps.inventory.models import MovementType, StockMovement
+
+        receipt = self.receive(self.make_order("10", "5"), "10")
+        StockMovement.objects.create(
+            item=self.item, warehouse=self.warehouse, movement_type=MovementType.ISSUE,
+            uom=self.uom, quantity=Decimal("-8"), unit_cost=Decimal("5"),
+            occurred_at=timezone.now(), notes="shipped",
+        )
+        return receipt
+
+    def test_goods_no_longer_on_the_shelf_cannot_go_back(self):
+        receipt = self.shipped_eight_of_ten()
+        with self.assertRaisesMessage(ValidationError, "cannot send back 10"):
+            receipt.create_return(debit_bills=False)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("2"))
+        self.assertFalse(GoodsReceipt.objects.filter(reverses=receipt).exists())
+        self.assertEqual(self.balance(self.inventory), Decimal("50"))
+
+    def test_what_is_still_there_can_go_back(self):
+        receipt = self.shipped_eight_of_ten()
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("2")}, debit_bills=False)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+
+    def test_a_warehouse_that_allows_backorders_takes_it_back_anyway(self):
+        self.warehouse.allow_negative_stock = True
+        self.warehouse.save()
+        receipt = self.shipped_eight_of_ten()
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("-8"))
+
+
 class ReturnDebitsTheBillTests(ReturnTestCase):
     def billed(self, quantity="10", price="5"):
         order = self.make_order(quantity, price)

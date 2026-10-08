@@ -100,6 +100,18 @@ class ConsignmentDeliveryTests(ConsignmentTestCase):
         self.assertEqual(self.item.on_hand_at(self.store), Decimal("0"))
         self.assertEqual(self.balance(self.inventory), Decimal("0"))
 
+    def test_what_was_drawn_cannot_also_be_sent_back(self):
+        # Thirty of the hundred became the company's; the vendor can have
+        # the seventy back, not the hundred.
+        order, receipt = self.deliver("100")
+        draw_consignment(
+            self.item, self.store, self.warehouse, Decimal("30"),
+            self.payable, on_date=datetime.date(2026, 2, 1),
+        )
+        with self.assertRaisesMessage(ValidationError, "cannot send back 100"):
+            receipt.create_return()
+        self.assertEqual(self.item.on_hand_at(self.store), Decimal("70"))
+
 
 class ShippingConsignmentTests(ConsignmentTestCase):
     def test_nothing_ships_straight_off_consignment(self):
