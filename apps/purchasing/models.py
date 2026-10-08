@@ -6036,31 +6036,39 @@ class GoodsReceipt(AuditModel):
             pair
             for line, _quantity in selected
             for pair in (
-                (line.order_line.item, line.warehouse),
+                (line.order_line.item, line.inspection_step()),
                 (line.order_line.item, warehouse),
             )
         )
         moved = []
         for line, quantity in selected:
             item = line.order_line.item
-            cost = item.removal_unit_cost(line.warehouse, quantity)
-            # The cost is per stocking unit, so the quantity has to
-            # be too: a transfer valued at one unit and counted in another
-            # moves more value out of a warehouse than it moves in.
+            # Out of the place they wait to be looked at, which on a
+            # routed receipt is the inspection step and not the shelf the
+            # line names: forty cleared from an empty stock room left the
+            # forty in inspection and the stock room at nothing.
+            source = line.inspection_step()
+            # In stocking units, priced as every outbound path is: the
+            # total this batch's withdrawal takes off, not a rate for the
+            # document quantity. Three cases priced as three eaches put
+            # 840 back of the 960 taken, and specific identification
+            # could not be cleared at all without its batch.
             moving = item.to_stock_quantity(quantity, line.order_line.uom)
-            for target, movement_type, signed in (
-                (line.warehouse, MovementType.TRANSFER_OUT, -moving),
-                (warehouse, MovementType.TRANSFER_IN, moving),
+            check_available(item, source, moving, lot=line.lot, action="clear")
+            leaving = item.cost_of_removing(source, moving, lot=line.lot)
+            rate = (leaving / moving).quantize(Decimal("0.00000001"))
+            for target, movement_type, signed, shelf, residue in (
+                (source, MovementType.TRANSFER_OUT, -moving, line.bin_at(source), None),
+                # Somewhere on the shelf it clears to, as a receipt chooses,
+                # carrying what the rate cannot say.
+                (warehouse, MovementType.TRANSFER_IN, moving, plan_putaway(item, warehouse),
+                 (leaving - moving * rate).quantize(Decimal("0.0001")) or None),
             ):
                 StockMovement.objects.create(
                     item=item, warehouse=target, movement_type=movement_type,
-                    uom=item.uom, lot=line.lot,
-                    # Quarantine and the shelf it clears to are different
-                    # places, so the bin only follows to the bin the caller
-                    # named — not the one it sat in under inspection.
-                    bin=(line.bin if target.pk == line.warehouse_id else None),
-                    quantity=signed, unit_cost=cost, reference=self.number,
-                    occurred_at=occurred_at,
+                    uom=item.uom, lot=line.lot, bin=shelf,
+                    quantity=signed, unit_cost=rate, value_adjustment=residue,
+                    reference=self.number, occurred_at=occurred_at,
                     notes=f"Accepted from inspection on {self.number}",
                 )
             ReceiptInspection.objects.create(
@@ -6089,7 +6097,7 @@ class GoodsReceipt(AuditModel):
             )
         return self.create_return(
             quantities={line: quantity for line, quantity in selected},
-            debit_bills=debit_bills,
+            debit_bills=debit_bills, from_inspection=True,
         )
 
     def _inspection_selection(self, quantities):
@@ -6308,7 +6316,7 @@ class GoodsReceipt(AuditModel):
         return entry
 
     @serialised("posted")
-    def create_return(self, quantities=None, debit_bills=True):
+    def create_return(self, quantities=None, debit_bills=True, from_inspection=False):
         """
         Send goods back. By default all of them; pass `quantities` as
         {receipt_line: quantity} to send back part, which is what a
@@ -6318,6 +6326,10 @@ class GoodsReceipt(AuditModel):
         partial. Returning ten units to send back three, then re-receiving
         seven, loses the receipt date on the seven and books three stock
         movements where one belongs.
+
+        Off the places the goods are, a return line each: what failed
+        inspection from the inspection step (`from_inspection`), anything
+        else the earliest place first.
         """
         if not self.posted:
             raise ValidationError("Only a posted goods receipt can be returned.")
@@ -6348,21 +6360,27 @@ class GoodsReceipt(AuditModel):
             reverses=self,
         )
         for line, quantity in selected:
-            GoodsReceiptLine.objects.create(
-                receipt=return_receipt,
-                order_line=line.order_line,
-                reverses_line=line,
-                lot=line.lot,
-                bin=line.bin,
-                warehouse=line.warehouse,
-                # Off the shelf the goods are actually on. A routed
-                # receipt leaves them in the bay or in inspection while
-                # the line still names the shelf they were destined for,
-                # and taking them from there would send back stock that
-                # never got there.
-                landed_warehouse=line.current_step(),
-                quantity_received=quantity,
+            # Off the shelves the goods are actually on. A routed receipt
+            # leaves them in the bay or in inspection while the line still
+            # names the shelf they were destined for, and part of them may
+            # have been put away: all forty taken from the bay with
+            # twenty-five already in the stock room left the bay at minus
+            # twenty-five and the stock room holding goods sent back.
+            parts = (
+                [(line.inspection_step() or line.arrived_at(), quantity)] if from_inspection
+                else line.split_by_position(quantity)
             )
+            for place, part in parts:
+                GoodsReceiptLine.objects.create(
+                    receipt=return_receipt,
+                    order_line=line.order_line,
+                    reverses_line=line,
+                    lot=line.lot,
+                    bin=line.bin_at(place),
+                    warehouse=line.warehouse,
+                    landed_warehouse=place,
+                    quantity_received=part,
+                )
         return_receipt.post()
         return_receipt.debit_notes_created = (
             return_receipt._debit_returned_goods() if debit_bills else []
@@ -6449,17 +6467,97 @@ class GoodsReceiptLine(AuditModel):
         How much of this line is sitting at one step of its route.
 
         Derived from the moves rather than stored, so a half-advanced
-        line cannot claim to be somewhere it is not.
+        line cannot claim to be somewhere it is not. Every way the goods
+        leave a place counts: put away onward, cleared out of inspection
+        to the shelf named, sent back from it. Counting only the hops, a
+        return or a clearance left the line still claiming the goods it
+        had given up, and the next return took them from there again.
         """
         arrived = (
             self.quantity_received if warehouse.pk == self.arrived_at().pk
             else Decimal("0")
         )
+        accepted = self.inspections.filter(accepted=True)
+        cleared_in = accepted.filter(warehouse=warehouse).aggregate(
+            total=models.Sum("quantity"))["total"] or Decimal("0")
+        inspection = self.inspection_step()
+        cleared_out = (
+            accepted.aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+            if inspection is not None and inspection.pk == warehouse.pk else Decimal("0")
+        )
+        sent_back = self.return_lines.filter(receipt__posted=True).filter(
+            Q(landed_warehouse=warehouse) | Q(landed_warehouse__isnull=True, warehouse=warehouse)
+        ).aggregate(total=models.Sum("quantity_received"))["total"] or Decimal("0")
         return (
             arrived
             + self.quantity_advanced_to(warehouse)
             - self.quantity_advanced_from(warehouse)
+            + cleared_in - cleared_out - sent_back
         )
+
+    def places(self):
+        """
+        Every place this line's goods have been, in the order they got
+        there: where they landed, each hop, each shelf inspection cleared
+        them to. From what happened, not from the route the warehouse
+        declares now, which may have changed since.
+        """
+        reached = [self.arrived_at()]
+        reached += [move.to_warehouse for move in self.route_moves.select_related("to_warehouse")]
+        reached += [row.warehouse for row in self.inspections.filter(
+            accepted=True, warehouse__isnull=False).select_related("warehouse").order_by("id")]
+        seen, places = set(), []
+        for place in reached:
+            if place.pk not in seen:
+                seen.add(place.pk)
+                places.append(place)
+        return places
+
+    def positions(self):
+        """[(warehouse, quantity)] where this line's goods are now, in that order."""
+        return [(place, held) for place in self.places() if (held := self.quantity_at(place)) > 0]
+
+    def inspection_step(self):
+        """
+        Where this line's goods wait to be looked at: the quarantine place
+        they reached, on landing or by a hop. None when they never did.
+        """
+        reached = [self.arrived_at()]
+        reached += [move.to_warehouse for move in self.route_moves.select_related("to_warehouse")]
+        return next((place for place in reached if place.is_quarantine), None)
+
+    def bin_at(self, warehouse):
+        """Which shelf in `warehouse` this line's goods were put on, when anything says."""
+        from apps.inventory.models import StockTransferStep
+
+        if warehouse.pk == self.arrived_at().pk:
+            return self.bin
+        move = self.route_moves.filter(to_warehouse=warehouse).order_by("-id").first()
+        if move is None:
+            return None
+        step = (StockTransferStep.objects.filter(line__transfer=move.transfer, destination=warehouse,
+                                                 reversed_step__isnull=True)
+                .select_related("in_movement__bin").order_by("-id").first())
+        return step.in_movement.bin if step is not None else None
+
+    def split_by_position(self, quantity):
+        """
+        [(warehouse, quantity)] taking `quantity` from where the goods are,
+        the earliest place first. Sending forty back with fifteen in the
+        bay and twenty-five put away took all forty from the bay.
+        """
+        parts, remaining = [], quantity
+        for place, held in self.positions():
+            if remaining <= 0:
+                break
+            taken = min(held, remaining)
+            parts.append((place, taken))
+            remaining -= taken
+        if remaining > 0:
+            # Nothing records where the rest is; where it landed, as it always
+            # was, and the shelf's own check refuses it if it is not there.
+            parts.append((self.arrived_at(), remaining))
+        return parts
 
     def current_step(self):
         """
@@ -6477,11 +6575,8 @@ class GoodsReceiptLine(AuditModel):
 
     def quarantined_quantity(self):
         """How much of this line is sitting somewhere it cannot ship from."""
-        total = Decimal("0")
-        for step in self.route_steps():
-            if step is not None and step.is_quarantine:
-                total += self.quantity_at(step)
-        return total
+        return sum((self.quantity_at(place) for place in self.places() if place.is_quarantine),
+                   Decimal("0"))
 
     def next_step_from(self, warehouse=None):
         warehouse = warehouse or self.current_step()
@@ -6541,7 +6636,10 @@ class GoodsReceiptLine(AuditModel):
         StockTransferLine.objects.create(
             transfer=transfer, item=self.order_line.item,
             uom=self.order_line.item.uom, lot=self.lot,
-            from_bin=self.bin if origin.pk == self.arrived_at().pk else None,
+            from_bin=self.bin_at(origin),
+            # Somewhere on the shelf it goes to, as a receipt chooses: a
+            # binned stock room refused every put-away that named none.
+            to_bin=plan_putaway(self.order_line.item, destination),
             quantity=self.order_line.item.to_stock_quantity(
                 quantity, self.order_line.uom
             ),
@@ -6564,9 +6662,10 @@ class GoodsReceiptLine(AuditModel):
 
         Measured from what is actually in quarantine rather than from
         what was received, because a routed line reaches inspection a
-        pallet at a time and the rest is still in the bay.
+        pallet at a time and the rest is still in the bay. What was
+        decided has left it: cleared to a shelf, or sent back.
         """
-        return self.quarantined_quantity() - self.quantity_inspected()
+        return self.quarantined_quantity()
 
     def quantity_returned(self):
         """How much of this line posted returns have already sent back."""
