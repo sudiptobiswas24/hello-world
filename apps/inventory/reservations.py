@@ -31,7 +31,7 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, serialised
 
-from .locking import lock_position
+from .locking import lock_positions
 from .models import Item, Warehouse
 
 
@@ -70,9 +70,20 @@ class ReservationManager(models.Manager.from_queryset(ReservationQuerySet)):
         if quantity <= 0:
             raise ValidationError("A reservation must claim a positive quantity.")
 
-        lock_position(item, warehouse)
+        # Both shelves when the claim is moving: the one it leaves gains
+        # what it gives up, and the one it goes to is read and promised.
+        held_at = self.for_source(source).open().values_list("warehouse_id", flat=True).first()
+        lock_positions([(item, warehouse)] + (
+            [(item, Warehouse.objects.get(pk=held_at))] if held_at and held_at != warehouse.pk else []))
         existing = self.for_source(source).open().first()
-        already = existing.remaining() if existing else Decimal("0")
+        # Only what it already holds here is its own to count again. Moved
+        # to a shelf of five, a claim of twenty-five held at the old one
+        # counted itself as free there and promised twenty-five of five.
+        already = (
+            existing.remaining()
+            if existing and existing.warehouse_id == warehouse.pk and existing.item_id == item.pk
+            else Decimal("0")
+        )
         free = Decimal(item.available_at(warehouse)) + already
         taken = min(quantity, max(free, Decimal("0")))
         shortfall = quantity - taken
@@ -83,12 +94,11 @@ class ReservationManager(models.Manager.from_queryset(ReservationQuerySet)):
             return None, shortfall
 
         if existing:
-            if taken < existing.consumed:
-                raise ValidationError(
-                    f"{existing.consumed} of this claim has already shipped; it cannot "
-                    f"be reduced to {taken}."
-                )
-            existing.quantity = taken
+            # `quantity` is what is still to ship; the claim also records
+            # what has shipped against it. Set to the remainder alone, a
+            # line of 25 that had shipped 10 held 5 after an edit, and one
+            # that had shipped 15 could not be edited at all.
+            existing.quantity = existing.consumed + taken
             existing.warehouse = warehouse
             super(StockReservation, existing).save(
                 update_fields=["quantity", "warehouse", "updated_at"]
