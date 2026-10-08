@@ -1033,6 +1033,18 @@ class Payslip(AuditModel):
                 ))
                 if component.kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
+        earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0.00"))
+        deducted = sum((line.amount for line in lines if line.kind == ComponentKind.DEDUCTION), Decimal("0.00"))
+        if deducted > earned:
+            # Refused, not capped. Below nothing, the slip posted a debit to net
+            # pay payable that no payment out can clear; capped, what was not
+            # deducted would be dropped with nothing to carry it to a next run.
+            # A pay below nothing is a debt, which a payslip has no meaning for.
+            raise ValidationError(
+                f"{self.employee} would be paid below nothing: {deducted} deducted against {earned} "
+                f"earned for {self.run.period_start}..{self.run.period_end}. Change what is deducted "
+                "from them for this period, or leave them off this run."
+            )
         return lines
 
     def _span(self, row):
