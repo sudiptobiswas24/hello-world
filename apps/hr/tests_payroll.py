@@ -708,6 +708,65 @@ class WhatPostsIsWhatIsOwedAsItPostsTests(PayrollTestCase):
         self.assertEqual(self.balance(self.wages), Decimal("4400.00"))
 
 
+class PayIsNotTakenBelowNothingTests(PayrollTestCase):
+    """
+    A joiner of 29 June earns 2 of June's 22 working days of 4,400, 400.00,
+    against a fixed recovery of 1,000. Their slip came to -600.00, posted,
+    and left 600.00 on net pay payable that no payment out could clear.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.recovery = PayComponent.objects.create(
+            code="ADV", name="Advance recovered", kind=ComponentKind.DEDUCTION,
+            basis=ComponentBasis.FIXED, liability_account=self.pension_payable, sequence=80,
+        )
+        self.full = self.employee("N1")
+        self.pay(self.full, self.salary, "4400")
+        self.late = self.employee("N2", hire=datetime.date(2026, 6, 29))
+        self.pay(self.late, self.salary, "4400", since=datetime.date(2026, 6, 29))
+
+    def settle(self, slip):
+        payment = Payment.objects.create(
+            party=slip.employee.party, direction=PaymentDirection.DISBURSEMENT,
+            payment_date=datetime.date(2026, 6, 30), amount=slip.net(), currency=self.usd,
+            bank_account=self.bank, counterpart_account=self.net_pay)
+        payment.post()
+        slip.pay(payment)
+
+    def test_a_recovery_above_what_they_earned_is_refused_by_name(self):
+        self.pay(self.late, self.recovery, "1000", since=datetime.date(2026, 6, 29))
+        run = self.pay_run()
+        with self.assertRaisesMessage(ValidationError, "N2 - N2 would be paid below nothing: 1000.00 deducted "
+                                                       "against 400.00 earned"):
+            run.calculate()
+        self.assertEqual(run.payslips.count(), 0)
+
+    def test_on_a_run_of_their_own_it_is_refused_in_words_not_by_the_ledger(self):
+        # Gone on 1 July: 4,400 x 1/23 = 191.30 against 1,000.
+        self.pay(self.late, self.recovery, "1000", since=datetime.date(2026, 6, 29))
+        self.late.terminate(on_date=datetime.date(2026, 7, 1))
+        july = self.pay_run(datetime.date(2026, 7, 1), datetime.date(2026, 7, 31), datetime.date(2026, 7, 31))
+        with self.assertRaisesMessage(ValidationError, "191.30 earned"):
+            july.calculate(employees=[self.late])
+
+    def test_with_the_recovery_from_july_june_is_paid_and_net_pay_payable_clears(self):
+        self.pay(self.late, self.recovery, "1000", since=datetime.date(2026, 7, 1))
+        run = self.pay_run()
+        run.calculate()
+        run.post()
+        for slip in run.payslips.all():
+            self.settle(slip)
+        self.assertEqual((run.payslips.get(employee=self.late).net(), self.balance(self.net_pay)),
+                         (Decimal("400.00"), Decimal("0.00")))
+
+    def test_a_slip_that_comes_to_exactly_nothing_is_not_refused(self):
+        self.pay(self.full, self.recovery, "4400")
+        run = self.pay_run()
+        run.calculate(employees=[self.full])
+        self.assertEqual(run.payslips.get().net(), Decimal("0.00"))
+
+
 class VoidingTests(PayrollTestCase):
     def payroll(self):
         person = self.employee("V1")
