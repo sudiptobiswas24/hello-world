@@ -779,6 +779,13 @@ class LeaveRequest(AuditModel):
                 f"This leave ended on {self.end_date}; it has been taken and cannot be "
                 "cancelled. Adjust the entitlement if it was recorded wrongly."
             )
+        if self.status == LeaveStatus.APPROVED and self.start_date < on_date:
+            # Under way: back on `on_date`, the days before it were taken. Cancelled whole, the
+            # leave gave every day back, the ones already gone with them.
+            self.end_date = on_date - datetime.timedelta(days=1)
+            self.days_taken = self.compute_days()
+            super().save(update_fields=["end_date", "days_taken", "updated_at"])
+            return self
         self.status = LeaveStatus.CANCELLED
         self.days_taken = None
         super().save(update_fields=["status", "days_taken", "updated_at"])

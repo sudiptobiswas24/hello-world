@@ -8,6 +8,7 @@ import datetime
 import re
 
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
+from django.utils import timezone
 
 try:
     from playwright.sync_api import expect
@@ -62,6 +63,20 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         self.sign_in(self.linked("Employee Self Service", self.employee("W-2")), "/app/payroll/leave", page=colleague)
         expect(colleague.locator("tbody tr:not(.skeleton)", has_text="W-1")).to_have_count(0)
         expect(colleague.get_by_text("No leave requests").first).to_be_visible()
+        self.assertEqual(self.problems, [])
+
+    def test_back_early_the_weaver_ends_the_leave_and_keeps_the_days_taken(self):
+        # Cancelled while under way, a leave gave back the days already taken with the rest;
+        # it now ends the day before, and the page says so rather than "Cancelled".
+        today = timezone.localdate()
+        weaver = self.employee("W-4")  # reports to self.boss
+        leave = self.request(weaver, today - datetime.timedelta(days=7), today + datetime.timedelta(days=7))
+        leave.approve(by=self.boss)
+        page = self.sign_in(self.linked("Employee Self Service", weaver), f"/app/payroll/leave/{leave.pk}")
+        page.get_by_role("button", name="Cancel it").click()
+        expect(page.locator(".toast", has_text="the days after are back").first).to_be_visible()
+        leave.refresh_from_db()
+        self.assertEqual((leave.status, leave.end_date), (LeaveStatus.APPROVED, today - datetime.timedelta(days=1)))
         self.assertEqual(self.problems, [])
 
     def test_hr_decides_anyones_and_another_teams_manager_cannot_open_it(self):
