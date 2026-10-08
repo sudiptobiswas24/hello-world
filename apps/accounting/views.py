@@ -170,7 +170,7 @@ class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["account_type", "is_active", "parent", "holds_money"]
     ordering_fields = ["code", "name"]
 
-    queryset = Account.objects.all()
+    queryset = Account.objects.select_related("parent")
     serializer_class = AccountSerializer
     # The chart is reference data every role reads; what was posted to an
     # account is the books, and reading it is reading journal entries.

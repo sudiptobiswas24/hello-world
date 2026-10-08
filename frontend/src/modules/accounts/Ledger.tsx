@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import { ApiError, request } from "../../api/client";
+import { useAccess } from "../../auth/me";
 import { DocHeader } from "../../forms/Document";
 import { positive } from "../../lib/decimal";
 import { count, date, money } from "../../lib/format";
@@ -33,10 +34,12 @@ const SIZE = 50;
 /**
  * An account's ledger for a period: what it opened at, every posted line
  * newest first with the balance after it, and what it closed at. The
- * balances are the server's, so page five is as right as page one.
+ * balances are the server's, so page five is as right as page one. It is
+ * the account's page: whoever may change the account edits it from here.
  */
 export default function LedgerPage() {
   const { id } = useParams();
+  const { can } = useAccess();
   const [params, setParams] = useSearchParams();
   const from = params.get("from") ?? "";
   const to = params.get("to") ?? "";
@@ -67,7 +70,9 @@ export default function LedgerPage() {
   return (
     <article className="doc">
       <DocHeader back="/accounts/chart" backLabel="Chart of accounts" title="Ledger"
-        number={data ? `${data.account.code} · ${data.account.name}` : "…"} />
+        number={data ? `${data.account.code} · ${data.account.name}` : "…"}>
+        {can("accounting.change_account") && <Link className="btn" to={`/accounts/chart/${id}/edit`}>Edit</Link>}
+      </DocHeader>
       <header className="list-head">
         <label className="inline">From <input type="date" value={from} onChange={(e) => set("from", e.target.value)} /></label>
         <label className="inline">To <input type="date" value={to} onChange={(e) => set("to", e.target.value)} /></label>

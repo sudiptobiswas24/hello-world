@@ -33,11 +33,14 @@ const routes: RouteObject[] = [
           { index: true, lazy: async () => ({ Component: (await import("../modules/home/Home")).default }) },
           ...MODULES.flatMap((module) =>
             module.screens.flatMap((screen) => {
-              const detail = screen.detail;
+              const { detail, edit } = screen;
               return [
                 { path: `${module.key}/${screen.path}`, lazy: async () => ({ Component: (await screen.load()).default }) },
                 ...(detail
                   ? [{ path: `${module.key}/${screen.path}/:id`, lazy: async () => ({ Component: (await detail()).default }) }]
+                  : []),
+                ...(edit
+                  ? [{ path: `${module.key}/${screen.path}/:id/edit`, lazy: async () => ({ Component: (await edit()).default }) }]
                   : []),
               ];
             }),

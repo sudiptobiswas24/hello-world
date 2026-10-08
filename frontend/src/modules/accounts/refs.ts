@@ -4,7 +4,7 @@ type Row = Record<string, unknown>;
 
 const coded = (row: Row) => `${String(row.code)} · ${String(row.name)}`;
 
-export { ACCOUNT, MONEY_ACCOUNT } from "../purchasing/refs";
+export { ACCOUNT, CURRENCY, MONEY_ACCOUNT } from "../purchasing/refs";
 /** A section tax is deducted under (194C, 194Q, ...). */
 export const SECTION: FieldDef["ref"] = {
   endpoint: "/api/accounting/tds-sections/", permission: "accounting.view_tdssection", label: coded,

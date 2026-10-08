@@ -19,6 +19,12 @@ export interface Screen {
   keywords?: string;
   load: Loader;
   detail?: Loader;
+  /**
+   * The form a record is changed in (`path/:id/edit`), where its own page
+   * (`detail`) is about it rather than the form: an account opens on its
+   * ledger.
+   */
+  edit?: Loader;
   create?: string;
   /** Reached from other screens, not offered in the navigation. */
   hidden?: boolean;
@@ -763,11 +769,14 @@ export const MODULES: Module[] = [
     screens: [
       {
         // The list reads the chart; each account opens on its ledger, which
-        // is the books and takes the right to read journal entries.
+        // is the books and takes the right to read journal entries. One is
+        // made at chart/new and changed at chart/:id/edit, each by whoever
+        // the server lets add or change one.
         path: "chart", label: "Chart of accounts", permission: "accounting.view_account",
-        also: ["accounting.view_journalentry"],
+        also: ["accounting.view_journalentry"], create: "accounting.add_account",
         keywords: "ledger account gl", load: () => import("../modules/accounts/Chart"),
-        detail: () => import("../modules/accounts/Ledger"),
+        detail: () => import("../modules/accounts/Account"),
+        edit: () => import("../modules/accounts/AccountForm"),
       },
       {
         path: "cost-centres", label: "Cost centres", permission: "accounting.view_costcentre", create: "accounting.add_costcentre",
