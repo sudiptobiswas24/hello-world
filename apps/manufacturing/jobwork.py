@@ -42,7 +42,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
 
 ZERO = Decimal("0")
 INPUTS_DAYS = 365
@@ -124,19 +124,27 @@ class JobWorkChallan(AuditModel):
         if not lines:
             raise ValidationError("A challan with nothing on it sends nothing.")
         self.challan_date = to_date(self.challan_date)
+        # Each run held before its status and its other challans are read:
+        # two challans of 600 issued at once each found the other unissued.
+        runs = {line.operation.work_order_id: line.operation.work_order for line in lines}
+        lock_rows(*runs.values())
         # This challan's own lines count too: two of 600 on one challan for
         # a run that holds 1,100 each found only the other challans.
         going = {}
         for line in lines:
-            order = line.operation.work_order
+            order = runs[line.operation.work_order_id]
             if order.status != WorkOrderStatus.RELEASED:
                 raise ValidationError(f"{order} is not running; nothing of it can go out.")
             going[line.operation_id] = going.get(line.operation_id, ZERO) + line.quantity
             sent, _lost = _on_challans(line.operation)
+            # A line is in the run's own unit and the ceiling in the item's
+            # stocking unit, as the vendor's receipt compares them: 5 t out
+            # on a run of 1.1 t passed as 5 against 1,100 kg.
+            out = order.item.to_stock_quantity(sent + going[line.operation_id], order.uom)
             ceiling = order.maximum_output()
-            if sent + going[line.operation_id] > ceiling:
+            if out > ceiling:
                 raise ValidationError(
-                    f"{order} holds at most {ceiling}, and {sent + going[line.operation_id]} "
+                    f"{order} holds at most {ceiling} {order.item.uom}, and {out} "
                     "of it would be out on challans."
                 )
         from apps.accounting.models import PartyTaxProfile
@@ -167,9 +175,15 @@ class JobWorkChallan(AuditModel):
         """
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not an issued challan.")
+        lines = list(self.lines.select_related("operation__work_order"))
+        # Held before what came back is read: a withdrawal read nothing back
+        # while the vendor's receipt, counting this challan as sent, booked
+        # 700 against the 600 the other challan then had out.
+        lock_rows(*{line.operation.work_order_id: line.operation.work_order
+                    for line in lines}.values())
         for guard in CHALLAN_VOID_GUARDS:
             guard(self)
-        for line in self.lines.all():
+        for line in lines:
             if line.losses.filter(voided_at__isnull=True).exists():
                 raise ValidationError(f"Losses are recorded against {line}.")
             # What the other challans can still account for is what they

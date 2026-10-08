@@ -12,7 +12,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
 from apps.accounting.models import PartyTaxProfile
-from apps.core.models import Party
+from apps.core.models import Party, UnitOfMeasure, UnitOfMeasureCategory
 
 from .jobwork import (
     JobWorkChallan,
@@ -22,6 +22,7 @@ from .jobwork import (
     check_back_was_sent,
     still_out,
 )
+from .orders import WorkOrder
 from .tests_orders import TODAY
 from .tests_outside import OutsideTestCase
 
@@ -267,6 +268,39 @@ class AChallansOwnLinesCountTogetherTests(JobWorkTestCase):
         self.line(challan, "500")
         challan.post()
         self.assertTrue(challan.posted)
+
+
+class ARunInTonnesTests(JobWorkTestCase):
+    """
+    Found in review: a challan's lines are in the run's unit and the
+    ceiling in the item's stocking unit, and the two were compared as
+    they stood. Two challans of 0.6 t on a run of 1 t of tape kept in
+    kilogrammes read as 1.2 against 1,100 and went out; the vendor's
+    1.2 t back would then have been refused against the same 1,100 kg.
+    """
+
+    def setUp(self):
+        super().setUp()
+        tonne = UnitOfMeasure.objects.create(
+            code="t", name="Tonne", category=UnitOfMeasureCategory.WEIGHT,
+            base_unit=self.kg, conversion_factor=Decimal("1000"),
+        )
+        self.in_tonnes = WorkOrder.objects.create(
+            item=self.tape, bom=self.bom, quantity_ordered=Decimal("1"), uom=tonne,
+            warehouse=self.plant, work_centre=self.loom,
+        )
+        self.in_tonnes.release(TODAY)
+        self.coat_in_tonnes = self.in_tonnes.operations.get(is_outside=True)
+
+    def test_past_the_run_is_refused(self):
+        self.assertEqual(self.in_tonnes.maximum_output(), Decimal("1100"))
+        self.challan("0.6", operation=self.coat_in_tonnes)
+        with self.assertRaisesMessage(ValidationError, "and 1200"):
+            self.challan("0.6", operation=self.coat_in_tonnes)
+
+    def test_up_to_it_they_go(self):
+        self.challan("0.6", operation=self.coat_in_tonnes)
+        self.assertTrue(self.challan("0.5", operation=self.coat_in_tonnes).posted)
 
 
 class WithdrawingAChallanTests(JobWorkTestCase):
