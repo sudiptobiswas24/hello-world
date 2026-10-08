@@ -514,10 +514,13 @@ class PayRun(AuditModel):
 
         hours = hours or {}
         people = employees if employees is not None else self._eligible_employees()
+        # Employed on any day of the period. Asked of its first and last days
+        # only, somebody hired on 8 June and gone on the 19th was on no run
+        # at all, and ten days' wages were never paid.
         people = [
             person for person in people
-            if person.is_employed_on(self.period_start)
-            or person.is_employed_on(self.period_end)
+            if to_date(person.hire_date) <= self.period_end
+            and (person.termination_date is None or to_date(person.termination_date) >= self.period_start)
         ]
         if not people:
             raise ValidationError("Nobody is employed during this period.")
