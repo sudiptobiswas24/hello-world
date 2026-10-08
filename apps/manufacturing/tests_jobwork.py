@@ -244,6 +244,31 @@ class LossesAtTheJobWorkerTests(JobWorkTestCase):
             self.loss("1", challan=second)
 
 
+class AChallansOwnLinesCountTogetherTests(JobWorkTestCase):
+    def line(self, challan, quantity):
+        return JobWorkLine.objects.create(
+            challan=challan, operation=self.coat, description="Woven fabric for coating",
+            hsn_code="63053300", quantity=Decimal(quantity),
+            value=Decimal(quantity) * 95, tax_rate=Decimal("5"),
+        )
+
+    def test_two_lines_past_what_the_run_holds_are_refused(self):
+        # The run holds 1,100 with its allowance; each 600 found only the
+        # other challans, of which there were none.
+        challan = JobWorkChallan.objects.create(job_worker=self.laminator, challan_date=TODAY)
+        self.line(challan, "600")
+        self.line(challan, "600")
+        with self.assertRaisesMessage(ValidationError, "and 1200.0000 of it would be out"):
+            challan.post()
+
+    def test_two_lines_within_it_go(self):
+        challan = JobWorkChallan.objects.create(job_worker=self.laminator, challan_date=TODAY)
+        self.line(challan, "500")
+        self.line(challan, "500")
+        challan.post()
+        self.assertTrue(challan.posted)
+
+
 class WithdrawingAChallanTests(JobWorkTestCase):
     def test_one_nothing_came_back_against(self):
         challan = self.challan("600")
@@ -263,6 +288,27 @@ class WithdrawingAChallanTests(JobWorkTestCase):
         self.back(self.lamination, "300", "600")
         first.void()
         self.assertIsNotNone(first.voided_at)
+
+    def test_not_when_the_others_lost_what_would_cover_it(self):
+        # 600 and 400 out, 100 of the 600 lost, 550 back: the 600 accounts
+        # for 500 at most, so the 400 is needed.
+        first = self.challan("600", day=TODAY - datetime.timedelta(days=2))
+        second = self.challan("400", day=TODAY - datetime.timedelta(days=1))
+        JobWorkLoss.objects.create(line=first.lines.get(), loss_date=TODAY,
+                                   quantity=Decimal("100"))
+        self.back(self.lamination, "550", "1100")
+        with self.assertRaisesMessage(ValidationError, "has come back"):
+            second.void()
+        self.assertIsNone(JobWorkChallan.objects.get(pk=second.pk).voided_at)
+
+    def test_but_when_they_still_cover_it(self):
+        first = self.challan("600", day=TODAY - datetime.timedelta(days=2))
+        second = self.challan("400", day=TODAY - datetime.timedelta(days=1))
+        JobWorkLoss.objects.create(line=first.lines.get(), loss_date=TODAY,
+                                   quantity=Decimal("100"))
+        self.back(self.lamination, "500", "1000")
+        second.void()
+        self.assertIsNotNone(second.voided_at)
 
     def test_not_with_losses_recorded(self):
         challan = self.challan("600")
