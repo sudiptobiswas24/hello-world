@@ -668,12 +668,21 @@ class LeaveRequest(AuditModel):
     def save(self, *args, **kwargs):
         if self.pk:
             previous = LeaveRequest.objects.filter(pk=self.pk).first()
+            if previous is not None and previous.employee_id != self.employee_id:
+                # Approved for one person, an edit handed it to another, with
+                # their first person's manager's yes on it and the days docked
+                # from a run that had paid the first.
+                raise ValidationError(
+                    "Leave is asked for by one person and is not moved to another. Raise theirs, "
+                    "and cancel this one."
+                )
             if previous is not None and previous.status == LeaveStatus.APPROVED:
                 changed = (
                     previous.start_date != self.start_date
                     or previous.end_date != self.end_date
                     or previous.half_day != self.half_day
                     or previous.policy_id != self.policy_id
+                    or previous.leave_type != self.leave_type
                 )
                 if changed:
                     # An approval covers the dates somebody actually agreed
@@ -684,6 +693,19 @@ class LeaveRequest(AuditModel):
                     )
         self.clean()
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # An approval is undone by cancelling it, which asks whether its days
+        # have been taken or paid on. Deleted, approved unpaid leave that a
+        # posted run had docked went with nothing asked, and the payslip kept
+        # a deduction no leave stood behind.
+        stored = LeaveRequest.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+        if stored == LeaveStatus.APPROVED:
+            raise ValidationError(
+                "This leave has been approved: cancel it rather than delete it, and what it took "
+                "is given back as far as it can be."
+            )
+        return super().delete(*args, **kwargs)
 
     # -- the decision, and its reverse ----------------------------------
 
@@ -835,6 +857,19 @@ class LeaveRequest(AuditModel):
         # and never asked, so anyone could undo a manager's yes.
         self.check_approver(by, as_hr)
         self._check_not_paid_on(self.start_date, self.end_date, "send back")
+        # As cancel() asks: days already taken are not given back. Sent back
+        # and then cancelled, a June holiday was given back in October.
+        today = timezone.localdate()
+        if self.end_date < today:
+            raise ValidationError(
+                f"This leave ended on {self.end_date}; it has been taken and its approval is not sent "
+                "back. Adjust the entitlement if it was recorded wrongly."
+            )
+        if self.start_date < today:
+            raise ValidationError(
+                f"This leave began on {self.start_date}, and the days taken since stay taken. Cancel it "
+                "from today instead, and the rest is given back."
+            )
         self.status = LeaveStatus.PENDING
         self.decided_by = None
         self.decided_at = None
