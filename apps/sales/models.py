@@ -438,6 +438,22 @@ def quantities_awaited(lines):
     return awaited
 
 
+def refuse_awaited_from_a_vendor(lines, doing):
+    """
+    Refuse `doing` while a vendor is still to send any of `lines` straight to the customer.
+    The goods would come all the same, and their receipt, delivering to an order that no
+    longer wants them, could never post: the drop-ship stood open with nobody to receive it.
+    """
+    from apps.core.api import plain
+
+    awaited = quantities_awaited(lines)
+    coming = [f"{line.label()} ({plain(awaited[line.pk])})" for line in lines if awaited[line.pk] > 0]
+    if coming:
+        raise ValidationError(
+            f"A vendor is still to send {', '.join(coming)} to the customer on a drop-ship. "
+            f"Cancel it, or close it short, before {doing}.")
+
+
 def refuse_material_problems(customer, rows):
     """rows: [(item, lots, on_date)]. Refuse naming every problem at once."""
     problems = []
@@ -727,6 +743,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                     "This order has been shipped or invoiced and cannot be cancelled. "
                     "Return the goods or issue a credit note instead."
                 )
+        refuse_awaited_from_a_vendor(list(self.lines.all()), "cancelling the order")
         # Billed up front is billed: cancelled, nothing would draw the deposit down,
         # and one still unpaid would be chased for an order that is not coming.
         held = [deposit for deposit in self.deposits() if deposit.deposit_unapplied() > 0]
@@ -1275,6 +1292,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         reason = " ".join((reason or "").split())
         if not reason:
             raise ValidationError("Say why the rest will not be shipped.")
+        # What the drop-ships bring is read next; create_for_drop_ship() takes the order to add to it.
+        lock_rows(self.order, refresh=False)
+        refuse_awaited_from_a_vendor([self], "closing the line short")
         self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
         release_for(self, f"Closed short: {reason}"[:255])
