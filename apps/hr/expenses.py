@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
-from .models import Employee
+from .models import Employee, reversal_day
 
 ZERO = Decimal("0")
 
@@ -173,8 +173,9 @@ class ExpenseClaim(AuditModel):
         reason = _text(reason)
         if not reason:
             raise ValidationError("Say why the payment is reversed.")
+        on_date = reversal_day(on_date, self.paid_on, f"{self} was paid")
         with transaction.atomic():
-            self.voided_entry = self.journal_entry.create_reversal(entry_date=to_date(on_date) or timezone.localdate())
+            self.voided_entry = self.journal_entry.create_reversal(entry_date=on_date)
             # The payment no longer stands, so neither does when and from where it was made: left,
             # an approved claim read "paid on 3 June from petty cash". Its entry and the reversal
             # stay recorded.

@@ -53,7 +53,7 @@ from apps.core.models import (
 )
 
 from .calendars import working_days
-from .models import Employee, LeaveRequest, LeaveStatus
+from .models import Employee, LeaveRequest, LeaveStatus, reversal_day
 
 
 class ComponentKind(models.TextChoices):
@@ -692,14 +692,7 @@ class PayRun(AuditModel):
             raise ValidationError("Only a posted pay run can be voided.")
         if self.is_voided():
             raise ValidationError("This pay run has already been voided.")
-        # On a day the run stood and one that has come, as a payment's void is.
-        # Dated 1 May, June's wages went negative in May's books; dated in
-        # December, the documents read it voided before the ledger did.
-        on_date = to_date(on_date) or timezone.localdate()
-        if on_date < to_date(self.pay_date):
-            raise ValidationError(f"This run was paid on {self.pay_date}; it is not voided before then.")
-        if on_date > timezone.localdate():
-            raise ValidationError(f"{on_date} has not come yet; a pay run is voided on a day that has.")
+        on_date = reversal_day(on_date, self.pay_date, "This run was paid")
         paid = next((slip for slip in self.payslips.all() if slip.is_paid()), None)
         if paid is not None:
             raise ValidationError(
@@ -742,6 +735,15 @@ class PayRun(AuditModel):
             (slip.net() for slip in self.payslips.all() if not slip.is_paid()),
             Decimal("0"),
         )
+
+    def delete(self, *args, **kwargs):
+        # Posted, it is in the ledger and is reversed by voiding it; voided, it
+        # is the record of what was paid and taken back. Deleted, its slips
+        # went and its entries stayed, owed to nobody.
+        stored = PayRun.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+        if stored in (PayRunStatus.POSTED, PayRunStatus.VOIDED):
+            raise ValidationError(f"{self} has been posted: it is voided, not deleted.")
+        return super().delete(*args, **kwargs)
 
     @transaction.atomic
     def save(self, *args, **kwargs):

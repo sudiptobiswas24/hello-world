@@ -231,6 +231,18 @@ class ApprovalTests(TimesheetTestCase):
         with self.assertRaises(ValidationError):
             sheet.entries.first().delete()
 
+    def test_an_approved_sheet_is_sent_back_before_it_is_deleted(self):
+        # Deleted whole, its entries went past their own refusal.
+        sheet = self.filled()
+        sheet.submit()
+        sheet.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "send it back before deleting it"):
+            sheet.delete()
+        self.assertEqual(TimesheetEntry.objects.filter(timesheet=sheet).count(), 5)
+        sheet.send_back()
+        sheet.delete()
+        self.assertFalse(Timesheet.objects.filter(pk=sheet.pk).exists())
+
     def test_an_approved_period_cannot_be_moved(self):
         sheet = self.filled()
         sheet.submit()

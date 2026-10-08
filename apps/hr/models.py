@@ -36,6 +36,25 @@ from .calendars import (  # noqa: F401
 )
 
 
+def reversal_day(on_date, made_on, what):
+    """
+    The day a correction of something done on `made_on` is dated: the day
+    asked, or today. Not before it was done, which takes it back in a period
+    it was never in, and not ahead of today, which has the document read
+    undone while the ledger still holds it. A payment's void asks the same.
+    Dated 1 May, June's pay run took June's wages out of May.
+
+    `what` says what was done, for the refusal: "This run was paid".
+    """
+    day = to_date(on_date) or timezone.localdate()
+    made_on = to_date(made_on)
+    if made_on is not None and day < made_on:
+        raise ValidationError(f"{what} on {made_on}; it is not undone before then.")
+    if day > timezone.localdate():
+        raise ValidationError(f"{day} has not come yet; nothing is undone ahead of the day it is.")
+    return day
+
+
 def _require_employee_role(party):
     if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
         raise ValidationError(f"{party} does not have the Employee role.")
