@@ -155,6 +155,23 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
         with self.assertRaisesMessage(ValidationError, "creels hold 30 kg of it not yet drawn"):
             self.weigh(when=at(TODAY, 10, 42))
 
+    def test_what_a_closed_run_did_not_draw_is_free_to_load_again(self):
+        # Found in review: a closed run's creels were counted for ever, so
+        # what its output had not drawn of D-1 could never be loaded again,
+        # and its load could not be withdrawn either.
+        first = self.load("D-1", "100", CreelSide.WARP, 9)
+        self.produce(self.run, "49", lot=Lot.objects.create(item=self.fabric, code="F-OFFICE")).post()
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("50"))
+        self.run.close(on_date=TODAY)
+        with self.assertRaisesMessage(ValidationError, "is free to load on another run"):
+            void_load(first, self.station, self.supervisor, self.operator, "Off the creel")
+        following = self.released_run()
+        WorkOrder.objects.filter(pk=following.pk).update(backflush=True)
+        again = self.load("D-1", "50", CreelSide.WARP, 13)
+        self.assertEqual(again.work_order, following)
+        with self.assertRaisesMessage(ValidationError, "has 0 kg in"):
+            self.load("D-1", "1", CreelSide.WEFT, 13, 5)
+
     def test_a_load_its_output_drew_on_is_not_withdrawn(self):
         load = self.load("D-1", "100", CreelSide.WARP, 9)
         self.produce(self.run, "50", lot=Lot.objects.create(item=self.fabric, code="F-OFFICE")).post()

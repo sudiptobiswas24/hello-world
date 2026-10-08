@@ -25,7 +25,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, lock_rows
 
 ZERO = Decimal("0")
 
@@ -123,12 +123,20 @@ def void_load(load, station, supervisor, operator, reason):
     if not reason:
         raise ValidationError("Say why the load is withdrawn.")
     check_supervisor(station, supervisor, operator)
+    # Held before anything below reads what the run has made or drawn: a
+    # roll booked meanwhile draws on this load.
+    run = load.work_order
+    lock_rows(run)
+    if not run.is_open():
+        raise ValidationError(
+            f"{run} is {run.get_status_display().lower()}; {load} stands as the record of "
+            "what it wove, and what its output did not draw is free to load on another run."
+        )
     if FabricRoll.objects.filter(machine=load.machine, weighed_at__gte=load.loaded_at,
                                  entry__work_order=load.work_order,
                                  entry__voided_at__isnull=True).exists():
         raise ValidationError(f"A roll has come off {load.machine.code} since {load} was "
                               "loaded, and names it.")
-    run = load.work_order
     if run.backflush and drawn_by_output(run, load.lot) > loaded(run, load.lot) - load.kg:
         raise ValidationError(f"{run}'s output has drawn on {load}; it stands.")
     if load.issue_id:
@@ -171,11 +179,22 @@ def on_the_creels(run, item):
 
 
 def on_creels_undrawn(lot):
-    """Kilos of a batch on backflushed runs' creels that their output has not drawn yet."""
-    from .orders import WorkOrder
+    """
+    Kilos of a batch on the creels of backflushed runs still open that
+    their output has not drawn yet.
+
+    A run closed or cancelled holds nothing on its creels. A backflushed
+    load issues nothing, so what its output did not draw never left the
+    shelf, and it is free to load on another run; the closed run's loads
+    stand as the record of what it wove. Counted for ever, 20 kg left of
+    a 100 kg doff after a run drew 80 and closed could never be loaded
+    again, nor its load withdrawn.
+    """
+    from .orders import WorkOrder, WorkOrderStatus
 
     runs = WorkOrder.objects.filter(
-        backflush=True, tape_loads__lot=lot, tape_loads__voided_at__isnull=True,
+        backflush=True, status=WorkOrderStatus.RELEASED,
+        tape_loads__lot=lot, tape_loads__voided_at__isnull=True,
     ).distinct()
     return sum((max(loaded(run, lot) - drawn_by_output(run, lot), ZERO) for run in runs), ZERO)
 
