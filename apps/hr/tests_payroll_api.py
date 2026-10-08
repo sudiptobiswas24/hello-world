@@ -290,6 +290,22 @@ class VoidedOnADayItStoodTests(AsTheRolesTestCase):
         voided = controller.post(f"/api/hr/pay-runs/{run.pk}/void/", {"on_date": "2026-06-30"}, format="json")
         self.assertEqual((voided.status_code, voided.json()["status"]), (200, PayRunStatus.VOIDED))
 
+    def test_the_payroll_officer_does_not_move_a_voided_run(self):
+        # Moved to May, a June run voided on 20 July had the July report say May was owed.
+        run = self.pay_run()
+        run.calculate()
+        run.post()
+        self.clients["Controller"].post(f"/api/hr/pay-runs/{run.pk}/void/", {"on_date": "2026-07-20"}, format="json")
+        officer = self.clients["Payroll Officer"]
+        for change in ({"period_start": "2026-05-01", "period_end": "2026-05-31"}, {"pay_date": "2026-07-01"},
+                       {"name": "May"}):
+            refused = officer.patch(f"/api/hr/pay-runs/{run.pk}/", change, format="json")
+            self.assertEqual(refused.status_code, 400, (change, refused.content))
+            self.assertIn("Cannot modify a voided pay run", refused.content.decode())
+        stood = self.client.get(f"/api/hr/pay-runs/{run.pk}/").json()
+        self.assertEqual((stood["status"], stood["period_start"], stood["pay_date"], stood["name"]),
+                         (PayRunStatus.VOIDED, "2026-06-01", "2026-06-30", "June"))
+
 
 class APostedRunKeepsTheSlipsItPaidTests(AsTheRolesTestCase):
     def test_the_controller_posts_june_and_then_pays_the_one_it_paid_nothing(self):

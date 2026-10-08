@@ -749,9 +749,15 @@ class PayRun(AuditModel):
     @transaction.atomic
     def save(self, *args, **kwargs):
         previous = PayRun.objects.filter(pk=self.pk).first() if self.pk else None
-        if previous is not None and previous.status == PayRunStatus.POSTED:
+        # Edited only while it is being worked out. Voided, it is the record of what was paid
+        # and taken back, as fixed as when it stood: a voided June run moved to May turned the
+        # statutory report as of 10 July from June owing 1,000.00 into May owing it. post() and
+        # void() write their own fields past this, through AuditModel.save().
+        if previous is not None and previous.status not in (PayRunStatus.DRAFT, PayRunStatus.CALCULATED):
             raise ValidationError(
-                "Cannot modify a posted pay run. Void it and raise another."
+                f"Cannot modify a {previous.get_status_display().lower()} pay run. "
+                + ("Void it and raise another." if previous.status == PayRunStatus.POSTED
+                   else "It is the record of what was paid and taken back; raise another.")
             )
         moved = (previous is not None and previous.status == PayRunStatus.CALCULATED
                  and (to_date(self.period_start), to_date(self.period_end))
