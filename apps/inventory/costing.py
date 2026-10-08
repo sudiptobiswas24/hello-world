@@ -315,6 +315,50 @@ def holds_value(item, warehouse, adjusts=None, lot=None):
     return held > 0
 
 
+def goods_held(item, warehouse, quantity, sources=(), lot=None):
+    """
+    [(source, quantity)]: how much of `quantity` of some goods, put on
+    `warehouse` by the movements `sources` (oldest first), is still there
+    for a value-only movement written next to land on, and on which of
+    those movements it lands.
+
+    What a cost incurred on those goods, landed after some of them have
+    gone, may put on the shelf: only the share the goods still there
+    bear. Ten of a receipt on the shelf and nine written off, the shelf
+    holds one, and 80 of freight on that one unit priced it at 85; nine
+    tenths of the freight left with the nine, and belongs where they went.
+
+    By method, as the replays value it: under FIFO each source is a layer
+    and what is left of those layers is what is held, each part landing
+    on its own layer (_apply_adjustment); under the average, what the
+    shelf holds, up to `quantity`; under specific identification, what
+    the batch holds there; at the standard nothing lands. A caller posts
+    the rest somewhere else.
+    """
+    quantity = Decimal(quantity)
+    method = item.costing_method
+    if quantity <= 0 or method == CostingMethod.STANDARD:
+        return []
+    fold = _fold_to_start_from(item, warehouse, None, None)
+    if method == CostingMethod.FIFO:
+        _held, layers, _value = _replay_fifo(item, warehouse, fold=fold)
+        left = {source: layer for layer, _cost, source in layers if layer > 0}
+        found, wanted = [], quantity
+        for source in sources:
+            there = min(left.get(source.pk, Decimal("0")), wanted)
+            if there > 0:
+                found.append((source, there))
+                wanted -= there
+        return found
+    if method == CostingMethod.SPECIFIC:
+        _held, pools, _value = _replay_specific(item, warehouse, fold=fold)
+        there = pools.get(lot.pk if lot is not None else None, (Decimal("0"),))[0]
+    else:
+        there, _value = _replay_average(item, warehouse, fold=fold)
+    there = min(there, quantity)
+    return [(sources[-1] if sources else None, there)] if there > 0 else []
+
+
 def unit_cost_for(item, warehouse, quantity, lot=None):
     """
     `cost_of_removing` expressed per unit, for the places that must put

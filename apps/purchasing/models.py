@@ -73,7 +73,7 @@ from apps.accounting.settlement import (
     undone_by_note,
 )
 from apps.inventory.availability import check_available
-from apps.inventory.costing import holds_value
+from apps.inventory.costing import goods_held, holds_value
 from apps.inventory.valuation import (
     cogs_account_for,
     grni_account,
@@ -4359,37 +4359,60 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     def _apply_landed_cost(self, receipt_line, amount, on_date):
         item = receipt_line.order_line.item
         memo = f"Landed cost from {self.bill.number} onto {item}"
-        arrived = receipt_line.stock_movement
-        # On the shelf the receipt put the goods on, which a routed receipt
-        # makes the bay rather than the shelf the line is destined for: ten
-        # waiting in the bay took none of the freight, and an empty stock
-        # room held it.
-        warehouse = arrived.warehouse if arrived is not None else receipt_line.arrived_at()
-        lock_position(item, warehouse)
-        movement = None
-        if holds_value(item, warehouse, adjusts=arrived, lot=receipt_line.lot):
-            movement = StockMovement.objects.create(
-                item=item, warehouse=warehouse,
+        uom = receipt_line.order_line.uom
+        # On the goods where they are now, not where the receipt put them:
+        # ten received into the bay and put away before the freight bill
+        # came found the bay empty, and the 80 went to cost of sales while
+        # the stock room held all ten at 50. Each shelf takes the share its
+        # goods still there bear, and what no shelf holds any longer is
+        # cost of sales (inventory/costing.py, goods_held).
+        positions = receipt_line.positions()
+        lock_positions((item, place) for place, _there in positions)
+        shelves = [
+            (place, source, held)
+            for place, there in positions
+            for source, held in goods_held(
+                item, place, item.to_stock_quantity(there, uom),
+                sources=receipt_line.arrivals_at(place), lot=receipt_line.lot,
+            )
+        ]
+        received = item.to_stock_quantity(receipt_line.quantity_received, uom)
+        gone = received - sum((held for _place, _source, held in shelves), Decimal("0"))
+        parts = shelves + ([(None, None, gone)] if gone > 0 else [])
+        # Total first, divide last: each part's share by quantity, the last
+        # taking what the others left.
+        movements, remaining = [], amount
+        for index, (place, source, quantity) in enumerate(parts):
+            share = remaining if index == len(parts) - 1 else round_money(amount * quantity / received)
+            remaining -= share
+            if place is None or not share:
+                continue
+            movements.append(StockMovement.objects.create(
+                item=item, warehouse=place,
                 movement_type=MovementType.ADJUSTMENT, uom=item.uom,
-                lot=receipt_line.lot, bin=arrived.bin if arrived is not None else receipt_line.bin,
+                lot=receipt_line.lot,
+                bin=source.bin if source is not None else receipt_line.bin_at(place),
                 # Landed cost belongs to the goods it was incurred on, and the
                 # receipt says which those were. Under FIFO that decides which
                 # layer it raises; spreading it over the shelf would misprice
                 # everything that was already standing there.
-                adjusts=arrived,
+                adjusts=source,
                 quantity=Decimal("0"),
-                value_adjustment=amount, reference=self.bill.number,
+                value_adjustment=share, reference=self.bill.number,
                 occurred_at=timezone.now(), notes=memo,
-            )
+            ))
         entry = _post_landed_cost(
             item, self.posted_account or self.expense_account, amount,
-            on_shelf=amount if movement is not None else Decimal("0"),
+            on_shelf=sum((movement.value_adjustment for movement in movements), Decimal("0")),
             date=on_date, reference=self.bill.number, memo=memo,
         )
-        return LandedCostApplication.objects.create(
+        application = LandedCostApplication.objects.create(
             charge_line=self, receipt_line=receipt_line, amount=amount,
-            date=on_date, journal_entry=entry, stock_movement=movement,
+            date=on_date, journal_entry=entry,
         )
+        # What each shelf took, kept: its release takes it back off there.
+        application.movements.set(movements)
+        return application
 
     @transaction.atomic
     def capitalise_as_asset(self, category, name="", in_service_date=None,
@@ -6066,7 +6089,7 @@ class GoodsReceipt(AuditModel):
             # could not be cleared at all without its batch.
             moving = item.to_stock_quantity(quantity, line.order_line.uom)
             check_available(item, source, moving, lot=line.lot, action="clear")
-            move_stock(
+            _out, into = move_stock(
                 item, source, warehouse, moving, lot=line.lot,
                 from_bin=line.bin_at(source),
                 # Somewhere on the shelf it clears to, as a receipt chooses.
@@ -6076,7 +6099,7 @@ class GoodsReceipt(AuditModel):
             )
             ReceiptInspection.objects.create(
                 receipt_line=line, quantity=quantity, accepted=True,
-                inspected_on=to_date(occurred_at), warehouse=warehouse,
+                inspected_on=to_date(occurred_at), warehouse=warehouse, movement=into,
             )
             moved.append((item, quantity))
         return moved
@@ -6522,6 +6545,33 @@ class GoodsReceiptLine(AuditModel):
         """[(warehouse, quantity)] where this line's goods are now, in that order."""
         return [(place, held) for place in self.places() if (held := self.quantity_at(place)) > 0]
 
+    def arrivals_at(self, warehouse):
+        """
+        The movements that put this line's goods on `warehouse`, oldest
+        first: the receipt's own where they landed, each hop's arrival
+        there that still stands, each clearance out of inspection onto it.
+        Under FIFO each is a layer, and a cost incurred on these goods
+        lands on those layers and on no others.
+        """
+        from apps.inventory.models import StockTransferStep
+
+        found = []
+        if self.stock_movement_id and self.stock_movement.warehouse_id == warehouse.pk:
+            found.append(self.stock_movement)
+        hops = self.route_moves.filter(to_warehouse=warehouse).values_list("transfer_id", flat=True)
+        found += [
+            step.in_movement for step in StockTransferStep.objects.filter(
+                line__transfer_id__in=list(hops), destination=warehouse,
+                reversed_step__isnull=True, reverses__isnull=True,
+            ).select_related("in_movement__bin").order_by("id")
+        ]
+        found += [
+            row.movement for row in self.inspections.filter(
+                accepted=True, warehouse=warehouse, movement__isnull=False,
+            ).select_related("movement__bin").order_by("id")
+        ]
+        return found
+
     def inspection_step(self):
         """
         Where this line's goods wait to be looked at: the quarantine place
@@ -6778,6 +6828,12 @@ class LandedCostApplication(AuditModel):
     stock_movement = models.ForeignKey(
         StockMovement, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
+        help_text="The one shelf an allocation made before `movements` were kept landed on.",
+    )
+    movements = models.ManyToManyField(
+        StockMovement, blank=True, related_name="+", editable=False,
+        help_text="What each shelf took: one value-only movement per shelf the goods were "
+                  "on. What the shelves did not take went to cost of sales.",
     )
     released_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
@@ -6815,25 +6871,28 @@ class LandedCostApplication(AuditModel):
         # undone while the books still hold it.
         on_date = correction_date(on_date, self.date, f"{self} is not released on", "it was allocated")
         item = self.receipt_line.order_line.item
-        landed = self.stock_movement
-        # Off the shelf it went onto, and only what that shelf still holds:
-        # goods sold since took their freight into cost of sales with them,
-        # and that is where it comes back out of.
+        # Off the shelves it went onto, as each recorded what it took, and
+        # only what those shelves still hold: goods sold since took their
+        # freight into cost of sales with them, and that is where it comes
+        # back out of.
+        landed = list(self.movements.select_related("warehouse", "adjusts", "lot", "bin").order_by("id"))
+        if not landed and self.stock_movement_id:
+            landed = [self.stock_movement]
+        lock_positions((item, movement.warehouse) for movement in landed)
         off_shelf = Decimal("0")
-        if landed is not None:
-            lock_position(item, landed.warehouse)
-            if holds_value(item, landed.warehouse, adjusts=landed.adjusts, lot=landed.lot):
+        for movement in landed:
+            if holds_value(item, movement.warehouse, adjusts=movement.adjusts, lot=movement.lot):
                 StockMovement.objects.create(
-                    item=item, warehouse=landed.warehouse,
+                    item=item, warehouse=movement.warehouse,
                     movement_type=MovementType.ADJUSTMENT, uom=item.uom,
-                    lot=landed.lot, bin=landed.bin, adjusts=landed.adjusts,
+                    lot=movement.lot, bin=movement.bin, adjusts=movement.adjusts,
                     quantity=Decimal("0"),
-                    value_adjustment=-landed.value_adjustment,
+                    value_adjustment=-movement.value_adjustment,
                     reference=self.charge_line.bill.number,
                     occurred_at=timezone.now(),
                     notes=f"Landed cost released from {self.charge_line.bill.number}",
                 )
-                off_shelf = landed.value_adjustment
+                off_shelf += movement.value_adjustment
         entry = _post_landed_cost(
             item, self.charge_line.posted_account or self.charge_line.expense_account,
             self.amount, on_shelf=off_shelf,
@@ -6905,6 +6964,13 @@ class ReceiptInspection(AuditModel):
     warehouse = models.ForeignKey(
         Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         help_text="Where accepted goods were cleared to.",
+    )
+    movement = models.ForeignKey(
+        StockMovement, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="The movement that put accepted goods on that shelf: under FIFO their layer, "
+                  "which a cost landed on them later raises. Blank on clearances made before "
+                  "it was kept.",
     )
     note = models.CharField(max_length=255, blank=True)
 
