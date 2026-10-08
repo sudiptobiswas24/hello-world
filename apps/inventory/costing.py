@@ -282,6 +282,37 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
     return quantity * (value / held)
 
 
+def holds_value(item, warehouse, adjusts=None, lot=None):
+    """
+    Whether a value-only movement written here next would land on goods.
+
+    The mirror of `cost_of_removing` for value with no quantity, and for
+    the same reason beside the replays: a landed cost posted to the
+    inventory account that the shelf does not take parts the two for good.
+    It does not land when the receipt layer it names has gone (FIFO: the
+    replay drops it), when the shelf is valued at the standard and nothing
+    else, or when there is nothing there to carry it, which would leave
+    value on an empty shelf for whatever arrives next. A caller posts that
+    part somewhere else.
+    """
+    fold = _fold_to_start_from(item, warehouse, None, None)
+    method = item.costing_method
+    if method == CostingMethod.STANDARD:
+        return False
+    if method == CostingMethod.SPECIFIC:
+        _held, pools, _value = _replay_specific(item, warehouse, fold=fold)
+        return pools.get(lot.pk if lot is not None else None, (Decimal("0"),))[0] > 0
+    if method == CostingMethod.FIFO:
+        _held, layers, _value = _replay_fifo(item, warehouse, fold=fold)
+        if adjusts is not None:
+            # What _apply_adjustment does with it: onto that layer, or nowhere.
+            return any(source == adjusts.pk and quantity > 0 for quantity, _cost, source in layers)
+        return (sum((quantity for quantity, _cost, _source in layers), Decimal("0")) > 0
+                or sum((quantity * cost for quantity, cost, _source in layers), Decimal("0")) > 0)
+    held, _value = _replay_average(item, warehouse, fold=fold)
+    return held > 0
+
+
 def unit_cost_for(item, warehouse, quantity, lot=None):
     """
     `cost_of_removing` expressed per unit, for the places that must put
