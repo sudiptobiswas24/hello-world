@@ -622,8 +622,25 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
             return None
         # committed_balance already counts this order once it is confirmed;
         # at confirmation time it isn't yet, so add it explicitly.
-        exposure = committed_balance(self.customer) + self.total()
+        exposure = committed_balance(self.customer)
+        if self.status != OrderStatus.CONFIRMED:
+            exposure += self.total()
         return (exposure, limit) if exposure > limit else None
+
+    def refuse_going_over_the_credit_limit(self):
+        """
+        What confirming asks, asked again of a confirmed order that grows.
+        A line raised or added after confirmation is a commitment the limit
+        never saw: confirmed at 600 against 1,000 and raised to 6,000, the
+        customer was six times over and nothing had looked.
+        """
+        breach = self.credit_limit_breach()
+        if breach:
+            exposure, limit = breach
+            raise ValidationError(
+                f"{self.customer} would be at {exposure} against a credit limit of {limit}. A "
+                "confirmed order is not raised past it; take the rest as a new order, which "
+                "asks for approval.")
 
     def cost_total(self):
         """
@@ -794,6 +811,9 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 "what they send, or make it an ordinary sale."
             )
         refuse_credit_hold(self.customer, "no order of theirs is confirmed")
+        # The limit weighs every confirmed order of theirs: two confirmed at
+        # once each found the other not there yet, and together went over.
+        lock_rows(self.customer, refresh=False)
         # No bypass flag. The old ignore_credit_limit= was reachable by
         # anyone who could confirm an order at all — which is the rep whose
         # discount the limit exists to check — and left no record that
@@ -1347,6 +1367,15 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return (stored is not None and stored.order.status == OrderStatus.CONFIRMED
                 and self.unit_price is not None and self.net_amount() < stored.net_amount())
 
+    def _worth_more_than_stored(self):
+        """A line added to a confirmed order, or one raised on it: more promised than the limit saw."""
+        stored = SalesOrderLine.objects.select_related("order").filter(pk=self.pk).first() if self.pk else None
+        if stored is None:
+            return bool(self.order_id) and SalesOrder.objects.filter(
+                pk=self.order_id, status=OrderStatus.CONFIRMED).exists()
+        return (stored.order.status == OrderStatus.CONFIRMED and self.unit_price is not None
+                and self.net_amount() > stored.net_amount())
+
     def _hold_for_deposits(self):
         """The line, then its order, as close_short() takes them: what the order holds up front is weighed next."""
         lock_rows(self, refresh=False)
@@ -1357,6 +1386,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         shrinking = self._worth_less_than_stored()
         if shrinking:
             self._hold_for_deposits()
+        growing = not shrinking and self._worth_more_than_stored()
+        if growing:
+            # Under the customer's lock, as confirming one of their orders takes it.
+            lock_rows(self.order.customer, refresh=False)
         if self.pk:
             from .call_offs import called_off, plain
 
@@ -1438,6 +1471,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         super().save(*args, **kwargs)
         if shrinking:
             self.order.refuse_coming_to_less_than_its_deposits()
+        if growing:
+            SalesOrder.objects.get(pk=self.order_id).refuse_going_over_the_credit_limit()
         # Re-sizing or re-warehousing a line on a confirmed order changes
         # what it has promised, so the claim has to follow. Leaving the old
         # one standing holds stock for a quantity nobody is waiting for.
