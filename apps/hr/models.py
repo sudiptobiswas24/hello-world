@@ -689,6 +689,7 @@ class LeaveRequest(AuditModel):
         self.check_approver(by, as_hr)
         self._check_balance()
         self._check_not_worked()
+        self._check_not_paid_on(self.start_date, self.end_date, "approve")
         # Freeze what it cost. The working pattern and the public holiday
         # list both change, and what an approved holiday cost does not.
         self.days_taken = self.compute_days()
@@ -734,6 +735,35 @@ class LeaveRequest(AuditModel):
                     "is not both worked and taken off. Take them off the timesheet, or ask for the "
                     "days either side of it.")
 
+    def _check_not_paid_on(self, first, last, doing):
+        """
+        A posted pay run paid on these days as they stood. Unpaid leave came
+        off the salary, an absence the leave covers did not, and a day-rated
+        worker's day off was paid on the leave's word; changing the leave
+        under the run leaves the payslip saying what the records no longer
+        do. The register refuses the same inside a posted run, and so does
+        a timesheet. Paid leave on a day the run read nothing for changes
+        nothing it paid, and is not refused.
+        """
+        from .attendance import UNPAID, AttendanceDay
+        from .payroll import PayRunStatus, Payslip
+
+        read_by_pay = (
+            (self.policy_id is not None and not self.policy.is_paid)
+            or self.employee.paid_by_attendance
+            or AttendanceDay.objects.filter(employee=self.employee, on__range=(first, last),
+                                            status__in=list(UNPAID)).exists()
+        )
+        if not read_by_pay:
+            return
+        paid = Payslip.objects.filter(employee=self.employee, run__status=PayRunStatus.POSTED,
+                                      run__period_start__lte=last, run__period_end__gte=first,
+                                      ).select_related("run").first()
+        if paid is not None:
+            raise ValidationError(
+                f"{paid.run} is posted and paid {self.employee} on these days as they stood; "
+                f"void the run to {doing} this leave.")
+
     def _check_balance(self):
         if self.policy_id is None or self.policy.allows_negative:
             return
@@ -767,6 +797,7 @@ class LeaveRequest(AuditModel):
         # Whoever may give the decision may take it back; `by` was taken
         # and never asked, so anyone could undo a manager's yes.
         self.check_approver(by, as_hr)
+        self._check_not_paid_on(self.start_date, self.end_date, "send back")
         self.status = LeaveStatus.PENDING
         self.decided_by = None
         self.decided_at = None
@@ -812,6 +843,9 @@ class LeaveRequest(AuditModel):
                 f"This leave ended on {self.end_date}; it has been taken and cannot be "
                 "cancelled. Adjust the entitlement if it was recorded wrongly."
             )
+        if self.status == LeaveStatus.APPROVED:
+            # Only the days given back change what a run read.
+            self._check_not_paid_on(max(self.start_date, on_date), self.end_date, "cancel")
         if self.status == LeaveStatus.APPROVED and self.start_date < on_date:
             # Under way: back on `on_date`, the days before it were taken. Cancelled whole, the
             # leave gave every day back, the ones already gone with them.
