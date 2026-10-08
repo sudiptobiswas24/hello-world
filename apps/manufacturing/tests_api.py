@@ -13,10 +13,16 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from rest_framework.test import APIClient
 
+from apps.core.models import UnitOfMeasure, UnitOfMeasureCategory
+from apps.inventory.models import Lot
+
+from .bom import BillOfMaterials
 from .orders import MaterialIssue
+from .tests_backflush import ReworkTestCase
 from .tests_conversion import ConversionTestCase
 from .tests_orders import TODAY, RunTestCase
 from .tests_woven import WovenTestCase
@@ -331,6 +337,95 @@ class APostedDocumentIsVoidedNotDeletedTests(ConversionTestCase):
         })
         self.assertEqual(response.status_code, 403)
         self.assertTrue(MaterialIssue.objects.filter(pk=document.pk).exists())
+
+
+class AReleasedRunsFrozenFactsStayTests(ReworkTestCase):
+    """
+    Found by probing as a production supervisor. Release decides on the
+    item, the bill, the unit, the batch being put right and the customer
+    line, and freezes the cost on them; a PATCH could change each after.
+    The tape run re-pointed at masterbatch booked its output as 100 kg of
+    masterbatch at tape's 91.71, and a rework run re-pointed at a batch
+    that had passed drew 470.4 kg of good stock as salvage.
+    """
+
+    def setUp(self):
+        super().setUp()
+        call_command("setup_roles", verbosity=0)
+        supervisor = get_user_model().objects.create_user("supervisor")
+        supervisor.groups.add(Group.objects.get(name="Production Supervisor"))
+        self.client = APIClient()
+        self.client.force_authenticate(supervisor)
+
+    def patch(self, job, **fields):
+        return self.client.patch(f"/api/manufacturing/work-orders/{job.pk}/", fields,
+                                 format="json")
+
+    def test_its_item_is_not_changed(self):
+        job = self.order()
+        job.release(TODAY)
+        response = self.patch(job, item=self.colour.pk)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("item", response.data)
+        job.refresh_from_db()
+        self.assertEqual(job.item, self.tape)
+        self.full_issue(job).post()
+        self.produce(job, "100", lot=Lot.objects.create(item=self.tape, code="T-NEW")).post()
+        self.assertEqual(self.colour.on_hand_at(self.plant), Decimal("100") - Decimal("20.6186"))
+        self.assertEqual(self.tape.on_hand_at(self.plant), Decimal("100"))
+
+    def test_nor_the_batch_it_is_putting_right(self):
+        bad = self.failed_lot()
+        good = Lot.objects.create(item=self.tape, code="T-GOOD")
+        self.stock(self.tape, "500", "90", lot=good)
+        job = self.rework_order(bad)
+        job.release(TODAY)
+        response = self.patch(job, rework_of=good.pk)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rework_of", response.data)
+        job.refresh_from_db()
+        self.assertEqual(job.rework_of, bad)
+
+    def test_nor_its_bill_unit_or_customer_line(self):
+        other = BillOfMaterials.objects.create(
+            item=self.tape, name="Tape, another recipe", version=9, is_default=False,
+            quantity_produced=Decimal("100"), uom=self.kg,
+        )
+        tonne = UnitOfMeasure.objects.create(
+            code="t", name="Tonne", category=UnitOfMeasureCategory.WEIGHT,
+            base_unit=self.kg, conversion_factor=Decimal("1000"),
+        )
+        for field, value in (("bom", other.pk), ("uom", tonne.pk)):
+            with self.subTest(field):
+                job = self.order()
+                job.release(TODAY)
+                self.assertEqual(self.patch(job, **{field: value}).status_code, 400)
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        customer = Party.objects.create(code="CEM", name="Deccan Cement")
+        PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
+        line = SalesOrderLine.objects.create(
+            order=SalesOrder.objects.create(customer=customer, order_date=TODAY,
+                                            currency=self.usd),
+            item=self.tape, uom=self.kg, quantity=Decimal("1000"),
+            unit_price=Decimal("120"),
+        )
+        job = self.order()
+        job.release(TODAY)
+        job.sales_order_line = line
+        with self.assertRaisesMessage(ValidationError, "frozen at release"):
+            job.save()
+
+    def test_a_draft_still_changes_and_a_released_run_still_moves(self):
+        job = self.order()
+        self.assertEqual(self.patch(job, item=self.colour.pk).status_code, 200)
+        job = self.order()
+        job.release(TODAY)
+        response = self.patch(job, scheduled_start="2026-06-03", notes="moved a day")
+        self.assertEqual(response.status_code, 200)
+        job.refresh_from_db()
+        self.assertEqual(str(job.scheduled_start), "2026-06-03")
 
 
 class RoutingApiTests(RunTestCase):
