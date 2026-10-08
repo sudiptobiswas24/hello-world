@@ -343,6 +343,13 @@ class Downtime(AuditModel):
         """The maintenance job resting on this stoppage, cancelled ones aside."""
         return self.maintenance.filter(cancelled_at__isnull=True).first() if self.pk else None
 
+    def locked_before_it(self):
+        """
+        The job resting on it, as save() takes it and as completing the job
+        does: the job, then the stoppage (apps.core.models.lock_for_change).
+        """
+        return [self.standing_job()]
+
     def _check_the_job_on_it(self):
         """
         A job rests on its stoppage: a repair on the one it was raised on,

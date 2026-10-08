@@ -9,6 +9,7 @@ this, and what did they do" is handled consistently everywhere.
 from django.db import transaction
 
 from .history import EventKind, record_by_id
+from .models import lock_for_change
 
 
 class AuditableAdminMixin:
@@ -40,6 +41,36 @@ class AuditableViewSetMixin:
         with transaction.atomic():
             self._deleting = str(instance)
             instance.delete()
+
+    # A PUT, PATCH or DELETE in one transaction, from the read to the
+    # write: get_object() reads its row under the lock.
+    def update(self, request, *args, **kwargs):
+        with transaction.atomic():
+            self._changing = True
+            return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        with transaction.atomic():
+            self._changing = True
+            return super().destroy(request, *args, **kwargs)
+
+    def get_object(self):
+        """
+        The row a PUT, PATCH or DELETE changes, read again once it is held.
+
+        DRF reads the row, checks the request against it and saves every
+        field it read. Two people editing one party at once, one its name
+        and the other its email: both read it, and whichever saved second
+        wrote the other's field back as it had found it. Held from the
+        read, the second waits for the first to commit, then reads what it
+        did. Read first to answer 404 and to know what to hold
+        (apps.core.models.lock_for_change).
+        """
+        found = super().get_object()
+        if getattr(self, "_changing", False):
+            lock_for_change(found)
+            found = super().get_object()
+        return found
 
     def finalize_response(self, request, response, *args, **kwargs):
         """
