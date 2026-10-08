@@ -52,6 +52,7 @@ from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import (
     AuditModel,
     DocumentSequence,
+    UnitOfMeasure,
     lock_rows,
     serialised,
     to_date,
@@ -734,16 +735,29 @@ class WorkOrder(AuditModel):
         return self.entries.filter(posted=True, voided_at__isnull=True)
 
     def quantity_produced(self):
-        total = self.posted_entries().aggregate(
-            total=models.Sum("quantity_produced")
-        )["total"]
-        return total or Decimal("0")
+        return self._booked("quantity_produced")
 
     def quantity_scrapped(self):
-        total = self.posted_entries().aggregate(
-            total=models.Sum("quantity_scrapped")
-        )["total"]
-        return total or Decimal("0")
+        return self._booked("quantity_scrapped")
+
+    def _booked(self, field):
+        """
+        What the standing entries booked, in this order's own unit, each
+        entry restated from the unit it was booked in. Summed as written,
+        half a tonne booked on a run kept in kilogrammes counted as half a
+        kilogramme, and the run then took a further 1,000 kg against a
+        ceiling of 1,100.
+        """
+        total = Decimal("0")
+        for row in self.posted_entries().order_by().values("uom").annotate(
+                booked=models.Sum(field)):
+            booked = row["booked"] or Decimal("0")
+            if row["uom"] != self.uom_id:
+                booked = self.item.to_stock_quantity(
+                    booked, UnitOfMeasure.objects.get(pk=row["uom"])
+                ) / self.item.unit_factor(self.uom)
+            total += booked
+        return total
 
     def planned_minutes(self):
         """How long this run was planned to hold machines, setup included."""
