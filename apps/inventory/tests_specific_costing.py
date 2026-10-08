@@ -285,6 +285,55 @@ class ShippingUnderSpecificCostingTests(SpecificCostingTestCase):
         self.assertEqual(later.on_hand_at(self.north), Decimal("10"))
 
 
+class ReturnedAtWhatEachBatchTookTests(SpecificCostingTestCase):
+    """
+    Three of SOONER at 100 and two of LATER at 900 went out on one line,
+    2,100 in all, 420 a unit on average. The line's one rate is a blend;
+    the batches were never worth 420. Three of SOONER back took 1,260 out
+    of cost of sales where 300 is what they cost, and SOONER came home
+    worth 420 a unit.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.sooner = self.lot("SOONER", "2026-08-01")
+        self.later = self.lot("LATER", "2026-12-01")
+        self.stock(self.sooner, "3", "100")
+        self.stock(self.later, "10", "900")
+        self.delivery, self.line = self.ship("5")
+        self.line.refresh_from_db()  # as the API reads it, rate and all
+
+    def test_part_of_a_shipment_comes_back_at_what_its_batch_cost(self):
+        self.delivery.create_return(quantities={self.line: Decimal("3")})
+        self.assertEqual(self.balance(self.cogs), Decimal("1800.00"))  # the two of LATER kept
+
+    def test_the_batch_that_came_back_still_costs_what_it_cost(self):
+        self.delivery.create_return(quantities={self.line: Decimal("3")})
+        self.assertEqual(self.item.cost_of_removing(self.north, Decimal("1"), lot=self.sooner),
+                         Decimal("100"))
+
+    def test_the_rest_comes_back_at_what_the_other_batch_cost(self):
+        self.delivery.create_return(quantities={self.line: Decimal("3")})
+        self.delivery.create_return(quantities={self.line: Decimal("2")})
+        self.assertEqual(self.balance(self.cogs), Decimal("0.00"))
+        self.assertEqual(self.item.cost_of_removing(self.north, Decimal("1"), lot=self.later),
+                         Decimal("900"))
+
+    def test_returned_whole_each_batch_keeps_its_own_cost(self):
+        self.delivery.create_return()
+        self.assertEqual(
+            (self.item.cost_of_removing(self.north, Decimal("1"), lot=self.sooner),
+             self.item.cost_of_removing(self.north, Decimal("1"), lot=self.later)),
+            (Decimal("100"), Decimal("900")))
+
+    def test_a_shipment_from_before_the_total_was_kept_returns_at_its_batchs_rate(self):
+        from apps.sales.models import DeliveryAllocation
+
+        DeliveryAllocation.objects.filter(line=self.line).update(cost=None)
+        self.delivery.create_return(quantities={self.line: Decimal("3")})
+        self.assertEqual(self.balance(self.cogs), Decimal("1800.00"))
+
+
 class AdjustingAndMovingTests(SpecificCostingTestCase):
     def test_a_write_off_costs_the_batch_it_destroyed(self):
         cheap, dear = self.lot("CHEAP"), self.lot("DEAR")

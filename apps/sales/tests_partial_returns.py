@@ -105,3 +105,69 @@ class BatchesGoHomeTests(SalesTestCase):
         shipment.create_return(quantities={line: Decimal("25")}, credit_invoices=False)
         after = {lot.code: lot.on_hand_at(self.warehouse) for lot in (a, b)}
         self.assertEqual({code: after[code] - before[code] for code in after}, sent)
+
+
+class ReturnedAtWhatTheShipmentTookTests(SalesTestCase):
+    """
+    A thousand at 4 and two thousand at 3: three thousand worth 10,000,
+    averaging 3.3333... Shipped whole, cost of sales took 10,000.00.
+    Returned at the line's four-place rate, 3,000 at 3.3333 put back
+    9,999.90, and 0.10 of a shipment that came back entirely stayed in
+    cost of sales. The total goes back, not a rate multiplied up.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.utils import timezone
+
+        from apps.inventory.models import Item, MovementType, StockMovement
+
+        from .models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
+
+        self.plain = Item.objects.create(sku="PLAIN", name="Plain", uom=self.uom)
+        for quantity, cost in (("1000", "4"), ("2000", "3")):
+            StockMovement.objects.create(item=self.plain, warehouse=self.warehouse,
+                                         movement_type=MovementType.RECEIPT, uom=self.uom,
+                                         quantity=Decimal(quantity), unit_cost=Decimal(cost),
+                                         occurred_at=timezone.now())
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd)
+        order_line = SalesOrderLine.objects.create(order=order, item=self.plain, uom=self.uom,
+                                                   quantity=Decimal("3000"), unit_price=Decimal("5"),
+                                                   revenue_account=self.revenue)
+        order.confirm()
+        self.shipment = Delivery.objects.create(sales_order=order, delivery_date=datetime.date(2026, 3, 3))
+        self.line = DeliveryLine.objects.create(delivery=self.shipment, order_line=order_line,
+                                                warehouse=self.warehouse,
+                                                quantity_shipped=Decimal("3000"))
+        self.shipment.post()
+
+    def test_returned_whole_nothing_stays_in_cost_of_sales(self):
+        self.shipment.create_return(credit_invoices=False)
+        self.assertEqual(self.balance(self.cogs), Decimal("0.00"))
+
+    def test_returned_whole_the_shelf_is_worth_what_it_was(self):
+        self.shipment.create_return(credit_invoices=False)
+        self.assertEqual(self.plain.stock_value_at(self.warehouse), Decimal("10000.00"))
+
+    def test_returned_in_two_parts_it_still_comes_to_nothing(self):
+        self.shipment.create_return(quantities={self.line: Decimal("1000")}, credit_invoices=False)
+        self.assertEqual(self.balance(self.cogs), Decimal("6666.67"))
+        self.shipment.create_return(quantities={self.line: Decimal("2000")}, credit_invoices=False)
+        self.assertEqual(self.balance(self.cogs), Decimal("0.00"))
+        self.assertEqual(self.plain.stock_value_at(self.warehouse), Decimal("10000.00"))
+
+    def test_taken_back_by_the_store_through_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        store = User.objects.create_user("store")
+        store.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(store)
+        response = client.post(f"/api/sales/deliveries/{self.shipment.pk}/customer_return/",
+                               {"credit_invoices": False}, format="json")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.assertEqual(self.balance(self.cogs), Decimal("0.00"))
