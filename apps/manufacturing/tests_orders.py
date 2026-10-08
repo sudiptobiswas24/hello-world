@@ -28,7 +28,8 @@ from apps.core.models import (
     UnitOfMeasure,
     UnitOfMeasureCategory,
 )
-from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.models import Item, Lot, MovementType, StockMovement, Warehouse
+from apps.inventory.tracking import TrackingMode
 
 from .bom import BillOfMaterials, BomByproduct, BomComponent, ByproductValuation
 from .orders import (
@@ -545,6 +546,114 @@ class EveryForwardPathHasItsReverseTests(RunTestCase):
         self.run.notes = "after the fact"
         with self.assertRaises(ValidationError):
             self.run.save()
+
+
+class AReturnHandsBackWhatItsLineDrewTests(RunTestCase):
+    """
+    Found by probing: a return was checked only for naming a line on the
+    same run. Issued 100 kg and returned 150, the shelf held 2,050 of the
+    2,000 it started with and work in progress -5,000. Two full returns
+    of one line, or one against a voided issue, made 2,100 and -10,000;
+    filler came back at masterbatch's 200 a kilo against a masterbatch
+    line. The mirror of a void, which refuses while returns stand.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.job = self.order()
+        self.job.release(TODAY)
+
+    def drawn(self, item=None, quantity="100"):
+        document = self.issue(self.job, [(item or self.virgin, quantity)])
+        document.post()
+        return document.lines.get()
+
+    def back(self, line, quantity, item=None):
+        return self.issue(self.job, [(item or self.virgin, quantity, line)],
+                          direction=IssueDirection.RETURN)
+
+    def test_no_more_than_the_line_drew(self):
+        line = self.drawn()
+        with self.assertRaisesMessage(ValidationError, "so 100 can come back, not 150"):
+            self.back(line, "150").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("1900"))
+        self.assertEqual(self.balance(self.wip), Decimal("10000"))
+
+    def test_not_the_same_kilos_twice(self):
+        line = self.drawn()
+        self.back(line, "100").post()
+        with self.assertRaisesMessage(ValidationError, "100 has come back against it"):
+            self.back(line, "100").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+    def test_not_off_a_voided_issue(self):
+        line = self.drawn()
+        line.issue.void(TODAY)
+        with self.assertRaisesMessage(ValidationError, "was voided"):
+            self.back(line, "100").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+    def test_not_off_a_draft(self):
+        draft = self.issue(self.job, [(self.virgin, "100")])
+        with self.assertRaisesMessage(ValidationError, "is not posted"):
+            self.back(draft.lines.get(), "100").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+
+    def test_not_off_another_return(self):
+        line = self.drawn()
+        first = self.back(line, "40")
+        first.post()
+        with self.assertRaisesMessage(ValidationError, "is itself a return"):
+            self.back(first.lines.get(), "40").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("1940"))
+        self.assertEqual(self.balance(self.wip), Decimal("6000"))
+
+    def test_not_another_material(self):
+        # Ten kilos of masterbatch at 200 drawn; filler is not what went out.
+        line = self.drawn(self.colour, "10")
+        with self.assertRaisesMessage(ValidationError, "that line drew MB-WHITE"):
+            self.back(line, "10", item=self.filler).post()
+        self.assertEqual(self.filler.on_hand_at(self.plant), Decimal("300"))
+
+    def test_not_out_of_another_batch(self):
+        Item.objects.filter(pk=self.virgin.pk).update(tracking=TrackingMode.LOT)
+        self.virgin.refresh_from_db()
+        first, second = (Lot.objects.create(item=self.virgin, code=code)
+                         for code in ("PP-A", "PP-B"))
+        for lot in (first, second):
+            self.stock(self.virgin, "100", "100", lot=lot)
+        drawn = self.issue_with_lots(self.job, [(self.virgin, "50", first)])
+        drawn.post()
+        back = MaterialIssue.objects.create(
+            work_order=self.job, direction=IssueDirection.RETURN, issue_date=TODAY,
+            warehouse=self.plant,
+        )
+        MaterialIssueLine.objects.create(
+            issue=back, item=self.virgin, quantity=Decimal("50"), uom=self.kg,
+            lot=second, returns_line=drawn.lines.get(), line_number=1,
+        )
+        with self.assertRaisesMessage(ValidationError, "out of the batch it drew it from"):
+            back.post()
+        self.assertEqual(second.on_hand_at(self.plant), Decimal("100"))
+
+    def test_in_parts_up_to_what_it_drew(self):
+        line = self.drawn()
+        self.back(line, "40").post()
+        self.back(line, "60").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+        self.assertEqual(self.job.material_cost(), Decimal("0"))
+
+    def test_a_voided_return_gives_its_kilos_back_to_the_line(self):
+        line = self.drawn()
+        mistaken = self.back(line, "100")
+        mistaken.post()
+        mistaken.void(TODAY)
+        self.back(line, "100").post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
 
 
 class SettingsThatWereNeverConfiguredTests(RunTestCase):
