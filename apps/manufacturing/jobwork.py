@@ -124,21 +124,20 @@ class JobWorkChallan(AuditModel):
         if not lines:
             raise ValidationError("A challan with nothing on it sends nothing.")
         self.challan_date = to_date(self.challan_date)
+        # This challan's own lines count too: two of 600 on one challan for
+        # a run that holds 1,100 each found only the other challans.
+        going = {}
         for line in lines:
             order = line.operation.work_order
             if order.status != WorkOrderStatus.RELEASED:
                 raise ValidationError(f"{order} is not running; nothing of it can go out.")
-            others = sum(
-                (other.quantity for other in JobWorkLine.objects.filter(
-                    operation=line.operation, challan__posted=True,
-                    challan__voided_at__isnull=True)),
-                ZERO,
-            )
+            going[line.operation_id] = going.get(line.operation_id, ZERO) + line.quantity
+            sent, _lost = _on_challans(line.operation)
             ceiling = order.maximum_output()
-            if others + line.quantity > ceiling:
+            if sent + going[line.operation_id] > ceiling:
                 raise ValidationError(
-                    f"{order} holds at most {ceiling}, and {others + line.quantity} of it "
-                    "would be out on challans."
+                    f"{order} holds at most {ceiling}, and {sent + going[line.operation_id]} "
+                    "of it would be out on challans."
                 )
         from apps.accounting.models import PartyTaxProfile
 
@@ -173,13 +172,11 @@ class JobWorkChallan(AuditModel):
         for line in self.lines.all():
             if line.losses.filter(voided_at__isnull=True).exists():
                 raise ValidationError(f"Losses are recorded against {line}.")
-            remaining = sum(
-                (other.quantity for other in JobWorkLine.objects.filter(
-                    operation=line.operation, challan__posted=True,
-                    challan__voided_at__isnull=True).exclude(challan=self)),
-                ZERO,
-            )
-            if line.operation.quantity_back() > remaining:
+            # What the other challans can still account for is what they
+            # sent less what the job worker lost of it: 550 back against
+            # 600 sent and 100 lost laid 50 kg against nothing.
+            sent, lost = _on_challans(line.operation, excluding=self)
+            if line.operation.quantity_back() > sent - lost:
                 raise ValidationError(
                     f"Work has come back against {self}; it cannot be withdrawn."
                 )
@@ -378,17 +375,32 @@ def allocation(operation, as_of=None):
     return state
 
 
+def _on_challans(operation, excluding=None):
+    """
+    (sent, lost) on the step's issued challans that stand, leaving out
+    `excluding`: what they can account for coming back is the difference.
+    Asked by the receipt, the challan's issue and its void alike.
+    """
+    lines = JobWorkLine.objects.filter(
+        operation=operation, challan__posted=True, challan__voided_at__isnull=True,
+    )
+    if excluding is not None:
+        lines = lines.exclude(challan=excluding)
+    lines = list(lines)
+    sent = sum((line.quantity for line in lines), ZERO)
+    lost = sum((loss.quantity for line in lines for loss in live_losses(line)), ZERO)
+    return sent, lost
+
+
 def check_back_was_sent(operation, quantity):
     """
     Refuse work back that was never sent, once a step uses challans.
 
     Called by the goods receipt before it books the vendor's work.
     """
-    lines = live_lines(operation)
-    if not lines:
+    sent, lost = _on_challans(operation)
+    if not sent:
         return
-    sent = sum((line.quantity for line in lines), ZERO)
-    lost = sum((loss.quantity for line in lines for loss in live_losses(line)), ZERO)
     back = operation.quantity_back()
     if back + Decimal(quantity) > sent - lost:
         raise ValidationError(
