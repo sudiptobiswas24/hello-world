@@ -183,6 +183,15 @@ class ReturnedAtWhatTheShipmentTookTests(SalesTestCase):
         self.assertEqual(self.balance(self.cogs), Decimal("0.00"))
         self.assertEqual(self.plain.stock_value_at(self.warehouse), Decimal("10000.00"))
 
+    def test_returned_in_three_parts_the_last_takes_what_is_left(self):
+        """Each part put back 3,333.33 on its own reckoning, and 0.01 stayed in cost of sales."""
+        balances = []
+        for _part in range(3):
+            self.shipment.create_return(quantities={self.line: Decimal("1000")}, credit_invoices=False)
+            balances.append(self.balance(self.cogs))
+        self.assertEqual(balances, [Decimal("6666.67"), Decimal("3333.33"), Decimal("0.00")])
+        self.assertEqual(self.plain.stock_value_at(self.warehouse), Decimal("10000.00"))
+
     def test_taken_back_by_the_store_through_the_api(self):
         from django.contrib.auth.models import Group, User
         from django.core.management import call_command
