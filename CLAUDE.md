@@ -261,6 +261,28 @@ Go through it before running anything.
 - Suite, `audit_invariants`, `makemigrations --check`, then commit.
   Never in one command (mistake 9).
 
+## Interrupted work: find it and resume it
+
+Usage limits, container restarts and the two-hour background limit stop
+work mid-step without a word. The owner's standing instruction is to look
+for anything stopped abruptly and resume it from where it stopped, never
+to start over or leave it.
+
+Do this at the start of every session, and again after any limit,
+restart or timeout:
+- **Agents.** A task notification reading "failed: ... session limit" or
+  "killed" is a stopped agent. Resume it with a message to its id (it
+  keeps its transcript), saying what changed: the machine restarted,
+  background jobs are gone.
+- **Background jobs.** `exit=124` is the time limit, not a test result.
+  A restart kills every job silently (`uptime`). Re-run the lane. A
+  PostgreSQL lane drops its test databases first.
+- **Worktrees.** List them with `git worktree list`. Any with commits not
+  on a pushed branch, or uncommitted edits, is unfinished work: finish
+  it, or push it to a `claude/erp-*` backup branch before anything else.
+- **Gates.** A gate is done only when every lane printed OK on the same
+  tip. Check docs/HANDOFF.md for the gate in flight.
+
 ## Auditing
 
 `.claude/skills/audit/SKILL.md` holds the defect shapes three audits

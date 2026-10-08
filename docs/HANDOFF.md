@@ -8,6 +8,8 @@ that a new session can start small.
 
 ## 0. Read, then verify, before doing anything
 
+First, look for interrupted work and resume it from where it stopped (CLAUDE.md, "Interrupted work"). The manufacturing fix agent may have been stopped part-way: see `claude/erp-fix-make`.
+
 1. Read, in order:
    - `CLAUDE.md`: house rules and the mistakes this project keeps making.
    - this file.
