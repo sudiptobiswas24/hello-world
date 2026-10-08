@@ -104,6 +104,18 @@ class WithdrawnTests(TapeLoadTestCase):
         self.assertEqual([load.lot.code for load in tape_for(third)], ["D-1", "D-3"])
 
 
+class ALoadsIssueGoesWithItTests(TapeLoadTestCase):
+    def test_not_voided_while_the_load_stands(self):
+        # Voided on its own, the load still named the doff on the creel
+        # with nothing issued for it, and could never be withdrawn.
+        load = self.load("D-1", "30", CreelSide.WARP, 9)
+        with self.assertRaisesMessage(ValidationError, "Void that, and this goes with it"):
+            load.issue.void()
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("70"))
+        void_load(load, self.station, self.supervisor, self.operator, "Wrong doff")
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("100"))
+
+
 class TracedOverTheApiTests(TapeLoadTestCase):
     def test_a_roll_names_its_doffs(self):
         from django.contrib.auth.models import Permission, User
