@@ -159,6 +159,25 @@ def _standing(lines):
         bale__delivery__posted=True)
 
 
+def baled(lot):
+    """Bags of this batch sealed in bales still on the shelf: spoken for."""
+    return sum((line.quantity for line in _standing(BaleLine.objects.filter(lot=lot))), ZERO)
+
+
+def check_not_baled(lot, what):
+    """
+    Refuse `what` while bags of this batch are sealed in a bale. A bundle
+    voided from under its bale left the bale reading 1,000 bags, sealed,
+    with 500 of them gone.
+    """
+    held = baled(lot) if lot is not None else ZERO
+    if held:
+        raise ValidationError(
+            f"{format(held.normalize(), 'f')} of {lot.code} are sealed in a bale; break "
+            f"the bale before {what}."
+        )
+
+
 @transaction.atomic
 def pack(warehouse, packed_by, rows, on_date=None, gross_kg=None):
     """Press, strap and seal a bale of [(bundle lot, bags)]."""
@@ -183,8 +202,7 @@ def pack(warehouse, packed_by, rows, on_date=None, gross_kg=None):
         check_released(item, lot, action="be baled")
         asked[lot] += quantity
     for lot, quantity in asked.items():
-        spoken = sum((line.quantity for line in _standing(BaleLine.objects.filter(lot=lot))), ZERO)
-        free = lot.on_hand_at(warehouse) - spoken
+        free = lot.on_hand_at(warehouse) - baled(lot)
         if quantity > free:
             raise ValidationError(
                 f"{lot.code} has {format(free.normalize(), 'f')} bags on the shelf not already "
