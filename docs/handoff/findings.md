@@ -88,26 +88,33 @@ New `audit_invariants` checks: `corrections_dated_without_the_rule` (with
 - **621f823, call-offs racing past their blanket line.** Proven on
   PostgreSQL, the reverse path too.
 
-## Manufacturing (`claude/erp-fix-make`)
+## Manufacturing (`claude/erp-fix-make`): finished, 19 commits, tip b2b6a7c
 
-The agent was stopped twice by usage limits and resumed. Its branch holds
-what it committed. The findings, in its order:
-1. posted floor documents deletable;
-2. material return not checked against its issue line;
-3. output, by-products and returns in another unit, about 1,000 times
-   off the ledger (also stores audit finding 1);
-4. a released order's item, BOM and rework could be changed by PATCH;
-5. a backflush issue voided alone;
-6. a run closed with a clock running;
-7. `void_bags` voided a bundle in a sealed bale;
-8. TimeBooking.void didn't re-check the next step;
-9. job-work challan sibling quantities;
-10. the WIP-account guard against reopen;
-11. a re-batch void re-priced at today's average;
-12. voids booked at the posted cost, not `cost_of_removing`;
-13. backflushed runs couldn't use lot-tracked components;
-14. one substitute serving two components.
+| # | Finding | Fix |
+|---|---|---|
+| 1 | Posted issues, entries, bookings and vendor movements could be deleted (API and admin bulk delete) | 9ca02a2, aebe892: one mixin, `orders.VoidedNotDeleted`, and an admin mixin |
+| 2 | A material return was not checked against its issue line | de45de4: it locks and must match the line, no more than is still out |
+| 3 | Output, waste and returns in another unit were about 1,000 times off the ledger | 92e0f9a: every movement in the item's stocking unit. b2b6a7c: a run's totals convert before summing |
+| 4 | A released order's frozen facts could be changed by PATCH | 40848a5 |
+| 5 | A backflush, load or mount issue could be voided alone | 3568466 |
+| 6 | A run could close under a running machine clock | a0a665c |
+| 7 | void_bags voided a bundle in a sealed bale | 67278f3: one helper shared by packing, re-batch and void |
+| 8 | TimeBooking.void didn't re-check the next step | 70eb2a9: `check_drawn_on` shared with the step report |
+| 9 | Job-work challan sibling quantities | e53c63d |
+| 10 | The WIP account changed under reopen | ac56379: the run records its WIP account at release (migration 0078, with a migration test) |
+| 11 | A re-batch void re-priced at today's average | 8d878cf |
+| 12 | Voids booked at the posted cost | d1141ff: `cost_of_removing`, with the difference to material variance (`void_variance_entry`, migration 0079) |
+| 13 | Backflushed runs and lot-tracked tape; a doff loaded twice | ae933b8 |
+| 14 | One stand-in served two components | 61eddd2: `check_stand_ins` |
+| Race | Voids read the run as open without its lock | b6c8c71: one helper locks the run first. Needs a PostgreSQL proof: `NothingIsTakenBackOutOfARunAsItClosesTests` (5 tests) |
 
-It also has a race family: voids that read the order as open without
-taking its lock. Read the branch's log, and the agent's report if one
-arrived (notes.md), before integrating.
+Audit checks added: delete() guards on posted documents (93f93ca, with
+`DELETABLE_REPORTED` naming inventory.StockAdjustment,
+inventory.StockCount and quality.Inspection, still deletable),
+`movements_in_another_unit` (705d3aa), `outbound_at_a_posted_figure`,
+and `unlocked_open_runs`. "A reverse path skipping its forward path's
+check" cannot be detected from code; it was fixed instance by instance
+with shared helpers.
+
+The payroll agent also added a "deletable posted document" check. Merge
+the two into one when integrating.

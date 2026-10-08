@@ -45,3 +45,9 @@ Side findings agents saw but did not fix, decisions made, and gate lessons. Path
 - Decided (follow-up): refuse closing an accounting period while depreciation for it is uncharged (needs a period-close check registry in accounting, assets registering).
 - Open: place_in_service accepts a future in-service date; admin lets status be edited directly; depreciated_before unenforced on hand-made drafts; dispose() reverses a closed-month charge on the disposal date (existing test asserts it — check whether intended); capitalising a bill line has no API action; register not footed against the ledger in health checks.
 - Never edit a shell script while a background job is executing it: bash reads scripts as it runs, and the job then executes shifted lines (lost g16's PG half B result). Copy to a new file and edit that.
+
+## Manufacturing fix agent (fix_make, tip b2b6a7c) — seen, not touched
+- Posted StockAdjustment, StockCount and quality Inspection can still be deleted through the API (named in DELETABLE_REPORTED).
+- A job-work challan's issue reads the run's status without locking it.
+- The WIP tile in apps/web/bank.py reads only the account in settings, not each run's recorded WIP account (after ac56379).
+- Release merges components by item and unit: the same item in two units freezes two rows that each count its issues.

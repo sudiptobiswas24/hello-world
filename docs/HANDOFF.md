@@ -8,7 +8,7 @@ that a new session can start small.
 
 ## 0. Read, then verify, before doing anything
 
-First, look for interrupted work and resume it from where it stopped (CLAUDE.md, "Interrupted work"). The manufacturing fix agent may have been stopped part-way: see `claude/erp-fix-make`.
+First, look for interrupted work and resume it from where it stopped (CLAUDE.md, "Interrupted work"). At handoff nothing was interrupted: all six fix branches are finished and pushed.
 
 1. Read, in order:
    - `CLAUDE.md`: house rules and the mistakes this project keeps making.
@@ -26,7 +26,7 @@ First, look for interrupted work and resume it from where it stopped (CLAUDE.md,
 | `claude/erp-fix-store` | 15 commits: stores fixes. Not gated. |
 | `claude/erp-fix-pay` | 14 commits: payroll fixes. Not gated. |
 | `claude/erp-fix-asset` | 8 commits: fixed-asset fixes. Not gated. |
-| `claude/erp-fix-make` | Manufacturing fixes, 18 or more commits. Its agent may have been mid-fix; check that the last commit is whole. Not gated. |
+| `claude/erp-fix-make` | 19 commits: manufacturing fixes, finished (tip b2b6a7c). Not gated. |
 | `claude/erp-fix-race` | 2 commits: lost-update races, proven on PostgreSQL. Not gated. |
 | `claude/erp-fix-ui` | 1 commit: the account form on screen. Not gated. |
 | `claude/erp-leftover-{ctree,htree,ltree}` | Uncommitted edits left by sessions before 8 October, saved unverified. Probably superseded; diff against the product branch before discarding. |
