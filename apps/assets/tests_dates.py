@@ -18,9 +18,9 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
-from apps.accounting.models import JournalLine
+from apps.accounting.models import AccountingPeriod, JournalLine
 
-from .models import AssetStatus
+from .models import AssetCategory, AssetStatus, DepreciationMethod, FixedAsset
 from .tests import CapitalisationFixture, the_plants_day
 
 TODAY = datetime.date(2026, 10, 8)
@@ -110,6 +110,63 @@ class NotOnADayToComeTests(DatedTestCase):
         with self.assertRaisesMessage(ValidationError, "that day has not come"):
             self.lathe.reinstate(on_date=TOMORROW)
 
+
+class AClosedMonthTests(DatedTestCase):
+    """
+    The first quarter closed with an old loom charged to March. The lathe,
+    capitalised in January and commissioned since, put into service from
+    15 January: every month-end run stopped on its January, the loom's
+    April went uncharged, and the lathe could not be disposed of.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.loom = FixedAsset.objects.create(name="Old loom", category=self.category, cost=Decimal("12000"),
+                                              acquisition_date=datetime.date(2026, 1, 1), life_months=12)
+        self.loom.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.loom.depreciate(through=datetime.date(2026, 3, 31))
+        AccountingPeriod.objects.create(name="Q1 2026", start_date=datetime.date(2026, 1, 1),
+                                        end_date=datetime.date(2026, 3, 31), closed=True)
+
+    def test_a_machine_is_not_put_into_service_from_a_closed_month(self):
+        refused = self.act("place-in-service", on_date="2026-01-15")
+        self.lathe.refresh_from_db()
+        self.assertEqual((refused.status_code, self.lathe.status, self.lathe.number), (400, AssetStatus.DRAFT, ""))
+        self.assertIn("depreciation for January 2026 would fall in Q1 2026, which is closed", str(refused.json()))
+
+    def test_from_an_open_month_it_is_and_the_run_charges_every_machine(self):
+        self.assertEqual(self.act("place-in-service", on_date="2026-04-01").status_code, 200)
+        run = self.controller.post("/api/assets/assets/depreciate-all/", {"through": "2026-04-30"}, format="json")
+        self.assertEqual((run.status_code, len(run.json()["charged"]), self.loom.accumulated(),
+                          self.lathe.accumulated()), (200, 2, Decimal("4000.00"), Decimal("1000.00")))
+        self.assertEqual(self.act("dispose", on_date="2026-05-20").status_code, 200)
+        self.assertEqual(self.balance(self.disposal), Decimal("11000.00"))
+
+    def test_one_not_depreciated_goes_into_service_from_a_closed_month(self):
+        land = AssetCategory.objects.create(code="LAND", name="Land", asset_account=self.plant,
+                                            accumulated_account=self.accumulated, expense_account=self.depreciation,
+                                            method=DepreciationMethod.NONE)
+        yard = FixedAsset.objects.create(name="Yard", category=land, cost=Decimal("50000"), life_months=0,
+                                         acquisition_date=datetime.date(2026, 1, 1))
+        yard.place_in_service(on_date=datetime.date(2026, 1, 15))
+        self.assertEqual(yard.status, AssetStatus.IN_SERVICE)
+
+    def test_one_brought_in_at_go_live_whose_closed_months_were_the_old_systems(self):
+        loom = FixedAsset.objects.create(name="Loom 7", category=self.category, cost=Decimal("12000"), life_months=12,
+                                         acquisition_date=datetime.date(2026, 1, 1),
+                                         depreciated_before=datetime.date(2026, 3, 31),
+                                         opening_depreciation=Decimal("3000"))
+        loom.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.assertEqual([row.period_end for row in loom.depreciate(through=datetime.date(2026, 4, 30))],
+                         [datetime.date(2026, 4, 30)])
+
+    def test_a_month_closed_since_names_the_machine_holding_up_the_run(self):
+        AccountingPeriod.objects.get(name="Q1 2026").reopen()
+        self.lathe.place_in_service(on_date=datetime.date(2026, 1, 15))
+        AccountingPeriod.objects.get(name="Q1 2026").close()
+        run = self.controller.post("/api/assets/assets/depreciate-all/", {"through": "2026-04-30"}, format="json")
+        self.assertEqual(run.status_code, 400)
+        self.assertIn(f"{self.lathe.number} Machine's depreciation for January 2026 falls in Q1 2026", str(run.json()))
 
 class TheAuditAsksItTests(SimpleTestCase):
     """`manage.py audit_invariants` reports a step that reverses on its given day without the rule."""
