@@ -561,9 +561,26 @@ class Command(BaseCommand):
                 and isinstance(node.value.func.value, ast.Name) and node.value.func.value.id == "self"
                 and node.value.func.attr in saved)
 
+    # Posted documents still deletable, found when the check was written
+    # and reported to the module that owns each rather than fixed from
+    # outside it. Each comes off when its guard lands: an entry the check
+    # no longer needs is reported as stale.
+    DELETABLE_REPORTED = {
+        "inventory.StockAdjustment": "stores: its movements and entry would stay",
+        "inventory.StockCount": "stores: a sheet with no difference is the only evidence",
+        "quality.Inspection": "quality: the batch would read as never inspected",
+    }
+
     def mutable_posted_documents(self, labels, sources):
-        """A posted document that can still be edited is not posted."""
-        findings = []
+        """
+        A posted document that can still be edited is not posted, and nor
+        is one that can still be deleted: its stock movements and its
+        entry stay, with nothing left to say why. Its lines refusing their
+        own delete does not cover it, because they go with it by cascade,
+        which never asks them. A supervisor deleted a posted issue, entry
+        and booking over the API, and only save() was being asked here.
+        """
+        findings, reported = [], set()
         for label in labels:
             code = non_test_text(sources[label])
             for model in django_apps.get_app_config(label).get_models():
@@ -573,24 +590,38 @@ class Command(BaseCommand):
                 body = self._class_body(code, model.__name__)
                 if body is None:
                     continue
-                # The guard may be inherited from an abstract base in the
-                # same app; a document is guarded if any class it is built
-                # from carries one. Each still has to say posted and raise.
-                guards = []
-                for cls in model.__mro__:
-                    if cls is models.Model:
-                        break
-                    found = self._class_body(code, cls.__name__)
-                    guard = found and self._method_body(found, "save")
-                    if guard:
-                        guards.append(guard)
-                if not any("posted" in guard and "raise" in guard for guard in guards):
+                key = f"{label}.{model.__name__}"
+                for method, shape, refusing in (
+                    ("save", "mutable posted document", "edits"),
+                    ("delete", "deletable posted document", "deletion"),
+                ):
+                    if self._guards_posted(model, code, method):
+                        continue
+                    if method == "delete" and key in self.DELETABLE_REPORTED:
+                        reported.add(key)
+                        continue
                     findings.append((
-                        "mutable posted document",
-                        f"{label}.{model.__name__} has a posted flag but no save() "
-                        "guard refusing edits once posted.",
+                        shape,
+                        f"{key} has a posted flag but no {method}() guard refusing "
+                        f"{refusing} once posted.",
                     ))
+        findings += [("stale exemption", f"{key} refuses deletion now; take it off DELETABLE_REPORTED.")
+                     for key in sorted(set(self.DELETABLE_REPORTED) - reported)
+                     if key.split(".")[0] in labels]
         return findings
+
+    def _guards_posted(self, model, code, method):
+        # The guard may be inherited from an abstract base in the same
+        # app; a document is guarded if any class it is built from
+        # carries one. Each still has to say posted and raise.
+        for cls in model.__mro__:
+            if cls is models.Model:
+                break
+            found = self._class_body(code, cls.__name__)
+            guard = found and self._method_body(found, method)
+            if guard and "posted" in guard and "raise" in guard:
+                return True
+        return False
 
     def unconstrained_numbers(self, labels):
         """
