@@ -78,7 +78,10 @@ def traveller(order):
     customer_order = None
     if order.sales_order_line_id:
         line = order.sales_order_line
-        customer_order = {"number": line.order.number, "customer": str(line.order.customer)}
+        so = line.order
+        # As the order recorded them, so the floor packs what the order promised.
+        customer_order = {"number": so.number, "customer": str(so.customer),
+                          "sacks_per_bale": so.sacks_per_bale, "marking": so.marking}
     return {
         "number": order.number,
         "barcode": barcode.svg(order.number),

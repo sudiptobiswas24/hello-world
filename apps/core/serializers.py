@@ -102,12 +102,14 @@ class PartySerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     roles = serializers.SerializerMethodField()
     addresses = AddressSerializer(many=True, read_only=True)
     contacts = ContactSerializer(many=True, read_only=True)
+    parent_name = serializers.CharField(source="parent.name", read_only=True, default="")
 
     class Meta:
         model = Party
         fields = [
             "id", "code", "name", "legal_name", "email", "phone", "tax_id",
             "default_currency", "payment_terms", "tags", "is_active",
+            "website", "cin", "iec", "parent", "parent_name", "notes",
             "roles", "addresses", "contacts", "extra",
         ]
 

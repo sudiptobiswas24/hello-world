@@ -193,6 +193,10 @@ export default function DeliveryForm() {
   const act = useAct<Delivery>();
   const [returning, setReturning] = useState<Record<number, string> | null>(null);
   const [credit, setCredit] = useState(true);
+  // Shipping takes the pick list away before the answer comes: the write
+  // refreshes every open panel, and a pick list asked for once the goods
+  // have gone is refused.
+  const [shipping, setShipping] = useState(false);
 
   if (record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   const delivery = record.data;
@@ -202,9 +206,13 @@ export default function DeliveryForm() {
   const warehouseName = (wid: number) => warehouses.data?.find((w) => w.id === wid)?.code ?? `#${wid}`;
   const state = delivery.reverses ? "Return" : delivery.posted ? "Shipped" : "Draft";
 
-  const post = () => act.run("POST", `${ENDPOINT}${delivery.id}/post_delivery/`, {}, {
-    done: (result) => `${(result as Delivery).number} shipped`,
-  });
+  const post = async () => {
+    setShipping(true);
+    const outcome = await act.run("POST", `${ENDPOINT}${delivery.id}/post_delivery/`, {}, {
+      done: (result) => `${(result as Delivery).number} shipped`,
+    });
+    if (!outcome.ok) setShipping(false);
+  };
   const backorder = async () => {
     const outcome = await act.run("POST", `${ENDPOINT}${delivery.id}/backorder/`, {}, { done: "Backorder drafted" });
     if (outcome.ok) navigate(`/sales/deliveries/${outcome.data.id}`);
@@ -296,7 +304,7 @@ export default function DeliveryForm() {
         )}
       </Sheet>
 
-      {!delivery.posted && !delivery.reverses && delivery.lines.length > 0 && <PickList key={`pick-${delivery.id}-${delivery.lines.length}`} delivery={delivery} />}
+      {!delivery.posted && !shipping && !delivery.reverses && delivery.lines.length > 0 && <PickList key={`pick-${delivery.id}-${delivery.lines.length}`} delivery={delivery} />}
       {!delivery.reverses && <Transport key={`${delivery.id}-${delivery.lr_number}`} delivery={delivery} editable={can("sales.change_delivery")} />}
       {delivery.posted && !delivery.reverses && (
         <Received key={`${delivery.id}-${delivery.received_on ?? ""}`} delivery={delivery} editable={can("sales.change_delivery")} />

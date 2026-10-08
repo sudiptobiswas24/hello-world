@@ -161,6 +161,69 @@ class SalesInTheBrowserTests(BrowserTestCase):
         rep.get_by_role("combobox", name="Customer").fill("Kisan")
         expect(rep.get_by_role("option", name=re.compile("Kisan Feeds"))).to_be_visible()
 
+    def test_accounts_opens_a_customer_in_one_form_and_holds_them(self):
+        from django.contrib.auth.models import Group
+
+        from apps.accounting.models import PartyTaxProfile
+        from apps.core.models import Address, PartyRoleAssignment
+        from apps.sales.models import CustomerProfile
+
+        carrier = Party.objects.create(code="SRW", name="Sharma Roadways")
+        PartyRoleAssignment.objects.create(party=carrier, role=PartyRole.VENDOR)
+        person = self.person("AR Manager")
+        person.groups.add(Group.objects.get(name="GST Officer"))  # who keeps the GSTIN as well
+        page = self.sign_in(person, "/app/sales/customers/new")
+        page.get_by_label("Code", exact=True).fill("KFL")
+        page.get_by_label("Name", exact=True).fill("Konkan Fertilisers")
+        page.get_by_label("CIN").fill("U24120MH2001PLC131234")
+        billing = page.get_by_role("region", name="Address")
+        billing.get_by_label("Line 1").fill("Nariman Point")
+        billing.get_by_label("City").fill("Mumbai")
+        page.get_by_label("Goods go to another address").check()
+        shipping = page.get_by_role("region", name="Shipping address")
+        shipping.get_by_label("Line 1").fill("MIDC Plot 7")
+        shipping.get_by_label("City").fill("Ratnagiri")
+        page.get_by_role("region", name="Whom to speak to").get_by_label("First name").fill("Anil")
+        page.get_by_label("GSTIN").fill("27AABCD1234E1Z8")
+        page.get_by_label("Freight").select_option(label="FOR destination: we deliver, the freight is ours")
+        page.get_by_label("Usual transporter").fill("Sharma")
+        page.get_by_role("option", name=re.compile("Sharma Roadways")).click()
+        page.get_by_label("Sacks a bale").fill("500")
+        page.get_by_role("button", name="Add customer").click()
+        page.wait_for_url(re.compile(r"/sales/customers/\d+$"))
+        made = Party.objects.get(code="KFL")
+        self.assertEqual(sorted(Address.objects.filter(party=made).values_list("address_type", "city")),
+                         [("billing", "Mumbai"), ("shipping", "Ratnagiri")])
+        self.assertEqual(PartyTaxProfile.objects.get(party=made).gst_state, "27")
+        terms = CustomerProfile.objects.get(party=made)
+        self.assertEqual((terms.freight_terms, terms.transporter, terms.sacks_per_bale),
+                         ("for_destination", carrier, 500))
+        # On their page, the hold is asked for its reason before it is set.
+        region = page.get_by_role("region", name="Sales terms")
+        region.get_by_label("On credit hold").check()
+        region.get_by_role("button", name="Save terms").click()
+        expect(region.locator(".field.invalid .field-error")).to_contain_text("Say why they are on hold.")
+        region.get_by_label("Why on hold").fill("March bill 45 days overdue")
+        region.get_by_role("button", name="Save terms").click()
+        expect(region.get_by_role("button", name="Save terms")).to_have_count(0)
+        terms.refresh_from_db()
+        self.assertEqual((terms.credit_hold, terms.credit_hold_reason), (True, "March bill 45 days overdue"))
+
+    def test_a_refused_section_keeps_the_form_and_makes_nothing(self):
+        from django.contrib.auth.models import Group
+
+        person = self.person("AR Manager")
+        person.groups.add(Group.objects.get(name="GST Officer"))
+        page = self.sign_in(person, "/app/sales/customers/new")
+        page.get_by_label("Code", exact=True).fill("KFL")
+        page.get_by_label("Name", exact=True).fill("Konkan Fertilisers")
+        page.get_by_label("GSTIN").fill("27AABCD1234E1Z9")  # its check character is wrong
+        page.get_by_role("button", name="Add customer").click()
+        expect(page.get_by_role("region", name="GST").locator(".form-error, .field-error")).to_be_visible()
+        self.assertFalse(Party.objects.filter(code="KFL").exists())
+        self.assertTrue(page.url.endswith("/sales/customers/new"))
+        expect(page.get_by_label("Name", exact=True)).to_have_value("Konkan Fertilisers")
+
     def test_the_ar_manager_gives_a_customer_to_a_rep_who_then_sees_only_theirs(self):
         from apps.core.models import PartyRoleAssignment
         from apps.sales.models import CustomerProfile

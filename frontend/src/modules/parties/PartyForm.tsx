@@ -4,13 +4,14 @@ import { useAct, useRecord } from "../../api/hooks";
 import { useAccess } from "../../auth/me";
 import { ExtraFields } from "../../forms/ExtraFields";
 import { ActionButton, DocHeader, Sheet } from "../../forms/Document";
-import { Field } from "../../forms/fields";
+import { FieldSection } from "../../forms/FieldSection";
 import { useDraft } from "../../forms/useDraft";
 import { ErrorPanel } from "../../shell/ErrorPanel";
-import { RecordPanel } from "../../views/RecordScreen";
+import { RecordPanel, useRefs } from "../../views/RecordScreen";
 import type { ReactNode } from "react";
 
 import { PARTY_PANELS } from "./panels";
+import { PARTY_FIELDS } from "./partyFields";
 
 import type { PartyRole } from "../../forms/PartyPicker";
 
@@ -27,14 +28,6 @@ interface Party {
 }
 
 const ENDPOINT = "/api/core/parties/";
-const FIELDS: [keyof Party & string, string, string?][] = [
-  ["code", "Code", "Short and unique: what people type to find them"],
-  ["name", "Name"],
-  ["legal_name", "Legal name", "As it must appear on invoices, if different"],
-  ["tax_id", "Other tax number", "PAN, or a foreign tax number. The GST registration is kept under GST, below"],
-  ["phone", "Phone"],
-  ["email", "Email", "Where invoices and statements are sent"],
-];
 
 export interface PartyConfig {
   role: PartyRole;
@@ -55,6 +48,7 @@ export function PartyForm({ role, base, plural, related }: PartyConfig) {
   const blank = { code: "", name: "", legal_name: "", email: "", phone: "", tax_id: "", is_active: true } as Party;
   const draft = useDraft<Party>(isNew ? blank : party);
   const act = useAct<Party>();
+  const refs = useRefs(PARTY_FIELDS);
 
   if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   if (!isNew && !party) return <div className="loading">Opening…</div>;
@@ -85,15 +79,8 @@ export function PartyForm({ role, base, plural, related }: PartyConfig) {
         )}
       </DocHeader>
       <Sheet>
-        <div className="field-grid">
-          {FIELDS.map(([key, label, hint]) => (
-            <Field key={key} label={label} hint={hint} errors={draft.errors[key]}>
-              {(fid, described) => editable
-                ? <input id={fid} aria-describedby={described} value={String(value[key] ?? "")} onChange={(e) => draft.set(key, e.target.value as never)} />
-                : <output id={fid}>{String(party?.[key] || "—")}</output>}
-            </Field>
-          ))}
-        </div>
+        <FieldSection fields={PARTY_FIELDS} value={value} set={(key, next) => draft.set(key, next as never)}
+          errors={draft.errors} editable={editable} refs={refs} />
         <ExtraFields kind="core.party" value={value.extra as Record<string, unknown> | undefined} set={(next) => draft.set("extra", next as never)} errors={draft.errors} editable={editable} />
         {draft.errors.non_field_errors && <p className="form-error" role="alert">{draft.errors.non_field_errors.join(" ")}</p>}
       </Sheet>

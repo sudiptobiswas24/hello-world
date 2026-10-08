@@ -22,6 +22,8 @@ def render_invoice_pdf(invoice):
     ]
     if invoice.payment_terms_id:
         meta.append(["Terms", invoice.payment_terms.name])
+    if invoice.sales_order_id:
+        meta += freight_meta(invoice.sales_order)
     if invoice.reference:
         meta.append(["Reference", invoice.reference])
     if invoice.is_credit_note() and invoice.credits_id:
@@ -60,6 +62,19 @@ def render_invoice_pdf(invoice):
     )
 
 
+def freight_meta(order):
+    """How the goods travel, as the order recorded it; fixed on the order once anything has shipped."""
+    meta = []
+    if order.freight_terms:
+        meta.append(["Freight", order.get_freight_terms_display().split(":")[0]])
+    if order.incoterm:
+        # Not "FOB Jebel Ali": an F-term names the port of loading, so the discharge port goes on its own line.
+        meta.append(["Incoterm", order.incoterm])
+    if order.port_of_discharge:
+        meta.append(["Port of discharge", order.port_of_discharge])
+    return meta
+
+
 def _ship_to(order):
     address = order.shipping_address
     return address.formatted().replace("\n", ", ") if address else ""
@@ -88,6 +103,7 @@ def render_order_pdf(order, proforma=False):
         meta.append(["Your order", order.reference])
     if order.payment_terms_id:
         meta.append(["Terms", order.payment_terms.name])
+    meta += freight_meta(order)
     if _ship_to(order):
         meta.append(["Ship to", _ship_to(order)])
     totals = [["Subtotal", order.subtotal()]]
