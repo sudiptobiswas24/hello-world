@@ -9,8 +9,10 @@ sale that never comes, or an expense, which puts a decade of value into
 one month's profit.
 """
 
+import contextlib
 import datetime
 from decimal import Decimal
+from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
@@ -26,6 +28,24 @@ from .models import (
     FixedAsset,
     asset_register,
 )
+
+
+@contextlib.contextmanager
+def the_plants_day(day):
+    """
+    Today at the plant, for a test whose story is told after its months
+    have ended: depreciation is charged only through a day that has come,
+    so a lathe run to December is run in January. Also a decorator.
+    """
+    from django.utils import timezone
+
+    real = timezone.localdate
+
+    def localdate(value=None, timezone=None):
+        return day if value is None else real(value, timezone)
+
+    with mock.patch("django.utils.timezone.localdate", side_effect=localdate):
+        yield
 
 
 class AssetTestCase(TestCase):
@@ -146,6 +166,7 @@ class DepreciationTests(AssetTestCase):
         self.assertEqual(len(entries), 4)
         self.assertEqual(asset.accumulated(), Decimal("5000"))
 
+    @the_plants_day(datetime.date(2028, 1, 15))
     def test_it_never_depreciates_past_salvage(self):
         """The last month takes whatever is left rather than the full
         charge."""
@@ -156,11 +177,13 @@ class DepreciationTests(AssetTestCase):
         self.assertEqual(asset.accumulated(), Decimal("9000"))
         self.assertEqual(asset.net_book_value(), Decimal("1000"))
 
+    @the_plants_day(datetime.date(2029, 1, 15))
     def test_a_finished_asset_charges_nothing_more(self):
         asset = self.asset("12000", life=12)
         asset.depreciate(through=datetime.date(2027, 12, 31))
         self.assertEqual(asset.depreciate(through=datetime.date(2028, 12, 31)), [])
 
+    @the_plants_day(datetime.date(2027, 1, 15))
     def test_a_non_depreciating_category_charges_nothing(self):
         land = AssetCategory.objects.create(
             code="LAND", name="Land", asset_account=self.plant,

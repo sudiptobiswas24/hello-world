@@ -98,6 +98,7 @@ class Command(BaseCommand):
         findings += self.dead_class_attributes(labels, sources)
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
         findings += self.kept_settings_read_live(labels, sources)
+        findings += self.corrections_dated_without_the_rule(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -745,6 +746,61 @@ class Command(BaseCommand):
                                 f"{label}.{model.__name__} keeps its own {name}, but "
                                 f"`{code.splitlines()[line - 1].strip()[:90]}` reads its {relation}'s.",
                             ))
+        return findings
+
+    # -- shape 1: a correction dated before what it corrects, or ahead ------
+    # Steps that reverse an entry on a day they are given and do not yet ask
+    # correction_date(), with why. Each is a step another fix owns; the list
+    # only shrinks, as a step moved onto the rule makes its line stale.
+    NOT_YET_ON_THE_RULE = "another module's step, not yet on correction_date(): named in the fixed-asset fix's report"
+    DATED_ELSEWHERE = {
+        "accounting.Payment.void": "refuses a day before the payment and a day to come in its own words, "
+                                   "written before the rule",
+        **dict.fromkeys((
+            "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
+            "sales.Invoice.recover_write_off", "sales.InvoicePayment.release_exchange_difference",
+            "sales.CustomerTds.reverse", "purchasing.BillPayment.release_exchange_difference",
+            "purchasing.LandedCostApplication.release", "purchasing.TdsDeduction.reverse",
+            "purchasing.TdsChallan.void", "hr.ExpenseClaim.unpay", "hr.PayRun.void",
+            "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
+            "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",
+            "manufacturing.OutsideMovement.void"), NOT_YET_ON_THE_RULE),
+    }
+
+    def corrections_dated_without_the_rule(self, labels, sources):
+        """
+        A step that reverses an entry on the day it is given, never asking correction_date().
+
+        A lathe bought on 1 January was disposed of on 15 December before, and its
+        capitalisation undone on 1 December: the plant account stood at -12,000 over the
+        year end. Dated on a day still to come, a correction has the document read done
+        while the books do not. apps.core.models.correction_date() refuses both, and a step
+        that takes `on_date` and reverses an entry asks it, or says here why not.
+        """
+        findings, exempted = [], set()
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                for cls in (node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.ClassDef)):
+                    for fn in (node for node in cls.body if isinstance(node, ast.FunctionDef)):
+                        body = ast.unparse(fn)
+                        if "on_date" not in {arg.arg for arg in fn.args.args + fn.args.kwonlyargs} \
+                                or ".create_reversal(" not in body or "correction_date(" in body:
+                            continue
+                        key = f"{label}.{cls.name}.{fn.name}"
+                        if key in self.DATED_ELSEWHERE:
+                            exempted.add(key)
+                            continue
+                        findings.append((
+                            "correction dated anywhere",
+                            f"{key} ({path.name}:{fn.lineno}) reverses an entry on the day it is given and "
+                            "never asks correction_date(): before what it takes back, or on a day to come, "
+                            "the document and the books disagree.",
+                        ))
+        findings += [("stale exemption", f"{key} is exempted from correction_date() but is no longer a step "
+                                         "that needs it.")
+                     for key in sorted(set(self.DATED_ELSEWHERE) - exempted) if key.split(".")[0] in labels]
         return findings
 
     @staticmethod

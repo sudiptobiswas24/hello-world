@@ -20,7 +20,7 @@ from django.db import IntegrityError, transaction
 from apps.core.models import Currency, ExchangeRate
 
 from .models import AssetStatus, FixedAsset, asset_register
-from .tests import AssetTestCase, CapitalisationFixture
+from .tests import AssetTestCase, CapitalisationFixture, the_plants_day
 
 MAR_31 = datetime.date(2026, 3, 31)
 JUN_30 = datetime.date(2026, 6, 30)
@@ -102,6 +102,7 @@ class ADisposalTakesBackMonthsAfterItTests(AssetTestCase):
     7,000.
     """
 
+    @the_plants_day(datetime.date(2027, 1, 15))
     def test_months_after_the_disposal_are_reversed(self):
         asset = self.asset()
         asset.depreciate(through=datetime.date(2026, 12, 31))
@@ -136,6 +137,7 @@ class ADisposalTakesBackMonthsAfterItTests(AssetTestCase):
         self.assertEqual((asset.accumulated(), self.balance(self.disposal)),
                          (Decimal("5000.00"), Decimal("7000.00")))
 
+    @the_plants_day(datetime.date(2027, 1, 15))
     def test_the_register_before_the_disposal_still_shows_what_was_charged(self):
         asset = self.asset()
         asset.depreciate(through=datetime.date(2026, 12, 31))
@@ -258,6 +260,7 @@ class ADisposalInErrorIsReinstatedTests(AssetTestCase):
         asset.dispose(on_date=datetime.date(2026, 7, 10))  # and it goes again, properly this time
         self.assertEqual(asset.status, AssetStatus.DISPOSED)
 
+    @the_plants_day(datetime.date(2027, 1, 15))
     def test_the_months_it_took_back_are_charged_again_on_their_own_month_ends(self):
         asset = self.asset()
         asset.depreciate(through=datetime.date(2026, 12, 31))
