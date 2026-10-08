@@ -207,6 +207,24 @@ class PartialCorrectionsTests(ScreensTestCase):
         self.assertEqual(order.lines.get().quantity_open(), Decimal("4"))
         self.assertEqual(Bill.objects.filter(debits__isnull=False).count(), 0)
 
+    def test_goods_no_longer_on_the_shelf_are_refused_in_words(self):
+        from django.utils import timezone
+
+        from apps.inventory.models import MovementType, StockMovement
+
+        receipt = self.receive(self.make_order(quantity="10"), "10")
+        StockMovement.objects.create(
+            item=self.item, warehouse=self.warehouse, movement_type=MovementType.ISSUE,
+            uom=self.item.uom, quantity=Decimal("-8"), unit_cost=Decimal("5"),
+            occurred_at=timezone.now(), notes="shipped",
+        )
+        response = self.as_("Warehouse Staff").post(
+            f"/api/purchasing/goods-receipts/{receipt.pk}/return_receipt/",
+            {"debit_bills": False}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("cannot send back 10", str(response.json()))
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("2"))
+
     def test_a_return_debits_the_bill_unless_told_not_to(self):
         order = self.make_order(quantity="10")
         receipt = self.receive(order, "10")
