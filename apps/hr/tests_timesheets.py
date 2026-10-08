@@ -322,6 +322,22 @@ class FeedingPayrollTests(TimesheetTestCase):
         self.assertEqual(sorted((line.rate, line.amount) for line in run.payslips.get().lines.all()),
                          [(Decimal("25.0000"), Decimal("1000.00")), (Decimal("30.0000"), Decimal("1200.00"))])
 
+    def test_hours_approved_after_the_run_was_calculated_stop_its_post(self):
+        # Calculated on the first week's 40 hours, 1,000.00; the second week's, approved before it
+        # posts, make June 2,000.00.
+        first = self.filled()
+        first.submit()
+        first.approve(by=self.boss)
+        run = self.pay_run()
+        run.calculate(employees=[self.person])
+        later = self.sheet(start=datetime.date(2026, 6, 8), end=datetime.date(2026, 6, 12))
+        for day in range(8, 13):
+            self.entry(later, datetime.date(2026, 6, day))
+        later.submit()
+        later.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "Hourly pay was worked out at 1000.00 and comes to 2000.00 now"):
+            run.post()
+
     def test_explicit_hours_still_override(self):
         run = self.pay_run()
         run.calculate(employees=[self.person], hours={self.person: Decimal("10")})

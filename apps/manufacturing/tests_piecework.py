@@ -128,6 +128,31 @@ class PaidByTheMetreTests(PieceworkTestCase):
         self.assertEqual(self.line(self.pay(SEP(16), SEP(30)))[:2],
                          (Decimal("1000"), Decimal("450.00")))
 
+    def test_two_fortnights_calculated_before_either_posts_pay_september_once(self):
+        # 1,000 m on the 3rd at 0.40 and 1,000 m on the 21st at 0.45: 850.00 in all. Each run
+        # calculated from nothing posted paid 400.00 and 850.00.
+        self.woven("1000", SEP(3))
+        self.woven("1000", SEP(21))
+        first = self.pay(SEP(1), SEP(15), post=False)
+        second = self.pay(SEP(16), SEP(30), post=False)
+        first.post()
+        with self.assertRaisesMessage(ValidationError, "was worked out at 850.00 and comes to 450.00 now"):
+            second.post()
+        second.calculate(employees=[self.weaver])
+        second.post()
+        self.assertEqual((self.line(second), first.gross() + second.gross()),
+                         ((Decimal("1000"), Decimal("450.00"), Decimal("0.45")), Decimal("850.00")))
+
+    def test_the_later_fortnight_posted_first_stops_the_earlier(self):
+        self.woven("1000", SEP(3))
+        self.woven("1000", SEP(21))
+        first = self.pay(SEP(1), SEP(15), post=False)
+        second = self.pay(SEP(16), SEP(30), post=False)
+        second.post()
+        with self.assertRaisesMessage(ValidationError, "paid in order"):
+            first.post()
+        self.assertEqual(second.gross(), Decimal("850.00"))
+
     def test_paid_in_order(self):
         self.woven("1000", SEP(21))
         self.pay(SEP(16), SEP(30))

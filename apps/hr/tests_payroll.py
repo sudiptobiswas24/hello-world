@@ -603,6 +603,84 @@ class ARateChangedInsideThePeriodTests(PayrollTestCase):
             old.save()
 
 
+class WhatPostsIsWhatIsOwedAsItPostsTests(PayrollTestCase):
+    """
+    A run is calculated, checked, then posted, and what it read can move in
+    between. Each slip is worked out again as the run posts; one that has
+    changed stops the post until the run is calculated again.
+    """
+
+    def test_unpaid_leave_approved_after_calculating_stops_the_post(self):
+        # 8-12 June unpaid: 4,400 x 17/22 = 3,400.00, not the 4,400.00 calculated.
+        unpaid = LeavePolicy.objects.create(code="UNP", name="Unpaid", leave_type="unpaid",
+                                            annual_days=Decimal("0"), allows_negative=True, is_paid=False)
+        boss = self.employee("B1")
+        person = self.employee("U1", manager=boss)
+        self.pay(person, self.salary, "4400")
+        run = self.pay_run()
+        run.calculate(employees=[person])
+        LeaveRequest.objects.create(employee=person, policy=unpaid, leave_type=LeaveType.UNPAID,
+                                    start_date=datetime.date(2026, 6, 8),
+                                    end_date=datetime.date(2026, 6, 12)).approve(by=boss)
+        with self.assertRaisesMessage(ValidationError, "Salary was worked out at 4400.00 and comes to 3400.00 now"):
+            run.post()
+        run.refresh_from_db()
+        self.assertEqual((run.status, self.balance(self.wages)), (PayRunStatus.CALCULATED, Decimal("0")))
+        run.calculate(employees=[person])
+        run.post()
+        self.assertEqual(self.balance(self.wages), Decimal("3400.00"))
+
+    def test_a_rate_edited_after_calculating_stops_the_post(self):
+        person = self.employee("C2")
+        row = self.pay(person, self.salary, "5000")
+        run = self.pay_run()
+        run.calculate()
+        row.amount = Decimal("5100")
+        row.save()
+        with self.assertRaisesMessage(ValidationError, "Salary was worked out at 5000.00 and comes to 5100.00 now"):
+            run.post()
+        run.calculate()
+        run.post()
+        # The row held as paid on holds the rate that was paid.
+        self.assertEqual(run.payslips.get().lines.get().rate, Decimal("5100.0000"))
+
+    def test_hours_handed_in_are_posted_as_calculated(self):
+        hourly = PayComponent.objects.create(
+            code="HR", name="Hourly", kind=ComponentKind.EARNING,
+            basis=ComponentBasis.PER_HOUR, expense_account=self.wages, sequence=5,
+        )
+        person = self.employee("H1")
+        self.pay(person, hourly, "25")
+        run = self.pay_run()
+        run.calculate(hours={person: Decimal("100")})
+        run.post()
+        self.assertEqual((run.payslips.get().hours, self.balance(self.wages)),
+                         (Decimal("100.00"), Decimal("2500.00")))
+
+    def test_a_calculated_run_whose_period_moves_is_calculated_again(self):
+        person = self.employee("M1")
+        self.pay(person, self.salary, "4400")
+        run = self.pay_run()
+        run.calculate()
+        run.period_end = datetime.date(2026, 7, 31)
+        run.save()
+        run.refresh_from_db()
+        self.assertEqual((run.status, run.payslips.count()), (PayRunStatus.DRAFT, 0))
+        with self.assertRaisesMessage(ValidationError, "no payslips"):
+            run.post()
+
+    def test_a_calculated_run_renamed_or_paid_on_another_day_stays_calculated(self):
+        person = self.employee("M2")
+        self.pay(person, self.salary, "4400")
+        run = self.pay_run()
+        run.calculate()
+        run.name = "June wages"
+        run.pay_date = datetime.date(2026, 7, 1)
+        run.save()
+        run.post()
+        self.assertEqual(self.balance(self.wages), Decimal("4400.00"))
+
+
 class VoidingTests(PayrollTestCase):
     def payroll(self):
         person = self.employee("V1")

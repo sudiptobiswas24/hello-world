@@ -28,6 +28,7 @@ track of somebody's wages.
 """
 
 import datetime
+from collections import Counter
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from itertools import groupby
 
@@ -559,6 +560,14 @@ class PayRun(AuditModel):
                 "Nobody on this run is owed anything. Check the compensation in force "
                 "before posting a payroll that pays nothing."
             )
+        # What is posted is what these people are owed as it posts. Their
+        # leave, register, hours, rates and output can have moved since the
+        # run was calculated, and another run of theirs been posted; each
+        # slip is worked out again with them held, so none of it moves
+        # until the entry is made.
+        lock_rows(*(slip.employee for slip in slips))
+        for slip in slips:
+            slip.check_current()
         self._check_not_already_paid()
 
         if not self.number:
@@ -714,14 +723,27 @@ class PayRun(AuditModel):
             Decimal("0"),
         )
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.pk:
-            previous = PayRun.objects.filter(pk=self.pk).first()
-            if previous is not None and previous.status == PayRunStatus.POSTED:
-                raise ValidationError(
-                    "Cannot modify a posted pay run. Void it and raise another."
-                )
+        previous = PayRun.objects.filter(pk=self.pk).first() if self.pk else None
+        if previous is not None and previous.status == PayRunStatus.POSTED:
+            raise ValidationError(
+                "Cannot modify a posted pay run. Void it and raise another."
+            )
+        moved = (previous is not None and previous.status == PayRunStatus.CALCULATED
+                 and (to_date(self.period_start), to_date(self.period_end))
+                 != (previous.period_start, previous.period_end))
+        if moved:
+            # Its slips were worked out for the days it covered; for any
+            # others it is calculated again. Stretched to June and July after
+            # June was calculated, it posted June's pay for both months, and
+            # then refused July's run as paid already.
+            self.status = PayRunStatus.DRAFT
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = {*kwargs["update_fields"], "status"}
         super().save(*args, **kwargs)
+        if moved:
+            self.payslips.all().delete()
 
 
 def _net_pay_account():
@@ -742,6 +764,12 @@ class Payslip(AuditModel):
         related_name="payslips", editable=False,
         help_text="What settled the net pay. Until it is set, net pay payable holds "
                   "this slip's balance.",
+    )
+    hours = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Hours handed in for hourly pay when the run was calculated; empty when "
+                  "they were read from approved timesheets. Posting works the slip out "
+                  "again from these.",
     )
     note = models.CharField(max_length=255, blank=True)
 
@@ -897,6 +925,47 @@ class Payslip(AuditModel):
         """
         Build this slip's lines from the compensation in force.
 
+        Hours handed in are kept with the slip, to the hundredth as a
+        timesheet keeps them, and the slip is worked out from what is
+        kept: posting works it out again from the same figure.
+        """
+        self.lines.all().delete()
+        self.hours = None if hours is None else Decimal(hours).quantize(Decimal("0.01"))
+        for line in self.work_out(self.hours):
+            line.save()
+        super().save(update_fields=["hours", "updated_at"])
+        return list(self.lines.all())
+
+    def check_current(self):
+        """
+        Refuse when the slip is not what working it out now would give.
+
+        Calculating and posting are apart so a payroll can be checked, and
+        everything it read could move in between. Unpaid leave approved
+        after June was calculated was posted unseen at 4,400.00 instead
+        of 3,400.00; a rate edited from 5,000 to 5,100 was posted at 5,000
+        and the row then held as paid on at 5,100. Two fortnights
+        calculated before either posted each paid September's piece work
+        from nothing, 1,250.00 for 850.00. Asked by post() with the
+        person held, so nothing it reads moves until the entry is made.
+        """
+        now, then = self.work_out(self.hours), list(self.lines.select_related("component"))
+        if Counter(map(_as_worked_out, now)) == Counter(map(_as_worked_out, then)):
+            return
+        before, after = _by_component(then), _by_component(now)
+        moved = [component for component in sorted(set(before) | set(after), key=lambda c: (c.sequence, c.code))
+                 if before.get(component) != after.get(component)]
+        what = (f"{moved[0].name} was worked out at {before.get(moved[0], Decimal('0.00'))} and comes to "
+                f"{after.get(moved[0], Decimal('0.00'))} now" if moved else "its lines are not made up as they were")
+        raise ValidationError(
+            f"{self.employee}'s pay has changed since this run was calculated: {what}. "
+            "Calculate the run again, and check it, before posting it."
+        )
+
+    def work_out(self, hours=None):
+        """
+        The lines this slip comes to from what is in force now, unsaved.
+
         Components are worked out in sequence order, so a percentage
         component can only ever be taken of what has already been
         computed. A percentage of a gross that later grows is a number
@@ -909,7 +978,6 @@ class Payslip(AuditModel):
         full, 9,900.00 where 4,950.00 was owed. Each is a line of its own,
         at its own rate.
         """
-        self.lines.all().delete()
         proportion = self.paid_proportion()
         rows = EmployeeCompensation.objects.filter(
             employee=self.employee,
@@ -925,6 +993,7 @@ class Payslip(AuditModel):
 
         running_taxable = Decimal("0")
         computed = {}
+        lines = []
         for _component, group in groupby(rows, key=lambda row: row.component_id):
             group = list(group)
             component = group[0].component
@@ -944,7 +1013,7 @@ class Payslip(AuditModel):
                 if amount <= 0:
                     continue
                 computed[component.pk] = computed.get(component.pk, Decimal("0")) + amount
-                PayslipLine.objects.create(
+                lines.append(PayslipLine(
                     payslip=self,
                     component=component,
                     kind=component.kind,
@@ -958,10 +1027,10 @@ class Payslip(AuditModel):
                     is_taxable=component.is_taxable,
                     amount=amount,
                     quantity=quantity,
-                )
+                ))
                 if component.kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
-        return list(self.lines.all())
+        return lines
 
     def _span(self, row):
         """The first and last day of this period that `row`'s rate was in force on."""
@@ -1257,6 +1326,18 @@ class PayslipLine(AuditModel):
         if department is not None and department.cost_centre_id:
             return department.cost_centre
         return self.component.expense_account
+
+
+def _as_worked_out(line):
+    """What a payslip line says about somebody's pay: two workings of a slip are compared on it."""
+    return (line.component_id, line.kind, line.basis, line.is_taxable, line.rate, line.amount, line.quantity)
+
+
+def _by_component(lines):
+    totals = {}
+    for line in lines:
+        totals[line.component] = totals.get(line.component, Decimal("0.00")) + line.amount
+    return totals
 
 
 def _month_of(day):
