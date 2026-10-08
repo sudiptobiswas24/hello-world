@@ -232,7 +232,6 @@ class Command(BaseCommand):
                                             "and lock every shelf it moves between",
         "inventory.StockTransferStep.reverse": "called only by its transfer's cancel, which holds the transfer",
         "manufacturing.Complaint.settle": "the credit note is credit_claim's, which holds the invoice and its room",
-        "manufacturing.MaterialIssueLine.post": "called only by its issue's post, which holds the issue",
         "purchasing.GoodsReceiptLine.advance": "decides only on stock: it holds every shelf on the route before reading "
                                                "what is where, and changes nothing on the line",
         "sales.Invoice.email_to_customer": "decides nothing a send changes: a second press is a second mail",

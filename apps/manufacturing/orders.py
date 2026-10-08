@@ -1979,6 +1979,11 @@ def _check_order_is_open_for(order, what):
         )
 
 
+def _shown(quantity):
+    """A quantity as a sentence says it: 40, not 40.0000."""
+    return format(Decimal(quantity).normalize(), "f")
+
+
 class IssueDirection(models.TextChoices):
     ISSUE = "issue", "Issued to the run"
     RETURN = "return", "Returned to the store"
@@ -2287,6 +2292,60 @@ class MaterialIssueLine(AuditModel):
             return
         check_released(self.item, self.lot, action="go into a run")
 
+    def _check_return(self, issue):
+        """
+        A return hands back what the issue line it names drew and has not
+        had back yet: the same material, out of the same batch, off an
+        issue that stands.
+
+        The mirror of `MaterialIssue.void`, which refuses while returns
+        stand against the issue. Asked with the named line locked, so two
+        returns of the same kilos cannot both find them still out.
+        """
+        if self.returns_line_id is None:
+            raise ValidationError(
+                f"{self}: a return must name the issue line it hands back. "
+                "Material comes back at what it went out at, and the shelf "
+                "has moved since."
+            )
+        line = self.returns_line
+        lock_rows(line)
+        drawn = line.issue
+        if drawn.work_order_id != issue.work_order_id:
+            raise ValidationError(
+                f"{self}: that issue line belongs to {drawn.work_order}, not to "
+                f"{issue.work_order}."
+            )
+        if drawn.direction != IssueDirection.ISSUE:
+            raise ValidationError(
+                f"{self}: {line} on {drawn} is itself a return. A return names the "
+                "issue line the material went out on."
+            )
+        if not drawn.posted or drawn.is_voided():
+            raise ValidationError(
+                f"{self}: {drawn} {'was voided' if drawn.posted else 'is not posted'}, "
+                "so nothing went out on it to come back."
+            )
+        if line.item_id != self.item_id or line.lot_id != self.lot_id:
+            raise ValidationError(
+                f"{self}: that line drew {line.item}"
+                + (f" from {line.lot}" if line.lot_id else "")
+                + ". A return hands back what its line drew, out of the batch it "
+                "drew it from."
+            )
+        back = sum((
+            row.stock_quantity() for row in line.returned_by.filter(
+                issue__posted=True, issue__voided_at__isnull=True,
+            ).select_related("item", "uom")
+        ), Decimal("0"))
+        out = line.stock_quantity() - back
+        if self.stock_quantity() > out:
+            raise ValidationError(
+                f"{self}: that line drew {_shown(line.stock_quantity())} {self.item.uom} "
+                f"and {_shown(back)} has come back against it, so {_shown(out)} can "
+                f"come back, not {_shown(self.stock_quantity())}."
+            )
+
     def post(self, issue, occurred_at, label):
         """Write the movement and return what it was worth, unsigned."""
         quantity = self.stock_quantity()
@@ -2303,19 +2362,8 @@ class MaterialIssueLine(AuditModel):
             movement_quantity = -self.quantity
             movement_type = MovementType.ISSUE
         else:
-            if self.returns_line_id is None:
-                raise ValidationError(
-                    f"{self}: a return must name the issue line it hands back. "
-                    "Material comes back at what it went out at, and the shelf "
-                    "has moved since."
-                )
-            if self.returns_line.issue.work_order_id != issue.work_order_id:
-                raise ValidationError(
-                    f"{self}: that issue line belongs to "
-                    f"{self.returns_line.issue.work_order}, not to "
-                    f"{issue.work_order}."
-                )
-            value = (self.returns_line.unit_cost or Decimal("0")) * quantity
+            self._check_return(issue)
+            value = self.returns_line.unit_cost * quantity
             movement_quantity = self.quantity
             movement_type = MovementType.RECEIPT
         self.unit_cost = (
