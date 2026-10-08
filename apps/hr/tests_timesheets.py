@@ -322,6 +322,39 @@ class FeedingPayrollTests(TimesheetTestCase):
         run.calculate(employees=[self.person])
         self.assertEqual(run.payslips.get().gross(), Decimal("1000.00"))
 
+    def test_hours_for_a_month_already_paid_are_not_approved_into_nowhere(self):
+        # June went out on the first week's forty hours, 1,000.00; the second
+        # week's, approved afterwards, would be read by no run at all.
+        sheet = self.filled()
+        sheet.submit()
+        sheet.approve(by=self.boss)
+        run = self.pay_run()
+        run.calculate(employees=[self.person])
+        run.post()
+        late = self.sheet(start=datetime.date(2026, 6, 8), end=datetime.date(2026, 6, 12))
+        for day in range(8, 13):
+            self.entry(late, datetime.date(2026, 6, day))
+        late.submit()
+        with self.assertRaisesMessage(ValidationError, "these would never be paid. Void the run to approve them"):
+            late.approve(by=self.boss)
+        self.assertEqual(approved_hours(self.person, datetime.date(2026, 6, 1), datetime.date(2026, 6, 30)),
+                         Decimal("40.00"))
+
+    def test_a_salaried_persons_late_hours_are_approved_for_what_they_cost(self):
+        salary = PayComponent.objects.create(
+            code="SAL", name="Salary", kind=ComponentKind.EARNING, basis=ComponentBasis.FIXED,
+            expense_account=self.wages, sequence=5)
+        clerk = self.employee("E9")
+        EmployeeCompensation.objects.create(employee=clerk, component=salary, amount=Decimal("30000"),
+                                            effective_from=datetime.date(2020, 1, 1))
+        run = self.pay_run()
+        run.calculate(employees=[clerk])
+        run.post()
+        late = self.sheet(clerk)
+        self.entry(late, datetime.date(2026, 6, 2))
+        late.submit()
+        late.approve(by=self.boss)
+
     def test_paid_hours_cannot_be_sent_back(self):
         # Editing them would leave a payslip nobody can reproduce.
         sheet = self.filled()
