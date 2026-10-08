@@ -147,6 +147,30 @@ class FixedAsset(Extensible, AuditModel):
         help_text="What the old system had depreciated by that date, counted in what is "
                   "accumulated here; its journal side is in the opening balances.",
     )
+    # What it stands on, kept as it goes on the books, as a bill line keeps the account it
+    # posted to. Its category says what the next asset gets: read live, a category moved to
+    # new accounts took a lathe's cost off an account that never held it and left the old
+    # one holding it for good, and a category switched to not depreciated stopped a lathe
+    # in service with three-quarters of its life to run.
+    asset_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="The account its cost stands on: the one its capitalisation debited, or "
+                  "its category's when it went into service. Its disposal takes the cost off "
+                  "this one, whatever the category says by then.",
+    )
+    accumulated_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Where its depreciation is held: its category's when it went into service. "
+                  "Every charge is credited here and its disposal clears it.",
+    )
+    method = models.CharField(
+        max_length=16, choices=DepreciationMethod.choices, blank=True, editable=False,
+        help_text="How it is depreciated: its category's when it went into service. Its "
+                  "charges are worked out from this; a change to the category is for assets "
+                  "to come.",
+    )
 
     class Meta:
         ordering = ["-acquisition_date", "-id"]
@@ -176,19 +200,35 @@ class FixedAsset(Extensible, AuditModel):
     def __str__(self):
         return f"{self.number or f'FA-draft-{self.pk}'} {self.name}"
 
-    # What every depreciation charge was worked out from. Once the asset
-    # has left draft, changing any of them would leave the charges
-    # already posted computed from figures the asset no longer has.
+    # What every depreciation charge was worked out from, and the accounts
+    # its entries stand on. Once the asset has left draft, changing any of
+    # them would leave the charges already posted computed from figures,
+    # and held on accounts, the asset no longer has.
     FIXED_IN_SERVICE = (
         "category_id", "acquisition_date", "in_service_date", "cost",
         "salvage_value", "life_months", "depreciated_before", "opening_depreciation",
+        "asset_account_id", "accumulated_account_id", "method",
     )
+
+    # Copied from the category as the asset goes into service, unless
+    # already kept: a capitalisation keeps the asset account it debited.
+    STANDS_ON = ("asset_account", "accumulated_account", "method")
 
     def save(self, *args, **kwargs):
         # `clean()` is not called for an asset made in code — which is
         # every asset capitalised from a bill — or through the API, so
         # the question is asked here, where every one of them passes.
         self.clean()
+        # Here rather than in place_in_service(), so that every way into service keeps it.
+        if self.status == AssetStatus.IN_SERVICE:
+            kept = [name for name in self.STANDS_ON if not self.serializable_value(name)]
+            if kept:
+                # As the category stands, not as this object last read it.
+                category = AssetCategory.objects.get(pk=self.category_id)
+                for name in kept:
+                    setattr(self, name, getattr(category, name))
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = [*kwargs["update_fields"], *kept]
         if self.pk:
             previous = FixedAsset.objects.filter(pk=self.pk).first()
             if previous is not None and previous.status != AssetStatus.DRAFT:
@@ -243,7 +283,8 @@ class FixedAsset(Extensible, AuditModel):
         return self.cost - self.salvage_value
 
     def monthly_charge(self):
-        if self.category.method == DepreciationMethod.NONE or not self.life_months:
+        # A draft's is its category's until it goes into service and keeps one.
+        if (self.method or self.category.method) == DepreciationMethod.NONE or not self.life_months:
             return Decimal("0")
         return round_money(self.depreciable_base() / self.life_months)
 
@@ -350,7 +391,7 @@ class FixedAsset(Extensible, AuditModel):
             debit=amount, description=memo[:255],
         )
         JournalLine.objects.create(
-            entry=entry, account=self.category.accumulated_account,
+            entry=entry, account=self.accumulated_account,
             credit=amount, description=memo[:255],
         )
         entry.post()
@@ -454,13 +495,14 @@ class FixedAsset(Extensible, AuditModel):
 
         memo = memo or f"Disposal of {self.number}"
         entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
+        # Off the accounts it stands on, which its category may since have moved away from.
         if accumulated:
             JournalLine.objects.create(
-                entry=entry, account=self.category.accumulated_account,
+                entry=entry, account=self.accumulated_account,
                 debit=accumulated, description=memo[:255],
             )
         JournalLine.objects.create(
-            entry=entry, account=self.category.asset_account,
+            entry=entry, account=self.asset_account,
             credit=self.cost, description=memo[:255],
         )
         if proceeds:
