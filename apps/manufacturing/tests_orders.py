@@ -581,6 +581,25 @@ class AReturnHandsBackWhatItsLineDrewTests(RunTestCase):
         self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("1900"))
         self.assertEqual(self.balance(self.wip), Decimal("10000"))
 
+    def test_not_past_the_line_on_two_lines_of_one_return(self):
+        # Found in review: the document is not posted while its lines are,
+        # so each of two lines of 60 found all 100 still out.
+        line = self.drawn()
+        both = self.issue(self.job, [(self.virgin, "60", line), (self.virgin, "60", line)],
+                          direction=IssueDirection.RETURN)
+        with self.assertRaisesMessage(
+                ValidationError, "with 60 more on this return's other lines, so 40 can come back"):
+            both.post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("1900"))
+        self.assertEqual(self.balance(self.wip), Decimal("10000"))
+
+    def test_two_lines_of_one_return_within_the_line(self):
+        line = self.drawn()
+        self.issue(self.job, [(self.virgin, "50", line), (self.virgin, "50", line)],
+                   direction=IssueDirection.RETURN).post()
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
     def test_not_the_same_kilos_twice(self):
         line = self.drawn()
         self.back(line, "100").post()
