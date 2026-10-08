@@ -71,6 +71,7 @@ from apps.accounting.settlement import (
     undone_by_note,
 )
 from apps.inventory.availability import check_available
+from apps.inventory.costing import holds_value
 from apps.inventory.valuation import (
     cogs_account_for,
     grni_account,
@@ -4293,7 +4294,8 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
 
         The charge already expensed when its own bill posted, since there
         was nothing on that bill to absorb it, so this moves it: Dr
-        inventory / Cr the expense it landed in.
+        inventory / Cr the expense it landed in, or Dr cost of sales for
+        goods no longer on the shelf to carry it.
         """
         # One allocation at a time per charge, each reading what the last left: two at once both
         # read the whole charge as unallocated and put it into stock twice.
@@ -4360,31 +4362,32 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     def _apply_landed_cost(self, receipt_line, amount, on_date):
         item = receipt_line.order_line.item
         memo = f"Landed cost from {self.bill.number} onto {item}"
-        entry = JournalEntry.objects.create(
-            date=on_date, reference=self.bill.number, memo=memo
-        )
-        JournalLine.objects.create(
-            entry=entry, account=inventory_account_for(item),
-            debit=amount, description=memo[:255],
-        )
-        JournalLine.objects.create(
-            entry=entry, account=self.posted_account or self.expense_account,
-            credit=amount, description=memo[:255],
-        )
-        entry.post()
-
-        movement = StockMovement.objects.create(
-            item=item, warehouse=receipt_line.warehouse,
-            movement_type=MovementType.ADJUSTMENT, uom=item.uom,
-            lot=receipt_line.lot, bin=receipt_line.bin,
-            # Landed cost belongs to the goods it was incurred on, and the
-            # receipt says which those were. Under FIFO that decides which
-            # layer it raises; spreading it over the shelf would misprice
-            # everything that was already standing there.
-            adjusts=receipt_line.stock_movement,
-            quantity=Decimal("0"),
-            value_adjustment=amount, reference=self.bill.number,
-            occurred_at=timezone.now(), notes=memo,
+        arrived = receipt_line.stock_movement
+        # On the shelf the receipt put the goods on, which a routed receipt
+        # makes the bay rather than the shelf the line is destined for: ten
+        # waiting in the bay took none of the freight, and an empty stock
+        # room held it.
+        warehouse = arrived.warehouse if arrived is not None else receipt_line.arrived_at()
+        lock_position(item, warehouse)
+        movement = None
+        if holds_value(item, warehouse, adjusts=arrived, lot=receipt_line.lot):
+            movement = StockMovement.objects.create(
+                item=item, warehouse=warehouse,
+                movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+                lot=receipt_line.lot, bin=arrived.bin if arrived is not None else receipt_line.bin,
+                # Landed cost belongs to the goods it was incurred on, and the
+                # receipt says which those were. Under FIFO that decides which
+                # layer it raises; spreading it over the shelf would misprice
+                # everything that was already standing there.
+                adjusts=arrived,
+                quantity=Decimal("0"),
+                value_adjustment=amount, reference=self.bill.number,
+                occurred_at=timezone.now(), notes=memo,
+            )
+        entry = _post_landed_cost(
+            item, self.posted_account or self.expense_account, amount,
+            on_shelf=amount if movement is not None else Decimal("0"),
+            date=on_date, reference=self.bill.number, memo=memo,
         )
         return LandedCostApplication.objects.create(
             charge_line=self, receipt_line=receipt_line, amount=amount,
@@ -6633,6 +6636,32 @@ class GoodsReceiptLine(AuditModel):
         super().delete(*args, **kwargs)
 
 
+def _post_landed_cost(item, expense, amount, on_shelf, date, reference, memo, undoing=None):
+    """
+    The ledger side of landing a charge on goods, or of taking it back off:
+    the expense it sat in, the inventory account for what the shelf took
+    (`on_shelf`), and cost of sales for the rest, where goods no longer on
+    the shelf took their cost. Written here rather than bent out of
+    post_inventory_entry, whose sides are GRNI and cost of sales, not an
+    expense (CLAUDE.md, mistake 6). `undoing` the entry being released: the
+    same lines the other way round, as far as the shelf still allows.
+    """
+    entry = JournalEntry.objects.create(date=date, reference=reference, memo=memo, reverses=undoing)
+    sign = Decimal("-1") if undoing is not None else Decimal("1")
+    for account, value in ((inventory_account_for, on_shelf),
+                           (cogs_account_for, amount - on_shelf),
+                           (lambda _item: expense, -amount)):
+        value = sign * value
+        if value:
+            JournalLine.objects.create(
+                entry=entry, account=account(item), description=memo[:255],
+                debit=value if value > 0 else Decimal("0"),
+                credit=-value if value < 0 else Decimal("0"),
+            )
+    entry.post()
+    return entry
+
+
 class LandedCostApplication(AuditModel):
     """
     A capitalised charge from one bill applied to goods received on
@@ -6691,22 +6720,32 @@ class LandedCostApplication(AuditModel):
         """
         if self.is_released():
             raise ValidationError("This allocation has already been released.")
-        entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.localdate(),
-            memo=f"Landed cost released from {self.receipt_line.order_line.item}",
-        )
-        StockMovement.objects.create(
-            item=self.receipt_line.order_line.item,
-            warehouse=self.receipt_line.warehouse,
-            movement_type=MovementType.ADJUSTMENT,
-            uom=self.receipt_line.order_line.item.uom,
-            lot=self.receipt_line.lot, bin=self.receipt_line.bin,
-            adjusts=self.receipt_line.stock_movement,
-            quantity=Decimal("0"),
-            value_adjustment=-self.amount,
-            reference=self.charge_line.bill.number,
-            occurred_at=timezone.now(),
-            notes=f"Landed cost released from {self.charge_line.bill.number}",
+        item = self.receipt_line.order_line.item
+        landed = self.stock_movement
+        # Off the shelf it went onto, and only what that shelf still holds:
+        # goods sold since took their freight into cost of sales with them,
+        # and that is where it comes back out of.
+        off_shelf = Decimal("0")
+        if landed is not None:
+            lock_position(item, landed.warehouse)
+            if holds_value(item, landed.warehouse, adjusts=landed.adjusts, lot=landed.lot):
+                StockMovement.objects.create(
+                    item=item, warehouse=landed.warehouse,
+                    movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+                    lot=landed.lot, bin=landed.bin, adjusts=landed.adjusts,
+                    quantity=Decimal("0"),
+                    value_adjustment=-landed.value_adjustment,
+                    reference=self.charge_line.bill.number,
+                    occurred_at=timezone.now(),
+                    notes=f"Landed cost released from {self.charge_line.bill.number}",
+                )
+                off_shelf = landed.value_adjustment
+        entry = _post_landed_cost(
+            item, self.charge_line.posted_account or self.charge_line.expense_account,
+            self.amount, on_shelf=off_shelf,
+            date=to_date(on_date) or timezone.localdate(),
+            reference=self.journal_entry.reference,
+            memo=f"Landed cost released from {item}", undoing=self.journal_entry,
         )
         self.released_entry = entry
         self.save(update_fields=["released_entry", "updated_at"])
