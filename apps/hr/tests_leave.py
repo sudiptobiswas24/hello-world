@@ -245,6 +245,24 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         self.assertEqual(booking.status, LeaveStatus.CANCELLED)
         self.assertEqual(leave_taken(person, self.policy, 2027), Decimal("0"))
 
+    def test_cancelled_while_under_way_it_keeps_the_days_already_taken(self):
+        # Coming back early is what cancel() took approved requests for, and it gave back every
+        # day: Monday 5 to Friday 9 July, back on the Thursday, returned all five. Cancelled on
+        # its first day, a leave has taken nothing and goes whole.
+        person = self.employee("W6")
+        booking = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        booking.approve(by=self.boss)
+        booking.cancel(on_date=datetime.date(2027, 7, 8))
+        booking.refresh_from_db()
+        self.assertEqual((booking.status, booking.end_date, booking.days_taken),
+                         (LeaveStatus.APPROVED, datetime.date(2027, 7, 7), Decimal("3.00")))
+
+        unstarted = self.request(person, datetime.date(2027, 7, 12), datetime.date(2027, 7, 16))
+        unstarted.approve(by=self.boss)
+        unstarted.cancel(on_date=datetime.date(2027, 7, 12))
+        self.assertEqual((unstarted.status, leave_taken(person, self.policy, 2027)),
+                         (LeaveStatus.CANCELLED, Decimal("3.00")))
+
     def test_leave_already_taken_cannot_be_given_back(self):
         person = self.employee("W4")
         booking = self.request(person, datetime.date(2026, 2, 2), datetime.date(2026, 2, 6))

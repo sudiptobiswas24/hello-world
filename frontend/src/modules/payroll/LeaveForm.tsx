@@ -104,7 +104,10 @@ export default function LeaveForm() {
           <ActionButton primary pending={act.pending} onClick={() => void decide("approve")}>Approve</ActionButton>
         )}
         {(leave?.status === "pending" || leave?.status === "approved") && (mine || forOthers) && (
-          <ActionButton pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${leave!.id}/cancel/`, {}, { done: "Cancelled: the days are back" })}>
+          <ActionButton pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${leave!.id}/cancel/`, {}, {
+            // A leave under way is cut short to yesterday, not cancelled: the days already taken stay taken.
+            done: (row) => row.status === "cancelled" ? "Cancelled: the days are back" : `Ended on ${date(row.end_date)}: the days after are back`,
+          })}>
             Cancel it
           </ActionButton>
         )}
