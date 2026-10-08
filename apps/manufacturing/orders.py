@@ -2550,12 +2550,21 @@ class MaterialIssueLine(AuditModel):
                 issue__posted=True, issue__voided_at__isnull=True,
             ).select_related("item", "uom")
         ), Decimal("0"))
-        out = line.stock_quantity() - back
+        # This return's other lines on the same issue line count too: the
+        # document is not posted yet, so the filter above cannot see them,
+        # and two lines of 60 handed back 120 of 100 drawn.
+        here = sum((
+            row.stock_quantity() for row in issue.lines.filter(
+                returns_line=line,
+            ).exclude(pk=self.pk).select_related("item", "uom")
+        ), Decimal("0"))
+        out = line.stock_quantity() - back - here
         if self.stock_quantity() > out:
             raise ValidationError(
                 f"{self}: that line drew {_shown(line.stock_quantity())} {self.item.uom} "
-                f"and {_shown(back)} has come back against it, so {_shown(out)} can "
-                f"come back, not {_shown(self.stock_quantity())}."
+                f"and {_shown(back)} has come back against it"
+                + (f", with {_shown(here)} more on this return's other lines" if here else "")
+                + f", so {_shown(out)} can come back, not {_shown(self.stock_quantity())}."
             )
 
     def post(self, issue, occurred_at, label):
