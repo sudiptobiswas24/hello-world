@@ -502,6 +502,32 @@ class NobodyIsPaidTwiceTests(PayrollTestCase):
         with self.assertRaises(IntegrityError):
             Payslip.objects.create(run=run, employee=person)
 
+    def paid_and_forgotten(self):
+        """June posted for Z1 on 4,400 and Z2, who had no pay set up and a slip with nothing on it."""
+        paid, forgotten = self.employee("Z1"), self.employee("Z2")
+        self.pay(paid, self.salary, "4400")
+        run = self.pay_run()
+        run.calculate(employees=[paid, forgotten])
+        run.post()
+        return run, forgotten
+
+    def test_somebody_a_run_paid_nothing_is_paid_for_the_month_by_another(self):
+        run, forgotten = self.paid_and_forgotten()
+        self.assertEqual([slip.employee.employee_number for slip in run.payslips.all()], ["Z1"])
+        self.pay(forgotten, self.salary, "3000")
+        late = self.pay_run()
+        late.calculate(employees=[forgotten])
+        late.post()
+        self.assertEqual(self.balance(self.wages), Decimal("7400.00"))
+
+    def test_the_register_of_somebody_a_run_paid_nothing_is_not_held_by_it(self):
+        from .attendance import AttendanceDay, AttendanceStatus
+
+        _run, forgotten = self.paid_and_forgotten()
+        day = AttendanceDay.objects.create(employee=forgotten, on=datetime.date(2026, 6, 10),
+                                           status=AttendanceStatus.ABSENT)
+        self.assertEqual(day.status, AttendanceStatus.ABSENT)
+
     def test_two_rates_cannot_be_in_force_at_once(self):
         person = self.employee("T5")
         self.pay(person, self.salary, "5000")
