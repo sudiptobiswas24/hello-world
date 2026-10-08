@@ -2808,6 +2808,9 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         if self.is_voided():
             raise ValidationError(f"{self} is already voided.")
         _check_order_is_open_for(self.work_order, "void this entry")
+        from .bales import check_not_baled
+
+        check_not_baled(self.lot, f"{self} is voided")
         on_date = to_date(on_date) or timezone.localdate()
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"

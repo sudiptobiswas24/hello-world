@@ -15,6 +15,7 @@ from apps.inventory.models import Item, Lot
 from apps.sales.models import Delivery, DeliveryLine, SalesOrder, SalesOrderLine
 
 from .bales import Bale, bales_holding, break_bale, load, pack, trace, unload
+from .conversion import BagCount, void_bags
 from .tests_bag_counts import ConversionTestCase
 from .tests_orders import TODAY
 from .trace import recall
@@ -83,6 +84,27 @@ class PackingTests(BaleTestCase):
         bale.gross_kg = Decimal("1")
         with self.assertRaisesMessage(ValidationError, "is sealed. Break it"):
             bale.save()
+
+
+class ABundleInASealedBaleStaysTests(BaleTestCase):
+    """
+    Found by probing: a count voided while its bundle was sealed in a
+    bale took the 500 bags off the shelf, and the bale went on reading
+    1,000 bags, sealed. Re-batching already refused such a bundle.
+    """
+
+    def test_its_count_is_not_voided(self):
+        bale = self.bale()
+        count = BagCount.objects.get(inspection__lot=self.b1)
+        with self.assertRaisesMessage(ValidationError, "500 of BG-"):
+            void_bags(count, self.supervisor, "Miscounted")
+        self.assertEqual(self.b1.on_hand_at(self.plant), Decimal("500"))
+        self.assertEqual(Bale.objects.get(pk=bale.pk).bags(), Decimal("1000"))
+
+    def test_once_the_bale_is_broken_it_is(self):
+        break_bale(self.bale(), "Re-sorting")
+        void_bags(BagCount.objects.get(inspection__lot=self.b1), self.supervisor, "Miscounted")
+        self.assertEqual(self.b1.on_hand_at(self.plant), Decimal("0"))
 
 
 class ShippingTests(BaleTestCase):

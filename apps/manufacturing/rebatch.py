@@ -48,6 +48,8 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
+from .bales import baled
+
 ZERO = Decimal("0")
 
 
@@ -144,7 +146,7 @@ class Rebatch(AuditModel):
                                   "in comes out.")
         lock_positions([(self.item, self.warehouse)])
         for line in taken:
-            free = line.lot.on_hand_at(self.warehouse) - _baled(line.lot)
+            free = line.lot.on_hand_at(self.warehouse) - baled(line.lot)
             if line.quantity > free:
                 raise ValidationError(
                     f"{line.lot.code} has {_q(free)} on the shelf and not in a sealed bale; "
@@ -200,7 +202,7 @@ class Rebatch(AuditModel):
         made = list(self.made())
         for line in made:
             others = line.lot.movements.exclude(pk=line.stock_movement_id)
-            if others.exists() or _baled(line.lot):
+            if others.exists() or baled(line.lot):
                 raise ValidationError(f"{line.lot.code} has been used since it was made; "
                                       "the re-batch stands.")
         occurred_at = timezone.now()
@@ -259,12 +261,6 @@ class RebatchLine(AuditModel):
             super().save(update_fields=fields + ["updated_at"])
         finally:
             self._writing = False
-
-
-def _baled(lot):
-    from .bales import BaleLine, _standing
-
-    return sum((line.quantity for line in _standing(BaleLine.objects.filter(lot=lot))), ZERO)
 
 
 def _standing_lines(**filters):
