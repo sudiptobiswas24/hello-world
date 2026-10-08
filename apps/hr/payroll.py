@@ -838,11 +838,13 @@ class Payslip(AuditModel):
         ).select_related("policy"):
             overlap_start = max(request.start_date, self.run.period_start)
             overlap_end = min(request.end_date, self.run.period_end)
-            total += Decimal(working_days(
+            days = Decimal(working_days(
                 overlap_start, overlap_end,
                 pattern=self.employee.working_days,
                 region=self.employee.holiday_region,
             ))
+            # Half a day off is half a day unpaid, as it was half a day off the allowance.
+            total += days / 2 if request.half_day else days
         return total
 
     def absent_days(self):
