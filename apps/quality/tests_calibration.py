@@ -7,6 +7,12 @@ BAL-1, the lab balance: 0 to 200 g, calibrated every 180 days.
   June 2026 found out and adjusted: the inspections of 1 March and 1
   June measured on it are suspect, the one of 1 December 2025 (under the
   previous good calibration's watch, before the 10 January check) is not.
+
+  Found failed on 15 March, on a certificate that only arrives in May:
+  the inspections of 1 March and 1 April both relied on the January
+  check and both are suspect. Repaired and passed on 20 April, the one
+  of 1 May relied on that and is not. Adjusted on 15 March instead, it
+  was right again from that day, and only 1 March is suspect.
 """
 
 import datetime
@@ -148,6 +154,23 @@ class FoundOutTests(CalibrationTestCase):
         failed = self.calibrate(D(2026, 6, 15), CalibrationResult.FAIL)
         self.assertEqual(adjusted.suspect_inspections(), [february])
         self.assertEqual(failed.suspect_inspections(), [april])
+
+    def test_a_failure_recorded_late_casts_doubt_forward_on_what_relied_on_the_last_good(self):
+        self.calibrate(D(2026, 1, 10))
+        march = self.measured(D(2026, 3, 1)).post()
+        april = self.measured(D(2026, 4, 1)).post()
+        failed = self.calibrate(D(2026, 3, 15), CalibrationResult.FAIL)
+        self.calibrate(D(2026, 4, 20))
+        may = self.measured(D(2026, 5, 1)).post()
+        self.assertEqual(failed.suspect_inspections(), [march, april])
+        self.assertNotIn(may, failed.suspect_inspections())
+
+    def test_an_adjustment_recorded_late_was_right_again_from_its_day(self):
+        self.calibrate(D(2026, 1, 10))
+        march = self.measured(D(2026, 3, 1)).post()
+        self.measured(D(2026, 4, 1)).post()
+        adjusted = self.calibrate(D(2026, 3, 15), CalibrationResult.ADJUSTED)
+        self.assertEqual(adjusted.suspect_inspections(), [march])
 
     def test_found_out_at_its_first_check_has_nothing_behind_it(self):
         # A reading can only name an instrument in calibration, so a good
