@@ -415,6 +415,23 @@ class PayrollRaceTests(RaceCase):
                 period=payroll_fixture.JUNE[0], amount=Decimal("893"))
             for payment in payments]))
 
+    def test_a_run_is_not_voided_as_its_dues_are_paid_over(self):
+        """
+        Each held at its first write after deciding: the void at its reversal, the remittance at
+        itself. Both hold the ESI account, so whichever goes second sees the other: the run
+        stands with the dues paid over, or goes with nothing paid over against it.
+        """
+        from apps.core.models import Party
+
+        run = self.run_for(*payroll_fixture.JUNE)
+        payment = self.payment(self.esi_payable, "893", Party.objects.create(code="ESIC", name="ESIC"))
+        self.once(race(None, lambda: PayRun.objects.get(pk=run.pk).void(on_date=payroll_fixture.JULY_15),
+                       lambda: StatutoryRemittance.objects.create(
+                           payment_id=payment.pk, liability_account=self.esi_payable,
+                           period=payroll_fixture.JUNE[0], amount=Decimal("893"))))
+        self.assertIn((PayRun.objects.get(pk=run.pk).is_voided(), StatutoryRemittance.objects.count()),
+                      [(True, 0), (False, 1)])
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
