@@ -87,6 +87,7 @@ class Command(BaseCommand):
         findings += self.unread_settings(all_code)
         findings += self.uncalled_helpers(labels, sources, all_code)
         findings += self.unlocked_stock_writers(labels, sources)
+        findings += self.movements_in_another_unit(labels, sources)
         findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
@@ -218,6 +219,60 @@ class Command(BaseCommand):
                     f"{key} writes stock movements and never holds a position — "
                     "two documents can read the same shelf and both post.",
                 ))
+        return findings
+
+    # Stock movements written in a unit other than their item's, with why
+    # the quantity and the cost are both in that unit.
+    WRITTEN_IN_ANOTHER_UNIT = {
+        "purchasing.GoodsReceipt.post": "the received quantity and the agreed price are both "
+                                        "per order-line unit, and the movement restates the pair",
+        "purchasing.GoodsReceipt._move_consignment": "at no cost: the unit carries no value",
+        "purchasing.draw_consignment": "at no cost: the unit carries no value",
+    }
+
+    def movements_in_another_unit(self, labels, sources):
+        """
+        A stock movement takes its quantity and its cost in the unit it
+        names, and restates the pair into the item's stocking unit. Named
+        in the document's unit with a cost per stocking unit, the pair is
+        restated a factor off: half a tonne of tape went onto the shelf at
+        45.86 while the ledger took 45,855.67. A movement is written in its
+        item's own unit, or says here why its pair is in another.
+        """
+        findings, used = [], set()
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                if "StockMovement.objects.create" not in text:
+                    continue
+
+                def walk(node, scope):
+                    for child in ast.iter_child_nodes(node):
+                        if isinstance(child, (ast.ClassDef, ast.FunctionDef)):
+                            walk(child, scope + [child.name])
+                            continue
+                        if isinstance(child, ast.Call) and ast.unparse(child.func) == "StockMovement.objects.create":
+                            given = {k.arg: ast.unparse(k.value) for k in child.keywords if k.arg}
+                            item, uom = given.get("item"), given.get("uom")
+                            if uom != f"{item}.uom":
+                                key = ".".join([label] + scope)
+                                if key in self.WRITTEN_IN_ANOTHER_UNIT:
+                                    used.add(key)
+                                else:
+                                    findings.append((
+                                        "movement in another unit",
+                                        f"{label}/{path.name}:{child.lineno} writes {item} in {uom}: "
+                                        f"write it in {item}.uom, with the quantity and the cost "
+                                        "per that unit, or say why here.",
+                                    ))
+                        walk(child, scope)
+
+                walk(ast.parse(text), [])
+        findings += [("stale exemption", f"{key} writes its movements in its item's unit now; "
+                                         "take it off WRITTEN_IN_ANOTHER_UNIT.")
+                     for key in sorted(set(self.WRITTEN_IN_ANOTHER_UNIT) - used)
+                     if key.split(".")[0] in labels]
         return findings
 
     # Not state changes: the guards themselves, and what Python calls.
