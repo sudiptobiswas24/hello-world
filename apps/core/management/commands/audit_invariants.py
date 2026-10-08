@@ -96,6 +96,9 @@ class Command(BaseCommand):
         findings += self.unsettable_fields(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
+        findings += self.shelf_read_before_lock(labels, sources)
+        findings += self.per_unit_withdrawal_rates(labels, sources)
+        findings += self.movements_written_around_save(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -372,6 +375,109 @@ class Command(BaseCommand):
                         "unsettable field",
                         f"{key} can be set on the model but {serializer.__name__} drops it "
                         "without a word.",
+                    ))
+        return findings
+
+    # What reads a shelf to decide on it, and what holds the shelf.
+    SHELF_READS = {"on_hand_at", "available_at", "reserved_at", "check_available", "cost_of_removing"}
+    SHELF_LOCKS = {"lock_position", "lock_positions"}
+    # Reads made before the lock on purpose, with the reason.
+    READ_BEFORE_LOCK_ON_PURPOSE = {}
+
+    def shelf_read_before_lock(self, labels, sources):
+        """
+        A function that holds a shelf and read it first.
+
+        The lock is taken so two documents cannot both read the same
+        shelf, decide, and write; a read before it decides on what the
+        other may already be changing. A delivery checked what was on hand
+        and free and only then held the shelf, its comment saying it held
+        it before anything read: two orders each shipped the last ten.
+        Asked of each function that takes the lock, by where its first
+        read and its first lock are.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                for fn in ast.walk(ast.parse(text)):
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    reads, locks = [], []
+                    for node in ast.walk(fn):
+                        if isinstance(node, ast.Call):
+                            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+                            if name in self.SHELF_READS:
+                                reads.append(node.lineno)
+                            elif name in self.SHELF_LOCKS:
+                                locks.append(node.lineno)
+                    key = f"{label}/{path.name}:{fn.name}"
+                    if reads and locks and min(reads) < min(locks) and key not in self.READ_BEFORE_LOCK_ON_PURPOSE:
+                        findings.append((
+                            "shelf read before its lock",
+                            f"{key} reads the shelf at line {min(reads)} and holds it only at line "
+                            f"{min(locks)}; two at once both decide on what they read. Lock first.",
+                        ))
+        return findings
+
+    # Who may still ask for a withdrawal's cost per unit, and why.
+    PER_UNIT_RATE_ALLOWED = {
+        "inventory/costing.py": "where the rate is defined",
+        "inventory/models.py": "the Item method that hands the rate on",
+        "manufacturing/bom.py": "a planned cost: nothing is booked or moved at it",
+    }
+
+    def per_unit_withdrawal_rates(self, labels, sources):
+        """
+        A withdrawal priced at a rate rather than at the total it takes.
+
+        cost_of_removing() is a total: under FIFO the units span layers,
+        under specific identification the batch decides, and a rate
+        multiplied back up is not what the shelf gives up. Clearing three
+        cases out of inspection at a rate for three eaches turned 960 of
+        stock into 840; a write-down at a four-place rate booked 3,333.30
+        where the shelf gave up 3,333.33. A move between shelves is
+        move_stock(); a posting books the total.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                key = f"{label}/{path.name}"
+                if key in self.PER_UNIT_RATE_ALLOWED:
+                    continue
+                for match in re.finditer(r"\b(removal_unit_cost|unit_cost_for)\(", text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    findings.append((
+                        "per-unit withdrawal rate",
+                        f"{key}:{line} asks {match.group(1)}(); book what cost_of_removing() "
+                        "says leaving takes, the total, or move it with move_stock().",
+                    ))
+        return findings
+
+    def movements_written_around_save(self, labels, sources):
+        """
+        Stock movements written or changed without StockMovement.save().
+
+        Its save() is where every movement is restated in the stocking unit
+        and refused below zero, out of a batch or a bin that has not got
+        it, unless the warehouse allows it; a bulk insert or a queryset
+        update goes round all of it, and round the append-only rule.
+        """
+        findings = []
+        shape = re.compile(r"StockMovement\.objects\b[^\n]*\.(bulk_create|bulk_update|update)\(")
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                for match in shape.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    findings.append((
+                        "movement written around save",
+                        f"{label}/{path.name}:{line} writes stock movements with {match.group(1)}(), "
+                        "past the checks StockMovement.save() makes. Create them one by one.",
                     ))
         return findings
 
