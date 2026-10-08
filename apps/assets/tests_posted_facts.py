@@ -18,11 +18,11 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import connection
-from django.test import TransactionTestCase, tag
+from django.test import SimpleTestCase, TransactionTestCase, tag
 
 from apps.accounting.models import Account, AccountType
 
-from .models import DepreciationMethod, FixedAsset
+from .models import AssetCategory, DepreciationMethod, FixedAsset
 from .tests import CapitalisationFixture
 
 MAR_31 = datetime.date(2026, 3, 31)
@@ -118,6 +118,77 @@ class TheMethodAnAssetIsDepreciatedByTests(CategoryMovedTestCase):
         asset.place_in_service(on_date=datetime.date(2026, 1, 1))
         self.assertEqual((asset.method, asset.depreciate(through=JUN_30)), (DepreciationMethod.NONE, []))
 
+
+class ACapitalisedDraftTests(CapitalisationFixture):
+    """
+    A draft from a bill has posted: its capitalisation put 12,000 on the
+    plant account. Its status said draft, and the guard asked only that.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.controller = self.as_role("Controller")
+        (self.lathe,) = self.bill_line("1", "12000").capitalise_as_asset(self.category)
+
+    def patched(self, asset, **changes):
+        return self.controller.patch(f"/api/assets/assets/{asset.pk}/", changes, format="json")
+
+    def test_it_keeps_the_cost_its_capitalisation_posted(self):
+        refused = self.patched(self.lathe, cost="15000.00")
+        self.lathe.refresh_from_db()
+        self.lathe.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.lathe.dispose(on_date=datetime.date(2026, 1, 15))
+        self.assertEqual((refused.status_code, self.lathe.cost, self.balance(self.plant)),
+                         (400, Decimal("12000.00"), Decimal("0")))
+        self.assertIn("settled by that entry", str(refused.json()))
+
+    def test_nor_is_it_moved_to_another_category(self):
+        vehicles = Account.objects.create(code="1520", name="Vehicles", account_type=AccountType.ASSET)
+        category = AssetCategory.objects.create(
+            code="VEH", name="Vehicles", asset_account=vehicles, accumulated_account=self.accumulated,
+            expense_account=self.depreciation, disposal_account=self.disposal, default_life_months=12)
+        refused = self.patched(self.lathe, category=category.pk)
+        lathe = FixedAsset.objects.get(pk=self.lathe.pk)
+        lathe.place_in_service(on_date=datetime.date(2026, 1, 1))
+        lathe.dispose(on_date=datetime.date(2026, 1, 15))
+        self.assertEqual((refused.status_code, self.balance(self.plant), self.balance(vehicles)),
+                         (400, Decimal("0"), Decimal("0")))
+
+    def test_nor_is_its_acquisition_date_moved_off_the_bills(self):
+        self.assertEqual(self.patched(self.lathe, acquisition_date="2026-02-01").status_code, 400)
+
+    def test_nor_is_it_given_depreciation_an_old_system_took(self):
+        refused = self.patched(self.lathe, depreciated_before="2026-03-31", opening_depreciation="3000.00")
+        self.assertEqual((refused.status_code, FixedAsset.objects.get(pk=self.lathe.pk).opening_depreciation),
+                         (400, Decimal("0.00")))
+
+    def test_what_its_capitalisation_did_not_settle_still_changes(self):
+        changed = self.patched(self.lathe, name="Lathe No. 2", life_months=24, salvage_value="1000.00",
+                               in_service_date="2026-02-01")
+        self.assertEqual(changed.status_code, 200, changed.content)
+
+    def test_a_draft_typed_in_by_hand_is_still_repriced(self):
+        draft = FixedAsset.objects.create(name="Press", category=self.category, cost=Decimal("6000"),
+                                          acquisition_date=datetime.date(2026, 1, 1), life_months=12)
+        self.assertEqual(self.patched(draft, cost="6500.00").status_code, 200)
+
+class TheAuditAsksItTests(SimpleTestCase):
+    """`manage.py audit_invariants` reports an entry kept past a guard keyed to the status."""
+
+    def findings(self, edit=lambda text: text):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        sources = app_sources()
+        sources["assets"] = {path: edit(text) if path.name == "models.py" else text
+                             for path, text in sources["assets"].items()}
+        return [detail for _, detail in Command().entries_kept_past_the_edit_guard(["assets"], sources)]
+
+    def test_a_guard_that_forgets_the_capitalisation_is_reported(self):
+        (said,) = self.findings(lambda text: text.replace("previous.capitalisation_entry_id", "previous.pk"))
+        self.assertIn("assets.FixedAsset.capitalisation_entry is set by BillLine.capitalise_as_asset", said)
+
+    def test_the_guard_as_it_stands_is_not(self):
+        self.assertEqual(self.findings(), [])
 
 # Slow: it unwinds the later migrations and replays them.
 @tag("migration")

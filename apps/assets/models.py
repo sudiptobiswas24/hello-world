@@ -210,6 +210,17 @@ class FixedAsset(Extensible, AuditModel):
         "asset_account_id", "accumulated_account_id", "method",
     )
 
+    # What a capitalisation settles while the asset is still a draft: its
+    # cost, onto its category's asset account, on the bill's date, and all
+    # of it this system's, so nothing depreciated by an old one. Repriced
+    # to 15,000 against 12,000 posted, its disposal took 15,000 off the
+    # plant account and left it at -3,000; moved to another category, it
+    # came off that category's account and left 12,000 on the first.
+    FIXED_ONCE_CAPITALISED = (
+        "category_id", "acquisition_date", "cost", "asset_account_id",
+        "depreciated_before", "opening_depreciation",
+    )
+
     # Copied from the category as the asset goes into service, unless
     # already kept: a capitalisation keeps the asset account it debited.
     STANDS_ON = ("asset_account", "accumulated_account", "method")
@@ -231,18 +242,30 @@ class FixedAsset(Extensible, AuditModel):
                     kwargs["update_fields"] = [*kwargs["update_fields"], *kept]
         if self.pk:
             previous = FixedAsset.objects.filter(pk=self.pk).first()
-            if previous is not None and previous.status != AssetStatus.DRAFT:
-                changed = [
-                    name for name in self.FIXED_IN_SERVICE
-                    if getattr(previous, name) != getattr(self, name)
-                ]
-                if changed:
-                    raise ValidationError(
-                        f"{self} is {previous.get_status_display().lower()}; "
-                        f"its {', '.join(n.replace('_id', '') for n in changed)} "
-                        "can no longer change. Its depreciation was worked out "
-                        "from them — dispose of it and register it again."
-                    )
+            # Fixed by what it has posted, not by its status alone: a draft from a bill has
+            # posted its capitalisation.
+            if previous is None:
+                fixed = ()
+            elif previous.status != AssetStatus.DRAFT:
+                fixed = self.FIXED_IN_SERVICE
+            elif previous.capitalisation_entry_id:
+                fixed = self.FIXED_ONCE_CAPITALISED
+            else:
+                fixed = ()
+            changed = [name for name in fixed if getattr(previous, name) != getattr(self, name)]
+            names = ", ".join(n.replace("_id", "") for n in changed)
+            if changed and previous.status != AssetStatus.DRAFT:
+                raise ValidationError(
+                    f"{self} is {previous.get_status_display().lower()}; "
+                    f"its {names} can no longer change. Its depreciation was worked out "
+                    "from them — dispose of it and register it again."
+                )
+            if changed:
+                raise ValidationError(
+                    f"{self} was capitalised from its bill at {previous.cost}; its {names} "
+                    "were settled by that entry and can no longer change. Un-capitalise it, "
+                    "then capitalise the bill line again as it should be."
+                )
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
