@@ -677,6 +677,53 @@ class AReturnHandsBackWhatItsLineDrewTests(RunTestCase):
         self.assertEqual(self.balance(self.wip), Decimal("0"))
 
 
+class ATotalComesBackWholeTests(RunTestCase):
+    """
+    Found in review: a return came back at its issue line's rate, kept to
+    six places and multiplied back up, and voiding an issue put the
+    material back at the same rate. 30,000 kg drawn at 2,125,670.33 came
+    back at 2,125,670.34: work in progress at -0.01 after the whole line
+    was returned, and the shelf 0.01 above the ledger after a void.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.stock(self.virgin, "30000", "68.91272284")
+        self.job = self.order("40000")
+        self.job.release(TODAY)
+        self.before = self.shelf()
+        document = self.issue(self.job, [(self.virgin, "30000")])
+        document.post()
+        self.drawn = document.lines.get()
+
+    def shelf(self):
+        return self.virgin.valuation_at(self.plant)[1].quantize(Decimal("0.01"))
+
+    def back(self, quantity):
+        document = self.issue(self.job, [(self.virgin, quantity, self.drawn)],
+                              direction=IssueDirection.RETURN)
+        document.post()
+        return document.lines.get()
+
+    def test_the_whole_line_returned_leaves_nothing_in_progress(self):
+        self.assertEqual(self.before, Decimal("2267381.69"))
+        self.back("30000")
+        self.assertEqual(self.balance(self.wip), Decimal("0.00"))
+        self.assertEqual(self.shelf(), self.before)
+        self.assertEqual(self.drawn.posted_value, Decimal("2125670.32987500"))
+
+    def test_returned_in_two_parts_they_come_to_what_went_out(self):
+        first, second = self.back("10000"), self.back("20000")
+        self.assertEqual(self.balance(self.wip), Decimal("0.00"))
+        self.assertEqual((first.posted_value, second.posted_value),
+                         (Decimal("708556.77662500"), Decimal("1417113.55325000")))
+
+    def test_the_issue_voided_puts_back_what_went_out(self):
+        self.drawn.issue.void(TODAY)
+        self.assertEqual(self.balance(self.wip), Decimal("0.00"))
+        self.assertEqual(self.shelf(), self.before)
+
+
 class BookedInAnotherUnitOfWeightTests(RunTestCase):
     """
     Found by probing: a document in tonnes on a run kept in kilogrammes
