@@ -100,28 +100,33 @@ class Account(AuditModel):
                 f"{self} is the {kept}; money does not move through it."]})
 
     def _check_tree(self):
+        # Each beside the field it is about, so the form that made the
+        # choice shows it there and not only in a passing notice.
         if self.parent_id and self.parent_id == self.pk:
-            raise ValidationError("An account cannot be its own parent.")
+            raise ValidationError({"parent": ["An account cannot be its own parent."]})
         if self.parent_id and self.parent.account_type != self.account_type:
-            raise ValidationError("A sub-account must have the same account_type as its parent.")
+            raise ValidationError({"parent": ["A sub-account must have the same account_type as its parent."]})
         # Its own parent at one remove is still its own parent: the chart
         # would have no top, and every report that walks it would not end.
+        # The loop closes on this account, read back; the one chosen is
+        # what is already under it.
         seen, above = {self.pk}, self.parent
         while above is not None and self.pk is not None:
             if above.pk in seen:
-                raise ValidationError(f"{above} is already under {self}; it cannot also be above it.")
+                raise ValidationError({"parent": [
+                    f"{self.parent} is already under {self}; it cannot also be above it."]})
             seen.add(above.pk)
             above = above.parent
         if self.pk:
             before = Account.objects.filter(pk=self.pk).values_list("account_type", flat=True).first()
             if before and before != self.account_type:
                 if self.children.exclude(account_type=self.account_type).exists():
-                    raise ValidationError("Its sub-accounts are of the old type; change them first.")
+                    raise ValidationError({"account_type": [
+                        "Its sub-accounts are of the old type; change them first."]})
                 if JournalLine.objects.filter(account=self, entry__posted=True).exists():
-                    raise ValidationError(
+                    raise ValidationError({"account_type": [
                         f"{self} has posted entries, reported as {before}. Changing its type would "
-                        "move them between the statements; open a new account instead."
-                    )
+                        "move them between the statements; open a new account instead."]})
 
 
 class AccountingPeriod(AuditModel):

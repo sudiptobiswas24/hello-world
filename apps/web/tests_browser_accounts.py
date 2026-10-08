@@ -1,8 +1,9 @@
 """
 The books, in a browser, by the people who keep them: the bookkeeper
 keys an entry, the controller posts it and reads it back through the
-trial balance into the account's ledger. Payroll is worked out by one
-person and posted by another. Each step is read back from the database.
+trial balance into the account's ledger. The bookkeeper keeps the chart
+from the office. Payroll is worked out by one person and posted by
+another. Each step is read back from the database.
 """
 
 import re
@@ -15,7 +16,7 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
-from apps.accounting.models import JournalEntry
+from apps.accounting.models import Account, AccountType, JournalEntry
 from apps.hr.tests_payroll_api import PayrollApiTestCase
 
 from .tests_browser import BrowserMixin, BrowserTestCase
@@ -133,6 +134,95 @@ class BooksInTheBrowserTests(BrowserTestCase):
                     expect(page.locator("main").first).to_contain_text(heading)
                     page.wait_for_load_state("networkidle")
                 self.assertEqual(self.problems, [], role)
+
+
+class TheChartKeptOnScreenTests(BrowserTestCase):
+    """
+    Accounts made and changed from the office rather than the admin. 1010
+    Bank had a receipt of 500 posted into it; 2400 Secured loans is a
+    liability to group a borrowing under.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.receipt("500")
+        self.secured = Account.objects.create(code="2400", name="Secured loans", account_type=AccountType.LIABILITY)
+
+    def url(self, path):
+        return f"{self.live_server_url}/app{path}"
+
+    def test_made_from_the_chart_changed_from_its_ledger_and_the_bank_stays_a_bank(self):
+        keeper = self.sign_in(self.person("Bookkeeper"), "/app/accounts/chart")
+        keeper.get_by_role("link", name="New", exact=True).click()
+        keeper.wait_for_url(re.compile(r"/accounts/chart/new$"))
+        keeper.get_by_label("Code", exact=True).fill("1030")
+        keeper.get_by_label("Name", exact=True).fill("SBI cash credit")
+        keeper.get_by_label("Kind", exact=True).select_option(label="Liability")
+        # Its parent is offered from the kind chosen: the bank is an asset.
+        parent = keeper.get_by_role("combobox", name="Parent", exact=True)
+        parent.fill("Bank")
+        expect(keeper.get_by_text("Nothing matches “Bank”.")).to_be_visible()
+        parent.fill("Secured")
+        keeper.get_by_role("option", name=re.compile("^2400 · Secured loans")).click()
+        keeper.get_by_label("Bank, cash or card").check()
+        keeper.get_by_role("button", name="Create", exact=True).click()
+        keeper.wait_for_url(re.compile(r"/accounts/chart/\d+$"))
+        made = Account.objects.get(code="1030")
+        self.assertEqual((made.name, made.account_type, made.parent, made.is_active, made.holds_money),
+                         ("SBI cash credit", AccountType.LIABILITY, self.secured, True, True))
+
+        # It opens on its ledger, and is changed from there.
+        expect(keeper.locator(".doc-head h1")).to_have_text("1030 · SBI cash credit")
+        keeper.get_by_role("link", name="Edit", exact=True).click()
+        keeper.wait_for_url(re.compile(rf"/accounts/chart/{made.pk}/edit$"))
+        keeper.get_by_label("Name", exact=True).fill("SBI cash credit, Nagpur")
+        keeper.get_by_role("button", name="Save", exact=True).click()
+        expect(keeper.get_by_role("button", name="Save", exact=True)).to_have_count(0)
+        made.refresh_from_db()
+        self.assertEqual((made.name, made.account_type, made.parent, made.holds_money),
+                         ("SBI cash credit, Nagpur", AccountType.LIABILITY, self.secured, True))
+
+        # The bank the receipt went into stays a bank, and says so beside the box.
+        keeper.goto(self.url(f"/accounts/chart/{self.bank.pk}"))
+        keeper.get_by_role("link", name="Edit", exact=True).click()
+        keeper.get_by_label("Bank, cash or card").uncheck()
+        keeper.get_by_role("button", name="Save", exact=True).click()
+        refused = keeper.locator(".field.invalid")
+        expect(refused.locator("label")).to_have_text("Bank, cash or card")
+        expect(refused.locator(".field-error")).to_contain_text(
+            "1010 - Bank has posted entries as a bank, cash or card account")
+        self.assertTrue(Account.objects.get(pk=self.bank.pk).holds_money)
+        # That refusal is the one 400 the browser logs; anything else is a problem.
+        logged = [problem for problem in self.problems if "status of 400" in problem]
+        self.assertEqual((len(logged), [problem for problem in self.problems if problem not in logged]), (1, []))
+        self.problems.clear()
+
+        # Whoever reads the chart and the books without keeping them is offered neither.
+        officer = self.new_page()
+        self.sign_in(self.person("GST Officer"), "/app/accounts/chart", page=officer)
+        expect(officer.locator("tbody tr", has_text="SBI cash credit, Nagpur")).to_have_count(1)
+        expect(officer.get_by_role("link", name="New", exact=True)).to_have_count(0)
+        officer.goto(self.url(f"/accounts/chart/{made.pk}"))
+        expect(officer.locator(".doc-head h1")).to_have_text("1030 · SBI cash credit, Nagpur")
+        expect(officer.get_by_role("link", name="Edit", exact=True)).to_have_count(0)
+
+        # A rep reads the chart too, and is offered neither: the form typed in
+        # shows the account and changes nothing, and its ledger is not a rep's.
+        rep = self.new_page()
+        self.sign_in(self.person("Sales Rep"), "/app/accounts/chart", page=rep)
+        expect(rep.locator("tbody tr", has_text="SBI cash credit, Nagpur")).to_have_count(1)
+        expect(rep.get_by_role("link", name="New", exact=True)).to_have_count(0)
+        rep.goto(self.url(f"/accounts/chart/{made.pk}/edit"))
+        expect(rep.locator(".doc-head h1")).to_have_text("1030 · SBI cash credit, Nagpur")
+        expect(rep.locator("main output").first).to_be_visible()
+        expect(rep.get_by_role("checkbox")).to_have_count(0)
+        expect(rep.get_by_role("link", name="Ledger", exact=True)).to_have_count(0)
+        rep.wait_for_load_state("networkidle")
+        self.assertEqual(self.problems, [])
+        rep.goto(self.url(f"/accounts/chart/{made.pk}"))
+        expect(rep.get_by_role("heading", name="Not allowed")).to_be_visible()
+        expect(rep.get_by_role("link", name="Edit", exact=True)).to_have_count(0)
+        self.problems.clear()  # the ledger's refusal is the point here
 
 
 class PayrollInTheBrowserTests(BrowserMixin, PayrollApiTestCase, StaticLiveServerTestCase):

@@ -136,7 +136,13 @@ export interface RecordScreenProps {
   newTitle: string;
   heading: (record: Row) => string;
   state?: (record: Row) => { label: string; tone: string } | null;
-  fields: FieldDef[];
+  /**
+   * Or worked out from what the form holds now: an account's parent is
+   * offered from accounts of the kind chosen. Only what a box offers may
+   * follow it; the boxes, their kinds and what a new record starts with
+   * may not.
+   */
+  fields: FieldDef[] | ((value: Row) => FieldDef[]);
   actions?: ActionDef[];
   /** Pages the record opens in a new tab: its PDF, a printed card. */
   links?: LinkDef[];
@@ -320,7 +326,7 @@ function ReadTable({ read, record, columns, href }: {
 }
 
 export function RecordScreen(props: RecordScreenProps) {
-  const { endpoint, back, backLabel, newTitle, heading, state, fields, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl, extras, smart } = props;
+  const { endpoint, back, backLabel, newTitle, heading, state, fields: declared, actions = [], links = [], trail, panels = [], permissions, editable, afterCreate, note, below, createUrl, extras, smart } = props;
   const { id } = useParams();
   const isNew = id === "new";
   const navigate = useNavigate();
@@ -330,7 +336,9 @@ export function RecordScreen(props: RecordScreenProps) {
   // Every record screen carries its trail: named by the screen when it says, else by its address.
   const kind = useKindOf(endpoint);
   const model = trail ?? kind;
-  const draft = useDraft<Row>(isNew ? blank(fields) : saved);
+  const fieldsFor = (value: Row) => (typeof declared === "function" ? declared(value) : declared);
+  const draft = useDraft<Row>(isNew ? blank(fieldsFor({ id: 0 })) : saved);
+  const fields = fieldsFor(draft.value);
   const refs = useRefs(fields);
   const act = useAct<Row>();
   const [asking, setAsking] = useState<ActionDef | null>(null);
