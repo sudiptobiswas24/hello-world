@@ -23,9 +23,12 @@ characteristic that says so demands an instrument on every reading.
 that found the instrument out (adjusted, or failed) lists every
 inspection measured on it since its last good calibration: those are
 the batches whose weights nobody can now vouch for. That list is the
-point of keeping a register at all.
+point of keeping a register at all. A failure casts it forwards as well:
+the lab's certificate comes days later, and every inspection measured in
+between relied on the good calibration before it.
 
-**Voided** only while no reading has relied on it.
+**Voided** only while no reading has relied on it — asked under the same
+lock an inspection takes on the calibration its readings rely on.
 """
 
 import datetime
@@ -35,7 +38,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
 
 
 class Instrument(AuditModel):
@@ -186,6 +189,12 @@ class Calibration(AuditModel):
         Inspections measured on this instrument since its last good
         calibration, where this one found it out of tolerance. Empty when
         it was found in tolerance.
+
+        Adjusted, it was put right that day and the doubt stops there.
+        Failed, it was out of service from that day, so an inspection
+        after it that still relied on an older calibration — measured
+        before the failure was recorded, as a certificate often comes
+        later — is as much in doubt as one before it.
         """
         from .models import Inspection
 
@@ -195,9 +204,12 @@ class Calibration(AuditModel):
             posted=True, voided_at__isnull=True, calibrated_on__lt=self.calibrated_on,
             result__in=[CalibrationResult.PASS, CalibrationResult.ADJUSTED],
         ).order_by("-calibrated_on", "-id").first()
+        until = Q(inspected_on__lte=self.calibrated_on)
+        if self.result == CalibrationResult.FAIL:
+            until |= Q(readings__calibration__calibrated_on__lt=self.calibrated_on)
+        # One filter, so the reading on this instrument is the reading that relied.
         found = Inspection.objects.filter(
-            posted=True, voided_at__isnull=True, readings__instrument=self.instrument,
-            inspected_on__lte=self.calibrated_on,
+            until, posted=True, voided_at__isnull=True, readings__instrument=self.instrument,
         )
         if before is not None:
             found = found.filter(inspected_on__gte=before.calibrated_on)
@@ -239,6 +251,12 @@ def check_readings(inspection):
         status, calibration = instrument.status(on_date)
         if status != "in calibration":
             raise ValidationError(f"{instrument} was {status} on {on_date}.")
+        # Held until the inspection posts, as a void holds it to ask whether
+        # anything relied on it: withdrawn as the readings were frozen on it,
+        # they would rely on a calibration that no longer stands.
+        lock_rows(calibration)
+        if calibration.voided_at is not None:
+            raise ValidationError(f"{calibration} was withdrawn as this was posted; post it again.")
         # Inspection.post is atomic: a refusal at a later reading takes this
         # back, so no draft is left claiming a calibration it never used.
         Reading.objects.filter(pk=reading.pk).update(calibration=calibration)

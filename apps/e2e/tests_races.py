@@ -632,6 +632,65 @@ class OneDecisionAtATimeRaceTests(RaceCase):
         marked = AttendanceDay.objects.filter(employee=made.worker, on=datetime.date(2026, 10, 7)).exists()
         self.assertNotEqual(request.status == LeaveStatus.APPROVED, marked)
 
+    def test_a_calibration_is_not_withdrawn_as_readings_come_to_rely_on_it(self):
+        """
+        The inspection reads the calibration as standing, the void finds
+        nothing relying on it yet, and the readings are frozen on a
+        calibration withdrawn under them. No save falls between the read
+        and the freeze, so the inspection is held in the read itself while
+        the void decides.
+        """
+        from unittest import mock
+
+        from apps.quality import tests_calibration
+        from apps.quality.calibration import Calibration, Instrument
+        from apps.quality.models import Inspection, Reading
+
+        made = fixture(self, tests_calibration.CalibrationTestCase)
+        calibration = made.calibrate(datetime.date(2026, 1, 10))
+        # One bag weighed: with more readings on the balance, the next one's
+        # read finds the void, and the first one's freeze holds the row.
+        made.gsm_plan.lines.update(sample_size=1)
+        inspection = made.measured(datetime.date(2026, 3, 1), values=("87",))
+        read, decided = threading.Event(), threading.Event()
+        status, outcomes = Instrument.status, {}
+
+        def held(instrument, on_date):
+            found = status(instrument, on_date)
+            read.set()
+            decided.wait(5)
+            return found
+
+        def step(name, call, before=None, after=None):
+            if before is not None:
+                before.wait(5)
+            try:
+                with transaction.atomic():
+                    call()
+                outcomes[name] = "done"
+            except Exception as exc:
+                outcomes[name] = f"refused: {exc}"
+            finally:
+                if after is not None:
+                    after.set()
+                connection.close()
+
+        with mock.patch.object(Instrument, "status", held):
+            threads = [
+                threading.Thread(target=step, args=("post", lambda: Inspection.objects.get(pk=inspection.pk).post())),
+                threading.Thread(target=step, args=(
+                    "void", lambda: Calibration.objects.get(pk=calibration.pk).void("Wrong certificate"),
+                    read, decided)),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.once([outcomes.get("post"), outcomes.get("void")])
+        calibration.refresh_from_db()
+        self.assertFalse(calibration.voided_at is not None
+                         and Reading.objects.filter(calibration=calibration).exists())
+
     def test_a_schedule_puts_one_job_on_the_board(self):
         from apps.manufacturing.maintenance import MaintenanceJob, MaintenanceSchedule
         from apps.manufacturing import tests_maintenance
