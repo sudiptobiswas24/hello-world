@@ -102,6 +102,15 @@ class ClaimTests(PeopleTestCase):
         claim.unpay("Paid from petty cash, should be bank", on_date=datetime.date(2026, 6, 4))
         self.assertEqual((claim.status, claim.voided_entry.posted, claim.decision_note[:16]), (ClaimStatus.APPROVED, True, "Payment reversed"))
         self.assertEqual(JournalLine.objects.filter(entry=claim.voided_entry, account=self.cash, debit=Decimal("450")).count(), 1)
+        # Approved again, it reads as unpaid: no date or drawer left from the payment reversed.
+        claim.refresh_from_db()
+        self.assertEqual((claim.paid_on, claim.paid_from), (None, None))
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        claim.pay(bank, on_date=datetime.date(2026, 6, 5))
+        self.assertEqual((claim.status, claim.paid_on, claim.paid_from), (ClaimStatus.PAID, datetime.date(2026, 6, 5), bank))
+        balances = {account.code: sum((row.debit - row.credit for row in JournalLine.objects.filter(
+            account=account, entry__posted=True)), Decimal("0")) for account in (self.cash, bank, self.travel)}
+        self.assertEqual(balances, {"1000": Decimal("0"), "1010": Decimal("-450"), "6200": Decimal("300")})
 
     def test_what_is_refused(self):
         empty = ExpenseClaim.objects.create(employee=self.riley, claim_date=JUNE_1, purpose="Nothing")
