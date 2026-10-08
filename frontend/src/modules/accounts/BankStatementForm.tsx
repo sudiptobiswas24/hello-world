@@ -1,4 +1,5 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
+import { MONEY_ACCOUNT } from "./refs";
 
 type Row = Record<string, unknown>;
 type Line = Row & { id: number };
@@ -38,7 +39,7 @@ export default function BankStatementForm() {
       permissions={{ add: "accounting.add_bankstatement", change: "accounting.change_bankstatement", delete: "accounting.delete_bankstatement" }}
       editable={(row) => !row.closed}
       fields={[
-        { key: "bank_account", label: "Bank account", kind: "pick", pick: ACCOUNT, createOnly: true },
+        { key: "bank_account", label: "Bank account", kind: "pick", pick: MONEY_ACCOUNT, createOnly: true },
         { key: "reference", label: "Reference", hint: "The statement's own number or period" },
         { key: "start_date", label: "From", kind: "date" },
         { key: "end_date", label: "To", kind: "date" },

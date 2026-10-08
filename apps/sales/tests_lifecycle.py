@@ -51,7 +51,7 @@ class LifecycleTestCase(TestCase):
         self.warehouse = Warehouse.objects.create(code="WH1", name="Main")
 
         self.ar = Account.objects.create(code="1100", name="AR", account_type=AccountType.ASSET)
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Revenue", account_type=AccountType.INCOME
         )

@@ -28,7 +28,7 @@ JUNE = datetime.date(2026, 6, 1)
 class MsmeTests(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.net30 = PaymentTerms.objects.create(code="N30M", name="Net 30", net_days=30)
         self.net60 = PaymentTerms.objects.create(code="N60", name="Net 60", net_days=60)
         PartyTaxProfile.objects.create(party=self.vendor, msme_category="micro", udyam_number="UDYAM-MH-26-0012345")

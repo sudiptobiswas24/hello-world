@@ -11,6 +11,7 @@ import { least, positive } from "../../lib/decimal";
 import { date, money } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 import { PartyPicker, type PartyRole } from "../../forms/PartyPicker";
+import { RecordPicker } from "../../forms/RecordPicker";
 import { Trail } from "../../views/Trail";
 
 interface Payment {
@@ -24,6 +25,8 @@ interface Payment {
   memo: string;
   posted: boolean;
   voided: boolean;
+  bank_account: number | null;
+  bank_account_name: string;
   /** What is left to apply, as the server adds it up. */
   unallocated: string;
   [key: string]: unknown;
@@ -48,6 +51,8 @@ interface OpenInvoice {
 }
 
 const ENDPOINT = "/api/accounting/payments/";
+/** Where money is: the server refuses any other account, and a closed one. */
+const MONEY = { holds_money: "true", is_active: "true" };
 
 /** Which way the money went, and what it is put against. */
 export interface MoneyConfig {
@@ -91,12 +96,15 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
 
   const value = draft.value;
   const editable = isNew || (!payment!.posted && can("accounting.change_payment"));
+  const readsAccounts = can("accounting.view_account");
 
   const record_ = async (andPost: boolean) => {
     const outcome = isNew
       ? await act.run("POST", ENDPOINT, {
           party: value.party, direction: config.direction, payment_date: value.payment_date,
           amount: value.amount, reference: value.reference,
+          // Left out, the company's bank.
+          ...(value.bank_account ? { bank_account: value.bank_account } : {}),
         }, { done: `${config.noun[0]!.toUpperCase()}${config.noun.slice(1)} recorded` })
       : await act.run("PATCH", `${ENDPOINT}${payment!.id}/`, draft.changes, { done: "Saved" });
     if (!outcome.ok) {
@@ -168,8 +176,17 @@ export function PaymentForm({ config }: { config: MoneyConfig }) {
               ? <input id={fid} aria-describedby={described} value={String(value.reference ?? "")} onChange={(e) => draft.set("reference", e.target.value as never)} />
               : <output id={fid}>{payment?.reference || "—"}</output>}
           </Field>
+          {readsAccounts && (
+            <Field label={config.direction === "receipt" ? "Into" : "From"} hint={editable ? "A bank, cash or card account. Empty: the company's bank" : undefined} errors={draft.errors.bank_account}>
+              {(fid) => editable
+                ? <RecordPicker<{ id: number; code: string; name: string }> id={fid} endpoint="/api/accounting/accounts/" fixed={MONEY}
+                    value={(value.bank_account as number | null) ?? null} onChange={(next) => draft.set("bank_account", next as never)}
+                    label={(row) => `${row.code} · ${row.name}`} placeholder="Bank, cash or card" invalid={!!draft.errors.bank_account} />
+                : <output id={fid}>{payment?.bank_account_name}</output>}
+            </Field>
+          )}
         </div>
-        {["bank_account", "counterpart_account", "non_field_errors"].map((key) => draft.errors[key] && (
+        {[...(readsAccounts ? [] : ["bank_account"]), "counterpart_account", "non_field_errors"].map((key) => draft.errors[key] && (
           <p key={key} className="form-error" role="alert">{draft.errors[key]!.join(" ")}</p>
         ))}
       </Sheet>

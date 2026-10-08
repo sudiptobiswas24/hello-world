@@ -24,7 +24,7 @@ class PostingPermissionTests(TestCase):
     """
 
     def setUp(self):
-        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Revenue", account_type=AccountType.INCOME
         )
@@ -154,7 +154,7 @@ class AnActionTakesWhatItNamesTests(TestCase):
     """
 
     def setUp(self):
-        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Revenue", account_type=AccountType.INCOME)
         entry = JournalEntry.objects.create(date="2026-01-01", memo="Test")

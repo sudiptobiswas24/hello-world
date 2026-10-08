@@ -60,7 +60,7 @@ class AuditTestCase(TestCase):
             sku="WDG-1", name="Widget", uom=self.uom, sale_price=Decimal("10")
         )
         self.ar = Account.objects.create(code="1100", name="AR", account_type=AccountType.ASSET)
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Revenue", account_type=AccountType.INCOME
         )

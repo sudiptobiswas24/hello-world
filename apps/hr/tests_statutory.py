@@ -56,14 +56,14 @@ JULY_15 = datetime.date(2026, 7, 15)
 class StatutoryTestCase(TestCase):
     def setUp(self):
         self.inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
-        acc = lambda c, n, t: Account.objects.create(code=c, name=n, account_type=t)
+        acc = lambda c, n, t, **more: Account.objects.create(code=c, name=n, account_type=t, **more)
         self.wages = acc("6000", "Wages", AccountType.EXPENSE)
         self.employer = acc("6100", "Employer contributions", AccountType.EXPENSE)
         self.net_pay = acc("2300", "Net pay payable", AccountType.LIABILITY)
         self.pf_payable = acc("2310", "PF payable", AccountType.LIABILITY)
         self.esi_payable = acc("2320", "ESI payable", AccountType.LIABILITY)
         self.pt_payable = acc("2330", "PT payable", AccountType.LIABILITY)
-        self.bank = acc("1010", "Bank", AccountType.ASSET)
+        self.bank = acc("1010", "Bank", AccountType.ASSET, holds_money=True)
         Company.objects.create(name="Deccan Polysacks", base_currency=self.inr,
                                net_pay_account=self.net_pay)
         earning = lambda code, seq: PayComponent.objects.create(

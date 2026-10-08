@@ -45,11 +45,11 @@ from .models import (
 class AuditTestCase(TestCase):
     def setUp(self):
         self.usd = Currency.objects.create(code="USD", name="USD", is_base=True)
-        acc = lambda c, n, t: Account.objects.create(code=c, name=n, account_type=t)
+        acc = lambda c, n, t, **more: Account.objects.create(code=c, name=n, account_type=t, **more)
         self.wages = acc("6000", "Wages", AccountType.EXPENSE)
         self.tax_payable = acc("2200", "Tax payable", AccountType.LIABILITY)
         self.net_pay = acc("2300", "Net pay payable", AccountType.LIABILITY)
-        self.bank = acc("1010", "Bank", AccountType.ASSET)
+        self.bank = acc("1010", "Bank", AccountType.ASSET, holds_money=True)
         Company.objects.create(
             name="Test Co", base_currency=self.usd, net_pay_account=self.net_pay
         )

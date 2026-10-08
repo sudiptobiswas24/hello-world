@@ -24,7 +24,7 @@ class PeopleInTheBrowserTests(BrowserTestCase):
     def setUp(self):
         super().setUp()
         self.travel = Account.objects.create(code="6200", name="Travel", account_type=AccountType.EXPENSE)
-        self.cash = Account.objects.create(code="1000", name="Cash in hand", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash in hand", account_type=AccountType.ASSET, holds_money=True)
         self.jordan = self.employee("E006", "Jordan Park", self.person("Line Manager"))
         self.riley = self.employee("E005", "Riley Chen", self.person("Employee Self Service"), manager=self.jordan)
 

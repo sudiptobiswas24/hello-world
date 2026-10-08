@@ -45,8 +45,8 @@ class ChargeTypeAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 @admin.register(Account)
 class AccountAdmin(AuditableAdminMixin, admin.ModelAdmin):
-    list_display = ("code", "name", "account_type", "parent", "currency", "is_active")
-    list_filter = ("account_type", "is_active")
+    list_display = ("code", "name", "account_type", "holds_money", "parent", "currency", "is_active")
+    list_filter = ("account_type", "holds_money", "is_active")
     search_fields = ("code", "name")
 
 

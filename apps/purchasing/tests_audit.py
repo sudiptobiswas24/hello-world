@@ -306,7 +306,7 @@ class PaidThenDebitedTests(AuditTestCase):
         from .models import BillPayment
 
         bank = Account.objects.create(
-            code="1010", name="Bank", account_type=AccountType.ASSET
+            code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True
         )
         order = self.make_order("10", "5")
         self.receive(order, "10")
@@ -443,7 +443,7 @@ class VendorSettlementDiscountTests(AuditTestCase):
         from .models import Bill, BillPayment
 
         bill = self.discounted_bill()
-        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         paying = Payment.objects.create(party=self.vendor, direction=PaymentDirection.DISBURSEMENT,
                                         payment_date=datetime.date(2026, 1, 15), amount=Decimal("49"),
                                         currency=self.usd, bank_account=bank, counterpart_account=self.payable)
@@ -549,7 +549,7 @@ class DebitAfterDiscountTests(VendorSettlementDiscountTests):
 
         from .models import BillPayment
 
-        bank = Account.objects.create(code="1011", name="Bank", account_type=AccountType.ASSET)
+        bank = Account.objects.create(code="1011", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         bill = self.discounted_bill()
         payment = Payment.objects.create(party=self.vendor, direction=PaymentDirection.DISBURSEMENT,
                                          amount=Decimal("49"), payment_date=datetime.date(2026, 1, 15),

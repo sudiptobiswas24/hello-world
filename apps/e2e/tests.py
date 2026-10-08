@@ -97,12 +97,12 @@ class FromPolymerToCashTests(TestCase):
             ExchangeRate.objects.create(
                 currency=self.eur, rate=Decimal(rate), valid_from=JAN(day)
             )
-        acc = lambda code, name, kind: Account.objects.create(
-            code=code, name=name, account_type=kind
+        acc = lambda code, name, kind, **more: Account.objects.create(
+            code=code, name=name, account_type=kind, **more
         )
         A, L, I, E = (AccountType.ASSET, AccountType.LIABILITY,
                       AccountType.INCOME, AccountType.EXPENSE)
-        self.bank = acc("1010", "Bank", A)
+        self.bank = acc("1010", "Bank", A, holds_money=True)
         self.ar = acc("1100", "Receivables", A)
         self.inventory = acc("1200", "Inventory", A)
         self.wip = acc("1250", "Work in progress", A)

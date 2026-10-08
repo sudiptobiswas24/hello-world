@@ -25,7 +25,7 @@ class PrepaymentTestCase(PurchasingLifecycleTestCase):
             code="1400", name="Vendor Prepayments", account_type=AccountType.ASSET
         )
         self.bank = Account.objects.create(
-            code="1010", name="Bank", account_type=AccountType.ASSET
+            code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True
         )
         company = Company.get()
         company.vendor_prepayment_account = self.prepaid

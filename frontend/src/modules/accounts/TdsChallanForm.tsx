@@ -1,5 +1,5 @@
 import { RecordScreen } from "../../views/RecordScreen";
-import { ACCOUNT, SECTION } from "./refs";
+import { MONEY_ACCOUNT, SECTION } from "./refs";
 
 /**
  * A month's deductions under one section paid over: everything deducted
@@ -21,7 +21,7 @@ export default function TdsChallanForm() {
         { key: "section", label: "Section", kind: "ref", ref: SECTION, show: (row) => String(row.section_code) },
         { key: "month", label: "Deducted in", kind: "date", hint: "Any day of the month; all of it is paid" },
         { key: "date", label: "Paid on", kind: "date" },
-        { key: "bank_account", label: "From", kind: "pick", pick: ACCOUNT },
+        { key: "bank_account", label: "From", kind: "pick", pick: MONEY_ACCOUNT },
         { key: "challan_number", label: "Challan number" },
         { key: "bsr_code", label: "BSR code", hint: "The bank branch's seven digits" },
         { key: "amount", label: "Amount", kind: "money", existingOnly: true, readOnly: true },

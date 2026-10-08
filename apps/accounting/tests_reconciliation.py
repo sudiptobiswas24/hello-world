@@ -39,9 +39,9 @@ class ReconciliationTestCase(TestCase):
     def setUp(self):
         self.usd = Currency.objects.create(code="USD", name="USD", is_base=True)
         UnitOfMeasure.objects.create(code="ea", name="Each")
-        acc = lambda c, n, t: Account.objects.create(code=c, name=n, account_type=t)
-        self.bank = acc("1010", "Bank", AccountType.ASSET)
-        self.other_bank = acc("1011", "Savings", AccountType.ASSET)
+        acc = lambda c, n, t, **more: Account.objects.create(code=c, name=n, account_type=t, **more)
+        self.bank = acc("1010", "Bank", AccountType.ASSET, holds_money=True)
+        self.other_bank = acc("1011", "Savings", AccountType.ASSET, holds_money=True)
         self.ar = acc("1100", "AR", AccountType.ASSET)
         self.ap = acc("2000", "AP", AccountType.LIABILITY)
         self.charges = acc("5800", "Bank Charges", AccountType.EXPENSE)

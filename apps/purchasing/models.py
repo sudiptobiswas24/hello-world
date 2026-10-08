@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.db.models import Q
 
 from apps.accounting.defaults import default_account
+from apps.accounting.money import refuse_money_kept_as
 from apps.accounting.mixins import (
     PostedLineMixin,
     PostedTaxDocumentMixin,
@@ -3462,6 +3463,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             self.payment_terms = self.payment_terms or self.vendor.payment_terms
         if self._state.adding and not self.payable_account_id:
             self.payable_account = default_account("payable", "payable_account")
+        refuse_money_kept_as(self, "payable_account")
         self._check_duplicate_reference()
         super().save(*args, **kwargs)
 
@@ -3653,6 +3655,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
+        # Asked again as it posts: the account may have been made a bank's since the draft named it.
+        refuse_money_kept_as(self, "payable_account", changed_only=False)
         # What the order has been billed, and paid up front, is decided on
         # below; two bills for one order must not both see the same room.
         lock_rows(self.purchase_order)

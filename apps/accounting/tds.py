@@ -90,6 +90,12 @@ class TdsSection(AuditModel):
     def __str__(self):
         return f"{self.code} {self.name}"
 
+    def save(self, *args, **kwargs):
+        from .money import refuse_money_kept_as, settings_fields
+
+        refuse_money_kept_as(self, *settings_fields(TdsSection))
+        super().save(*args, **kwargs)
+
     def owed(self, rate, this, year_before, untaxed_before):
         """
         (base, tax) on a bill of `this`, with `year_before` already billed

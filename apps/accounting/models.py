@@ -51,6 +51,10 @@ class Account(AuditModel):
         help_text="Defaults to the company's base currency if unset.",
     )
     is_active = models.BooleanField(default=True)
+    holds_money = models.BooleanField(
+        default=False,
+        help_text="A bank, cash box, card or overdraft: what payments, claims and challans are paid "
+                  "from or into. Nothing else is offered as one.")
 
     class Meta:
         ordering = ["code"]
@@ -60,12 +64,40 @@ class Account(AuditModel):
 
     def clean(self):
         self._check_tree()
+        self._check_money()
 
     def save(self, *args, **kwargs):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_tree()
+        self._check_money()
         super().save(*args, **kwargs)
+
+    def _check_money(self):
+        """
+        Money is an asset or a liability (a card or an overdraft is owed).
+        Once anything is posted to an account it stays what it was: the
+        payments through it, and the documents owed on it, were read by it.
+        """
+        from .money import purposes_kept_on
+
+        if self.holds_money and self.account_type not in (AccountType.ASSET, AccountType.LIABILITY):
+            raise ValidationError({"holds_money": [
+                "A bank, cash or card account is an asset, or a liability (a card, an overdraft)."]})
+        if self.pk is None:
+            return
+        before = Account.objects.filter(pk=self.pk).values_list("holds_money", flat=True).first()
+        if before is None or before == self.holds_money:
+            return
+        if JournalLine.objects.filter(account=self, entry__posted=True).exists():
+            was = "a bank, cash or card account" if before else "not one"
+            raise ValidationError({"holds_money": [
+                f"{self} has posted entries as {was}. What it was is what they were read as; "
+                "open a new account instead."]})
+        kept = purposes_kept_on(self) if self.holds_money else ""
+        if kept:
+            raise ValidationError({"holds_money": [
+                f"{self} is the {kept}; money does not move through it."]})
 
     def _check_tree(self):
         if self.parent_id and self.parent_id == self.pk:
@@ -523,6 +555,9 @@ class Tax(AuditModel):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
         self._check_accounts()
+        from .money import refuse_money_kept_as, settings_fields
+
+        refuse_money_kept_as(self, *settings_fields(Tax))
         super().save(*args, **kwargs)
 
     def _check_accounts(self):
@@ -996,6 +1031,13 @@ class Payment(AuditModel):
                 # owed to a vendor.
                 purpose = "receivable" if self.is_receipt() else "payable"
                 self.counterpart_account = default_account(purpose, "counterpart_account")
+        from .money import refuse_as_money_account
+
+        refuse_as_money_account(self.bank_account)
+        if self.bank_account_id == self.counterpart_account_id:
+            raise ValidationError({"bank_account": [
+                f"{self.bank_account} is the account this payment settles as well; money moves "
+                "between two accounts, not out of one and into it again."]})
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
@@ -1015,6 +1057,10 @@ class Payment(AuditModel):
     def post(self):
         if self.posted:
             raise ValidationError("This payment is already posted.")
+        from .money import refuse_as_money_account
+
+        # Asked again as the money moves: a draft outlives the account it named being closed.
+        refuse_as_money_account(Account.objects.get(pk=self.bank_account_id))
         for check in PAYMENT_CHECKS:
             said = check(self)
             if said:
@@ -1176,6 +1222,12 @@ class BankStatement(AuditModel):
         if self.pk and BankStatement.objects.filter(pk=self.pk, closed=True).exists():
             raise ValidationError("This statement is closed. Reopen it to make changes.")
         self._check_span()
+        stored = BankStatement.objects.filter(pk=self.pk).values_list("bank_account_id", flat=True).first()
+        if stored != self.bank_account_id:
+            from .money import refuse_as_money_account
+
+            # A bank's statement is of an account money moves through.
+            refuse_as_money_account(self.bank_account)
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

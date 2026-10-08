@@ -51,7 +51,7 @@ class RulesTestCase(TestCase):
         self.nobody = Party.objects.create(code="NOBODY", name="Holds no role")
         self.customer, self.customer2 = self.party("C1", PartyRole.CUSTOMER), self.party("C2", PartyRole.CUSTOMER)
         self.vendor, self.vendor2 = self.party("V1", PartyRole.VENDOR), self.party("V2", PartyRole.VENDOR)
-        self.bank = Account.objects.create(code="1000", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1000", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.ar = Account.objects.create(code="1100", name="AR", account_type=AccountType.ASSET)
         self.ap = Account.objects.create(code="2000", name="AP", account_type=AccountType.LIABILITY)
 

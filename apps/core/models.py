@@ -195,6 +195,18 @@ def register_booked_in_base(ask):
         _BOOKED_IN_BASE.append(ask)
 
 
+# What the modules that read the company's settings refuse of them
+# (accounting, the bank a payment goes through), asked as it is saved;
+# core imports none of them.
+_COMPANY_CHECKS = []
+
+
+def register_company_check(check):
+    """check(company) raises ValidationError for a setting its module cannot work with."""
+    if check not in _COMPANY_CHECKS:
+        _COMPANY_CHECKS.append(check)
+
+
 class Currency(AuditModel):
     code = models.CharField(max_length=3, unique=True, help_text="ISO 4217 code, e.g. USD")
     name = models.CharField(max_length=64)
@@ -1212,6 +1224,8 @@ class Company(AuditModel):
     def save(self, *args, **kwargs):
         self._check_base_currency()
         self.bank_ifsc = check_ifsc(self.bank_ifsc)
+        for check in _COMPANY_CHECKS:
+            check(self)
         existing = Company.objects.first()
         if self._state.adding and existing is not None:
             # Stay a singleton: fold this into the existing row rather than
