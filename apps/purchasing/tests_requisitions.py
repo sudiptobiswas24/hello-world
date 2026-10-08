@@ -161,6 +161,36 @@ class RequisitionToOrderTests(RequisitionTestCase):
         requisition.refresh_from_db()
         self.assertEqual(requisition.status, RequisitionStatus.ORDERED)
 
+    def open_on(self, requisition):
+        from .models import open_requisition_lines
+
+        return [row["open"] for row in open_requisition_lines() if row["line"].requisition_id == requisition.pk]
+
+    def test_a_line_taken_off_its_draft_order_is_open_to_order_again(self):
+        requisition = self.approved()
+        order = requisition.create_order(self.vendor, order_date=datetime.date(2026, 1, 10))
+        order.lines.get().delete()
+        requisition.refresh_from_db()
+        self.assertEqual((requisition.status, self.open_on(requisition)),
+                         (RequisitionStatus.APPROVED, [Decimal("10")]))
+        again = requisition.create_order(self.vendor, order_date=datetime.date(2026, 1, 11))
+        requisition.refresh_from_db()
+        self.assertEqual((again.lines.get().quantity, requisition.status),
+                         (Decimal("10"), RequisitionStatus.ORDERED))
+
+    def test_a_line_cut_on_its_draft_order_leaves_the_rest_open(self):
+        requisition = self.approved()
+        line = requisition.create_order(self.vendor, order_date=datetime.date(2026, 1, 10)).lines.get()
+        line.quantity = Decimal("6")
+        line.save()
+        requisition.refresh_from_db()
+        self.assertEqual((requisition.status, self.open_on(requisition)),
+                         (RequisitionStatus.APPROVED, [Decimal("4")]))
+        line.quantity = Decimal("10")
+        line.save()
+        requisition.refresh_from_db()
+        self.assertEqual((requisition.status, self.open_on(requisition)), (RequisitionStatus.ORDERED, []))
+
     def test_it_can_be_split_across_vendors(self):
         """Which is exactly why the vendor is not chosen when the request
         is made."""
