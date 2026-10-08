@@ -691,6 +691,28 @@ class OneDecisionAtATimeRaceTests(RaceCase):
         self.assertFalse(calibration.voided_at is not None
                          and Reading.objects.filter(calibration=calibration).exists())
 
+    def test_two_orders_confirmed_at_once_do_not_both_fit_under_the_credit_limit(self):
+        from apps.sales import tests_approvals
+        from apps.sales.models import CustomerProfile, SalesOrder, committed_balance
+
+        made = fixture(self, tests_approvals.ApprovalTestCase)
+        CustomerProfile.objects.create(party=made.customer, credit_limit=Decimal("1000"))
+        first, second = made.draft("6", "100"), made.draft("6", "100")
+        self.once(race(SalesOrder, lambda: SalesOrder.objects.get(pk=first.pk).confirm(),
+                       lambda: SalesOrder.objects.get(pk=second.pk).confirm()))
+        self.assertEqual(committed_balance(made.customer), Decimal("600.00"))
+
+    def test_two_orders_confirmed_at_once_do_not_both_fit_in_the_budget(self):
+        from apps.purchasing import tests_budgets
+        from apps.purchasing.models import PurchaseApprovalPolicy, PurchaseOrder
+
+        made = fixture(self, tests_budgets.BudgetTestCase)
+        PurchaseApprovalPolicy.objects.create(code="STD", name="Standard")
+        first, second = (made.order_of("300", "20", confirm=False) for _ in range(2))
+        self.once(race(PurchaseOrder, lambda: PurchaseOrder.objects.get(pk=first.pk).confirm(),
+                       lambda: PurchaseOrder.objects.get(pk=second.pk).confirm()))
+        self.assertEqual(made.budget.available(), Decimal("4000.00"))
+
     def test_a_schedule_puts_one_job_on_the_board(self):
         from apps.manufacturing.maintenance import MaintenanceJob, MaintenanceSchedule
         from apps.manufacturing import tests_maintenance

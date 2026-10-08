@@ -233,6 +233,29 @@ class CreditLimitAsApprovalTests(ApprovalTestCase):
         order.confirm()
         self.assertEqual(order.status, OrderStatus.CONFIRMED)
 
+    def test_a_confirmed_order_is_not_raised_past_the_limit(self):
+        # Confirmed at 600 against 1,000: raised to 6,000 it would be six
+        # times over, and nothing had asked.
+        from django.core.exceptions import ValidationError
+
+        from .models import committed_balance
+
+        CustomerProfile.objects.create(party=self.customer, credit_limit=Decimal("1000"))
+        order = self.draft("6", "100")
+        order.confirm()
+        line = order.lines.get()
+        line.quantity = Decimal("60")
+        with self.assertRaisesMessage(ValidationError, "would be at 6000.00 against a credit limit of 1000.00"):
+            line.save()
+        self.assertEqual(committed_balance(self.customer), Decimal("600.00"))
+        line.quantity = Decimal("9")
+        line.save()
+        added = SalesOrderLine(order=order, item=self.item, uom=self.uom, quantity=Decimal("2"),
+                               unit_price=Decimal("100"), revenue_account=self.revenue)
+        with self.assertRaisesMessage(ValidationError, "would be at 1100.00"):
+            added.save()
+        self.assertEqual(committed_balance(self.customer), Decimal("900.00"))
+
     def test_every_breach_is_listed_at_once(self):
         """An approver needs to see all of it, not discover the next one
         each time the last is fixed."""

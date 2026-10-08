@@ -1869,6 +1869,10 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
             raise ValidationError("A cancelled order cannot be confirmed.")
         if not self.lines.exists():
             raise ValidationError("Cannot confirm an order with no lines.")
+        if PurchaseApprovalPolicy.active() is not None:
+            # What is left on a budget weighs every confirmed order on it: two
+            # confirmed at once each found it all there.
+            lock_rows(*{line.budget() for line in self.lines.all()} - {None}, refresh=False)
         if self.approval_status() == ApprovalStatus.PENDING:
             raise ValidationError(
                 "This order needs approval before it can be confirmed: "
@@ -2418,6 +2422,20 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return (stored is not None and stored.order.status == OrderStatus.CONFIRMED
                 and self.unit_price is not None and self.net_amount() < stored.net_amount())
 
+    def _worth_more_than_stored(self):
+        """A line added to a confirmed order, or one raised on it: more committed than its budget was asked."""
+        stored = PurchaseOrderLine.objects.select_related("order").filter(pk=self.pk).first() if self.pk else None
+        if stored is None:
+            return bool(self.order_id) and PurchaseOrder.objects.filter(
+                pk=self.order_id, status=OrderStatus.CONFIRMED).exists()
+        return (stored.order.status == OrderStatus.CONFIRMED and self.unit_price is not None
+                and self.net_amount() > stored.net_amount())
+
+    def budget(self):
+        """The budget this line is coded to on its order's date, as approval reads it."""
+        account = self.expense_account or (self.charge.expense_account if self.is_charge() else None)
+        return Budget.for_account(account, self.order.order_date)
+
     def _hold_for_prepayments(self):
         """The line, then its order, as close_short() takes them: what the order holds up front is weighed next."""
         lock_rows(self, refresh=False)
@@ -2496,7 +2514,18 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         self._check_drop_ship_quantity()
         before = (PurchaseOrderLine.objects.filter(pk=self.pk).values_list("requisition_line_id", flat=True).first()
                   if self.pk else None)
+        # What confirming asks under an approval policy, asked again of a
+        # confirmed order that grows: raised afterwards, a line spent budget
+        # nobody had looked at. Under the budget's lock, as confirming takes it.
+        budget = (self.budget() if not shrinking and PurchaseApprovalPolicy.active() is not None
+                  and self._worth_more_than_stored() else None)
+        if budget is not None:
+            lock_rows(budget, refresh=False)
         super().save(*args, **kwargs)
+        if budget is not None and budget.available() < 0:
+            raise ValidationError(
+                f"Budget {budget.code} would be {-budget.available()} over. A confirmed order is not "
+                "raised past it; order the rest separately, which asks for approval.")
         self._reconsider_requisitions(before)
         if shrinking:
             self.order.refuse_coming_to_less_than_its_prepayments()
