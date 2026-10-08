@@ -29,6 +29,7 @@ track of somebody's wages.
 
 import datetime
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+from itertools import groupby
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
@@ -388,6 +389,10 @@ class EmployeeCompensation(AuditModel):
         if stored.effective_to is not None:
             runs = runs.filter(period_start__lte=stored.effective_to)
         last = runs.order_by("-period_end").values_list("period_end", flat=True).first()
+        if last is not None and stored.effective_to is not None:
+            # A rate that ended inside a run's period was paid on to its own
+            # last day, and the next rate from the day after.
+            last = min(last, stored.effective_to)
         return last, stored
 
     def save(self, *args, **kwargs):
@@ -800,16 +805,17 @@ class Payslip(AuditModel):
             region=self.employee.holiday_region,
         ))
 
-    def days_employed(self):
+    def days_employed(self, start=None, end=None):
         """
-        Working days in this period the person was actually employed for.
+        Working days in this period the person was actually employed for,
+        or in the part of it from `start` to `end`.
 
         A joiner halfway through the month is owed half a month, and
         paying them a full salary because the run happened to include
         them is the kind of error nobody reports.
         """
-        start = max(self.run.period_start, self.employee.hire_date)
-        end = self.run.period_end
+        start = max(start or self.run.period_start, self.employee.hire_date)
+        end = end or self.run.period_end
         if self.employee.termination_date:
             end = min(end, self.employee.termination_date)
         if end < start:
@@ -820,24 +826,26 @@ class Payslip(AuditModel):
             region=self.employee.holiday_region,
         ))
 
-    def unpaid_leave_days(self):
+    def unpaid_leave_days(self, start=None, end=None):
         """
-        Approved days in this period under a policy that does not pay.
+        Approved days in this period, or in the part of it from `start` to
+        `end`, under a policy that does not pay.
 
         This is the join between the two halves of the module: leave
         knows the days, payroll knows what a day costs, and neither is
         much use without the other.
         """
+        start, end = start or self.run.period_start, end or self.run.period_end
         total = Decimal("0")
         for request in LeaveRequest.objects.filter(
             employee=self.employee,
             status=LeaveStatus.APPROVED,
             policy__is_paid=False,
-            start_date__lte=self.run.period_end,
-            end_date__gte=self.run.period_start,
+            start_date__lte=end,
+            end_date__gte=start,
         ).select_related("policy"):
-            overlap_start = max(request.start_date, self.run.period_start)
-            overlap_end = min(request.end_date, self.run.period_end)
+            overlap_start = max(request.start_date, start)
+            overlap_end = min(request.end_date, end)
             days = Decimal(working_days(
                 overlap_start, overlap_end,
                 pattern=self.employee.working_days,
@@ -847,11 +855,16 @@ class Payslip(AuditModel):
             total += days / 2 if request.half_day else days
         return total
 
-    def absent_days(self):
+    def absent_days(self, start=None, end=None):
         """Days the attendance register shows the person away without leave, a half day as a half."""
         from .attendance import absent_days
 
-        return absent_days(self.employee, self.run.period_start, self.run.period_end)
+        return absent_days(self.employee, start or self.run.period_start, end or self.run.period_end)
+
+    def paid_days(self, start=None, end=None):
+        """Working days employed in the period, or from `start` to `end`, less unpaid leave and absences."""
+        earned = self.days_employed(start, end) - self.unpaid_leave_days(start, end) - self.absent_days(start, end)
+        return max(earned, Decimal("0"))
 
     def paid_proportion(self):
         """
@@ -874,7 +887,7 @@ class Payslip(AuditModel):
                     f"{self.employee} is paid by attendance and {len(missing)} working day(s) in this "
                     f"period are not marked, the first {missing[0]}. Mark the register before the run."
                 )
-        earned = self.days_employed() - self.unpaid_leave_days() - self.absent_days()
+        earned = self.paid_days()
         if earned <= 0:
             return Decimal("0")
         return min(earned / full, Decimal("1"))
@@ -889,6 +902,12 @@ class Payslip(AuditModel):
         computed. A percentage of a gross that later grows is a number
         that was right when it was calculated and wrong when it was
         posted.
+
+        A rate changed inside the period is two rows of one component,
+        and each is paid for the part of the period it was in force: a
+        rise on the 16th of a 22-day June paid both 4,400 and 5,500 in
+        full, 9,900.00 where 4,950.00 was owed. Each is a line of its own,
+        at its own rate.
         """
         self.lines.all().delete()
         proportion = self.paid_proportion()
@@ -902,45 +921,62 @@ class Payslip(AuditModel):
             # What each component is taken of, covered by and banded at,
             # read with the rows rather than asked once per component.
             "component__base_components", "component__coverage_components", "component__slabs",
-        ).order_by("component__sequence", "component__code")
+        ).order_by("component__sequence", "component__code", "effective_from")
 
         running_taxable = Decimal("0")
         computed = {}
-        pieces_done = set()
-        for row in rows:
-            component = row.component
-            quantity = None
+        for _component, group in groupby(rows, key=lambda row: row.component_id):
+            group = list(group)
+            component = group[0].component
             if component.basis == ComponentBasis.PER_UNIT:
-                # A rate changed mid-period is two rows of one component;
-                # piece work is worked out once, at each day's own rate.
-                if component.pk in pieces_done:
-                    continue
-                pieces_done.add(component.pk)
+                # Piece work is worked out once, at each day's own rate,
+                # however many rows it has.
                 amount, quantity, row = self.piece_work(component)
+                owed = [(row, amount, quantity)]
             else:
-                amount = self._amount_for(row, proportion, running_taxable, hours, computed)
-            amount = component.round(amount)
-            if amount <= 0:
-                continue
-            computed[component.pk] = computed.get(component.pk, Decimal("0")) + amount
-            PayslipLine.objects.create(
-                payslip=self,
-                component=component,
-                kind=component.kind,
-                description=component.name,
-                # Frozen: the rate, the basis and the account as they stood
-                # when this slip was worked out. All three can change, and
-                # a payslip that restates itself afterwards cannot be
-                # reconciled to the entry that paid it.
-                rate=row.amount,
-                basis=component.basis,
-                is_taxable=component.is_taxable,
-                amount=amount,
-                quantity=quantity,
-            )
-            if component.kind == ComponentKind.EARNING and component.is_taxable:
-                running_taxable += amount
+                # Each rate is taken of the gross before the component, not
+                # of what its own earlier rate added to it.
+                before = running_taxable
+                owed = [(row, self._amount_for(row, proportion, before, hours, computed), None)
+                        for row in group]
+            for row, amount, quantity in owed:
+                amount = component.round(amount)
+                if amount <= 0:
+                    continue
+                computed[component.pk] = computed.get(component.pk, Decimal("0")) + amount
+                PayslipLine.objects.create(
+                    payslip=self,
+                    component=component,
+                    kind=component.kind,
+                    description=component.name,
+                    # Frozen: the rate, the basis and the account as they stood
+                    # when this slip was worked out. All three can change, and
+                    # a payslip that restates itself afterwards cannot be
+                    # reconciled to the entry that paid it.
+                    rate=row.amount,
+                    basis=component.basis,
+                    is_taxable=component.is_taxable,
+                    amount=amount,
+                    quantity=quantity,
+                )
+                if component.kind == ComponentKind.EARNING and component.is_taxable:
+                    running_taxable += amount
         return list(self.lines.all())
+
+    def _span(self, row):
+        """The first and last day of this period that `row`'s rate was in force on."""
+        start = max(self.run.period_start, row.effective_from)
+        end = self.run.period_end if row.effective_to is None else min(self.run.period_end, row.effective_to)
+        return start, end
+
+    def _part(self, amount, start, end):
+        """
+        `amount`, a whole period's worth, for the days from `start` to
+        `end`: in proportion to the working days employed, the day basis
+        joiners and leavers are paid on. Multiplied before it is divided.
+        """
+        employed = self.days_employed()
+        return amount * self.days_employed(start, end) / employed if employed > 0 else Decimal("0")
 
     def piece_work(self, component):
         """
@@ -986,9 +1022,10 @@ class Payslip(AuditModel):
         return (round_money(earned) - (paid["amount"] or Decimal("0")),
                 made - (paid["quantity"] or Decimal("0")), in_force)
 
-    def worked_hours(self):
+    def worked_hours(self, start=None, end=None):
         """
-        Hours signed off for this person within the period.
+        Hours signed off for this person within the period, or from
+        `start` to `end` inside it.
 
         Read from approved timesheets rather than handed in from outside.
         Hours that arrive as an argument came from a spreadsheet, and
@@ -997,7 +1034,7 @@ class Payslip(AuditModel):
         """
         from .timesheets import approved_hours
 
-        return approved_hours(self.employee, self.run.period_start, self.run.period_end)
+        return approved_hours(self.employee, start or self.run.period_start, end or self.run.period_end)
 
     def _sum_of(self, component, named, computed, running_taxable):
         """What `named` components came to on this slip; the taxable gross if none."""
@@ -1054,7 +1091,18 @@ class Payslip(AuditModel):
         return wages <= component.coverage_ceiling
 
     def _amount_for(self, row, proportion, running_taxable, hours, computed=None):
+        """
+        What `row` pays on this slip: the whole period's worth when its rate
+        was in force for all of the period, and otherwise the part it was in
+        force for. What is dated is read for those days: hours on a
+        timesheet, overtime in the register. A salary is paid for the days
+        paid under the rate, as a joiner's is; anything else is the period's
+        figure at this rate in proportion to the working days employed
+        under it.
+        """
         component = row.component
+        start, end = self._span(row)
+        whole = (start, end) == (self.run.period_start, self.run.period_end)
         if component.basis in (ComponentBasis.PERCENT_OF_GROSS, ComponentBasis.SLAB):
             computed = computed or {}
             if not self._is_covered(component, computed, running_taxable):
@@ -1064,12 +1112,14 @@ class Payslip(AuditModel):
             if component.base_ceiling is not None:
                 base = min(base, component.base_ceiling)
             if component.basis == ComponentBasis.SLAB:
-                return component.slab_for(base, self.run.period_end.month)
-            return base * row.amount / Decimal("100")
+                amount = component.slab_for(base, self.run.period_end.month)
+            else:
+                amount = base * row.amount / Decimal("100")
+            return amount if whole else self._part(amount, start, end)
         if component.basis == ComponentBasis.PER_OVERTIME_HOUR:
             from .attendance import overtime_hours
 
-            return overtime_hours(self.employee, self.run.period_start, self.run.period_end) * row.amount
+            return overtime_hours(self.employee, start, end) * row.amount
         if component.basis == ComponentBasis.PER_HOUR:
             worked = Decimal(hours) if hours is not None else self.worked_hours()
             if not worked:
@@ -1078,15 +1128,22 @@ class Payslip(AuditModel):
                     "approved hours in this period. Approve their timesheet, or pass "
                     "the hours in explicitly."
                 )
-            return worked * row.amount
-        amount = row.amount
+            if whole:
+                return worked * row.amount
+            if hours is not None:
+                # Handed in for the period, with no days to them.
+                return self._part(worked * row.amount, start, end)
+            return self.worked_hours(start, end) * row.amount
         if component.reduces_for_unpaid_leave:
-            amount = amount * proportion
-        elif proportion <= 0:
+            if whole:
+                return row.amount * proportion
+            full = self.period_working_days()
+            return row.amount * self.paid_days(start, end) / full if full > 0 else Decimal("0")
+        if proportion <= 0:
             # Somebody who was employed for none of this period is owed
             # nothing, whatever the component says it pays regardless.
             return Decimal("0")
-        return amount
+        return row.amount if whole else self._part(row.amount, start, end)
 
     @serialised("payment")
     def pay(self, payment):
