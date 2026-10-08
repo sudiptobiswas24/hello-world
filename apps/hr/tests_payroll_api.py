@@ -291,6 +291,22 @@ class VoidedOnADayItStoodTests(AsTheRolesTestCase):
         self.assertEqual((voided.status_code, voided.json()["status"]), (200, PayRunStatus.VOIDED))
 
 
+class APostedRunKeepsTheSlipsItPaidTests(AsTheRolesTestCase):
+    def test_the_controller_posts_june_and_then_pays_the_one_it_paid_nothing(self):
+        officer, controller = self.clients["Payroll Officer"], self.clients["Controller"]
+        forgotten = self.employee("P9")
+        run = self.pay_run()
+        run.calculate(employees=[self.person, forgotten])
+        posted = controller.post(f"/api/hr/pay-runs/{run.pk}/post/", {}, format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        self.pay(forgotten, self.salary, "3000")
+        late = self.pay_run()
+        self.assertEqual(officer.post(f"/api/hr/pay-runs/{late.pk}/calculate/", {"employees": [forgotten.pk]},
+                                      format="json").status_code, 200)
+        posted = controller.post(f"/api/hr/pay-runs/{late.pk}/post/", {}, format="json")
+        self.assertEqual((posted.status_code, posted.json()["gross"]), (200, "3000.00"), posted.content)
+
+
 class PayrollScreensTests(PayrollApiTestCase):
     """What the payroll screens ask: every slip, paged; a void on a date."""
 
