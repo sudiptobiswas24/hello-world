@@ -172,8 +172,12 @@ class ExpenseClaim(AuditModel):
             raise ValidationError("Say why the payment is reversed.")
         with transaction.atomic():
             self.voided_entry = self.journal_entry.create_reversal(entry_date=to_date(on_date) or timezone.localdate())
-            self.status, self.decision_note = ClaimStatus.APPROVED, f"Payment reversed: {reason}"[:255]
-            self._move(["status", "voided_entry", "decision_note"])
+            # The payment no longer stands, so neither does when and from where it was made: left,
+            # an approved claim read "paid on 3 June from petty cash". Its entry and the reversal
+            # stay recorded.
+            self.status, self.paid_on, self.paid_from = ClaimStatus.APPROVED, None, None
+            self.decision_note = f"Payment reversed: {reason}"[:255]
+            self._move(["status", "paid_on", "paid_from", "voided_entry", "decision_note"])
 
 
 class ExpenseLine(AuditModel):
