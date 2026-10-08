@@ -257,6 +257,24 @@ class PayingItOverTests(StatutoryTestCase):
         self.june.void(on_date=datetime.date(2026, 7, 20))
         self.assertEqual((self.report(), self.balance(self.pf_payable)), ({}, Decimal("0.00")))
 
+    def test_a_remittance_whose_payment_stands_is_not_deleted(self):
+        # Deleted, the 7,200 stayed paid over in the ledger, the report said June was owed it
+        # again, and the run could be voided under it.
+        remittance = self.remit(self.pf_payable, "7200")
+        with self.assertRaisesMessage(ValidationError, "it stays while the payment stands"):
+            remittance.delete()
+        with self.assertRaisesMessage(ValidationError, "has been paid over"):
+            self.june.void(on_date=datetime.date(2026, 7, 20))
+        self.assertEqual((self.report()["2310"][2], self.balance(self.pf_payable)),
+                         (Decimal("0.00"), Decimal("0.00")))
+
+    def test_the_remittance_of_a_payment_that_bounced_is_deleted(self):
+        remittance = self.remit(self.pf_payable, "7200")
+        remittance.payment.void(on_date=JULY_15)
+        remittance.delete()
+        self.june.void(on_date=datetime.date(2026, 7, 20))
+        self.assertEqual((self.report(), self.balance(self.pf_payable)), ({}, Decimal("0.00")))
+
     def test_the_account_it_was_owed_into_is_kept(self):
         other = Account.objects.create(code="2311", name="PF payable (new)",
                                        account_type=AccountType.LIABILITY)
@@ -365,6 +383,16 @@ class PayrollOverTheApiTests(StatutoryTestCase):
             {"2310": ("2026-06-01", "7200.00", "7200.00", True),
              "2320": ("2026-06-01", "893.00", "0.00", False),
              "2330": ("2026-06-01", "400.00", "400.00", False)})
+
+    def test_the_controller_deletes_a_remittance_only_once_its_payment_is_voided(self):
+        self.run_for(*JUNE)
+        remittance = self.remit(self.pf_payable, "7200")
+        controller = self.clients["Controller"]
+        refused = controller.delete(f"/api/hr/statutory-remittances/{remittance.pk}/")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("it stays while the payment stands", refused.content.decode())
+        remittance.payment.void(on_date=JULY_15)
+        self.assertEqual(controller.delete(f"/api/hr/statutory-remittances/{remittance.pk}/").status_code, 204)
 
     def test_a_refused_remittance_is_a_400(self):
         self.run_for(*JUNE)
