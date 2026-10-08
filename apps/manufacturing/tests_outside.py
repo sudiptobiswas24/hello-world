@@ -311,6 +311,26 @@ class AMistakenMovementIsVoidedTests(OutsideTestCase):
         with self.assertRaisesMessage(ValidationError, "once it is posted"):
             movement.save()
 
+    def test_a_posted_movement_is_not_deleted(self):
+        # Deleted, its 2,000 would stay in work in progress against a step
+        # that reads as having had nothing back.
+        order = self.released()
+        movement = self.back(order, "1000", "2000")
+        with self.assertRaisesMessage(ValidationError, "Cannot delete"):
+            movement.delete()
+        self.assertTrue(OutsideMovement.objects.filter(pk=movement.pk).exists())
+        self.assertEqual(order.outside_cost(), Decimal("2000"))
+        self.assertEqual(self.balance(self.wip), Decimal("2000"))
+
+    def test_a_draft_movement_still_is(self):
+        order = self.released()
+        draft = OutsideMovement.objects.create(
+            operation=order.operations.get(is_outside=True), movement_date=TODAY,
+            quantity=Decimal("10"), value=Decimal("20"), credit_account=self.grni,
+        )
+        draft.delete()
+        self.assertFalse(OutsideMovement.objects.filter(pk=draft.pk).exists())
+
 
 class TheNextStepWaitsForTheVendorTests(OutsideTestCase):
     """

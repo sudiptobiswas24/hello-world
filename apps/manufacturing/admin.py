@@ -667,6 +667,19 @@ class PostedInlineMixin:
         return not self._posted(obj)
 
 
+class PostedNotDeletedMixin:
+    """
+    A posted document is voided, not deleted, and the model refuses. The
+    admin's bulk delete never calls the model's delete(), but it does ask
+    this of every row it would take.
+    """
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.posted:
+            return False
+        return super().has_delete_permission(request, obj)
+
+
 class MaterialIssueLineInline(PostedInlineMixin, admin.TabularInline):
     model = MaterialIssueLine
     fk_name = "issue"
@@ -676,7 +689,7 @@ class MaterialIssueLineInline(PostedInlineMixin, admin.TabularInline):
 
 
 @admin.register(MaterialIssue)
-class MaterialIssueAdmin(AuditableAdminMixin, admin.ModelAdmin):
+class MaterialIssueAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "direction", "issue_date", "warehouse",
                     "posted", "posted_value", "voided_at")
     list_filter = ("direction", "posted", "warehouse")
@@ -704,7 +717,7 @@ class ProductionByproductInline(PostedInlineMixin, admin.TabularInline):
 
 
 @admin.register(ProductionEntry)
-class ProductionEntryAdmin(AuditableAdminMixin, admin.ModelAdmin):
+class ProductionEntryAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "entry_date", "quantity_produced",
                     "quantity_scrapped", "uom", "work_centre", "posted",
                     "unit_cost", "posted_value")
@@ -726,7 +739,7 @@ class ProductionEntryAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(TimeBooking)
-class TimeBookingAdmin(AuditableAdminMixin, admin.ModelAdmin):
+class TimeBookingAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "operation", "booking_date",
                     "shift", "shown_crew", "minutes", "shown_hours",
                     "quantity_completed", "hourly_rate", "posted",

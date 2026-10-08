@@ -2191,6 +2191,18 @@ class MaterialIssue(AuditModel):
                 )
         super().save(*args, **kwargs)
 
+    @serialised("posted")
+    def delete(self, *args, **kwargs):
+        # Deleting a posted issue leaves its stock movements and its entry
+        # standing, and the run then reads as having drawn nothing. Its
+        # lines go with it by cascade, which never asks their own guard.
+        if self.posted:
+            raise ValidationError(
+                f"Cannot delete {self} once it is posted. Void it and raise "
+                "another."
+            )
+        return super().delete(*args, **kwargs)
+
 
 class MaterialIssueLine(AuditModel):
     issue = models.ForeignKey(
@@ -2721,6 +2733,17 @@ class ProductionEntry(AuditModel):
                     )
         super().save(*args, **kwargs)
 
+    @serialised("posted")
+    def delete(self, *args, **kwargs):
+        # The output on the shelf and the credit to work in progress would
+        # stay, with the run reading as having made nothing.
+        if self.posted:
+            raise ValidationError(
+                f"Cannot delete {self} once it is posted. Void it and raise "
+                "another."
+            )
+        return super().delete(*args, **kwargs)
+
 
 class ProductionByproduct(AuditModel):
     """
@@ -3120,6 +3143,17 @@ class TimeBooking(AuditModel):
             )
         self.resolve_machine()
         super().save(*args, **kwargs)
+
+    @serialised("posted")
+    def delete(self, *args, **kwargs):
+        # Its charge to work in progress would stay, against hours the run
+        # no longer shows.
+        if self.posted:
+            raise ValidationError(
+                f"Cannot delete {self} once it is posted. Void it and book "
+                "again."
+            )
+        return super().delete(*args, **kwargs)
 
     def resolve_machine(self):
         """
