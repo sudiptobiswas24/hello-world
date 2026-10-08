@@ -21,6 +21,7 @@ from django.contrib.auth.models import Group, User
 from django.contrib.staticfiles import finders
 from django.contrib.staticfiles.testing import StaticLiveServerTestCase
 from django.core.management import call_command
+from django.core.signals import request_finished, request_started
 from django.db import connections
 from django.db.backends.sqlite3.base import DatabaseWrapper as SQLiteDatabase
 from django.db.backends.sqlite3.base import SQLiteCursorWrapper
@@ -99,6 +100,41 @@ class OneCallAtATime(SQLiteCursorWrapper):
 _PLAIN_CURSOR = SQLiteDatabase.create_cursor
 
 
+class InFlight:
+    """
+    The requests the live server has begun and not finished.
+
+    The flush that ends each test waits until there are none. A page that
+    navigates away gives up on what it asked, so to the browser it is
+    idle, but the server is still answering: on PostgreSQL that request's
+    SELECT and the flush's TRUNCATE deadlock, and the next test's setUp
+    fails on what the flush left. Waiting for the page's network to
+    settle did not see it, and timed out without a word under load.
+    """
+
+    waits_for = 60  # seconds, before a request that never ends is reported
+
+    def __init__(self):
+        self.count = 0
+        self.lock = threading.Lock()
+
+    def started(self, **kwargs):
+        with self.lock:
+            self.count += 1
+
+    def finished(self, **kwargs):
+        with self.lock:
+            self.count -= 1
+
+    def wait(self):
+        deadline = time.monotonic() + self.waits_for
+        while self.count > 0:
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"The server was still answering {self.count} request(s) "
+                                     f"{self.waits_for} seconds after the test's browsers closed.")
+            time.sleep(0.02)
+
+
 def _one_call_at_a_time(on):
     if any(connection.vendor == "sqlite" and connection.is_in_memory_db() for connection in connections.all()):
         SQLiteDatabase.create_cursor = (
@@ -151,9 +187,14 @@ class BrowserMixin:
             super().tearDownClass()
             _one_call_at_a_time(False)
             raise unittest.SkipTest(f"No usable Chromium: {str(error).splitlines()[0]}")
+        cls.in_flight = InFlight()
+        request_started.connect(cls.in_flight.started, weak=False, dispatch_uid=f"in-flight-started-{id(cls)}")
+        request_finished.connect(cls.in_flight.finished, weak=False, dispatch_uid=f"in-flight-finished-{id(cls)}")
 
     @classmethod
     def tearDownClass(cls):
+        request_started.disconnect(dispatch_uid=f"in-flight-started-{id(cls)}")
+        request_finished.disconnect(dispatch_uid=f"in-flight-finished-{id(cls)}")
         cls.browser.close()
         cls.playwright.stop()
         super().tearDownClass()
@@ -165,21 +206,10 @@ class BrowserMixin:
         call_command("setup_roles", verbosity=0)
         self.problems = []
         self.contexts = []
+        # Cleanups run last first: this one after every browser below has
+        # closed, so nothing can ask again, and before the flush.
+        self.addCleanup(self.in_flight.wait)
         self.page = self.new_page()
-
-    def tearDown(self):
-        # Let every page's last requests finish before the database is
-        # flushed. A write still inside its transaction when the flush's
-        # TRUNCATE arrives deadlocks on PostgreSQL, and the next test's
-        # setUp fails on the wreck: two of a gate's browser tests, both
-        # ending on an action whose answer refetches the whole screen.
-        for context in self.contexts:
-            for page in context.pages:
-                try:
-                    page.wait_for_load_state("networkidle", timeout=15_000)
-                except Exception:  # noqa: BLE001 - a page already gone, or one that never settles
-                    pass
-        super().tearDown()
 
     def new_page(self):
         """A browser of its own: a second person signs in beside the first."""
