@@ -62,6 +62,32 @@ class WhatMayStandInTests(SubstituteTestCase):
         with self.assertRaisesMessage(ValidationError, "already a component"):
             self.allow(item=self.filler)
 
+    def test_one_stand_in_is_not_for_two_components(self):
+        """
+        Found by probing: 100 kg of a second grade allowed for both virgin
+        and regrind read as 100 of each, and planning took both off what
+        it would buy.
+        """
+        self.allow()
+        with self.assertRaisesMessage(ValidationError, "already stands in for MB-WHITE"):
+            BomSubstitute.objects.create(
+                component=self.bom.components.get(item=self.filler), item=self.other_white,
+            )
+
+    def test_nor_is_a_component_added_as_what_stands_in(self):
+        self.allow()
+        with self.assertRaisesMessage(ValidationError, "already a component"):
+            BomComponent.objects.create(bom=self.bom, item=self.other_white,
+                                        quantity=Decimal("1"), uom=self.kg, line_number=9)
+
+    def test_nor_is_a_run_released_on_one_set_down_before_the_rule(self):
+        self.allow()
+        BomSubstitute.objects.bulk_create([BomSubstitute(
+            component=self.bom.components.get(item=self.filler), item=self.other_white,
+        )])
+        with self.assertRaisesMessage(ValidationError, "already stands in for"):
+            self.released()
+
     def test_a_proper_stand_in_is_allowed(self):
         row = self.allow()
         self.assertEqual(row.item, self.other_white)
