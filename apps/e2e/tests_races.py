@@ -614,6 +614,24 @@ class OneDecisionAtATimeRaceTests(RaceCase):
             lambda: MasterScheduleEntry.objects.get(pk=entry.pk).commit(on_date=tests_mps.TODAY)] * 2))
         self.assertEqual(WorkOrder.objects.count(), 1)
 
+    def test_a_day_is_not_taken_off_as_it_is_marked_worked(self):
+        """Each finds the other not there yet, and the day is paid twice."""
+        from apps.hr import tests_attendance
+        from apps.hr.attendance import AttendanceDay
+        from apps.hr.models import LeavePolicy
+
+        made = fixture(self, tests_attendance.AttendanceTestCase)
+        policy = LeavePolicy.objects.create(code="HOL-R", name="Holiday", leave_type="vacation",
+                                            annual_days=Decimal("12"))
+        request = LeaveRequest.objects.create(
+            employee=made.worker, policy=policy, leave_type=LeaveType.VACATION,
+            start_date=datetime.date(2026, 10, 7), end_date=datetime.date(2026, 10, 7))
+        self.once(race(None, lambda: LeaveRequest.objects.get(pk=request.pk).approve(by=made.boss),
+                       lambda: made.mark(7)))
+        request.refresh_from_db()
+        marked = AttendanceDay.objects.filter(employee=made.worker, on=datetime.date(2026, 10, 7)).exists()
+        self.assertNotEqual(request.status == LeaveStatus.APPROVED, marked)
+
     def test_a_schedule_puts_one_job_on_the_board(self):
         from apps.manufacturing.maintenance import MaintenanceJob, MaintenanceSchedule
         from apps.manufacturing import tests_maintenance

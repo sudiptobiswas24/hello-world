@@ -26,7 +26,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, serialised, to_date
+from apps.core.models import AuditModel, lock_rows, serialised, to_date
 
 from .calendars import parse_working_days
 from .models import Employee, LeaveRequest, LeaveStatus
@@ -301,10 +301,12 @@ class TimesheetEntry(AuditModel):
         Both are claims on the same day and both feed pay. Somebody on
         approved holiday who also files eight hours is paid twice for it,
         and the two records each look perfectly reasonable on their own.
+        Half a day off leaves the other half to work, and to claim.
         """
         clash = LeaveRequest.objects.filter(
             employee=self.timesheet.employee,
             status=LeaveStatus.APPROVED,
+            half_day=False,
             start_date__lte=self.date,
             end_date__gte=self.date,
         ).first()
@@ -314,8 +316,12 @@ class TimesheetEntry(AuditModel):
                 f"leave on {self.date}; time cannot also be claimed for it."
             )
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self.timesheet_id:
+            # Leave is approved against the hours under the same lock, so
+            # the two are not each found clear of the other.
+            lock_rows(self.timesheet.employee, refresh=False)
             status = Timesheet.objects.filter(pk=self.timesheet_id).values_list(
                 "status", flat=True
             ).first()

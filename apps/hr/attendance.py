@@ -4,7 +4,10 @@ clocked in and out, how late, and the overtime agreed for the day.
 
 An absence is unpaid wherever it falls on a day the person works and is
 not covered by approved leave, so salary comes off for it as it does for
-unpaid leave. A day-rated worker (`Employee.paid_by_attendance`) is paid
+unpaid leave. Leave asked for after the absence — the usual order for a
+sick day — is what excuses it: paid or not as its policy says, and not
+docked a second time off the register. Half a day off leaves the other
+half to be worked, or not, and marked either way. A day-rated worker (`Employee.paid_by_attendance`) is paid
 for what the register shows and nothing else, so a pay run refuses while
 one of their working days is unmarked: an empty day read as present is
 a day's wage paid on nobody's word.
@@ -21,7 +24,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 
 from apps.core.csvrows import RowError, date, read
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, lock_rows
 
 from .calendars import holidays_between, parse_working_days
 from .models import Employee, LeaveRequest, LeaveStatus
@@ -64,7 +67,8 @@ class AttendanceStatus(models.TextChoices):
 
 
 # What a day counts as unpaid, by status.
-UNPAID = {AttendanceStatus.ABSENT: Decimal("1"), AttendanceStatus.HALF_DAY: Decimal("0.5")}
+ZERO, HALF, ONE = Decimal("0"), Decimal("0.5"), Decimal("1")
+UNPAID = {AttendanceStatus.ABSENT: ONE, AttendanceStatus.HALF_DAY: HALF}
 
 
 class AttendanceDay(AuditModel):
@@ -93,12 +97,21 @@ class AttendanceDay(AuditModel):
     def __str__(self):
         return f"{self.employee} {self.on} {self.get_status_display()}"
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        # Leave is approved against the register under the same lock: the
+        # day marked as the leave is approved would find no leave, and the
+        # leave no mark.
+        lock_rows(self.employee, refresh=False)
         if not self.employee.is_employed_on(self.on):
             raise ValidationError({"on": f"{self.employee} was not employed on {self.on}."})
         if self.status == AttendanceStatus.ABSENT and (self.time_in or self.overtime_hours):
             raise ValidationError("Somebody absent has no time in and no overtime.")
-        if on_leave(self.employee, self.on):
+        leave = leave_on(self.employee, self.on)
+        if leave is not None and leave.half_day and self.status == AttendanceStatus.PRESENT:
+            raise ValidationError({"on": f"{self.employee} has half of {self.on} off as approved leave; "
+                                         "mark the half they came in for as half a day."})
+        if leave is not None and not leave.half_day:
             raise ValidationError({"on": f"{self.employee} is on approved leave on {self.on}; "
                                          "cancel the leave first if they came in."})
         if not self._state.adding:
@@ -128,9 +141,23 @@ def _refuse_if_paid(employee, on):
                               "void the run to change it.")
 
 
-def on_leave(employee, on):
+def leave_on(employee, on):
+    """The approved leave covering a day, or None."""
     return LeaveRequest.objects.filter(employee=employee, status=LeaveStatus.APPROVED,
-                                       start_date__lte=on, end_date__gte=on).exists()
+                                       start_date__lte=on, end_date__gte=on).first()
+
+
+def leave_cover(employee, start, end):
+    """{day: how much of it approved leave takes off, a whole day or a half}, between two dates."""
+    covered = {}
+    for first, last, half in LeaveRequest.objects.filter(
+            employee=employee, status=LeaveStatus.APPROVED, start_date__lte=end, end_date__gte=start,
+    ).values_list("start_date", "end_date", "half_day"):
+        day = max(first, start)
+        while day <= min(last, end):
+            covered[day] = HALF if half else ONE
+            day += datetime.timedelta(days=1)
+    return covered
 
 
 def works_on(employee, day, holidays):
@@ -145,28 +172,35 @@ def _employed_span(employee, start, end):
 
 
 def absent_days(employee, start, end):
-    """Unpaid days the register shows: an absence a whole day, half a day a half, on days the person works."""
+    """
+    Unpaid days the register shows: an absence a whole day, half a day a
+    half, on days the person works, less what approved leave covers. A
+    covered absence is the leave's: docked here as well, an unpaid sick day
+    came off the salary twice and a paid one came off it at all.
+    """
     holidays = holidays_between(start, end, employee.holiday_region)
-    return sum((UNPAID[row.status] for row in AttendanceDay.objects.filter(
+    covered = leave_cover(employee, start, end)
+    return sum((max(UNPAID[row.status] - covered.get(row.on, ZERO), ZERO) for row in AttendanceDay.objects.filter(
         employee=employee, on__range=(start, end), status__in=list(UNPAID))
-        if works_on(employee, row.on, holidays)), Decimal("0"))
+        if works_on(employee, row.on, holidays)), ZERO)
 
 
 def unmarked_days(employee, start, end):
-    """Working days in the span, while employed, with neither a register entry nor approved leave."""
+    """
+    Working days in the span, while employed, with neither a register entry
+    nor a whole day's approved leave. Half a day off leaves the other half
+    for the register to say.
+    """
     start, end = _employed_span(employee, start, end)
     if end < start:
         return []
     holidays = holidays_between(start, end, employee.holiday_region)
     marked = set(AttendanceDay.objects.filter(employee=employee, on__range=(start, end))
                  .values_list("on", flat=True))
-    leave = list(LeaveRequest.objects.filter(employee=employee, status=LeaveStatus.APPROVED,
-                                             start_date__lte=end, end_date__gte=start)
-                 .values_list("start_date", "end_date"))
+    covered = leave_cover(employee, start, end)
     days, day = [], start
     while day <= end:
-        if (works_on(employee, day, holidays) and day not in marked
-                and not any(first <= day <= last for first, last in leave)):
+        if works_on(employee, day, holidays) and day not in marked and covered.get(day) != ONE:
             days.append(day)
         day += datetime.timedelta(days=1)
     return days

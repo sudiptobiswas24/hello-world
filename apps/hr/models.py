@@ -688,6 +688,7 @@ class LeaveRequest(AuditModel):
         lock_rows(self.employee)
         self.check_approver(by, as_hr)
         self._check_balance()
+        self._check_not_worked()
         # Freeze what it cost. The working pattern and the public holiday
         # list both change, and what an approved holiday cost does not.
         self.days_taken = self.compute_days()
@@ -700,6 +701,38 @@ class LeaveRequest(AuditModel):
             "status", "decided_by", "decided_at", "days_taken", "reason", "updated_at",
         ])
         return self
+
+    def _check_not_worked(self):
+        """
+        A day is not both taken off and worked. The register and the
+        timesheet each refuse a day of approved leave; asked here as well,
+        for the order it usually comes in: the day marked or the hours
+        filed, and the leave asked for after. An absence in the register is
+        what leave excuses and stands. Half a day off leaves the other half
+        to have been worked, so only a full day in the register is against it.
+        """
+        from .attendance import AttendanceDay, AttendanceStatus, works_on
+        from .calendars import holidays_between
+        from .timesheets import TimesheetEntry
+
+        holidays = holidays_between(self.start_date, self.end_date, self.employee.holiday_region)
+        worked = [AttendanceStatus.PRESENT] + ([] if self.half_day else [AttendanceStatus.HALF_DAY])
+        for day in AttendanceDay.objects.filter(employee=self.employee, status__in=worked,
+                                                on__range=(self.start_date, self.end_date)).order_by("on"):
+            if works_on(self.employee, day.on, holidays):
+                raise ValidationError(
+                    f"{self.employee} is marked {day.get_status_display().lower()} on {day.on}: a day "
+                    "is not both worked and taken off. Correct the register, or ask for the days "
+                    "either side of it.")
+        if self.half_day:
+            return
+        for entry in TimesheetEntry.objects.filter(timesheet__employee=self.employee,
+                                                   date__range=(self.start_date, self.end_date)).order_by("date"):
+            if works_on(self.employee, entry.date, holidays):
+                raise ValidationError(
+                    f"{self.employee} has {entry.hours} hours on a timesheet for {entry.date}: a day "
+                    "is not both worked and taken off. Take them off the timesheet, or ask for the "
+                    "days either side of it.")
 
     def _check_balance(self):
         if self.policy_id is None or self.policy.allows_negative:
