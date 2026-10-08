@@ -440,6 +440,108 @@ class ThirdPartyLandedCostTests(ReturnTestCase):
             charge.allocate_landed_cost([])
 
 
+class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
+    """
+    Ten at 5 waiting in the receiving bay, then 80 of freight. It went on
+    the stock room the line was destined for: under FIFO the bay's layer
+    is not there, so the shelf kept 50 and the books said 130; under the
+    average an empty stock room held 80. And with the goods already gone
+    the books took 80 of stock nobody had. The freight goes on the shelf
+    the receipt put the goods on, and what no shelf carries is cost of
+    sales.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.cogs = Account.objects.create(code="5100", name="Cost of sales",
+                                           account_type=AccountType.EXPENSE)
+        company = Company.get()
+        company.default_cogs_account = self.cogs
+        company.save()
+
+    def via_the_bay(self):
+        from apps.inventory.models import Warehouse
+
+        self.bay = Warehouse.objects.create(code="BAY", name="Receiving bay")
+        self.warehouse.receipt_route = "input"
+        self.warehouse.input_warehouse = self.bay
+        self.warehouse.save()
+
+    def first_in_first_out(self):
+        self.item.costing_method = "fifo"
+        self.item.save()
+
+    def written_off(self):
+        from apps.inventory.models import AdjustmentReason, StockAdjustment, StockAdjustmentLine
+
+        reason = AdjustmentReason.objects.create(code="SCRAP", name="Scrapped", account=self.expense)
+        adjustment = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 1, 20),
+                                                    warehouse=self.warehouse, reason=reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.item, uom=self.uom,
+                                           quantity=Decimal("-10"))
+        adjustment.post()
+
+    def landed(self):
+        bill, charge = self.carrier_bill("80")
+        (application,) = charge.allocate_landed_cost([self.receipt.lines.get()])
+        return application
+
+    def test_freight_on_goods_waiting_in_the_bay_lands_on_them(self):
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.first_in_first_out()
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.landed()
+        self.assertEqual(self.item.stock_value_at(self.bay), Decimal("130.00"))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
+
+    def test_under_the_average_the_bay_carries_it_not_an_empty_stock_room(self):
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.landed()
+        self.assertEqual((self.item.stock_value_at(self.bay), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("130.00"), Decimal("0.00")))
+
+    def test_freight_on_goods_already_gone_is_cost_of_sales(self):
+        self.first_in_first_out()
+        order, self.receipt = self.goods_received("10", "5")
+        self.written_off()
+        self.landed()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
+                         (Decimal("0"), Decimal("80")))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("0.00"))
+
+    def test_released_it_comes_back_off_the_bay(self):
+        self.first_in_first_out()
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.landed().release()
+        self.assertEqual(self.item.stock_value_at(self.bay), Decimal("50.00"))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.freight_expense)),
+                         (Decimal("50"), Decimal("80")))
+
+    def test_released_after_the_goods_went_it_comes_out_of_cost_of_sales(self):
+        self.first_in_first_out()
+        order, self.receipt = self.goods_received("10", "5")
+        application = self.landed()
+        self.written_off()  # at 130: the freight left with the goods
+        application.release()
+        self.assertEqual((self.balance(self.inventory), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("0"), Decimal("0.00")))
+        self.assertEqual((self.balance(self.cogs), self.balance(self.freight_expense)),
+                         (Decimal("-80"), Decimal("80")))
+
+    def test_released_when_it_never_reached_a_shelf_it_comes_out_of_cost_of_sales(self):
+        self.first_in_first_out()
+        order, self.receipt = self.goods_received("10", "5")
+        self.written_off()
+        self.landed().release()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
+                          self.balance(self.freight_expense)),
+                         (Decimal("0"), Decimal("0"), Decimal("80")))
+
+
 class OneChargeLandsOnceTests(ThirdPartyLandedCostTests):
     """A freight bill could land on the goods and be capitalised onto a machine as well: 80.00
     of freight became 80.00 of stock and 80.00 of asset, and the freight account went to -80.00."""
