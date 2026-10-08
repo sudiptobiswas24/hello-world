@@ -68,6 +68,7 @@ from .bom import (
     BillOfMaterials,
     ByproductValuation,
     byproduct_value,
+    check_stand_ins,
     drawn,
     planned_cost,
 )
@@ -1140,6 +1141,13 @@ class WorkOrder(AuditModel):
                 merged[key] = [component, Decimal("0"), []]
             merged[key][1] += required
             merged[key][2].append(component)
+        # Asked of the run as it will be frozen: a phantom blown through can
+        # bring a stand-in its own recipe never set beside the parent's.
+        check_stand_ins(self, [
+            (component.item, [row.item for line in lines
+                              for row in line.substitutes.filter(is_active=True)])
+            for component, _required, lines in merged.values()
+        ])
         for index, (component, required, lines) in enumerate(
             merged.values(), start=1
         ):
