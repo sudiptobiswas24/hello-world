@@ -322,3 +322,42 @@ class WhatIsComingFromTheVendorIsNotShippedTwiceTests(DropShipTestCase):
         with self.assertRaisesMessage(ValidationError, "the same item"):
             PurchaseOrderLine.objects.create(order=drop, item=bolt, uom=self.uom, quantity=Decimal("1"),
                                              unit_price=Decimal("6"), sales_order_line=sale.lines.get())
+
+
+class TheCustomersOrderWaitsForItsDropShipTests(DropShipTestCase):
+    """
+    A vendor still to send the customer's goods: the sale was cancelled, or its line closed
+    short, with the drop-ship left standing. The goods would come all the same, and their
+    receipt, delivering to an order that no longer wanted them, could never post; the
+    drop-ship stood open with nobody to receive it. Refused until the drop-ship is called off.
+    """
+
+    def test_the_sale_is_cancelled_only_once_its_drop_ship_is(self):
+        sale = self.sales_order("10")
+        drop = PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        drop.confirm()
+        with self.assertRaisesMessage(ValidationError, f"A vendor is still to send {self.sales_line.label()} (10)"):
+            sale.cancel()
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, "confirmed")
+
+        drop.cancel()
+        sale.cancel()
+        sale.refresh_from_db()
+        self.assertEqual(sale.status, "cancelled")
+
+    def test_the_line_is_closed_short_only_once_its_drop_ship_is(self):
+        sale = self.sales_order("10")
+        drop = PurchaseOrder.create_for_drop_ship(sale, self.vendor)
+        drop.confirm()
+        self.receive(drop, "4")
+        with self.assertRaisesMessage(ValidationError, "(6) to the customer on a drop-ship"):
+            self.sales_line.close_short("Customer wants no more")
+        self.sales_line.refresh_from_db()
+        self.assertFalse(self.sales_line.is_closed_short())
+
+        drop.lines.get().close_short("Customer wants no more")
+        self.sales_line.close_short("Customer wants no more")
+        self.sales_line.refresh_from_db()
+        self.assertEqual((self.sales_line.is_closed_short(), self.sales_line.quantity_open()),
+                         (True, Decimal("0")))
