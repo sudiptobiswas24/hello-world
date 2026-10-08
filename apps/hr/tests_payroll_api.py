@@ -230,8 +230,8 @@ class TheLastRunPaidOnTests(PayrollApiTestCase):
         self.assertEqual(len(self.client.get("/api/hr/payslips/").json()), 2)
 
 
-class CalculatedThenChangedOverTheApiTests(PayrollApiTestCase):
-    """The Payroll Officer calculates and corrects the run; the Controller posts it."""
+class AsTheRolesTestCase(PayrollApiTestCase):
+    """The Payroll Officer calculates and corrects a run; the Controller posts and voids it."""
 
     def setUp(self):
         super().setUp()
@@ -246,6 +246,8 @@ class CalculatedThenChangedOverTheApiTests(PayrollApiTestCase):
             self.clients[role] = APIClient()
             self.clients[role].force_authenticate(user)
 
+
+class CalculatedThenChangedOverTheApiTests(AsTheRolesTestCase):
     def calculated_june(self):
         officer = self.clients["Payroll Officer"]
         made = officer.post("/api/hr/pay-runs/", {"period_start": "2026-06-01", "period_end": "2026-06-30",
@@ -272,6 +274,21 @@ class CalculatedThenChangedOverTheApiTests(PayrollApiTestCase):
         self.assertEqual(refused.status_code, 400)
         self.assertIn("Salary was worked out at 5000.00 and comes to 5100.00 now", refused.content.decode())
         self.assertEqual(self.client.get(base).json()["status"], PayRunStatus.CALCULATED)
+
+
+class VoidedOnADayItStoodTests(AsTheRolesTestCase):
+    def test_the_controller_does_not_void_june_in_may_or_in_a_month_to_come(self):
+        from django.utils import timezone
+
+        run = self.pay_run()
+        run.calculate()
+        run.post()
+        controller = self.clients["Controller"]
+        for day in ("2026-05-01", (timezone.localdate() + datetime.timedelta(days=60)).isoformat()):
+            refused = controller.post(f"/api/hr/pay-runs/{run.pk}/void/", {"on_date": day}, format="json")
+            self.assertEqual(refused.status_code, 400, (day, refused.content))
+        voided = controller.post(f"/api/hr/pay-runs/{run.pk}/void/", {"on_date": "2026-06-30"}, format="json")
+        self.assertEqual((voided.status_code, voided.json()["status"]), (200, PayRunStatus.VOIDED))
 
 
 class PayrollScreensTests(PayrollApiTestCase):
