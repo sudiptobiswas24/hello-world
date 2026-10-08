@@ -13,10 +13,11 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.core.models import Party
-from apps.inventory.models import Item, Lot, Warehouse
+from apps.inventory.models import Item, Lot, MovementType, StockMovement, Warehouse
 from apps.quality.models import Disposition, Inspection, Reading, ReleaseStatus
 from apps.quality.release import check_released, release_status
 from apps.sales.models import CustomerProfile, DeliveryLine, ThirdPartyRelease, ThirdPartyReleaseLine
@@ -187,6 +188,43 @@ class RefusedTests(RebatchTestCase):
         with self.assertRaisesMessage(ValidationError, "holds VEN - Vendor's stock"):
             rebatch(self.bag, theirs, [(self.b1, "2")],
                     [(self.new("RB-4"), "1"), (self.new("RB-5"), "1")], "x", on_date=TODAY)
+
+
+class TheShelfIsWorthTheSameTests(RebatchTestCase):
+    """
+    Found by probing: a re-batch posts no journal, so whatever it changes
+    in the shelf's value stays unexplained. Voided after other sacks came
+    in at another price, it put the sources back at what they went out
+    at while the new batches left at the moved average (27,677.24 became
+    29,077.00); and a rate rounded to six places split sacks worth
+    10,000.00 into sacks worth 9,999.99.
+    """
+
+    def receive(self, lot, quantity, cost):
+        StockMovement.objects.create(
+            item=self.bag, warehouse=self.plant, movement_type=MovementType.RECEIPT,
+            uom=self.bag.uom, quantity=Decimal(quantity), unit_cost=Decimal(cost), lot=lot,
+            occurred_at=timezone.now())
+
+    def worth(self):
+        return self.value()[1].quantize(Decimal("0.0001"))
+
+    def test_voided_after_the_shelf_moved(self):
+        document, _made = self.split()
+        self.receive(self.new("BOUGHT-1"), "1000", "5")
+        before = self.worth()
+        document.void("Split by mistake")
+        self.assertEqual(self.worth(), before)
+
+    def test_split_at_a_rate_no_six_places_can_say(self):
+        awkward = self.new("ODD")
+        self.receive(awkward, "10000", "0.5")
+        self.receive(awkward, "20000", "0.25")
+        before = self.worth()
+        rebatch(self.bag, self.plant, [(awkward, "30000")],
+                [(self.new("ODD-1"), "10000"), (self.new("ODD-2"), "20000")],
+                "Two customers", on_date=TODAY)
+        self.assertEqual(self.worth(), before)
 
 
 class UndoneTests(RebatchTestCase):
