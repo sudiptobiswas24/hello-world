@@ -269,6 +269,11 @@ class PayingItOverTests(StatutoryTestCase):
                           self.report(datetime.date(2026, 7, 20))["2310"][2]),
                          (Decimal("0.00"), Decimal("7200.00")))
 
+    def test_a_run_voided_since_was_owed_until_it_was_voided(self):
+        self.june.void(on_date=datetime.date(2026, 7, 20))
+        self.assertEqual((self.report(datetime.date(2026, 7, 10))["2310"][2], self.report()),
+                         (Decimal("7200.00"), {}))
+
     def test_a_remittance_whose_payment_stands_is_not_deleted(self):
         # Deleted, the 7,200 stayed paid over in the ledger, the report said June was owed it
         # again, and the run could be voided under it.
