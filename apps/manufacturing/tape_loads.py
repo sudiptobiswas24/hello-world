@@ -125,7 +125,7 @@ def void_load(load, station, supervisor, operator, reason):
         raise ValidationError(f"A roll has come off {load.machine.code} since {load} was "
                               "loaded, and names it.")
     if load.issue_id:
-        load.issue.void(memo=f"Load withdrawn at {station}: {reason}"[:255])
+        load.issue.void_with(load, memo=f"Load withdrawn at {station}: {reason}"[:255])
     load.voided_at = timezone.now()
     load.voided_reason = reason[:255]
     load.save(update_fields=["voided_at", "voided_reason", "updated_at"])

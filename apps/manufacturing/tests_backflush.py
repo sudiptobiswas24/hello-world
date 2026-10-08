@@ -92,6 +92,18 @@ class BackflushTests(RunTestCase):
             order.components.get(item=self.virgin).quantity_issued(), Decimal("0")
         )
 
+    def test_its_issue_is_not_voided_while_the_output_stands(self):
+        # Found by probing: voided on its own, it left 500 kg of tape on
+        # the shelf made of no polymer at all.
+        order = self.released()
+        entry = self.produce(order, "500")
+        entry.post()
+        with self.assertRaisesMessage(ValidationError, "Void that, and this goes with it"):
+            entry.backflush_issue.void(TODAY)
+        self.assertEqual(
+            order.components.get(item=self.virgin).quantity_issued(), Decimal("386.5979")
+        )
+
     def test_a_closed_backflushed_run_holds_nothing(self):
         """
         The test that matters most: everything that went in has come

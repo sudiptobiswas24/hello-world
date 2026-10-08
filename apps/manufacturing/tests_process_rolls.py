@@ -192,6 +192,17 @@ class WithdrawnTests(RollsTestCase):
         void_mount(mount, self.kx, self.supervisor, self.operator, "Wrong roll")
         self.assertEqual(self.fabric_lot.on_hand_at(self.plant), Decimal("104.4000"))
 
+    def test_its_issue_and_its_return_go_only_with_it(self):
+        mount = self.mount()
+        dismount_roll(self.kx, self.operator, self.k1, remaining_kg="20", at=at(TODAY, 10, 55))
+        mount.refresh_from_db()
+        for document in (mount.returned, mount.issue):
+            with self.subTest(document.direction):
+                with self.assertRaisesMessage(ValidationError, "Void that, and this goes with it"):
+                    document.void()
+        void_mount(mount, self.kx, self.supervisor, self.operator, "Wrong roll")
+        self.assertEqual(self.fabric_lot.on_hand_at(self.plant), Decimal("104.4000"))
+
     def test_a_roll_is_withdrawn_only_while_it_is_not_mounted(self):
         self.mount()
         roll = self.laminated()
