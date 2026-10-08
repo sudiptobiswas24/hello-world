@@ -74,7 +74,7 @@ def prefetched(instance, relation):
 _COMPANY = contextvars.ContextVar("company_for_this_request", default=None)
 
 
-def row_lock_query(model, pk):
+def row_lock_query(model, pk, no_key=False):
     """
     The query that locks one row, and only that row.
 
@@ -83,8 +83,13 @@ def row_lock_query(model, pk):
     on an inner join it locks the related row as well. Closing a complaint,
     whose actions sort by their alert, failed there and nowhere else:
     SQLite takes no row locks at all.
+
+    `no_key`: FOR NO KEY UPDATE, the lock the row's own UPDATE takes. It
+    keeps out another change of the row, and not a row elsewhere that is
+    being written with a key pointing at this one.
     """
-    return model._base_manager.select_for_update().filter(pk=pk).order_by().values_list("pk", flat=True)
+    return model._base_manager.select_for_update(no_key=no_key).filter(pk=pk).order_by().values_list(
+        "pk", flat=True)
 
 
 def lock_rows(*instances, refresh=True):
@@ -109,6 +114,32 @@ def lock_rows(*instances, refresh=True):
         list(row_lock_query(type(instance), instance.pk))
         if refresh:
             instance.refresh_from_db()
+
+
+def lock_for_change(instance):
+    """
+    Hold `instance`'s row for a change made from outside its own methods,
+    an edit or a delete through the API (apps/core/audit.py), which reads
+    it again once this returns.
+
+    First what its own save() holds before writing it, in that order,
+    where the model names it in `locked_before_it()`; then the row. Taken
+    the other way round, the change would hold the row and wait for the
+    rest while a step taking them in save()'s order held the rest and
+    waited for the row, and PostgreSQL would end one of them as a
+    deadlock: a stoppage corrected as the repair on it is completed, which
+    takes the job and then the stoppage.
+
+    The row FOR NO KEY UPDATE, the lock its own UPDATE takes anyway, only
+    sooner: a second change waits, and a delivery line being written for
+    an order line does not.
+    """
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("lock_for_change() outside a transaction locks nothing.")
+    before = getattr(instance, "locked_before_it", None)
+    if before is not None:
+        lock_rows(*before(), refresh=False)
+    list(row_lock_query(type(instance), instance.pk, no_key=True))
 
 
 def serialised(*state):

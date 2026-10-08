@@ -97,12 +97,19 @@ class AttendanceDay(AuditModel):
     def __str__(self):
         return f"{self.employee} {self.on} {self.get_status_display()}"
 
+    def locked_before_it(self):
+        """
+        The employee, as save() takes it and as the punch file's update of
+        a day does: the employee, then the day (apps.core.models.lock_for_change).
+        """
+        return [self.employee]
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         # Leave is approved against the register under the same lock: the
         # day marked as the leave is approved would find no leave, and the
         # leave no mark.
-        lock_rows(self.employee, refresh=False)
+        lock_rows(*self.locked_before_it(), refresh=False)
         if not self.employee.is_employed_on(self.on):
             raise ValidationError({"on": f"{self.employee} was not employed on {self.on}."})
         if self.status == AttendanceStatus.ABSENT and (self.time_in or self.overtime_hours):
