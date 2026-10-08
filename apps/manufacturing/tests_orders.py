@@ -689,6 +689,15 @@ class BookedInAnotherUnitOfWeightTests(RunTestCase):
         self.assertEqual(self.shelf(self.tape), Decimal("45855.67"))
         self.assertEqual(self.tape.on_hand_at(self.plant), Decimal("500"))
 
+    def test_the_run_counts_it_at_its_size(self):
+        # Counted as written, the half tonne was half a kilogramme, and a
+        # further 1,000 kg went past the 1,100 the run allows.
+        self.full_issue(self.job).post()
+        self.produce(self.job, "0.5", uom=self.tonne).post()
+        self.assertEqual(self.job.quantity_produced(), Decimal("500"))
+        with self.assertRaisesMessage(ValidationError, "Booking 1000 on top of 500"):
+            self.produce(self.job, "1000").post()
+
     def test_voiding_it_takes_back_the_kilos_at_their_cost(self):
         self.full_issue(self.job).post()
         entry = self.produce(self.job, "0.5", uom=self.tonne)
