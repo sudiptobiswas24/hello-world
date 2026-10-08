@@ -429,6 +429,12 @@ class BomComponent(AuditModel):
                 "components with it. Change that."
             )
         self.item.check_uom(self.uom)
+        # The mirror of a stand-in's own check: a component added as what
+        # already stands in for another would be counted against both.
+        check_stand_ins(self.bom, [
+            (component.item, [row.item for row in component.substitutes.all()])
+            for component in self.bom.components.exclude(pk=self.pk).select_related("item")
+        ] + [(self.item, [row.item for row in self.substitutes.all()] if self.pk else [])])
         if self.item_id == self.bom.item_id and not self.bom.is_rework:
             raise ValidationError(
                 f"{self.bom} makes {self.bom.item} and this line puts "
@@ -585,21 +591,47 @@ class BomSubstitute(AuditModel):
             raise ValidationError(
                 f"{self.item} cannot stand in for itself."
             )
-        clash = self.component.bom.components.filter(
-            item_id=self.item_id
-        ).exclude(pk=self.component_id).exists()
-        if clash:
-            raise ValidationError(
-                f"{self.item} is already a component of {self.component.bom}. "
-                "Counting it as a stand-in as well would have one issue cover "
-                "two requirements, so the run would read as fully issued on "
-                "half the material."
-            )
+        bom = self.component.bom
+        # This row's requirement last, so a clash names what was there first.
+        check_stand_ins(bom, [
+            (component.item, [row.item for row in component.substitutes.exclude(pk=self.pk)])
+            for component in bom.components.exclude(pk=self.component_id).select_related("item")
+        ] + [(self.component.item,
+              [row.item for row in self.component.substitutes.exclude(pk=self.pk)] + [self.item])])
 
     def save(self, *args, **kwargs):
         self.check_allowed()
         self.component.item.check_uom(self.component.uom)
         super().save(*args, **kwargs)
+
+
+def check_stand_ins(where, requirements):
+    """
+    [(component item, [its stand-ins' items])] of one recipe, or of one
+    run as released. A stand-in counts against the one requirement it
+    stands in for: one standing in for two, or one that is a component
+    itself, has a single issue read against both, so 100 kg of a second
+    grade read as 100 of virgin and 100 of regrind, and planning took
+    both off what it bought.
+    """
+    required = {item.pk for item, _ in requirements}
+    stands_for = {}
+    for item, stand_ins in requirements:
+        for stand_in in stand_ins:
+            if stand_in.pk in required and stand_in.pk != item.pk:
+                raise ValidationError(
+                    f"{stand_in} is already a component of {where}, and a stand-in for "
+                    f"{item} as well. Counted against both, one issue would cover two "
+                    "requirements, so the run would read as fully issued on half the "
+                    "material."
+                )
+            first = stands_for.setdefault(stand_in.pk, item)
+            if first.pk != item.pk:
+                raise ValidationError(
+                    f"{stand_in} already stands in for {first} in {where}. Standing in "
+                    f"for {item} as well, one issue would cover two requirements, so "
+                    "the run would read as fully issued on half the material."
+                )
 
 
 Requirement = namedtuple(
