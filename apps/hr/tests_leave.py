@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
@@ -217,9 +218,13 @@ class WhoDecidesTests(LeaveTestCase):
 
 
 class ApprovalHasAReverseTests(LeaveTestCase):
+    # A holiday still to come, whatever day the tests run on: booked for July
+    # 2026, these two became a holiday taken and given back once July passed.
+    NEXT_JULY = datetime.date(timezone.localdate().year + 1, 7, 1)
+
     def test_an_approval_can_be_sent_back(self):
         person = self.employee("W1")
-        booking = self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
+        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         booking.withdraw_approval(by=self.boss)
         self.assertEqual(booking.status, LeaveStatus.PENDING)
@@ -228,11 +233,49 @@ class ApprovalHasAReverseTests(LeaveTestCase):
 
     def test_sending_it_back_gives_the_days_back(self):
         person = self.employee("W2")
-        booking = self.request(person, datetime.date(2026, 7, 1), datetime.date(2026, 7, 3))
+        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         booking.withdraw_approval(by=self.boss)
         booking.cancel()
-        self.assertEqual(leave_taken(person, self.policy, 2026), Decimal("0"))
+        self.assertEqual(leave_taken(person, self.policy, self.NEXT_JULY.year), Decimal("0"))
+
+    def test_a_holiday_already_taken_is_not_sent_back_to_be_cancelled(self):
+        # June's five days taken; sent back and cancelled in October, they were given back.
+        person = self.employee("W7")
+        booking = self.request(person, datetime.date(2026, 6, 8), datetime.date(2026, 6, 12))
+        booking.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "it has been taken and its approval is not sent back"):
+            booking.withdraw_approval(by=self.boss)
+        self.assertEqual(leave_taken(person, self.policy, 2026), Decimal("5.00"))
+
+    def test_a_holiday_under_way_is_not_sent_back_but_cancelled_from_today(self):
+        person = self.employee("W8")
+        today = timezone.localdate()
+        if (today - datetime.timedelta(days=1)).year != today.year:
+            self.skipTest("On 1 January no leave of this year is yet under way.")
+        booking = self.request(person, today - datetime.timedelta(days=1), today,
+                               policy=self.sick, leave_type=LeaveType.SICK)
+        booking.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "the days taken since stay taken"):
+            booking.withdraw_approval(by=self.boss)
+
+    def test_approved_leave_is_not_deleted_but_cancelled(self):
+        person = self.employee("W9")
+        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
+        booking.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "cancel it rather than delete it"):
+            booking.delete()
+        booking.cancel()
+        booking.delete()
+        self.assertFalse(LeaveRequest.objects.filter(pk=booking.pk).exists())
+
+    def test_leave_is_not_handed_to_somebody_else(self):
+        person, other = self.employee("W10"), self.employee("W11")
+        booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
+        booking.approve(by=self.boss)
+        booking.employee = other
+        with self.assertRaisesMessage(ValidationError, "is not moved to another"):
+            booking.save()
 
     def test_an_approved_future_holiday_can_be_cancelled(self):
         # The original cancel() took only pending requests, which made an
@@ -279,6 +322,28 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         with self.assertRaises(ValidationError) as caught:
             booking.save()
         self.assertIn("can no longer change", str(caught.exception))
+
+
+class ApprovedLeaveOverTheApiTests(LeaveTestCase):
+    def test_hr_neither_deletes_approved_leave_nor_hands_it_to_somebody_else(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("hr-admin")
+        user.groups.add(Group.objects.get(name="HR Admin"))
+        client = APIClient()
+        client.force_authenticate(user)
+        person, other = self.employee("X1"), self.employee("X2")
+        start = datetime.date(timezone.localdate().year + 1, 7, 1)
+        booking = self.request(person, start, start + datetime.timedelta(days=2))
+        booking.approve(by=self.boss)
+        moved = client.patch(f"/api/hr/leave-requests/{booking.pk}/", {"employee": other.pk}, format="json")
+        deleted = client.delete(f"/api/hr/leave-requests/{booking.pk}/")
+        self.assertEqual((moved.status_code, deleted.status_code), (400, 400), (moved.content, deleted.content))
+        booking.refresh_from_db()
+        self.assertEqual((booking.employee, booking.status), (person, LeaveStatus.APPROVED))
 
 
 class WorkingDayTests(LeaveTestCase):
