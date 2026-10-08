@@ -32,6 +32,7 @@ from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
     Extensible,
+    correction_date,
     AuditModel,
     Company,
     Currency,
@@ -6809,6 +6810,10 @@ class LandedCostApplication(AuditModel):
         """
         if self.is_released():
             raise ValidationError("This allocation has already been released.")
+        # Released before it was allocated, the freight leaves stock in a
+        # period it never entered; on a day to come, the allocation reads
+        # undone while the books still hold it.
+        on_date = correction_date(on_date, self.date, f"{self} is not released on", "it was allocated")
         item = self.receipt_line.order_line.item
         landed = self.stock_movement
         # Off the shelf it went onto, and only what that shelf still holds:
@@ -6832,7 +6837,7 @@ class LandedCostApplication(AuditModel):
         entry = _post_landed_cost(
             item, self.charge_line.posted_account or self.charge_line.expense_account,
             self.amount, on_shelf=off_shelf,
-            date=to_date(on_date) or timezone.localdate(),
+            date=on_date,
             reference=self.journal_entry.reference,
             memo=f"Landed cost released from {item}", undoing=self.journal_entry,
         )

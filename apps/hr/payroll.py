@@ -46,6 +46,7 @@ from apps.accounting.models import (
 from apps.core.models import (
     AuditModel,
     Company,
+    correction_date,
     DocumentSequence,
     lock_rows,
     serialised,
@@ -53,7 +54,7 @@ from apps.core.models import (
 )
 
 from .calendars import working_days
-from .models import Employee, LeaveRequest, LeaveStatus, reversal_day
+from .models import Employee, LeaveRequest, LeaveStatus
 
 
 class ComponentKind(models.TextChoices):
@@ -692,7 +693,7 @@ class PayRun(AuditModel):
             raise ValidationError("Only a posted pay run can be voided.")
         if self.is_voided():
             raise ValidationError("This pay run has already been voided.")
-        on_date = reversal_day(on_date, self.pay_date, "This run was paid")
+        on_date = correction_date(on_date, self.pay_date, f"{self} is not voided on", "it was paid")
         paid = next((slip for slip in self.payslips.all() if slip.is_paid()), None)
         if paid is not None:
             raise ValidationError(

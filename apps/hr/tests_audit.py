@@ -447,15 +447,15 @@ class TheAuditAsksTests(TestCase):
 
         from apps.core.management.commands.audit_invariants import Command
 
-        return Command().unchecked_reversal_dates(["hr"], {"hr": {Path("apps/hr/example.py"): text}})
+        return Command().corrections_dated_without_the_rule(["hr"], {"hr": {Path("apps/hr/example.py"): text}})
 
-    def test_a_reversal_dated_by_its_caller_is_reported_until_it_asks_both_ways(self):
+    def test_a_reversal_dated_by_its_caller_is_reported_until_it_asks_the_rule(self):
         unasked = ("class Slip:\n    def void(self, on_date=None):\n"
                    "        self.entry.create_reversal(entry_date=on_date)\n")
         shared = ("class Slip:\n    def void(self, on_date=None):\n"
-                  "        on_date = reversal_day(on_date, self.day, 'Paid')\n"
+                  "        on_date = correction_date(on_date, self.day, 'Not voided on', 'it was paid')\n"
                   "        self.entry.create_reversal(entry_date=on_date)\n")
-        self.assertEqual([shape for shape, _detail in self.reversals(unasked)], ["unchecked reversal date"])
+        self.assertEqual([shape for shape, _detail in self.reversals(unasked)], ["correction dated anywhere"])
         self.assertEqual(self.reversals(shared), [])
 
     def test_a_posted_pay_run_that_could_be_deleted_is_reported(self):
@@ -463,14 +463,17 @@ class TheAuditAsksTests(TestCase):
 
         from apps.core.management.commands.audit_invariants import Command, source_of
 
+        def deletable(sources):
+            return [detail.split(" ")[0] for shape, detail in Command().mutable_posted_documents(["hr"], {"hr": sources})
+                    if shape == "deletable posted document"]
+
         sources = source_of("hr")
-        self.assertEqual(Command().deletable_posted_documents(["hr"], {"hr": sources}), [])
+        self.assertEqual(deletable(sources), [])
         payroll = Path("apps/hr/payroll.py")
         sources[payroll] = sources[payroll].replace(
             "    def delete(self, *args, **kwargs):\n        # Posted, it is in the ledger",
             "    def kept(self, *args, **kwargs):\n        # Posted, it is in the ledger")
-        self.assertEqual([detail.split(" ")[0] for _shape, detail in
-                          Command().deletable_posted_documents(["hr"], {"hr": sources})], ["hr.PayRun"])
+        self.assertEqual(deletable(sources), ["hr.PayRun"])
 
     def test_a_pay_run_posted_as_it_was_calculated_is_reported(self):
         from pathlib import Path

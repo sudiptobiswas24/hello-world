@@ -102,8 +102,6 @@ class Command(BaseCommand):
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
         findings += self.kept_settings_read_live(labels, sources)
         findings += self.corrections_dated_without_the_rule(labels, sources)
-        findings += self.unchecked_reversal_dates(labels, sources)
-        findings += self.deletable_posted_documents(labels, sources)
         findings += self.posted_as_calculated(labels, sources)
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
@@ -843,8 +841,12 @@ class Command(BaseCommand):
         for label in labels:
             code = non_test_text(sources[label])
             for model in django_apps.get_app_config(label).get_models():
-                names = {f.name for f in model._meta.get_fields()}
-                if "posted" not in names:
+                # Posted is a flag on some documents and a status on others
+                # (a pay run, a remittance). Either can be deleted; the
+                # edit guard is asked of the flag, which is all it reads.
+                flagged = "posted" in {f.name for f in model._meta.get_fields()}
+                status = next((f for f in model._meta.fields if f.name == "status"), None)
+                if not flagged and not (status is not None and "posted" in dict(status.choices or ())):
                     continue
                 body = self._class_body(code, model.__name__)
                 if body is None:
@@ -854,6 +856,8 @@ class Command(BaseCommand):
                     ("save", "mutable posted document", "edits"),
                     ("delete", "deletable posted document", "deletion"),
                 ):
+                    if method == "save" and not flagged:
+                        continue
                     if self._guards_posted(model, code, method):
                         continue
                     if method == "delete" and key in self.DELETABLE_REPORTED:
@@ -861,63 +865,12 @@ class Command(BaseCommand):
                         continue
                     findings.append((
                         shape,
-                        f"{key} has a posted flag but no {method}() guard refusing "
+                        f"{key} can be posted but has no {method}() guard refusing "
                         f"{refusing} once posted.",
                     ))
         findings += [("stale exemption", f"{key} refuses deletion now; take it off DELETABLE_REPORTED.")
                      for key in sorted(set(self.DELETABLE_REPORTED) - reported)
                      if key.split(".")[0] in labels]
-        return findings
-
-    # Found before the check, in modules other than the one it was found
-    # from; reported to their owners. A name comes off once its method asks.
-    REVERSAL_DATES_NOT_YET_ASKED = {
-        "accounting.BankStatementLine.reverse_posting", "assets.FixedAsset.uncapitalise",
-        "assets.FixedAsset.dispose", "assets.FixedAsset.reinstate", "inventory.StockAdjustment.void",
-        "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
-        "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",
-        "manufacturing.OutsideMovement.void", "purchasing.BillPayment.release_exchange_difference",
-        "purchasing.LandedCostApplication.release", "purchasing.TdsDeduction.reverse",
-        "purchasing.TdsChallan.void", "sales.Invoice.recover_write_off",
-        "sales.InvoicePayment.release_exchange_difference", "sales.CustomerTds.reverse",
-    }
-    AHEAD = re.compile(r"on_date\s*>\s*timezone\.localdate\(\)")
-    BEFORE = re.compile(r"on_date\s*<\s")
-
-    def unchecked_reversal_dates(self, labels, sources):
-        """
-        A reversal dated on the caller's day, asked neither whether that day
-        comes before what it reverses nor whether it has come yet. A pay run
-        paid on 30 June was voided on 1 May and on a day two months ahead; a
-        payment's void refused both. A method passes by calling the shared
-        rule (hr's reversal_day) or by asking both itself.
-        """
-        findings = []
-        for label in labels:
-            for path, text in sorted(sources[label].items()):
-                if "test" in path.name or "migrations" in path.parts:
-                    continue
-                for owner in ast.walk(ast.parse(text)):
-                    if not isinstance(owner, ast.ClassDef):
-                        continue
-                    for node in owner.body:
-                        if not isinstance(node, ast.FunctionDef) or node.name == "create_reversal":
-                            continue
-                        if "on_date" not in {arg.arg for arg in node.args.args + node.args.kwonlyargs}:
-                            continue
-                        body = ast.get_source_segment(text, node) or ""
-                        if "create_reversal(" not in body or "reversal_day(" in body:
-                            continue
-                        if self.AHEAD.search(body) and self.BEFORE.search(body):
-                            continue
-                        where = f"{label}.{owner.name}.{node.name}"
-                        if where in self.REVERSAL_DATES_NOT_YET_ASKED:
-                            continue
-                        findings.append((
-                            "unchecked reversal date",
-                            f"{where} ({path.name}:{node.lineno}) reverses on the day it is given without "
-                            "refusing one before what it reverses or after today.",
-                        ))
         return findings
 
     def posted_as_calculated(self, labels, sources):
@@ -950,44 +903,6 @@ class Command(BaseCommand):
                         ))
         return findings
 
-    # As above: found before the check, outside the module it came from.
-    DELETABLE_NOT_YET_GUARDED = {
-        "quality.Inspection", "manufacturing.TimeBooking", "manufacturing.ProductionEntry",
-        "manufacturing.OutsideMovement", "manufacturing.MaterialIssue", "inventory.StockCount",
-        "inventory.StockAdjustment",
-    }
-
-    def deletable_posted_documents(self, labels, sources):
-        """
-        A document that can be posted, with no delete() that refuses. A
-        posted pay run deleted took its slips and left its entry owed to
-        nobody; a remittance deleted reopened what the void of its run
-        closes. A document posted is corrected by reversing it.
-        """
-        findings = []
-        for label in labels:
-            code = non_test_text(sources[label])
-            for model in django_apps.get_app_config(label).get_models():
-                status = next((f for f in model._meta.fields if f.name == "status"), None)
-                if "posted" not in {f.name for f in model._meta.get_fields()} and not (
-                        status is not None and "posted" in dict(status.choices or ())):
-                    continue
-                if f"{label}.{model.__name__}" in self.DELETABLE_NOT_YET_GUARDED:
-                    continue
-                guards = []
-                for cls in model.__mro__:
-                    if cls is models.Model:
-                        break
-                    found = self._class_body(code, cls.__name__)
-                    guard = found and self._method_body(found, "delete")
-                    if guard:
-                        guards.append(guard)
-                if not any("raise" in guard for guard in guards):
-                    findings.append((
-                        "deletable posted document",
-                        f"{label}.{model.__name__} can be posted and has no delete() refusing once it is.",
-                    ))
-        return findings
     def _guards_posted(self, model, code, method):
         # The guard may be inherited from an abstract base in the same
         # app; a document is guarded if any class it is built from
@@ -1166,12 +1081,15 @@ class Command(BaseCommand):
             "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
             "sales.Invoice.recover_write_off", "sales.InvoicePayment.release_exchange_difference",
             "sales.CustomerTds.reverse", "purchasing.BillPayment.release_exchange_difference",
-            "purchasing.LandedCostApplication.release", "purchasing.TdsDeduction.reverse",
-            "purchasing.TdsChallan.void", "hr.ExpenseClaim.unpay", "hr.PayRun.void",
+            "purchasing.TdsDeduction.reverse", "purchasing.TdsChallan.void",
             "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
             "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",
             "manufacturing.OutsideMovement.void"), NOT_YET_ON_THE_RULE),
     }
+
+    # An entry is taken back by create_reversal(), or written by hand
+    # naming the entry it undoes: the landed-cost release posts its own.
+    REVERSES = re.compile(r"\.create_reversal\(|\b(reverses|undoing)=")
 
     def corrections_dated_without_the_rule(self, labels, sources):
         """
@@ -1192,7 +1110,7 @@ class Command(BaseCommand):
                     for fn in (node for node in cls.body if isinstance(node, ast.FunctionDef)):
                         body = ast.unparse(fn)
                         if "on_date" not in {arg.arg for arg in fn.args.args + fn.args.kwonlyargs} \
-                                or ".create_reversal(" not in body or "correction_date(" in body:
+                                or not self.REVERSES.search(body) or "correction_date(" in body:
                             continue
                         key = f"{label}.{cls.name}.{fn.name}"
                         if key in self.DATED_ELSEWHERE:
