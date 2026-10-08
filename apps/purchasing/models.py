@@ -4416,7 +4416,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
 
     @transaction.atomic
     def capitalise_as_asset(self, category, name="", in_service_date=None,
-                            life_months=None, salvage_value=Decimal("0")):
+                            life_months=None, salvage_value=Decimal("0"), on_date=None):
         """
         Turn this purchase into a fixed asset.
 
@@ -4428,6 +4428,13 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         One asset per unit, because assets are tracked, disposed of and
         depreciated individually — a line for three machines is three
         assets, not one worth three times as much.
+
+        The first capitalisation stands on the bill's date, where the bill
+        put the cost. One made again after an undo is dated when it is
+        done, `on_date` or today, and never before the undo: dated on the
+        bill's, a lathe undone on 31 March and capitalised again into
+        vehicles stood on both plant and vehicles from January to March,
+        with purchases at -12,000.
         """
         from apps.assets.models import AssetStatus, FixedAsset
 
@@ -4439,6 +4446,18 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # line's account. Counted, it refused the undo's own way forward, capitalising again.
         if self.assets.exclude(status=AssetStatus.CANCELLED).exists():
             raise ValidationError("This line has already been capitalised.")
+        undone_on = JournalEntry.objects.filter(
+            reverses__in=self.assets.filter(status=AssetStatus.CANCELLED).values("capitalisation_entry"),
+        ).aggregate(day=models.Max("date"))["day"]
+        if undone_on is None:
+            if on_date is not None and to_date(on_date) != to_date(self.bill.bill_date):
+                raise ValidationError(
+                    f"'{self.label()}' is capitalised on {self.bill.bill_date}, the day its bill put the "
+                    "cost where this takes it from; only capitalising it again after an undo takes a day.")
+            posted_on = self.bill.bill_date
+        else:
+            posted_on = correction_date(on_date, undone_on, f"'{self.label()}' is not capitalised again on",
+                                        "its capitalisation was undone")
         if any(not application.is_released() for application in self.landed_cost_applications.all()):
             raise ValidationError(
                 f"'{self.label()}' has been landed on stock; release that before capitalising "
@@ -4487,7 +4506,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 asset_account=category.asset_account,
             )
             entry = JournalEntry.objects.create(
-                date=self.bill.bill_date, reference=self.bill.number, memo=memo
+                date=posted_on, reference=self.bill.number, memo=memo
             )
             JournalLine.objects.create(
                 entry=entry, account=asset.asset_account,

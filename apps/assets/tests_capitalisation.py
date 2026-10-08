@@ -15,14 +15,16 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db.models import Sum
+from django.utils import timezone
 
-from apps.accounting.models import Account, AccountType
+from apps.accounting.models import Account, AccountType, JournalLine
 
-from .models import AssetCategory, AssetStatus
+from .models import AssetCategory, AssetStatus, asset_register
 from .tests import CapitalisationFixture
 
 
-class CapitalisedAgainAfterTheUndoTests(CapitalisationFixture):
+class WithVehicles(CapitalisationFixture):
     def setUp(self):
         super().setUp()
         self.vehicles_account = Account.objects.create(code="1520", name="Vehicles", account_type=AccountType.ASSET)
@@ -30,6 +32,8 @@ class CapitalisedAgainAfterTheUndoTests(CapitalisationFixture):
             code="VEH", name="Vehicles", asset_account=self.vehicles_account, accumulated_account=self.accumulated,
             expense_account=self.depreciation, disposal_account=self.disposal, default_life_months=12)
 
+
+class CapitalisedAgainAfterTheUndoTests(WithVehicles):
     def undone(self):
         line = self.bill_line("1", "12000")
         (first,) = line.capitalise_as_asset(self.category)
@@ -54,7 +58,7 @@ class CapitalisedAgainAfterTheUndoTests(CapitalisationFixture):
 
     def test_the_one_capitalised_again_is_undone_in_its_turn_and_the_bill_then_debited(self):
         line, _ = self.undone()
-        (second,) = line.capitalise_as_asset(self.vehicles)
+        (second,) = line.capitalise_as_asset(self.vehicles, on_date=datetime.date(2026, 1, 7))
         second.uncapitalise(on_date=datetime.date(2026, 1, 9))
         self.assertEqual((self.balance(self.vehicles_account), self.balance(self.expense)),
                          (Decimal("0"), Decimal("12000.00")))
@@ -65,6 +69,63 @@ class CapitalisedAgainAfterTheUndoTests(CapitalisationFixture):
         _, first = self.undone()
         with self.assertRaisesMessage(ValidationError, "has already been un-capitalised"):
             first.uncapitalise(on_date=datetime.date(2026, 1, 6))
+
+
+class CapitalisedAgainOnTheDayItIsDoneTests(WithVehicles):
+    """
+    Undone on 31 March and capitalised again into vehicles. Dated on its bill's 1 January, the
+    second stood beside the first until March: plant 12,000, vehicles 12,000, purchases -12,000.
+    """
+
+    def as_of(self, account, day):
+        rows = JournalLine.objects.filter(account=account, entry__posted=True, entry__date__lte=day).aggregate(
+            debit=Sum("debit"), credit=Sum("credit"))
+        return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
+
+    def undone_in_march(self):
+        line = self.bill_line("1", "12000")
+        (first,) = line.capitalise_as_asset(self.category)
+        first.uncapitalise(on_date=datetime.date(2026, 3, 31))
+        return line, first
+
+    def test_capitalised_again_it_stands_from_the_day_it_was_done_not_its_bills(self):
+        line, first = self.undone_in_march()
+        (second,) = line.capitalise_as_asset(self.vehicles)
+        today = timezone.localdate()
+        self.assertEqual(second.capitalisation_entry.date, today)
+        february = datetime.date(2026, 2, 15)
+        self.assertEqual(
+            (self.as_of(self.plant, february), self.as_of(self.vehicles_account, february),
+             self.as_of(self.expense, february), [row["asset"] for row in asset_register(february)]),
+            (Decimal("12000.00"), Decimal("0"), Decimal("0.00"), [first]))
+        self.assertEqual(
+            (self.as_of(self.plant, today), self.as_of(self.vehicles_account, today),
+             self.as_of(self.expense, today), [row["asset"] for row in asset_register(today)]),
+            (Decimal("0.00"), Decimal("12000.00"), Decimal("0.00"), [second]))
+
+    def test_not_capitalised_again_before_the_undo(self):
+        line, _ = self.undone_in_march()
+        with self.assertRaisesMessage(ValidationError, "is not capitalised again on 2026-03-30: its capitalisation "
+                                                       "was undone on 2026-03-31"):
+            line.capitalise_as_asset(self.vehicles, on_date=datetime.date(2026, 3, 30))
+        self.assertEqual((line.assets.count(), self.balance(self.vehicles_account), self.balance(self.expense)),
+                         (1, Decimal("0"), Decimal("12000.00")))
+
+    def test_capitalised_again_it_goes_into_service_no_earlier_than_it_was_capitalised(self):
+        line, _ = self.undone_in_march()
+        (second,) = line.capitalise_as_asset(self.vehicles, on_date=datetime.date(2026, 4, 1))
+        with self.assertRaisesMessage(ValidationError, "it was capitalised on 2026-04-01"):
+            second.place_in_service(datetime.date(2026, 2, 1))
+        second.refresh_from_db()
+        self.assertEqual(second.status, AssetStatus.DRAFT)
+        second.place_in_service(datetime.date(2026, 4, 1))
+        self.assertEqual(second.status, AssetStatus.IN_SERVICE)
+
+    def test_a_first_capitalisation_is_not_dated_away_from_its_bill(self):
+        line = self.bill_line("1", "12000")
+        with self.assertRaisesMessage(ValidationError, "is capitalised on 2026-01-01"):
+            line.capitalise_as_asset(self.category, on_date=datetime.date(2026, 2, 1))
+        self.assertEqual(line.assets.count(), 0)
 
 
 class ADebitNoteOnALineCapitalisedTests(CapitalisationFixture):

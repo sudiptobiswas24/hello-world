@@ -348,6 +348,13 @@ class FixedAsset(Extensible, AuditModel):
         # Checked by `save()`, which every path through here reaches —
         # a date before the asset arrived is refused there.
         in_service = to_date(on_date) or self.in_service_date or self.acquisition_date
+        # Not before its cost is on the books: capitalised again after an undo, that is the day
+        # it was capitalised, and months charged before it stood against a cost not yet there.
+        if self.capitalisation_entry_id and in_service < to_date(self.capitalisation_entry.date):
+            raise ValidationError(
+                f"{self} cannot go into service from {in_service}: it was capitalised on "
+                f"{self.capitalisation_entry.date}, and is not on the books before then."
+            )
         # Asked here, where the date is first known. Put into service from 15 January with the
         # first quarter closed, a machine's January could never be charged: every month-end run
         # stopped on it, for every asset, and the machine could not be disposed of either.
@@ -692,17 +699,21 @@ def asset_register(as_of=None, category=None):
     was today's register with March written on it.
 
     On the books means what the ledger says: an asset in service or since
-    disposed of, and one capitalised from a bill from the bill's date
-    until its capitalisation is undone, in service or not. A capitalised
+    disposed of, and one capitalised from a bill from the day it was
+    capitalised (the bill's date, or the day it was capitalised again
+    after an undo) until its capitalisation is undone, in service or not. A capitalised
     draft was left out while its 12,000 stood on the plant account, so
     the register and the ledger disagreed by every machine still in its
     crate. `state` says which it was that day: capitalised, or in service.
     A draft typed in by hand has posted nothing and is not on it.
     """
     as_of = to_date(as_of) or timezone.localdate()
-    assets = FixedAsset.objects.select_related("category").filter(
+    assets = FixedAsset.objects.select_related("category", "capitalisation_entry").filter(
         Q(status__in=(AssetStatus.IN_SERVICE, AssetStatus.DISPOSED)) | Q(capitalisation_entry__isnull=False),
         acquisition_date__lte=as_of,
+    ).exclude(
+        # Capitalised again after an undo, it is on the books from that day, not from its bill's.
+        capitalisation_entry__date__gt=as_of,
     )
     if category is not None:
         assets = assets.filter(category=category)
