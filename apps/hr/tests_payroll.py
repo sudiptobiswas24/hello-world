@@ -493,6 +493,116 @@ class NobodyIsPaidTwiceTests(PayrollTestCase):
         self.assertEqual(run.payslips.get().gross(), Decimal("6000.00"))
 
 
+class ARateChangedInsideThePeriodTests(PayrollTestCase):
+    """
+    June 2026 has 22 working days, 11 to the 15th and 11 after. Every rate
+    in force at some point in June was paid for the whole of it: a rise on
+    the 16th from 4,400 to 5,500 paid 9,900.00 where 4,950.00 was owed.
+    Each rate is paid for its own days, on its own line.
+    """
+
+    JUNE_16 = datetime.date(2026, 6, 16)
+
+    def changed(self, person, component, old, new):
+        before = self.pay(person, component, old)
+        before.effective_to = self.JUNE_16 - datetime.timedelta(days=1)
+        before.save()
+        self.pay(person, component, new, since=self.JUNE_16)
+        return before
+
+    def slip(self, person, **kwargs):
+        run = self.pay_run()
+        run.calculate(employees=[person], **kwargs)
+        return run.payslips.get()
+
+    def paid(self, slip, component):
+        return sorted((line.rate, line.amount) for line in slip.lines.filter(component=component))
+
+    def test_a_rise_on_the_16th_pays_each_salary_for_its_half(self):
+        person = self.employee("R1")
+        self.changed(person, self.salary, "4400", "5500")
+        slip = self.slip(person)
+        self.assertEqual(self.paid(slip, self.salary), [(Decimal("4400.0000"), Decimal("2200.00")),
+                                                        (Decimal("5500.0000"), Decimal("2750.00"))])
+        self.assertEqual(slip.gross(), Decimal("4950.00"))
+
+    def test_unpaid_leave_comes_off_the_salary_it_was_taken_under(self):
+        # 8-12 June is in the first half: 4,400 x 6/22 + 5,500 x 11/22.
+        unpaid = LeavePolicy.objects.create(code="UNP", name="Unpaid", leave_type="unpaid",
+                                            annual_days=Decimal("0"), allows_negative=True, is_paid=False)
+        boss = self.employee("B1")
+        person = self.employee("R2", manager=boss)
+        self.changed(person, self.salary, "4400", "5500")
+        LeaveRequest.objects.create(employee=person, policy=unpaid, leave_type=LeaveType.UNPAID,
+                                    start_date=datetime.date(2026, 6, 8),
+                                    end_date=datetime.date(2026, 6, 12)).approve(by=boss)
+        self.assertEqual(self.paid(self.slip(person), self.salary),
+                         [(Decimal("4400.0000"), Decimal("1200.00")), (Decimal("5500.0000"), Decimal("2750.00"))])
+
+    def test_a_percentage_cut_on_the_16th_takes_each_rate_for_its_half(self):
+        person = self.employee("R3")
+        self.pay(person, self.salary, "4400")
+        self.changed(person, self.tax, "20", "10")
+        slip = self.slip(person)
+        self.assertEqual(self.paid(slip, self.tax), [(Decimal("10.0000"), Decimal("220.00")),
+                                                     (Decimal("20.0000"), Decimal("440.00"))])
+        self.assertEqual(slip.deductions(), Decimal("660.00"))
+
+    def test_hours_handed_in_are_shared_by_the_days_of_each_rate(self):
+        hourly = PayComponent.objects.create(
+            code="HR", name="Hourly", kind=ComponentKind.EARNING,
+            basis=ComponentBasis.PER_HOUR, expense_account=self.wages, sequence=5,
+        )
+        person = self.employee("R4")
+        self.changed(person, hourly, "25", "30")
+        slip = self.slip(person, hours={person: Decimal("100")})
+        self.assertEqual(self.paid(slip, hourly), [(Decimal("25.0000"), Decimal("1250.00")),
+                                                   (Decimal("30.0000"), Decimal("1500.00"))])
+
+    def test_an_allowance_paid_regardless_is_paid_at_each_rate_for_its_days(self):
+        person = self.employee("R5")
+        self.changed(person, self.bonus, "500", "600")
+        self.assertEqual(self.paid(self.slip(person), self.bonus),
+                         [(Decimal("500.0000"), Decimal("250.00")), (Decimal("600.0000"), Decimal("300.00"))])
+
+    def test_a_slab_whose_row_is_closed_and_opened_again_is_taken_once(self):
+        from .payroll import PayComponentSlab
+
+        professional_tax = PayComponent.objects.create(
+            code="PT", name="Professional tax", kind=ComponentKind.DEDUCTION,
+            basis=ComponentBasis.SLAB, liability_account=self.tax_payable, sequence=90,
+        )
+        PayComponentSlab.objects.create(component=professional_tax, above=Decimal("0"), amount=Decimal("200"))
+        person = self.employee("R6")
+        self.pay(person, self.salary, "4400")
+        self.changed(person, professional_tax, "1", "2")
+        self.assertEqual(self.slip(person).deductions(), Decimal("200.00"))
+
+    def test_a_percentage_earning_is_taken_of_the_gross_before_it_at_each_rate(self):
+        # Of 4,400 both times, not of 4,400 plus what the first rate added.
+        allowance = PayComponent.objects.create(
+            code="DA", name="Dearness allowance", kind=ComponentKind.EARNING,
+            basis=ComponentBasis.PERCENT_OF_GROSS, expense_account=self.wages, sequence=15,
+        )
+        person = self.employee("R7")
+        self.pay(person, self.salary, "4400")
+        self.changed(person, allowance, "10", "20")
+        self.assertEqual(self.paid(self.slip(person), allowance),
+                         [(Decimal("10.0000"), Decimal("220.00")), (Decimal("20.0000"), Decimal("440.00"))])
+
+    def test_a_rate_that_ended_inside_a_posted_run_was_paid_on_to_its_own_last_day(self):
+        person = self.employee("R8")
+        old = self.changed(person, self.salary, "4400", "5500")
+        run = self.pay_run()
+        run.calculate()
+        run.post()
+        old.note = "Before the rise"
+        old.save()
+        old.effective_to = datetime.date(2026, 6, 10)
+        with self.assertRaisesMessage(ValidationError, "paid on it to 2026-06-15"):
+            old.save()
+
+
 class VoidingTests(PayrollTestCase):
     def payroll(self):
         person = self.employee("V1")

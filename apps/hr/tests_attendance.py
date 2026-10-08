@@ -20,7 +20,7 @@ from rest_framework.test import APIClient
 
 from .attendance import AttendanceDay, AttendanceStatus, import_punches, minutes_late, unmarked_days
 from .models import LeavePolicy, LeaveRequest, LeaveType
-from .payroll import ComponentBasis, ComponentKind, PayComponent, PayRunStatus
+from .payroll import ComponentBasis, ComponentKind, EmployeeCompensation, PayComponent, PayRunStatus
 from .tests_payroll import PayrollTestCase
 
 D = datetime.date
@@ -91,6 +91,20 @@ class OnThePayslipTests(AttendanceTestCase):
         run.calculate()
         lines = {line.component.code: line.amount for line in run.payslips.get().lines.all()}
         self.assertEqual((lines["SAL"], lines["OT"]), (Decimal("12250.00"), Decimal("750.00")))
+
+    def test_overtime_is_paid_at_the_rate_of_the_day_it_was_worked(self):
+        # 125 to 15 October, 150 from the 16th: 4 hours on the 8th and 2 on the 20th.
+        row = EmployeeCompensation.objects.get(employee=self.worker, component=self.overtime)
+        row.effective_to = D(2026, 10, 15)
+        row.save()
+        self.pay(self.worker, self.overtime, "150", since=D(2026, 10, 16))
+        self.mark(8, overtime_hours=Decimal("4"))
+        self.mark(20, overtime_hours=Decimal("2"))
+        run = self.october()
+        run.calculate()
+        self.assertEqual(sorted((line.rate, line.amount)
+                                for line in run.payslips.get().lines.filter(component=self.overtime)),
+                         [(Decimal("125.0000"), Decimal("500.00")), (Decimal("150.0000"), Decimal("300.00"))])
 
     def test_an_absence_on_a_sunday_costs_nothing(self):
         self.mark(4, AttendanceStatus.ABSENT)

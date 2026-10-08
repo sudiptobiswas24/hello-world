@@ -304,6 +304,24 @@ class FeedingPayrollTests(TimesheetTestCase):
             run.calculate(employees=[self.person])
         self.assertIn("no approved hours", str(caught.exception))
 
+    def test_hours_are_paid_at_the_rate_of_the_days_they_were_worked(self):
+        # 40 hours on 1-5 June at 25 and 40 on 22-26 June at 30, the rate from the 16th.
+        row = EmployeeCompensation.objects.get(employee=self.person, component=self.hourly)
+        row.effective_to = datetime.date(2026, 6, 15)
+        row.save()
+        EmployeeCompensation.objects.create(employee=self.person, component=self.hourly, amount=Decimal("30"),
+                                            effective_from=datetime.date(2026, 6, 16))
+        first, later = self.filled(), self.sheet(start=datetime.date(2026, 6, 22), end=datetime.date(2026, 6, 26))
+        for day in range(22, 27):
+            self.entry(later, datetime.date(2026, 6, day))
+        for sheet in (first, later):
+            sheet.submit()
+            sheet.approve(by=self.boss)
+        run = self.pay_run()
+        run.calculate(employees=[self.person])
+        self.assertEqual(sorted((line.rate, line.amount) for line in run.payslips.get().lines.all()),
+                         [(Decimal("25.0000"), Decimal("1000.00")), (Decimal("30.0000"), Decimal("1200.00"))])
+
     def test_explicit_hours_still_override(self):
         run = self.pay_run()
         run.calculate(employees=[self.person], hours={self.person: Decimal("10")})
