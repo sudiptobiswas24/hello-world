@@ -9,6 +9,7 @@ const VENDOR: FieldDef["pick"] = {
 };
 const draft = (row: Row) => row.status === "draft";
 const inService = (row: Row) => row.status === "in_service";
+const disposed = (row: Row) => row.status === "disposed";
 
 /**
  * A machine, a building, a vehicle: capitalised at cost, depreciated
@@ -54,6 +55,11 @@ export default function AssetForm() {
           when: inService, done: "Disposed of", fields: [
             { key: "on_date", label: "On", kind: "date" },
             { key: "proceeds", label: "Sold for", kind: "money", hint: "Nothing, if scrapped; invoice the buyer separately" },
+            { key: "memo", label: "Why", wide: true },
+          ] },
+        { label: "Reinstate it", path: "reinstate", permission: "assets.dispose_fixedasset", danger: true,
+          when: disposed, done: "Reinstated: back on the books as though it never went", fields: [
+            { key: "on_date", label: "On", kind: "date", hint: "Used only where the disposal's month has closed" },
             { key: "memo", label: "Why", wide: true },
           ] },
         { label: "Undo the capitalisation", path: "uncapitalise", permission: "accounting.post_journalentry", danger: true,

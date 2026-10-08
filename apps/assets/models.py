@@ -124,6 +124,11 @@ class FixedAsset(Extensible, AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
     )
+    reinstatement_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The entry that took back a disposal recorded in error, when one was.",
+    )
     capitalisation_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
@@ -291,8 +296,11 @@ class FixedAsset(Extensible, AuditModel):
         through = to_date(through)
         if self.status != AssetStatus.IN_SERVICE or not self.in_service_date:
             return []
+        # A month whose charge a disposal took back is charged again once the asset is
+        # reinstated: only a charge that stands counts.
         charged = {
-            to_date(entry.period_end) for entry in self.depreciation_entries.all()
+            to_date(entry.period_end)
+            for entry in self.depreciation_entries.filter(reversal__isnull=True)
         }
         periods, cursor = [], to_date(self.in_service_date)
         # The old system's months are not this one's to charge again.
@@ -328,24 +336,27 @@ class FixedAsset(Extensible, AuditModel):
                 break
             # The last month takes whatever is left rather than the full
             # charge, or the asset depreciates past its salvage value.
-            amount = min(charge, remaining)
-            memo = f"Depreciation {self.number} to {period_end:%b %Y}"
-            entry = JournalEntry.objects.create(
-                date=period_end, reference=self.number, memo=memo
-            )
-            JournalLine.objects.create(
-                entry=entry, account=self.category.expense_account,
-                debit=amount, description=memo[:255],
-            )
-            JournalLine.objects.create(
-                entry=entry, account=self.category.accumulated_account,
-                credit=amount, description=memo[:255],
-            )
-            entry.post()
-            made.append(DepreciationEntry.objects.create(
-                asset=self, period_end=period_end, amount=amount, journal_entry=entry
-            ))
+            made.append(self._charge(period_end, min(charge, remaining)))
         return made
+
+    def _charge(self, period_end, amount, posted_on=None):
+        """One month's charge, posted on its month end or `posted_on`, and recorded so it is taken once."""
+        memo = f"Depreciation {self.number} to {period_end:%b %Y}"
+        entry = JournalEntry.objects.create(
+            date=posted_on or period_end, reference=self.number, memo=memo
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.category.expense_account,
+            debit=amount, description=memo[:255],
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.category.accumulated_account,
+            credit=amount, description=memo[:255],
+        )
+        entry.post()
+        return DepreciationEntry.objects.create(
+            asset=self, period_end=period_end, amount=amount, journal_entry=entry
+        )
 
     @serialised("status")
     def uncapitalise(self, on_date=None, memo=""):
@@ -472,6 +483,42 @@ class FixedAsset(Extensible, AuditModel):
         self.save(update_fields=["status", "disposed_on", "disposal_entry", "updated_at"])
         return entry
 
+    @serialised("status")
+    def reinstate(self, on_date=None, memo=""):
+        """
+        Take back a disposal recorded in error, by reversing it rather than by editing it.
+
+        Written because there was none: the disposal's entry is the asset's, so the journal
+        refuses to reverse it by hand, and a lathe written off by mistake had no way back onto
+        the books. The disposal is reversed on its own date, and the months it took back are
+        charged again on theirs, so the asset reads as though it had never gone; a date in a
+        month since closed moves to `on_date`, as dispose() moves a reversal.
+        """
+        if self.status != AssetStatus.DISPOSED:
+            raise ValidationError(f"{self} is not disposed of; there is nothing to reinstate.")
+        if self.disposal_entry_id is None:
+            raise ValidationError(
+                f"{self} was disposed of before its entry was kept; reverse that entry from the journal.")
+        on_date = to_date(on_date) or timezone.localdate()
+
+        def open_or_today(day):
+            return day if AccountingPeriod.blocking(day) is None else on_date
+
+        self.reinstatement_entry = self.disposal_entry.create_reversal(
+            entry_date=open_or_today(to_date(self.disposed_on)),
+            memo=memo or f"{self.number} reinstated: disposed of in error",
+        )
+        standing = {to_date(day) for day in self.depreciation_entries.filter(
+            reversal__isnull=True).values_list("period_end", flat=True)}
+        for taken_back in self.depreciation_entries.filter(reversal__isnull=False).order_by("period_end"):
+            month_end = to_date(taken_back.period_end)
+            if month_end not in standing:
+                self._charge(month_end, taken_back.amount, posted_on=open_or_today(month_end))
+                standing.add(month_end)
+        self.status, self.disposed_on = AssetStatus.IN_SERVICE, None
+        self.save(update_fields=["status", "disposed_on", "reinstatement_entry", "updated_at"])
+        return self.reinstatement_entry
+
 
 class DepreciationEntry(AuditModel):
     """One month's charge. A record, so a period is never charged twice."""
@@ -495,8 +542,11 @@ class DepreciationEntry(AuditModel):
         ordering = ["period_end", "id"]
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="depreciation_amount_positive"),
+            # One that stands: a charge a disposal took back is charged again if the asset
+            # is reinstated, beside the row that records it was taken back.
             models.UniqueConstraint(
-                fields=["asset", "period_end"], name="one_charge_per_asset_and_period"
+                fields=["asset", "period_end"], condition=Q(reversal__isnull=True),
+                name="one_standing_charge_per_asset_and_period",
             ),
         ]
 
