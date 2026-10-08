@@ -415,9 +415,9 @@ def void_mount(mount, station, supervisor, operator, reason):
         raise ValidationError(f"Something was made from {mount}; withdraw that first.")
     check_supervisor(station, supervisor, operator)
     if mount.returned_id:
-        mount.returned.void(memo=f"Withdrawn at {station}: {reason}"[:255])
+        mount.returned.void_with(mount, memo=f"Withdrawn at {station}: {reason}"[:255])
     if mount.issue_id:
-        mount.issue.void(memo=f"Withdrawn at {station}: {reason}"[:255])
+        mount.issue.void_with(mount, memo=f"Withdrawn at {station}: {reason}"[:255])
     mount.voided_at, mount.voided_reason = timezone.now(), reason[:255]
     mount.save(update_fields=["voided_at", "voided_reason", "updated_at"])
 

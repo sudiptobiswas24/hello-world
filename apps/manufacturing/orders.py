@@ -2190,6 +2190,32 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
         ])
         return self.journal_entry
 
+    def raised_by(self):
+        """
+        The standing document that raised this issue and undoes it with
+        itself, if any: output that backflushed it, a tape load, a roll
+        mounted or taken off. None for an issue somebody raised by hand.
+        """
+        from .process_rolls import RollMount
+        from .tape_loads import TapeLoad
+
+        return (
+            self.backflushed_by.filter(voided_at__isnull=True).first()
+            or TapeLoad.objects.filter(issue=self, voided_at__isnull=True).first()
+            or RollMount.objects.filter(
+                Q(issue=self) | Q(returned=self), voided_at__isnull=True
+            ).first()
+        )
+
+    def void_with(self, owner, on_date=None, memo=""):
+        """Void this as part of voiding `owner`, the document that raised it."""
+        self._voided_with = owner
+        try:
+            return self.void(on_date=on_date, memo=memo)
+        finally:
+            # Left set, a later void of this object would pass the guard too.
+            self._voided_with = None
+
     @serialised("posted", "voided_at")
     def void(self, on_date=None, memo=""):
         """Undo a posting that should not have happened at all."""
@@ -2198,6 +2224,15 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
         if self.is_voided():
             raise ValidationError(f"{self} is already voided.")
         _check_order_is_open_for(self.work_order, "void this issue")
+        # Voided on its own, a backflush left 500 kg of tape on the shelf
+        # made of no polymer at all, and a load or a mount went on naming
+        # a doff or a roll that had gone back, and could never be undone.
+        owner = self.raised_by()
+        if owner is not None and owner != getattr(self, "_voided_with", None):
+            raise ValidationError(
+                f"{self} was raised by {owner._meta.verbose_name} {owner}, which "
+                "stands. Void that, and this goes with it."
+            )
         # The relation is line-to-line: a return line names the issue
         # line it hands back, so the question is asked of this
         # document's lines rather than of the document.
@@ -2775,7 +2810,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         # whole consumption into variance for output that no longer
         # exists.
         if self.backflush_issue_id and not self.backflush_issue.is_voided():
-            self.backflush_issue.void(on_date=on_date, memo=label)
+            self.backflush_issue.void_with(self, on_date=on_date, memo=label)
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=label
