@@ -1050,6 +1050,7 @@ from .reservations import (  # noqa: E402,F401
     reserved_at,
 )
 from .transfers import (  # noqa: E402,F401
+    move_stock,
     StockTransfer,
     StockTransferLine,
     StockTransferStep,

@@ -53,6 +53,7 @@ from apps.inventory.models import (
     Warehouse,
     lock_position,
     lock_positions,
+    move_stock,
     plan_putaway,
 )
 from apps.accounting.settlement import (
@@ -2151,19 +2152,14 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         )
         moved = []
         for item, quantity in plan.items():
-            cost = item.removal_unit_cost(from_warehouse, quantity)
-            for warehouse, movement_type, signed in (
-                (from_warehouse, MovementType.TRANSFER_OUT, -quantity),
-                (self.subcontract_warehouse, MovementType.TRANSFER_IN, quantity),
-            ):
-                StockMovement.objects.create(
-                    item=item, warehouse=warehouse,
-                    movement_type=movement_type, uom=item.uom,
-                    quantity=signed,
-                    unit_cost=cost, reference=self.number,
-                    occurred_at=occurred_at,
-                    notes=f"Components to subcontractor for {self.number}",
-                )
+            # The value the shelf gives up arrives with the vendor, as any
+            # move between the company's shelves: a per-unit rate with no
+            # remainder lost a little on every issue.
+            move_stock(
+                item, from_warehouse, self.subcontract_warehouse, quantity,
+                reference=self.number, occurred_at=occurred_at,
+                notes=f"Components to subcontractor for {self.number}",
+            )
             moved.append((item, quantity))
         return moved
 
@@ -6055,22 +6051,14 @@ class GoodsReceipt(AuditModel):
             # could not be cleared at all without its batch.
             moving = item.to_stock_quantity(quantity, line.order_line.uom)
             check_available(item, source, moving, lot=line.lot, action="clear")
-            leaving = item.cost_of_removing(source, moving, lot=line.lot)
-            rate = (leaving / moving).quantize(Decimal("0.00000001"))
-            for target, movement_type, signed, shelf, residue in (
-                (source, MovementType.TRANSFER_OUT, -moving, line.bin_at(source), None),
-                # Somewhere on the shelf it clears to, as a receipt chooses,
-                # carrying what the rate cannot say.
-                (warehouse, MovementType.TRANSFER_IN, moving, plan_putaway(item, warehouse),
-                 (leaving - moving * rate).quantize(Decimal("0.0001")) or None),
-            ):
-                StockMovement.objects.create(
-                    item=item, warehouse=target, movement_type=movement_type,
-                    uom=item.uom, lot=line.lot, bin=shelf,
-                    quantity=signed, unit_cost=rate, value_adjustment=residue,
-                    reference=self.number, occurred_at=occurred_at,
-                    notes=f"Accepted from inspection on {self.number}",
-                )
+            move_stock(
+                item, source, warehouse, moving, lot=line.lot,
+                from_bin=line.bin_at(source),
+                # Somewhere on the shelf it clears to, as a receipt chooses.
+                to_bin=plan_putaway(item, warehouse),
+                reference=self.number, occurred_at=occurred_at,
+                notes=f"Accepted from inspection on {self.number}",
+            )
             ReceiptInspection.objects.create(
                 receipt_line=line, quantity=quantity, accepted=True,
                 inspected_on=to_date(occurred_at), warehouse=warehouse,
@@ -6201,7 +6189,9 @@ class GoodsReceipt(AuditModel):
             # What the replay will take off, exactly: the rule every
             # outbound path follows (inventory/costing.py).
             taking = component.item.cost_of_removing(warehouse, used) if used else Decimal("0")
-            cost = (taking / used).quantize(Decimal("0.0001")) if used else Decimal("0")
+            # Eight places: a return puts the components back at this rate,
+            # and four lost 0.001 on thirty frames worth 100.
+            cost = (taking / used).quantize(Decimal("0.00000001")) if used else Decimal("0")
             on_hand = component.item.on_hand_at(warehouse)
             if used > on_hand:
                 raise ValidationError(

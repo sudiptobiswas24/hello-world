@@ -271,3 +271,21 @@ class ComponentTopUpTests(SubcontractTestCase):
             order.issue_components(self.warehouse, quantities={self.assembly: Decimal("1")})
         with self.assertRaisesMessage(ValidationError, "above nothing"):
             order.issue_components(self.warehouse, quantities={self.frame: Decimal("0")})
+
+
+class ComponentsComeBackAtWhatTheyCostTests(SubcontractTestCase):
+    """
+    Thirty frames at the subcontractor worth 100 (ten at 4, twenty at 3),
+    consumed by thirty assemblies at a four-place 3.3333 a frame. Sent
+    back, the assemblies returned their frames at that rate: 99.999 of the
+    100 that went into them.
+    """
+
+    def test_returned_assemblies_put_their_frames_back_at_what_they_took(self):
+        self.stock(self.frame, "10", "4", warehouse=self.subcontractor)
+        self.stock(self.frame, "20", "3", warehouse=self.subcontractor)
+        self.stock(self.motor, "60", "12", warehouse=self.subcontractor)
+        receipt = self.receive(self.subcontract_order("30"), "30")
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(self.frame.valuation_at(self.subcontractor)[1].quantize(Decimal("0.0001")),
+                         Decimal("100.0000"))
