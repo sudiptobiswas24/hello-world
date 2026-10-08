@@ -230,6 +230,50 @@ class TheLastRunPaidOnTests(PayrollApiTestCase):
         self.assertEqual(len(self.client.get("/api/hr/payslips/").json()), 2)
 
 
+class CalculatedThenChangedOverTheApiTests(PayrollApiTestCase):
+    """The Payroll Officer calculates and corrects the run; the Controller posts it."""
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        self.clients = {}
+        for role in ("Payroll Officer", "Controller"):
+            user = User.objects.create_user(role.replace(" ", "-").lower())
+            user.groups.add(Group.objects.get(name=role))
+            self.clients[role] = APIClient()
+            self.clients[role].force_authenticate(user)
+
+    def calculated_june(self):
+        officer = self.clients["Payroll Officer"]
+        made = officer.post("/api/hr/pay-runs/", {"period_start": "2026-06-01", "period_end": "2026-06-30",
+                                                  "pay_date": "2026-06-30"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        base = f"/api/hr/pay-runs/{made.json()['id']}/"
+        self.assertEqual(officer.post(base + "calculate/", {}, format="json").status_code, 200)
+        return base
+
+    def test_stretched_to_july_it_is_calculated_again_before_it_posts(self):
+        base = self.calculated_june()
+        patched = self.clients["Payroll Officer"].patch(base, {"period_end": "2026-07-31"}, format="json")
+        self.assertEqual((patched.status_code, patched.json()["status"], patched.json()["gross"]),
+                         (200, PayRunStatus.DRAFT, "0"))
+        refused = self.clients["Controller"].post(base + "post/", {}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("no payslips", refused.content.decode())
+
+    def test_a_rate_changed_since_it_was_calculated_is_said_to_the_controller(self):
+        base = self.calculated_june()
+        self.salary_row.amount = Decimal("5100")
+        self.salary_row.save()
+        refused = self.clients["Controller"].post(base + "post/", {}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("Salary was worked out at 5000.00 and comes to 5100.00 now", refused.content.decode())
+        self.assertEqual(self.client.get(base).json()["status"], PayRunStatus.CALCULATED)
+
+
 class PayrollScreensTests(PayrollApiTestCase):
     """What the payroll screens ask: every slip, paged; a void on a date."""
 
