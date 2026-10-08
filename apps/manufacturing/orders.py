@@ -2989,7 +2989,6 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         _check_order_is_open_for(self.work_order, "void this entry")
         from .bales import check_not_baled
 
-        check_not_baled(self.lot, f"{self} is voided")
         on_date = to_date(on_date) or timezone.localdate()
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"
@@ -2998,6 +2997,10 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
             [(self.work_order.item, self.warehouse)]
             + [(row.item, self.warehouse) for row in byproducts]
         )
+        # After the shelf is held, as packing holds it before it reads what
+        # is baled: asked before, a bale sealed meanwhile over these bags
+        # was not seen, and the void took them out from under it.
+        check_not_baled(self.lot, f"{self} is voided")
         taken_back = []
         if self.stock_movement_id is not None:
             item = self.work_order.item

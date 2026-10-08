@@ -1036,6 +1036,51 @@ class FloorRaceTests(RaceCase):
     before holding what another step changes it through.
     """
 
+    @staticmethod
+    def each_waits_after(read):
+        """
+        `read`, after which each of two threads waits for the other once:
+        both have read before either writes, which no model's save marks
+        where the reads come before a lock.
+        """
+        barrier, local = threading.Barrier(2, timeout=3), threading.local()
+
+        def held(*args, **kwargs):
+            answer = read(*args, **kwargs)
+            if not getattr(local, "held", False):
+                local.held = True
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass  # The other waits on a lock this one has.
+            return answer
+        return held
+
+    def test_a_count_is_not_voided_as_its_bundle_is_baled(self):
+        """
+        A bundle pressed into a bale as its count is voided. Packing held
+        the shelf and read what was baled; the void read it before holding
+        the shelf, found nothing, then waited for the packing and took the
+        500 bags out from under the sealed bale. Reading after the hold,
+        as packing does, one of the two finds the other.
+        """
+        from unittest import mock
+
+        from apps.manufacturing import bales, tests_bales
+        from apps.manufacturing.bales import Bale, pack
+        from apps.manufacturing.conversion import BagCount, void_bags
+
+        made = fixture(self, tests_bales.BaleTestCase)
+        count = BagCount.objects.get(inspection__lot=made.b1)
+        with mock.patch.object(bales, "baled", self.each_waits_after(bales.baled)):
+            outcomes = race(
+                (),
+                lambda: pack(made.plant, made.operator, [(made.b1, 500)], on_date=run_fixture.TODAY),
+                lambda: void_bags(BagCount.objects.get(pk=count.pk), made.supervisor, "Miscounted"))
+        self.once(outcomes)
+        sealed = Bale.objects.filter(lines__lot=made.b1, broken_at__isnull=True).exists()
+        self.assertEqual(made.b1.on_hand_at(made.plant), Decimal("500") if sealed else Decimal("0"))
+
     def test_two_looms_do_not_both_load_the_whole_doff(self):
         """
         One 100 kg doff loaded on two looms of two backflushed runs at once.
