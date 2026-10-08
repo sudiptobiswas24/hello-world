@@ -89,6 +89,7 @@ class Command(BaseCommand):
         findings += self.unlocked_stock_writers(labels, sources)
         findings += self.movements_in_another_unit(labels, sources)
         findings += self.unlocked_open_runs(labels, sources)
+        findings += self.outbound_at_a_posted_figure(labels, sources)
         findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
@@ -264,6 +265,64 @@ class Command(BaseCommand):
         findings += [("stale exemption", f"{key} writes its movements in its item's unit now; "
                                          "take it off WRITTEN_IN_ANOTHER_UNIT.")
                      for key in sorted(set(self.WRITTEN_IN_ANOTHER_UNIT) - used)
+                     if key.split(".")[0] in labels]
+        return findings
+
+    # Outbound movements that never ask what leaving costs, with why that
+    # is right for them.
+    OUTBOUND_UNPRICED = {
+        "manufacturing._movement": "a customer's own material, held and handed back at no cost",
+        "purchasing.draw_consignment": "a vendor's consignment, held at no cost until bought",
+        "purchasing.GoodsReceipt._move_consignment": "a vendor's consignment, at no cost",
+    }
+
+    def outbound_at_a_posted_figure(self, labels, sources):
+        """
+        A movement that takes stock off the shelf, written by a function
+        that never asks cost_of_removing(). The replay takes off the
+        shelf's own figure whatever the movement says, so the ledger has
+        to be told that figure: voids that wrote back the posted cost left
+        the inventory account 20,855.67, 390.76 and 816.33 away from the
+        shelf, and a re-batch's void moved the shelf's value with no
+        journal at all.
+        """
+        findings, used = [], set()
+        asks = ("cost_of_removing", "unit_cost_for")
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                if "StockMovement.objects.create" not in text:
+                    continue
+
+                def walk(node, scope):
+                    for child in ast.iter_child_nodes(node):
+                        if isinstance(child, (ast.ClassDef, ast.FunctionDef)):
+                            walk(child, scope + [child])
+                            continue
+                        if isinstance(child, ast.Call) and ast.unparse(child.func) == "StockMovement.objects.create":
+                            given = {k.arg: ast.unparse(k.value) for k in child.keywords if k.arg}
+                            kind = given.get("movement_type", "")
+                            function = next((s for s in reversed(scope) if isinstance(s, ast.FunctionDef)), None)
+                            if ("ISSUE" in kind or "TRANSFER_OUT" in kind) and function is not None \
+                                    and not any(word in ast.unparse(function) for word in asks):
+                                key = ".".join([label] + [s.name for s in scope])
+                                if key in self.OUTBOUND_UNPRICED:
+                                    used.add(key)
+                                else:
+                                    findings.append((
+                                        "outbound at a posted figure",
+                                        f"{label}/{path.name}:{child.lineno} {function.name}() takes "
+                                        f"{given.get('item')} off the shelf without asking "
+                                        "cost_of_removing(): the ledger and the shelf will differ "
+                                        "by whatever the shelf has moved.",
+                                    ))
+                        walk(child, scope)
+
+                walk(ast.parse(text), [])
+        findings += [("stale exemption", f"{key} asks what leaving costs now, or no longer takes "
+                                         "stock off; take it off OUTBOUND_UNPRICED.")
+                     for key in sorted(set(self.OUTBOUND_UNPRICED) - used)
                      if key.split(".")[0] in labels]
         return findings
 

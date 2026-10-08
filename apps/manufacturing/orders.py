@@ -2029,6 +2029,49 @@ def _post_entry(on_date, reference, memo, rows, balance_to=None):
     return entry, balancing
 
 
+def _take_back_off(item, warehouse, moved, occurred_at, reference, notes):
+    """
+    Goods a posting put on the shelf, taken back off by its void at what
+    removing them takes off the shelf now, which is returned: what the
+    stock ledger will take, whatever they went on at. Written at the
+    posted figure instead, a void of 1,000 kg of tape put on at 91.71
+    onto a shelf averaging 70.86 took 91,711.34 out of the ledger and
+    70,855.67 off the shelf, and the two never met again.
+    """
+    quantity = moved.quantity
+    going = cost_of_removing(item, warehouse, quantity, lot=moved.lot)
+    StockMovement.objects.create(
+        item=item, warehouse=warehouse, movement_type=MovementType.ISSUE,
+        uom=item.uom, quantity=-quantity,
+        unit_cost=(going / quantity).quantize(RATE_PLACES) if quantity else Decimal("0"),
+        lot=moved.lot, bin=moved.bin, occurred_at=occurred_at,
+        reference=reference, notes=notes[:255],
+    )
+    return going
+
+
+def _post_void_variance(on_date, reference, memo, taken_back):
+    """
+    [(item, what its posting put on the shelf, what taking it back off
+    removed)] -> the entry that books the difference to material
+    variance, or None where there is none. The void's own reversal
+    credits inventory with what went on; this brings the account to what
+    left, so the account and the shelf agree.
+    """
+    put_on, taken_off = {}, {}
+    for item, value, going in taken_back:
+        put_on[item] = put_on.get(item, Decimal("0")) + value
+        taken_off[item] = taken_off.get(item, Decimal("0")) + going
+    rows = [(inventory_account_for(item), round_money(put_on[item]) - taken_off[item])
+            for item in put_on]
+    if not any(round_money(amount) for _account, amount in rows):
+        return None
+    entry, _ = _post_entry(on_date, reference, memo, rows, balance_to=ManufacturingSettings.account(
+        "variance", "a void took goods back off the shelf at other than they went on at",
+    ))
+    return entry
+
+
 def _check_order_is_open_for(order, what):
     """
     Refuse to move money on a run that has been closed.
@@ -2053,8 +2096,9 @@ def _check_order_is_open_for(order, what):
         )
 
 
-# The places a stock movement's quantity is kept at.
+# The places a stock movement's quantity is kept at, and its rate.
 STOCK_PLACES = Decimal("0.0001")
+RATE_PLACES = Decimal("0.00000001")
 
 
 def check_drawn_on(step, following, taken, left):
@@ -2181,6 +2225,13 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
     voided_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
+    )
+    void_variance_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="On the void of a return: what taking the material back off "
+                  "the shelf removed, against what it came back at, booked to "
+                  "material variance. The shelf may have moved in between.",
     )
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
 
@@ -2319,14 +2370,22 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
         label = memo or f"Void of {self.number}"
         lines = list(self.lines.select_related("item", "uom", "lot"))
         lock_positions((line.item, self.warehouse) for line in lines)
+        taken_back = []
         for line in lines:
-            line.reverse(self, occurred_at, label)
+            going = line.reverse(self, occurred_at, label)
+            if going is not None:
+                taken_back.append(
+                    (line.item, line.unit_cost * line.stock_movement.quantity, going)
+                )
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=label
             )
+        self.void_variance_entry = _post_void_variance(on_date, self.number, label, taken_back)
         self.voided_at = occurred_at
-        super().save(update_fields=["voided_entry", "voided_at", "updated_at"])
+        super().save(update_fields=[
+            "voided_entry", "void_variance_entry", "voided_at", "updated_at",
+        ])
         return self.voided_entry
 
     def save(self, *args, **kwargs):
@@ -2515,19 +2574,26 @@ class MaterialIssueLine(AuditModel):
         return value
 
     def reverse(self, issue, occurred_at, label):
-        """Put the movement back, at the value it went out at."""
+        """
+        Put the movement back. What went out to the run comes back in at
+        what it went out at. What came back to the store goes out again at
+        what removing it takes off the shelf now, which is returned.
+        """
         movement = self.stock_movement
         if movement is None:
             return None
-        return StockMovement.objects.create(
+        if movement.quantity > 0:
+            return _take_back_off(
+                self.item, issue.warehouse, movement, occurred_at, issue.number, label
+            )
+        StockMovement.objects.create(
             item=self.item, warehouse=issue.warehouse,
-            movement_type=(
-                MovementType.RECEIPT if movement.quantity < 0 else MovementType.ISSUE
-            ),
+            movement_type=MovementType.RECEIPT,
             uom=self.item.uom, quantity=-movement.quantity,
             unit_cost=self.unit_cost, lot=self.lot, bin=self.bin,
             occurred_at=occurred_at, reference=issue.number, notes=label[:255],
         )
+        return None
 
     def save(self, *args, **kwargs):
         # The document refuses to be edited once posted and its lines
@@ -2632,6 +2698,13 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
     voided_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
+    )
+    void_variance_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="On the void: what taking the output and by-products back "
+                  "off the shelf removed, against what they went on at, booked "
+                  "to material variance. The shelf may have moved in between.",
     )
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
     backflush_issue = models.ForeignKey(
@@ -2864,16 +2937,20 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
             [(self.work_order.item, self.warehouse)]
             + [(row.item, self.warehouse) for row in byproducts]
         )
+        taken_back = []
         if self.stock_movement_id is not None:
-            StockMovement.objects.create(
-                item=self.work_order.item, warehouse=self.warehouse,
-                movement_type=MovementType.ISSUE, uom=self.work_order.item.uom,
-                quantity=-self.stock_movement.quantity, unit_cost=self.unit_cost,
-                lot=self.lot, bin=self.bin, occurred_at=occurred_at,
-                reference=self.number, notes=label[:255],
-            )
+            item = self.work_order.item
+            taken_back.append((
+                item, self.unit_cost * self.stock_movement.quantity,
+                _take_back_off(item, self.warehouse, self.stock_movement, occurred_at,
+                               self.number, label),
+            ))
         for row in byproducts:
-            row.reverse(self, occurred_at, label)
+            going = row.reverse(self, occurred_at, label)
+            if going is not None:
+                taken_back.append(
+                    (row.item, row.unit_value * row.stock_movement.quantity, going)
+                )
         # The reverse of the backflush, written in the same sitting as
         # the backflush itself. Voiding output that drew its own
         # material and leaving the material drawn would put the run's
@@ -2885,8 +2962,11 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=label
             )
+        self.void_variance_entry = _post_void_variance(on_date, self.number, label, taken_back)
         self.voided_at = occurred_at
-        super().save(update_fields=["voided_entry", "voided_at", "updated_at"])
+        super().save(update_fields=[
+            "voided_entry", "void_variance_entry", "voided_at", "updated_at",
+        ])
         return self.voided_entry
 
     def save(self, *args, **kwargs):
@@ -3023,14 +3103,11 @@ class ProductionByproduct(AuditModel):
         return self.unit_value * quantity
 
     def reverse(self, entry, occurred_at, label):
+        """Off the shelf again at what removing it takes off now; returns that."""
         if self.stock_movement_id is None:
             return None
-        return StockMovement.objects.create(
-            item=self.item, warehouse=entry.warehouse,
-            movement_type=MovementType.ISSUE, uom=self.item.uom,
-            quantity=-self.stock_movement.quantity, unit_cost=self.unit_value,
-            lot=self.lot, bin=self.bin, occurred_at=occurred_at,
-            reference=entry.number, notes=label[:255],
+        return _take_back_off(
+            self.item, entry.warehouse, self.stock_movement, occurred_at, entry.number, label
         )
 
     def save(self, *args, **kwargs):
