@@ -51,6 +51,8 @@ from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 from .bales import baled
 
 ZERO = Decimal("0")
+# A rate a movement keeps: eight places, as its column does.
+RATE_PLACES = Decimal("0.00000001")
 
 
 def _q(value):
@@ -107,7 +109,6 @@ class Rebatch(AuditModel):
     @serialised("posted")
     def post(self):
         from apps.inventory.locking import lock_positions
-        from apps.inventory.models import MovementType, StockMovement
         from apps.inventory.tracking import TrackingMode
 
         if self.posted:
@@ -159,26 +160,14 @@ class Rebatch(AuditModel):
         self.rebatched_on = to_date(self.rebatched_on)
         self.number = DocumentSequence.next_for("manufacturing.rebatch", self.rebatched_on,
                                                 name="Re-batches", prefix="RB-")
-        occurred_at, value = timezone.now(), ZERO
+        occurred_at = timezone.now()
         notes = f"Re-batch {self.number}: {self.reason.strip()}"[:255]
-        for line in taken:
-            cost = self.item.cost_of_removing(self.warehouse, line.quantity, lot=line.lot)
-            value += cost
-            line.stock_movement = StockMovement.objects.create(
-                item=self.item, warehouse=self.warehouse, lot=line.lot,
-                movement_type=MovementType.TRANSFER_OUT, uom=self.item.uom,
-                quantity=-line.quantity, unit_cost=(cost / line.quantity).quantize(
-                    Decimal("0.000001")),
-                reference=self.number, occurred_at=occurred_at, notes=notes)
-            line._write(["stock_movement"])
-        rate = (value / total_in).quantize(Decimal("0.000001"))
+        value = self._take_out(taken, occurred_at, notes)
+        rate = (value / total_in).quantize(RATE_PLACES)
         expiries = [line.lot.expires_on for line in taken if line.lot.expires_on]
-        for line in made:
-            line.stock_movement = StockMovement.objects.create(
-                item=self.item, warehouse=self.warehouse, lot=line.lot,
-                movement_type=MovementType.TRANSFER_IN, uom=self.item.uom,
-                quantity=line.quantity, unit_cost=rate,
-                reference=self.number, occurred_at=occurred_at, notes=notes)
+        for line, movement in zip(made, self._bring_in(
+                [(line, rate) for line in made], value, occurred_at, notes)):
+            line.stock_movement = movement
             line._write(["stock_movement"])
             if expiries and (line.lot.expires_on is None
                              or line.lot.expires_on > min(expiries)):
@@ -192,7 +181,6 @@ class Rebatch(AuditModel):
     @serialised("posted", "voided_at")
     def void(self, reason):
         from apps.inventory.locking import lock_positions
-        from apps.inventory.models import MovementType, StockMovement
 
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not a standing re-batch.")
@@ -207,17 +195,57 @@ class Rebatch(AuditModel):
                                       "the re-batch stands.")
         occurred_at = timezone.now()
         notes = f"Void of {self.number}: {reason.strip()}"[:255]
-        for line in made + list(self.taken()):
-            original = line.stock_movement
-            StockMovement.objects.create(
-                item=self.item, warehouse=self.warehouse, lot=line.lot,
-                movement_type=(MovementType.TRANSFER_IN if original.quantity < 0
-                               else MovementType.TRANSFER_OUT),
-                uom=self.item.uom, quantity=-original.quantity,
-                unit_cost=original.unit_cost, reference=self.number,
-                occurred_at=occurred_at, notes=notes)
+        # The new batches go out at what taking them off now removes, and
+        # the sources come back carrying exactly that: put back at what
+        # they went out at, after the shelf's average had moved, the sacks
+        # were worth 2,500 where they had been worth 3,000, and a re-batch
+        # posts no journal to say where the 500 went.
+        removed = self._take_out(made, occurred_at, notes)
+        sources = list(self.taken())
+        list(self._bring_in(
+            [(line, line.stock_movement.unit_cost) for line in sources],
+            removed, occurred_at, notes))
         self.voided_at, self.voided_reason = timezone.now(), reason.strip()
         self._write(["voided_at", "voided_reason"])
+
+
+    def _take_out(self, lines, occurred_at, notes):
+        """Each line's sacks off the shelf at what removing them takes off it; the total."""
+        from apps.inventory.models import MovementType, StockMovement
+
+        value = ZERO
+        for line in lines:
+            cost = self.item.cost_of_removing(self.warehouse, line.quantity, lot=line.lot)
+            value += cost
+            movement = StockMovement.objects.create(
+                item=self.item, warehouse=self.warehouse, lot=line.lot,
+                movement_type=MovementType.TRANSFER_OUT, uom=self.item.uom,
+                quantity=-line.quantity, unit_cost=(cost / line.quantity).quantize(RATE_PLACES),
+                reference=self.number, occurred_at=occurred_at, notes=notes)
+            if line.stock_movement_id is None:
+                line.stock_movement = movement
+                line._write(["stock_movement"])
+        return value
+
+    def _bring_in(self, rows, value, occurred_at, notes):
+        """
+        [(line, rate)] onto the shelf carrying exactly `value` between them:
+        each at its rate, and the last carrying what the rates cannot say as
+        value with no quantity attached. A rate rounded to six places took
+        sacks worth 10,000.00 down to 9,999.99 with no journal to absorb it.
+        """
+        from apps.inventory.models import MovementType, StockMovement
+
+        written = ZERO
+        for index, (line, rate) in enumerate(rows):
+            written += line.quantity * rate
+            last = index == len(rows) - 1
+            residue = (value - written).quantize(Decimal("0.0001")) if last else ZERO
+            yield StockMovement.objects.create(
+                item=self.item, warehouse=self.warehouse, lot=line.lot,
+                movement_type=MovementType.TRANSFER_IN, uom=self.item.uom,
+                quantity=line.quantity, unit_cost=rate, value_adjustment=residue or None,
+                reference=self.number, occurred_at=occurred_at, notes=notes)
 
 
 class RebatchSide(models.TextChoices):
