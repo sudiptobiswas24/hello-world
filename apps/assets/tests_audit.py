@@ -226,3 +226,69 @@ class ADisposalAfterAMonthWasClosedTests(AssetTestCase):
               (datetime.date(2026, 9, 30), datetime.date(2026, 8, 20))],
              Decimal("7000.00"), Decimal("5000.00"), Decimal("7000.00")),
         )
+
+
+class ADisposalInErrorIsReinstatedTests(AssetTestCase):
+    """
+    A lathe written off by mistake had no way back onto the books: nothing undid a disposal,
+    and the journal refuses to reverse an entry a document keeps. Reinstated, the disposal is
+    reversed and the months it took back are charged again, each on its own date or, where
+    that month has closed, on the day it is reinstated.
+    """
+
+    def test_the_books_read_as_though_it_never_went(self):
+        asset = self.asset()
+        asset.depreciate(through=MAR_31)
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        self.assertEqual(self.balance(self.disposal), Decimal("7000.00"))
+
+        asset.reinstate()
+        asset.refresh_from_db()
+        # Nothing capitalised this fixture's lathe, so the plant account held nothing before the
+        # disposal took 12,000 off it, and holds nothing once that is put back.
+        self.assertEqual(
+            (asset.status, asset.disposed_on, self.balance(self.plant), self.balance(self.accumulated),
+             self.balance(self.disposal), self.balance(self.depreciation), asset.reinstatement_entry.date),
+            (AssetStatus.IN_SERVICE, None, Decimal("0"), Decimal("-5000.00"), Decimal("0"),
+             Decimal("5000.00"), datetime.date(2026, 6, 15)))
+        asset.depreciate(through=JUN_30)
+        self.assertEqual(self.balance(self.depreciation), Decimal("6000.00"))
+        with self.assertRaisesMessage(ValidationError, "was posted by fixed asset"):
+            asset.reinstatement_entry.reverse_by_hand()
+        asset.dispose(on_date=datetime.date(2026, 7, 10))  # and it goes again, properly this time
+        self.assertEqual(asset.status, AssetStatus.DISPOSED)
+
+    def test_the_months_it_took_back_are_charged_again_on_their_own_month_ends(self):
+        asset = self.asset()
+        asset.depreciate(through=datetime.date(2026, 12, 31))
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        asset.reinstate()
+        standing = asset.depreciation_entries.filter(reversal__isnull=True)
+        self.assertEqual(
+            (asset.accumulated(), self.balance(self.depreciation), self.balance(self.disposal),
+             standing.count(), asset.depreciation_entries.count(),
+             {(row.period_end, row.journal_entry.date) for row in standing.filter(period_end__gt=JUN_30)}),
+            (Decimal("12000.00"), Decimal("12000.00"), Decimal("0"), 12, 19,
+             {(datetime.date(2026, month, day), datetime.date(2026, month, day))
+              for month, day in ((7, 31), (8, 31), (9, 30), (10, 31), (11, 30), (12, 31))}))
+
+    def test_a_month_since_closed_is_charged_again_on_the_day_it_is_reinstated(self):
+        from apps.accounting.models import AccountingPeriod
+
+        asset = self.asset()
+        asset.depreciate(through=datetime.date(2026, 9, 30))
+        AccountingPeriod.objects.create(name="Sep 2026", start_date=datetime.date(2026, 9, 1),
+                                        end_date=datetime.date(2026, 9, 30), closed=True)
+        asset.dispose(on_date=datetime.date(2026, 8, 20))
+        asset.reinstate(on_date=datetime.date(2026, 10, 5))
+        self.assertEqual(
+            (asset.accumulated(), self.balance(self.depreciation), self.balance(self.disposal),
+             sorted((row.period_end, row.journal_entry.date) for row in asset.depreciation_entries.filter(
+                 reversal__isnull=True, period_end__gt=datetime.date(2026, 7, 31)))),
+            (Decimal("9000.00"), Decimal("9000.00"), Decimal("0"),
+             [(datetime.date(2026, 8, 31), datetime.date(2026, 8, 31)),
+              (datetime.date(2026, 9, 30), datetime.date(2026, 10, 5))]))
+
+    def test_only_a_disposed_asset_is_reinstated(self):
+        with self.assertRaisesMessage(ValidationError, "is not disposed of"):
+            self.asset().reinstate()
