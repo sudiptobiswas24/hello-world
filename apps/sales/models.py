@@ -4476,15 +4476,16 @@ class DeliveryLine(AuditModel):
             if remaining <= 0:
                 break
             key = (allocation.lot_id, allocation.bin_id)
-            left = allocation.quantity - min(home[key], allocation.quantity)
-            home[key] -= allocation.quantity - left
+            already = min(home[key], allocation.quantity)
+            left = allocation.quantity - already
+            home[key] -= already
             if left <= 0:
                 continue
             taken = min(left, remaining)
             # The allocation's own total, in proportion: total first,
-            # divide last.
+            # divide last, and the last return takes whatever is left.
             plan.append((allocation.lot, allocation.bin, taken,
-                         allocation.value() * taken / allocation.quantity))
+                         allocation.value_through(already + taken) - allocation.value_through(already)))
             remaining -= taken
         if remaining > 0:
             if not plan:
@@ -4562,6 +4563,19 @@ class DeliveryAllocation(AuditModel):
         # Written before the total was kept: its movement's rate, which
         # is this batch's own and not the line's blend.
         return self.quantity * (self.movement.unit_cost or Decimal("0"))
+
+    def value_through(self, quantity):
+        """
+        What the first `quantity` of this share are worth, to the paisa, and
+        all of it exactly. A return puts back the difference between what
+        it and the returns before it have reached: each worked out from the
+        total, so the last return takes whatever is left. Three returns of
+        1,000 of 3,000 worth 10,000.00 each put back 3,333.33 on its own
+        reckoning, and 0.01 stayed in cost of sales for good.
+        """
+        if quantity >= self.quantity:
+            return self.value()
+        return round_money(self.value() * quantity / self.quantity)
 
     def delete(self, *args, **kwargs):
         # An allocation belongs to a line, not a delivery: it read
