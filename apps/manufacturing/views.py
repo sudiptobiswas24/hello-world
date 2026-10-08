@@ -1013,6 +1013,7 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     action_permission_map = {"calendar": "manufacturing.view_maintenancejob",
                              "complete": "manufacturing.change_maintenancejob",
+                             "reopen": "manufacturing.change_maintenancejob",
                              "cancel": "manufacturing.change_maintenancejob",
                              "labour": "manufacturing.change_maintenancejob",
                              "breakdown": "manufacturing.add_maintenancejob",
@@ -1030,6 +1031,13 @@ class MaintenanceJobViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             cause=request.data.get("cause", ""),
             action=request.data.get("action", ""),
         )
+        return Response(self.get_serializer(job).data)
+
+    @action(detail=True, methods=["post"])
+    def reopen(self, request, pk=None):
+        """{reason}: completed in error, back on the board."""
+        job = self.get_object()
+        _run(job.reopen, request.data.get("reason", ""))
         return Response(self.get_serializer(job).data)
 
     @action(detail=False, methods=["post"])

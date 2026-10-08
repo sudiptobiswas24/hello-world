@@ -65,6 +65,10 @@ export default function JobForm() {
             lines: [{ item: values.item, quantity: values.quantity, ...(values.position ? { position: values.position } : {}) }] }) },
         { label: "Cancel", path: "cancel", permission: "manufacturing.change_maintenancejob", when: open, danger: true,
           done: "Cancelled", fields: [{ key: "reason", label: "Why", kind: "text" }] },
+        // Completed in error: a service's stoppage is withdrawn and its schedule's clock put back.
+        { label: "Reopen", path: "reopen", permission: "manufacturing.change_maintenancejob",
+          when: (row) => row.status === "done", danger: true,
+          done: "Back on the board", fields: [{ key: "reason", label: "Why", kind: "text" }] },
       ]}
       panels={[
         { title: "Fitters' time", permission: "manufacturing.view_maintenancejob", endpoint: "", query: () => ({}),

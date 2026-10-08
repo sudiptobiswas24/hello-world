@@ -35,11 +35,11 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
 
 MINUTES_PER_HOUR = Decimal("60")
 
@@ -182,6 +182,21 @@ class DowntimeReason(AuditModel):
         return f"{self.code} - {self.name}"
 
 
+# What a stoppage says happened; a job resting on it says the same.
+CORRECTABLE = ("work_centre_id", "machine_id", "shift_date", "shift_id", "reason_id", "minutes",
+               "work_order_id")
+
+
+def _differs(now, was):
+    """A value set and the one stored: 90 and 90.00 minutes are the same minutes."""
+    if isinstance(was, Decimal) and now is not None:
+        try:
+            return Decimal(str(now)) != was
+        except ArithmeticError:
+            return True
+    return now != was
+
+
 class Downtime(AuditModel):
     """
     A machine stopped, for this long, for this reason.
@@ -316,18 +331,55 @@ class Downtime(AuditModel):
             raise ValidationError(f"{self} is already withdrawn.")
         if not (reason or "").strip():
             raise ValidationError("Say why the stoppage is withdrawn.")
-        job = self.maintenance.filter(cancelled_at__isnull=True).first()
+        job = self.standing_job()
         if job is not None:
             raise ValidationError(f"{job} rests on this stoppage; "
-                                  f"{'cancel it first' if job.is_open() else 'it is done'}.")
+                                  f"{'cancel it first' if job.is_open() else 'reopen it first'}.")
         self.voided_at, self.voided_by = timezone.now(), by
         self.voided_reason = reason.strip()
         super().save(update_fields=["voided_at", "voided_by", "voided_reason", "updated_at"])
 
+    def standing_job(self):
+        """The maintenance job resting on this stoppage, cancelled ones aside."""
+        return self.maintenance.filter(cancelled_at__isnull=True).first() if self.pk else None
+
+    def _check_the_job_on_it(self):
+        """
+        A job rests on its stoppage: a repair on the one it was raised on,
+        a service on the one its completion booked. Correcting the stoppage
+        under it changes what the job says happened. The machine stays the
+        job's, a breakdown's stoppage stays unplanned, and once the job is
+        done the stoppage is as it was when the job was done: reopen the
+        job to correct it, which a correction made here would get round.
+
+        Under a lock on the job, which its completion takes too: a repair
+        closed a moment ago is seen as closed, not as the open job read
+        before it.
+        """
+        job = self.standing_job()
+        if job is None:
+            return
+        lock_rows(job)
+        stored = Downtime.objects.filter(pk=self.pk).values(*CORRECTABLE).first() or {}
+        changed = {key for key, was in stored.items() if _differs(getattr(self, key), was)}
+        if not changed or job.cancelled_at is not None:
+            return
+        if job.done_on is not None:
+            raise ValidationError(f"{job} is done and rests on this stoppage; reopen it to correct the stoppage.")
+        if changed & {"work_centre_id", "machine_id"}:
+            raise ValidationError(f"{job} rests on this stoppage, on {job.machine or job.work_centre}; "
+                                  "cancel it to book the stoppage somewhere else.")
+        if job.is_breakdown and "reason_id" in changed and self.reason.is_planned:
+            raise ValidationError(f"{job} is a breakdown raised on this stoppage, and {self.reason} is "
+                                  "planned; cancel the job if the machine did not fail.")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self.shift_date = to_date(self.shift_date)
         if self.pk and Downtime.objects.filter(pk=self.pk, voided_at__isnull=False).exists():
             raise ValidationError(f"{self} was withdrawn; book the stoppage again.")
+        if self.pk:
+            self._check_the_job_on_it()
         if self.shift_id is not None:
             self._check_fits_the_shift()
         if self.machine_id is not None:
@@ -347,6 +399,15 @@ class Downtime(AuditModel):
                 name="Downtime", prefix="DT-",
             )
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # What void refuses, for the other way a stoppage leaves: deleted,
+        # a service's job would read done with no stoppage behind it.
+        job = self.standing_job()
+        if job is not None:
+            raise ValidationError(f"{job} rests on this stoppage; "
+                                  f"{'cancel it first' if job.is_open() else 'reopen it first'}.")
+        return super().delete(*args, **kwargs)
 
 
 def shift_starts(code):

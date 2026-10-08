@@ -5,6 +5,7 @@ service that fell due is put on the board. Each step is read back from
 the database.
 """
 
+import datetime
 import re
 from decimal import Decimal
 
@@ -58,6 +59,24 @@ class PlantInTheBrowserTests(BrowserMixin, BreakdownTestCase, StaticLiveServerTe
         self.assertIsNotNone(job.done_on)
         self.assertEqual((job.cause, job.action_taken), ("Melt filter clogged", "Screen changed"))
         expect(fitter.get_by_role("button", name="Complete")).to_have_count(0)
+        self.assertEqual(self.problems, [])
+
+    def test_a_service_done_on_the_wrong_loom_goes_back_on_the_board(self):
+        last = TODAY - datetime.timedelta(days=90)
+        schedule = self.schedule(days=90, last=last)
+        job = schedule.raise_job(as_of=TODAY)
+        job.complete(on_date=TODAY)
+        fitter = self.sign_in(self.person("Maintenance"), f"/app/plant/jobs/{job.pk}")
+        fitter.get_by_role("button", name="Reopen").click()
+        form = fitter.get_by_role("form", name="Reopen")
+        form.get_by_label("Why").fill("Done on the wrong loom")
+        form.get_by_role("button", name="Reopen").click()
+        self.toast(fitter, "Back on the board")
+        job.refresh_from_db()
+        schedule.refresh_from_db()
+        self.assertEqual((job.done_on, job.downtime_id, schedule.last_done_on), (None, None, last))
+        expect(fitter.get_by_role("button", name="Complete")).to_be_visible()
+        expect(fitter.get_by_role("button", name="Reopen")).to_have_count(0)
         self.assertEqual(self.problems, [])
 
     def test_a_service_that_fell_due_is_put_on_the_board(self):
