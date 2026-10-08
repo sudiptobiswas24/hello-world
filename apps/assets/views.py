@@ -179,6 +179,7 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 "asset": row["asset"].number,
                 "name": row["asset"].name,
                 "category": row["category"].code,
+                "state": row["state"],
                 "cost": row["cost"],
                 "accumulated": row["accumulated"],
                 "net_book_value": row["net_book_value"],
