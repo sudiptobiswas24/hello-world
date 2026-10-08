@@ -687,6 +687,16 @@ class WorkOrder(AuditModel):
         related_name="+", editable=False,
         help_text="The entry that cleared work in progress to variance.",
     )
+    wip_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The work-in-progress account this run's material is kept on, "
+                  "frozen at release. Everything the run posts, its close and "
+                  "its reopening land there, whatever the setting says later: "
+                  "a run closed, reopened after the account moved and closed "
+                  "again left 93,195.89 on the old account and the same "
+                  "credit on the new one.",
+    )
     reopened_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
@@ -1213,17 +1223,27 @@ class WorkOrder(AuditModel):
             if stock_quantity else Decimal("0")
         )
         self.quantity_to_start = Decimal(started).quantize(Decimal("0.0001"))
+        self.wip_account = ManufacturingSettings.get().wip_account
         self.status = WorkOrderStatus.RELEASED
         self.released_at = timezone.now()
         super().save(update_fields=[
             "number", "planned_unit_cost", "planned_material_cost",
             "planned_conversion_cost", "routing", "backflush",
-            "quantity_to_start", "status", "released_at", "updated_at",
+            "quantity_to_start", "wip_account", "status", "released_at", "updated_at",
         ])
         return self
 
     def is_rework(self):
         return self.rework_of_id is not None
+
+    def wip(self, why):
+        """
+        The account this run's work in progress is on: the one frozen at
+        release, or the setting for a run released before there was one.
+        """
+        if self.wip_account_id is not None:
+            return self.wip_account
+        return ManufacturingSettings.account("wip", why)
 
     def _check_rework(self):
         """
@@ -1333,7 +1353,7 @@ class WorkOrder(AuditModel):
         if balance or time_overrun or vendor_overrun:
             label = memo or f"Closing variance on {self.number}"
             rows = [(
-                ManufacturingSettings.account("wip", "a run is being closed"),
+                self.wip("a run is being closed"),
                 -balance,
             )]
             if time_overrun:
@@ -2220,9 +2240,7 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
             total += value
             by_item[line.item] = by_item.get(line.item, Decimal("0")) + value
 
-        wip = ManufacturingSettings.account(
-            "wip", "material is being issued to a run"
-        )
+        wip = self.work_order.wip("material is being issued to a run")
         rows = [
             (inventory_account_for(item), -value * self.sign())
             for item, value in by_item.items()
@@ -2795,9 +2813,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
             ))
             taken += value
 
-        wip = ManufacturingSettings.account(
-            "wip", "output is being booked off a run"
-        )
+        wip = order.wip("output is being booked off a run")
         self.journal_entry, released = _post_entry(
             self.entry_date, self.number, label, rows, balance_to=wip
         )
@@ -3243,9 +3259,7 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
                     ),
                     -value,
                 )],
-                balance_to=ManufacturingSettings.account(
-                    "wip", "machine time is being charged to a run"
-                ),
+                balance_to=self.work_order.wip("machine time is being charged to a run"),
             )
             self.posted_value = charged
         else:

@@ -138,11 +138,7 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
 
     @serialised("posted")
     def post(self, memo=""):
-        from .orders import (
-            ManufacturingSettings,
-            _check_order_is_open_for,
-            _post_entry,
-        )
+        from .orders import _check_order_is_open_for, _post_entry
 
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
@@ -191,9 +187,7 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
             f"{'Returned to vendor' if self.is_return else 'Back from vendor'}"
             f": {operation.name} on {order.number}, {self.number}"
         )
-        wip = ManufacturingSettings.account(
-            "wip", "a vendor's work is being booked to a run"
-        )
+        wip = order.wip("a vendor's work is being booked to a run")
         sign = Decimal("-1") if self.is_return else Decimal("1")
         self.journal_entry, released = _post_entry(
             self.movement_date, self.reference or self.number, label,

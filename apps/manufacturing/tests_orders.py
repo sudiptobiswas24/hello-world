@@ -18,7 +18,9 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
-from django.test import TestCase
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase, tag
 from django.utils import timezone
 
 from apps.accounting.models import Account, AccountType, JournalLine
@@ -738,6 +740,86 @@ class BookedInAnotherUnitOfWeightTests(RunTestCase):
         moved = document.lines.get().stock_movement
         self.assertEqual((moved.quantity, moved.unit_cost), (Decimal("-100"), Decimal("100")))
         self.assertEqual(self.balance(self.wip), Decimal("10000"))
+
+
+class ARunKeepsItsWorkInProgressAccountTests(RunTestCase):
+    """
+    Found by probing: the account could move while only a closed run
+    existed, and reopening reversed the close onto the old account while
+    the run's next output and close went to the new one. Old work in
+    progress ended 93,195.89, new -93,195.89, and the order said nothing
+    was left.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.moved_to = Account.objects.create(code="1251", name="Work in progress, new",
+                                               account_type=AccountType.ASSET)
+
+    def move(self):
+        settings = ManufacturingSettings.get()
+        settings.wip_account = self.moved_to
+        settings.save()
+
+    def test_reopened_after_the_move_it_clears_where_it_was_kept(self):
+        job = self.order()
+        job.release(TODAY)
+        self.full_issue(job).post()
+        job.close(TODAY)
+        self.move()
+        job.reopen(TODAY)
+        self.produce(job, "1000", byproducts=[(self.regrind, "24.742268")]).post()
+        job.close(TODAY)
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+        self.assertEqual(self.balance(self.moved_to), Decimal("0"))
+
+    def test_released_after_the_move_it_keeps_the_new_one(self):
+        self.move()
+        job = self.order()
+        job.release(TODAY)
+        self.assertEqual(job.wip_account, self.moved_to)
+        self.issue(job, [(self.virgin, "100")]).post()
+        self.assertEqual(self.balance(self.moved_to), Decimal("10000"))
+        self.assertEqual(self.balance(self.wip), Decimal("0"))
+
+
+@tag("migration")
+class RunsKeepTheAccountTheyWereReleasedOnTests(TransactionTestCase):
+    """The upgrade freezes the present account onto runs released or closed."""
+
+    before = [("manufacturing", "0077_maintenance_completion_withdrawn"),
+              ("accounting", "0023_account_holds_money")]
+    after = [("manufacturing", "0078_workorder_wip_account")]
+
+    def test_released_and_closed_runs_take_the_present_account(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        wip = apps.get_model("accounting", "Account").objects.create(
+            code="1250", name="Work in progress", account_type="asset")
+        apps.get_model("manufacturing", "ManufacturingSettings").objects.create(wip_account=wip)
+        kg = apps.get_model("core", "UnitOfMeasure").objects.create(
+            code="kg", name="kg", category="weight")
+        tape = apps.get_model("inventory", "Item").objects.create(sku="T", name="T", uom=kg)
+        bom = apps.get_model("manufacturing", "BillOfMaterials").objects.create(
+            item=tape, quantity_produced=Decimal("100"), uom=kg)
+        plant = apps.get_model("inventory", "Warehouse").objects.create(code="P", name="P")
+        runs = {
+            status: apps.get_model("manufacturing", "WorkOrder").objects.create(
+                item=tape, bom=bom, quantity_ordered=Decimal("10"), uom=kg,
+                warehouse=plant, status=status).pk
+            for status in ("draft", "released", "closed", "cancelled")
+        }
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        apps = executor.loader.project_state(self.after).apps
+        kept = dict(apps.get_model("manufacturing", "WorkOrder").objects.values_list(
+            "status", "wip_account_id"))
+        self.assertEqual(kept, {"draft": None, "released": wip.pk, "closed": wip.pk,
+                                "cancelled": None})
+        self.assertEqual(len(runs), 4)
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
 
 
 class SettingsThatWereNeverConfiguredTests(RunTestCase):
