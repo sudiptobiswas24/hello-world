@@ -96,6 +96,7 @@ class Command(BaseCommand):
         findings += self.unsettable_fields(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
+        findings += self.entries_kept_past_the_edit_guard(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -656,6 +657,64 @@ class Command(BaseCommand):
                             f"{label}.{model.__name__}.{field.name} has no check "
                             "constraint on its sign.",
                         ))
+        return findings
+
+    # -- shape 1: a draft still editable after it posted something -------
+    def entries_kept_past_the_edit_guard(self, labels, sources):
+        """
+        An entry a record keeps, set by a step that leaves its status alone.
+
+        A record's save() guard is usually keyed to its status: a draft may
+        change, an issued one may not. A fixed asset capitalised from a bill
+        keeps the entry that put its cost on the asset account and stays a
+        draft, so the guard let a capitalised draft be repriced to 15,000
+        against 12,000 posted, or moved off the account it was posted to.
+        Asked of the code: wherever an entry such a record keeps is set
+        without its status changing in the same step, its save() must name
+        that entry, or what the entry posted can be edited away.
+        """
+        from apps.accounting.models import JournalEntry
+
+        steps = []
+        for label in OUR_APPS:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                for node in ast.parse(text).body:
+                    owner = node.name if isinstance(node, ast.ClassDef) else ""
+                    functions = node.body if isinstance(node, ast.ClassDef) else [node]
+                    for fn in functions:
+                        if not isinstance(fn, ast.FunctionDef):
+                            continue
+                        assigned = {target.attr for statement in ast.walk(fn) if isinstance(statement, ast.Assign)
+                                    for each in statement.targets
+                                    for target in (each.elts if isinstance(each, ast.Tuple) else [each])
+                                    if isinstance(target, ast.Attribute)}
+                        steps.append((path, owner, fn.name, ast.unparse(fn), assigned))
+        findings = []
+        for label in labels:
+            code = non_test_text(sources[label])
+            for model in django_apps.get_app_config(label).get_models():
+                if "status" not in {field.name for field in model._meta.fields}:
+                    continue
+                kept = [field.name for field in model._meta.fields
+                        if field.is_relation and field.related_model is JournalEntry]
+                body = self._class_body(code, model.__name__) or ""
+                guard = self._method_body(body, "save") or ""
+                for name in kept:
+                    if re.search(rf"\b{name}(_id)?\b", guard):
+                        continue
+                    for path, owner, function, text, assigned in steps:
+                        if owner != model.__name__ and not re.search(rf"\b{model.__name__}\b", text):
+                            continue
+                        if name in assigned and "status" not in assigned:
+                            findings.append((
+                                "draft that posted",
+                                f"{label}.{model.__name__}.{name} is set by {owner + '.' if owner else ''}"
+                                f"{function} ({path.name}) with the status left as it was, and save() "
+                                "never names it: what that entry posted can still be edited.",
+                            ))
+                            break
         return findings
 
     @staticmethod
