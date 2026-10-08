@@ -751,6 +751,7 @@ class StockMovement(AuditModel):
         if self._state.adding:
             self._check_bin()
             self._check_tracking()
+            self._check_on_hand()
             if self.uom_id is None:
                 raise ValidationError(
                     f"A stock movement for {self.item} must say which unit its "
@@ -856,6 +857,21 @@ class StockMovement(AuditModel):
                 f"{self.warehouse} is binned; this movement must say where in it "
                 "the stock is."
             )
+
+    def _check_on_hand(self):
+        """
+        Stock does not go below nothing unless the warehouse says it may.
+
+        Here, for every writer, as the batch and the bin are checked: the
+        documents ask it in their own words first, and the return to
+        vendor, which never asked, sent back ten with two on the shelf.
+        """
+        if self.quantity >= 0:
+            return
+        from .availability import check_available
+
+        check_available(self.item, self.warehouse,
+                        -self.item.to_stock_quantity(self.quantity, self.uom), action="move")
 
     def _check_tracking(self):
         """
