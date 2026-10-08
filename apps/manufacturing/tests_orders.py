@@ -860,18 +860,26 @@ class ARunKeepsItsWorkInProgressAccountTests(RunTestCase):
 
 @tag("migration")
 class RunsKeepTheAccountTheyWereReleasedOnTests(TransactionTestCase):
-    """The upgrade freezes the present account onto runs released or closed."""
+    """
+    The upgrade freezes the present account onto runs released or closed,
+    except a run whose close names another: closed before the account
+    moved, it keeps the one it cleared, which its reopening reverses onto.
+    """
 
     before = [("manufacturing", "0077_maintenance_completion_withdrawn"),
               ("accounting", "0023_account_holds_money")]
     after = [("manufacturing", "0078_workorder_wip_account")]
 
-    def test_released_and_closed_runs_take_the_present_account(self):
+    def test_released_and_closed_runs_take_the_account_they_were_kept_on(self):
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
         apps = executor.loader.project_state(self.before).apps
-        wip = apps.get_model("accounting", "Account").objects.create(
-            code="1250", name="Work in progress", account_type="asset")
+        account = lambda code, name, kind: apps.get_model("accounting", "Account").objects.create(
+            code=code, name=name, account_type=kind)
+        wip = account("1250", "Work in progress", "asset")
+        earlier = account("1240", "Work in progress, until May", "asset")
+        inventory = account("1200", "Inventory", "asset")
+        variance = account("5100", "Production variance", "expense")
         apps.get_model("manufacturing", "ManufacturingSettings").objects.create(wip_account=wip)
         kg = apps.get_model("core", "UnitOfMeasure").objects.create(
             code="kg", name="kg", category="weight")
@@ -879,20 +887,41 @@ class RunsKeepTheAccountTheyWereReleasedOnTests(TransactionTestCase):
         bom = apps.get_model("manufacturing", "BillOfMaterials").objects.create(
             item=tape, quantity_produced=Decimal("100"), uom=kg)
         plant = apps.get_model("inventory", "Warehouse").objects.create(code="P", name="P")
+        WorkOrder = apps.get_model("manufacturing", "WorkOrder")
         runs = {
-            status: apps.get_model("manufacturing", "WorkOrder").objects.create(
+            status: WorkOrder.objects.create(
                 item=tape, bom=bom, quantity_ordered=Decimal("10"), uom=kg,
                 warehouse=plant, status=status).pk
             for status in ("draft", "released", "closed", "cancelled")
         }
+        # Closed in May on the account then set, before it moved to 1250:
+        # its issue drew onto 1240 and its close cleared 1240.
+        early = WorkOrder.objects.create(item=tape, bom=bom, quantity_ordered=Decimal("10"),
+                                         uom=kg, warehouse=plant, status="closed")
+        JournalEntry = apps.get_model("accounting", "JournalEntry")
+        JournalLine = apps.get_model("accounting", "JournalLine")
+
+        def entry(reference, *lines):
+            made = JournalEntry.objects.create(date=TODAY, reference=reference, posted=True)
+            for line_account, debit, credit in lines:
+                JournalLine.objects.create(entry=made, account=line_account,
+                                           debit=Decimal(debit), credit=Decimal(credit))
+            return made
+
+        apps.get_model("manufacturing", "MaterialIssue").objects.create(
+            work_order=early, issue_date=TODAY, warehouse=plant, posted=True,
+            journal_entry=entry("MI-1", (earlier, "100", "0"), (inventory, "0", "100")))
+        WorkOrder.objects.filter(pk=early.pk).update(close_entry=entry(
+            "WO-1", (earlier, "0", "40"), (variance, "40", "0")))
         executor = MigrationExecutor(connection)
         executor.migrate(self.after)
         apps = executor.loader.project_state(self.after).apps
         kept = dict(apps.get_model("manufacturing", "WorkOrder").objects.values_list(
-            "status", "wip_account_id"))
-        self.assertEqual(kept, {"draft": None, "released": wip.pk, "closed": wip.pk,
-                                "cancelled": None})
-        self.assertEqual(len(runs), 4)
+            "pk", "wip_account_id"))
+        self.assertEqual(kept, {
+            runs["draft"]: None, runs["released"]: wip.pk, runs["closed"]: wip.pk,
+            runs["cancelled"]: None, early.pk: earlier.pk,
+        })
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
 

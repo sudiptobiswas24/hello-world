@@ -4,19 +4,53 @@ import django.db.models.deletion
 from django.db import migrations, models
 
 
-def freeze_the_present_account(apps, schema_editor):
+def freeze_the_account_each_run_was_kept_on(apps, schema_editor):
     """
-    Runs already released or closed were posted to the account set now:
-    the setting refused to move while any run was released. A closed one
-    that ran before an earlier move cannot be told apart, and keeps
-    today's behaviour.
+    Runs already released were posted to the account set now: the setting
+    refused to move while any run was released, and they keep it.
+
+    A closed run may have run before an earlier move. Its close entry
+    names the account it cleared, which is the account a reopening
+    reverses onto, so it keeps that one: frozen on today's setting instead,
+    a run closed on the old account and reopened left the old account
+    holding what the close had cleared and the new one the same credit.
+    The close's work-in-progress line is the one on an account the run's
+    own documents posted to as well (narrowed to an asset, should a scrap
+    or absorption account happen to be a variance account too). A close
+    that left nothing in progress has no such line, and nothing a
+    reopening reverses depends on the account; it takes the setting.
     """
+    WorkOrder = apps.get_model("manufacturing", "WorkOrder")
+    JournalLine = apps.get_model("accounting", "JournalLine")
+    Account = apps.get_model("accounting", "Account")
     settings = apps.get_model("manufacturing", "ManufacturingSettings").objects.first()
-    if settings is None or settings.wip_account_id is None:
-        return
-    apps.get_model("manufacturing", "WorkOrder").objects.filter(
-        status__in=("released", "closed"), wip_account__isnull=True,
-    ).update(wip_account_id=settings.wip_account_id)
+    present = settings.wip_account_id if settings is not None else None
+    documents = [
+        (apps.get_model("manufacturing", "MaterialIssue"), "work_order"),
+        (apps.get_model("manufacturing", "ProductionEntry"), "work_order"),
+        (apps.get_model("manufacturing", "TimeBooking"), "work_order"),
+        (apps.get_model("manufacturing", "OutsideMovement"), "operation__work_order"),
+    ]
+    for run in WorkOrder.objects.filter(status__in=("released", "closed"),
+                                        wip_account__isnull=True):
+        account = present
+        if run.status == "closed" and run.close_entry_id is not None:
+            closing = set(JournalLine.objects.filter(entry_id=run.close_entry_id)
+                          .values_list("account_id", flat=True))
+            posted = set()
+            for model, path in documents:
+                entries = model.objects.filter(**{path: run.pk}, journal_entry__isnull=False
+                                               ).values_list("journal_entry_id", flat=True)
+                posted |= set(JournalLine.objects.filter(entry_id__in=entries)
+                              .values_list("account_id", flat=True))
+            named = closing & posted
+            if len(named) > 1:
+                named = set(Account.objects.filter(pk__in=named, account_type="asset")
+                            .values_list("pk", flat=True))
+            if len(named) == 1:
+                account = named.pop()
+        if account is not None:
+            WorkOrder.objects.filter(pk=run.pk).update(wip_account_id=account)
 
 
 class Migration(migrations.Migration):
@@ -40,5 +74,5 @@ class Migration(migrations.Migration):
                 to="accounting.account",
             ),
         ),
-        migrations.RunPython(freeze_the_present_account, migrations.RunPython.noop),
+        migrations.RunPython(freeze_the_account_each_run_was_kept_on, migrations.RunPython.noop),
     ]
