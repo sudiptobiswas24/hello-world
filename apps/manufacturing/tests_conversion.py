@@ -34,6 +34,7 @@ from .orders import (
     ManufacturingSettings,
     MaterialIssueLine,
     TimeBooking,
+    WorkCentre,
     WorkOrderOperation,
     WorkOrderStatus,
 )
@@ -385,6 +386,67 @@ class HowFarThroughTheRoutingTests(ConversionTestCase):
         booking.post()
         booking.void(TODAY)
         self.assertEqual(order.operations.get().quantity_completed(), Decimal("0"))
+
+
+class ACountTheNextStepDrewOnStandsTests(ConversionTestCase):
+    """
+    Found by probing: a booking's void did not ask what its post asked of
+    the step before. Extruded 500 and 500, wound 1,000, one extruder
+    booking was voided and the run read 500 extruded and 1,000 wound. A
+    step's report already refused this; both now ask the same rule.
+    """
+
+    def setUp(self):
+        super().setUp()
+        winder = WorkCentre.objects.create(code="WIND-1", name="Winder",
+                                           capacity_per_hour=Decimal("180"), capacity_uom=self.kg)
+        routing = Routing.objects.create(code="R-2", name="Extrude and wind")
+        for sequence, name, centre in ((10, "Extrude", self.loom), (20, "Wind", winder)):
+            RoutingOperation.objects.create(
+                routing=routing, sequence=sequence, name=name, work_centre=centre,
+                setup_minutes=Decimal("0"), units_per_hour=Decimal("180"), rate_uom=self.kg,
+            )
+        self.bom.routing = routing
+        self.bom.save()
+        self.job = self.order("1000")
+        self.job.release(TODAY)
+        self.extrude, self.wind = self.job.operations.order_by("sequence")
+
+    def counted(self, step, minutes, quantity):
+        booking = self.book(self.job, minutes, completed=quantity, operation=step)
+        booking.post()
+        return booking
+
+    def test_one_of_two_counts_the_winder_drew_on(self):
+        first = self.counted(self.extrude, "170", "500")
+        self.counted(self.extrude, "170", "500")
+        self.counted(self.wind, "340", "1000")
+        with self.assertRaisesMessage(
+                ValidationError, "Wind has already taken 1000 from Extrude; without this "
+                                 "count it passed on 500"):
+            first.void(TODAY)
+        self.assertEqual(self.extrude.quantity_completed(), Decimal("1000"))
+
+    def test_nor_the_only_one(self):
+        only = self.counted(self.extrude, "200", "500")
+        self.counted(self.wind, "200", "500")
+        with self.assertRaisesMessage(ValidationError, "Wind has already taken 500"):
+            only.void(TODAY)
+
+    def test_one_the_winder_has_not_drawn_on_goes(self):
+        first = self.counted(self.extrude, "170", "500")
+        self.counted(self.extrude, "170", "500")
+        self.counted(self.wind, "170", "500")
+        first.void(TODAY)
+        self.assertEqual(self.extrude.quantity_completed(), Decimal("500"))
+
+    def test_hours_with_no_count_go(self):
+        hours = self.book(self.job, "60", operation=self.extrude)
+        hours.post()
+        self.counted(self.extrude, "170", "500")
+        self.counted(self.wind, "170", "500")
+        hours.void(TODAY)
+        self.assertIsNotNone(hours.voided_at)
 
 
 class ABookingHasToBePhysicallyPossibleTests(ConversionTestCase):

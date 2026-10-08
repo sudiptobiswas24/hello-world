@@ -1792,6 +1792,15 @@ class WorkOrderOperation(AuditModel):
     def counted_bookings(self):
         return self.posted_bookings().filter(quantity_completed__isnull=False)
 
+    def feeds(self):
+        """The step after this one that somebody counted: the one it feeds."""
+        for later in self.work_order.operations.filter(
+            sequence__gt=self.sequence
+        ).order_by("sequence"):
+            if later.is_counted():
+                return later
+        return None
+
     def feeds_from(self):
         """
         The operation before this one that somebody actually counted.
@@ -2021,6 +2030,21 @@ def _check_order_is_open_for(order, what):
 
 # The places a stock movement's quantity is kept at.
 STOCK_PLACES = Decimal("0.0001")
+
+
+def check_drawn_on(step, following, taken, left):
+    """
+    A count the next step has already drawn on stands. `following` has
+    taken `taken` from `step`, which without the count being withdrawn
+    passed on `left`. Asked of a step's report and of a time booking's
+    count alike: voiding one extruder count of two after the winder had
+    wound both left 500 extruded and 1,000 wound.
+    """
+    if taken > left:
+        raise ValidationError(
+            f"{following.name} has already taken {_shown(taken)} from {step.name}; "
+            f"without this count it passed on {_shown(left)}."
+        )
 
 
 def _shown(quantity):
@@ -3240,6 +3264,17 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
         if self.is_voided():
             raise ValidationError(f"{self} is already voided.")
         _check_order_is_open_for(self.work_order, "void this booking")
+        # The mirror of the check its post made against the step before.
+        following = self.operation.feeds() if self.quantity_completed is not None else None
+        if following is not None:
+            order = self.work_order
+            check_drawn_on(
+                self.operation, following,
+                order.item.to_stock_quantity(following.quantity_completed(), order.uom),
+                order.item.to_stock_quantity(
+                    self.operation.quantity_completed() - self.quantity_completed, order.uom
+                ),
+            )
         on_date = to_date(on_date) or timezone.localdate()
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
