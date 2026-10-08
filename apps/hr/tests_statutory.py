@@ -236,7 +236,7 @@ class PayingItOverTests(StatutoryTestCase):
 
     def test_a_bounced_payment_pays_nothing_over(self):
         remittance = self.remit(self.pf_payable, "7200")
-        remittance.payment.void()
+        remittance.payment.void(on_date=datetime.date(2026, 7, 20))
         self.assertEqual(self.report()["2310"][2], Decimal("7200.00"))
 
     def test_a_voided_run_owes_nothing(self):
@@ -256,6 +256,18 @@ class PayingItOverTests(StatutoryTestCase):
         remittance.payment.void()  # it bounced: nothing was paid over after all
         self.june.void(on_date=datetime.date(2026, 7, 20))
         self.assertEqual((self.report(), self.balance(self.pf_payable)), ({}, Decimal("0.00")))
+
+    def test_as_of_a_day_before_it_was_paid_over_june_is_still_owed(self):
+        self.remit(self.pf_payable, "7200")  # paid on 15 July
+        self.assertEqual(self.report(datetime.date(2026, 7, 10))["2310"][1:3], (Decimal("0"), Decimal("7200.00")))
+        self.assertEqual(self.report(JULY_15)["2310"][1:3], (Decimal("7200.00"), Decimal("0.00")))
+
+    def test_a_payment_that_bounced_had_paid_it_over_until_it_was_returned(self):
+        remittance = self.remit(self.pf_payable, "7200")
+        remittance.payment.void(on_date=datetime.date(2026, 7, 20))
+        self.assertEqual((self.report(datetime.date(2026, 7, 17))["2310"][2],
+                          self.report(datetime.date(2026, 7, 20))["2310"][2]),
+                         (Decimal("0.00"), Decimal("7200.00")))
 
     def test_a_remittance_whose_payment_stands_is_not_deleted(self):
         # Deleted, the 7,200 stayed paid over in the ledger, the report said June was owed it
