@@ -259,10 +259,18 @@ missing), **minor**.
 | O32 | hr | `LeaveRequest.cancel(on_date)` takes any date: called in code with a day before the leave, it cancels a holiday already taken and restores the balance. The API passes no date | rule | open |
 | O33 | manufacturing | A material return (manufacturing/orders.py, near line 2306 when seen) may go back at the issue rate times the quantity rather than at what the issue took; check against de45de4 and d1141ff | books | verify |
 | O34 | assets | The fixed-asset register is not footed against the ledger in the daily health checks | rule | open |
+| O35 | core | `locked_before_it()` is read from the instance as it stood before the lock: an allocation re-pointed to another payment at the same moment locks the old payment | race | minor |
+| O36 | sales | A line's check against its call-offs runs under the line's lock only on a confirmed order whose line drops in value; a cut on a draft order, or on a zero-price line, made through model code reads the call-offs unlocked (the API path is locked) | race | minor |
+| O37 | hr, purchasing, sales, manufacturing | These save() methods lock a related row without declaring it in `locked_before_it()`, so an API edit holds the row first and the related row second: hr/timesheets.py:342, hr/payroll.py:1472, hr/contract_labour.py:75, purchasing/models.py:615, :2478, :2523, sales/models.py:1393, manufacturing/maintenance.py:346 (line numbers at 7f726a5). No opposite-order path traced yet | race | open, unproven |
+| O38 | purchasing | `_restore_components` puts components back at the consumed unit cost times the quantity, with no remainder carried (under a paisa at eight places) | books | minor |
+| O39 | inventory | reservations.py:75 reads `held_at` before the lock, so it can lock the wrong second shelf | race | open |
+| O40 | core | Audit gaps: `per_unit_withdrawal_rates` skips inventory/models.py and `average_cost_at`; `shelf_read_before_lock` sees a read and a lock only inside one function | rule | open |
+| O41 | manufacturing | `_booked` converts each entry at today's unit factor; a conversion that depends on the date makes `quantity_produced` drift from what went on the shelf | books | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
 - A pay run calculated with handed-in hours before hr migration 0020 is refused at post until it is calculated again.
+- A void made before manufacturing migration 0079 keeps its gap between shelf and ledger, and nothing records it.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
 
