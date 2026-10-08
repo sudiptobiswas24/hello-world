@@ -31,6 +31,39 @@ from .locking import lock_position, lock_positions
 from .models import Item, MovementType, StockMovement, Warehouse
 
 
+def move_stock(item, source, destination, quantity, reference, occurred_at, notes,
+               lot=None, from_bin=None, to_bin=None):
+    """
+    Take `quantity` (stocking units) off one shelf and put it on another,
+    the same value at both ends. Returns (out, into).
+
+    The one way stock moves between the company's own shelves: a transfer,
+    a clearance out of inspection, components sent to a subcontractor.
+    What leaving takes off is what cost_of_removing says, a total, because
+    under FIFO the units span layers and under specific identification
+    the batch decides; the arriving leg puts back that total, at an
+    eight-place rate with what the rate cannot say carried as value.
+    Priced per unit and multiplied back up, three cases cleared at three
+    eaches' rate turned 960 into 840, and a rate with no remainder loses a
+    little on every move. The caller holds both positions.
+    """
+    leaving = item.cost_of_removing(source, quantity, lot=lot)
+    rate = (leaving / quantity).quantize(Decimal("0.00000001"))
+    residue = (leaving - quantity * rate).quantize(Decimal("0.0001")) or None
+    out = StockMovement.objects.create(
+        item=item, warehouse=source, movement_type=MovementType.TRANSFER_OUT,
+        uom=item.uom, lot=lot, bin=from_bin, quantity=-quantity, unit_cost=rate,
+        reference=reference, occurred_at=occurred_at, notes=notes,
+    )
+    into = StockMovement.objects.create(
+        item=item, warehouse=destination, movement_type=MovementType.TRANSFER_IN,
+        uom=item.uom, lot=lot, bin=to_bin, quantity=quantity, unit_cost=rate,
+        value_adjustment=residue,
+        reference=reference, occurred_at=occurred_at, notes=notes,
+    )
+    return out, into
+
+
 class TransferStatus(models.TextChoices):
     DRAFT = "draft", "Draft"
     IN_TRANSIT = "in_transit", "In transit"
@@ -417,29 +450,11 @@ class StockTransferLine(AuditModel):
                 f"cannot move {quantity}."
             )
 
-        # What the source shelf actually gives up. Under FIFO that is
-        # the oldest layers rather than an average of all of them, and
-        # the receiving end has to add back the same figure or the move
-        # revalues the company's stock.
-        leaving = item.cost_of_removing(source, quantity, lot=self.lot)
-        unit_cost = (leaving / quantity).quantize(Decimal("0.0001"))
-        residue = (leaving - quantity * unit_cost).quantize(Decimal("0.0001")) or None
-
-        label = (
-            f"Transfer {transfer.number}: {source.code} to {destination.code}"
-        )
-        out = StockMovement.objects.create(
-            item=item, warehouse=source, movement_type=MovementType.TRANSFER_OUT,
-            uom=item.uom, lot=self.lot, bin=from_bin,
-            quantity=-quantity, unit_cost=unit_cost,
-            reference=transfer.number, occurred_at=occurred_at, notes=label,
-        )
-        into = StockMovement.objects.create(
-            item=item, warehouse=destination, movement_type=MovementType.TRANSFER_IN,
-            uom=item.uom, lot=self.lot, bin=to_bin,
-            quantity=quantity, unit_cost=unit_cost,
-            value_adjustment=residue,
-            reference=transfer.number, occurred_at=occurred_at, notes=label,
+        out, into = move_stock(
+            item, source, destination, quantity, lot=self.lot,
+            from_bin=from_bin, to_bin=to_bin, reference=transfer.number,
+            occurred_at=occurred_at,
+            notes=f"Transfer {transfer.number}: {source.code} to {destination.code}",
         )
         return StockTransferStep.objects.create(
             line=self, leg=leg, quantity=quantity,
