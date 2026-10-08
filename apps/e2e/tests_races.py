@@ -799,3 +799,88 @@ class OneDecisionAtATimeRaceTests(RaceCase):
             lambda: LoomStation.objects.get(pk=made.station.pk).identify(wrong, now=now)] * 2, atomic=False)
         self.assertEqual(StationAttempt.objects.filter(station=made.station).count(), 5, outcomes)
         self.assertTrue(any("locked" in outcome for outcome in outcomes), outcomes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class EditRaceTests(RaceCase):
+    """
+    Two people editing one record through the API at once, each a field of
+    their own. DRF reads the row, checks the request against it and saves
+    every field it holds, so whichever saved second wrote back the field
+    the other had just changed, as it had read it, without a word.
+    """
+
+    def setUp(self):
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+
+    def person(self, role):
+        from django.contrib.auth.models import Group, User
+
+        user = User.objects.create_user(role.lower().replace(" ", "-"))
+        user.groups.add(Group.objects.get(name=role))
+        return user
+
+    def patch(self, user, url, data):
+        """A PATCH from a client of its own, as each person's browser is; anything but 200 raises."""
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.patch(url, data, format="json")
+        if response.status_code != 200:
+            raise AssertionError(f"{response.status_code}: {response.content.decode()}")
+
+    def test_two_people_editing_one_party_keep_both_changes(self):
+        from apps.core.models import Party
+
+        party = Party.objects.create(code="C-ACME", name="Acme Sacks", email="orders@acme.example")
+        clerk, url = self.person("AR Manager"), f"/api/core/parties/{party.pk}/"
+        outcomes = race(Party, lambda: self.patch(clerk, url, {"name": "Acme Sacks Ltd"}),
+                        lambda: self.patch(clerk, url, {"email": "accounts@acme.example"}), atomic=False)
+        self.assertEqual(outcomes, ["done", "done"])
+        party.refresh_from_db()
+        self.assertEqual((party.name, party.email), ("Acme Sacks Ltd", "accounts@acme.example"))
+
+    def test_a_stoppage_corrected_as_its_repair_completes_is_not_a_deadlock(self):
+        """
+        Completing the repair holds the job, then the stoppage; the stoppage's
+        save holds the job too. The correction holding the stoppage from its
+        read, each waited for the other until PostgreSQL ended one of them.
+        Each is held here just before its second lock, so both have their
+        first. Taking the job first, as save() does, one waits for the other:
+        the repair closes on the corrected minutes, or the correction finds
+        it done.
+        """
+        from unittest import mock
+
+        from apps.manufacturing import maintenance, shifts, tests_breakdowns
+        from apps.manufacturing.maintenance import MaintenanceJob
+        from apps.manufacturing.shifts import Downtime
+
+        job = fixture(self, tests_breakdowns.BreakdownTestCase).broken("90")
+        supervisor, url = self.person("Production Supervisor"), f"/api/manufacturing/downtime/{job.downtime_id}/"
+        barrier, local = threading.Barrier(2, timeout=3), threading.local()
+
+        def held(lock):
+            def second(*rows, **kwargs):
+                if not getattr(local, "held", False):
+                    local.held = True
+                    try:
+                        barrier.wait()
+                    except threading.BrokenBarrierError:
+                        pass  # The other waits on a lock this one has.
+                return lock(*rows, **kwargs)
+            return second
+
+        with mock.patch.object(shifts, "lock_rows", held(shifts.lock_rows)), \
+                mock.patch.object(maintenance, "lock_rows", held(maintenance.lock_rows)):
+            outcomes = race(None, lambda: self.patch(supervisor, url, {"minutes": "120"}),
+                            lambda: MaintenanceJob.objects.select_related("downtime").get(pk=job.pk).complete(
+                                on_date=run_fixture.TODAY, action="Screen changed"), atomic=False)
+        self.assertFalse([outcome for outcome in outcomes if "deadlock" in outcome], outcomes)
+        job.refresh_from_db()
+        self.assertIsNotNone(job.done_on)
+        self.assertEqual(job.actual_minutes, Downtime.objects.get(pk=job.downtime_id).minutes)

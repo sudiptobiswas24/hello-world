@@ -3056,12 +3056,19 @@ class InvoicePayment(AuditModel):
                 f"The invoice only has {outstanding} outstanding; cannot apply {self.amount}."
             )
 
+    def locked_before_it(self):
+        """
+        The payment and the invoice, as save() takes them and as voiding the
+        payment does, which then releases this allocation's exchange
+        difference (apps.core.models.lock_for_change).
+        """
+        return [self.payment if self.payment_id else None, self.invoice if self.invoice_id else None]
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         # What is left on the payment and due on the invoice are read in
         # clean(); two allocations at once must not both spend them.
-        lock_rows(self.payment if self.payment_id else None,
-                  self.invoice if self.invoice_id else None)
+        lock_rows(*self.locked_before_it())
         self.full_clean()
         # Re-posting rather than adjusting: an allocation can be re-pointed
         # or re-sized after the fact, and the exchange difference it caused
