@@ -351,6 +351,14 @@ class StockAdjustmentLine(AuditModel):
                   "it is taken from the weighted average when the line posts, and "
                   "frozen there.",
     )
+    posted_value = models.DecimalField(
+        max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
+        help_text="Signed value this line moved, frozen when it posted: on a "
+                  "write-down, exactly what the shelf gave up. The entry books it "
+                  "to the cent and a void puts it back, rather than a four-place "
+                  "rate multiplied by the quantity. Blank on lines posted before it "
+                  "was kept, which read their rate.",
+    )
     movement = models.ForeignKey(
         StockMovement, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
         editable=False,
@@ -391,6 +399,8 @@ class StockAdjustmentLine(AuditModel):
         every time the average moved, and the ledger entry it is supposed
         to explain was written once.
         """
+        if self.posted_value is not None:
+            return self.posted_value.quantize(Decimal("0.01"))
         if self.revaluation is not None:
             return self.revaluation.quantize(Decimal("0.01"))
         if self.unit_cost is None:
@@ -415,30 +425,36 @@ class StockAdjustmentLine(AuditModel):
                 quantity=Decimal("0"), value_adjustment=self.revaluation,
                 reference=adjustment.number, occurred_at=occurred_at, notes=label,
             )
-            super().save(update_fields=["movement", "updated_at"])
+            self.posted_value = self.revaluation
+            super().save(update_fields=["movement", "posted_value", "updated_at"])
             return self.movement
 
         quantity = self.stock_quantity()
-        if self.unit_cost is None:
-            # An outbound movement is valued by the replay at the running
-            # average, so the ledger entry has to use the same number or
-            # the two records of what left the shelf disagree. Freezing it
-            # is what makes the entry explainable a year later.
-            # What the replay will actually take off, asked of the one
-            # place that knows: under FIFO the units leaving may span
-            # layers bought at different prices, and an average is then
-            # the wrong number in both directions.
-            self.unit_cost = (
-                item.average_cost_at(adjustment.warehouse) if quantity > 0
-                else item.removal_unit_cost(
-                    adjustment.warehouse, -quantity, lot=self.lot
-                )
-            ).quantize(Decimal("0.0001"))
-            if quantity > 0 and not self.unit_cost:
-                raise ValidationError(
-                    f"There is no {item} at {adjustment.warehouse} to take a cost from. "
-                    "Give the line an explicit unit cost."
-                )
+        if self.unit_cost is None and quantity < 0:
+            # An outbound movement is valued by the replay, so the ledger
+            # entry has to use the same number or the two records of what
+            # left the shelf disagree. Freezing it is what makes the entry
+            # explainable a year later. What the replay will actually take
+            # off, asked of the one place that knows: under FIFO the units
+            # leaving may span layers bought at different prices, and an
+            # average is then the wrong number in both directions.
+            #
+            # A total, kept as it is. A four-place rate multiplied back up
+            # wrote 1,000 of 3,000 worth 10,000 off the books at 3,333.30
+            # while the shelf gave up 3,333.33; the rate is for reading.
+            taking = item.cost_of_removing(adjustment.warehouse, -quantity, lot=self.lot)
+            self.unit_cost = (taking / -quantity).quantize(Decimal("0.0001"))
+            self.posted_value = -taking
+        else:
+            if self.unit_cost is None:
+                self.unit_cost = item.average_cost_at(adjustment.warehouse).quantize(
+                    Decimal("0.0001"))
+                if quantity > 0 and not self.unit_cost:
+                    raise ValidationError(
+                        f"There is no {item} at {adjustment.warehouse} to take a cost from. "
+                        "Give the line an explicit unit cost."
+                    )
+            self.posted_value = quantity * self.unit_cost
         on_hand = item.on_hand_at(adjustment.warehouse)
         if quantity < 0 and -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:
             raise ValidationError(
@@ -461,7 +477,7 @@ class StockAdjustmentLine(AuditModel):
             occurred_at=occurred_at,
             notes=label,
         )
-        super().save(update_fields=["unit_cost", "movement", "updated_at"])
+        super().save(update_fields=["unit_cost", "posted_value", "movement", "updated_at"])
         return self.movement
 
     def reverse(self, adjustment, occurred_at, label):
@@ -504,11 +520,22 @@ class StockAdjustmentLine(AuditModel):
             super().save(update_fields=["reversal_movement", "updated_at"])
             return self.reversal_movement
 
-        moved_value = (original.quantity * (original.unit_cost or Decimal("0"))) + (
-            original.value_adjustment or Decimal("0")
+        # What the line moved, as it was booked: the frozen total where one
+        # was kept, the rate multiplied up on a line posted before.
+        moved_value = self.posted_value if self.posted_value is not None else (
+            (original.quantity * (original.unit_cost or Decimal("0")))
+            + (original.value_adjustment or Decimal("0"))
         )
         quantity = -original.quantity
-        residue = None
+        unit_cost, residue = original.unit_cost, None
+        if quantity > 0:
+            # A write-down coming back: on at exactly what went off. At
+            # its four-place rate, 3,333.33 written off came back as
+            # 3,333.30 and the shelf ended 0.03 short of a ledger the
+            # reversal had put straight. The rate carries eight places
+            # and what it cannot say rides along as value.
+            unit_cost = (-moved_value / quantity).quantize(Decimal("0.00000001"))
+            residue = (-moved_value - quantity * unit_cost).quantize(Decimal("0.0001")) or None
         if quantity < 0:
             on_hand = self.item.on_hand_at(adjustment.warehouse)
             if -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:
@@ -533,7 +560,7 @@ class StockAdjustmentLine(AuditModel):
             lot=self.lot,
             bin=self.bin,
             quantity=quantity,
-            unit_cost=original.unit_cost,
+            unit_cost=unit_cost,
             value_adjustment=residue,
             reference=adjustment.number,
             occurred_at=occurred_at,
