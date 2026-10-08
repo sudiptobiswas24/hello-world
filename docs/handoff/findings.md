@@ -11,7 +11,7 @@ as the pushed 9c67116):
 | `claude/erp-fix-store` | stores | 15 | done; report below |
 | `claude/erp-fix-pay` | payroll | 14 | done; report below |
 | `claude/erp-fix-asset` | fixed assets | 8 | done; report below |
-| `claude/erp-fix-make` | manufacturing | 18+ | see the end of this file |
+| `claude/erp-fix-make` | manufacturing | 19 | done; report below |
 | `claude/erp-fix-race` | two lost-update races | 2 | done, proven on PostgreSQL |
 | `claude/erp-fix-ui` | account form on screen | 1 | done |
 
