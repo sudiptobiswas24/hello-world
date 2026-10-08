@@ -822,6 +822,78 @@ class RunsKeepTheAccountTheyWereReleasedOnTests(TransactionTestCase):
         executor.migrate(executor.loader.graph.leaf_nodes())
 
 
+class AVoidTakesOffWhatTheShelfGivesUpTests(RunTestCase):
+    """
+    Found by probing. A void took goods back off the shelf at what they
+    went on at, while the stock ledger took what removing them takes off
+    a shelf whose average had moved; the inventory account and the shelf
+    parted for good: -20,855.67 on output, -390.76 on its regrind, 816.33
+    on a return. Each void now takes off what the shelf gives up and
+    books the difference from the posted figure to material variance.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.job = self.order()
+        self.job.release(TODAY)
+
+    def shelf(self, *items):
+        return sum((item.valuation_at(self.plant)[1] for item in items), Decimal("0"))
+
+    def voided(self, document, *items):
+        ledger, shelf = self.balance(self.inventory), self.shelf(*items)
+        document.void(TODAY)
+        return (self.balance(self.inventory) - ledger,
+                (self.shelf(*items) - shelf).quantize(Decimal("0.01")))
+
+    def test_output_onto_a_shelf_that_averages_less(self):
+        # 1,000 kg already there at 50; the run's 1,000 at 91.71134 make
+        # the average 70.85567, so taking 1,000 back off removes 70,855.67.
+        self.stock(self.tape, "1000", "50")
+        self.full_issue(self.job).post()
+        entry = self.produce(self.job, "1000")
+        entry.post()
+        self.assertEqual(self.voided(entry, self.tape),
+                         (Decimal("-70855.67"), Decimal("-70855.67")))
+        self.assertEqual(self.balance(self.variance), Decimal("-20855.67"))
+        self.assertAlmostEqual(self.balance(self.wip), Decimal("93195.89"), places=2)
+        self.assertIsNotNone(entry.void_variance_entry)
+
+    def test_its_regrind_too(self):
+        # 500 kg more regrind at 20 make it average 40; after the issue and
+        # 20 kg back at the standard 60, taking the 20 back off removes
+        # 809.24 where 1,200 went on.
+        self.stock(self.regrind, "500", "20")
+        self.full_issue(self.job).post()
+        entry = self.produce(self.job, "500", byproducts=[(self.regrind, "20")])
+        entry.post()
+        self.assertEqual(self.voided(entry, self.tape, self.regrind),
+                         (Decimal("-46664.91"), Decimal("-46664.91")))
+        self.assertEqual(self.balance(self.variance), Decimal("-390.76"))
+
+    def test_a_return_onto_a_shelf_that_averages_more(self):
+        # 40 kg came back at the 100 it went out at; 1,000 more at 160 make
+        # the average 120.40816, so taking it off again removes 4,816.33.
+        drawn = self.issue(self.job, [(self.virgin, "100")])
+        drawn.post()
+        self.stock(self.virgin, "1000", "160")
+        back = self.issue(self.job, [(self.virgin, "40", drawn.lines.get())],
+                          direction=IssueDirection.RETURN)
+        back.post()
+        self.assertEqual(self.voided(back, self.virgin),
+                         (Decimal("-4816.33"), Decimal("-4816.33")))
+        self.assertEqual(self.balance(self.variance), Decimal("816.33"))
+
+    def test_where_the_shelf_has_not_moved_there_is_nothing_to_book(self):
+        self.full_issue(self.job).post()
+        entry = self.produce(self.job, "1000")
+        entry.post()
+        self.assertEqual(self.voided(entry, self.tape),
+                         (Decimal("-91711.34"), Decimal("-91711.34")))
+        self.assertIsNone(entry.void_variance_entry)
+        self.assertEqual(self.balance(self.variance), Decimal("0"))
+
+
 class SettingsThatWereNeverConfiguredTests(RunTestCase):
     def test_issuing_with_no_work_in_progress_account(self):
         settings = ManufacturingSettings.get()
