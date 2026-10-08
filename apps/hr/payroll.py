@@ -1035,8 +1035,15 @@ class Payslip(AuditModel):
                 # Each rate is taken of the gross before the component, not
                 # of what its own earlier rate added to it.
                 before = running_taxable
-                owed = [(row, self._amount_for(row, proportion, before, hours, computed), None)
-                        for row in group]
+                # Rounded once, for the component, not once a rate: 1,000 up to the rupee,
+                # closed on 9 June and opened again on the 10th, paid 319 + 682 = 1,001. Each
+                # line is what the running total rounds to less what the lines before it took.
+                owed, unrounded, taken = [], Decimal("0"), Decimal("0")
+                for row in group:
+                    unrounded += self._amount_for(row, proportion, before, hours, computed)
+                    so_far = component.round(unrounded)
+                    owed.append((row, so_far - taken, None))
+                    taken = so_far
             for row, amount, quantity in owed:
                 amount, kind = component.round(amount), component.kind
                 if amount < 0 and component.basis == ComponentBasis.PER_UNIT and self.is_final():
