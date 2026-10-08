@@ -73,7 +73,7 @@ from apps.accounting.settlement import (
     undone_by_note,
 )
 from apps.inventory.availability import check_available
-from apps.inventory.costing import goods_held, holds_value
+from apps.inventory.costing import goods_held, value_still_held
 from apps.inventory.valuation import (
     cogs_account_for,
     grni_account,
@@ -6860,6 +6860,10 @@ class LandedCostApplication(AuditModel):
         Undo the allocation: take the value back out of stock and return
         it to the expense it came from.
 
+        Off each shelf it went onto, what that shelf took scaled to what of
+        its goods is still there (inventory/costing.py, value_still_held);
+        the rest left with the goods and comes back out of cost of sales.
+
         Written in the same sitting as the allocation, because a costing
         decision made weeks after the goods arrived is exactly the kind
         that gets revised.
@@ -6872,27 +6876,30 @@ class LandedCostApplication(AuditModel):
         on_date = correction_date(on_date, self.date, f"{self} is not released on", "it was allocated")
         item = self.receipt_line.order_line.item
         # Off the shelves it went onto, as each recorded what it took, and
-        # only what those shelves still hold: goods sold since took their
-        # freight into cost of sales with them, and that is where it comes
-        # back out of.
+        # only the share their goods still there bear: goods sold or
+        # written off since took their freight with them, and that part
+        # comes back out of cost of sales. Taken back whole, 80 came off
+        # the two left of ten, worth 26, and priced them below nothing.
         landed = list(self.movements.select_related("warehouse", "adjusts", "lot", "bin").order_by("id"))
         if not landed and self.stock_movement_id:
             landed = [self.stock_movement]
         lock_positions((item, movement.warehouse) for movement in landed)
         off_shelf = Decimal("0")
         for movement in landed:
-            if holds_value(item, movement.warehouse, adjusts=movement.adjusts, lot=movement.lot):
-                StockMovement.objects.create(
-                    item=item, warehouse=movement.warehouse,
-                    movement_type=MovementType.ADJUSTMENT, uom=item.uom,
-                    lot=movement.lot, bin=movement.bin, adjusts=movement.adjusts,
-                    quantity=Decimal("0"),
-                    value_adjustment=-movement.value_adjustment,
-                    reference=self.charge_line.bill.number,
-                    occurred_at=timezone.now(),
-                    notes=f"Landed cost released from {self.charge_line.bill.number}",
-                )
-                off_shelf += movement.value_adjustment
+            still = min(round_money(value_still_held(movement)), movement.value_adjustment)
+            if still <= 0:
+                continue
+            StockMovement.objects.create(
+                item=item, warehouse=movement.warehouse,
+                movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+                lot=movement.lot, bin=movement.bin, adjusts=movement.adjusts,
+                quantity=Decimal("0"),
+                value_adjustment=-still,
+                reference=self.charge_line.bill.number,
+                occurred_at=timezone.now(),
+                notes=f"Landed cost released from {self.charge_line.bill.number}",
+            )
+            off_shelf += still
         entry = _post_landed_cost(
             item, self.charge_line.posted_account or self.charge_line.expense_account,
             self.amount, on_shelf=off_shelf,
