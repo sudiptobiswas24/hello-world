@@ -1,5 +1,5 @@
 import { RecordScreen } from "../../views/RecordScreen";
-import { ACCOUNT } from "../accounts/refs";
+import { KEPT_ACCOUNT } from "../purchasing/refs";
 
 /** The sections tax is deducted under: each one's rate, its rate without a PAN, its threshold and where the tax is owed or claimed. Kept by the plant; they change with every budget. */
 export default function TdsSectionForm() {
@@ -20,8 +20,8 @@ export default function TdsSectionForm() {
         { key: "mode", label: "Taxed on", kind: "choice", choices: [["excess", "On what the year passes the threshold by (194Q)"], ["whole", "On the whole year once a limit is passed (194C, 194J)"]], initial: "whole" },
         { key: "single_threshold", label: "One bill above", kind: "money", hint: "One bill above this is taxed" },
         { key: "annual_threshold", label: "The year above", kind: "money", hint: "The year's bills from one party above this are taxed" },
-        { key: "payable_account", label: "Payable account", kind: "pick", pick: ACCOUNT, hint: "Where tax the company deducts is owed until a challan pays it over" },
-        { key: "receivable_account", label: "Receivable account", kind: "pick", pick: ACCOUNT, hint: "Where tax a customer deducted waits to be claimed against Form 26AS" },
+        { key: "payable_account", label: "Payable account", kind: "pick", pick: KEPT_ACCOUNT, hint: "Where tax the company deducts is owed until a challan pays it over" },
+        { key: "receivable_account", label: "Receivable account", kind: "pick", pick: KEPT_ACCOUNT, hint: "Where tax a customer deducted waits to be claimed against Form 26AS" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
       ]}
     />

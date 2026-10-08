@@ -39,7 +39,7 @@ class PeopleTestCase(TestCase):
         Company.objects.create(name="Test Co", base_currency=self.usd)
         self.travel = Account.objects.create(code="6200", name="Travel", account_type=AccountType.EXPENSE)
         self.meals = Account.objects.create(code="6210", name="Meals", account_type=AccountType.EXPENSE)
-        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.weaving = Department.objects.create(code="WEAVE", name="Weaving")
         self.manager = self.person("E006", "Jordan Park", "Line Manager")
         self.riley = self.person("E005", "Riley Chen", "Employee Self Service", manager=self.manager)
@@ -74,6 +74,41 @@ class PeopleTestCase(TestCase):
 
 
 class ClaimTests(PeopleTestCase):
+    def approved(self):
+        claim = self.claim()
+        claim.submit()
+        claim.approve(self.manager)
+        return claim
+
+    def test_not_paid_from_an_expense_account(self):
+        claim = self.approved()
+        with self.assertRaisesMessage(ValidationError, "6200 - Travel is not a bank, cash or card account"):
+            claim.pay(self.travel)
+        claim.refresh_from_db()
+        self.assertEqual((claim.status, claim.journal_entry, claim.paid_from), (ClaimStatus.APPROVED, None, None))
+
+    def test_not_paid_from_what_customers_owe(self):
+        receivable = Account.objects.create(code="1100", name="AR", account_type=AccountType.ASSET)
+        with self.assertRaisesMessage(ValidationError, "1100 - AR is not a bank, cash or card account"):
+            self.approved().pay(receivable)
+
+    def test_paid_by_the_company_card(self):
+        card = Account.objects.create(code="2300", name="Company card", account_type=AccountType.LIABILITY,
+                                      holds_money=True)
+        claim = self.approved()
+        claim.pay(card, on_date=datetime.date(2026, 6, 3))
+        lines = {(row.account.code, row.debit, row.credit) for row in JournalLine.objects.filter(entry=claim.journal_entry)}
+        self.assertEqual(lines, {("6200", Decimal("300"), Decimal("0")), ("6210", Decimal("150"), Decimal("0")),
+                                 ("2300", Decimal("0"), Decimal("450"))})
+
+    def test_through_the_api_the_bookkeeper_is_told_why(self):
+        claim = self.approved()
+        refused = self.as_(self.books).post(f"/api/hr/expense-claims/{claim.pk}/pay/", {"paid_from": self.travel.pk},
+                                             format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("is not a bank, cash or card account", str(refused.content))
+        self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.APPROVED)
+
     def test_submitted_decided_by_the_manager_and_paid_as_one_journal(self):
         claim = self.claim()
         self.assertEqual((claim.total(), claim.number, claim.status), (Decimal("450"), "", ClaimStatus.DRAFT))
@@ -105,7 +140,7 @@ class ClaimTests(PeopleTestCase):
         # Approved again, it reads as unpaid: no date or drawer left from the payment reversed.
         claim.refresh_from_db()
         self.assertEqual((claim.paid_on, claim.paid_from), (None, None))
-        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         claim.pay(bank, on_date=datetime.date(2026, 6, 5))
         self.assertEqual((claim.status, claim.paid_on, claim.paid_from), (ClaimStatus.PAID, datetime.date(2026, 6, 5), bank))
         balances = {account.code: sum((row.debit - row.credit for row in JournalLine.objects.filter(

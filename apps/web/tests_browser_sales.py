@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - the base class skips, saying why
 
 from django.utils import timezone
 
-from apps.accounting.models import Payment
+from apps.accounting.models import Account, AccountType, Payment
 from apps.core.models import Company, Party, PartyRole
 from apps.sales.models import Delivery, Invoice, SalesOrder
 
@@ -51,6 +51,29 @@ class SalesInTheBrowserTests(BrowserTestCase):
         page.get_by_role("button", name="Confirm", exact=True).click()
         expect(page.locator(".pill", has_text="confirmed")).to_be_visible()
         return SalesOrder.objects.get(pk=int(page.url.rsplit("/", 1)[1]))
+
+    def test_cash_received_goes_into_the_cash_box(self):
+        cash = Account.objects.create(code="1020", name="Cash in hand", account_type=AccountType.ASSET,
+                                      holds_money=True)
+        Account.objects.create(code="1021", name="Old cash box", account_type=AccountType.ASSET, holds_money=True,
+                               is_active=False)
+        accounts = self.sign_in(self.person("AR Manager"), "/app/sales/receipts/new")
+        accounts.get_by_role("combobox", name="Customer").fill("Acm")
+        accounts.get_by_role("option", name=re.compile("Acme")).click()
+        accounts.get_by_label("Amount").fill("250")
+        accounts.get_by_label("Reference").fill("Cash at the gate")
+        # Where money is, and only where it is: the closed box and the receivable are not offered.
+        accounts.get_by_role("combobox", name="Into").fill("1")
+        expect(accounts.get_by_role("option", name=re.compile("Cash in hand"))).to_be_visible()
+        expect(accounts.get_by_role("option", name=re.compile("Old cash box|AR"))).to_have_count(0)
+        accounts.get_by_role("option", name=re.compile("Cash in hand")).click()
+        accounts.get_by_role("button", name="Record and post").click()
+        accounts.wait_for_url(re.compile(r"/sales/receipts/\d+$"))
+        payment = Payment.objects.get(reference="Cash at the gate")
+        self.assertEqual((payment.posted, payment.bank_account, payment.amount), (True, cash, Decimal("250.00")))
+        self.assertEqual((self.balance(cash), self.balance(self.bank)), (Decimal("250.00"), Decimal("0")))
+        expect(accounts.locator("output", has_text="Cash in hand")).to_be_visible()
+        self.assertEqual(self.problems, [])
 
     def test_an_order_from_first_line_to_money_in_the_bank(self):
         on_hand = self.item.on_hand_at(self.warehouse)

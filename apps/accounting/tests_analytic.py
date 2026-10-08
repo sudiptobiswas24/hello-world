@@ -19,7 +19,7 @@ from .models import Account, AccountType, JournalEntry, JournalLine
 class CostCentreTestCase(TestCase):
     def setUp(self):
         call_command("setup_roles", verbosity=0)
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.power = Account.objects.create(code="5300", name="Power", account_type=AccountType.EXPENSE)
         self.repairs = Account.objects.create(code="5400", name="Repairs", account_type=AccountType.EXPENSE)
         self.loom = CostCentre.objects.create(code="LOOM", name="Loom shed")

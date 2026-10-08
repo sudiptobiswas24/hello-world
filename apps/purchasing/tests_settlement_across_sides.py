@@ -30,7 +30,7 @@ class SettlementTestCase(DropShipTestCase):
     def setUp(self):
         super().setUp()
         PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.VENDOR)
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
 
     def invoice(self):
         from apps.sales.models import InvoicePolicy

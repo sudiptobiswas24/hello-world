@@ -70,7 +70,7 @@ class StandingTests(VendorTestCase):
 class PaymentHoldTests(VendorTestCase):
     def setUp(self):
         super().setUp()
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
 
     def payment(self, direction=PaymentDirection.DISBURSEMENT):
         return Payment.objects.create(party=self.vendor, direction=direction, amount=Decimal("500"),

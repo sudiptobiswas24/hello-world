@@ -19,7 +19,7 @@ class PostedDocumentAdminTests(TestCase):
         self.admin_user = User.objects.create_superuser("root", "root@example.com", "pw")
         self.client.force_login(self.admin_user)
 
-        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Revenue", account_type=AccountType.INCOME
         )

@@ -17,7 +17,7 @@ from apps.accounting.models import Account, AccountType, JournalEntry, JournalLi
 
 class AnEntryIsReversedOnceTests(TestCase):
     def setUp(self):
-        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.sales = Account.objects.create(code="4000", name="Sales",
                                             account_type=AccountType.INCOME)
         self.entry = JournalEntry.objects.create(date="2026-03-01", memo="x")

@@ -149,6 +149,9 @@ class ExpenseClaim(AuditModel):
             raise ValidationError(f"{self} is {self.get_status_display().lower()}; only an approved claim is paid.")
         if paid_from is None:
             raise ValidationError({"paid_from": ["Say which cash or bank account it is paid from."]})
+        from apps.accounting.money import refuse_as_money_account
+
+        refuse_as_money_account(paid_from, "paid_from")
         on_date = to_date(on_date) or timezone.localdate()
         by_account = defaultdict(lambda: ZERO)
         for line in self.lines.select_related("expense_account"):

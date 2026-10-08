@@ -8,7 +8,7 @@ from .models import Account, AccountType, JournalEntry, JournalLine
 
 class AccountingTestCase(TestCase):
     def setUp(self):
-        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET)
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Sales Revenue", account_type=AccountType.INCOME
         )

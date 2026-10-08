@@ -54,6 +54,7 @@ from apps.inventory.valuation import post_inventory_entry
 from apps.quality.release import check_released
 
 from apps.accounting.defaults import default_account
+from apps.accounting.money import refuse_money_kept_as
 from apps.accounting.mixins import (
     PostedLineMixin,
     PostedTaxDocumentMixin,
@@ -2311,6 +2312,7 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
             self._apply_customer_defaults()
             if not self.receivable_account_id:
                 self.receivable_account = default_account("receivable", "receivable_account")
+        refuse_money_kept_as(self, "receivable_account")
         super().save(*args, **kwargs)
 
     def _apply_customer_defaults(self):
@@ -2418,6 +2420,8 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
     def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
+        # Asked again as it posts: the account may have been made a bank's since the draft named it.
+        refuse_money_kept_as(self, "receivable_account", changed_only=False)
         # What the order has already been billed, and taken up front, is
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room.
@@ -5361,6 +5365,7 @@ class RecurringInvoice(AuditModel):
 
     def save(self, *args, **kwargs):
         self._check_terms()
+        refuse_money_kept_as(self, "receivable_account")
         if self.next_run_date is None:
             self.next_run_date = to_date(self.start_date)
         if self._state.adding and self.customer_id:

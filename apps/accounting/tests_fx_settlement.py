@@ -43,10 +43,10 @@ class FxSettlementTestCase(TestCase):
         self.uom = UnitOfMeasure.objects.create(code="ea", name="Each")
         self.item = Item.objects.create(sku="W", name="Widget", uom=self.uom)
 
-        acc = lambda c, n, t: Account.objects.create(code=c, name=n, account_type=t)
+        acc = lambda c, n, t, **more: Account.objects.create(code=c, name=n, account_type=t, **more)
         self.ar = acc("1100", "AR", AccountType.ASSET)
         self.ap = acc("2000", "AP", AccountType.LIABILITY)
-        self.bank = acc("1010", "Bank", AccountType.ASSET)
+        self.bank = acc("1010", "Bank", AccountType.ASSET, holds_money=True)
         self.revenue = acc("4000", "Revenue", AccountType.INCOME)
         self.expense = acc("5000", "Purchases", AccountType.EXPENSE)
         self.gain = acc("4900", "FX Gain", AccountType.INCOME)
