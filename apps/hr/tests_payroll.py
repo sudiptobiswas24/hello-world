@@ -49,6 +49,7 @@ from .models import (
     Payslip,
     PublicHoliday,
 )
+from .payroll import Rounding
 
 
 class PayrollTestCase(TestCase):
@@ -606,6 +607,22 @@ class ARateChangedInsideThePeriodTests(PayrollTestCase):
         self.assertEqual(self.paid(slip, self.salary), [(Decimal("4400.0000"), Decimal("2200.00")),
                                                         (Decimal("5500.0000"), Decimal("2750.00"))])
         self.assertEqual(slip.gross(), Decimal("4950.00"))
+
+    def test_a_component_is_rounded_once_not_once_a_rate(self):
+        # 1,000 up to the rupee, closed on 9 June and opened again on the 10th: 7 and 15 of
+        # June's 22 days, 318.18 and 681.82. Rounded a rate at a time, 319 + 682 = 1,001.
+        allowance = PayComponent.objects.create(
+            code="ALW", name="Allowance", kind=ComponentKind.EARNING, basis=ComponentBasis.FIXED,
+            expense_account=self.wages, rounding=Rounding.RUPEE_UP, sequence=30)
+        person = self.employee("R9")
+        before = self.pay(person, allowance, "1000")
+        before.effective_to = datetime.date(2026, 6, 9)
+        before.save()
+        self.pay(person, allowance, "1000", since=datetime.date(2026, 6, 10))
+        slip = self.slip(person)
+        self.assertEqual(self.paid(slip, allowance), [(Decimal("1000.0000"), Decimal("319.00")),
+                                                      (Decimal("1000.0000"), Decimal("681.00"))])
+        self.assertEqual(slip.gross(), Decimal("1000.00"))
 
     def test_unpaid_leave_comes_off_the_salary_it_was_taken_under(self):
         # 8-12 June is in the first half: 4,400 x 6/22 + 5,500 x 11/22.
