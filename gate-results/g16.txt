@@ -1,0 +1,16 @@
+Gate g16
+HEAD: 2335abb17d55cba320696cc753981e91566125fb
+Before runs: HEAD matched; git status --short empty (clean)
+After runs:  HEAD matched; git status --short empty (clean)
+
+Lane: Asia/Kolkata (--exclude-tag migration, fastsettings)
+Found 5316 test(s).
+Ran 5316 tests in 468.233s
+OK (skipped=154)
+
+Lane: migration-tagged
+Found 8 test(s).
+Ran 8 tests in 1468.842s
+OK
+
+ERROR/FAIL entries in either log: none
