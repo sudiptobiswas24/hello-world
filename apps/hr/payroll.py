@@ -1551,9 +1551,14 @@ def statutory_liabilities(as_of=None):
     stand: a voided run owes nothing and a bounced payment paid nothing.
     """
     as_of = to_date(as_of) or timezone.localdate()
+    # A run voided since `as_of` was owed on it, as a payment returned since
+    # had paid over: voided in August, June read as never deducted in July.
     lines = PayslipLine.objects.filter(
-        posted_liability_account__isnull=False, payslip__run__status=PayRunStatus.POSTED,
+        posted_liability_account__isnull=False,
+        payslip__run__status__in=(PayRunStatus.POSTED, PayRunStatus.VOIDED),
         payslip__run__period_end__lte=as_of,
+    ).filter(
+        Q(payslip__run__voided_entry__isnull=True) | Q(payslip__run__voided_entry__date__gt=as_of)
     ).select_related("posted_liability_account", "component", "payslip__run")
     rows, due_days = {}, {}
     for line in lines:
