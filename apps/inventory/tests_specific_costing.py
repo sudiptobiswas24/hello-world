@@ -473,3 +473,29 @@ class ReportingTests(SpecificCostingTestCase):
         self.ship("4")
         report = reconcile_to_ledger()
         self.assertTrue(report["balanced"], report["rows"])
+
+
+class BelowZeroABatchAgreesTests(SpecificCostingTestCase):
+    """
+    Five of a batch at 700 on a shelf that may go below zero, eight
+    written off (minus three), then one more. The one was credited at the
+    700 the batch last came in at, and the replay priced it at nothing
+    because the batch was already empty: the shelf gave up none of it.
+    """
+
+    def write_off(self, warehouse, batch, quantity):
+        adjustment = StockAdjustment.objects.create(
+            adjustment_date=datetime.date(2026, 4, 1), warehouse=warehouse, reason=self.reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.item, uom=self.each,
+                                           lot=batch, quantity=-Decimal(quantity))
+        adjustment.post()
+
+    def test_one_more_off_an_empty_batch_takes_off_what_it_credits(self):
+        backorders = Warehouse.objects.create(code="B", name="Backorders", allow_negative_stock=True)
+        batch = self.lot("B1")
+        self.stock(batch, "5", "700", warehouse=backorders)
+        self.write_off(backorders, batch, "8")
+        before = self.item.valuation_at(backorders)[1]
+        self.write_off(backorders, batch, "1")
+        self.assertEqual(self.item.valuation_at(backorders)[1] - before, Decimal("-700"))
+        self.assertEqual(self.balance(self.inventory), Decimal("-6300.00"))
