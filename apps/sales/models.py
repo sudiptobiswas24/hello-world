@@ -4043,19 +4043,34 @@ class Delivery(AuditModel):
             if is_return:
                 plan = line.return_plan(shipped)
             else:
-                plan = plan_issue(
-                    item, line.warehouse, shipped,
-                    lot=line.lot, storage_bin=line.bin,
-                    on_date=self.delivery_date,
-                )
+                plan = [
+                    (chosen_lot, chosen_bin, chosen_quantity, None)
+                    for chosen_lot, chosen_bin, chosen_quantity in plan_issue(
+                        item, line.warehouse, shipped,
+                        lot=line.lot, storage_bin=line.bin,
+                        on_date=self.delivery_date,
+                    )
+                ]
 
             frozen = line.unit_cost
             cost = Decimal("0")
-            for chosen_lot, chosen_bin, chosen_quantity in plan:
-                if frozen is not None:
-                    # A return reverses at the rate the shipment used, so
-                    # the two entries cancel exactly rather than drifting
-                    # with whatever the shelf costs today.
+            for chosen_lot, chosen_bin, chosen_quantity, took in plan:
+                residue = None
+                if took is not None:
+                    # Back at what this batch's own share of the shipment
+                    # took off the shelf, a total. The line's one rate
+                    # blends every batch it came off: three of a batch
+                    # costing 100 went home at 420, and a four-place rate
+                    # multiplied back up left 0.10 of a whole return in
+                    # cost of sales. The rate carries eight places and the
+                    # remainder rides along as value, as a transfer's does.
+                    entry_cost = took
+                    rate = (entry_cost / chosen_quantity).quantize(Decimal("0.00000001"))
+                    residue = (entry_cost - chosen_quantity * rate).quantize(
+                        Decimal("0.0001")) or None
+                elif frozen is not None:
+                    # A return with nothing behind it to say what each
+                    # batch took: the rate the line was given.
                     entry_cost = chosen_quantity * frozen
                     rate = frozen
                 else:
@@ -4081,6 +4096,7 @@ class Delivery(AuditModel):
                     uom=item.uom,
                     quantity=chosen_quantity if is_return else -chosen_quantity,
                     unit_cost=rate,
+                    value_adjustment=residue,
                     reference=self.number,
                     occurred_at=occurred_at,
                     notes=notes,
@@ -4089,24 +4105,24 @@ class Delivery(AuditModel):
                 # Both ways: a return holds the movement that put stock
                 # back, as a shipment holds the one that took it, so a
                 # trace reads which customer has which batch from links
-                # rather than from a reference anybody can type.
+                # rather than from a reference anybody can type. And what
+                # it was worth, so a return can put back exactly that.
                 DeliveryAllocation.objects.create(
                     line=line, lot=chosen_lot, bin=chosen_bin,
-                    quantity=chosen_quantity, movement=movement,
+                    quantity=chosen_quantity, movement=movement, cost=entry_cost,
                 )
 
-            if frozen is None:
-                # One rate on the line for a shipment that may have come
-                # off several batches at several prices: the total is the
-                # fact, and the rate is derived from it so a return can
-                # reverse the same money.
-                line.unit_cost = (
-                    (cost / shipped).quantize(Decimal("0.0001"))
-                    if shipped else Decimal("0")
-                )
-                super(DeliveryLine, line).save(
-                    update_fields=["unit_cost", "updated_at"]
-                )
+            # One rate on the line for a shipment that may have come off
+            # several batches at several prices: the total is the fact,
+            # and the rate is derived from it. A return's says what came
+            # back, not what the shipment averaged.
+            line.unit_cost = (
+                (cost / shipped).quantize(Decimal("0.0001"))
+                if shipped else Decimal("0")
+            )
+            super(DeliveryLine, line).save(
+                update_fields=["unit_cost", "updated_at"]
+            )
             # The goods have gone, so the claim on them is spent. Drawing
             # it down here rather than when the order closes keeps
             # availability honest between a partial shipment and the next.
@@ -4374,7 +4390,8 @@ class DeliveryLine(AuditModel):
     quantity_shipped = models.DecimalField(max_digits=18, decimal_places=4)
     unit_cost = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
-        help_text="Weighted average cost at the moment of shipping, frozen so a return reverses exactly.",
+        help_text="What a unit cost on average across the batches it came off, frozen. A "
+                  "return puts back what each batch took (its allocations), not this rate.",
     )
 
     class Meta:
@@ -4426,10 +4443,14 @@ class DeliveryLine(AuditModel):
         A line with nothing behind it — a return typed in by hand — falls
         back to whatever it names, and is refused downstream if that is
         nothing and the item is tracked.
+
+        [(lot, bin, quantity, cost)]: each share carries its part of what
+        that batch's allocation took off the shelf when it left, or None
+        when nothing behind the line says.
         """
         original = self.reverses_line
         if original is None:
-            return [(self.lot, self.bin, quantity)]
+            return [(self.lot, self.bin, quantity, None)]
         # What earlier returns of this line already took home, batch by
         # batch: a second return began again at the first batch and could
         # send more into it than ever left it.
@@ -4438,7 +4459,7 @@ class DeliveryLine(AuditModel):
             for allocation in earlier.allocations.all():
                 home[(allocation.lot_id, allocation.bin_id)] += allocation.quantity
         plan, remaining = [], quantity
-        for allocation in original.allocations.select_related("lot", "bin"):
+        for allocation in original.allocations.select_related("lot", "bin", "movement"):
             if remaining <= 0:
                 break
             key = (allocation.lot_id, allocation.bin_id)
@@ -4447,11 +4468,14 @@ class DeliveryLine(AuditModel):
             if left <= 0:
                 continue
             taken = min(left, remaining)
-            plan.append((allocation.lot, allocation.bin, taken))
+            # The allocation's own total, in proportion: total first,
+            # divide last.
+            plan.append((allocation.lot, allocation.bin, taken,
+                         allocation.value() * taken / allocation.quantity))
             remaining -= taken
         if remaining > 0:
             if not plan:
-                return [(self.lot, self.bin, quantity)]
+                return [(self.lot, self.bin, quantity, None)]
             raise ValidationError(
                 f"{quantity} of {original.order_line.label()} is being returned and "
                 f"only {quantity - remaining} went out on that line."
@@ -4498,6 +4522,13 @@ class DeliveryAllocation(AuditModel):
         "inventory.StockMovement", on_delete=models.PROTECT, related_name="+",
         editable=False,
     )
+    cost = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="What its movement took off the shelf, or put back on a return: "
+                  "the total, frozen. A return puts back its share of this rather "
+                  "than a rate times a quantity. Blank on allocations made before "
+                  "it was kept, which read their movement's own rate.",
+    )
 
     class Meta:
         ordering = ["id"]
@@ -4510,6 +4541,14 @@ class DeliveryAllocation(AuditModel):
     def __str__(self):
         where = self.lot.code if self.lot_id else "untracked"
         return f"{self.quantity} of {where}"
+
+    def value(self):
+        """What this batch's share moved, as it was booked."""
+        if self.cost is not None:
+            return self.cost
+        # Written before the total was kept: its movement's rate, which
+        # is this batch's own and not the line's blend.
+        return self.quantity * (self.movement.unit_cost or Decimal("0"))
 
     def delete(self, *args, **kwargs):
         if self.delivery.posted:
