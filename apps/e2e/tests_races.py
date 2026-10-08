@@ -40,7 +40,7 @@ from apps.inventory.models import StockAdjustment
 from apps.inventory import tests_adjustments as stock_fixture
 from apps.manufacturing.orders import MaterialIssue, WorkOrder, WorkOrderStatus
 from apps.manufacturing import tests_orders as run_fixture
-from apps.purchasing.models import Bill, BillPayment, BillPolicy, PurchaseOrder
+from apps.purchasing.models import Bill, BillPayment, BillPolicy, PurchaseOrder, PurchaseOrderLine
 from apps.purchasing import tests_prepayments as purchase_fixture
 from apps.purchasing import tests_tds as tds_fixture
 # Modules, not classes: a TestCase named here would be collected and run
@@ -53,6 +53,7 @@ from apps.sales.models import (
     InvoicePolicy,
     InvoiceWriteOff,
     SalesOrder,
+    SalesOrderLine,
 )
 from apps.sales import tests_base as sales_fixture
 
@@ -244,6 +245,25 @@ class SalesRaceTests(RaceCase):
         self.assertIn((order.status, posted, self.balance(self.ar)),
                       [("cancelled", False, Decimal("0")), ("confirmed", True, Decimal("1000.00"))])
 
+    def test_an_order_is_not_cut_under_a_deposit_posting_at_once(self):
+        """
+        10 x 100 cut to 5 while a deposit of 800 posts. The cut holds the line and the order
+        before writing, the post holds the order before weighing its room: whichever goes second
+        sees the other, and either the cut or the deposit stands, never both.
+        """
+        order = self.make_order("10", "100")
+        draft = order.create_down_payment_invoice(self.ar, amount=Decimal("800"))
+        line_pk = order.lines.get().pk
+
+        def cut():
+            line = SalesOrderLine.objects.get(pk=line_pk)
+            line.quantity = Decimal("5")
+            line.save()
+
+        self.once(race(None, cut, lambda: Invoice.objects.get(pk=draft.pk).post()))
+        self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, Invoice.objects.get(pk=draft.pk).posted),
+                      [(Decimal("5"), False), (Decimal("10"), True)])
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
@@ -315,6 +335,28 @@ class PurchasingRaceTests(RaceCase):
         posted = Bill.objects.get(pk=draft.pk).posted
         self.assertIn((order.status, posted, self.balance(self.payable)),
                       [("cancelled", False, Decimal("0")), ("confirmed", True, Decimal("-50.00"))])
+
+    def test_an_order_is_not_cut_under_a_prepayment_posting_at_once(self):
+        """Sales' race, mirrored: 10 x 5 cut to 5 while 40 is paid up front."""
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company
+
+        company = Company.get()
+        company.vendor_prepayment_account = Account.objects.create(
+            code="1400", name="Vendor Prepayments", account_type=AccountType.ASSET)
+        company.save()
+        order = self.make_order("10", "5")
+        draft = order.create_prepayment_bill(self.payable, amount=Decimal("40"))
+        line_pk = order.lines.get().pk
+
+        def cut():
+            line = PurchaseOrderLine.objects.get(pk=line_pk)
+            line.quantity = Decimal("5")
+            line.save()
+
+        self.once(race(None, cut, lambda: Bill.objects.get(pk=draft.pk).post()))
+        self.assertIn((PurchaseOrderLine.objects.get(pk=line_pk).quantity, Bill.objects.get(pk=draft.pk).posted),
+                      [(Decimal("5"), False), (Decimal("10"), True)])
 
     def test_a_payment_is_not_spent_on_two_bills(self):
         bills = []

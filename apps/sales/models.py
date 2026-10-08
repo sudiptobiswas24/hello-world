@@ -983,6 +983,32 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
             Decimal("0"),
         )
 
+    def worth_at_most(self):
+        """What this order can still come to: a line closed short counts at what it shipped."""
+        return self.worth_within(lambda line: line.quantity if line.is_charge() else line.invoice_limit())
+
+    def total_words(self, worth):
+        """The order total a refusal states: what the order can still come to, and why if less."""
+        return f"{worth}" + ("" if worth == self.total() else ", once what was closed short is taken off")
+
+    def refuse_coming_to_less_than_its_deposits(self):
+        """
+        Down payments on an order cannot exceed what it can still come to. Asked when one is
+        taken, and here after anything that leaves the order worth less (a line cut, repriced,
+        removed or closed short), inside that change's transaction, which the refusal undoes.
+        The caller holds the order, so a deposit posting at the same moment is counted. A
+        1,000 order holding 800 was cut to 500, and 300 of the deposit was left for no invoice
+        to draw down.
+        """
+        taken = self.deposit_total()
+        if not taken:
+            return
+        worth = self.worth_at_most()
+        if taken > worth:
+            raise ValidationError(
+                f"{self} would come to {self.total_words(worth)}: less than the {taken} taken on it "
+                f"up front. Credit {taken - worth} of its down payments back first.")
+
     @transaction.atomic
     def create_down_payment_invoice(
         self, receivable_account, amount=None, percent=None, invoice_date=None, description=""
@@ -1015,11 +1041,11 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
         if amount <= 0:
             raise ValidationError("A down payment must be for a positive amount.")
 
-        already = self.deposit_total()
-        if already + amount > order_total:
+        already, worth = self.deposit_total(), self.worth_at_most()
+        if already + amount > worth:
             raise ValidationError(
                 f"Down payments of {already} are already on this order; taking {amount} more "
-                f"would exceed the order total of {order_total}."
+                f"would exceed the order total of {self.total_words(worth)}."
             )
 
         account = Company.get().customer_deposit_account
@@ -1297,6 +1323,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         refuse_awaited_from_a_vendor([self], "closing the line short")
         self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        self.order.refuse_coming_to_less_than_its_deposits()
         release_for(self, f"Closed short: {reason}"[:255])
 
     @serialised("closed_short_at")
@@ -1310,7 +1337,26 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
         self.reclaim_stock()
 
+    def _worth_less_than_stored(self):
+        """An edit of a line on a confirmed order that leaves it worth less: cut, repriced, discounted."""
+        if not self.pk:
+            return False
+        # The order as stored, not as this line last saw it: a line read through a draft that
+        # has since been confirmed would pass by.
+        stored = SalesOrderLine.objects.select_related("order").filter(pk=self.pk).first()
+        return (stored is not None and stored.order.status == OrderStatus.CONFIRMED
+                and self.unit_price is not None and self.net_amount() < stored.net_amount())
+
+    def _hold_for_deposits(self):
+        """The line, then its order, as close_short() takes them: what the order holds up front is weighed next."""
+        lock_rows(self, refresh=False)
+        lock_rows(self.order, refresh=False)
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        shrinking = self._worth_less_than_stored()
+        if shrinking:
+            self._hold_for_deposits()
         if self.pk:
             from .call_offs import called_off, plain
 
@@ -1390,6 +1436,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         if self._state.adding and self.order_id and self.order.approved_at:
             self.order.withdraw_approval()
         super().save(*args, **kwargs)
+        if shrinking:
+            self.order.refuse_coming_to_less_than_its_deposits()
         # Re-sizing or re-warehousing a line on a confirmed order changes
         # what it has promised, so the claim has to follow. Leaving the old
         # one standing holds stock for a quantity nobody is waiting for.
@@ -1410,18 +1458,25 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             return
         StockReservation.objects.claim(self, self.item, self.warehouse, outstanding)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.order_id and self.order.approved_at:
-            self.order.withdraw_approval()
         if self.quantity_shipped() or self.quantity_invoiced():
             raise ValidationError(
                 "This line has been shipped or invoiced and can no longer be removed."
             )
+        # Refused first: a refusal after it left the approval withdrawn for a line still there.
+        if self.order_id and self.order.approved_at:
+            self.order.withdraw_approval()
+        order = SalesOrder.objects.filter(pk=self.order_id, status=OrderStatus.CONFIRMED).first()
+        if order is not None:
+            self._hold_for_deposits()
         # A line that no longer exists cannot be holding anything. The
         # reservation points at it generically, so nothing cascades — the
         # claim would simply survive its own document.
         release_for(self, "Line removed")
         super().delete(*args, **kwargs)
+        if order is not None:
+            order.refuse_coming_to_less_than_its_deposits()
 
     def promised_date(self):
         """
@@ -2608,12 +2663,11 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         order = self.sales_order
         if order is None:
             return
-        taken = order.deposit_total()
-        order_total = order.total()
-        if taken + self.total() > order_total:
+        taken, worth = order.deposit_total(), order.worth_at_most()
+        if taken + self.total() > worth:
             raise ValidationError(
                 f"Down payments of {taken} are already on {order}; taking {self.total()} "
-                f"more would exceed the order total of {order_total}."
+                f"more would exceed the order total of {order.total_words(worth)}."
             )
 
     def _credit_deposit(self, memo, quantities, amount=None):

@@ -596,3 +596,57 @@ class ACancelledOrderHoldsNoPrepaymentTests(PrepaymentTestCase):
         self.assertEqual((noted.status_code, noted.json()["total"]), (200, "15.00"), noted.content)
         cancelled = ap.post(cancel, {}, format="json")
         self.assertEqual((cancelled.status_code, cancelled.json()["status"]), (200, "cancelled"), cancelled.content)
+
+
+class AnOrderComesToNoLessThanItsPrepaymentsTests(PrepaymentTestCase):
+    """
+    Sales' deposits, mirrored: 10 x 5 with 40 paid up front, cut to 5, came to 25 and left 15
+    with the vendor for no bill to draw down; closed short after 5 came, the same.
+    """
+
+    def test_a_line_cut_under_its_prepayment_is_left_as_it_was_until_the_difference_is_debited(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order, percent=80)
+        line = order.lines.get()
+        line.quantity = Decimal("5")
+        with self.assertRaisesMessage(
+                ValidationError, "would come to 25.00: less than the 40.00 paid on it up front. Raise a debit note for 15.00"):
+            line.save()
+        line.refresh_from_db()
+        self.assertEqual(line.quantity, Decimal("10"))
+
+        prepayment.create_debit_note(memo="Order cut to five", amount=Decimal("15"))
+        line.quantity = Decimal("5")
+        line.save()
+        self.assertEqual((order.total(), order.prepayment_total(), self.balance(self.prepaid)),
+                         (Decimal("25.00"), Decimal("25.00"), Decimal("25.00")))
+
+    def test_closed_short_under_its_prepayment_once_the_rest_is_debited_the_account_clears(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order, percent=80)
+        self.receive(order, "5")
+        order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10)).post()
+        line = order.lines.get()
+        with self.assertRaisesMessage(
+                ValidationError, "would come to 25.00, once what was closed short is taken off: less than the 40.00"):
+            line.close_short("Vendor out of stock")
+        line.refresh_from_db()
+        self.assertFalse(line.is_closed_short())
+
+        prepayment.create_debit_note(memo="Rest called off")
+        line.close_short("Vendor out of stock")
+        self.assertEqual(self.balance(self.prepaid), Decimal("0"))
+
+    def test_a_line_that_may_not_go_leaves_the_approval_where_it_was(self):
+        from django.utils import timezone
+
+        from .models import PurchaseOrder
+
+        order = self.make_order("10", "5")
+        self.receive(order, "4")
+        PurchaseOrder.objects.filter(pk=order.pk).update(approved_at=timezone.now())
+        order.refresh_from_db()  # the line reads its order from here
+        with self.assertRaisesMessage(ValidationError, "can no longer be removed"):
+            order.lines.get().delete()
+        order.refresh_from_db()
+        self.assertIsNotNone(order.approved_at)

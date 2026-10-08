@@ -2170,6 +2170,29 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
             Decimal("0"),
         )
 
+    def worth_at_most(self):
+        """What this order can still come to: a line closed short counts at what came."""
+        return self.worth_within(lambda line: line.bill_limit())
+
+    def total_words(self, worth):
+        """The order total a refusal states: what the order can still come to, and why if less."""
+        return f"{worth}" + ("" if worth == self.total() else ", once what was closed short is taken off")
+
+    def refuse_coming_to_less_than_its_prepayments(self):
+        """
+        Sales' deposits, mirrored: prepayments on an order cannot exceed what it can still come
+        to, asked when one is paid and here after anything that leaves the order worth less,
+        inside that change's transaction, with the order held.
+        """
+        paid = self.prepayment_total()
+        if not paid:
+            return
+        worth = self.worth_at_most()
+        if paid > worth:
+            raise ValidationError(
+                f"{self} would come to {self.total_words(worth)}: less than the {paid} paid on it "
+                f"up front. Raise a debit note for {paid - worth} of its prepayments first.")
+
     @transaction.atomic
     def create_prepayment_bill(
         self, payable_account, amount=None, percent=None, bill_date=None, description=""
@@ -2204,11 +2227,11 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         if amount <= 0:
             raise ValidationError("A prepayment must be for a positive amount.")
 
-        already = self.prepayment_total()
-        if already + amount > order_total:
+        already, worth = self.prepayment_total(), self.worth_at_most()
+        if already + amount > worth:
             raise ValidationError(
                 f"Prepayments of {already} are already on this order; taking {amount} more "
-                f"would exceed the order total of {order_total}."
+                f"would exceed the order total of {self.total_words(worth)}."
             )
 
         account = Company.get().vendor_prepayment_account
@@ -2368,8 +2391,26 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 "to count the same thing."
             )
 
+    def _worth_less_than_stored(self):
+        """An edit of a line on a confirmed order that leaves it worth less: cut, repriced, discounted."""
+        if not self.pk:
+            return False
+        # The order as stored, not as this line last saw it: a line read through a draft that
+        # has since been confirmed would pass by.
+        stored = PurchaseOrderLine.objects.select_related("order").filter(pk=self.pk).first()
+        return (stored is not None and stored.order.status == OrderStatus.CONFIRMED
+                and self.unit_price is not None and self.net_amount() < stored.net_amount())
+
+    def _hold_for_prepayments(self):
+        """The line, then its order, as close_short() takes them: what the order holds up front is weighed next."""
+        lock_rows(self, refresh=False)
+        lock_rows(self.order, refresh=False)
+
     @transaction.atomic
     def save(self, *args, **kwargs):
+        shrinking = self._worth_less_than_stored()
+        if shrinking:
+            self._hold_for_prepayments()
         self._check_outside_step()
         if self.is_charge() and not self.expense_account_id:
             self.expense_account = self.charge.account_for(is_sale=False)
@@ -2432,6 +2473,8 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         self._check_bom()
         self._check_drop_ship_quantity()
         super().save(*args, **kwargs)
+        if shrinking:
+            self.order.refuse_coming_to_less_than_its_prepayments()
         if self.sales_order_line_id is not None:
             self.sales_order_line.reclaim_stock()
         if self.bom_id is not None:
@@ -2529,15 +2572,22 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             row._rebuilding = True
             row.save()
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.order_id and self.order.approved_at:
-            self.order.withdraw_approval()
         if self.quantity_received() or self.quantity_billed():
             raise ValidationError(
                 "This line has been received or billed and can no longer be removed."
             )
+        # Refused first: a refusal after it left the approval withdrawn for a line still there.
+        if self.order_id and self.order.approved_at:
+            self.order.withdraw_approval()
+        order = PurchaseOrder.objects.filter(pk=self.order_id, status=OrderStatus.CONFIRMED).first()
+        if order is not None:
+            self._hold_for_prepayments()
         sales_line = self.sales_order_line
         result = super().delete(*args, **kwargs)
+        if order is not None:
+            order.refuse_coming_to_less_than_its_prepayments()
         if sales_line is not None:
             sales_line.reclaim_stock()
         return result
@@ -2686,8 +2736,12 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         reason = " ".join((reason or "").split())
         if not reason:
             raise ValidationError("Say why the rest will not come.")
+        # What the order holds up front is weighed against it once closed: the order, as a
+        # prepayment posting takes it.
+        lock_rows(self.order, refresh=False)
         self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        self.order.refuse_coming_to_less_than_its_prepayments()
         if self.sales_order_line_id is not None:
             # No longer coming from the vendor: the shelf's to send, and hold.
             self.sales_order_line.reclaim_stock()
@@ -3973,12 +4027,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         order = self.purchase_order
         if order is None:
             return
-        taken = order.prepayment_total()
-        order_total = order.total()
-        if taken + self.total() > order_total:
+        taken, worth = order.prepayment_total(), order.worth_at_most()
+        if taken + self.total() > worth:
             raise ValidationError(
                 f"Prepayments of {taken} are already on {order}; paying {self.total()} more "
-                f"would exceed the order total of {order_total}."
+                f"would exceed the order total of {order.total_words(worth)}."
             )
 
     def _debit_prepayment(self, memo, quantities, amount=None):
