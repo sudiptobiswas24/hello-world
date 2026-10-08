@@ -211,7 +211,7 @@ class Rebatch(AuditModel):
                 item=self.item, warehouse=self.warehouse, lot=line.lot,
                 movement_type=(MovementType.TRANSFER_IN if original.quantity < 0
                                else MovementType.TRANSFER_OUT),
-                uom=original.uom, quantity=-original.quantity,
+                uom=self.item.uom, quantity=-original.quantity,
                 unit_cost=original.unit_cost, reference=self.number,
                 occurred_at=occurred_at, notes=notes)
         self.voided_at, self.voided_reason = timezone.now(), reason.strip()
