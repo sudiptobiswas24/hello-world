@@ -266,11 +266,14 @@ missing), **minor**.
 | O39 | inventory | reservations.py:75 reads `held_at` before the lock, so it can lock the wrong second shelf | race | open |
 | O40 | core | Audit gaps: `per_unit_withdrawal_rates` skips inventory/models.py and `average_cost_at`; `shelf_read_before_lock` sees a read and a lock only inside one function | rule | open |
 | O41 | manufacturing | `_booked` converts each entry at today's unit factor; a conversion that depends on the date makes `quantity_produced` drift from what went on the shelf | books | minor |
+| O42 | purchasing | A landed-cost release takes off each shelf it landed on what that shelf still holds of it, and the rest out of cost of sales. Goods moved to another shelf after the landing (a put-away from the bay) carried their freight with them, but the release does not follow them: landed on the bay, put away, released, the bay gives up 0, cost of sales is credited 80, and the stock room keeps the 80. Shelf and ledger agree; the release does nothing. `value_still_held` must follow a transfer's value to the shelf it went to | books | open, next |
+| O43 | inventory | A dated correction (adjustment void, run issue and entry voids, transfer cancel, return, landed-cost release) stamps its stock movement when it is made and dates only its journal entry. The replays price movements in the order they were written, so stamping on the given day would reprice what came after; as written, a stock value asked as of a day between the two differs from the ledger by the correction | books | by design; decide |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
 - A pay run calculated with handed-in hours before hr migration 0020 is refused at post until it is calculated again.
 - A void made before manufacturing migration 0079 keeps its gap between shelf and ledger, and nothing records it.
+- A landed-cost allocation made before purchasing migration 0059 releases through its one `stock_movement`; a clearance out of inspection made before 0059 recorded no movement, so under FIFO freight landed on its goods goes to cost of sales.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
 
