@@ -16,7 +16,7 @@ from django.core.exceptions import ValidationError
 from apps.accounting.models import Account, AccountType
 from apps.core.models import Company, Party, PartyRole, PartyRoleAssignment
 from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
-from apps.sales.models import InvoicePolicy, SalesOrder, SalesOrderLine
+from apps.sales.models import DeliveryLine, InvoicePolicy, SalesOrder, SalesOrderLine
 
 from .models import (
     BlanketOrder,
@@ -300,6 +300,77 @@ class DropShipReturnTests(PurchasingLifecycleTestCase):
         receipt.create_return()
 
         self.assertEqual(self.sales_line.quantity_shipped(), Decimal("0"))
+
+    def test_three_of_ten_coming_back_unships_three(self):
+        # The whole delivery was reversed for three, and the sale read
+        # nothing shipped.
+        sale, order, receipt = self.drop_shipped()
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("3")})
+        self.assertEqual(self.sales_line.quantity_shipped(), Decimal("7"))
+
+    def test_two_more_coming_back_unship_two_more(self):
+        # The second return found the delivery already reversed and
+        # took back nothing.
+        sale, order, receipt = self.drop_shipped()
+        line = receipt.lines.get()
+        receipt.create_return(quantities={line: Decimal("3")})
+        receipt.create_return(quantities={line: Decimal("2")})
+        self.assertEqual(self.sales_line.quantity_shipped(), Decimal("5"))
+        receipt.create_return()
+        self.assertEqual(self.sales_line.quantity_shipped(), Decimal("0"))
+
+    def test_the_store_sends_three_back_through_the_api(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        store = get_user_model().objects.create_user("store")
+        store.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(store)
+        sale, order, receipt = self.drop_shipped()
+        response = client.post(
+            f"/api/purchasing/goods-receipts/{receipt.pk}/return_receipt/",
+            {"quantities": {str(receipt.lines.get().pk): "3"}, "debit_bills": False}, format="json")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.assertEqual(self.sales_line.quantity_shipped(), Decimal("7"))
+
+    def test_a_return_comes_off_the_delivery_its_own_receipt_made(self):
+        sale, order, first = self.drop_shipped_in_two("6", "4")
+        first.create_return(quantities={first.lines.get(): Decimal("2")})
+        self.assertEqual(self.sales_line.quantity_shipped(), Decimal("8"))
+        self.assertEqual(
+            sorted(line.quantity_returnable() for line in DeliveryLine.objects.filter(
+                delivery__is_drop_ship=True, delivery__reverses__isnull=True)),
+            [Decimal("4"), Decimal("4")])
+
+    def drop_shipped_in_two(self, first_quantity, second_quantity):
+        sale = SalesOrder.objects.create(
+            customer=self.customer, order_date=datetime.date(2026, 1, 1),
+            currency=self.usd, invoice_policy=InvoicePolicy.DELIVERED,
+        )
+        self.sales_line = SalesOrderLine.objects.create(
+            order=sale, item=self.item, uom=self.uom, quantity=Decimal("10"),
+            unit_price=Decimal("10"), revenue_account=self.revenue,
+        )
+        sale.confirm()
+        order = PurchaseOrder.create_for_drop_ship(
+            sale, self.vendor, order_date=datetime.date(2026, 1, 2)
+        )
+        order.confirm()
+        receipts = []
+        for quantity in (first_quantity, second_quantity):
+            receipt = GoodsReceipt.objects.create(
+                purchase_order=order, receipt_date=datetime.date(2026, 1, 10)
+            )
+            GoodsReceiptLine.objects.create(
+                receipt=receipt, order_line=order.lines.first(),
+                warehouse=self.warehouse, quantity_received=Decimal(quantity),
+            )
+            receipt.post()
+            receipts.append(receipt)
+        return sale, order, receipts[0]
 
 
 class MechanicalAuditTests(PurchasingLifecycleTestCase):

@@ -5947,13 +5947,34 @@ class GoodsReceipt(AuditModel):
         sales_lines = [line for line in lines if line.order_line.sales_order_line_id]
         if sales_lines and is_return:
             # The customer sent it back to the vendor, so the sales
-            # delivery is reversed on the sales side, where returns belong.
-            original = Delivery.objects.filter(
-                sales_order=self.purchase_order.drop_ship_for,
-                is_drop_ship=True, posted=True, reverses__isnull=True,
-            ).order_by("-id").first()
-            if original and not original.reversed_by.exists():
-                original.create_return(credit_invoices=False)
+            # delivery is reversed on the sales side, where returns belong:
+            # by what came back, line by line, off the delivery this
+            # receipt made. The whole delivery went back on the first
+            # return, so three of ten left the sale reading nothing
+            # shipped, and the next return found it reversed and took back
+            # nothing at all.
+            made_by = self.reverses.number
+            taking = defaultdict(dict)
+            for line in sales_lines:
+                remaining = line.quantity_received
+                shipped = DeliveryLine.objects.filter(
+                    order_line=line.order_line.sales_order_line,
+                    delivery__sales_order=self.purchase_order.drop_ship_for,
+                    delivery__is_drop_ship=True, delivery__posted=True,
+                    delivery__reverses__isnull=True,
+                ).select_related("delivery")
+                for row in sorted(shipped, key=lambda row: (
+                        row.delivery.reference != made_by, -row.delivery_id, -row.pk)):
+                    if remaining <= 0:
+                        break
+                    left = row.quantity_returnable() - taking[row.delivery].get(row, Decimal("0"))
+                    if left <= 0:
+                        continue
+                    taken = min(left, remaining)
+                    taking[row.delivery][row] = taking[row.delivery].get(row, Decimal("0")) + taken
+                    remaining -= taken
+            for delivery, quantities in taking.items():
+                delivery.create_return(credit_invoices=False, quantities=quantities)
         elif sales_lines:
             delivery = Delivery.objects.create(
                 sales_order=self.purchase_order.drop_ship_for,
