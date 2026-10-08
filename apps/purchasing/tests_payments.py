@@ -32,7 +32,7 @@ class PaymentTestCase(PurchasingLifecycleTestCase):
         from apps.accounting.models import Account, AccountType
 
         self.bank = Account.objects.create(
-            code="1010", name="Bank", account_type=AccountType.ASSET
+            code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True
         )
 
     def disbursement(self, amount, on=datetime.date(2026, 1, 20), currency=None):

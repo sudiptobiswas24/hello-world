@@ -151,11 +151,12 @@ class Command(BaseCommand):
             net30 = Terms.objects.create(code="N30", name="Net 30 days", net_days=30)
             net45 = Terms.objects.create(code="N45", name="Net 45 days", net_days=45)
 
-            def acc(code, name, kind):
-                return M("accounting.Account").objects.create(code=code, name=name, account_type=kind)
+            def acc(code, name, kind, holds_money=False):
+                return M("accounting.Account").objects.create(code=code, name=name, account_type=kind,
+                                                              holds_money=holds_money)
 
-            bank = acc("1010", "HDFC Bank current account", "asset")
-            acc("1020", "Cash in hand", "asset")
+            bank = acc("1010", "HDFC Bank current account", "asset", holds_money=True)
+            acc("1020", "Cash in hand", "asset", holds_money=True)
             ar = acc("1100", "Sundry debtors", "asset")
             stock_acc = acc("1200", "Stock in trade", "asset")
             wip = acc("1250", "Work in progress", "asset")

@@ -1,6 +1,7 @@
 import { Lines, type TradeLine } from "../../forms/Lines";
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-import { ACCOUNT, CUSTOMER, EMPLOYEE_PARTY } from "./extraRefs";
+import { KEPT_ACCOUNT } from "../purchasing/refs";
+import { CUSTOMER, EMPLOYEE_PARTY } from "./extraRefs";
 
 type Row = Record<string, unknown>;
 
@@ -25,7 +26,7 @@ export default function RecurringInvoiceForm() {
       fields={[
         { key: "code", label: "Code" },
         { key: "customer", label: "Customer", kind: "pick", pick: CUSTOMER, createOnly: true, show: (row) => String(row.customer_name ?? "") },
-        { key: "receivable_account", label: "Receivable account", kind: "pick", pick: ACCOUNT },
+        { key: "receivable_account", label: "Receivable account", kind: "pick", pick: KEPT_ACCOUNT },
         { key: "currency", label: "Currency", kind: "ref", ref: CURRENCY, hint: "The customer's, if left empty" },
         { key: "payment_terms", label: "Payment terms", kind: "ref", ref: TERMS, hint: "The customer's, if left empty" },
         { key: "sales_rep", label: "Sales rep", kind: "pick", pick: EMPLOYEE_PARTY },

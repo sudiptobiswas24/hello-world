@@ -166,7 +166,8 @@ class RecurringJournalLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class AccountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["code", "name"]
-    filter_fields = ["account_type", "is_active", "parent"]
+    # holds_money=true&is_active=true: what a "paid from" picker offers.
+    filter_fields = ["account_type", "is_active", "parent", "holds_money"]
     ordering_fields = ["code", "name"]
 
     queryset = Account.objects.all()

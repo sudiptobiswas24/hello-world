@@ -27,7 +27,7 @@ class SettlementTestCase(TestCase):
         self.item = Item.objects.create(sku="WDG-1", name="Widget", uom=self.uom)
 
         self.ar = Account.objects.create(code="1100", name="AR", account_type=AccountType.ASSET)
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
             code="4000", name="Revenue", account_type=AccountType.INCOME
         )

@@ -22,7 +22,7 @@ from .models import (
 class AccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = Account
-        fields = ["id", "code", "name", "account_type", "parent", "currency", "is_active"]
+        fields = ["id", "code", "name", "account_type", "parent", "currency", "is_active", "holds_money"]
 
 
 class CostCentreSerializer(serializers.ModelSerializer):
@@ -181,6 +181,7 @@ class PartyTaxProfileSerializer(serializers.ModelSerializer):
 
 class PaymentSerializer(serializers.ModelSerializer):
     party_name = serializers.CharField(source="party.name", read_only=True)
+    bank_account_name = serializers.CharField(source="bank_account.name", read_only=True)
     # A payment whose entry was reversed, by void() or by hand: the
     # invoices it paid are owed again.
     voided = serializers.SerializerMethodField()
@@ -204,7 +205,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         model = Payment
         fields = [
             "id", "number", "party", "party_name", "direction", "payment_date", "amount", "currency",
-            "exchange_rate", "bank_account", "counterpart_account", "reference", "memo",
+            "exchange_rate", "bank_account", "bank_account_name", "counterpart_account", "reference", "memo",
             "journal_entry", "posted", "posted_at", "voided", "unallocated",
         ]
         read_only_fields = ["number", "exchange_rate", "journal_entry", "posted", "posted_at"]

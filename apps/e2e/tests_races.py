@@ -279,7 +279,7 @@ class PurchasingRaceTests(RaceCase):
 
         purchase_fixture.PurchasingLifecycleTestCase.setUp(self)
         self.bank = Account.objects.create(code="1010", name="Bank",
-                                           account_type=AccountType.ASSET)
+                                           account_type=AccountType.ASSET, holds_money=True)
 
     def test_two_bills_do_not_both_catch_up_the_year(self):
         """

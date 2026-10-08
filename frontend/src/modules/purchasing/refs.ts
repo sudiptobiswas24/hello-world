@@ -23,6 +23,15 @@ export const WAREHOUSE: FieldDef["ref"] = {
 export const ACCOUNT: FieldDef["pick"] = {
   endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: coded,
 };
+/** What money is paid from or into: an open bank, cash or card account. The server refuses the rest. */
+export const MONEY_ACCOUNT: FieldDef["pick"] = {
+  endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: coded,
+  query: { holds_money: "true", is_active: "true" },
+};
+/** Anything but a bank, cash or card account: where a document or a setting keeps what is owed, held or taxed. */
+export const KEPT_ACCOUNT: FieldDef["pick"] = {
+  endpoint: "/api/accounting/accounts/", permission: "accounting.view_account", label: coded, query: { holds_money: "false" },
+};
 export const CURRENCY: FieldDef["ref"] = {
   endpoint: "/api/core/currencies/", permission: "core.view_currency", label: (row: Row) => String(row.code),
 };

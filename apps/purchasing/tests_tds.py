@@ -34,7 +34,7 @@ class TdsTestCase(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
         self.tds_payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
-        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.goods = TdsSection.objects.create(
             code="194Q", name="Purchase of goods", rate_percent=Decimal("0.1"), no_pan_rate_percent=Decimal("5"),
             mode="excess", annual_threshold=Decimal("5000000"), payable_account=self.tds_payable)
@@ -219,6 +219,20 @@ class LedgerTests(TdsTestCase):
         self.assertEqual(challan.amount, Decimal("700.00"))
         with self.assertRaisesMessage(ValidationError, "void the challan first"):
             again.reverse()
+
+    def test_not_paid_over_from_where_it_is_owed(self):
+        self.bill("35000", vendor=self.contractor(pan="AAAPL1234C")).deduct_tds()
+        with self.assertRaisesMessage(ValidationError, "2250 - TDS payable is not a bank, cash or card account"):
+            TdsChallan.pay(self.contract, DAY, DAY, self.tds_payable, "00042", "0510308")
+        self.assertFalse(TdsChallan.objects.exists())
+        self.assertEqual(self.balance(self.tds_payable), Decimal("-700.00"))
+
+    def test_not_paid_over_from_what_customers_owe(self):
+        self.bill("35000", vendor=self.contractor(pan="AAAPL1234C")).deduct_tds()
+        receivable = Account.objects.create(code="1105", name="Customers", account_type=AccountType.ASSET)
+        with self.assertRaisesMessage(ValidationError, "1105 - Customers is not a bank, cash or card account"):
+            TdsChallan.pay(self.contract, DAY, DAY, receivable, "00042", "0510308")
+        self.assertFalse(TdsChallan.objects.exists())
 
     def test_a_challan_clears_the_month_and_voiding_it_owes_again(self):
         self.bill("3000000")

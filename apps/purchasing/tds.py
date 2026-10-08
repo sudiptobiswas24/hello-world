@@ -183,6 +183,9 @@ class TdsChallan(AuditModel):
     @classmethod
     def pay(cls, section, month, date, bank_account, challan_number, bsr_code):
         """Pay over everything deducted under `section` in `month` and not yet paid."""
+        from apps.accounting.money import refuse_as_money_account
+
+        refuse_as_money_account(bank_account)
         month = to_date(month).replace(day=1)
         following = (month.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
         with transaction.atomic():

@@ -1,5 +1,5 @@
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
-import { ACCOUNT } from "../purchasing/refs";
+import { ACCOUNT, MONEY_ACCOUNT } from "../purchasing/refs";
 
 /** The expense accounts only: a claim line is never against the bank or a customer. */
 const EXPENSE_ACCOUNT: NonNullable<FieldDef["pick"]> = {
@@ -47,7 +47,7 @@ export default function ClaimForm() {
           fields: [{ key: "note", label: "Why", kind: "text", hint: "Say why, or it comes back unchanged" }] },
         { label: "Pay", path: "pay", permission: "hr.pay_expenseclaim", when: is("approved"), primary: true, done: "Paid and posted",
           fields: [
-            { key: "paid_from", label: "From account", kind: "pick", pick: ACCOUNT },
+            { key: "paid_from", label: "From account", kind: "pick", pick: MONEY_ACCOUNT },
             { key: "on_date", label: "On", kind: "date", hint: "Empty: today" },
             { key: "memo", label: "Memo", kind: "text" },
           ] },
