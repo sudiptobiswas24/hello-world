@@ -412,6 +412,8 @@ class FixedAsset(Extensible, AuditModel):
         an asset that has been in service has been depreciated or could
         have been, and taking it off is a disposal.
         """
+        if self.status == AssetStatus.CANCELLED:
+            raise ValidationError(f"{self} has already been un-capitalised.")
         if self.status != AssetStatus.DRAFT:
             raise ValidationError(
                 f"{self} has been in service. Taking it off the books is a "

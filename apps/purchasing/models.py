@@ -4405,13 +4405,15 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         depreciated individually — a line for three machines is three
         assets, not one worth three times as much.
         """
-        from apps.assets.models import AssetCategory, FixedAsset
+        from apps.assets.models import AssetStatus, FixedAsset
 
         # One at a time per line, reading what the last did: two at once both found no asset.
         lock_rows(self)
         if not self.bill.posted:
             raise ValidationError("Only a posted bill can be capitalised.")
-        if self.assets.exists():
+        # One un-capitalised stands for nothing: its entry was reversed and the cost is back in the
+        # line's account. Counted, it refused the undo's own way forward, capitalising again.
+        if self.assets.exclude(status=AssetStatus.CANCELLED).exists():
             raise ValidationError("This line has already been capitalised.")
         if any(not application.is_released() for application in self.landed_cost_applications.all()):
             raise ValidationError(
@@ -4692,10 +4694,13 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             # debit note crediting the line's own account would take it
             # out of an account that no longer holds it — below nothing —
             # while the asset stayed on the books at full cost.
+            # Not even once disposed of: the disposal took the cost off the asset account into the
+            # loss, and the line's own account is as empty as it was.
             raise ValidationError(
-                f"{original.label()} was capitalised as fixed assets. "
-                "Un-capitalise them first, or, once in service, dispose of "
-                "them — then the bill can be debited."
+                f"{original.label()} was capitalised as fixed assets, so its cost is no longer "
+                "in the account a debit note gives it back from. Un-capitalise them while they "
+                "are drafts, and the bill can then be debited; one that has been in service "
+                "keeps its cost, disposed of or not, and the bill cannot be debited for it."
             )
         if any(not application.is_released() for application in original.landed_cost_applications.all()):
             # The same, landed on other goods: the freight account it would credit is empty.
