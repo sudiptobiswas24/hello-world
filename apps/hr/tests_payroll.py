@@ -435,6 +435,24 @@ class PostingTests(PayrollTestCase):
         with self.assertRaises(ValidationError):
             run.save()
 
+    def test_a_voided_run_is_not_edited_and_keeps_what_it_owed_as_of_before_its_void(self):
+        from .payroll import statutory_liabilities
+
+        _person, run = self.payroll()
+        run.post()
+        run.void(on_date=datetime.date(2026, 7, 20))
+        run.refresh_from_db()
+        self.assertEqual((run.status, run.voided_entry.date), (PayRunStatus.VOIDED, datetime.date(2026, 7, 20)))
+        owed = [(row["period"], row["deducted"]) for row in statutory_liabilities(datetime.date(2026, 7, 10))]
+        run.period_start, run.period_end = datetime.date(2026, 5, 1), datetime.date(2026, 5, 31)
+        with self.assertRaisesMessage(ValidationError, "Cannot modify a voided pay run"):
+            run.save()
+        run.refresh_from_db()
+        self.assertEqual((run.period_start, run.period_end), (datetime.date(2026, 6, 1), datetime.date(2026, 6, 30)))
+        self.assertEqual([(row["period"], row["deducted"]) for row in statutory_liabilities(datetime.date(2026, 7, 10))],
+                         owed)
+        self.assertEqual(owed[0][0], datetime.date(2026, 6, 1))
+
     def test_a_posted_run_is_voided_not_deleted(self):
         _person, run = self.payroll()
         run.post()
