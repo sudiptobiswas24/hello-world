@@ -8,15 +8,17 @@ as the pushed 9c67116):
 
 | Branch | Area | Commits | State |
 |---|---|---|---|
-| `claude/erp-fix-store` | stores | 15 | done; report below |
-| `claude/erp-fix-pay` | payroll | 14 | done; report below |
-| `claude/erp-fix-asset` | fixed assets | 8 | done; report below |
-| `claude/erp-fix-make` | manufacturing | 19 | done; report below |
-| `claude/erp-fix-race` | two lost-update races | 2 | done, proven on PostgreSQL |
-| `claude/erp-fix-ui` | account form on screen | 1 | done |
+| `claude/erp-fix-store` | stores | 15 | in g17 |
+| `claude/erp-fix-pay` | payroll | 14 | in g17 |
+| `claude/erp-fix-asset` | fixed assets | 8 | in g17 |
+| `claude/erp-fix-make` | manufacturing | 19 | in g17 |
+| `claude/erp-fix-race` | two lost-update races | 2 | in g17, proven on PostgreSQL |
+| `claude/erp-fix-ui` | account form on screen | 1 | in g17 |
 
-None of these is gated or pushed to the main branch yet. That is the
-next session's first job (HANDOFF.md, step 2).
+All six are now in the product, gated as g17 (b1d03ed). The g17 review
+of these fixes found two release blockers and about fifteen smaller
+defects in them. The blockers and most of the rest were fixed in g17;
+what was not is in docs/RISKS.md, "Open defects".
 
 Every fix has regression tests. The fixing agent reverted each fix and
 watched its tests fail; I have not repeated that. Review every diff before

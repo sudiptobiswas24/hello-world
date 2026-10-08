@@ -8,7 +8,7 @@ that a new session can start small.
 
 ## 0. Read, then verify, before doing anything
 
-First, look for interrupted work and resume it from where it stopped (CLAUDE.md, "Interrupted work"). At handoff nothing was interrupted: all six fix branches are finished and pushed.
+First, look for interrupted work and resume it from where it stopped (CLAUDE.md, "Interrupted work"). At the last handoff (after g17) nothing was interrupted: no agent, background job or gate was running, and every worktree's commits were pushed.
 
 1. Read, in order:
    - `CLAUDE.md`: house rules and the mistakes this project keeps making.
@@ -22,18 +22,12 @@ First, look for interrupted work and resume it from where it stopped (CLAUDE.md,
 
 | Branch | What it is |
 |---|---|
-| `claude/erp-creation-guidance-ox5afo` | **The product.** Gated and pushed through 9c67116, plus this handoff commit. PR #4 (the owner's, into master) tracks it. Push only here, and only after a gate. |
-| `claude/erp-fix-store` | 15 commits: stores fixes. Not gated. |
-| `claude/erp-fix-pay` | 14 commits: payroll fixes. Not gated. |
-| `claude/erp-fix-asset` | 8 commits: fixed-asset fixes. Not gated. |
-| `claude/erp-fix-make` | 19 commits: manufacturing fixes, finished (tip b2b6a7c). Not gated. |
-| `claude/erp-fix-race` | 2 commits: lost-update races, proven on PostgreSQL. Not gated. |
-| `claude/erp-fix-ui` | 1 commit: the account form on screen. Not gated. |
-| `claude/erp-leftover-{ctree,htree,ltree}` | Uncommitted edits left by sessions before 8 October, saved unverified. Probably superseded; diff against the product branch before discarding. |
+| `claude/erp-creation-guidance-ox5afo` | **The product.** Gated and pushed through b1d03ed (g17), plus documentation commits. PR #4 (the owner's, into master) tracks it. Push only here, and only after a gate. |
+| `claude/erp-fix-{store,pay,asset,make,race,ui}` | The six fix branches. All are in g17 (b1d03ed); kept for their history. Safe to delete. |
+| `claude/erp-leftover-{ctree,htree,ltree}` | Edits left by sessions before 8 October. Checked on 8 October: all superseded by the product (ctree was an early draft of 9d81846). Safe to delete. |
+| `claude/erp-g17-wip`, `claude/erp-g17-make-wip` | Backups of g17 before it was pushed. Safe to delete. |
 | `claude/erp-gate-scratch`, `claude/erp-gate-results` | Scratch, from running two gate lanes in another cloud session. Safe to delete. |
 
-All six fix branches are based on 2335abb, which has the same tree as the
-product's 9c67116, so they cherry-pick cleanly onto it.
 
 ## 1. Environment, once per new container
 
@@ -56,60 +50,47 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
-1. **Integrate the fix branches as gate g17.**
-   - Make a worktree at the product tip.
-   - Cherry-pick in this order: race, ui, asset, pay, store, make.
-   - Expect conflicts:
-     - in `apps/core/management/commands/audit_invariants.py`: several
-       agents added checks. Keep each as its own function.
-     - in `apps/e2e/tests_races.py`.
-     - possibly in migration numbering. Read every migration's header
-       after resolving.
-   - Review every diff. A fix is accepted only if:
-     - it has a test that fails without it (spot-check by reverting);
-     - it closes the pattern everywhere, not one instance;
-     - it has an `audit_invariants` check where the shape can be
-       detected from code.
-   - Unify the duplicated rules:
-     - The "correction dated before the original or in the future" rule
-       exists twice. Keep the core one, `correction_date()` /
-       `day_that_has_come()` in apps/core/models.py. Move PayRun.void and
-       ExpenseClaim.unpay onto it. Drop hr's `reversal_day()` and its
-       check.
-     - The "deletable posted document" check may also exist twice
-       (payroll and manufacturing). Merge it into one.
-   - Run the new race tests on PostgreSQL. findings.md lists them.
-   - Gate per scripts/gate/README.md. Finalize. Push.
-2. **Record the patterns.** Add the patterns the audit found to CLAUDE.md
-   "Mistakes this project keeps making" and to
-   .claude/skills/audit/SKILL.md. They are:
-   - posted records deletable;
-   - corrections dated wrong;
-   - document-unit quantities with stock-unit costs;
-   - per-unit rounding;
-   - voids at the posted cost rather than `cost_of_removing`;
-   - calculations posted after their inputs changed;
-   - rate rows not prorated;
-   - checks made before the lock;
-   - lock-order inversions;
-   - settings read live where a posted fact should have been recorded.
+g17 is pushed (b1d03ed). It holds:
+- the six fix branches, with the duplicated rules merged;
+- the review of those fixes, and fixes for what the review found (two release blockers among them);
+- the open-defects register.
 
-   For each, name the audit check that now guards it.
-3. **Decided follow-ups** (RISKS.md O28 and O29 have the detail):
-   - A leaver's shortfall becomes a receivable from the former employee;
-     PF/ESI wages drop by what is taken back.
-   - A period is not closed while its depreciation is uncharged.
-   - Move the 17 exempted correction steps onto the core date rule, one
-     module at a time.
-4. **Open defects**, docs/RISKS.md "Open defects". Fix them by pattern,
-   smallest first. Each needs a test that fails before its fix, and
-   its commit names the id.
-5. **The Odoo 19 depth comparison.** Do one module at a time, using
-   `docs/handoff/odoo_brief.md`. Start with sales, then purchasing,
-   inventory, manufacturing, accounting, people. Each produces a ranked
-   gap list. Build the high-value gaps with the fix brief's discipline.
-6. Pending from the older backlog: E2 (users and roles kept from the
-   office), depth passes on every vertical, MB (matured-bug hunt).
+findings.md says what each fix branch held. docs/RISKS.md, "Open
+defects", is the one list of what is still open.
+
+1. **The owner chooses what comes next.** Two candidates were put to the
+   owner on 8 October:
+   - **Pilot path:** import the plant's real files (docs/IMPORT.md), then
+     the pilot in docs/PILOT.md. Before anything is filed with the
+     government, run a probe audit of GST and accounting, which have not
+     had one.
+   - **Another audit round:** sales, purchasing, accounting, GST, quality
+     and CRM have not had a probe audit like the 8 October one;
+     permissions and performance have never been audited.
+
+   If the owner has not answered, ask before starting either.
+2. **Decisions owed by the owner and the plant's accountant.** Put them
+   as one list; do not decide them:
+   - posting a pay run ahead of its pay date, which is allowed and is
+     voided on its own day (core `correction_date`);
+   - freight on goods already gone going to cost of sales rather than
+     to production cost (O42 is related);
+   - a leaver's overpayment recovered as a receivable from the former
+     employee: are there legal limits on recovering wages? (O28);
+   - partial returns taking the earliest route step first (O30);
+   - disposal reversing a closed month's charge (O9);
+   - dated corrections stamping stock when entered (O43).
+3. **Open defects** in docs/RISKS.md, by kind: books first, then race,
+   then rule. O42 (a landed-cost release does not follow goods moved
+   since) is next. Each fix needs a test that fails without it, and its
+   commit names the id.
+4. **Review every fix before its gate**, by someone other than its
+   author, with probes that try to break it. In the g17 round, fixes
+   that each had a test failing without them still held two release
+   blockers.
+5. **A gate takes fixes for what is broken, nothing else.** Refactors,
+   migrations for data that does not exist, and widened checks go to
+   the register.
 
 ## 3. The owner's standing instructions
 
@@ -151,7 +132,7 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 5. Loose ends
 
-- The previous session's PR #4 check-ins stopped, since nothing was
-  pushed. After pushing g17, set one about four hours out.
+- PR #4 (the owner's, into master) tracks the product branch. Check its
+  state after each push; do not rewrite it.
 - Cloud session session_01JhBJNMa8eEqsnUwAeQ5Zhy ran two g16 lanes. It
   can be archived.

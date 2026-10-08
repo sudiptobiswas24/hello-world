@@ -36,6 +36,9 @@ if line.returncode or not line.stdout.startswith("Gate: "):
 full = line.stdout.strip()
 if git("status", "--short"):
     raise SystemExit(f"{TREE} is not clean")
+# Full ids: the tip is matched against `git log`'s full ids below, and a
+# short one never matched, so the gated tip was told it was not run (g17).
+base, tip = git("rev-parse", base), git("rev-parse", tip)
 commits = git("log", "--reverse", "--format=%H", f"{base}..{tip}").split()
 subject = git("log", "-1", "--format=%s", tip)
 git("checkout", "-q", base)
