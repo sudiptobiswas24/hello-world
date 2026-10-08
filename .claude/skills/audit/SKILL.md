@@ -30,7 +30,7 @@ spent. Work it against the surface you are auditing.
    failing tests were encoding the defect, and the fixture was wrong.
    Twice the guard was wrong. Work out which before editing either.
 
-## The eight shapes
+## The shapes
 
 ### 1. Mirror gap — a guard on one path, absent on its mirror
 **Found 9 of 26. Check this first, always.**
@@ -127,6 +127,30 @@ Every lookup that crosses a dimension must filter on it: currency,
 company, date validity, active flag, party, warehouse. A price list that
 ignored currency priced a EUR order from a USD list.
 
+### 9. Two at once
+**Not on this list until the 8 October audit, which found it in stores, payroll and manufacturing.**
+
+A rule asked and then acted on, with another request free to change
+the answer in between.
+
+- a check made before the lock: the shelf, an open run, what is
+  left on a payment. Take the lock, re-read, then check.
+- two edits of one record: the second save writes back what the first
+  changed.
+- two paths locking the same rows in opposite orders: deadlock.
+- prove each one on PostgreSQL with `race()` in apps/e2e/tests_races.py.
+  SQLite serialises writers, so a test there proves nothing.
+
+### 10. Units, rounding and the figure booked
+**Found by the 8 October audit in stores, manufacturing and fixed assets.**
+
+- a quantity in the document's unit at a cost per stocking unit.
+- a per-unit cost rounded and multiplied back up.
+- a void or return booked at the figure it was posted at, not at what
+  `cost_of_removing()` says the shelf gives up.
+- a setting read live at a reversal, where the event should have
+  recorded it (an account, a method, a rate).
+
 ## Questions that are not on this list
 
 Deliberately. They matter, but no audit has found them and a checklist
@@ -134,7 +158,6 @@ that lists everything gets read by nobody:
 
 - performance, N+1 queries
 - error-message quality (one finding, low value)
-- concurrency beyond the existing `select_for_update`
 - security and permissions — use `/security-review`
 
 ## Is this list any good?
@@ -174,10 +197,11 @@ Two honest weaknesses:
   only ever check mirrors you get most of the value, and the other seven
   shapes are long-tail. Do not let their presence make the list feel
   thorough.
-- **It cannot find what it has not seen.** No audit here has looked for
-  concurrency, performance or permission defects, so none are listed,
-  so none will be found. The list is a record of where we have looked,
-  not of where the bugs are.
+- **It cannot find what it has not seen.** Concurrency was missing from
+  this list until the 8 October audit looked for it and found it in
+  three modules (shape 9). Performance and permissions have not been audited
+  yet. The list is a record of where we have looked, not of where the
+  bugs are.
 
 ## Mechanical half
 
