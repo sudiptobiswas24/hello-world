@@ -586,3 +586,39 @@ class BelowZeroTheShelfAgreesTests(CostingTestCase):
         self.receive(self.widget, "10", "12", warehouse=self.backorders)
         self.assertEqual(self.widget.valuation_at(self.backorders), (Decimal("5"), Decimal("70")))
 
+
+class OthersGoodsAtTheStandardTests(CostingTestCase):
+    """
+    Ten of a vendor's units on consignment, at nothing, under a standard of
+    5: every other method values them at what they came in at, nothing,
+    and the standard read them as 50 against a ledger of nothing. Moving
+    the standard to 6 then posted 10 onto the inventory account for goods
+    the company does not own.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.widget = self.item(CostingMethod.STANDARD, standard=Decimal("5"))
+
+    def holding(self, **owner):
+        shelf = Warehouse.objects.create(code="C", name="Not ours", **owner)
+        self.receive(self.widget, "10", "0", warehouse=shelf)
+        return shelf
+
+    def test_a_vendors_consignment_is_worth_nothing_on_the_books(self):
+        from .reports import reconcile_to_ledger
+
+        shelf = self.holding(consignment_vendor=self.vendor)
+        self.assertEqual(self.widget.stock_value_at(shelf), Decimal("0.00"))
+        self.assertTrue(reconcile_to_ledger()["balanced"])
+
+    def test_a_customers_material_is_worth_nothing_on_the_books(self):
+        shelf = self.holding(held_for=self.vendor)
+        self.assertEqual(self.widget.stock_value_at(shelf), Decimal("0.00"))
+
+    def test_a_new_standard_does_not_revalue_a_vendors_consignment(self):
+        from .models import set_standard_cost
+
+        self.holding(consignment_vendor=self.vendor)
+        self.assertEqual(set_standard_cost(self.widget, Decimal("6"), reason=self.reason), [])
+        self.assertEqual(self.balance(self.inventory), Decimal("0"))

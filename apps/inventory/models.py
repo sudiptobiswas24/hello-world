@@ -938,6 +938,10 @@ def set_standard_cost(item, new_cost, warehouse=None, on_date=None, reason=None)
 
     raised = []
     for shelf in warehouses:
+        if shelf.holds_others_goods():
+            # Not the company's to revalue: changing the standard put a
+            # vendor's consignment onto the books at the difference.
+            continue
         held = item.on_hand_at(shelf)
         if held == 0:
             continue
