@@ -214,6 +214,49 @@ class DepreciationTests(AssetTestCase):
         self.assertEqual(entries[0].period_end, datetime.date(2026, 4, 30))
 
 
+class TheLastMonthOfItsLifeTests(AssetTestCase):
+    """
+    Each month's charge is rounded to the paisa. 10,000 over twelve months
+    is 833.33 a month, which leaves 0.04 after the twelfth: it was charged
+    in a thirteenth month, a month after the lathe's life ended. The last
+    month of its life takes what is left, 833.37, and nothing comes after.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.enterContext(the_plants_day(datetime.date(2029, 1, 15)))
+
+    def test_it_takes_what_is_left_and_nothing_is_charged_after_it(self):
+        asset = self.asset("10000", life=12)
+        made = asset.depreciate(through=datetime.date(2027, 12, 31))
+        self.assertEqual(
+            ([row.amount for row in made], made[-1].period_end, asset.accumulated()),
+            ([Decimal("833.33")] * 11 + [Decimal("833.37")], datetime.date(2026, 12, 31), Decimal("10000.00")))
+
+    def test_a_charge_rounded_up_ends_on_its_last_month_as_before(self):
+        """10,000 over 36 months is 277.78 a month: the 36th takes the 277.70 left."""
+        made = self.asset("10000", life=36).depreciate(through=datetime.date(2028, 12, 31))
+        self.assertEqual((len(made), made[-2].amount, made[-1].amount, made[-1].period_end,
+                          sum(row.amount for row in made)),
+                         (36, Decimal("277.78"), Decimal("277.70"), datetime.date(2028, 12, 31), Decimal("10000.00")))
+
+    def test_one_disposed_of_mid_life_clears_its_accounts_to_the_paisa(self):
+        asset = self.asset("10000", life=12)
+        asset.depreciate(through=datetime.date(2026, 6, 30))
+        asset.dispose(on_date=datetime.date(2026, 7, 1))
+        self.assertEqual((self.balance(self.accumulated), self.balance(self.depreciation), self.balance(self.disposal)),
+                         (Decimal("0"), Decimal("4999.98"), Decimal("5000.02")))
+
+    def test_one_reinstated_still_ends_on_the_last_month_of_its_life(self):
+        asset = self.asset("10000", life=12)
+        asset.depreciate(through=datetime.date(2026, 12, 31))
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        asset.reinstate()
+        later = asset.depreciate(through=datetime.date(2027, 12, 31))
+        self.assertEqual((later, asset.accumulated(), self.balance(self.accumulated), self.balance(self.depreciation),
+                          self.balance(self.disposal)),
+                         ([], Decimal("10000.00"), Decimal("-10000.00"), Decimal("10000.00"), Decimal("0")))
+
 class DisposalTests(AssetTestCase):
     def test_selling_at_book_value_makes_neither_gain_nor_loss(self):
         asset = self.asset("12000", life=12)
