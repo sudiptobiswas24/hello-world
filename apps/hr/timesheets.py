@@ -144,6 +144,14 @@ class Timesheet(AuditModel):
         self.clean()
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        # Its entries go with it, past their own refusal once approved: hours
+        # a posted run paid on, gone. Sent back first, which asks that.
+        stored = Timesheet.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+        if stored == TimesheetStatus.APPROVED:
+            raise ValidationError("This timesheet has been approved: send it back before deleting it.")
+        return super().delete(*args, **kwargs)
+
     # -- the decision, and its reverse ----------------------------------
 
     @serialised("status")

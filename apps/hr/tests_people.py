@@ -109,6 +109,26 @@ class ClaimTests(PeopleTestCase):
         self.assertIn("is not a bank, cash or card account", str(refused.content))
         self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.APPROVED)
 
+    def paid_on_the_3rd(self):
+        claim = self.approved()
+        claim.pay(self.cash, on_date=datetime.date(2026, 6, 3))
+        return claim
+
+    def test_a_payment_is_not_reversed_before_it_was_made(self):
+        claim = self.paid_on_the_3rd()
+        with self.assertRaisesMessage(ValidationError, "was paid on 2026-06-03; it is not undone before then"):
+            claim.unpay("Wrong drawer", on_date=datetime.date(2026, 6, 2))
+        self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
+
+    def test_the_bookkeeper_does_not_reverse_a_payment_on_a_day_to_come(self):
+        claim = self.paid_on_the_3rd()
+        later = timezone.localdate() + datetime.timedelta(days=30)
+        refused = self.as_(self.books).post(f"/api/hr/expense-claims/{claim.pk}/unpay/",
+                                            {"reason": "Wrong drawer", "on_date": later.isoformat()}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("has not come yet", str(refused.content))
+        self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
+
     def test_submitted_decided_by_the_manager_and_paid_as_one_journal(self):
         claim = self.claim()
         self.assertEqual((claim.total(), claim.number, claim.status), (Decimal("450"), "", ClaimStatus.DRAFT))

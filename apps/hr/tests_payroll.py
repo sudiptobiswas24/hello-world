@@ -435,6 +435,16 @@ class PostingTests(PayrollTestCase):
         with self.assertRaises(ValidationError):
             run.save()
 
+    def test_a_posted_run_is_voided_not_deleted(self):
+        _person, run = self.payroll()
+        run.post()
+        with self.assertRaisesMessage(ValidationError, "it is voided, not deleted"):
+            run.delete()
+        run.void()
+        with self.assertRaisesMessage(ValidationError, "it is voided, not deleted"):
+            run.delete()
+        self.assertEqual(Payslip.objects.filter(run=run).count(), 1)
+
     def test_it_takes_a_number_when_it_posts(self):
         _person, run = self.payroll()
         run.post()
@@ -805,7 +815,7 @@ class VoidingTests(PayrollTestCase):
 
     def test_not_voided_before_the_day_it_was_paid(self):
         _person, run = self.payroll()
-        with self.assertRaisesMessage(ValidationError, "paid on 2026-06-30; it is not voided before then"):
+        with self.assertRaisesMessage(ValidationError, "paid on 2026-06-30; it is not undone before then"):
             run.void(on_date=datetime.date(2026, 5, 1))
         self.assertEqual((run.status, self.balance(self.wages)), (PayRunStatus.POSTED, Decimal("5000.00")))
 
