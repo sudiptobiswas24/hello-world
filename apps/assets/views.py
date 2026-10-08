@@ -8,7 +8,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
 from apps.core.audit import AuditableViewSetMixin
-from apps.core.models import to_date
+from apps.core.models import day_that_has_come, to_date
 
 from .models import (
     AssetCategory,
@@ -150,6 +150,9 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         month charged for some machines and not others.
         """
         through = _date(request, "through")
+        if through is not None:
+            # Refused with nothing in service too: the run is not a way past the rule.
+            _run(day_that_has_come, through, "Depreciation is not run through")
         charged = []
         with transaction.atomic():
             for asset in FixedAsset.objects.filter(status=AssetStatus.IN_SERVICE):

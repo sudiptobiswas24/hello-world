@@ -202,6 +202,39 @@ def to_date(value):
         raise ValidationError(f"{value!r} is not a date. Write it as 2026-03-31.") from None
 
 
+def day_that_has_come(day, refused):
+    """
+    `day`, refused when it is still to come at the plant.
+
+    What is posted for a day has happened on it: depreciation charged
+    through June of next year, or a void dated next week, has the books
+    saying now what is not yet so. `refused` is the refusal up to the day,
+    "FA-2026-00001 is not depreciated through".
+    """
+    day = to_date(day)
+    if day > timezone.localdate():
+        raise ValidationError(f"{refused} {day}: that day has not come.")
+    return day
+
+
+def correction_date(on_date, original, refused, since):
+    """
+    The day a correction is dated: `on_date`, or the plant's today.
+
+    Never before `original`, the day of what it takes back: a lathe bought
+    on 1 January and disposed of on 15 December before it left the plant
+    account at -12,000 over the year end, with nothing yet to take off.
+    Never a day still to come either (day_that_has_come). `refused` begins
+    the refusal, "FA-2026-00001 is not disposed of on"; `since` says what
+    happened on `original`, "it was acquired".
+    """
+    day = to_date(on_date) or timezone.localdate()
+    original = to_date(original)
+    if original is not None and day < original:
+        raise ValidationError(f"{refused} {day}: {since} on {original}.")
+    return day_that_has_come(day, refused)
+
+
 class Country(TimeStampedModel):
     code = models.CharField(max_length=2, unique=True, help_text="ISO 3166-1 alpha-2, e.g. US")
     name = models.CharField(max_length=128)

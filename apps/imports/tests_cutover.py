@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from apps.accounting.models import Account, AccountType
 from apps.assets.models import AssetCategory, FixedAsset
+from apps.assets.tests import the_plants_day
 from apps.core.models import Party, PartyRole, PartyRoleAssignment, UnitOfMeasure, UnitOfMeasureCategory
 from apps.hr.models import Employee
 from apps.hr.payroll import ComponentBasis, ComponentKind, EmployeeCompensation, PayComponent
@@ -133,6 +134,7 @@ class AssetRegisterTests(ImportTestCase):
     LOOM = ("name,category,acquisition_date,in_service_date,cost,salvage_value,life_months,depreciated_to_date\n"
             "Loom 7,PLANT,2024-10-01,2024-10-01,120000,0,60,48000\n")
 
+    @the_plants_day(datetime.date(2026, 11, 5))
     def test_what_was_depreciated_is_carried_and_not_charged_again(self):
         report = run("fixed_assets", self.LOOM, commit=True, date=datetime.date(2026, 9, 30))
         self.assertTrue(report.committed, report.errors)
