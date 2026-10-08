@@ -176,3 +176,70 @@ class InventoryPostingTests(ValuationTestCase):
             reference="X", memo="Special", direction="in",
         )
         self.assertEqual(entry.lines.get(account=special).debit, Decimal("10.00"))
+
+
+class TheAccountStockIsHeldInTests(ValuationTestCase):
+    """
+    Ten received at 5 put 50 in the inventory account. Moved to another
+    account with the ten on the shelf, the old account kept the 50 and
+    writing the ten off credited the new one 50: stock nothing, books
+    50 and minus 50. The account the stock was booked to is a fact of
+    every entry already posted, frozen as the item's unit is.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.spares = Account.objects.create(
+            code="1210", name="Inventory - spares", account_type=AccountType.ASSET
+        )
+
+    def test_an_item_with_stock_cannot_move_to_another_account(self):
+        self.receive("10", "5")
+        self.item.inventory_account = self.spares
+        with self.assertRaisesMessage(ValidationError, "inventory account cannot change"):
+            self.item.save()
+        self.assertIsNone(Item.objects.get(pk=self.item.pk).inventory_account)
+
+    def test_the_default_cannot_move_from_under_items_with_stock(self):
+        self.receive("10", "5")
+        company = Company.get()
+        company.default_inventory_account = self.spares
+        with self.assertRaisesMessage(ValidationError, "WDG-1"):
+            company.save()
+        self.assertEqual(Company.objects.get().default_inventory_account, self.inventory)
+
+    def test_the_store_head_is_refused_through_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        head = User.objects.create_user("stores_head")
+        head.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient()
+        client.force_authenticate(head)
+        self.receive("10", "5")
+        response = client.patch(f"/api/inventory/items/{self.item.pk}/",
+                                {"inventory_account": self.spares.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content[:300])
+        self.assertIn("inventory account cannot change", str(response.json()))
+
+    def test_an_item_with_no_movements_may_name_any_account(self):
+        self.item.inventory_account = self.spares
+        self.item.save()
+        self.assertEqual(Item.objects.get(pk=self.item.pk).inventory_account, self.spares)
+
+    def test_naming_the_account_it_already_uses_moves_nothing(self):
+        self.receive("10", "5")
+        self.item.inventory_account = self.inventory
+        self.item.save()
+        self.assertEqual(Item.objects.get(pk=self.item.pk).inventory_account, self.inventory)
+
+    def test_named_on_the_item_first_the_default_may_move(self):
+        self.receive("10", "5")
+        self.item.inventory_account = self.inventory
+        self.item.save()
+        company = Company.get()
+        company.default_inventory_account = self.spares
+        company.save()
+        self.assertEqual(Company.objects.get().default_inventory_account, self.spares)
