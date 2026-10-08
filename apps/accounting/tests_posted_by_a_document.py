@@ -71,7 +71,12 @@ class SalesSideTests(SalesTestCase):
         JournalLine.objects.create(entry=entry, account=self.revenue, debit=Decimal("10"))
         JournalLine.objects.create(entry=entry, account=self.bank, credit=Decimal("10"))
         entry.post()
-        self.assertEqual(self.reverse(entry).status_code, 200)
+        reversed_ = self.reverse(entry)
+        self.assertEqual(reversed_.status_code, 200)
+        # Its reversal is not reversed in turn, as the screen never offered: the rent is posted again.
+        refused = self.reverse(JournalEntry.objects.get(pk=reversed_.json()["id"]))
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn(f"reverses JE-{entry.pk}", refused.json()[0])
 
     def test_a_delivery_keeps_its_entry_and_is_returned_not_reversed(self):
         delivery = self.ship(self.make_order("10", "100"), "10")
