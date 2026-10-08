@@ -373,10 +373,22 @@ class Item(Extensible, AuditModel):
     def _check_counting_frozen(self):
         if not self.pk:
             return
-        before = Item.objects.filter(pk=self.pk).values(*(name for name, _ in self.COUNTED_AS)).first()
+        before = Item.objects.filter(pk=self.pk).values(
+            "inventory_account_id", *(name for name, _ in self.COUNTED_AS)).first()
         if before is None:
             return
         changed = [words for name, words in self.COUNTED_AS if before[name] != getattr(self, name)]
+        # And where its value is held, which every entry already posted for
+        # it was booked to (CLAUDE.md, mistake 4). Moved with ten on the
+        # shelf, the old account kept their 50, writing them off credited
+        # the new one 50, and the stock and the books parted by 50 for good.
+        # The account in use, whoever names it: blank is the company's.
+        if before["inventory_account_id"] != self.inventory_account_id:
+            from apps.core.models import Company
+
+            default = Company.get().default_inventory_account_id
+            if (before["inventory_account_id"] or default) != (self.inventory_account_id or default):
+                changed.append("inventory account")
         if changed and self.movements.exists():
             raise ValidationError(
                 f"{self.sku} has stock movements counted and valued as it stands, so its "
