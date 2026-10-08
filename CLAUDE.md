@@ -286,6 +286,17 @@ Go through it before running anything.
 - Suite, `audit_invariants`, `makemigrations --check`, then commit.
   Never in one command (mistake 9).
 
+**Agents working in parallel**
+- Two fix agents each built the same shared rule: a correction-date
+  rule in hr and another in core, and two deletable-posted checks. The
+  merge cost a commit and nearly kept both. Name in each brief the shared
+  rules that already exist, and give any new shared rule one owner.
+- A "stale exemption" is a question, not a fix. A rewrite took the
+  landed-cost release out of the date check's pattern while it could
+  still be dated anywhere. Read the method before taking it off a list.
+- Do not hide the output of a step whose failure matters (`2>/dev/null`,
+  `| tail -1`): a `git worktree add` failed that way, unseen.
+
 ## Interrupted work: find it and resume it
 
 Usage limits, container restarts and the two-hour background limit stop
@@ -309,6 +320,12 @@ restart or timeout:
   tip. Check docs/HANDOFF.md for the gate in flight.
 
 ## Auditing
+
+Every defect seen and not fixed goes into docs/RISKS.md, "Open
+defects", with an id, the day it is seen. A notes file, a commit
+message or an agent's report alone is not a record: none of them is
+read when choosing the next work. A row comes off only in the commit
+that fixes it, naming its id.
 
 `.claude/skills/audit/SKILL.md` holds the defect shapes three audits
 found, and `python manage.py audit_invariants` checks the mechanical

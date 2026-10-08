@@ -5,7 +5,7 @@ decision still owed, or a place the tests do not reach. Each says what
 would go wrong, how likely it is here, and what to do about it. Remove
 an entry only in the commit that removes the risk.
 
-Last reviewed: 2026-10-07.
+Last reviewed: 2026-10-08.
 
 ## Before the first real day
 
@@ -212,6 +212,57 @@ can prove.
     actions overdue, a rep's follow-ups due. Anything else still waits to be asked. The mail
     needs a mail server named (RUNBOOK.md) and a cron line; the home
     page needs neither.
+
+## Open defects
+
+Each one has been seen in the code and not yet fixed. The 8 October
+audit and its fix agents found them. A row comes off only in the commit
+that fixes it, and that commit's message names its id; the fix has a
+test that fails without it. Severity is the integrator's judgement:
+**crash** (an action fails for everyone), **books** (money or stock
+comes out wrong), **race** (two people at once), **rule** (a check
+missing), **minor**.
+
+| Id | Area | Defect | Kind | State |
+|---|---|---|---|---|
+| O1 | sales | `DeliveryAllocation.delete` reads `self.delivery`, which the model does not have: deleting any allocation fails | crash | fixed in g17 |
+| O2 | purchasing | Landed cost on the same bill (`Bill._record_landed_cost`, `_split_across_warehouses`) still lands on the line's destination and always debits inventory: the mirror of stores finding 6 | books | open |
+| O3 | inventory | A write-down given an explicit unit cost books that cost, not what the shelf loses (`cost_of_removing`) | books | open |
+| O4 | inventory | The importer reads 8-place opening costs into a 4-place field | books | open |
+| O5 | payroll | Editing a working pattern or holiday region restates posted slips' day counts: a frozen fact read live | books | open |
+| O6 | payroll | The EPFO ECR reads the PF wage ceiling live, not as it stood for the month | books | open |
+| O7 | manufacturing | Release merges components by item and unit: the same item in two units freezes two rows that each count all its issues | books | open |
+| O8 | manufacturing | The WIP tile (apps/web/bank.py) reads the account in settings, not each run's recorded WIP account | books | open |
+| O9 | assets | `dispose()` reverses a closed month's charge on the disposal date; an existing test asserts it, so it may be intended | books | decide |
+| O10 | inventory, quality | A posted stock adjustment, stock count or quality inspection can be deleted (named in `DELETABLE_REPORTED`) | rule | open |
+| O11 | inventory | Cancelling a put-away transfer leaves its receipt route move standing | rule | open |
+| O12 | assets | `place_in_service` accepts an in-service date still to come | rule | open |
+| O13 | assets | `depreciated_before` is not enforced on a draft made by hand | rule | open |
+| O14 | assets | The admin lets an asset's status be edited directly | rule | open |
+| O15 | all | 17 correction steps outside hr and assets are not yet on `correction_date()` (named in `DATED_ELSEWHERE`) | rule | open, one module at a time |
+| O16 | accounting | Unmarking `Account.holds_money` takes no lock and can race a payment posted through the account | race | open, needs a `race()` proof |
+| O17 | core, gst | Nine viewsets do not use `AuditableViewSetMixin`, so their edits take no lock: countries, party tags, saved filters, notes, follow-ups, attachments, and the e-invoice, e-way bill and GSTR-2B deletes | race | open |
+| O18 | hr | The punch-file import reads an attendance day (and whether it was entered by hand) before taking the employee's lock | race | open |
+| O19 | manufacturing | A job-work challan's issue reads the run's status without locking the run | race | open |
+| O20 | payroll | Whether posting a run under the employee locks also closes the run-post against leave and attendance race is unproven | race | open, needs a `race()` proof |
+| O21 | sales | Deleting a line of an approved order locks the order before the line; closing short locks the line first | race | open, check against 8f31e5a |
+| O22 | all | Admin edits read their row without a lock | race | minor |
+| O23 | inventory | The adjustment post endpoint answers with a stale `total_value` (lines prefetched before posting) | minor | open |
+| O24 | accounting | `Account.currency` is read by nothing | minor | open |
+| O25 | frontend | RecordScreen's afterCreate comment says it decides where to go after a delete; the code does not (mistake 1) | minor | open |
+| O26 | assets | Capitalising a bill line has no API action | minor | open |
+| O27 | inventory | Migrations 0030 and 0037 have no migration test | rule | open |
+| O28 | payroll | A leaver's final pay too small for what is taken back: the shortfall becomes a receivable from the former employee; PF/ESI wages drop by what is taken back. A roll voided after the final slip was paid: the same receivable, and the void is not refused (quality corrections must stay possible). Decided, not built | books | to build |
+| O29 | accounting, assets | A period closes while its depreciation is uncharged. Decided: refuse it, through a period-close check that accounting keeps and assets registers with. Not built | rule | to build |
+| O30 | inventory | A partial return across route steps takes the earliest place first | decide | owner's call |
+| O31 | payroll | A leaver's piece-work recovery happens only if the leaving date is set before the final run is calculated. Set after that run posts, no later run includes the person, and the overpayment is never recovered, with nothing said | books | open |
+| O32 | hr | `LeaveRequest.cancel(on_date)` takes any date: called in code with a day before the leave, it cancels a holiday already taken and restores the balance. The API passes no date | rule | open |
+| O33 | manufacturing | A material return (manufacturing/orders.py, near line 2306 when seen) may go back at the issue rate times the quantity rather than at what the issue took; check against de45de4 and d1141ff | books | verify |
+| O34 | assets | The fixed-asset register is not footed against the ledger in the daily health checks | rule | open |
+
+Upgrade notes, true of data made before the 8 October fixes:
+- Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
+- A pay run calculated with handed-in hours before hr migration 0020 is refused at post until it is calculated again.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
 
