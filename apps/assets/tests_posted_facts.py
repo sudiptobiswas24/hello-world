@@ -173,22 +173,32 @@ class ACapitalisedDraftTests(CapitalisationFixture):
         self.assertEqual(self.patched(draft, cost="6500.00").status_code, 200)
 
 class TheAuditAsksItTests(SimpleTestCase):
-    """`manage.py audit_invariants` reports an entry kept past a guard keyed to the status."""
+    """
+    `manage.py audit_invariants` reports an entry kept past a guard keyed to
+    the status, and a setting the asset keeps read live from its category.
+    """
 
-    def findings(self, edit=lambda text: text):
+    def findings(self, check, edit=lambda text: text):
         from apps.core.management.commands.audit_invariants import Command, app_sources
 
         sources = app_sources()
         sources["assets"] = {path: edit(text) if path.name == "models.py" else text
                              for path, text in sources["assets"].items()}
-        return [detail for _, detail in Command().entries_kept_past_the_edit_guard(["assets"], sources)]
+        return [detail for _, detail in getattr(Command(), check)(["assets"], sources)]
 
     def test_a_guard_that_forgets_the_capitalisation_is_reported(self):
-        (said,) = self.findings(lambda text: text.replace("previous.capitalisation_entry_id", "previous.pk"))
+        (said,) = self.findings("entries_kept_past_the_edit_guard",
+                                lambda text: text.replace("previous.capitalisation_entry_id", "previous.pk"))
         self.assertIn("assets.FixedAsset.capitalisation_entry is set by BillLine.capitalise_as_asset", said)
 
-    def test_the_guard_as_it_stands_is_not(self):
-        self.assertEqual(self.findings(), [])
+    def test_a_disposal_reading_its_categorys_account_is_reported(self):
+        (said,) = self.findings("kept_settings_read_live", lambda text: text.replace(
+            "entry=entry, account=self.asset_account,", "entry=entry, account=self.category.asset_account,"))
+        self.assertIn("keeps its own asset_account", said)
+
+    def test_the_asset_as_it_stands_is_not(self):
+        self.assertEqual(self.findings("entries_kept_past_the_edit_guard") + self.findings("kept_settings_read_live"),
+                         [])
 
 # Slow: it unwinds the later migrations and replays them.
 @tag("migration")
