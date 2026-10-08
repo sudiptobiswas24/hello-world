@@ -30,7 +30,18 @@ failed, books its fitters' time, and closes it with the cause and what
 was done. The stoppage is already the downtime, so closing the job
 adds none — a second row would count the same hour twice in
 effectiveness. And the stoppage cannot be withdrawn from under a job
-that rests on it.
+that rests on it, moved to another machine, or changed at all once the
+job is done.
+
+**A completion made in error is withdrawn, not left standing.** Done on
+the wrong loom, the job said a service happened that did not, its
+schedule's clock ran from that day and the machine went unserviced for
+a full interval. Reopened, a service's own stoppage is withdrawn with
+the reason and the clock goes back to the date the completion replaced,
+which the completion recorded rather than anything guessing it later.
+A breakdown keeps its stoppage: the machine stopped whatever the repair
+said. And a job is done on a day that has come, not before the service
+before it, and a repair not before the stoppage it repairs.
 
 **Spares are issued to a job**, while it is open: a write-down of the
 store under the maintenance reason, so they leave stock at their cost
@@ -53,7 +64,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, serialised, to_date
+from apps.core.models import AuditModel, lock_rows, serialised, to_date
 
 ZERO = Decimal("0")
 MINUTES_PER_HOUR = Decimal("60")
@@ -204,14 +215,16 @@ class MaintenanceSchedule(AuditModel):
         left = self.hours_remaining(as_of)
         return left is not None and left <= 0
 
-    @serialised()
+    @serialised("last_done_on")
     def raise_job(self, due_on=None, as_of=None):
         """
         Put a dated occurrence on the board.
 
         Refused when one is already open, because two open jobs for
         one schedule take the machine out twice and a planner cannot
-        tell which is real.
+        tell which is real. The clock is read again under the lock: a
+        job completed a moment ago moved it, and a next job dated off
+        the old one would fall due at once.
         """
         open_already = self.jobs.open().first()
         if open_already is not None:
@@ -282,6 +295,12 @@ class MaintenanceJob(AuditModel):
     action_taken = models.CharField(max_length=255, blank=True, editable=False)
     cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
     cancelled_reason = models.CharField(max_length=255, blank=True, editable=False)
+    replaced_last_done_on = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="When its schedule said it was last done before this job "
+                  "was completed, so a completion withdrawn puts the clock "
+                  "back where it found it. Empty: never done before.",
+    )
 
     objects = MaintenanceJobQuerySet.as_manager()
 
@@ -302,6 +321,13 @@ class MaintenanceJob(AuditModel):
                 condition=Q(downtime__isnull=False, cancelled_at__isnull=True),
                 name="one_standing_job_per_stoppage",
             ),
+            # What raise_job refuses, for every other way a job is written:
+            # two on the board take the machine out twice.
+            models.UniqueConstraint(
+                fields=["schedule"],
+                condition=Q(done_on__isnull=True, cancelled_at__isnull=True),
+                name="one_open_job_per_schedule",
+            ),
         ]
 
     def __str__(self):
@@ -312,16 +338,42 @@ class MaintenanceJob(AuditModel):
     def clean(self):
         self._check_machine()
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.pk and not getattr(self, "_closing", False):
-            stored = type(self).objects.filter(pk=self.pk).values(
-                "done_on", "cancelled_at").first()
+        if self.pk and not getattr(self, "_saving_state", False):
+            # Under the lock: an edit read before a completion committed
+            # would otherwise write the job back open over it.
+            stored = type(self).objects.select_for_update().filter(pk=self.pk).values(
+                "done_on", "cancelled_at", "schedule_id", "work_centre_id", "machine_id").first()
             if stored and stored["done_on"] is not None:
                 raise ValidationError(f"{self} is done; it is as it was done.")
             if stored and stored["cancelled_at"] is not None:
                 raise ValidationError(f"{self} was cancelled.")
+            if stored and (stored["schedule_id"], stored["work_centre_id"], stored["machine_id"]) != (
+                    self.schedule_id, self.work_centre_id, self.machine_id):
+                raise ValidationError(
+                    "A job stays on the machine and the schedule it was raised for; "
+                    "cancel this one and raise another where it is needed.")
+        elif not self.pk:
+            self._check_what_it_rests_on()
         self._check_machine()
         super().save(*args, **kwargs)
+
+    def _check_what_it_rests_on(self):
+        """
+        A service is on its schedule's machine and a repair on its
+        stoppage's: the job is one occurrence of either, not a second
+        opinion on where it happened.
+        """
+        if self.schedule_id is not None:
+            source, noun = self.schedule, "schedule"
+        elif self.downtime_id is not None and self.is_breakdown:
+            source, noun = self.downtime, "stoppage"
+        else:
+            return
+        if (self.work_centre_id, self.machine_id) != (source.work_centre_id, source.machine_id):
+            raise ValidationError(
+                f"A job is where its {noun} is: {source.machine or source.work_centre}.")
 
     def delete(self, *args, **kwargs):
         if self.done_on is not None:
@@ -346,12 +398,12 @@ class MaintenanceJob(AuditModel):
         total = self.labour.aggregate(total=Sum("minutes"))["total"] or ZERO
         return Decimal(total).quantize(CENTS)
 
-    def _close(self, fields):
-        self._closing = True
+    def _save_state(self, fields):
+        self._saving_state = True
         try:
             self.save(update_fields=[*fields, "updated_at"])
         finally:
-            self._closing = False
+            self._saving_state = False
 
     @serialised("cancelled_at", "done_on")
     def cancel(self, reason):
@@ -366,7 +418,7 @@ class MaintenanceJob(AuditModel):
         if self.spares.filter(adjustment__voided_at__isnull=True).exists():
             raise ValidationError(f"{self} has spares issued to it; return them first.")
         self.cancelled_at, self.cancelled_reason = timezone.now(), reason[:255]
-        self._close(["cancelled_at", "cancelled_reason"])
+        self._save_state(["cancelled_at", "cancelled_reason"])
 
     @serialised("cancelled_at", "done_on")
     def complete(self, on_date=None, minutes=None, reason=None, shift=None, cause="",
@@ -390,18 +442,37 @@ class MaintenanceJob(AuditModel):
         from .shifts import Downtime, DowntimeReason
 
         on_date = to_date(on_date) or timezone.localdate()
+        if on_date > timezone.localdate():
+            raise ValidationError(
+                f"{self} cannot be done on {on_date}: that day has not come, and a "
+                "service dated ahead stops its schedule's clock for a day nobody worked.")
         if self.is_breakdown:
+            # As it stands now, under the lock: a stoppage corrected a
+            # moment ago is the one the repair closes on.
+            stoppage = self.downtime
+            lock_rows(stoppage)
+            if on_date < stoppage.shift_date:
+                raise ValidationError(
+                    f"{stoppage} stopped on {stoppage.shift_date}; it was not repaired "
+                    f"on {on_date}, before it broke.")
             action = " ".join((action or "").split())
             if not action:
                 raise ValidationError("Say what was done to put it right.")
             if minutes is not None:
                 raise ValidationError(
                     f"The time {self.machine or self.work_centre} was down is the "
-                    f"stoppage's, {self.downtime.minutes} minutes; correct the stoppage.")
-            self.done_on, self.actual_minutes = on_date, self.downtime.minutes
+                    f"stoppage's, {stoppage.minutes} minutes; correct the stoppage.")
+            self.done_on, self.actual_minutes = on_date, stoppage.minutes
             self.cause, self.action_taken = " ".join((cause or "").split())[:255], action[:255]
-            self._close(["done_on", "actual_minutes", "cause", "action_taken"])
-            return self.downtime
+            self._save_state(["done_on", "actual_minutes", "cause", "action_taken"])
+            return stoppage
+        schedule = self.schedule
+        if schedule is not None:
+            lock_rows(schedule)
+            if schedule.last_done_on is not None and on_date < schedule.last_done_on:
+                raise ValidationError(
+                    f"{schedule} was last done on {schedule.last_done_on}; the service "
+                    f"after it was not done on {on_date}, before it.")
         minutes = Decimal(minutes) if minutes is not None else self.planned_minutes
         if minutes <= 0:
             raise ValidationError(
@@ -421,11 +492,68 @@ class MaintenanceJob(AuditModel):
         )
         self.done_on = on_date
         self.actual_minutes = minutes
-        self._close(["done_on", "actual_minutes", "downtime"])
-        if self.schedule_id:
-            self.schedule.last_done_on = on_date
-            self.schedule.save(update_fields=["last_done_on", "updated_at"])
+        fields = ["done_on", "actual_minutes", "downtime"]
+        if schedule is not None:
+            # What the completion replaces, kept so that withdrawing it
+            # puts back the date and not a guess at it.
+            self.replaced_last_done_on = schedule.last_done_on
+            fields.append("replaced_last_done_on")
+        self._save_state(fields)
+        if schedule is not None:
+            schedule.last_done_on = on_date
+            schedule.save(update_fields=["last_done_on", "updated_at"])
         return self.downtime
+
+    @serialised("cancelled_at", "done_on")
+    def reopen(self, reason):
+        """
+        Completed in error: back on the board as the completion found it.
+
+        The reverse of `complete`. A service's own stoppage is withdrawn
+        with the reason, so effectiveness stops counting hours for it,
+        and its schedule's clock goes back to the date the completion
+        replaced. A breakdown keeps its stoppage — the machine stopped,
+        whatever the repair said — and loses only what the repair said.
+
+        Refused once the schedule has moved on to a later job, whose
+        clock it is now, and once the clock has been set by hand since:
+        putting it back would undo what that person meant.
+        """
+        if self.cancelled_at is not None:
+            raise ValidationError(f"{self} was cancelled.")
+        if self.done_on is None:
+            raise ValidationError(f"{self} is not done; there is nothing to reopen.")
+        reason = " ".join((reason or "").split())
+        if not reason:
+            raise ValidationError("Say why the completion is withdrawn.")
+        schedule = self.schedule
+        if schedule is not None:
+            lock_rows(schedule)
+            later = schedule.jobs.filter(pk__gt=self.pk, cancelled_at__isnull=True).first()
+            if later is not None:
+                raise ValidationError(
+                    f"{later} has been raised on the schedule since, and its clock is "
+                    "that job's now. Cancel it first if this service was not done.")
+            if schedule.last_done_on != self.done_on:
+                raise ValidationError(
+                    f"{schedule} has been set to last done on {schedule.last_done_on} "
+                    "by hand since; correct the schedule rather than reopening this.")
+        stoppage = None if self.is_breakdown else self.downtime
+        self.done_on = self.actual_minutes = None
+        fields = ["done_on", "actual_minutes"]
+        if self.is_breakdown:
+            self.cause = self.action_taken = ""
+            fields += ["cause", "action_taken"]
+        else:
+            self.downtime = None
+            fields.append("downtime")
+        clock, self.replaced_last_done_on = self.replaced_last_done_on, None
+        self._save_state([*fields, "replaced_last_done_on"])
+        if stoppage is not None:
+            stoppage.void(f"{self} reopened: {reason}"[:255])
+        if schedule is not None:
+            schedule.last_done_on = clock
+            schedule.save(update_fields=["last_done_on", "updated_at"])
 
 
 def due_now(as_of=None, work_centre=None):

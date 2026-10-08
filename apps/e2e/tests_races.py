@@ -623,6 +623,43 @@ class OneDecisionAtATimeRaceTests(RaceCase):
             as_of=run_fixture.TODAY)] * 2))
         self.assertEqual(MaintenanceJob.objects.count(), 1)
 
+    def test_a_service_is_not_reopened_as_its_schedule_raises_the_next(self):
+        """Both at once would leave the schedule with two jobs on the board."""
+        from apps.manufacturing.maintenance import MaintenanceJob, MaintenanceSchedule
+        from apps.manufacturing import tests_maintenance
+
+        schedule = fixture(self, tests_maintenance.MaintenanceTestCase).schedule(days=90)
+        job = schedule.raise_job(as_of=run_fixture.TODAY)
+        job.complete(on_date=run_fixture.TODAY)
+        self.once(race(MaintenanceJob,
+                       lambda: MaintenanceJob.objects.get(pk=job.pk).reopen("Wrong loom"),
+                       lambda: MaintenanceSchedule.objects.get(pk=schedule.pk).raise_job(
+                           as_of=run_fixture.TODAY)))
+        self.assertEqual(MaintenanceJob.objects.open().filter(schedule=schedule).count(), 1)
+
+    def test_a_repair_closes_on_its_stoppage_as_it_stands(self):
+        """
+        The stoppage corrected as the repair is closed: either the repair
+        takes the corrected minutes, or the correction finds it done and
+        is refused. Not a repair that says 90 on a stoppage of 120.
+        """
+        from apps.manufacturing.maintenance import MaintenanceJob
+        from apps.manufacturing.shifts import Downtime
+        from apps.manufacturing import tests_breakdowns
+
+        job = fixture(self, tests_breakdowns.BreakdownTestCase).broken("90")
+
+        def correct():
+            stoppage = Downtime.objects.get(pk=job.downtime_id)
+            stoppage.minutes = Decimal("120")
+            stoppage.save()
+
+        race(None, lambda: MaintenanceJob.objects.select_related("downtime").get(pk=job.pk).complete(
+            on_date=run_fixture.TODAY, action="Screen changed"), correct)
+        job.refresh_from_db()
+        self.assertIsNotNone(job.done_on)
+        self.assertEqual(job.actual_minutes, Downtime.objects.get(pk=job.downtime_id).minutes)
+
     def test_two_runs_at_once_take_one_month_not_two(self):
         from apps.accounting import tests_recurring
         from apps.accounting.recurring import generate_due_journals

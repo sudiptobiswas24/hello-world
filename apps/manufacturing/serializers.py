@@ -586,7 +586,9 @@ class MaintenanceJobSerializer(serializers.ModelSerializer):
                   "status", "due_on", "planned_minutes", "done_on", "actual_minutes", "downtime",
                   "notes", "is_breakdown", "fault", "technician", "technician_name", "cause",
                   "action_taken", "cancelled_at", "cancelled_reason", "labour_minutes"]
-        read_only_fields = ["done_on", "actual_minutes", "downtime", "is_breakdown", "cause",
+        # A schedule's job is raised from the schedule, which refuses a
+        # second one on the board; typed in, it would not be asked.
+        read_only_fields = ["schedule", "done_on", "actual_minutes", "downtime", "is_breakdown", "cause",
                             "action_taken", "cancelled_at", "cancelled_reason"]
 
     labour_minutes = serializers.SerializerMethodField()
@@ -1092,10 +1094,10 @@ class DowntimeSerializer(serializers.ModelSerializer):
         fields = ["id", "number", "work_centre", "machine", "serves", "shift_date",
                   "shift", "shift_name", "reason", "reason_name", "is_planned", "minutes", "hours",
                   "work_order", "work_order_number", "notes"]
+        read_only_fields = ["number"]
 
     def get_serves(self, obj):
         return str(obj.machine or obj.work_centre)
-        read_only_fields = ["number"]
 
     def get_hours(self, obj):
         return round(obj.hours(), 3)
