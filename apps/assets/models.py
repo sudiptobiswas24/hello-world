@@ -351,7 +351,8 @@ class FixedAsset(Extensible, AuditModel):
         # Asked here, where the date is first known. Put into service from 15 January with the
         # first quarter closed, a machine's January could never be charged: every month-end run
         # stopped on it, for every asset, and the machine could not be disposed of either.
-        closed = self._closed_month(self._charges(self._month_ends(timezone.localdate(), since=in_service)))
+        closed = self._closed_month(self._charges(self._month_ends(timezone.localdate(), since=in_service),
+                                                  since=in_service))
         if closed is not None:
             month_end, period = closed
             raise ValidationError(
@@ -406,18 +407,26 @@ class FixedAsset(Extensible, AuditModel):
             cursor = last + datetime.timedelta(days=1)
         return ends
 
-    def _charges(self, months):
-        """What depreciation charges for each of `months`, in order: (month end, amount), until nothing is left."""
+    def _charges(self, months, since=None):
+        """
+        What depreciation charges for each of `months`, in order: (month end, amount), until
+        nothing is left. `since`: the in-service date, for an asset not yet in service.
+        """
         charge = self.monthly_charge()
         if charge <= 0:
             return []
+        start = to_date(since or self.in_service_date)
+        index = start.year * 12 + start.month - 1 + self.life_months - 1
+        last = datetime.date(index // 12, index % 12 + 1, calendar.monthrange(index // 12, index % 12 + 1)[1])
         remaining, charges = self.remaining_to_depreciate(), []
         for period_end in months:
             if remaining <= 0:
                 break
-            # The last month takes whatever is left rather than the full
-            # charge, or the asset depreciates past its salvage value.
-            amount = min(charge, remaining)
+            # A month short of its life takes the charge, or what is left if less, so it never
+            # depreciates past its salvage value. The last month of its life takes what is left:
+            # each charge is rounded to the paisa, and 10,000 over twelve months at 833.33 left
+            # 0.04 to a thirteenth month, after the lathe's life had ended.
+            amount = remaining if period_end >= last else min(charge, remaining)
             charges.append((period_end, amount))
             remaining -= amount
         return charges
