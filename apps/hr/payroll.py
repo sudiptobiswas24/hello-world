@@ -571,6 +571,14 @@ class PayRun(AuditModel):
         lock_rows(*(slip.employee for slip in slips))
         for slip in slips:
             slip.check_current()
+        # Somebody owed nothing was not paid, and a posted run keeps only the
+        # slips it paid. An empty one held the period: somebody on June's run
+        # with no pay set up was refused June's pay as paid already, and the
+        # register and leave read their June as paid on.
+        for slip in slips:
+            if not slip.lines.exists():
+                slip.delete()
+        slips = [slip for slip in slips if slip.pk is not None]
         self._check_not_already_paid()
 
         if not self.number:
