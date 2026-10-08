@@ -691,6 +691,34 @@ class OneDecisionAtATimeRaceTests(RaceCase):
         self.assertFalse(calibration.voided_at is not None
                          and Reading.objects.filter(calibration=calibration).exists())
 
+    def test_two_call_offs_at_once_do_not_call_off_more_than_the_line(self):
+        """100 ordered and 70 called off: two more of 20 at once each found 30 left."""
+        from apps.sales import tests_call_offs
+        from apps.sales.call_offs import CallOff, called_off
+
+        made = fixture(self, tests_call_offs.CallOffTestCase)
+        self.once(race(CallOff, *[lambda: CallOff.objects.create(
+            line_id=made.line.pk, due_on=tests_call_offs.day(40), quantity=Decimal("20"))] * 2))
+        self.assertEqual(called_off(made.line), Decimal("90"))
+
+    def test_a_line_is_not_cut_below_a_call_off_written_at_once(self):
+        """Cut to 80 as 20 more is called off: either stands, not 90 called off a line of 80."""
+        from apps.sales import tests_call_offs
+        from apps.sales.call_offs import CallOff, called_off
+
+        made = fixture(self, tests_call_offs.CallOffTestCase)
+        line_pk = made.line.pk
+
+        def cut():
+            line = SalesOrderLine.objects.get(pk=line_pk)
+            line.quantity = Decimal("80")
+            line.save()
+
+        self.once(race(None, cut, lambda: CallOff.objects.create(
+            line_id=line_pk, due_on=tests_call_offs.day(40), quantity=Decimal("20"))))
+        self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, called_off(made.line)),
+                      [(Decimal("80"), Decimal("70")), (Decimal("100"), Decimal("90"))])
+
     def test_two_orders_confirmed_at_once_do_not_both_fit_under_the_credit_limit(self):
         from apps.sales import tests_approvals
         from apps.sales.models import CustomerProfile, SalesOrder, committed_balance
