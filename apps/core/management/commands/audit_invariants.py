@@ -101,6 +101,7 @@ class Command(BaseCommand):
         findings += self.corrections_dated_without_the_rule(labels, sources)
         findings += self.unchecked_reversal_dates(labels, sources)
         findings += self.deletable_posted_documents(labels, sources)
+        findings += self.posted_as_calculated(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -645,6 +646,36 @@ class Command(BaseCommand):
                             "unchecked reversal date",
                             f"{where} ({path.name}:{node.lineno}) reverses on the day it is given without "
                             "refusing one before what it reverses or after today.",
+                        ))
+        return findings
+
+    def posted_as_calculated(self, labels, sources):
+        """
+        A document calculated and then posted, whose post() does not work it
+        out again. Everything a calculation read can move before it posts:
+        June's run was posted at 4,400.00 after unpaid leave made it
+        3,400.00, and two fortnights calculated before either posted both
+        paid September's piece work. post() asks again by calling
+        check_current(), work_out() or calculate().
+        """
+        findings = []
+        for label in labels:
+            documents = {model.__name__ for model in django_apps.get_app_config(label).get_models()}
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                for owner in ast.walk(ast.parse(text)):
+                    if not isinstance(owner, ast.ClassDef) or owner.name not in documents:
+                        continue
+                    methods = {node.name: node for node in owner.body if isinstance(node, ast.FunctionDef)}
+                    if "calculate" not in methods or "post" not in methods:
+                        continue
+                    body = ast.get_source_segment(text, methods["post"]) or ""
+                    if not any(call in body for call in ("check_current(", "work_out(", "calculate(")):
+                        findings.append((
+                            "posted as calculated",
+                            f"{label}.{owner.name}.post ({path.name}:{methods['post'].lineno}) posts what "
+                            "calculate() worked out without working it out again.",
                         ))
         return findings
 

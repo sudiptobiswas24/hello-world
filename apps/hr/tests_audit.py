@@ -471,3 +471,15 @@ class TheAuditAsksTests(TestCase):
             "    def kept(self, *args, **kwargs):\n        # Posted, it is in the ledger")
         self.assertEqual([detail.split(" ")[0] for _shape, detail in
                           Command().deletable_posted_documents(["hr"], {"hr": sources})], ["hr.PayRun"])
+
+    def test_a_pay_run_posted_as_it_was_calculated_is_reported(self):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command, source_of
+
+        sources = source_of("hr")
+        self.assertEqual(Command().posted_as_calculated(["hr"], {"hr": sources}), [])
+        payroll = Path("apps/hr/payroll.py")
+        sources[payroll] = sources[payroll].replace("            slip.check_current()\n", "            pass\n")
+        self.assertEqual([detail.split(" ")[0] for _shape, detail in
+                          Command().posted_as_calculated(["hr"], {"hr": sources})], ["hr.PayRun.post"])

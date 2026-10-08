@@ -374,7 +374,7 @@ class Employee(Extensible, AuditModel):
         file filed 11. Leave, the register, timesheets and rates refuse the
         same under a posted run; the run is voided to change it.
         """
-        from .payroll import PayRunStatus, Payslip
+        from .payroll import posted_slip_over
 
         previous = Employee.objects.filter(pk=self.pk).values("hire_date", "termination_date").first() \
             if self.pk else None
@@ -391,11 +391,7 @@ class Employee(Extensible, AuditModel):
         if before != after:
             moved.append(("start date", min(before, after), max(before, after) - datetime.timedelta(days=1)))
         for what, first, last in moved:
-            paid = Payslip.objects.filter(employee_id=self.pk, run__status=PayRunStatus.POSTED,
-                                          run__period_end__gte=first)
-            if last is not None:
-                paid = paid.filter(run__period_start__lte=last)
-            paid = paid.select_related("run").order_by("run__period_start").first()
+            paid = posted_slip_over(self.pk, first, last)
             if paid is not None:
                 raise ValidationError(
                     f"{paid.run} is posted and paid {self} for {paid.run.period_start}..{paid.run.period_end} "
@@ -824,7 +820,7 @@ class LeaveRequest(AuditModel):
         nothing it paid, and is not refused.
         """
         from .attendance import UNPAID, AttendanceDay
-        from .payroll import PayRunStatus, Payslip
+        from .payroll import posted_slip_over
 
         read_by_pay = (
             (self.policy_id is not None and not self.policy.is_paid)
@@ -834,9 +830,7 @@ class LeaveRequest(AuditModel):
         )
         if not read_by_pay:
             return
-        paid = Payslip.objects.filter(employee=self.employee, run__status=PayRunStatus.POSTED,
-                                      run__period_start__lte=last, run__period_end__gte=first,
-                                      ).select_related("run").first()
+        paid = posted_slip_over(self.employee, first, last)
         if paid is not None:
             raise ValidationError(
                 f"{paid.run} is posted and paid {self.employee} on these days as they stood; "
