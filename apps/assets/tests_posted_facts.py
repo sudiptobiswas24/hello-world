@@ -1,0 +1,180 @@
+"""
+What an asset posted is a fact it keeps, not something read again from
+its category later.
+
+A category says what the next asset gets. Read live, it moved assets
+already on the books: a category given new accounts had its lathe's
+disposal take 12,000 off an account that never held it, leaving the old
+plant account at 12,000 and the old accumulated account at -3,000 for
+good; a category switched to not depreciated stopped a lathe in service
+with 9,000 still to charge.
+
+The lathe: 12,000 from a bill dated 1 January 2026, twelve months at
+1,000, in service from 1 January.
+"""
+
+import datetime
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.db import connection
+from django.test import TransactionTestCase, tag
+
+from apps.accounting.models import Account, AccountType
+
+from .models import DepreciationMethod, FixedAsset
+from .tests import CapitalisationFixture
+
+MAR_31 = datetime.date(2026, 3, 31)
+JUN_30 = datetime.date(2026, 6, 30)
+
+
+class CategoryMovedTestCase(CapitalisationFixture):
+    def setUp(self):
+        super().setUp()
+        self.new_plant = Account.objects.create(code="1510", name="Plant (new)", account_type=AccountType.ASSET)
+        self.new_accumulated = Account.objects.create(code="1595", name="Accumulated (new)",
+                                                      account_type=AccountType.ASSET)
+        self.controller = self.as_role("Controller")
+
+    def lathe(self):
+        (asset,) = self.bill_line("1", "12000").capitalise_as_asset(self.category)
+        asset.place_in_service(on_date=datetime.date(2026, 1, 1))
+        return asset
+
+    def move_the_category(self, asset, **changes):
+        """The category changed over the API; the asset as the next request reads it."""
+        changes = changes or {"asset_account": self.new_plant.pk, "accumulated_account": self.new_accumulated.pk}
+        response = self.controller.patch(f"/api/assets/categories/{self.category.pk}/", changes, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        return FixedAsset.objects.get(pk=asset.pk)
+
+    def books(self):
+        return tuple(self.balance(account) for account in
+                     (self.plant, self.accumulated, self.new_plant, self.new_accumulated))
+
+
+class TheAccountsAnAssetStandsOnTests(CategoryMovedTestCase):
+    def test_its_disposal_clears_the_accounts_it_was_put_on_not_the_categorys_new_ones(self):
+        asset = self.lathe()
+        asset.depreciate(through=MAR_31)
+        self.move_the_category(asset)
+        gone = self.controller.post(f"/api/assets/assets/{asset.pk}/dispose/", {"on_date": "2026-04-01"},
+                                    format="json")
+        self.assertEqual(gone.status_code, 200, gone.content)
+        self.assertEqual(self.books() + (self.balance(self.disposal),),
+                         (Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("9000.00")))
+
+    def test_months_charged_after_the_move_are_held_with_the_months_before(self):
+        asset = self.lathe()
+        asset.depreciate(through=MAR_31)
+        asset = self.move_the_category(asset)
+        asset.depreciate(through=JUN_30)
+        self.assertEqual(self.books()[1:], (Decimal("-6000.00"), Decimal("0"), Decimal("0")))
+        asset.dispose(on_date=datetime.date(2026, 7, 1))
+        self.assertEqual(self.books() + (self.balance(self.depreciation), self.balance(self.disposal)),
+                         (Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000.00"),
+                          Decimal("6000.00")))
+
+    def test_one_reinstated_after_the_move_goes_back_where_it_stood(self):
+        asset = self.lathe()
+        asset.depreciate(through=MAR_31)
+        asset.dispose(on_date=datetime.date(2026, 6, 15))
+        asset = self.move_the_category(asset)
+        asset.reinstate()
+        asset.depreciate(through=JUN_30)
+        self.assertEqual(self.books() + (self.balance(self.disposal),),
+                         (Decimal("12000.00"), Decimal("-6000.00"), Decimal("0"), Decimal("0"), Decimal("0")))
+
+    def test_one_put_in_service_after_the_move_stands_on_the_new_accounts(self):
+        asset = FixedAsset.objects.create(name="Press", category=self.category, cost=Decimal("6000"),
+                                          acquisition_date=datetime.date(2026, 1, 1), life_months=12)
+        asset = self.move_the_category(asset)
+        asset.place_in_service(on_date=datetime.date(2026, 1, 1))
+        asset.depreciate(through=datetime.date(2026, 1, 31))
+        self.assertEqual((asset.asset_account, asset.accumulated_account, self.balance(self.new_accumulated)),
+                         (self.new_plant, self.new_accumulated, Decimal("-500.00")))
+
+    def test_what_it_stands_on_is_not_changed_once_in_service(self):
+        asset = self.lathe()
+        asset.accumulated_account = self.new_accumulated
+        with self.assertRaisesMessage(ValidationError, "accumulated_account can no longer change"):
+            asset.save()
+
+
+class TheMethodAnAssetIsDepreciatedByTests(CategoryMovedTestCase):
+    def test_a_category_switched_to_not_depreciated_does_not_stop_one_in_service(self):
+        asset = self.lathe()
+        asset.depreciate(through=MAR_31)
+        asset = self.move_the_category(asset, method=DepreciationMethod.NONE)
+        made = asset.depreciate(through=JUN_30)
+        self.assertEqual(([row.amount for row in made], asset.accumulated()),
+                         ([Decimal("1000.00")] * 3, Decimal("6000.00")))
+
+    def test_a_draft_follows_its_category_until_it_goes_into_service(self):
+        asset = FixedAsset.objects.create(name="Yard wall", category=self.category, cost=Decimal("6000"),
+                                          acquisition_date=datetime.date(2026, 1, 1), life_months=12)
+        asset = self.move_the_category(asset, method=DepreciationMethod.NONE)
+        asset.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.assertEqual((asset.method, asset.depreciate(through=JUN_30)), (DepreciationMethod.NONE, []))
+
+
+# Slow: it unwinds the later migrations and replays them.
+@tag("migration")
+class AssetsAlreadyOnTheBooksMigrationTests(TransactionTestCase):
+    """
+    Upgraded, an asset already on the books keeps what it stands on: the
+    asset account its capitalisation debited, even where its category has
+    moved since; otherwise its category's, as every entry of it read until
+    now. A draft from a bill keeps its asset account; one typed in keeps
+    nothing until it goes into service.
+    """
+
+    before = [("assets", "0006_disposal_in_error_reinstated")]
+    after = [("assets", "0007_what_each_asset_stands_on")]
+
+    def test_each_keeps_what_it_stands_on(self):
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        # Only assets is taken back; the accounts and entries are made as they stand now, by id.
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        account = now.get_model("accounting", "Account")
+        old_plant, new_plant, accumulated, expense, purchases = (
+            account.objects.create(code=code, name=code, account_type=kind) for code, kind in (
+                ("1500", "asset"), ("1510", "asset"), ("1590", "asset"), ("6100", "expense"),
+                ("5000", "expense")))
+        category = apps.get_model("assets", "AssetCategory").objects.create(
+            code="PLANT", name="Plant", asset_account_id=new_plant.pk, accumulated_account_id=accumulated.pk,
+            expense_account_id=expense.pk, method="straight_line")
+        entry = now.get_model("accounting", "JournalEntry").objects.create(date=datetime.date(2026, 1, 1))
+        line = now.get_model("accounting", "JournalLine")
+        line.objects.create(entry=entry, account=old_plant, debit=Decimal("12000"))
+        line.objects.create(entry=entry, account=purchases, credit=Decimal("12000"))
+        draft_entry = now.get_model("accounting", "JournalEntry").objects.create(date=datetime.date(2026, 1, 1))
+        line.objects.create(entry=draft_entry, account=old_plant, debit=Decimal("500"))
+        line.objects.create(entry=draft_entry, account=purchases, credit=Decimal("500"))
+        asset = apps.get_model("assets", "FixedAsset")
+
+        def made(name, status, capitalisation=None):
+            return asset.objects.create(name=name, category=category, status=status, cost=Decimal("12000"),
+                                        acquisition_date=datetime.date(2026, 1, 1), life_months=12,
+                                        capitalisation_entry_id=capitalisation)
+
+        made("From a bill", "in_service", entry.pk)
+        made("Typed in", "in_service")
+        made("Drafted from a bill", "draft", draft_entry.pk)
+        made("Drafted by hand", "draft")
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        asset = executor.loader.project_state(self.after).apps.get_model("assets", "FixedAsset")
+        self.assertEqual(
+            sorted(asset.objects.values_list("name", "asset_account_id", "accumulated_account_id", "method")),
+            [("Drafted by hand", None, None, ""), ("Drafted from a bill", old_plant.pk, None, ""),
+             ("From a bill", old_plant.pk, accumulated.pk, "straight_line"),
+             ("Typed in", new_plant.pk, accumulated.pk, "straight_line")])
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())

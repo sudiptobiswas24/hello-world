@@ -60,6 +60,20 @@ class AssetTestCase(TestCase):
         )
         return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
 
+    def as_role(self, role):
+        """The API as someone setup_roles puts in `role`: a superuser proves nothing about who may."""
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        if not Group.objects.filter(name=role).exists():
+            call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user(f"{role.lower().replace(' ', '-')}-{User.objects.count()}")
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
 
 class LifecycleTests(AssetTestCase):
     def test_placing_in_service_numbers_it(self):

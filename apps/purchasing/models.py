@@ -4457,12 +4457,14 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 cost=cost,
                 salvage_value=Decimal(salvage_value),
                 life_months=life_months or category.default_life_months,
+                # Kept on the asset: its disposal takes the cost off where this put it.
+                asset_account=category.asset_account,
             )
             entry = JournalEntry.objects.create(
                 date=self.bill.bill_date, reference=self.bill.number, memo=memo
             )
             JournalLine.objects.create(
-                entry=entry, account=category.asset_account,
+                entry=entry, account=asset.asset_account,
                 debit=cost, description=memo[:255],
             )
             JournalLine.objects.create(
