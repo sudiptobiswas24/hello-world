@@ -614,6 +614,23 @@ class OneDecisionAtATimeRaceTests(RaceCase):
             lambda: MasterScheduleEntry.objects.get(pk=entry.pk).commit(on_date=tests_mps.TODAY)] * 2))
         self.assertEqual(WorkOrder.objects.count(), 1)
 
+    def test_two_fortnights_posted_at_once_do_not_both_pay_the_piece_work(self):
+        """
+        Each run's piece work is what was made less what posted runs paid. Calculated before
+        either posted and posted together, each found the other not there, and September's
+        2,000 m were paid 1,250.00 for 850.00. The weaver is held as either posts.
+        """
+        from apps.manufacturing import tests_piecework
+
+        made = fixture(self, tests_piecework.PieceworkTestCase)
+        made.woven("1000", tests_piecework.SEP(3))
+        made.woven("1000", tests_piecework.SEP(21))
+        runs = [made.pay(tests_piecework.SEP(1), tests_piecework.SEP(15), post=False),
+                made.pay(tests_piecework.SEP(16), tests_piecework.SEP(30), post=False)]
+        self.once(race(JournalEntry, *[lambda pk=run.pk: PayRun.objects.get(pk=pk).post() for run in runs]))
+        self.assertLessEqual(sum((run.gross() for run in PayRun.objects.filter(status="posted")), Decimal("0")),
+                             Decimal("850.00"))
+
     def test_a_day_is_not_taken_off_as_it_is_marked_worked(self):
         """Each finds the other not there yet, and the day is paid twice."""
         from apps.hr import tests_attendance
