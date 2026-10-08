@@ -2019,7 +2019,12 @@ def _check_order_is_open_for(order, what):
     empty, where it stays — which is exactly the sort of balance this
     module exists to make impossible. Reopening reverses the close
     first, and reopening is a posting rather than an edit.
+
+    Asked holding the run, as every posting asks: a void that read the
+    run released while a close summed it, document and all, committed
+    its reversal into the work in progress the close had just cleared.
     """
+    lock_rows(order)
     if not order.is_open():
         raise ValidationError(
             f"{order} is {order.get_status_display().lower()}, so you cannot "
