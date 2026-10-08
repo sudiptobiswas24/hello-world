@@ -1144,7 +1144,7 @@ class Command(BaseCommand):
 
     @staticmethod
     def _class_body(code, name):
-        match = re.search(rf"^class {name}\(", code, re.M)
+        match = re.search(rf"^class {name}[(:]", code, re.M)
         if not match:
             return None
         rest = code[match.start():]

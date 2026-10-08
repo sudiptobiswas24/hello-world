@@ -41,8 +41,10 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 
+from .orders import VoidedNotDeleted
 
-class OutsideMovement(AuditModel):
+
+class OutsideMovement(VoidedNotDeleted, AuditModel):
     """
     Work coming back from a vendor against an outside step — or going
     back to them.
@@ -133,17 +135,6 @@ class OutsideMovement(AuditModel):
                 "charge belongs on the step they did."
             )
         super().save(*args, **kwargs)
-
-    @serialised("posted")
-    def delete(self, *args, **kwargs):
-        # Its entry in work in progress would stay, and the step would read
-        # as having had nothing back.
-        if self.posted:
-            raise ValidationError(
-                f"Cannot delete {self} once it is posted. Void it or return "
-                "the work to the vendor."
-            )
-        return super().delete(*args, **kwargs)
 
     @serialised("posted")
     def post(self, memo=""):
