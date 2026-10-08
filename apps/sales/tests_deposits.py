@@ -10,11 +10,14 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 
 from .models import (
     DepositApplication,
     Invoice,
     InvoicePolicy,
+    SalesOrder,
+    SalesOrderLine,
     SettlementStatus,
     committed_balance,
     commission_report,
@@ -676,3 +679,93 @@ class ACancelledOrderHoldsNoDepositTests(SalesTestCase):
             deposit.post()
         deposit.refresh_from_db()
         self.assertEqual((deposit.posted, self.balance(self.deposits)), (False, Decimal("0")))
+
+
+class AnOrderComesToNoLessThanItsDepositsTests(SalesTestCase):
+    """
+    Down payments on an order cannot exceed it: asked when one was taken and never again, so
+    the order could be cut under what it held. 10 x 100 holding 800, cut to 5: the final
+    invoice drew 500, and 300 sat on the deposit account for no invoice to draw down. A line
+    closed short did the same. Every change that leaves the order worth less is weighed once
+    written and undone if it comes to less than was taken.
+    """
+
+    def deposit(self, order, amount="800"):
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal(amount))
+        deposit.post()
+        return deposit
+
+    def test_a_line_cut_under_its_deposit_is_left_as_it_was_until_the_difference_is_credited(self):
+        order = self.make_order("10", "100")
+        deposit = self.deposit(order)
+        line = order.lines.get()
+        line.quantity = Decimal("5")
+        with self.assertRaisesMessage(
+                ValidationError, "would come to 500.00: less than the 800.00 taken on it up front. Credit 300.00"):
+            line.save()
+        line.refresh_from_db()
+        self.assertEqual(line.quantity, Decimal("10"))
+
+        deposit.create_credit_note(memo="Order cut to five", amount=Decimal("300"))
+        line.quantity = Decimal("5")
+        line.save()
+        self.assertEqual((order.total(), order.deposit_total(), self.balance(self.deposits)),
+                         (Decimal("500.00"), Decimal("500.00"), Decimal("-500.00")))
+
+    def test_repriced_or_removed_likewise_and_a_cut_the_deposit_covers_stands(self):
+        order = self.make_order("10", "100")
+        self.deposit(order)
+        line = order.lines.get()
+        line.unit_price = Decimal("50")
+        with self.assertRaisesMessage(ValidationError, "would come to 500.00"):
+            line.save()
+
+        two = self.make_order("5", "100")
+        SalesOrderLine.objects.create(order=two, item=self.item, uom=self.uom, quantity=Decimal("5"),
+                                      unit_price=Decimal("100"), revenue_account=self.revenue)
+        self.deposit(two)
+        with self.assertRaisesMessage(ValidationError, "would come to 500.00"):
+            two.lines.order_by("-pk").first().delete()
+        self.assertEqual(two.lines.count(), 2)
+
+        covered = self.make_order("10", "100")
+        self.deposit(covered, "300")
+        line = covered.lines.get()
+        line.quantity = Decimal("5")
+        line.save()
+        self.assertEqual(covered.total(), Decimal("500.00"))
+
+    def test_closed_short_under_its_deposit_once_the_rest_is_credited_the_account_clears(self):
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        deposit = self.deposit(order)
+        self.ship(order, "5")
+        self.bill(order)
+        line = order.lines.get()
+        with self.assertRaisesMessage(
+                ValidationError, "would come to 500.00, once what was closed short is taken off: less than the 800.00"):
+            line.close_short("Customer wants no more")
+        line.refresh_from_db()
+        self.assertFalse(line.is_closed_short())
+
+        deposit.create_credit_note(memo="Rest called off")
+        line.close_short("Customer wants no more")
+        self.assertEqual(self.balance(self.deposits), Decimal("0"))
+
+    def test_a_deposit_taken_after_a_line_closed_short_counts_what_the_order_can_still_come_to(self):
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        self.ship(order, "5")
+        order.lines.get().close_short("Customer wants no more")
+        with self.assertRaisesMessage(
+                ValidationError, "would exceed the order total of 500.00, once what was closed short is taken off"):
+            order.create_down_payment_invoice(self.ar, amount=Decimal("600"))
+        self.assertEqual(self.deposit(order, "500").total(), Decimal("500.00"))
+
+    def test_a_line_that_may_not_go_leaves_the_approval_where_it_was(self):
+        order = self.make_order("10", "100")
+        self.ship(order, "4")
+        SalesOrder.objects.filter(pk=order.pk).update(approved_at=timezone.now())
+        order.refresh_from_db()  # the line reads its order from here
+        with self.assertRaisesMessage(ValidationError, "can no longer be removed"):
+            order.lines.get().delete()
+        order.refresh_from_db()
+        self.assertIsNotNone(order.approved_at)

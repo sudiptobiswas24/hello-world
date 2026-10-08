@@ -230,6 +230,21 @@ class TaxedDocumentMixin(models.Model):
     def total(self):
         return self.subtotal() + self.tax_total()
 
+    def worth_within(self, limit):
+        """
+        What the document can still come to: its total, less each line's part beyond
+        `limit(line)` (what a line closed short will never bill), at that line's own share
+        of the tax the total counts.
+        """
+        worth = self.total()
+        for line, amounts in self.line_tax_amounts().items():
+            short = line.quantity - limit(line)
+            if short > 0 and line.quantity:
+                gross = line.net_amount() + sum(
+                    (amount for tax, amount in amounts if not tax.reverse_charge), Decimal("0"))
+                worth -= round_money(gross * short / line.quantity)
+        return worth
+
     def tax_breakdown(self):
         """{tax: amount} across all lines, for invoice summary lines."""
         totals = defaultdict(Decimal)

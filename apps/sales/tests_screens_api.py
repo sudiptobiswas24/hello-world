@@ -580,6 +580,20 @@ class ACancelThatHoldsADepositThroughTheApiTests(ScreensTestCase):
         self.assertEqual((cancelled.status_code, cancelled.json()["status"]), (200, "cancelled"), cancelled.content)
 
 
+
+class ACutUnderTheDepositThroughTheApiTests(ScreensTestCase):
+    def test_the_line_is_refused_beside_its_words_and_left_as_it_was(self):
+        order = self.make_order("10", "100")
+        order.create_down_payment_invoice(self.ar, amount=Decimal("800")).post()
+        line = order.lines.get()
+        refused = self.as_("AR Manager").patch(f"/api/sales/sales-order-lines/{line.pk}/", {"quantity": "5"},
+                                               format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("Credit 300.00 of its down payments back first", str(refused.json()))
+        line.refresh_from_db()
+        self.assertEqual(line.quantity, Decimal("10"))
+
+
 class DeliveryChallanPdfTests(ScreensTestCase):
     """The challan the lorry carries, read by whoever may read the delivery and nobody else."""
 
