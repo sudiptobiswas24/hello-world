@@ -88,6 +88,7 @@ class Command(BaseCommand):
         findings += self.uncalled_helpers(labels, sources, all_code)
         findings += self.unlocked_stock_writers(labels, sources)
         findings += self.movements_in_another_unit(labels, sources)
+        findings += self.unlocked_open_runs(labels, sources)
         findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
@@ -264,6 +265,39 @@ class Command(BaseCommand):
                                          "take it off WRITTEN_IN_ANOTHER_UNIT.")
                      for key in sorted(set(self.WRITTEN_IN_ANOTHER_UNIT) - used)
                      if key.split(".")[0] in labels]
+        return findings
+
+    def unlocked_open_runs(self, labels, sources):
+        """
+        A run asked whether it is open by something not holding it. Every
+        posting held its run before asking; the voids asked through a
+        helper that did not, and a void that read "released" while the
+        close summed the run, document and all, committed its reversal
+        into work in progress after the close had cleared it. A function
+        that asks an order or a run is_open() holds it there: lock_rows(),
+        or a select_for_update of its own.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or ".is_open()" not in text:
+                    continue
+                for fn in ast.walk(ast.parse(text)):
+                    if not isinstance(fn, ast.FunctionDef):
+                        continue
+                    body = ast.unparse(fn)
+                    if "lock_rows(" in body or "_lock(" in body or "select_for_update" in body:
+                        continue
+                    for node in ast.walk(fn):
+                        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                                and node.func.attr == "is_open"
+                                and re.search(r"(order|run)$", ast.unparse(node.func.value))):
+                            findings.append((
+                                "open run read unheld",
+                                f"{label}/{path.name}:{node.lineno} {fn.name}() asks "
+                                f"{ast.unparse(node.func.value)} whether it is open without "
+                                "holding it: lock_rows() it first, as every posting does.",
+                            ))
         return findings
 
     # Not state changes: the guards themselves, and what Python calls.

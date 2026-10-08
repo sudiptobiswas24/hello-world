@@ -38,7 +38,14 @@ from apps.hr import tests_audit as hr_fixture
 from apps.hr import tests_statutory as payroll_fixture
 from apps.inventory.models import StockAdjustment
 from apps.inventory import tests_adjustments as stock_fixture
-from apps.manufacturing.orders import MaterialIssue, WorkOrder, WorkOrderStatus
+from apps.manufacturing.orders import (
+    MaterialIssue,
+    ProductionEntry,
+    TimeBooking,
+    WorkOrder,
+    WorkOrderStatus,
+)
+from apps.manufacturing.outside import OutsideMovement
 from apps.manufacturing import tests_orders as run_fixture
 from apps.purchasing.models import Bill, BillPayment, BillPolicy, PurchaseOrder, PurchaseOrderLine
 from apps.purchasing import tests_prepayments as purchase_fixture
@@ -497,6 +504,75 @@ class RunRaceTests(RaceCase):
         order.refresh_from_db()
         self.assertEqual(order.status, WorkOrderStatus.CLOSED)
         self.assertEqual(self.balance(self.wip), Decimal("0.00"))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class NothingIsTakenBackOutOfARunAsItClosesTests(RaceCase):
+    """
+    A void, or a vendor's movement, read the run as released without its
+    lock while the close summed the run including that document and
+    committed; the void then committed its reversal into work in progress
+    after the close had cleared it. Either the void waits and is refused,
+    or the close waits and counts it: work in progress ends at nothing.
+    """
+
+    def closing(self, made, order, take_back):
+        race(JournalEntry, take_back,
+             lambda: WorkOrder.objects.get(pk=order.pk).close(on_date=run_fixture.TODAY))
+        order.refresh_from_db()
+        self.assertEqual(order.status, WorkOrderStatus.CLOSED)
+        self.assertEqual(made.balance(made.wip), Decimal("0.00"))
+
+    def test_an_issue_voided_as_the_run_closes(self):
+        made = fixture(self, run_fixture.RunTestCase)
+        order = made.order("10")
+        order.release(run_fixture.TODAY)
+        issue = made.full_issue(order)
+        issue.post()
+        self.closing(made, order, lambda: MaterialIssue.objects.get(pk=issue.pk).void(
+            on_date=run_fixture.TODAY))
+
+    def test_output_voided_as_the_run_closes(self):
+        made = fixture(self, run_fixture.RunTestCase)
+        order = made.order("10")
+        order.release(run_fixture.TODAY)
+        made.full_issue(order).post()
+        entry = made.produce(order, "10")
+        entry.post()
+        self.closing(made, order, lambda: ProductionEntry.objects.get(pk=entry.pk).void(
+            on_date=run_fixture.TODAY))
+
+    def test_a_booking_voided_as_the_run_closes(self):
+        from apps.manufacturing import tests_conversion
+
+        made = fixture(self, tests_conversion.ConversionTestCase)
+        order = made.order("1000")
+        order.release(run_fixture.TODAY)
+        booking = made.book(order, "60")
+        booking.post()
+        self.closing(made, order, lambda: TimeBooking.objects.get(pk=booking.pk).void(
+            on_date=run_fixture.TODAY))
+
+    def test_vendor_work_voided_as_the_run_closes(self):
+        from apps.manufacturing import tests_outside
+
+        made = fixture(self, tests_outside.OutsideTestCase)
+        order = made.released()
+        movement = made.back(order, "1000", "2000")
+        self.closing(made, order, lambda: OutsideMovement.objects.get(pk=movement.pk).void(
+            on_date=run_fixture.TODAY))
+
+    def test_vendor_work_booked_as_the_run_closes(self):
+        from apps.manufacturing import tests_outside
+
+        made = fixture(self, tests_outside.OutsideTestCase)
+        order = made.released()
+        draft = OutsideMovement.objects.create(
+            operation=order.operations.get(is_outside=True), movement_date=run_fixture.TODAY,
+            quantity=Decimal("1000"), value=Decimal("2000"), credit_account=made.grni,
+        )
+        self.closing(made, order, lambda: OutsideMovement.objects.get(pk=draft.pk).post())
 
 
 @tag("race")
