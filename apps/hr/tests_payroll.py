@@ -777,6 +777,24 @@ class VoidingTests(PayrollTestCase):
         run.post()
         return person, run
 
+    def test_not_voided_before_the_day_it_was_paid(self):
+        _person, run = self.payroll()
+        with self.assertRaisesMessage(ValidationError, "paid on 2026-06-30; it is not voided before then"):
+            run.void(on_date=datetime.date(2026, 5, 1))
+        self.assertEqual((run.status, self.balance(self.wages)), (PayRunStatus.POSTED, Decimal("5000.00")))
+
+    def test_not_voided_on_a_day_still_to_come(self):
+        from django.utils import timezone
+
+        _person, run = self.payroll()
+        with self.assertRaisesMessage(ValidationError, "has not come yet"):
+            run.void(on_date=timezone.localdate() + datetime.timedelta(days=60))
+        self.assertEqual(run.status, PayRunStatus.POSTED)
+
+    def test_voided_on_the_day_it_was_paid(self):
+        _person, run = self.payroll()
+        self.assertEqual(run.void(on_date=datetime.date(2026, 6, 30)).date, datetime.date(2026, 6, 30))
+
     def test_voiding_reverses_every_account(self):
         _person, run = self.payroll()
         run.void()
