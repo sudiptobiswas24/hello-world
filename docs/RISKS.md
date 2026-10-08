@@ -243,7 +243,6 @@ missing), **minor**.
 | O16 | accounting | Unmarking `Account.holds_money` takes no lock and can race a payment posted through the account | race | open, needs a `race()` proof |
 | O17 | core, gst | Nine viewsets do not use `AuditableViewSetMixin`, so their edits take no lock: countries, party tags, saved filters, notes, follow-ups, attachments, and the e-invoice, e-way bill and GSTR-2B deletes | race | open |
 | O18 | hr | The punch-file import reads an attendance day (and whether it was entered by hand) before taking the employee's lock | race | open |
-| O19 | manufacturing | A job-work challan's issue reads the run's status without locking the run | race | open |
 | O20 | payroll | Whether posting a run under the employee locks also closes the run-post against leave and attendance race is unproven | race | open, needs a `race()` proof |
 | O21 | sales | Deleting a line of an approved order locks the order before the line; closing short locks the line first | race | open, check against 8f31e5a |
 | O22 | all | Admin edits read their row without a lock | race | minor |
@@ -257,7 +256,6 @@ missing), **minor**.
 | O30 | inventory | A partial return across route steps takes the earliest place first | decide | owner's call |
 | O31 | payroll | A leaver's piece-work recovery happens only if the leaving date is set before the final run is calculated. Set after that run posts, no later run includes the person, and the overpayment is never recovered, with nothing said | books | open |
 | O32 | hr | `LeaveRequest.cancel(on_date)` takes any date: called in code with a day before the leave, it cancels a holiday already taken and restores the balance. The API passes no date | rule | open |
-| O33 | manufacturing | A material return (manufacturing/orders.py, near line 2306 when seen) may go back at the issue rate times the quantity rather than at what the issue took; check against de45de4 and d1141ff | books | verify |
 | O34 | assets | The fixed-asset register is not footed against the ledger in the daily health checks | rule | open |
 | O35 | core | `locked_before_it()` is read from the instance as it stood before the lock: an allocation re-pointed to another payment at the same moment locks the old payment | race | minor |
 | O36 | sales | A line's check against its call-offs runs under the line's lock only on a confirmed order whose line drops in value; a cut on a draft order, or on a zero-price line, made through model code reads the call-offs unlocked (the API path is locked) | race | minor |
@@ -268,14 +266,15 @@ missing), **minor**.
 | O41 | manufacturing | `_booked` converts each entry at today's unit factor; a conversion that depends on the date makes `quantity_produced` drift from what went on the shelf | books | minor |
 | O42 | purchasing | A landed-cost release takes off each shelf it landed on what that shelf still holds of it, and the rest out of cost of sales. Goods moved to another shelf after the landing (a put-away from the bay) carried their freight with them, but the release does not follow them: landed on the bay, put away, released, the bay gives up 0, cost of sales is credited 80, and the stock room keeps the 80. Shelf and ledger agree; the release does nothing. `value_still_held` must follow a transfer's value to the shelf it went to | books | open, next |
 | O43 | inventory | A dated correction (adjustment void, run issue and entry voids, transfer cancel, return, landed-cost release) stamps its stock movement when it is made and dates only its journal entry. The replays price movements in the order they were written, so stamping on the given day would reprice what came after; as written, a stock value asked as of a day between the two differs from the ledger by the correction | books | by design; decide |
-| O44 | manufacturing | Migration 0078 copies today's WIP setting onto runs closed before the setting last moved; their close entry's WIP line names the right account. Matters only for data made before 0078 | books | open, upgrade data only |
 | O45 | manufacturing, core | Three admin mixins refuse the same thing (`PostedNotDeletedMixin`, `PostedImmutableAdminMixin`, `PostedDocumentAdminMixin`): fold into one (mistake 5) | rule | open |
 | O46 | core | `unlocked_open_runs` sees only `.is_open()`; a run's status compared to RELEASED by a function that does not hold the run goes unreported (station clock and job work were found by reading) | rule | open |
+| O47 | manufacturing | `TapeLoad.kg` keeps 3 places but `load_tape` accepts 4: 48.9796 kg is stored as 48.980, 0.0004 kg more than the shelf held | books | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
 - A pay run calculated with handed-in hours before hr migration 0020 is refused at post until it is calculated again.
 - A void made before manufacturing migration 0079 keeps its gap between shelf and ledger, and nothing records it.
+- A material issue line posted before manufacturing migration 0080 has no `posted_value`; its return and void work from its rate times its quantity, as it was booked then.
 - A landed-cost allocation made before purchasing migration 0059 releases through its one `stock_movement`; a clearance out of inspection made before 0059 recorded no movement, so under FIFO freight landed on its goods goes to cost of sales.
 
 ## Decisions taken for the owner, confirmed on 2026-10-05
