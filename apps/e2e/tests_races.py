@@ -1174,3 +1174,25 @@ class FloorRaceTests(RaceCase):
         self.once(outcomes)
         withdrawn = JobWorkChallan.objects.get(pk=second.pk).voided_at is not None
         self.assertEqual(withdrawn, not OutsideMovement.objects.get(pk=receipt.pk).posted)
+
+    def test_a_clock_does_not_start_on_a_run_as_it_closes(self):
+        """
+        C-1's clock started as its run closed. The close held the run and
+        found no clock running; the start read the run as released without
+        holding it, and the run closed under a running clock that could
+        then never be stopped. Holding the run first, one finds the other.
+        """
+        from apps.manufacturing import tests_bag_counts
+        from apps.manufacturing.station_clock import MachineClock, start_clock
+        from apps.manufacturing.tests_station import at
+
+        made = fixture(self, tests_bag_counts.ConversionTestCase)
+        outcomes = race(
+            (MachineClock, WorkOrder),
+            lambda: start_clock(made.cv, made.operator, made.c1, at=at(run_fixture.TODAY, 16)),
+            lambda: WorkOrder.objects.get(pk=made.bag_run.pk).close(run_fixture.TODAY))
+        self.once(outcomes)
+        closed = WorkOrder.objects.get(pk=made.bag_run.pk).status == WorkOrderStatus.CLOSED
+        running = MachineClock.objects.filter(operation__work_order=made.bag_run,
+                                              stopped_at__isnull=True).exists()
+        self.assertNotEqual(closed, running)
