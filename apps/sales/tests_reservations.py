@@ -316,3 +316,89 @@ class LineChangesFollowThroughTests(ReservationTestCase):
         # Returned goods are back on the shelf and promised to nobody.
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("30"))
         self.assertEqual(self.item.available_at(self.warehouse), Decimal("30"))
+
+
+class ClaimsAfterShippingAndMovingTests(ReservationTestCase):
+    """
+    The claim records what was promised and what has shipped against it.
+    Re-claimed after a partial shipment it was set to what was left, so a
+    line of 25 that had shipped 10 held 5 after an edit, and one that had
+    shipped 15 could not be edited at all. And it counted itself free at
+    any shelf: moved to a shelf of five it held twenty-five there, and a
+    line holding stock at the main shelf shipped another order's ten from
+    a second one.
+    """
+
+    def other_shelf(self, quantity):
+        other = Warehouse.objects.create(code="O", name="Other")
+        StockMovement.objects.create(
+            item=self.item, warehouse=other, movement_type=MovementType.RECEIPT,
+            uom=self.item.uom, quantity=Decimal(quantity), unit_cost=Decimal("4"),
+            occurred_at=timezone.now(),
+        )
+        return other
+
+    def test_an_edited_line_still_holds_what_it_has_left_to_ship(self):
+        order, line = self.order_for("25")
+        self.ship(order, line, "10")
+        line.refresh_from_db()
+        line.description = "re-labelled"
+        line.save()
+        self.assertEqual(line.quantity_reserved(), Decimal("15"))
+        self.assertEqual(self.item.available_at(self.warehouse), Decimal("5"))
+
+    def test_a_line_mostly_shipped_can_still_be_edited(self):
+        order, line = self.order_for("25")
+        self.ship(order, line, "15")
+        line.refresh_from_db()
+        line.description = "re-labelled"
+        line.save()
+        self.assertEqual(line.quantity_reserved(), Decimal("10"))
+
+    def test_a_line_moved_to_a_shelf_of_five_holds_five_there(self):
+        other = self.other_shelf("5")
+        _order, line = self.order_for("25")
+        line.warehouse = other
+        line.save()
+        self.assertEqual((self.item.reserved_at(other), self.item.available_at(other)),
+                         (Decimal("5"), Decimal("0")))
+        self.assertEqual(self.item.reserved_at(self.warehouse), Decimal("0"))
+
+    def test_moved_back_it_holds_at_the_first_shelf_again(self):
+        other = self.other_shelf("5")
+        _order, line = self.order_for("25")
+        line.warehouse = other
+        line.save()
+        line.warehouse = self.warehouse
+        line.save()
+        self.assertEqual((self.item.reserved_at(self.warehouse), self.item.reserved_at(other)),
+                         (Decimal("25"), Decimal("0")))
+
+    def test_another_orders_promise_at_another_shelf_does_not_ship(self):
+        other = self.other_shelf("10")
+        self.order_for("10", warehouse=other)
+        order, line = self.order_for("25")
+        with self.assertRaisesMessage(ValidationError, "unreserved"):
+            self.ship(order, line, "10", warehouse=other)
+        self.assertEqual(self.item.on_hand_at(other), Decimal("10"))
+
+    def test_the_store_is_refused_it_through_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        other = self.other_shelf("10")
+        self.order_for("10", warehouse=other)
+        order, line = self.order_for("25")
+        delivery = Delivery.objects.create(sales_order=order, delivery_date=datetime.date(2026, 3, 5))
+        DeliveryLine.objects.create(delivery=delivery, order_line=line, warehouse=other,
+                                    quantity_shipped=Decimal("10"))
+        call_command("setup_roles", verbosity=0)
+        store = User.objects.create_user("store")
+        store.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(store)
+        response = client.post(f"/api/sales/deliveries/{delivery.pk}/post_delivery/", {}, format="json")
+        self.assertEqual(response.status_code, 400, response.content[:300])
+        self.assertIn("unreserved", str(response.json()))
+        self.assertEqual(self.item.on_hand_at(other), Decimal("10"))
