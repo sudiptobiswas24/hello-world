@@ -502,7 +502,7 @@ class FixedAsset(Extensible, AuditModel):
         )
         # Cancelled, not disposed: nothing was sold or scrapped, the
         # capitalisation simply never stood — and the register, which
-        # leaves drafts out, must not start showing it as a disposal.
+        # shows it only until the day it was undone, must not show it as a disposal.
         self.status = AssetStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
 
@@ -681,11 +681,20 @@ def asset_register(as_of=None, category=None):
     This used to report today's depreciation under any date asked and
     list assets that did not exist yet, so a register "as at last March"
     was today's register with March written on it.
+
+    On the books means what the ledger says: an asset in service or since
+    disposed of, and one capitalised from a bill from the bill's date
+    until its capitalisation is undone, in service or not. A capitalised
+    draft was left out while its 12,000 stood on the plant account, so
+    the register and the ledger disagreed by every machine still in its
+    crate. `state` says which it was that day: capitalised, or in service.
+    A draft typed in by hand has posted nothing and is not on it.
     """
     as_of = to_date(as_of) or timezone.localdate()
-    assets = FixedAsset.objects.select_related("category").exclude(
-        status__in=(AssetStatus.DRAFT, AssetStatus.CANCELLED)
-    ).filter(acquisition_date__lte=as_of)
+    assets = FixedAsset.objects.select_related("category").filter(
+        Q(status__in=(AssetStatus.IN_SERVICE, AssetStatus.DISPOSED)) | Q(capitalisation_entry__isnull=False),
+        acquisition_date__lte=as_of,
+    )
     if category is not None:
         assets = assets.filter(category=category)
 
@@ -693,12 +702,20 @@ def asset_register(as_of=None, category=None):
     for asset in assets:
         if asset.disposed_on and asset.disposed_on <= as_of:
             continue
+        if asset.status == AssetStatus.CANCELLED:
+            undone = asset.capitalisation_entry.reversed_by.values_list("date", flat=True).first()
+            if undone is None or undone <= as_of:
+                continue
+        in_service = asset.status in (AssetStatus.IN_SERVICE, AssetStatus.DISPOSED) \
+            and to_date(asset.in_service_date) <= as_of
         rows.append({
             "asset": asset,
             "category": asset.category,
+            "state": AssetStatus.IN_SERVICE if in_service else "capitalised",
             "cost": asset.cost,
             "accumulated": asset.accumulated(as_of),
             "net_book_value": asset.net_book_value(as_of),
-            "monthly_charge": asset.monthly_charge(),
+            # A machine in its crate is not being consumed.
+            "monthly_charge": asset.monthly_charge() if in_service else Decimal("0"),
         })
     return sorted(rows, key=lambda row: -row["net_book_value"])
