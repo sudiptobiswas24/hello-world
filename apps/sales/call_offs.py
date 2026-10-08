@@ -22,10 +22,10 @@ it — the same rule from both sides.
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, lock_rows
 
 ZERO = Decimal("0")
 
@@ -53,7 +53,20 @@ class CallOff(AuditModel):
     def __str__(self):
         return f"{self.line}: {self.quantity} on {self.due_on}"
 
+    def locked_before_it(self):
+        """
+        Its line, as save() takes it: an edit or a delete through the API
+        holds the line before the call-off, as deleting the line holds it
+        before its call-offs (apps.core.models.lock_for_change).
+        """
+        return [self.line]
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        # What is left on the line is weighed below: two call-offs at once
+        # each found the same 30 left and together called off 40. Re-read
+        # under the lock, so a line cut a moment ago is the one weighed.
+        lock_rows(*self.locked_before_it())
         if self.line.is_charge():
             raise ValidationError(f"{self.line} is a charge; there is nothing to call off.")
         others = self.line.call_offs.exclude(pk=self.pk).aggregate(
