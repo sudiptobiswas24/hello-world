@@ -727,6 +727,14 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                     "This order has been shipped or invoiced and cannot be cancelled. "
                     "Return the goods or issue a credit note instead."
                 )
+        # Billed up front is billed: cancelled, nothing would draw the deposit down,
+        # and one still unpaid would be chased for an order that is not coming.
+        held = [deposit for deposit in self.deposits() if deposit.deposit_unapplied() > 0]
+        if held:
+            raise ValidationError(
+                f"Down payment {', '.join(deposit.number for deposit in held)} still holds "
+                f"{sum(deposit.deposit_unapplied() for deposit in held)} on this order. "
+                "Credit it back before cancelling.")
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
         # The stock this order was holding is free the moment it is not
@@ -2304,6 +2312,12 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room.
         lock_rows(self.sales_order)
+        order = self.sales_order
+        if order is not None and not self.is_credit_note() and order.status != OrderStatus.CONFIRMED:
+            # Asked as a delivery asks, under the same lock: a draft made before the
+            # order was cancelled billed the customer for it, or took a deposit on it.
+            what = "take a down payment" if self.is_down_payment else "be invoiced"
+            raise ValidationError(f"Only a confirmed order can {what}; {order} is {order.get_status_display().lower()}.")
         if self.is_down_payment:
             self._check_deposit_shape()
             self._check_deposit_room()

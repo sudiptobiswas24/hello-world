@@ -644,3 +644,35 @@ class PartOfADepositIsGivenBackTests(SalesTestCase):
         invoice = self.bill(self.make_order("10", "100"))
         with self.assertRaisesMessage(ValidationError, "not by an amount"):
             invoice.create_credit_note(amount=Decimal("10"))
+
+
+class ACancelledOrderHoldsNoDepositTests(SalesTestCase):
+    """
+    A down payment on an order that is called off: cancelling was asked only about lines
+    shipped and invoiced, so an order holding a deposit was cancelled with nothing left to
+    draw it down, and an unpaid one was chased for an order that was not coming. A draft
+    drawn up before the cancel posted after it. Order 10 x 100; deposit 300.
+    """
+
+    def test_a_deposit_held_is_credited_back_before_the_order_is_cancelled(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal("300"))
+        deposit.post()
+        with self.assertRaisesMessage(ValidationError, f"Down payment {deposit.number} still holds 300.00"):
+            order.cancel()
+        order.refresh_from_db()
+        self.assertEqual(order.status, "confirmed")
+
+        deposit.create_credit_note(memo="Order called off")
+        order.cancel()
+        self.assertEqual((self.balance(self.deposits), outstanding_balance(self.customer)),
+                         (Decimal("0"), Decimal("0.00")))
+
+    def test_a_draft_drawn_up_before_the_cancel_does_not_post_after_it(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal("300"))
+        order.cancel()
+        with self.assertRaisesMessage(ValidationError, "Only a confirmed order can take a down payment"):
+            deposit.post()
+        deposit.refresh_from_db()
+        self.assertEqual((deposit.posted, self.balance(self.deposits)), (False, Decimal("0")))
