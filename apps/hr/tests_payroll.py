@@ -227,6 +227,33 @@ class ProrationTests(PayrollTestCase):
         run.calculate()
         self.assertEqual(run.payslips.get().gross(), Decimal("2200.00"))
 
+    def leaver(self, code, hire, left):
+        person = self.employee(code, hire=hire)
+        person.termination_date = left
+        person.employment_status = EmploymentStatus.TERMINATED
+        person.save()
+        self.pay(person, self.salary, "4400", since=hire)
+        return person
+
+    def test_somebody_who_left_before_the_month_is_not_on_its_run(self):
+        self.pay(self.employee("F0"), self.salary, "4400")
+        self.leaver("S0", datetime.date(2026, 5, 4), datetime.date(2026, 5, 29))
+        run = self.pay_run()
+        run.calculate()
+        self.assertEqual([slip.employee.employee_number for slip in run.payslips.all()], ["F0"])
+
+    def test_somebody_hired_and_gone_inside_the_month_is_paid_for_their_days(self):
+        # 8 to 19 June is 10 of June's 22 working days: 4,400 x 10/22.
+        self.pay(self.employee("F1"), self.salary, "4400")
+        short = self.leaver("S1", datetime.date(2026, 6, 8), datetime.date(2026, 6, 19))
+        run = self.pay_run()
+        run.calculate()
+        self.assertEqual(run.payslips.get(employee=short).gross(), Decimal("2000.00"))
+        alone = PayRun.objects.create(period_start=datetime.date(2026, 6, 1), period_end=datetime.date(2026, 6, 30),
+                                      pay_date=datetime.date(2026, 6, 30))
+        alone.calculate(employees=[short])
+        self.assertEqual(alone.payslips.get().gross(), Decimal("2000.00"))
+
     def test_unpaid_leave_comes_off_the_salary(self):
         # The join between the two halves of the module: leave knows the
         # days, payroll knows what a day costs.
