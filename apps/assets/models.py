@@ -347,7 +347,19 @@ class FixedAsset(Extensible, AuditModel):
             raise ValidationError(f"This asset is already {self.get_status_display().lower()}.")
         # Checked by `save()`, which every path through here reaches —
         # a date before the asset arrived is refused there.
-        self.in_service_date = to_date(on_date) or self.in_service_date or self.acquisition_date
+        in_service = to_date(on_date) or self.in_service_date or self.acquisition_date
+        # Asked here, where the date is first known. Put into service from 15 January with the
+        # first quarter closed, a machine's January could never be charged: every month-end run
+        # stopped on it, for every asset, and the machine could not be disposed of either.
+        closed = self._closed_month(self._charges(self._month_ends(timezone.localdate(), since=in_service)))
+        if closed is not None:
+            month_end, period = closed
+            raise ValidationError(
+                f"{self} cannot go into service from {in_service}: its depreciation for "
+                f"{month_end:%B %Y} would fall in {period}, which is closed, and hold up every "
+                f"asset's month-end run. Put it into service in a month still open, or reopen {period}."
+            )
+        self.in_service_date = in_service
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "assets.fixed_asset", self.acquisition_date,
@@ -374,7 +386,11 @@ class FixedAsset(Extensible, AuditModel):
             to_date(entry.period_end)
             for entry in self.depreciation_entries.filter(reversal__isnull=True)
         }
-        periods, cursor = [], to_date(self.in_service_date)
+        return [last for last in self._month_ends(through) if last not in charged]
+
+    def _month_ends(self, through, since=None):
+        """Month ends from going into service (`since`, or its date) to `through` that are this system's to charge."""
+        ends, cursor = [], to_date(since or self.in_service_date)
         # The old system's months are not this one's to charge again.
         taken_until = to_date(self.depreciated_before)
         if taken_until and taken_until >= cursor:
@@ -385,10 +401,35 @@ class FixedAsset(Extensible, AuditModel):
             )
             if last > through:
                 break
-            if last not in charged and not (taken_until and last <= taken_until):
-                periods.append(last)
+            if not (taken_until and last <= taken_until):
+                ends.append(last)
             cursor = last + datetime.timedelta(days=1)
-        return periods
+        return ends
+
+    def _charges(self, months):
+        """What depreciation charges for each of `months`, in order: (month end, amount), until nothing is left."""
+        charge = self.monthly_charge()
+        if charge <= 0:
+            return []
+        remaining, charges = self.remaining_to_depreciate(), []
+        for period_end in months:
+            if remaining <= 0:
+                break
+            # The last month takes whatever is left rather than the full
+            # charge, or the asset depreciates past its salvage value.
+            amount = min(charge, remaining)
+            charges.append((period_end, amount))
+            remaining -= amount
+        return charges
+
+    @staticmethod
+    def _closed_month(charges):
+        """The first (month end, closed period) among `charges`, or None."""
+        for period_end, _ in charges:
+            period = AccountingPeriod.blocking(period_end)
+            if period is not None:
+                return period_end, period
+        return None
 
     @serialised("status")
     def depreciate(self, through=None):
@@ -399,19 +440,16 @@ class FixedAsset(Extensible, AuditModel):
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service is depreciated.")
 
-        charge = self.monthly_charge()
-        if charge <= 0:
-            return []
-
-        made = []
-        for period_end in self.periods_due(through):
-            remaining = self.remaining_to_depreciate()
-            if remaining <= 0:
-                break
-            # The last month takes whatever is left rather than the full
-            # charge, or the asset depreciates past its salvage value.
-            made.append(self._charge(period_end, min(charge, remaining)))
-        return made
+        charges = self._charges(self.periods_due(through))
+        # Named, so that a month-end run held up by a month closed since says which machine.
+        closed = self._closed_month(charges)
+        if closed is not None:
+            month_end, period = closed
+            raise ValidationError(
+                f"{self}'s depreciation for {month_end:%B %Y} falls in {period}, which is closed. "
+                f"Reopen {period} to charge it; until then it is neither depreciated nor disposed of."
+            )
+        return [self._charge(period_end, amount) for period_end, amount in charges]
 
     def _charge(self, period_end, amount, posted_on=None):
         """One month's charge, posted on its month end or `posted_on`, and recorded so it is taken once."""

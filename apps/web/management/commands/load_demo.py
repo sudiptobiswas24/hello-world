@@ -784,6 +784,25 @@ class Command(BaseCommand):
                 if done:
                     job.complete(on_date=done, cause="Worn needle bar bush", action="Bush replaced")
 
+        with step("Fixed assets in service"):
+            machinery = M("assets.AssetCategory").objects.create(
+                code="PM", name="Plant and machinery", asset_account=plant_acc, accumulated_account=accumulated,
+                expense_account=depreciation, default_life_months=120)
+            office = M("assets.AssetCategory").objects.create(
+                code="OE", name="Office equipment", asset_account=office_acc, accumulated_account=accumulated,
+                expense_account=depreciation, default_life_months=60)
+            for name, category, bought, cost, months in (
+                    ("Tape line, 120 mm (EXT-1)", machinery, on(2026, 4, 10), "9500000", 120),
+                    ("Circular looms, six (LOOM-01 to 06)", machinery, on(2026, 4, 20), "11100000", 120),
+                    ("4-colour flexo press (PRN-1)", machinery, on(2026, 5, 2), "3850000", 120),
+                    ("Laptops for the office, four", office, on(2026, 6, 15), "260000", 36)):
+                asset = M("assets.FixedAsset").objects.create(name=name, category=category, acquisition_date=bought,
+                                                              cost=D(cost), life_months=months)
+                asset.place_in_service(on_date=bought)
+                # Charged to the end of the last month the books step closes, before it closes them:
+                # a month left uncharged under a close holds up every asset's month-end run.
+                asset.depreciate(through=s.month_span(2026, 7, -1)[1])
+
         # ----------------------------------------------------------- books
         with step("Journals, cost centres, a budget, the accounting periods and a recurring rent"):
             Entry, Line = M("accounting.JournalEntry"), M("accounting.JournalLine")
@@ -908,17 +927,3 @@ class Command(BaseCommand):
             M("hr.LeaveRequest").objects.create(employee=ravi, leave_type="sick", start_date=day(-9), end_date=day(-8),
                                                 reason="Fever")
 
-        with step("Fixed assets in service"):
-            machinery = M("assets.AssetCategory").objects.create(
-                code="PM", name="Plant and machinery", asset_account=plant_acc, accumulated_account=accumulated,
-                expense_account=depreciation, default_life_months=120)
-            office = M("assets.AssetCategory").objects.create(
-                code="OE", name="Office equipment", asset_account=office_acc, accumulated_account=accumulated,
-                expense_account=depreciation, default_life_months=60)
-            for name, category, bought, cost, months in (
-                    ("Tape line, 120 mm (EXT-1)", machinery, on(2026, 4, 10), "9500000", 120),
-                    ("Circular looms, six (LOOM-01 to 06)", machinery, on(2026, 4, 20), "11100000", 120),
-                    ("4-colour flexo press (PRN-1)", machinery, on(2026, 5, 2), "3850000", 120),
-                    ("Laptops for the office, four", office, on(2026, 6, 15), "260000", 36)):
-                M("assets.FixedAsset").objects.create(name=name, category=category, acquisition_date=bought, cost=D(cost),
-                                                      life_months=months).place_in_service(on_date=bought)
