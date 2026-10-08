@@ -1575,12 +1575,12 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             self.quantity_shipped(), self.uom or self.item.uom
         )
 
-    def quantity_reserved(self):
-        """How much of this line's promise is currently held on a shelf."""
-        return sum(
-            (r.remaining() for r in StockReservation.objects.for_source(self).open()),
-            Decimal("0"),
-        )
+    def quantity_reserved(self, warehouse=None):
+        """How much of this line's promise is currently held on a shelf, or on that one."""
+        held = StockReservation.objects.for_source(self).open()
+        if warehouse is not None:
+            held = held.filter(warehouse=warehouse)
+        return sum((r.remaining() for r in held), Decimal("0"))
 
     def quantity_invoiced(self):
         """Net quantity invoiced: posted invoices minus posted credit notes."""
@@ -3968,9 +3968,11 @@ class Delivery(AuditModel):
                     # of reserving was to be able to ship it, so it is added
                     # back before the comparison rather than counted against
                     # the shipment it was made for.
+                    # Its claim on this shelf: one held at another let an
+                    # order ship ten promised to somebody else here.
                     free = (
                         Decimal(item.available_at(line.warehouse))
-                        + line.order_line.quantity_reserved()
+                        + line.order_line.quantity_reserved(line.warehouse)
                     )
                     if not is_return and wanted > free:
                         raise ValidationError(
