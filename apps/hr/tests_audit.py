@@ -379,6 +379,56 @@ class TerminationDealsWithWhatComesAfterTests(AuditTestCase):
         self.assertEqual(person.termination_date, datetime.date(2026, 6, 30))
         self.assertEqual(person.employment_status, EmploymentStatus.TERMINATED)
 
+    def test_a_leaving_date_inside_a_posted_run_is_refused(self):
+        # June paid all 22 days; left on the 15th, the slip would read 11.
+        person = self.employee("P1")
+        run = self.payroll(person)
+        with self.assertRaisesMessage(ValidationError, "void the run to change their leaving date"):
+            person.terminate(datetime.date(2026, 6, 15))
+        person.refresh_from_db()
+        self.assertEqual((person.termination_date, run.payslips.get().days_employed()), (None, Decimal("22")))
+
+    def test_a_start_date_moved_into_a_posted_run_is_refused(self):
+        person = self.employee("P2")
+        self.payroll(person)
+        person.hire_date = datetime.date(2026, 6, 16)
+        with self.assertRaisesMessage(ValidationError, "void the run to change their start date"):
+            person.save()
+
+    def test_a_leaving_date_a_posted_run_paid_to_is_not_taken_away(self):
+        # Paid to 15 June; with the date gone the slip would read the whole month.
+        person = self.employee("P3")
+        person.terminate(datetime.date(2026, 6, 15))
+        self.payroll(person)
+        person.termination_date, person.employment_status = None, EmploymentStatus.ACTIVE
+        with self.assertRaisesMessage(ValidationError, "void the run to change their leaving date"):
+            person.save()
+
+    def test_leaving_on_or_after_the_last_day_a_run_paid_is_accepted(self):
+        person = self.employee("P4")
+        self.payroll(person)
+        person.terminate(datetime.date(2026, 6, 30))
+        person.terminate(datetime.date(2026, 7, 10))
+        person.refresh_from_db()
+        self.assertEqual(person.termination_date, datetime.date(2026, 7, 10))
+
+    def test_hr_is_refused_a_leaving_date_inside_a_posted_run_over_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("hr-admin")
+        user.groups.add(Group.objects.get(name="HR Admin"))
+        client = APIClient()
+        client.force_authenticate(user)
+        person = self.employee("P5")
+        self.payroll(person)
+        refused = client.patch(f"/api/hr/employees/{person.pk}/", {
+            "termination_date": "2026-06-15", "employment_status": "terminated"}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("void the run to change their leaving date", refused.content.decode())
+
     def test_re_saving_an_unchanged_leaving_date_does_not_re_check(self):
         # Otherwise any later edit to a leaver's record would fail on
         # history that was already dealt with.
