@@ -32,7 +32,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel
+from apps.core.models import AuditModel, lock_rows
 
 LEFT_RUNNING = datetime.timedelta(hours=24)
 
@@ -92,7 +92,13 @@ def start_clock(station, operator, machine, at=None):
     if running is not None:
         raise ValidationError(f"{machine.code}'s clock has been running since "
                               f"{timezone.localtime(running.started_at):%H:%M}; join it.")
-    _run, step = _step(machine)
+    run, step = _step(machine)
+    # Held before it is read as running, as the close holds it before it
+    # asks for running clocks: a clock started as the run closed passed
+    # the close's check, and could then never be stopped or voided.
+    lock_rows(run)
+    if not run.is_open():
+        raise ValidationError(f"{run} is {run.get_status_display().lower()}; no clock starts on it.")
     clock = MachineClock.objects.create(station=station, machine=machine, operation=step,
                                         started_at=at, started_by=operator)
     clock.crew.add(operator)
