@@ -395,6 +395,21 @@ class ThirdPartyLandedCostTests(ReturnTestCase):
         with self.assertRaisesMessage(ValidationError, "already been released"):
             applications[0].release()
 
+    def test_it_is_not_released_before_it_was_allocated_or_on_a_day_to_come(self):
+        from django.utils import timezone
+
+        order, receipt = self.goods_received()
+        bill, charge = self.carrier_bill("80")
+        application = charge.allocate_landed_cost([receipt.lines.get()], on_date=datetime.date(2026, 2, 10))[0]
+
+        with self.assertRaisesMessage(ValidationError, "is not released on 2026-02-09: it was allocated on 2026-02-10."):
+            application.release(on_date=datetime.date(2026, 2, 9))
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            application.release(on_date=timezone.localdate() + datetime.timedelta(days=1))
+        application.refresh_from_db()
+        self.assertFalse(application.is_released())
+        self.assertEqual(application.release(on_date=datetime.date(2026, 2, 10)).date, datetime.date(2026, 2, 10))
+
     def test_a_non_capitalising_charge_is_refused(self):
         plain = ChargeType.objects.create(
             code="CUR", name="Courier", expense_account=self.freight_expense

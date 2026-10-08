@@ -18,9 +18,9 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
 
-from .models import Employee, reversal_day
+from .models import Employee
 
 ZERO = Decimal("0")
 
@@ -173,7 +173,7 @@ class ExpenseClaim(AuditModel):
         reason = _text(reason)
         if not reason:
             raise ValidationError("Say why the payment is reversed.")
-        on_date = reversal_day(on_date, self.paid_on, f"{self} was paid")
+        on_date = correction_date(on_date, self.paid_on, f"{self} is not unpaid on", "it was paid")
         with transaction.atomic():
             self.voided_entry = self.journal_entry.create_reversal(entry_date=on_date)
             # The payment no longer stands, so neither does when and from where it was made: left,

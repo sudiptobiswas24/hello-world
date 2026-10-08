@@ -116,7 +116,7 @@ class ClaimTests(PeopleTestCase):
 
     def test_a_payment_is_not_reversed_before_it_was_made(self):
         claim = self.paid_on_the_3rd()
-        with self.assertRaisesMessage(ValidationError, "was paid on 2026-06-03; it is not undone before then"):
+        with self.assertRaisesMessage(ValidationError, "is not unpaid on 2026-06-02: it was paid on 2026-06-03."):
             claim.unpay("Wrong drawer", on_date=datetime.date(2026, 6, 2))
         self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
 
@@ -126,7 +126,7 @@ class ClaimTests(PeopleTestCase):
         refused = self.as_(self.books).post(f"/api/hr/expense-claims/{claim.pk}/unpay/",
                                             {"reason": "Wrong drawer", "on_date": later.isoformat()}, format="json")
         self.assertEqual(refused.status_code, 400, refused.content)
-        self.assertIn("has not come yet", str(refused.content))
+        self.assertIn("that day has not come", str(refused.content))
         self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
 
     def test_submitted_decided_by_the_manager_and_paid_as_one_journal(self):
