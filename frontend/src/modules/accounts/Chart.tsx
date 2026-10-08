@@ -17,7 +17,7 @@ const columns: Column<Account>[] = [
   { key: "is_active", label: "State", width: "7rem", render: (row) => (row.is_active ? "In use" : "Closed") },
 ];
 
-/** The chart of accounts; each opens on its ledger. */
+/** The chart of accounts; each opens on its ledger, and a new one is made from here. */
 export default function Chart() {
   return (
     <ListView<Account>
@@ -27,6 +27,7 @@ export default function Chart() {
       columns={columns}
       rowKey={(row) => row.id}
       rowHref={(row) => `/accounts/chart/${row.id}`}
+      create={{ href: "/accounts/chart/new", permission: "accounting.add_account" }}
       searchHint="Code or name"
       facets={[
         { label: "Assets", params: { account_type: "asset" } },

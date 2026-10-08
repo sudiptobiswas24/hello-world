@@ -20,9 +20,14 @@ from .models import (
 
 
 class AccountSerializer(serializers.ModelSerializer):
+    # What the account sits under, by name, for a page that shows it rather than offers a choice.
+    parent_code = serializers.CharField(source="parent.code", read_only=True, default="")
+    parent_name = serializers.CharField(source="parent.name", read_only=True, default="")
+
     class Meta:
         model = Account
-        fields = ["id", "code", "name", "account_type", "parent", "currency", "is_active", "holds_money"]
+        fields = ["id", "code", "name", "account_type", "parent", "parent_code", "parent_name", "currency",
+                  "is_active", "holds_money"]
 
 
 class CostCentreSerializer(serializers.ModelSerializer):
