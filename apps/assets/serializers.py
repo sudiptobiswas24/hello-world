@@ -32,9 +32,11 @@ class FixedAssetSerializer(ExtensibleSerializerMixin, serializers.ModelSerialize
                   "acquisition_date", "in_service_date", "cost",
                   "salvage_value", "life_months", "depreciated_before", "opening_depreciation", "status", "disposed_on",
                   "capitalisation_entry", "disposal_entry", "reinstatement_entry", "accumulated",
-                  "net_book_value", "monthly_charge", "category_name", "vendor_name", "extra"]
+                  "net_book_value", "monthly_charge", "category_name", "vendor_name", "extra",
+                  "asset_account", "accumulated_account", "method"]
         read_only_fields = ["number", "bill_line", "status", "disposed_on",
-                            "capitalisation_entry", "disposal_entry", "reinstatement_entry"]
+                            "capitalisation_entry", "disposal_entry", "reinstatement_entry",
+                            "asset_account", "accumulated_account", "method"]
 
     def get_accumulated(self, obj):
         return obj.accumulated()
