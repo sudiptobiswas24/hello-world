@@ -224,15 +224,27 @@ def correction_date(on_date, original, refused, since):
     Never before `original`, the day of what it takes back: a lathe bought
     on 1 January and disposed of on 15 December before it left the plant
     account at -12,000 over the year end, with nothing yet to take off.
-    Never a day still to come either (day_that_has_come). `refused` begins
-    the refusal, "FA-2026-00001 is not disposed of on"; `since` says what
-    happened on `original`, "it was acquired".
+    Never a day still to come either (day_that_has_come), with one
+    exception: `original` itself, when it is still to come. A run posted on
+    8 October for a pay date of the 11th could be voided neither on the 8th,
+    before it was paid, nor on the 11th, which had not come, and stood
+    unvoidable until then. Dated on `original`, the correction cancels the
+    entry on the very day it stands, so the books never say more than they
+    did; that day is also its default. Any later day still to come is
+    refused as before.
+
+    `refused` begins the refusal, "FA-2026-00001 is not disposed of on";
+    `since` says what happened on `original`, "it was acquired".
     """
-    day = to_date(on_date) or timezone.localdate()
     original = to_date(original)
+    today = timezone.localdate()
+    latest = today if original is None else max(today, original)
+    day = to_date(on_date) or latest
     if original is not None and day < original:
         raise ValidationError(f"{refused} {day}: {since} on {original}.")
-    return day_that_has_come(day, refused)
+    if day > latest:
+        raise ValidationError(f"{refused} {day}: that day has not come.")
+    return day
 
 
 class Country(TimeStampedModel):

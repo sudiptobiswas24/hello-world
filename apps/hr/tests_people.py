@@ -129,6 +129,24 @@ class ClaimTests(PeopleTestCase):
         self.assertIn("that day has not come", str(refused.content))
         self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
 
+    def test_a_payment_dated_ahead_is_reversed_on_its_own_day_and_no_other(self):
+        # Paid with a date three days ahead, it could be reversed neither before that day nor
+        # on it, which had not come; it now cancels on that day, the only one it stands on.
+        claim = self.approved()
+        ahead = timezone.localdate() + datetime.timedelta(days=3)
+        claim.pay(self.cash, on_date=ahead)
+        with self.assertRaisesMessage(ValidationError, f"it was paid on {ahead}"):
+            claim.unpay("Wrong drawer", on_date=timezone.localdate())
+        later = ahead + datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"is not unpaid on {later}: that day has not come"):
+            claim.unpay("Wrong drawer", on_date=later)
+        self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
+        claim.unpay("Wrong drawer")
+        claim.refresh_from_db()
+        self.assertEqual((claim.status, claim.voided_entry.date), (ClaimStatus.APPROVED, ahead))
+        self.assertEqual(sum((line.debit - line.credit for line in JournalLine.objects.filter(account=self.cash)),
+                             Decimal("0")), Decimal("0"))
+
     def test_submitted_decided_by_the_manager_and_paid_as_one_journal(self):
         claim = self.claim()
         self.assertEqual((claim.total(), claim.number, claim.status), (Decimal("450"), "", ClaimStatus.DRAFT))

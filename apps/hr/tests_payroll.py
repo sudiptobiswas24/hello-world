@@ -831,6 +831,39 @@ class VoidingTests(PayrollTestCase):
         _person, run = self.payroll()
         self.assertEqual(run.void(on_date=datetime.date(2026, 6, 30)).date, datetime.date(2026, 6, 30))
 
+    def paid_in_three_days(self, code):
+        """A run posted today for a pay date three days ahead, as payroll is done before payday."""
+        from django.utils import timezone
+
+        today = timezone.localdate()
+        person = self.employee(code)
+        self.pay(person, self.salary, "5000")
+        last_month_end = today.replace(day=1) - datetime.timedelta(days=1)
+        run = self.pay_run(start=last_month_end.replace(day=1), end=last_month_end,
+                           pay_date=today + datetime.timedelta(days=3))
+        run.calculate()
+        run.post()
+        return run
+
+    def test_a_run_posted_ahead_of_its_pay_date_is_voided_on_that_date(self):
+        # Refused before it (today) and after it (still to come), it stood unvoidable until payday.
+        run = self.paid_in_three_days("V2")
+        reversal = run.void()
+        self.assertEqual((run.status, reversal.date), (PayRunStatus.VOIDED, run.pay_date))
+        self.assertEqual(self.balance(self.wages), Decimal("0.00"))
+
+    def test_a_run_posted_ahead_is_not_voided_before_its_pay_date_nor_after_it_while_to_come(self):
+        from django.utils import timezone
+
+        run = self.paid_in_three_days("V3")
+        with self.assertRaisesMessage(ValidationError, f"it was paid on {run.pay_date}"):
+            run.void(on_date=timezone.localdate())
+        later = run.pay_date + datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"is not voided on {later}: that day has not come"):
+            run.void(on_date=later)
+        self.assertEqual(run.status, PayRunStatus.POSTED)
+        self.assertEqual(run.void(on_date=run.pay_date).date, run.pay_date)
+
     def test_voiding_reverses_every_account(self):
         _person, run = self.payroll()
         run.void()
