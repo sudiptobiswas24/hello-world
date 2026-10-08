@@ -684,6 +684,14 @@ class PayRun(AuditModel):
             raise ValidationError("Only a posted pay run can be voided.")
         if self.is_voided():
             raise ValidationError("This pay run has already been voided.")
+        # On a day the run stood and one that has come, as a payment's void is.
+        # Dated 1 May, June's wages went negative in May's books; dated in
+        # December, the documents read it voided before the ledger did.
+        on_date = to_date(on_date) or timezone.localdate()
+        if on_date < to_date(self.pay_date):
+            raise ValidationError(f"This run was paid on {self.pay_date}; it is not voided before then.")
+        if on_date > timezone.localdate():
+            raise ValidationError(f"{on_date} has not come yet; a pay run is voided on a day that has.")
         paid = next((slip for slip in self.payslips.all() if slip.is_paid()), None)
         if paid is not None:
             raise ValidationError(
@@ -706,7 +714,7 @@ class PayRun(AuditModel):
                     f"would leave {left} deducted for it. A payment that did not go through is voided first; while "
                     "it stands, so does this run.")
         self.voided_entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.localdate(),
+            entry_date=on_date,
             memo=memo or f"Void of payroll {self.number}",
         )
         self.status = PayRunStatus.VOIDED
