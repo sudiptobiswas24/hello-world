@@ -14,9 +14,11 @@ from django.core.exceptions import ValidationError
 
 from apps.inventory.models import Item, Lot
 
+from .orders import WorkOrder
 from .tape_loads import CreelSide, TapeLoad, load_tape, tape_for, void_load
 from .tests_orders import TODAY
 from .tests_station import StationTestCase, at
+from .trace import recall
 
 
 class TapeLoadTestCase(StationTestCase):
@@ -114,6 +116,50 @@ class ALoadsIssueGoesWithItTests(TapeLoadTestCase):
         self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("70"))
         void_load(load, self.station, self.supervisor, self.operator, "Wrong doff")
         self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("100"))
+
+
+class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
+    """
+    Found by probing. On a run that backflushes, a load issues nothing and
+    the output draws its own tape; but the draw named no batch, so a run
+    on batch-kept tape could not book a roll at all, and a 100 kg doff
+    could be loaded twice at 100 kg because neither load had left the
+    shelf. The output now draws the doffs on the run's creels, by batch.
+    """
+
+    def setUp(self):
+        super().setUp()
+        WorkOrder.objects.filter(pk=self.run.pk).update(backflush=True)
+        self.run.refresh_from_db()
+
+    def test_a_doff_is_not_loaded_past_its_weight(self):
+        self.load("D-1", "100", CreelSide.WARP, 9)
+        with self.assertRaisesMessage(ValidationError, "has 0 kg in"):
+            self.load("D-1", "100", CreelSide.WEFT, 9, 5)
+        self.assertEqual(TapeLoad.objects.filter(lot=self.doffs["D-1"]).count(), 1)
+
+    def test_its_roll_draws_the_doffs_on_its_creels(self):
+        self.load("D-1", "100", CreelSide.WARP, 9)
+        self.load("D-2", "100", CreelSide.WEFT, 9, 5)
+        roll = self.weigh(when=at(TODAY, 10, 42))
+        drawn = [(line.lot.code, line.quantity)
+                 for line in roll.entry.backflush_issue.lines.order_by("line_number")]
+        self.assertEqual([code for code, _ in drawn], ["D-1", "D-2"])
+        self.assertEqual(drawn[0][1], Decimal("100"))
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("0"))
+        made = [lot for row in recall(self.doffs["D-1"])["descendants"] for lot in row["made"]]
+        self.assertIn(roll.lot, made)
+
+    def test_not_past_what_its_creels_hold(self):
+        self.load("D-1", "30", CreelSide.WARP, 9)
+        with self.assertRaisesMessage(ValidationError, "creels hold 30 kg of it not yet drawn"):
+            self.weigh(when=at(TODAY, 10, 42))
+
+    def test_a_load_its_output_drew_on_is_not_withdrawn(self):
+        load = self.load("D-1", "100", CreelSide.WARP, 9)
+        self.produce(self.run, "50", lot=Lot.objects.create(item=self.fabric, code="F-OFFICE")).post()
+        with self.assertRaisesMessage(ValidationError, "output has drawn on"):
+            void_load(load, self.station, self.supervisor, self.operator, "Wrong doff")
 
 
 class TracedOverTheApiTests(TapeLoadTestCase):

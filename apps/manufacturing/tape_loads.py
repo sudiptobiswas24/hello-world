@@ -89,10 +89,14 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     if not run.components.filter(item=lot.item).exists():
         raise ValidationError(f"{lot} is {lot.item}; {run} does not weave it.")
     kg = _number(kg, "The kilos loaded")
-    on_hand = lot.on_hand_at(station.warehouse)
-    if kg > on_hand:
-        raise ValidationError(f"{lot} has {format(on_hand.normalize(), 'f')} kg in "
-                              f"{station.warehouse}, not {format(kg.normalize(), 'f')}.")
+    # A load on a backflushed run stays on the shelf until the output draws
+    # it, so what other creels already hold of the doff is not free: one
+    # 100 kg doff loaded twice at 100 kg was taken both times.
+    free = lot.on_hand_at(station.warehouse) - on_creels_undrawn(lot)
+    if kg > free:
+        raise ValidationError(f"{lot} has {format(free.normalize(), 'f')} kg in "
+                              f"{station.warehouse} that no creel holds yet, not "
+                              f"{format(kg.normalize(), 'f')}.")
     issue = None
     if not run.backflush:
         issue = MaterialIssue.objects.create(
@@ -124,12 +128,56 @@ def void_load(load, station, supervisor, operator, reason):
                                  entry__voided_at__isnull=True).exists():
         raise ValidationError(f"A roll has come off {load.machine.code} since {load} was "
                               "loaded, and names it.")
+    run = load.work_order
+    if run.backflush and drawn_by_output(run, load.lot) > loaded(run, load.lot) - load.kg:
+        raise ValidationError(f"{run}'s output has drawn on {load}; it stands.")
     if load.issue_id:
         load.issue.void_with(load, memo=f"Load withdrawn at {station}: {reason}"[:255])
     load.voided_at = timezone.now()
     load.voided_reason = reason[:255]
     load.save(update_fields=["voided_at", "voided_reason", "updated_at"])
     return load
+
+
+def loaded(run, lot):
+    """Kilos of a batch on this run's creels, by its standing loads."""
+    return sum((load.kg for load in TapeLoad.objects.filter(
+        work_order=run, lot=lot, voided_at__isnull=True)), ZERO)
+
+
+def drawn_by_output(run, lot):
+    """What a backflushed run's own output has drawn of a batch, standing."""
+    from .orders import MaterialIssueLine
+
+    return sum((line.stock_quantity() for line in MaterialIssueLine.objects.filter(
+        issue__work_order=run, lot=lot, issue__posted=True, issue__voided_at__isnull=True,
+        issue__backflushed_by__isnull=False,
+    ).select_related("item", "uom")), ZERO)
+
+
+def on_the_creels(run, item):
+    """
+    [(batch, kg)] of `item` loaded on a backflushed run's creels and not
+    yet drawn by its output, in the order it was loaded: what its output
+    draws, by batch, since a batch-kept tape cannot be drawn as no batch.
+    """
+    batches = []
+    for load in TapeLoad.objects.filter(work_order=run, lot__item=item, voided_at__isnull=True
+                                        ).select_related("lot").order_by("loaded_at", "id"):
+        if load.lot not in batches:
+            batches.append(load.lot)
+    rows = [(lot, loaded(run, lot) - drawn_by_output(run, lot)) for lot in batches]
+    return [(lot, kg) for lot, kg in rows if kg > 0]
+
+
+def on_creels_undrawn(lot):
+    """Kilos of a batch on backflushed runs' creels that their output has not drawn yet."""
+    from .orders import WorkOrder
+
+    runs = WorkOrder.objects.filter(
+        backflush=True, tape_loads__lot=lot, tape_loads__voided_at__isnull=True,
+    ).distinct()
+    return sum((max(loaded(run, lot) - drawn_by_output(run, lot), ZERO) for run in runs), ZERO)
 
 
 def tape_for(roll):

@@ -60,7 +60,7 @@ from apps.hr.calendars import WorkingCalendar, parse_working_days
 from apps.inventory.availability import check_available
 from apps.inventory.costing import cost_of_removing
 from apps.inventory.locking import lock_positions
-from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+from apps.inventory.models import Item, MovementType, StockMovement, TrackingMode, Warehouse
 from apps.inventory.valuation import inventory_account_for
 from apps.quality.release import check_released
 
@@ -2789,15 +2789,45 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         rows = self.work_order.backflush_for(quantity)
         if not rows:
             return None
+        from .tape_loads import on_the_creels
+
+        lines, taken = [], {}
+        for component, wanted in rows:
+            item = component.item
+            if item.tracking != TrackingMode.LOT:
+                lines.append((item, wanted, component.uom, None))
+                continue
+            # A batch-kept component is drawn from the batches loaded on
+            # the run's creels, as a load on a run that does not backflush
+            # is issued: drawn as no batch, the output could not be booked
+            # at all, and a recall of the doff would not find the roll.
+            needed = item.to_stock_quantity(wanted, component.uom)
+            for lot, kg in on_the_creels(self.work_order, item):
+                take = min(kg - taken.get(lot, Decimal("0")), needed).quantize(STOCK_PLACES)
+                if take <= 0:
+                    continue
+                lines.append((item, take, item.uom, lot))
+                taken[lot] = taken.get(lot, Decimal("0")) + take
+                needed -= take
+                if needed <= 0:
+                    break
+            if needed > 0:
+                raise ValidationError(
+                    f"{item} is kept by batch, and {self.work_order}'s creels hold "
+                    f"{_shown(item.to_stock_quantity(wanted, component.uom) - needed)} "
+                    f"{item.uom} of it not yet drawn; this output takes "
+                    f"{_shown(item.to_stock_quantity(wanted, component.uom))}. Load what "
+                    "it was made from first."
+                )
         issue = MaterialIssue.objects.create(
             work_order=self.work_order, direction=IssueDirection.ISSUE,
             issue_date=self.entry_date, warehouse=self.warehouse,
             memo=f"Backflushed by {self.number}"[:255],
         )
-        for index, (component, wanted) in enumerate(rows, start=1):
+        for index, (item, quantity, uom, lot) in enumerate(lines, start=1):
             MaterialIssueLine.objects.create(
-                issue=issue, item=component.item, quantity=wanted,
-                uom=component.uom, line_number=index,
+                issue=issue, item=item, quantity=quantity, uom=uom, lot=lot,
+                line_number=index,
             )
         issue.post(memo=label)
         return issue
