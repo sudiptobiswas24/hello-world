@@ -35,6 +35,28 @@ def inventory_account_for(item):
     return account
 
 
+def refuse_moving_the_default_stock_account(company):
+    """
+    A company check: the default inventory account is the account of every
+    item that names none of its own, so moving it moves theirs. Refused
+    while any of them has stock movements, as moving an item's own account
+    is; naming that account on those items first leaves them where they are.
+    """
+    from .models import Item
+
+    stored = type(company).objects.order_by("pk").values_list(
+        "default_inventory_account_id", flat=True).first()
+    if stored is None or stored == company.default_inventory_account_id:
+        return
+    held = list(Item.objects.filter(inventory_account__isnull=True, movements__isnull=False)
+                .values_list("sku", flat=True).distinct().order_by("sku")[:3])
+    if held:
+        raise ValidationError({"default_inventory_account": [
+            f"{', '.join(held)} hold their stock's value in the default inventory account "
+            "and have stock movements booked to it; it cannot move from under them. Name "
+            "the account on those items first."]})
+
+
 def cogs_account_for(item):
     account = item.cogs_account or Company.get().default_cogs_account
     if account is None:
