@@ -178,6 +178,62 @@ class PaidByTheMetreTests(PieceworkTestCase):
                          (Decimal("104.4000"), Decimal("417.60")))
 
 
+class ALeaversFinalRunTests(PieceworkTestCase):
+    """
+    Piece work is paid by difference, so a roll voided after payday is
+    taken back from the next run, and somebody leaving has none after the
+    run their leaving date falls in. 1,000 m woven on 3 September and
+    paid at 0.40, 400.00, then voided.
+    """
+
+    def paid_then_voided(self):
+        roll = self.woven("1000", SEP(3))
+        self.pay(SEP(1), SEP(15))
+        roll.entry.void()
+
+    def wages(self):
+        from apps.accounting.models import JournalLine
+
+        account = self.per_metre.expense_account
+        return sum((line.debit - line.credit for line in JournalLine.objects.filter(account=account)), Decimal("0"))
+
+    def test_with_nothing_else_to_take_it_from_the_final_run_is_refused_by_name(self):
+        self.paid_then_voided()
+        self.weaver.terminate(on_date=SEP(20))
+        with self.assertRaisesMessage(ValidationError, "400.00 deducted against 0.00 earned"):
+            self.pay(SEP(16), SEP(30))
+
+    def test_what_they_wove_before_leaving_pays_it_back_first(self):
+        # 1,500 m at 0.45 on the 21st, 675.00, less the 400.00: 275.00 for 500 m.
+        self.paid_then_voided()
+        self.woven("1500", SEP(21))
+        self.weaver.terminate(on_date=SEP(25))
+        self.assertEqual(self.line(self.pay(SEP(16), SEP(30))), (Decimal("500"), Decimal("275.00"), Decimal("0.45")))
+
+    def test_the_rest_comes_off_their_final_pay_once_and_a_void_puts_it_back(self):
+        from apps.hr.payroll import PayslipLine
+
+        allowance = PayComponent.objects.create(
+            code="ALW", name="Attendance allowance", kind=ComponentKind.EARNING,
+            basis=ComponentBasis.FIXED, expense_account=self.per_metre.expense_account)
+        self.rate(allowance, "1000", SEP(1))
+        self.paid_then_voided()
+        self.weaver.terminate(on_date=SEP(20))
+        final = self.pay(SEP(16), SEP(30))
+        (slip,) = final.payslips.all()
+        taken = slip.lines.get(component=self.per_metre)
+        self.assertEqual((taken.kind, taken.quantity, taken.amount, slip.net(), self.wages()),
+                         (ComponentKind.DEDUCTION, Decimal("1000"), Decimal("400.00"), Decimal("600.00"),
+                          Decimal("2000.00")))
+        # Wages taken back are owed to nobody: the liabilities report does not list them.
+        self.assertIsNone(PayslipLine.objects.get(pk=taken.pk).posted_liability_account)
+        final.void()
+        self.assertEqual(self.wages(), Decimal("1400.00"))
+        again = self.pay(SEP(16), SEP(30))
+        self.assertEqual((again.payslips.get().lines.get(component=self.per_metre).amount, self.wages()),
+                         (Decimal("400.00"), Decimal("2000.00")))
+
+
 class WhoIsPaidTests(PieceworkTestCase):
     def test_the_weaver_not_the_weigher_nor_another_weaver(self):
         other = self.employee("EMP-0301", "Other weaver")

@@ -609,7 +609,7 @@ class PayRun(AuditModel):
                 # different cost centre and this entry must not follow it.
                 # And what it is owed into: the liabilities report reads this,
                 # not the component, whose account can be changed later.
-                owed_into = None if line.kind == ComponentKind.EARNING else (
+                owed_into = None if ComponentKind.EARNING in (line.kind, line.component.kind) else (
                     account if line.kind == ComponentKind.DEDUCTION
                     else line.component.liability_account
                 )
@@ -1029,15 +1029,22 @@ class Payslip(AuditModel):
                 owed = [(row, self._amount_for(row, proportion, before, hours, computed), None)
                         for row in group]
             for row, amount, quantity in owed:
-                amount = component.round(amount)
+                amount, kind = component.round(amount), component.kind
+                if amount < 0 and component.basis == ComponentBasis.PER_UNIT and self.is_final():
+                    # More taken back than earned waits for the next run, and
+                    # somebody leaving has none: a roll voided after it was paid
+                    # comes off the rest of their final pay, taken back from the
+                    # wages it was charged to.
+                    amount, quantity, kind = -amount, -quantity, ComponentKind.DEDUCTION
                 if amount <= 0:
                     continue
-                computed[component.pk] = computed.get(component.pk, Decimal("0")) + amount
+                if kind == component.kind:
+                    computed[component.pk] = computed.get(component.pk, Decimal("0")) + amount
                 lines.append(PayslipLine(
                     payslip=self,
                     component=component,
-                    kind=component.kind,
-                    description=component.name,
+                    kind=kind,
+                    description=component.name if kind == component.kind else f"{component.name}, taken back",
                     # Frozen: the rate, the basis and the account as they stood
                     # when this slip was worked out. All three can change, and
                     # a payslip that restates itself afterwards cannot be
@@ -1048,7 +1055,7 @@ class Payslip(AuditModel):
                     amount=amount,
                     quantity=quantity,
                 ))
-                if component.kind == ComponentKind.EARNING and component.is_taxable:
+                if kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
         earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0.00"))
         deducted = sum((line.amount for line in lines if line.kind == ComponentKind.DEDUCTION), Decimal("0.00"))
@@ -1089,7 +1096,8 @@ class Payslip(AuditModel):
         payday is taken back from the next run, and one entered late is
         paid in it, and nothing needs remembering which run paid which
         roll. More taken back than earned leaves nothing on this slip and
-        the rest to the next.
+        the rest to the next; on the slip of somebody leaving, which has no
+        next, the rest comes off their other pay (work_out()).
 
         Output on a day no rate covers was not piece work, and is not
         paid. Runs are worked in order: once a later period has paid
@@ -1117,11 +1125,20 @@ class Payslip(AuditModel):
             if row is not None:
                 earned += quantity * row.amount
                 made += quantity
-        paid = paid_lines.aggregate(amount=Sum("amount"), quantity=Sum("quantity"))
+        # What a final run took back counts against what was paid.
+        paid_amount, paid_quantity = Decimal("0"), Decimal("0")
+        for kind, amount, quantity in paid_lines.values_list("kind", "amount", "quantity"):
+            sign = -1 if kind == ComponentKind.DEDUCTION else 1
+            paid_amount += sign * amount
+            paid_quantity += sign * (quantity or Decimal("0"))
         in_force = next((rate for rate in reversed(rates)
                          if rate.effective_from <= self.run.period_end), rates[-1])
-        return (round_money(earned) - (paid["amount"] or Decimal("0")),
-                made - (paid["quantity"] or Decimal("0")), in_force)
+        return round_money(earned) - paid_amount, made - paid_quantity, in_force
+
+    def is_final(self):
+        """Whether the person leaves inside this run's period, so no run of theirs comes after it."""
+        left = self.employee.termination_date
+        return left is not None and to_date(left) <= self.run.period_end
 
     def worked_hours(self, start=None, end=None):
         """
@@ -1352,8 +1369,10 @@ class PayslipLine(AuditModel):
         """
         if self.posted_account_id:
             return self.posted_account
-        if self.kind == ComponentKind.DEDUCTION:
+        if self.kind == ComponentKind.DEDUCTION and self.component.kind == ComponentKind.DEDUCTION:
             return self.component.liability_account
+        # An earning, an employer cost, or an earning taken back (a final
+        # run's piece work), which goes back to where the earning was charged.
         department = self.payslip.employee.department
         if department is not None and department.cost_centre_id:
             return department.cost_centre
