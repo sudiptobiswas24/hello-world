@@ -12,7 +12,9 @@ const ACCOUNT: FieldDef["pick"] = {
 
 /**
  * A payment out to PF, ESI or the tax office, said to settle one month of
- * one liability. Recorded, not edited: a wrong one is deleted and made again.
+ * one liability. Recorded, not edited, and not deleted while its payment
+ * stands: a payment that did not go through is voided, and its remittance
+ * can then go.
  */
 export default function RemittanceForm() {
   return (

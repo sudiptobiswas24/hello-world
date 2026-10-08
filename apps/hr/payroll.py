@@ -703,7 +703,8 @@ class PayRun(AuditModel):
             if paid_over > left:
                 raise ValidationError(
                     f"{paid_over} of {account} for {month:%B %Y} has been paid over; voided, this run "
-                    f"would leave {left} deducted for it. Delete the remittance, or void its payment, first.")
+                    f"would leave {left} deducted for it. A payment that did not go through is voided first; while "
+                    "it stands, so does this run.")
         self.voided_entry = self.journal_entry.create_reversal(
             entry_date=to_date(on_date) or timezone.localdate(),
             memo=memo or f"Void of payroll {self.number}",
@@ -1404,7 +1405,8 @@ class StatutoryRemittance(AuditModel):
     def save(self, *args, **kwargs):
         if self.pk:
             raise ValidationError(
-                "A remittance is not edited. Delete it and record what was paid."
+                "A remittance is not edited: it is the record of money paid over for its month. A "
+                "payment that did not go through is voided, and the one that did is recorded."
             )
         self.period = _month_of(self.period)
         self.amount = round_money(Decimal(self.amount))
@@ -1440,6 +1442,24 @@ class StatutoryRemittance(AuditModel):
                 f"{self.amount} is more than was deducted. Check the month."
             )
         super().save(*args, **kwargs)
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        """
+        Not while its payment stands: it is the record of what that money
+        paid. Deleted, June's 7,200 to the EPFO stayed paid over in the
+        ledger, the report said June was owed again, and the run it was
+        deducted by could then be voided under it - the hole the void's own
+        guard closes. A payment that bounced paid nothing over, and its
+        remittance then counts for nothing and goes.
+        """
+        lock_rows(self.payment, self.liability_account)
+        if not self.payment.is_voided():
+            raise ValidationError(
+                f"{self.payment.number} paid {self.amount} over against {self.liability_account} for "
+                f"{self.period:%B %Y}, and this is the record of it: it stays while the payment stands. A "
+                "payment that did not go through is voided, and its remittance can then go.")
+        return super().delete(*args, **kwargs)
 
 
 def remitted(account, period):
