@@ -2072,6 +2072,19 @@ def _take_back_off(item, warehouse, moved, occurred_at, reference, notes):
     return going
 
 
+def _carrying(value, quantity):
+    """
+    (rate, residue) for goods coming onto the shelf carrying exactly
+    `value`: the rate at the movement's eight places, and what no rate can
+    say as value with no quantity attached, or None.
+    """
+    if not quantity:
+        return Decimal("0"), None
+    rate = (value / quantity).quantize(RATE_PLACES)
+    residue = (value - rate * quantity).quantize(Decimal("0.0001"))
+    return rate, residue or None
+
+
 def _post_void_variance(on_date, reference, memo, taken_back):
     """
     [(item, what its posting put on the shelf, what taking it back off
@@ -2396,9 +2409,7 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
         for line in lines:
             going = line.reverse(self, occurred_at, label)
             if going is not None:
-                taken_back.append(
-                    (line.item, line.unit_cost * line.stock_movement.quantity, going)
-                )
+                taken_back.append((line.item, line.value_moved(), going))
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=label
@@ -2451,8 +2462,16 @@ class MaterialIssueLine(AuditModel):
     )
     unit_cost = models.DecimalField(
         max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
-        help_text="What a unit was worth when it moved, frozen here. A return "
-                  "reads it off the line it returns.",
+        help_text="What a unit was worth when it moved, frozen here, to read. "
+                  "Nothing is worked out from it: see `posted_value`.",
+    )
+    posted_value = models.DecimalField(
+        max_digits=24, decimal_places=8, null=True, blank=True, editable=False,
+        help_text="What this line moved, the total, frozen when it posted: what "
+                  "the issue took off the shelf, or what a return put back. A "
+                  "return and a void work from it rather than from the rate: "
+                  "30,000 kg taken at 2,125,670.33 came back at a six-place rate "
+                  "as 2,125,670.34, and work in progress was left at -0.01.",
     )
     stock_movement = models.ForeignKey(
         StockMovement, null=True, blank=True, on_delete=models.PROTECT,
@@ -2587,22 +2606,62 @@ class MaterialIssueLine(AuditModel):
             movement_type = MovementType.ISSUE
         else:
             self._check_return(issue)
-            value = self.returns_line.unit_cost * quantity
+            value = self._value_coming_back(issue, quantity)
             movement_quantity = quantity
             movement_type = MovementType.RECEIPT
+        # The total is the fact, kept to the movement's places; the journal,
+        # a return and a void all work from this figure.
+        value = value.quantize(RATE_PLACES)
+        self.posted_value = value
         self.unit_cost = (
             (value / quantity).quantize(Decimal("0.000001"))
             if quantity else Decimal("0")
         )
+        rate, residue = _carrying(value, quantity)
         self.stock_movement = StockMovement.objects.create(
             item=self.item, warehouse=issue.warehouse,
             movement_type=movement_type, uom=self.item.uom,
-            quantity=movement_quantity, unit_cost=self.unit_cost,
+            quantity=movement_quantity, unit_cost=rate,
+            # Going out, the shelf takes off what it says; coming back, the
+            # goods carry exactly the total.
+            value_adjustment=residue if movement_quantity > 0 else None,
             lot=self.lot, bin=self.bin, occurred_at=occurred_at,
             reference=issue.number, notes=label[:255],
         )
-        super().save(update_fields=["unit_cost", "stock_movement", "updated_at"])
+        super().save(update_fields=["unit_cost", "posted_value", "stock_movement", "updated_at"])
         return value
+
+    def value_moved(self):
+        """
+        What this line moved, unsigned: the total it froze, or for a line
+        posted before the total was kept, its rate times its quantity, which
+        is what it booked then.
+        """
+        if self.posted_value is not None:
+            return self.posted_value
+        return (self.unit_cost or Decimal("0")) * abs(self.stock_movement.quantity)
+
+    def _value_coming_back(self, issue, quantity):
+        """
+        What this return hands back, worked from totals: what its issue line
+        took less what has come back against it already, shared by
+        quantity, and all of what is left when the rest of it comes back.
+        Asked after `_check_return`, which holds the issue line. Earlier
+        lines of this same return count as come back once written.
+        """
+        line = self.returns_line
+        back_quantity, back_value = Decimal("0"), Decimal("0")
+        for row in line.returned_by.filter(
+            Q(issue__posted=True, issue__voided_at__isnull=True)
+            | Q(issue=issue, stock_movement__isnull=False)
+        ).exclude(pk=self.pk).select_related("stock_movement"):
+            back_quantity += row.stock_movement.quantity
+            back_value += row.value_moved()
+        left = -line.stock_movement.quantity - back_quantity
+        value_left = line.value_moved() - back_value
+        if quantity == left:
+            return value_left
+        return value_left * quantity / left
 
     def reverse(self, issue, occurred_at, label):
         """
@@ -2617,11 +2676,15 @@ class MaterialIssueLine(AuditModel):
             return _take_back_off(
                 self.item, issue.warehouse, movement, occurred_at, issue.number, label
             )
+        # Back on carrying exactly what went out, as the entry's reversal
+        # does: at the six-place rate multiplied back up, 30,000 kg came
+        # back 0.01 above what left, and the shelf parted from the ledger.
+        rate, residue = _carrying(self.value_moved(), -movement.quantity)
         StockMovement.objects.create(
             item=self.item, warehouse=issue.warehouse,
             movement_type=MovementType.RECEIPT,
             uom=self.item.uom, quantity=-movement.quantity,
-            unit_cost=self.unit_cost, lot=self.lot, bin=self.bin,
+            unit_cost=rate, value_adjustment=residue, lot=self.lot, bin=self.bin,
             occurred_at=occurred_at, reference=issue.number, notes=label[:255],
         )
         return None
