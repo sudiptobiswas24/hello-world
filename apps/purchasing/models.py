@@ -1395,7 +1395,7 @@ class Budget(AuditModel):
         for line in lines:
             if self._account_for(line) != self.account:
                 continue
-            unbilled = max(line.quantity - line.quantity_billed(), Decimal("0"))
+            unbilled = max(line.quantity_unbilled(), Decimal("0"))
             if unbilled <= 0:
                 continue
             share = unbilled / line.quantity if line.quantity else Decimal("0")
@@ -2736,8 +2736,16 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
         return billed - debited
 
+    def bill_limit(self):
+        """
+        The most this line may bill: what came, once closed short, and otherwise what was
+        ordered. Sales' invoice_limit(); closing short promised it and nothing held to it, so
+        a line billed as ordered went on billing goods that would never come.
+        """
+        return self.quantity_received() if self.is_closed_short() else self.quantity
+
     def quantity_unbilled(self):
-        return self.quantity - self.quantity_billed()
+        return self.bill_limit() - self.quantity_billed()
 
     def accrual_layers(self):
         """
@@ -2792,7 +2800,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return min(unbilled, self.quantity_received() - self.quantity_billed())
 
     def is_fully_billed(self):
-        return self.quantity_billed() >= self.quantity
+        return self.quantity_billed() >= self.bill_limit()
 
     def quantity_billed_not_held(self):
         """
@@ -3758,10 +3766,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 continue
             order_line = line.order_line
             already = order_line.quantity_billed()
-            if already + line.quantity > order_line.quantity:
+            limit = order_line.bill_limit()
+            if already + line.quantity > limit:
+                from apps.core.api import plain
+
+                what = "received quantity of a line closed short" if order_line.is_closed_short() else "ordered quantity"
                 raise ValidationError(
-                    f"Billing {line.quantity} of {order_line.item} would exceed the ordered "
-                    f"quantity ({order_line.quantity}; {already} already billed)."
+                    f"Billing {plain(line.quantity)} of {order_line.item} would exceed the {what} "
+                    f"({plain(limit)}; {plain(already)} already billed)."
                 )
             # A charge never arrives, so the receipt leg of the match does
             # not apply to it — the quantity and price legs still do.

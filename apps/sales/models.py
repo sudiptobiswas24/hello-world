@@ -2335,11 +2335,13 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
                 order_line = line.order_line
                 limit = order_line.quantity if order_line.is_charge() else order_line.invoice_limit()
                 if already + line.quantity > limit:
+                    from apps.core.api import plain
+
                     what = ("shipped quantity of a line closed short"
                             if order_line.is_closed_short() else "ordered quantity")
                     raise ValidationError(
-                        f"Invoicing {line.quantity} of {order_line.item} would exceed the "
-                        f"{what} ({limit}; {already} already invoiced)."
+                        f"Invoicing {plain(line.quantity)} of {order_line.item} would exceed the "
+                        f"{what} ({plain(limit)}; {plain(already)} already invoiced)."
                     )
         if not self.number:
             if self.is_credit_note():
