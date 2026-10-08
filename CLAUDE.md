@@ -97,6 +97,31 @@ Working a list in the order it was written rather than the order things
 depend on. Vendor prices had to precede blanket orders and RFQ, or both
 would have been retrofitted. **Sort by what the next thing needs.**
 
+### 11. The shapes the 8 October audit found, and what guards each
+Three read-only audits (stores, manufacturing, payroll with fixed assets)
+found over forty defects with a green suite. Each shape below has a
+guard now. Where it can be seen in code, `audit_invariants` reports it,
+so a new instance fails the gate instead of waiting for the next audit.
+
+| Shape | Example | Guard |
+|---|---|---|
+| A posted record deleted | A supervisor deleted a posted material issue over the API; its movements and entry stayed | check "deletable posted document": delete() says posted and raises |
+| A correction dated anywhere | June's pay run voided on 1 May; a lathe disposed of before it was bought | `correction_date()` in apps/core/models.py; check `corrections_dated_without_the_rule` |
+| Quantity in the document's unit, cost in the stock unit | Output in grammes at a per-kg cost: 1,000 times off the ledger | `movements_in_another_unit` |
+| A per-unit rate multiplied back up | A write-down at a four-place unit cost | `per_unit_withdrawal_rates` |
+| A void at the figure it was posted at | A re-batch void re-priced at today's average | `outbound_at_a_posted_figure`: book `cost_of_removing()`, the difference to variance |
+| A calculation posted after its inputs moved | June's run posted at 4,400 after unpaid leave made it 3,400 | `posted_as_calculated`: post() works it out again |
+| A rate row paid for the whole period | A mid-month rate change paid both rates in full: 9,900 for 4,950 | none in code: test a change on the 1st, mid-month and the last day |
+| A check made before the lock | Delivery.post read the shelf, then locked it | `shelf_read_before_lock`, `unlocked_open_runs`; a PostgreSQL `race()` test |
+| Two edits of one record at once | One person's new name kept, the other's new email lost | the viewset mixin holds the row from read to write |
+| Locks taken in two orders | A stoppage corrected as its repair completed: deadlock | `locked_before_it()` names the rows a save() locks first |
+| A setting read live where a fact should be kept | Disposal read the category's accounts after they changed | `kept_settings_read_live`, `entries_kept_past_the_edit_guard`: record it at the event |
+
+A reverse path skipping its forward path's check (a return not matched
+to its issue, a void of one part of a set) is still the most common
+shape, and no check can see it. Share the check between the two paths,
+so the reverse cannot be written without it.
+
 ## Pre-flight checklist
 
 The list above is about design. This one is about the mechanics that
