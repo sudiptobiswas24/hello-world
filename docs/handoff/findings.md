@@ -58,7 +58,7 @@ Patterns closed:
 | 9 | A back-dated leaving date was accepted under a posted run | 4a0dc5d |
 | 10 | `remitted()` ignored as_of | 090cdb8, 3da2ebc |
 | 11 | Leave could be deleted, moved or re-credited | 7335055 |
-| 12 | A leaver's piece-rate overpayment was never recovered | 440f6d8, in part. The follow-up is decided (notes.md): the shortfall becomes a receivable from the former employee; the final run is not refused; PF/ESI wages drop by what is taken back |
+| 12 | A leaver's piece-rate overpayment was never recovered | 440f6d8, in part. The follow-up is decided (RISKS.md O28): the shortfall becomes a receivable from the former employee; the final run is not refused; PF/ESI wages drop by what is taken back |
 
 New `audit_invariants` checks: unchecked reversal date, deletable posted
 document, posted as calculated (273259d, eeea508).

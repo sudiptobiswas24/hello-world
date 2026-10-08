@@ -15,7 +15,7 @@ First, look for interrupted work and resume it from where it stopped (CLAUDE.md,
    - this file.
    - `scripts/gate/README.md`: how a release is gated.
    - `docs/handoff/findings.md`: the last audit and what each fix branch holds.
-   - `docs/handoff/notes.md`: side findings, decisions, gate lessons.
+   - `docs/RISKS.md`, "Open defects": every defect seen and not yet fixed, numbered.
    - `.claude/skills/audit/SKILL.md`: before any audit.
 2. Verify every branch below exists, with `git ls-remote origin 'refs/heads/claude/erp-*'`.
    If any is missing, stop and tell the owner.
@@ -95,14 +95,15 @@ pg_isready -q || service postgresql start                              # role er
    - settings read live where a posted fact should have been recorded.
 
    For each, name the audit check that now guards it.
-3. **Decided follow-ups** (notes.md has the detail):
+3. **Decided follow-ups** (RISKS.md O28 and O29 have the detail):
    - A leaver's shortfall becomes a receivable from the former employee;
      PF/ESI wages drop by what is taken back.
    - A period is not closed while its depreciation is uncharged.
    - Move the 17 exempted correction steps onto the core date rule, one
      module at a time.
-4. **Side findings** in notes.md. Fix them by pattern, smallest first.
-   Each needs a test that fails before its fix.
+4. **Open defects**, docs/RISKS.md "Open defects". Fix them by pattern,
+   smallest first. Each needs a test that fails before its fix, and
+   its commit names the id.
 5. **The Odoo 19 depth comparison.** Do one module at a time, using
    `docs/handoff/odoo_brief.md`. Start with sales, then purchasing,
    inventory, manufacturing, accounting, people. Each produces a ranked
