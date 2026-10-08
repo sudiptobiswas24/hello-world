@@ -154,13 +154,12 @@ class OperationReport(AuditModel):
         if not (reason or "").strip():
             raise ValidationError("Say why the count is withdrawn.")
         _lock(self.operation.work_order)
+        from .orders import check_drawn_on
+
         after = _following(self.operation)
-        good = _good(self.operation) - self.stock_quantity()
-        if after is not None and _taken(after) > good:
-            raise ValidationError(
-                f"{after.name} has already taken {_q(_taken(after))} from "
-                f"{self.operation.name}; without this count it passed on {_q(good)}."
-            )
+        if after is not None:
+            check_drawn_on(self.operation, after, _taken(after),
+                           _good(self.operation) - self.stock_quantity())
         self.voided_at, self.voided_reason = timezone.now(), reason.strip()
         self._voiding = True
         try:
