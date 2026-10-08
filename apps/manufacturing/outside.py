@@ -135,6 +135,17 @@ class OutsideMovement(AuditModel):
         super().save(*args, **kwargs)
 
     @serialised("posted")
+    def delete(self, *args, **kwargs):
+        # Its entry in work in progress would stay, and the step would read
+        # as having had nothing back.
+        if self.posted:
+            raise ValidationError(
+                f"Cannot delete {self} once it is posted. Void it or return "
+                "the work to the vendor."
+            )
+        return super().delete(*args, **kwargs)
+
+    @serialised("posted")
     def post(self, memo=""):
         from .orders import (
             ManufacturingSettings,
