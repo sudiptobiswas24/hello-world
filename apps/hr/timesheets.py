@@ -168,6 +168,15 @@ class Timesheet(AuditModel):
         if self.status != TimesheetStatus.SUBMITTED:
             raise ValidationError("Only a submitted timesheet can be approved.")
         self.check_approver(by)
+        paid = self.hours_paid_by()
+        if paid is not None:
+            # A run reads the hours approved inside its own period and no
+            # other, so these would never reach a payslip: the month's pay
+            # went out on the hours approved before it.
+            raise ValidationError(
+                f"{paid.run} is posted and paid {self.employee} by the hour for "
+                f"{paid.run.period_start} to {paid.run.period_end} on the hours approved then; "
+                "these would never be paid. Void the run to approve them.")
         self.status = TimesheetStatus.APPROVED
         self.decided_by = by
         self.decided_at = timezone.now()
@@ -217,6 +226,16 @@ class Timesheet(AuditModel):
             "status", "decided_by", "decided_at", "submitted_at", "note", "updated_at",
         ])
         return self
+
+    def hours_paid_by(self):
+        """The posted payslip that paid this person's hours over this sheet's period, or None."""
+        from .payroll import ComponentBasis, Payslip, PayRunStatus
+
+        return Payslip.objects.filter(
+            employee_id=self.employee_id, run__status=PayRunStatus.POSTED, run__voided_at__isnull=True,
+            run__period_start__lte=self.period_end, run__period_end__gte=self.period_start,
+            lines__component__basis=ComponentBasis.PER_HOUR,
+        ).select_related("run").first()
 
     def is_paid(self):
         """
