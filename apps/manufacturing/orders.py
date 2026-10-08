@@ -1979,6 +1979,10 @@ def _check_order_is_open_for(order, what):
         )
 
 
+# The places a stock movement's quantity is kept at.
+STOCK_PLACES = Decimal("0.0001")
+
+
 def _shown(quantity):
     """A quantity as a sentence says it: 40, not 40.0000."""
     return format(Decimal(quantity).normalize(), "f")
@@ -2348,7 +2352,10 @@ class MaterialIssueLine(AuditModel):
 
     def post(self, issue, occurred_at, label):
         """Write the movement and return what it was worth, unsigned."""
-        quantity = self.stock_quantity()
+        # In the stocking unit, at the places the ledger keeps: the rate
+        # below is per stocking unit, and a movement written in the line's
+        # own unit would be restated as if the rate were per that unit.
+        quantity = self.stock_quantity().quantize(STOCK_PLACES)
         _check_whose(issue, self)
         if issue.direction == IssueDirection.ISSUE:
             check_available(
@@ -2359,12 +2366,12 @@ class MaterialIssueLine(AuditModel):
             value = cost_of_removing(
                 self.item, issue.warehouse, quantity, lot=self.lot
             )
-            movement_quantity = -self.quantity
+            movement_quantity = -quantity
             movement_type = MovementType.ISSUE
         else:
             self._check_return(issue)
             value = self.returns_line.unit_cost * quantity
-            movement_quantity = self.quantity
+            movement_quantity = quantity
             movement_type = MovementType.RECEIPT
         self.unit_cost = (
             (value / quantity).quantize(Decimal("0.000001"))
@@ -2372,7 +2379,7 @@ class MaterialIssueLine(AuditModel):
         )
         self.stock_movement = StockMovement.objects.create(
             item=self.item, warehouse=issue.warehouse,
-            movement_type=movement_type, uom=self.uom,
+            movement_type=movement_type, uom=self.item.uom,
             quantity=movement_quantity, unit_cost=self.unit_cost,
             lot=self.lot, bin=self.bin, occurred_at=occurred_at,
             reference=issue.number, notes=label[:255],
@@ -2648,13 +2655,15 @@ class ProductionEntry(AuditModel):
 
         rows = []
         taken = Decimal("0")
-        made = self.stock_quantity()
+        # In the stocking unit: the planned cost is per stocking unit, and
+        # half a tonne written as 0.5 at 91.71 went on the shelf at 45.86.
+        made = self.stock_quantity().quantize(STOCK_PLACES)
         if made:
             value = self.unit_cost * made
             self.stock_movement = StockMovement.objects.create(
                 item=order.item, warehouse=self.warehouse,
-                movement_type=MovementType.RECEIPT, uom=self.uom,
-                quantity=self.quantity_produced, unit_cost=self.unit_cost,
+                movement_type=MovementType.RECEIPT, uom=order.item.uom,
+                quantity=made, unit_cost=self.unit_cost,
                 lot=self.lot, bin=self.bin, occurred_at=occurred_at,
                 reference=self.number, notes=label[:255],
             )
@@ -2730,8 +2739,8 @@ class ProductionEntry(AuditModel):
         if self.stock_movement_id is not None:
             StockMovement.objects.create(
                 item=self.work_order.item, warehouse=self.warehouse,
-                movement_type=MovementType.ISSUE, uom=self.uom,
-                quantity=-self.quantity_produced, unit_cost=self.unit_cost,
+                movement_type=MovementType.ISSUE, uom=self.work_order.item.uom,
+                quantity=-self.stock_movement.quantity, unit_cost=self.unit_cost,
                 lot=self.lot, bin=self.bin, occurred_at=occurred_at,
                 reference=self.number, notes=label[:255],
             )
@@ -2854,7 +2863,7 @@ class ProductionByproduct(AuditModel):
                 "back what its bill of materials says it gives back — anything "
                 "else is stock appearing from nowhere with a value nobody chose."
             )
-        quantity = self.item.to_stock_quantity(self.quantity, self.uom)
+        quantity = self.item.to_stock_quantity(self.quantity, self.uom).quantize(STOCK_PLACES)
         if quantity <= 0:
             return Decimal("0"), Decimal("0")
         if row.valuation == ByproductValuation.SHARE:
@@ -2874,7 +2883,10 @@ class ProductionByproduct(AuditModel):
             rate = share / expected if expected else Decimal("0")
             value = rate * quantity
         else:
-            value = byproduct_value(row, self.quantity, None)
+            # The quantity weighed is in this line's unit; the bill's row
+            # may be written in another. 20 kg weighed as 0.02 t, read as
+            # 0.02 kg, came in at 1.20 where 1,200 was due.
+            value = byproduct_value(row, quantity, None, uom=self.item.uom)
         return value, quantity
 
     def post(self, entry, occurred_at, label):
@@ -2885,8 +2897,8 @@ class ProductionByproduct(AuditModel):
         )
         self.stock_movement = StockMovement.objects.create(
             item=self.item, warehouse=entry.warehouse,
-            movement_type=MovementType.RECEIPT, uom=self.uom,
-            quantity=self.quantity, unit_cost=self.unit_value,
+            movement_type=MovementType.RECEIPT, uom=self.item.uom,
+            quantity=quantity, unit_cost=self.unit_value,
             lot=self.lot, bin=self.bin, occurred_at=occurred_at,
             reference=entry.number, notes=label[:255],
         )
@@ -2898,8 +2910,8 @@ class ProductionByproduct(AuditModel):
             return None
         return StockMovement.objects.create(
             item=self.item, warehouse=entry.warehouse,
-            movement_type=MovementType.ISSUE, uom=self.uom,
-            quantity=-self.quantity, unit_cost=self.unit_value,
+            movement_type=MovementType.ISSUE, uom=self.item.uom,
+            quantity=-self.stock_movement.quantity, unit_cost=self.unit_value,
             lot=self.lot, bin=self.bin, occurred_at=occurred_at,
             reference=entry.number, notes=label[:255],
         )

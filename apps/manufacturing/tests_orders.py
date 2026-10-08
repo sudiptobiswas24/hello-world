@@ -656,6 +656,90 @@ class AReturnHandsBackWhatItsLineDrewTests(RunTestCase):
         self.assertEqual(self.balance(self.wip), Decimal("0"))
 
 
+class BookedInAnotherUnitOfWeightTests(RunTestCase):
+    """
+    Found by probing: a document in tonnes on a run kept in kilogrammes
+    wrote its stock movement with the quantity in tonnes and the cost per
+    kilogramme, and the ledger restated the pair as if the cost were per
+    tonne. Half a tonne of tape went into the inventory account at
+    45,855.67 and onto the shelf at 45.86; 20 kg of regrind weighed as
+    0.02 t was valued as 0.02 kg, at 1.20 where 1,200 was due.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tonne = UnitOfMeasure.objects.create(
+            code="t", name="Tonne", category=UnitOfMeasureCategory.WEIGHT,
+            base_unit=self.kg, conversion_factor=Decimal("1000"),
+        )
+        self.job = self.order()
+        self.job.release(TODAY)
+
+    def shelf(self, item):
+        return item.valuation_at(self.plant)[1].quantize(Decimal("0.01"))
+
+    def test_output_goes_on_the_shelf_at_what_the_ledger_took(self):
+        self.full_issue(self.job).post()
+        ledger = self.balance(self.inventory)
+        self.produce(self.job, "0.5", uom=self.tonne).post()
+        # 500 kg at the planned 91.711340.
+        self.assertEqual(self.balance(self.inventory) - ledger, Decimal("45855.67"))
+        self.assertEqual(self.shelf(self.tape), Decimal("45855.67"))
+        self.assertEqual(self.tape.on_hand_at(self.plant), Decimal("500"))
+
+    def test_voiding_it_takes_back_the_kilos_at_their_cost(self):
+        self.full_issue(self.job).post()
+        entry = self.produce(self.job, "0.5", uom=self.tonne)
+        entry.post()
+        entry.void(TODAY)
+        back = StockMovement.objects.filter(item=self.tape).order_by("-id").first()
+        self.assertEqual((back.quantity, back.unit_cost), (Decimal("-500"), Decimal("91.71134")))
+        self.assertEqual(self.tape.on_hand_at(self.plant), Decimal("0"))
+
+    def test_a_byproduct_is_valued_in_the_unit_it_was_weighed_in(self):
+        entry = self.produce(self.job, "0")
+        ProductionByproduct.objects.create(
+            entry=entry, item=self.regrind, quantity=Decimal("0.02"), uom=self.tonne,
+            line_number=1,
+        )
+        ledger, before = self.balance(self.inventory), self.shelf(self.regrind)
+        entry.post()
+        # 20 kg at the standard 60.
+        self.assertEqual(self.balance(self.inventory) - ledger, Decimal("1200"))
+        self.assertEqual(self.shelf(self.regrind) - before, Decimal("1200.00"))
+        self.assertEqual(entry.byproducts.get().unit_value, Decimal("60"))
+
+    def test_a_return_comes_back_onto_the_shelf_at_what_it_went_out_at(self):
+        line = self.issue(self.job, [(self.virgin, "100")])
+        line.post()
+        back = MaterialIssue.objects.create(
+            work_order=self.job, direction=IssueDirection.RETURN, issue_date=TODAY,
+            warehouse=self.plant,
+        )
+        MaterialIssueLine.objects.create(
+            issue=back, item=self.virgin, quantity=Decimal("0.04"), uom=self.tonne,
+            returns_line=line.lines.get(), line_number=1,
+        )
+        ledger, before = self.balance(self.inventory), self.shelf(self.virgin)
+        back.post()
+        # 40 kg at the 100 it went out at.
+        self.assertEqual(self.balance(self.inventory) - ledger, Decimal("4000"))
+        self.assertEqual(self.shelf(self.virgin) - before, Decimal("4000.00"))
+
+    def test_an_issue_records_its_kilos_at_their_cost(self):
+        document = MaterialIssue.objects.create(
+            work_order=self.job, issue_date=TODAY, warehouse=self.plant,
+        )
+        MaterialIssueLine.objects.create(
+            issue=document, item=self.virgin, quantity=Decimal("0.1"), uom=self.tonne,
+            line_number=1,
+        )
+        document.post()
+        moved = document.lines.get().stock_movement
+        self.assertEqual((moved.quantity, moved.unit_cost), (Decimal("-100"), Decimal("100")))
+        self.assertEqual(self.balance(self.wip), Decimal("10000"))
+
+
 class SettingsThatWereNeverConfiguredTests(RunTestCase):
     def test_issuing_with_no_work_in_progress_account(self):
         settings = ManufacturingSettings.get()

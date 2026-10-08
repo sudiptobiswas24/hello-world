@@ -870,9 +870,10 @@ def planned_cost(bom, quantity, warehouse, uom=None, on_date=None):
     )
 
 
-def byproduct_value(byproduct, quantity, run_cost=None):
+def byproduct_value(byproduct, quantity, run_cost=None, uom=None):
     """
-    What a by-product carries out of the run with it.
+    What a by-product carries out of the run with it. `quantity` is in
+    `uom`, the bill's own row unit when not given.
 
     Reground trim is worth a standard recovery value, well under virgin
     polymer. Sweepings are worth nothing and say so, rather than
@@ -893,5 +894,5 @@ def byproduct_value(byproduct, quantity, run_cost=None):
             "by-product is worth nothing — leaving it unanswered values the "
             "whole run against the main product without saying so."
         )
-    quantity = byproduct.item.to_stock_quantity(quantity, byproduct.uom)
+    quantity = byproduct.item.to_stock_quantity(quantity, uom or byproduct.uom)
     return standard * quantity
