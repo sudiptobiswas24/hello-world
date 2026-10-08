@@ -390,3 +390,184 @@ class RoutingIsReachableTests(RoutingTestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("end of its route", str(response.data))
+
+
+class ClearingTestCase(RoutingTestCase):
+    def received_into_inspection(self, item, uom, quantity, price, lot=None):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        order_line = PurchaseOrderLine.objects.create(order=order, item=item, uom=uom,
+                                                      quantity=Decimal(quantity), unit_price=Decimal(price))
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 2))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order_line, warehouse=self.qa,
+                                        lot=lot, quantity_received=Decimal(quantity))
+        receipt.post()
+        return receipt
+
+    def as_role(self, role):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        person = User.objects.create_user(role.replace(" ", "_").lower())
+        person.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(person)
+        return client
+
+
+class ClearedOutOfInspectionTests(ClearingTestCase):
+    """
+    Forty through the bay into inspection, then accepted into stock. The
+    clearance took them out of the stock room the line names, which held
+    none: inspection kept the forty, the stock room read nothing, and
+    nothing said where the goods were.
+    """
+
+    def test_accepted_goods_leave_the_inspection_step_for_stock(self):
+        self.three_step()
+        receipt, line = self.receive("40")
+        line.advance()
+        receipt.accept(self.stock_room)
+        self.assertEqual((self.item.on_hand_at(self.qa), self.item.on_hand_at(self.stock_room)),
+                         (Decimal("0"), Decimal("40")))
+        self.assertEqual(self.item.available_at(self.stock_room), Decimal("40"))
+
+    def test_a_batch_costed_by_its_own_cost_is_cleared_by_its_batch(self):
+        # Specific identification cannot price a withdrawal without its
+        # batch, and the clearance named none.
+        from apps.inventory.models import Lot
+
+        art = Item.objects.create(sku="ART", name="Print", uom=self.each,
+                                  tracking="lot", costing_method="specific")
+        batch = Lot.objects.create(item=art, code="B1")
+        receipt = self.received_into_inspection(art, self.each, "10", "7", lot=batch)
+        receipt.accept(self.stock_room)
+        self.assertEqual((batch.on_hand_at(self.qa), batch.on_hand_at(self.stock_room)),
+                         (Decimal("0"), Decimal("10")))
+        self.assertEqual(art.stock_value_at(self.stock_room), Decimal("70.00"))
+
+    def test_cases_cleared_out_of_inspection_keep_their_value(self):
+        # Two cases at 120 (24 at 10) and three at 240 (36 at 20): 960.
+        # The three were priced as three eaches and put 840 back.
+        from apps.core.models import UnitOfMeasure
+
+        case = UnitOfMeasure.objects.create(code="case", name="Case of 12", category=self.each.category,
+                                            base_unit=self.each, conversion_factor=Decimal("12"))
+        fifo = Item.objects.create(sku="F", name="Fifo widget", uom=self.each, costing_method="fifo")
+        self.received_into_inspection(fifo, case, "2", "120")
+        second = self.received_into_inspection(fifo, case, "3", "240")
+        second.accept(self.stock_room)
+        self.assertEqual(fifo.stock_value_at(self.qa) + fifo.stock_value_at(self.stock_room),
+                         Decimal("960.00"))
+
+    def test_a_quality_inspector_clears_them_through_the_api(self):
+        self.three_step()
+        receipt, line = self.receive("40")
+        line.advance()
+        response = self.as_role("Quality Inspector").post(
+            f"/api/purchasing/goods-receipts/{receipt.pk}/accept/",
+            {"warehouse": self.stock_room.pk}, format="json")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.assertEqual(self.item.on_hand_at(self.stock_room), Decimal("40"))
+
+class SentBackFromWhereTheyAreTests(ClearingTestCase):
+    """
+    A return took everything from the first place on the route holding
+    any of it. Forty received and twenty-five put away, all forty went
+    back out of the bay: the bay read minus twenty-five and the stock room
+    kept twenty-five sent back. Twenty-five in inspection rejected, with
+    fifteen still in the bay, went out of the bay: minus ten there, and
+    the twenty-five failed goods still in inspection.
+    """
+
+    def test_a_return_takes_each_part_from_where_it_is(self):
+        self.two_step()
+        receipt, line = self.receive("40")
+        line.advance(Decimal("25"))
+        receipt.create_return(debit_bills=False)
+        self.assertEqual((self.item.on_hand_at(self.bay), self.item.on_hand_at(self.stock_room)),
+                         (Decimal("0"), Decimal("0")))
+
+    def test_part_of_it_goes_back_from_the_bay_first(self):
+        self.two_step()
+        receipt, line = self.receive("40")
+        line.advance(Decimal("25"))
+        receipt.create_return(quantities={line: Decimal("20")}, debit_bills=False)
+        self.assertEqual((self.item.on_hand_at(self.bay), self.item.on_hand_at(self.stock_room)),
+                         (Decimal("0"), Decimal("20")))
+
+    def test_rejected_goods_go_back_from_inspection(self):
+        self.three_step()
+        receipt, line = self.receive("40")
+        line.advance(Decimal("25"))
+        receipt.reject(note="torn", debit_bills=False)
+        self.assertEqual((self.item.on_hand_at(self.bay), self.item.on_hand_at(self.qa)),
+                         (Decimal("15"), Decimal("0")))
+
+    def test_cleared_goods_go_back_from_the_shelf_they_were_cleared_to(self):
+        self.three_step()
+        receipt, line = self.receive("40")
+        line.advance()
+        receipt.accept(self.stock_room)
+        receipt.create_return(debit_bills=False)
+        self.assertEqual((self.item.on_hand_at(self.qa), self.item.on_hand_at(self.stock_room)),
+                         (Decimal("0"), Decimal("0")))
+
+    def test_a_quality_inspector_rejects_them_through_the_api(self):
+        self.three_step()
+        receipt, line = self.receive("40")
+        line.advance(Decimal("25"))
+        response = self.as_role("Quality Inspector").post(
+            f"/api/purchasing/goods-receipts/{receipt.pk}/reject/",
+            {"note": "torn", "debit_bills": False}, format="json")
+        self.assertEqual(response.status_code, 201, response.content[:300])
+        self.assertEqual((self.item.on_hand_at(self.bay), self.item.on_hand_at(self.qa)),
+                         (Decimal("15"), Decimal("0")))
+
+
+class OntoABinnedShelfTests(ClearingTestCase):
+    """
+    A receipt finds a bin in a binned warehouse; putting away and clearing
+    inspection named none, so a binned stock room refused both.
+    """
+
+    def binned_stock_room(self):
+        from apps.inventory.models import StorageBin
+
+        shelf = StorageBin.objects.create(warehouse=self.stock_room, code="A-1")
+        self.stock_room.requires_bins = True
+        self.stock_room.save()
+        return shelf
+
+    def test_put_away_goes_onto_a_free_bin(self):
+        shelf = self.binned_stock_room()
+        self.two_step()
+        receipt, line = self.receive("40")
+        line.advance()
+        self.assertEqual(shelf.on_hand(self.item), Decimal("40"))
+
+    def test_cleared_goods_go_onto_a_free_bin(self):
+        shelf = self.binned_stock_room()
+        receipt, line = self.receive("40", warehouse=self.qa)
+        receipt.accept(self.stock_room)
+        self.assertEqual(shelf.on_hand(self.item), Decimal("40"))
+
+    def test_a_binned_stock_room_with_no_bin_still_refuses_in_words(self):
+        self.stock_room.requires_bins = True
+        self.stock_room.save()
+        self.two_step()
+        receipt, line = self.receive("40")
+        with self.assertRaisesMessage(ValidationError, "has none that stock can sit in"):
+            line.advance()
+        self.assertEqual(self.item.on_hand_at(self.bay), Decimal("40"))
+
+    def test_the_store_puts_away_through_the_api(self):
+        shelf = self.binned_stock_room()
+        self.two_step()
+        receipt, line = self.receive("40")
+        response = self.as_role("Warehouse Staff").post(
+            f"/api/purchasing/goods-receipt-lines/{line.pk}/advance/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        self.assertEqual(shelf.on_hand(self.item), Decimal("40"))
