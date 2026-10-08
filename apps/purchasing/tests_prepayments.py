@@ -545,3 +545,54 @@ class PartOfAPrepaymentIsTakenBackTests(PrepaymentTestCase):
         bill.post()
         with self.assertRaisesMessage(ValidationError, "not by an amount"):
             bill.create_debit_note(amount=Decimal("10"))
+
+
+class ACancelledOrderHoldsNoPrepaymentTests(PrepaymentTestCase):
+    """
+    Sales' cancelled deposit, mirrored: an order holding a prepayment was cancelled with
+    nothing left to draw it down and the vendor holding the money, and a prepayment drafted
+    before the cancel posted after it. Order 10 x 5; prepayment 30%, 15.00.
+    """
+
+    def test_a_prepayment_held_is_debited_back_before_the_order_is_cancelled(self):
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        with self.assertRaisesMessage(ValidationError, f"Prepayment {prepayment.number} still holds 15.00"):
+            order.cancel()
+        order.refresh_from_db()
+        self.assertEqual(order.status, "confirmed")
+
+        prepayment.create_debit_note(memo="Order called off")
+        order.cancel()
+        self.assertEqual((self.balance(self.prepaid), vendor_balance(self.vendor)), (Decimal("0"), Decimal("0.00")))
+
+    def test_a_draft_drawn_up_before_the_cancel_does_not_post_after_it(self):
+        order = self.make_order("10", "5")
+        prepayment = order.create_prepayment_bill(self.payable, percent=30)
+        order.cancel()
+        with self.assertRaisesMessage(ValidationError, "Only a confirmed order can take a prepayment"):
+            prepayment.post()
+        prepayment.refresh_from_db()
+        self.assertEqual((prepayment.posted, self.balance(self.prepaid)), (False, Decimal("0")))
+
+
+    def test_through_the_api_the_buyer_is_told_why_and_the_debit_note_clears_the_way(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap_manager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        ap = APIClient()
+        ap.force_authenticate(user)
+        order = self.make_order("10", "5")
+        prepayment = self.prepay(order)
+        cancel = f"/api/purchasing/purchase-orders/{order.pk}/cancel/"
+        refused = ap.post(cancel, {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn(f"Prepayment {prepayment.number} still holds 15.00", str(refused.json()))
+        noted = ap.post(f"/api/purchasing/bills/{prepayment.pk}/debit_note/", {"memo": "Order called off"}, format="json")
+        self.assertEqual((noted.status_code, noted.json()["total"]), (200, "15.00"), noted.content)
+        cancelled = ap.post(cancel, {}, format="json")
+        self.assertEqual((cancelled.status_code, cancelled.json()["status"]), (200, "cancelled"), cancelled.content)

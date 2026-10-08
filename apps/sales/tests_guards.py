@@ -34,6 +34,7 @@ from .models import (
     Delivery,
     DeliveryLine,
     Invoice,
+    InvoiceLine,
     InvoicePayment,
     OrderStatus,
     PriceList,
@@ -208,6 +209,25 @@ class CancelledOrderTests(SalesGuardTestCase):
         self.bill(order)
         with self.assertRaises(ValidationError):
             order.cancel()
+
+    def test_an_invoice_drafted_before_the_cancel_does_not_post_after_it(self):
+        # Shipping asked whether the order still stood; invoicing did not, so the customer was
+        # billed 100 for an order called off.
+        order = self.make_order("10")
+        draft = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 2))
+        order.cancel()
+        with self.assertRaisesMessage(ValidationError, "Only a confirmed order can be invoiced"):
+            draft.post()
+        self.assertEqual(outstanding_balance(self.customer), Decimal("0"))
+
+    def test_an_invoice_typed_against_a_draft_order_does_not_post(self):
+        order = self.make_order("10", confirm=False)
+        invoice = Invoice.objects.create(customer=self.customer, invoice_date=datetime.date(2026, 3, 2),
+                                         sales_order=order, receivable_account=self.ar)
+        InvoiceLine.objects.create(invoice=invoice, order_line=order.lines.get(), item=self.item,
+                                   quantity=Decimal("10"), unit_price=Decimal("10"), revenue_account=self.revenue)
+        with self.assertRaisesMessage(ValidationError, "is draft"):
+            invoice.post()
 
     def test_cannot_cancel_twice(self):
         order = self.make_order("10")

@@ -563,6 +563,23 @@ class PartOfADepositThroughTheApiTests(ScreensTestCase):
         self.assertEqual(deposit.deposit_unapplied(), Decimal("210.00"))
 
 
+
+class ACancelThatHoldsADepositThroughTheApiTests(ScreensTestCase):
+    def test_refused_in_words_until_the_deposit_is_credited_back(self):
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal("300"))
+        deposit.post()
+        ar = self.as_("AR Manager")
+        cancel = f"/api/sales/sales-orders/{order.pk}/cancel/"
+        refused = ar.post(cancel, {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn(f"Down payment {deposit.number} still holds 300.00", str(refused.json()))
+        given = ar.post(f"/api/sales/invoices/{deposit.pk}/credit_note/", {"memo": "Order called off"}, format="json")
+        self.assertEqual((given.status_code, given.json()["total"]), (200, "300.00"), given.content)
+        cancelled = ar.post(cancel, {}, format="json")
+        self.assertEqual((cancelled.status_code, cancelled.json()["status"]), (200, "cancelled"), cancelled.content)
+
+
 class DeliveryChallanPdfTests(ScreensTestCase):
     """The challan the lorry carries, read by whoever may read the delivery and nobody else."""
 

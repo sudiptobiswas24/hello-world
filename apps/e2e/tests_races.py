@@ -40,7 +40,7 @@ from apps.inventory.models import StockAdjustment
 from apps.inventory import tests_adjustments as stock_fixture
 from apps.manufacturing.orders import MaterialIssue, WorkOrder, WorkOrderStatus
 from apps.manufacturing import tests_orders as run_fixture
-from apps.purchasing.models import Bill, BillPayment
+from apps.purchasing.models import Bill, BillPayment, BillPolicy, PurchaseOrder
 from apps.purchasing import tests_prepayments as purchase_fixture
 from apps.purchasing import tests_tds as tds_fixture
 # Modules, not classes: a TestCase named here would be collected and run
@@ -52,6 +52,7 @@ from apps.sales.models import (
     InvoicePayment,
     InvoicePolicy,
     InvoiceWriteOff,
+    SalesOrder,
 )
 from apps.sales import tests_base as sales_fixture
 
@@ -229,6 +230,20 @@ class SalesRaceTests(RaceCase):
              self.balance(self.deposits)),
             (Decimal("300.00"), Decimal("0.00")))
 
+    def test_an_order_is_not_cancelled_as_its_draft_invoice_posts(self):
+        """
+        Each held at its first write after deciding (any model's): the cancel at the order's
+        status, the post at its number. One wins; the other, waiting on the order, then sees it.
+        """
+        order = self.make_order("10", "100")
+        draft = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1))
+        self.once(race(None, lambda: SalesOrder.objects.get(pk=order.pk).cancel(),
+                       lambda: Invoice.objects.get(pk=draft.pk).post()))
+        order.refresh_from_db()
+        posted = Invoice.objects.get(pk=draft.pk).posted
+        self.assertIn((order.status, posted, self.balance(self.ar)),
+                      [("cancelled", False, Decimal("0")), ("confirmed", True, Decimal("1000.00"))])
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
@@ -282,6 +297,24 @@ class PurchasingRaceTests(RaceCase):
         draft = self.billed()
         self.once(race(JournalEntry, *[lambda: Bill.objects.get(pk=draft.pk).post()] * 2))
         self.assertEqual(self.balance(self.payable), Decimal("-50.00"))
+
+    def test_an_order_is_not_cancelled_as_its_draft_bill_posts(self):
+        """Sales' race, mirrored: billed as ordered, nothing received, so only the order decides."""
+        from apps.core.models import Company
+
+        company = Company.get()
+        company.default_purchase_expense_account = self.expense
+        company.save()
+        order = self.make_order("10", "5")
+        order.bill_policy = BillPolicy.ORDERED
+        order.save()
+        draft = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        self.once(race(None, lambda: PurchaseOrder.objects.get(pk=order.pk).cancel(),
+                       lambda: Bill.objects.get(pk=draft.pk).post()))
+        order.refresh_from_db()
+        posted = Bill.objects.get(pk=draft.pk).posted
+        self.assertIn((order.status, posted, self.balance(self.payable)),
+                      [("cancelled", False, Decimal("0")), ("confirmed", True, Decimal("-50.00"))])
 
     def test_a_payment_is_not_spent_on_two_bills(self):
         bills = []

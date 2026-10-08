@@ -1395,7 +1395,7 @@ class Budget(AuditModel):
         for line in lines:
             if self._account_for(line) != self.account:
                 continue
-            unbilled = max(line.quantity - line.quantity_billed(), Decimal("0"))
+            unbilled = max(line.quantity_unbilled(), Decimal("0"))
             if unbilled <= 0:
                 continue
             share = unbilled / line.quantity if line.quantity else Decimal("0")
@@ -1881,6 +1881,14 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                     f"{line.label()} has been billed and the order cannot be cancelled. Raise a debit "
                     "note on the bill first."
                 )
+        # Paid up front is billed, as sales asks of a deposit: cancelled, nothing would draw
+        # the prepayment down, and the vendor would hold it with nobody asking for it back.
+        held = [prepayment for prepayment in self.prepayments() if prepayment.prepayment_unapplied() > 0]
+        if held:
+            raise ValidationError(
+                f"Prepayment {', '.join(prepayment.number for prepayment in held)} still holds "
+                f"{sum(prepayment.prepayment_unapplied() for prepayment in held)} on this order. "
+                "Raise a debit note for it before cancelling.")
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
         # What a requisition asked for is no longer on order, so it is open
@@ -2728,8 +2736,16 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
         return billed - debited
 
+    def bill_limit(self):
+        """
+        The most this line may bill: what came, once closed short, and otherwise what was
+        ordered. Sales' invoice_limit(); closing short promised it and nothing held to it, so
+        a line billed as ordered went on billing goods that would never come.
+        """
+        return self.quantity_received() if self.is_closed_short() else self.quantity
+
     def quantity_unbilled(self):
-        return self.quantity - self.quantity_billed()
+        return self.bill_limit() - self.quantity_billed()
 
     def accrual_layers(self):
         """
@@ -2784,7 +2800,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return min(unbilled, self.quantity_received() - self.quantity_billed())
 
     def is_fully_billed(self):
-        return self.quantity_billed() >= self.quantity
+        return self.quantity_billed() >= self.bill_limit()
 
     def quantity_billed_not_held(self):
         """
@@ -3522,6 +3538,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # What the order has been billed, and paid up front, is decided on
         # below; two bills for one order must not both see the same room.
         lock_rows(self.purchase_order)
+        order = self.purchase_order
+        if order is not None and not self.is_debit_note() and order.status != OrderStatus.CONFIRMED:
+            # Asked as a receipt asks, under the same lock: a draft made before the order was
+            # cancelled was owed to the vendor for goods that could never come.
+            what = "take a prepayment" if self.is_prepayment else "be billed"
+            raise ValidationError(f"Only a confirmed order can {what}; {order} is {order.get_status_display().lower()}.")
         if self.is_prepayment:
             self._check_prepayment_shape()
             self._check_prepayment_room()
@@ -3744,10 +3766,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 continue
             order_line = line.order_line
             already = order_line.quantity_billed()
-            if already + line.quantity > order_line.quantity:
+            limit = order_line.bill_limit()
+            if already + line.quantity > limit:
+                from apps.core.api import plain
+
+                what = "received quantity of a line closed short" if order_line.is_closed_short() else "ordered quantity"
                 raise ValidationError(
-                    f"Billing {line.quantity} of {order_line.item} would exceed the ordered "
-                    f"quantity ({order_line.quantity}; {already} already billed)."
+                    f"Billing {plain(line.quantity)} of {order_line.item} would exceed the {what} "
+                    f"({plain(limit)}; {plain(already)} already billed)."
                 )
             # A charge never arrives, so the receipt leg of the match does
             # not apply to it — the quantity and price legs still do.

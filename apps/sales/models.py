@@ -438,6 +438,22 @@ def quantities_awaited(lines):
     return awaited
 
 
+def refuse_awaited_from_a_vendor(lines, doing):
+    """
+    Refuse `doing` while a vendor is still to send any of `lines` straight to the customer.
+    The goods would come all the same, and their receipt, delivering to an order that no
+    longer wants them, could never post: the drop-ship stood open with nobody to receive it.
+    """
+    from apps.core.api import plain
+
+    awaited = quantities_awaited(lines)
+    coming = [f"{line.label()} ({plain(awaited[line.pk])})" for line in lines if awaited[line.pk] > 0]
+    if coming:
+        raise ValidationError(
+            f"A vendor is still to send {', '.join(coming)} to the customer on a drop-ship. "
+            f"Cancel it, or close it short, before {doing}.")
+
+
 def refuse_material_problems(customer, rows):
     """rows: [(item, lots, on_date)]. Refuse naming every problem at once."""
     problems = []
@@ -727,6 +743,15 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                     "This order has been shipped or invoiced and cannot be cancelled. "
                     "Return the goods or issue a credit note instead."
                 )
+        refuse_awaited_from_a_vendor(list(self.lines.all()), "cancelling the order")
+        # Billed up front is billed: cancelled, nothing would draw the deposit down,
+        # and one still unpaid would be chased for an order that is not coming.
+        held = [deposit for deposit in self.deposits() if deposit.deposit_unapplied() > 0]
+        if held:
+            raise ValidationError(
+                f"Down payment {', '.join(deposit.number for deposit in held)} still holds "
+                f"{sum(deposit.deposit_unapplied() for deposit in held)} on this order. "
+                "Credit it back before cancelling.")
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
         # The stock this order was holding is free the moment it is not
@@ -1267,6 +1292,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         reason = " ".join((reason or "").split())
         if not reason:
             raise ValidationError("Say why the rest will not be shipped.")
+        # What the drop-ships bring is read next; create_for_drop_ship() takes the order to add to it.
+        lock_rows(self.order, refresh=False)
+        refuse_awaited_from_a_vendor([self], "closing the line short")
         self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
         release_for(self, f"Closed short: {reason}"[:255])
@@ -2304,6 +2332,12 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room.
         lock_rows(self.sales_order)
+        order = self.sales_order
+        if order is not None and not self.is_credit_note() and order.status != OrderStatus.CONFIRMED:
+            # Asked as a delivery asks, under the same lock: a draft made before the
+            # order was cancelled billed the customer for it, or took a deposit on it.
+            what = "take a down payment" if self.is_down_payment else "be invoiced"
+            raise ValidationError(f"Only a confirmed order can {what}; {order} is {order.get_status_display().lower()}.")
         if self.is_down_payment:
             self._check_deposit_shape()
             self._check_deposit_room()
@@ -2321,11 +2355,13 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
                 order_line = line.order_line
                 limit = order_line.quantity if order_line.is_charge() else order_line.invoice_limit()
                 if already + line.quantity > limit:
+                    from apps.core.api import plain
+
                     what = ("shipped quantity of a line closed short"
                             if order_line.is_closed_short() else "ordered quantity")
                     raise ValidationError(
-                        f"Invoicing {line.quantity} of {order_line.item} would exceed the "
-                        f"{what} ({limit}; {already} already invoiced)."
+                        f"Invoicing {plain(line.quantity)} of {order_line.item} would exceed the "
+                        f"{what} ({plain(limit)}; {plain(already)} already invoiced)."
                     )
         if not self.number:
             if self.is_credit_note():
