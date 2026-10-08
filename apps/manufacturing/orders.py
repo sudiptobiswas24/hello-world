@@ -1988,6 +1988,23 @@ def _shown(quantity):
     return format(Decimal(quantity).normalize(), "f")
 
 
+class VoidedNotDeleted:
+    """
+    A posted floor document is corrected by voiding it, never by deleting
+    it: its stock movements and its entry would stay with nothing left to
+    say why, and its lines go with it by cascade, which never asks their
+    own guard. A supervisor deleted a posted issue, entry and booking over
+    the API, and work in progress held 10,000, -47,125.67 and 360 against
+    runs that said nothing was left.
+    """
+
+    @serialised("posted")
+    def delete(self, *args, **kwargs):
+        if self.posted:
+            raise ValidationError(f"Cannot delete {self} once it is posted. Void it instead.")
+        return super().delete(*args, **kwargs)
+
+
 class IssueDirection(models.TextChoices):
     ISSUE = "issue", "Issued to the run"
     RETURN = "return", "Returned to the store"
@@ -2028,7 +2045,7 @@ def _check_whose(issue, line):
             )
 
 
-class MaterialIssue(AuditModel):
+class MaterialIssue(VoidedNotDeleted, AuditModel):
     """
     Material drawn from the store against a run, or handed back.
 
@@ -2199,18 +2216,6 @@ class MaterialIssue(AuditModel):
                     "another."
                 )
         super().save(*args, **kwargs)
-
-    @serialised("posted")
-    def delete(self, *args, **kwargs):
-        # Deleting a posted issue leaves its stock movements and its entry
-        # standing, and the run then reads as having drawn nothing. Its
-        # lines go with it by cascade, which never asks their own guard.
-        if self.posted:
-            raise ValidationError(
-                f"Cannot delete {self} once it is posted. Void it and raise "
-                "another."
-            )
-        return super().delete(*args, **kwargs)
 
 
 class MaterialIssueLine(AuditModel):
@@ -2425,7 +2430,7 @@ class MaterialIssueLine(AuditModel):
         return super().delete(*args, **kwargs)
 
 
-class ProductionEntry(AuditModel):
+class ProductionEntry(VoidedNotDeleted, AuditModel):
     """
     Output booked off a run: good sacks, by-products, and failures.
 
@@ -2790,17 +2795,6 @@ class ProductionEntry(AuditModel):
                     )
         super().save(*args, **kwargs)
 
-    @serialised("posted")
-    def delete(self, *args, **kwargs):
-        # The output on the shelf and the credit to work in progress would
-        # stay, with the run reading as having made nothing.
-        if self.posted:
-            raise ValidationError(
-                f"Cannot delete {self} once it is posted. Void it and raise "
-                "another."
-            )
-        return super().delete(*args, **kwargs)
-
 
 class ProductionByproduct(AuditModel):
     """
@@ -2934,7 +2928,7 @@ class ProductionByproduct(AuditModel):
         return super().delete(*args, **kwargs)
 
 
-class TimeBooking(AuditModel):
+class TimeBooking(VoidedNotDeleted, AuditModel):
     """
     A machine ran for a while against a run, and what that cost.
 
@@ -3203,17 +3197,6 @@ class TimeBooking(AuditModel):
             )
         self.resolve_machine()
         super().save(*args, **kwargs)
-
-    @serialised("posted")
-    def delete(self, *args, **kwargs):
-        # Its charge to work in progress would stay, against hours the run
-        # no longer shows.
-        if self.posted:
-            raise ValidationError(
-                f"Cannot delete {self} once it is posted. Void it and book "
-                "again."
-            )
-        return super().delete(*args, **kwargs)
 
     def resolve_machine(self):
         """
