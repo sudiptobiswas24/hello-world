@@ -673,6 +673,20 @@ class PayRun(AuditModel):
                 f"{paid.employee} has already been paid from this run. Reverse the "
                 "payment before voiding the payroll that owed it."
             )
+        # The month's dues paid over stand on what its runs deducted, as a slip's pay stands on
+        # the slip. Voided under them, June's run left 7,200 paid to the EPFO against nothing
+        # owed, and June gone from the report. Each account held as a remittance holds it.
+        shares = {}
+        for line in PayslipLine.objects.filter(payslip__run=self, posted_liability_account__isnull=False):
+            shares[line.posted_liability_account] = shares.get(line.posted_liability_account, Decimal("0")) + line.amount
+        lock_rows(*shares)
+        month = _month_of(self.period_end)
+        for account, share in sorted(shares.items(), key=lambda pair: pair[0].code):
+            paid_over, left = remitted(account, month), _deducted(account, month) - share
+            if paid_over > left:
+                raise ValidationError(
+                    f"{paid_over} of {account} for {month:%B %Y} has been paid over; voided, this run "
+                    f"would leave {left} deducted for it. Delete the remittance, or void its payment, first.")
         self.voided_entry = self.journal_entry.create_reversal(
             entry_date=to_date(on_date) or timezone.localdate(),
             memo=memo or f"Void of payroll {self.number}",

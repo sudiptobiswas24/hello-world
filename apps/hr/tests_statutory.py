@@ -243,6 +243,20 @@ class PayingItOverTests(StatutoryTestCase):
         self.june.void(on_date=datetime.date(2026, 7, 1))
         self.assertEqual(self.report(), {})
 
+    def test_a_run_is_not_voided_under_its_dues_paid_over(self):
+        # Voided after June's PF went to the EPFO, the run left 7,200 paid over against nothing
+        # deducted, PF payable in debit by it, and June gone from the report.
+        remittance = self.remit(self.pf_payable, "7200")
+        with self.assertRaisesMessage(ValidationError, "for June 2026 has been paid over; voided, this run "
+                                                       "would leave 0.00 deducted for it"):
+            self.june.void(on_date=datetime.date(2026, 7, 20))
+        self.june.refresh_from_db()
+        self.assertFalse(self.june.is_voided())
+
+        remittance.payment.void()  # it bounced: nothing was paid over after all
+        self.june.void(on_date=datetime.date(2026, 7, 20))
+        self.assertEqual((self.report(), self.balance(self.pf_payable)), ({}, Decimal("0.00")))
+
     def test_the_account_it_was_owed_into_is_kept(self):
         other = Account.objects.create(code="2311", name="PF payable (new)",
                                        account_type=AccountType.LIABILITY)
