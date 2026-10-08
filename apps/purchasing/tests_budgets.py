@@ -99,6 +99,18 @@ class CommitmentTests(BudgetTestCase):
         self.assertEqual(self.budget.committed(), Decimal("1200"))
         self.assertEqual(self.budget.available(), Decimal("8000"))
 
+    def test_a_line_closed_short_commits_only_what_it_will_still_bill(self):
+        # Closed short at 40 of 100, the order went on committing the 60 that would never
+        # come: 2,000 until billed, then 1,200 for ever.
+        order = self.order_of("100", "20")
+        self.receive(order, "40")
+        order.lines.get().close_short("Vendor discontinued it")
+        self.assertEqual(self.budget.committed(), Decimal("800"))
+        bill = order.create_bill(self.payable)
+        bill.bill_date = datetime.date(2026, 3, 10)
+        bill.post()
+        self.assertEqual((self.budget.spent(), self.budget.committed()), (Decimal("800"), Decimal("0")))
+
     def test_an_approved_requisition_is_counted_before_it_is_ordered(self):
         requisition = PurchaseRequisition.objects.create(
             requested_by=self.employee, request_date=datetime.date(2026, 2, 1)

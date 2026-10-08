@@ -18,7 +18,7 @@ from rest_framework.test import APIClient
 
 from apps.sales.models import SalesOrder
 
-from .models import FulfilmentStatus, PurchaseOrder, ReorderRule
+from .models import Bill, BillLine, BillPolicy, FulfilmentStatus, PurchaseOrder, ReorderRule
 from .tests_drop_ship import DropShipTestCase
 
 
@@ -110,6 +110,46 @@ class WhatClosingChangesTests(CloseShortTestCase):
         PurchaseOrder.create_for_drop_ship(sale, self.vendor)  # another vendor's, say
         with self.assertRaisesMessage(ValidationError, "would bring 10"):
             line.reopen()
+
+
+
+class BillsOnlyWhatCameTests(CloseShortTestCase):
+    """
+    Closed short, a line bills only what came. Closing refused a line billed beyond its
+    receipts and said so; nothing held to it after, so an order billed as ordered drafted
+    and posted a bill for all ten, and the accrual kept a debit no receipt could clear.
+      ordered 10 at 5, received 7, closed short
+      receipt  Dr Inventory 35 / Cr GRNI 35
+      bill     Dr GRNI 35 / Cr AP 35            GRNI 0 (billed for 10 it read 15 debit)
+    """
+
+    def closed(self, policy):
+        order, line = self.short_order()
+        order.bill_policy = policy
+        order.save()
+        line.close_short("Vendor out of stock")
+        return order, line
+
+    def test_a_bill_typed_for_the_rest_is_refused(self):
+        order, line = self.closed(BillPolicy.ORDERED)
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 12),
+                                   purchase_order=order, payable_account=self.payable)
+        BillLine.objects.create(bill=bill, order_line=line, item=self.item, quantity=Decimal("10"),
+                                unit_price=Decimal("5"), expense_account=self.expense)
+        with self.assertRaisesMessage(ValidationError,
+                                      "would exceed the received quantity of a line closed short (7; 0 already billed)"):
+            bill.post()
+
+    def test_billed_for_what_came_the_order_is_billed_and_the_accrual_clears(self):
+        for policy in (BillPolicy.ORDERED, BillPolicy.RECEIVED):
+            with self.subTest(policy=policy):
+                order, line = self.closed(policy)
+                bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 12))
+                self.assertEqual(bill.lines.get().quantity, Decimal("7"))
+                bill.post()
+                self.assertEqual((order.bill_status(), self.balance(self.grni)), (FulfilmentStatus.FULL, Decimal("0")))
+                with self.assertRaisesMessage(ValidationError, "already fully billed"):
+                    order.create_bill(self.payable)
 
 
 class ThroughTheApiTests(CloseShortTestCase):
