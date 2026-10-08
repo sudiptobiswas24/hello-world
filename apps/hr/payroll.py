@@ -1478,12 +1478,27 @@ class StatutoryRemittance(AuditModel):
         return super().delete(*args, **kwargs)
 
 
-def remitted(account, period):
-    """Paid over against `account` for `period`, by payments that still stand."""
+def remitted(account, period, as_of=None):
+    """
+    Paid over against `account` for `period`, by payments that still stand;
+    or, `as_of` a day, by payments made by then and not voided by then. As
+    of 10 July, June's PF paid over on the 15th read as paid already.
+    """
     rows = StatutoryRemittance.objects.filter(
         liability_account=account, period=_month_of(period)
-    ).select_related("payment")
-    return sum((row.amount for row in rows if not row.payment.is_voided()), Decimal("0"))
+    ).select_related("payment__voided_entry", "payment__journal_entry")
+    if as_of is None:
+        return sum((row.amount for row in rows if not row.payment.is_voided()), Decimal("0"))
+    return sum((row.amount for row in rows if _stood_on(row.payment, to_date(as_of))), Decimal("0"))
+
+
+def _stood_on(payment, day):
+    """Made by `day` and not yet voided on it: the payment as the ledger stood that day."""
+    if to_date(payment.payment_date) > day:
+        return False
+    if payment.voided_entry_id:
+        return to_date(payment.voided_entry.date) > day
+    return not payment.journal_entry.reversed_by.filter(date__lte=day).exists()
 
 
 def statutory_liabilities(as_of=None):
@@ -1511,7 +1526,7 @@ def statutory_liabilities(as_of=None):
     result = []
     for (account, period), deducted in sorted(rows.items(),
                                               key=lambda item: (item[0][1], item[0][0].code)):
-        paid = remitted(account, period)
+        paid = remitted(account, period, as_of)
         following = (period + datetime.timedelta(days=32)).replace(day=1)
         due = following.replace(day=due_days[(account, period)]) \
             if (account, period) in due_days else None
