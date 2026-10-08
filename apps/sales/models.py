@@ -3910,6 +3910,21 @@ class Delivery(AuditModel):
             # Goods coming back are taken whatever the hold; goods going out wait for it to lift.
             refuse_credit_hold(self.sales_order.customer, "nothing is dispatched to them")
 
+        # Held before anything reads the shelf, because the race is
+        # between the read and the write and a lock taken after the
+        # decision protects nothing. Every position this delivery touches,
+        # in a fixed order, so two deliveries over the same pair of items
+        # cannot take them in opposite orders and wait for each other.
+        # It was taken after the on-hand and free-stock checks: two orders
+        # each read the last ten, each passed, and the second wrote minus
+        # ten on a shelf that may not go below nothing; the order's own
+        # lock holds only deliveries of one order.
+        lock_positions(
+            (line.order_line.item, line.warehouse)
+            for line in lines
+            if line.order_line.item_id and line.order_line.item.track_inventory
+        )
+
         if not is_return:
             for line in lines:
                 already_shipped = line.order_line.quantity_shipped()
@@ -3999,17 +4014,6 @@ class Delivery(AuditModel):
                     )
                 if not is_return:
                     check_released(item, line.lot, action="be shipped")
-
-        # Held before anything reads the shelf, because the race is
-        # between the read and the write and a lock taken after the
-        # decision protects nothing. Every position this delivery touches,
-        # in a fixed order, so two deliveries over the same pair of items
-        # cannot take them in opposite orders and wait for each other.
-        lock_positions(
-            (line.order_line.item, line.warehouse)
-            for line in lines
-            if line.order_line.item_id and line.order_line.item.track_inventory
-        )
 
         self.delivery_date = to_date(self.delivery_date)
         if not self.number:
