@@ -31,7 +31,9 @@ from apps.accounting.models import (
     JournalLine,
     round_money,
 )
-from apps.core.models import Extensible, AuditModel, DocumentSequence, Party, serialised, to_date
+from apps.core.models import (
+    Extensible, AuditModel, DocumentSequence, Party, correction_date, day_that_has_come, serialised, to_date,
+)
 
 
 class DepreciationMethod(models.TextChoices):
@@ -391,7 +393,9 @@ class FixedAsset(Extensible, AuditModel):
     @serialised("status")
     def depreciate(self, through=None):
         """Charge every month due up to `through`. Returns the entries made."""
-        through = to_date(through) or timezone.localdate()
+        # A month is charged once it has ended: run to next June, the charges stood in the
+        # books for months nobody had used the machine in yet.
+        through = day_that_has_come(to_date(through) or timezone.localdate(), f"{self} is not depreciated through")
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service is depreciated.")
 
@@ -453,7 +457,8 @@ class FixedAsset(Extensible, AuditModel):
                 f"{self} was not capitalised from a bill, so there is nothing "
                 "to undo — delete the draft instead."
             )
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, self.capitalisation_entry.date, f"{self} is not un-capitalised on",
+                                  "it was capitalised")
         self.capitalisation_entry.create_reversal(
             entry_date=on_date, memo=memo or f"Un-capitalised {self}"
         )
@@ -483,11 +488,11 @@ class FixedAsset(Extensible, AuditModel):
         a receivable, and a disposal nobody invoices leaves the whole
         book value as a loss.
         """
-        on_date = to_date(on_date) or timezone.localdate()
         if self.status == AssetStatus.DISPOSED:
             raise ValidationError("This asset has already been disposed of.")
         if self.status != AssetStatus.IN_SERVICE:
             raise ValidationError("Only an asset in service can be disposed of.")
+        on_date = correction_date(on_date, self.acquisition_date, f"{self} is not disposed of on", "it was acquired")
         month_before = on_date.replace(day=1) - datetime.timedelta(days=1)
         self.depreciate(through=month_before)
         # Charges run past the disposal — the month-end job ran before the
@@ -572,7 +577,8 @@ class FixedAsset(Extensible, AuditModel):
         if self.disposal_entry_id is None:
             raise ValidationError(
                 f"{self} was disposed of before its entry was kept; reverse that entry from the journal.")
-        on_date = to_date(on_date) or timezone.localdate()
+        # Used where the disposal's month has closed: never a day before the disposal it takes back.
+        on_date = correction_date(on_date, self.disposed_on, f"{self} is not reinstated on", "it was disposed of")
 
         def open_or_today(day):
             return day if AccountingPeriod.blocking(day) is None else on_date
