@@ -1316,6 +1316,24 @@ class Payslip(AuditModel):
         return self
 
 
+def posted_slip_over(employee, first, last=None, **narrower):
+    """
+    The earliest payslip of `employee` in a posted run whose period touches
+    `first`..`last` (with no `last`, any day from `first` on), or None.
+
+    What a posted run paid on is not changed under it, and the register,
+    leave, timesheets and somebody's start and leaving dates each ask this
+    before they change; asked here once, so a rule about what counts as paid
+    on is one rule. `narrower` filters the slips further: a timesheet asks
+    only of slips that paid by the hour.
+    """
+    slips = Payslip.objects.filter(employee=employee, run__status=PayRunStatus.POSTED,
+                                   run__period_end__gte=first, **narrower)
+    if last is not None:
+        slips = slips.filter(run__period_start__lte=last)
+    return slips.select_related("run").order_by("run__period_start").first()
+
+
 class PayslipLine(AuditModel):
     payslip = models.ForeignKey(Payslip, on_delete=models.CASCADE, related_name="lines")
     component = models.ForeignKey(PayComponent, on_delete=models.PROTECT, related_name="+")

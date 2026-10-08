@@ -237,13 +237,10 @@ class Timesheet(AuditModel):
 
     def hours_paid_by(self):
         """The posted payslip that paid this person's hours over this sheet's period, or None."""
-        from .payroll import ComponentBasis, Payslip, PayRunStatus
+        from .payroll import ComponentBasis, posted_slip_over
 
-        return Payslip.objects.filter(
-            employee_id=self.employee_id, run__status=PayRunStatus.POSTED, run__voided_at__isnull=True,
-            run__period_start__lte=self.period_end, run__period_end__gte=self.period_start,
-            lines__component__basis=ComponentBasis.PER_HOUR,
-        ).select_related("run").first()
+        return posted_slip_over(self.employee_id, self.period_start, self.period_end,
+                                lines__component__basis=ComponentBasis.PER_HOUR)
 
     def is_paid(self):
         """
@@ -253,15 +250,9 @@ class Timesheet(AuditModel):
         sheet says, and editing them would leave a payslip nobody can
         reproduce.
         """
-        from .payroll import PayRun, PayRunStatus
+        from .payroll import posted_slip_over
 
-        return PayRun.objects.filter(
-            status=PayRunStatus.POSTED,
-            voided_at__isnull=True,
-            period_start__lte=self.period_end,
-            period_end__gte=self.period_start,
-            payslips__employee_id=self.employee_id,
-        ).exists()
+        return posted_slip_over(self.employee_id, self.period_start, self.period_end) is not None
 
 
 class TimesheetEntry(AuditModel):

@@ -132,10 +132,9 @@ class AttendanceDay(AuditModel):
 
 
 def _refuse_if_paid(employee, on):
-    from .payroll import Payslip, PayRunStatus
+    from .payroll import posted_slip_over
 
-    paid = Payslip.objects.filter(employee=employee, run__status=PayRunStatus.POSTED,
-                                  run__period_start__lte=on, run__period_end__gte=on).select_related("run").first()
+    paid = posted_slip_over(employee, on, on)
     if paid is not None:
         raise ValidationError(f"{on} is inside {paid.run}, which is posted and paid on this register; "
                               "void the run to change it.")
