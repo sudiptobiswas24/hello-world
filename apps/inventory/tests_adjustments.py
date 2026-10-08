@@ -363,6 +363,60 @@ class ImmutabilityTests(AdjustmentTestCase):
         self.assertTrue(adjustment.number.startswith("ADJ-"))
 
 
+class WrittenDownAtWhatTheShelfGaveUpTests(AdjustmentTestCase):
+    """
+    A thousand at 4 and two thousand at 3: three thousand worth 10,000,
+    averaging 3.3333... A thousand written off takes 3,333.33 off the
+    shelf. Booked at the four-place rate, 3,333.30 came off the inventory
+    account, and voiding put 3,333.30 back on a shelf that had given up
+    3,333.33: the account was put straight and the shelf stayed 0.03
+    short.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.stock("1000", "4")
+        self.stock("2000", "3")
+
+    def test_a_write_down_credits_inventory_what_the_shelf_gave_up(self):
+        self.adjust("-1000", reason=self.shrink)
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("6666.67"))
+        self.assertEqual(self.balance(self.inventory), Decimal("-3333.33"))
+
+    def test_voided_the_shelf_is_back_where_it_was(self):
+        self.adjust("-1000", reason=self.shrink).void()
+        self.assertEqual(self.balance(self.inventory), Decimal("0.00"))
+        self.assertEqual(self.item.valuation_at(self.warehouse)[1].quantize(Decimal("0.0001")),
+                         Decimal("10000.0000"))
+
+    def test_a_count_a_thousand_short_credits_what_the_shelf_gave_up(self):
+        count = StockCount.objects.create(count_date=datetime.date(2026, 3, 1),
+                                          warehouse=self.warehouse, reason=self.recount)
+        count.add(self.item, "2000")
+        count.post()
+        self.assertEqual(self.balance(self.inventory), Decimal("-3333.33"))
+
+    def test_the_store_head_posts_and_voids_it_through_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        head = User.objects.create_user("stores_head")
+        head.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient()
+        client.force_authenticate(head)
+        adjustment = self.adjust("-1000", reason=self.shrink, post=False)
+        posted = client.post(f"/api/inventory/stock-adjustments/{adjustment.pk}/post/", {}, format="json")
+        self.assertEqual(posted.status_code, 200, posted.content[:300])
+        read = client.get(f"/api/inventory/stock-adjustments/{adjustment.pk}/")
+        self.assertEqual(read.json()["total_value"], "-3333.33")
+        voided = client.post(f"/api/inventory/stock-adjustments/{adjustment.pk}/void/", {}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content[:300])
+        self.assertEqual(self.balance(self.inventory), Decimal("0.00"))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("10000.00"))
+
+
 class StockCountTests(AdjustmentTestCase):
     def sheet(self, **kwargs):
         return StockCount.objects.create(
