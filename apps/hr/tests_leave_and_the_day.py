@@ -145,3 +145,55 @@ class ADayWorkedIsNotTakenOffTests(TheDayTestCase):
         self.assertIn("a day is not both worked and taken off", str(response.content))
         request.refresh_from_db()
         self.assertEqual(request.status, "pending")
+
+
+class UnderAPostedRunTests(TheDayTestCase):
+    """
+    October posted: what it paid on is what the leave said then. The
+    register refuses a change inside a posted run; so does the leave,
+    where pay read it.
+    """
+
+    def posted(self):
+        run = self.october()
+        run.calculate()
+        run.post()
+        return run
+
+    def test_unpaid_leave_is_not_approved_in_a_month_already_paid(self):
+        self.posted()
+        with self.assertRaisesMessage(ValidationError, "void the run to approve this leave"):
+            self.leave(6, paid=False).approve(by=self.boss)
+
+    def test_paid_leave_does_not_excuse_an_absence_already_docked(self):
+        self.mark(5, AttendanceStatus.ABSENT)
+        self.posted()
+        with self.assertRaisesMessage(ValidationError, "void the run to approve this leave"):
+            self.leave(5).approve(by=self.boss)
+
+    def test_paid_leave_on_a_day_the_run_read_nothing_for(self):
+        self.posted()
+        self.leave(6).approve(by=self.boss)
+
+    def test_unpaid_leave_already_docked_is_not_sent_back_or_cancelled(self):
+        request = self.leave(6, paid=False)
+        request.approve(by=self.boss)
+        self.posted()
+        with self.assertRaisesMessage(ValidationError, "void the run to send back this leave"):
+            LeaveRequest.objects.get(pk=request.pk).withdraw_approval(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "void the run to cancel this leave"):
+            LeaveRequest.objects.get(pk=request.pk).cancel(on_date=D(2026, 10, 1))
+        request.refresh_from_db()
+        self.assertEqual(request.status, "approved")
+
+    def test_a_day_rated_workers_day_off_was_paid_on_the_leaves_word(self):
+        self.worker.paid_by_attendance = True
+        self.worker.save()
+        request = self.leave(20)
+        request.approve(by=self.boss)
+        for day in range(1, 32):
+            if D(2026, 10, day).isoweekday() != 7 and day != 20:
+                self.mark(day)
+        self.posted()
+        with self.assertRaisesMessage(ValidationError, "void the run to send back this leave"):
+            LeaveRequest.objects.get(pk=request.pk).withdraw_approval(by=self.boss)
