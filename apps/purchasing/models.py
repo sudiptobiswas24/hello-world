@@ -1881,6 +1881,14 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                     f"{line.label()} has been billed and the order cannot be cancelled. Raise a debit "
                     "note on the bill first."
                 )
+        # Paid up front is billed, as sales asks of a deposit: cancelled, nothing would draw
+        # the prepayment down, and the vendor would hold it with nobody asking for it back.
+        held = [prepayment for prepayment in self.prepayments() if prepayment.prepayment_unapplied() > 0]
+        if held:
+            raise ValidationError(
+                f"Prepayment {', '.join(prepayment.number for prepayment in held)} still holds "
+                f"{sum(prepayment.prepayment_unapplied() for prepayment in held)} on this order. "
+                "Raise a debit note for it before cancelling.")
         self.status = OrderStatus.CANCELLED
         self.save(update_fields=["status", "updated_at"])
         # What a requisition asked for is no longer on order, so it is open
@@ -3522,6 +3530,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # What the order has been billed, and paid up front, is decided on
         # below; two bills for one order must not both see the same room.
         lock_rows(self.purchase_order)
+        order = self.purchase_order
+        if order is not None and not self.is_debit_note() and order.status != OrderStatus.CONFIRMED:
+            # Asked as a receipt asks, under the same lock: a draft made before the order was
+            # cancelled was owed to the vendor for goods that could never come.
+            what = "take a prepayment" if self.is_prepayment else "be billed"
+            raise ValidationError(f"Only a confirmed order can {what}; {order} is {order.get_status_display().lower()}.")
         if self.is_prepayment:
             self._check_prepayment_shape()
             self._check_prepayment_room()

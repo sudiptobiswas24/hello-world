@@ -61,6 +61,28 @@ class DrawdownTests(MatchTestCase):
         bill.create_debit_note(memo="Order called off")
         order.cancel()
 
+    def test_a_bill_drafted_before_the_cancel_does_not_post_after_it(self):
+        # Receiving asked whether the order still stood; billing did not, so the vendor was owed
+        # 50 for goods the cancelled order could never receive.
+        order = self.make_order("10", "5")
+        order.bill_policy = BillPolicy.ORDERED
+        order.save()
+        draft = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        order.cancel()
+        with self.assertRaisesMessage(ValidationError, "Only a confirmed order can be billed"):
+            draft.post()
+        draft.refresh_from_db()
+        self.assertFalse(draft.posted)
+
+    def test_a_bill_typed_against_a_draft_order_does_not_post(self):
+        order = self.make_order("10", "5", confirm=False)
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 10),
+                                   purchase_order=order, payable_account=self.payable)
+        BillLine.objects.create(bill=bill, order_line=order.lines.get(), item=self.item, quantity=Decimal("10"),
+                                unit_price=Decimal("5"), expense_account=self.expense)
+        with self.assertRaisesMessage(ValidationError, "is draft"):
+            bill.post()
+
     def test_a_partial_receipt_bills_only_what_arrived(self):
         order = self.make_order("10", "5")
         self.receive(order, "4")

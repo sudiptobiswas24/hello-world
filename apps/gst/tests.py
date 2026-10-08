@@ -364,6 +364,7 @@ class RefusalTests(GstReturnTestCase):
         order = SalesOrder.objects.create(customer=customer, order_date=DAY)
         SalesOrderLine.objects.create(order=order, item=self.sack, uom=self.sack.uom, quantity=D("1"),
                                       unit_price=D("5000"), revenue_account=self.revenue)
+        order.confirm()  # an advance is taken on an order agreed, not on a draft
         deposit = Invoice.objects.create(customer=customer, invoice_date=DAY, sales_order=order,
                                          receivable_account=self.ar, is_down_payment=True)
         InvoiceLine.objects.create(invoice=deposit, description="Advance", quantity=D("1"),
@@ -396,6 +397,7 @@ class RefusalTests(GstReturnTestCase):
         order = PurchaseOrder.objects.create(vendor=vendor, order_date=DAY)
         PurchaseOrderLine.objects.create(order=order, item=self.sack, uom=self.sack.uom, quantity=D("1"),
                                          unit_price=D("5000"))
+        order.confirm()  # an advance is paid on an order agreed, not on a draft
         prepayment = Bill.objects.create(vendor=vendor, bill_date=DAY, payable_account=self.ap,
                                          purchase_order=order, is_prepayment=True)
         BillLine.objects.create(bill=prepayment, description="Advance", quantity=D("1"),
