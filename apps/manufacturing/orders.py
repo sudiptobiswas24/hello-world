@@ -1321,6 +1321,7 @@ class WorkOrder(AuditModel):
                 f"{self} is {self.get_status_display().lower()}; only a released "
                 "order can be closed."
             )
+        self._check_no_clock_running("closed")
         on_date = to_date(on_date) or timezone.localdate()
         balance = round_money(self.unaccounted())
         time_overrun = round_money(self.conversion_variance())
@@ -1376,6 +1377,26 @@ class WorkOrder(AuditModel):
         ])
         return self.close_entry
 
+    def _check_no_clock_running(self, becoming):
+        """
+        A machine's clock still running on this run holds it open. Closed
+        or cancelled under it, the clock could not be stopped (its hours
+        had no open run to go to) nor voided (it had never stopped), and
+        the machine could start no other.
+        """
+        from .station_clock import MachineClock
+
+        running = MachineClock.objects.filter(
+            operation__work_order=self, stopped_at__isnull=True,
+        ).select_related("machine", "operation").order_by("started_at").first()
+        if running is not None:
+            raise ValidationError(
+                f"{running.machine.code}'s clock has been running on "
+                f"{running.operation.name} since "
+                f"{timezone.localtime(running.started_at):%d %b %H:%M}. Stop it at the "
+                f"station before {self} is {becoming}."
+            )
+
     # -- and back again --------------------------------------------------
 
     @serialised("status")
@@ -1391,6 +1412,7 @@ class WorkOrder(AuditModel):
             raise ValidationError(
                 f"{self} is already {self.get_status_display().lower()}."
             )
+        self._check_no_clock_running("cancelled")
         # Material, machine time and vendors' work all put money into
         # work in progress, and a cancelled run is never closed, so any
         # of them left there stays for ever. Machine time was missing

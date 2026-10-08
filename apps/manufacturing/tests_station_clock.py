@@ -99,6 +99,34 @@ class ClockTests(ConversionTestCase):
         self.assertEqual(MachineClock.objects.count(), 1)
 
 
+class ARunningClockHoldsItsRunOpenTests(ConversionTestCase):
+    """
+    Found by probing: the run closed while C-1's clock ran on it, and then
+    the clock could not be stopped (the run was closed), nor voided (it
+    had never stopped), and C-1 could start no other clock.
+    """
+
+    def test_the_run_is_not_closed_under_it(self):
+        start_clock(self.cv, self.operator, self.c1, at=at(TODAY, 16))
+        with self.assertRaisesMessage(ValidationError, "C-1's clock has been running"):
+            self.bag_run.close(TODAY)
+        self.bag_run.refresh_from_db()
+        self.assertTrue(self.bag_run.is_open())
+
+    def test_nor_cancelled(self):
+        start_clock(self.cv, self.operator, self.c1, at=at(TODAY, 16))
+        with self.assertRaisesMessage(ValidationError, "C-1's clock has been running"):
+            self.bag_run.cancel()
+        self.bag_run.refresh_from_db()
+        self.assertTrue(self.bag_run.is_open())
+
+    def test_stopped_it_closes(self):
+        start_clock(self.cv, self.operator, self.c1, at=at(TODAY, 16))
+        stop_clock(self.cv, self.operator, self.c1, at=at(TODAY, 18))
+        self.bag_run.close(TODAY)
+        self.assertFalse(MachineClock.objects.filter(stopped_at__isnull=True).exists())
+
+
 class ClockApiTests(BagStationApiTests):
     def test_started_joined_and_stopped_at_the_station(self):
         self.post_cv("sign-in/", {"pin": self.pin})
