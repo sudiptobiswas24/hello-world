@@ -531,7 +531,11 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.first_in_first_out()
         self.via_the_bay()
         order, self.receipt = self.goods_received("10", "5")
-        self.landed().release()
+        application = self.landed()
+        # On the bay first, or the release proves nothing: landed on the
+        # stock room, FIFO dropped it there and the bay read 50 throughout.
+        self.assertEqual(self.item.stock_value_at(self.bay), Decimal("130.00"))
+        application.release()
         self.assertEqual(self.item.stock_value_at(self.bay), Decimal("50.00"))
         self.assertEqual((self.balance(self.inventory), self.balance(self.freight_expense)),
                          (Decimal("50"), Decimal("80")))
@@ -551,10 +555,107 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.first_in_first_out()
         order, self.receipt = self.goods_received("10", "5")
         self.written_off()
-        self.landed().release()
+        application = self.landed()
+        # In cost of sales while it stands, or the release proves nothing:
+        # debited to inventory, the release credited inventory back and
+        # every balance below came out the same.
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
+                         (Decimal("0"), Decimal("80")))
+        application.release()
         self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
                           self.balance(self.freight_expense)),
                          (Decimal("0"), Decimal("0"), Decimal("80")))
+
+
+    # Ten received into the bay and put away before the freight bill came:
+    # the 80 went to cost of sales because the bay was empty, while the
+    # stock room held all ten at 50. The freight follows the goods to where
+    # they are now, each shelf taking the share its goods there bear, and
+    # only what no shelf holds is cost of sales.
+
+    def put_away(self, quantity=None):
+        self.receipt.lines.get().advance(quantity=None if quantity is None else Decimal(quantity))
+
+    def test_freight_after_the_goods_were_put_away_lands_in_the_stock_room(self):
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.put_away()
+        self.landed()
+        self.assertEqual((self.item.stock_value_at(self.warehouse), self.item.stock_value_at(self.bay)),
+                         (Decimal("130.00"), Decimal("0.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
+                         (Decimal("130"), Decimal("0")))
+
+    def test_under_fifo_it_lands_on_the_layer_the_put_away_made(self):
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.first_in_first_out()
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.put_away()
+        self.landed()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
+
+    def test_six_put_away_and_four_in_the_bay_share_it_by_quantity(self):
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.put_away("6")
+        self.landed()
+        self.assertEqual((self.item.stock_value_at(self.bay), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("52.00"), Decimal("78.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
+                         (Decimal("130.00"), Decimal("0")))
+
+    def test_released_each_shelf_gives_back_what_it_took(self):
+        self.via_the_bay()
+        order, self.receipt = self.goods_received("10", "5")
+        self.put_away("6")
+        application = self.landed()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("78.00"))
+        application.release()
+        self.assertEqual((self.item.stock_value_at(self.bay), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("20.00"), Decimal("30.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
+                          self.balance(self.freight_expense)),
+                         (Decimal("50.00"), Decimal("0.00"), Decimal("80.00")))
+
+    def test_on_one_left_of_ten_only_its_share_lands(self):
+        order, self.receipt = self.goods_received("10", "5")
+        self.written_off_but_one()
+        self.landed()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("13.00"))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
+                          self.balance(self.freight_expense)),
+                         (Decimal("13.00"), Decimal("72.00"), Decimal("0.00")))
+
+    def test_under_fifo_goods_cleared_from_inspection_take_it_on_their_shelf(self):
+        from apps.inventory.models import Warehouse
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.first_in_first_out()
+        inspection = Warehouse.objects.create(code="QA", name="Inspection", is_quarantine=True)
+        order = self.make_order("10", "5")
+        self.receipt = GoodsReceipt.objects.create(purchase_order=order,
+                                                   receipt_date=datetime.date(2026, 1, 5))
+        GoodsReceiptLine.objects.create(receipt=self.receipt, order_line=order.lines.first(),
+                                        warehouse=inspection, quantity_received=Decimal("10"))
+        self.receipt.post()
+        self.receipt.accept(self.warehouse)
+        self.landed()
+        self.assertEqual((self.item.stock_value_at(self.warehouse), self.item.stock_value_at(inspection)),
+                         (Decimal("130.00"), Decimal("0.00")))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
+
+    def written_off_but_one(self):
+        from apps.inventory.models import AdjustmentReason, StockAdjustment, StockAdjustmentLine
+
+        reason = AdjustmentReason.objects.create(code="SCRAP", name="Scrapped", account=self.expense)
+        adjustment = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 1, 20),
+                                                    warehouse=self.warehouse, reason=reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.item, uom=self.uom,
+                                           quantity=Decimal("-9"))
+        adjustment.post()
 
 
 class OneChargeLandsOnceTests(ThirdPartyLandedCostTests):
