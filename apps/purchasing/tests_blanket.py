@@ -196,6 +196,28 @@ class BlanketClosingTests(BlanketTestCase):
         with self.assertRaisesMessage(ValidationError, "already closed"):
             blanket.close()
 
+    def test_a_release_is_not_raised_or_reopened_against_a_closed_agreement(self):
+        # Releases made stand; more called off them does not. Raised after the close, a release
+        # took 150 at the price the agreement fixed, and a line closed short reopened the same.
+        blanket = self.agreement("1000", "4")
+        order = blanket.release({self.line: Decimal("100")}, order_date=datetime.date(2026, 2, 1))
+        order.confirm()
+        self.receive(order, "60")
+        line = order.lines.get()
+        line.close_short("Vendor out of granules")
+        raised = blanket.release({self.line: Decimal("100")}, order_date=datetime.date(2026, 3, 1)).lines.get()
+        blanket.close()
+
+        raised.quantity = Decimal("150")
+        with self.assertRaisesMessage(ValidationError, f"{blanket.number} is closed"):
+            raised.save()
+        with self.assertRaisesMessage(ValidationError, f"{blanket.number} is closed"):
+            line.reopen()
+        raised.refresh_from_db()
+        self.assertEqual((raised.quantity, self.line.quantity_released()), (Decimal("100"), Decimal("160")))
+        raised.quantity = Decimal("80")  # less is still a release's own business
+        raised.save()
+
 
 class WhatAShortReleaseGivesBackTests(BlanketTestCase):
     """

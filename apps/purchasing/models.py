@@ -1113,6 +1113,16 @@ class BlanketOrder(AuditModel):
         on_date = to_date(on_date)
         return self.start_date <= on_date <= self.end_date
 
+    def refuse_calling_off_more(self):
+        """
+        Asked by release(), and by a release raised or reopened, which call off more just the
+        same: raised after the agreement closed, a release took 150 at the price it fixed.
+        """
+        if self.status != BlanketStatus.CONFIRMED:
+            raise ValidationError(
+                f"Only a confirmed agreement can be released against; {self.number or self} is "
+                f"{self.get_status_display().lower()}.")
+
     @serialised("status")
     def confirm(self):
         if self.status != BlanketStatus.DRAFT:
@@ -1149,8 +1159,7 @@ class BlanketOrder(AuditModel):
         committing to a volume is that the price is fixed for it.
         """
         order_date = to_date(order_date) or timezone.localdate()
-        if self.status != BlanketStatus.CONFIRMED:
-            raise ValidationError("Only a confirmed agreement can be released against.")
+        self.refuse_calling_off_more()
         if not self.covers(order_date):
             raise ValidationError(
                 f"This agreement runs {self.start_date:%d %b %Y} to {self.end_date:%d %b %Y}; "
@@ -2437,6 +2446,11 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             previous = PurchaseOrderLine.objects.filter(pk=self.pk).first()
             if previous is not None:
                 if self.blanket_line_id:
+                    if self.volume_called_off() > previous.volume_called_off():
+                        # More called off, as a release calls it off: under the agreement's
+                        # lock, and only while it stands.
+                        lock_rows(self.blanket_line.blanket)
+                        self.blanket_line.blanket.refuse_calling_off_more()
                     # quantity_released() already counts this line as stored,
                     # so compare against the agreement net of it.
                     others = self.blanket_line.quantity_released() - previous.volume_called_off()
@@ -2764,6 +2778,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
 
             blanket = self.blanket_line.blanket
             lock_rows(blanket)
+            blanket.refuse_calling_off_more()
             back, left = self.quantity - self.quantity_received(), self.blanket_line.quantity_remaining()
             if back > left:
                 raise ValidationError(
