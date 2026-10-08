@@ -243,3 +243,29 @@ class TheAccountStockIsHeldInTests(ValuationTestCase):
         company.default_inventory_account = self.spares
         company.save()
         self.assertEqual(Company.objects.get().default_inventory_account, self.spares)
+
+
+class NoWriterTakesAShelfBelowNothingTests(ValuationTestCase):
+    """
+    Each document asked the shelf in its own words, and one that did not
+    (the return to vendor) sent back ten with two there. Every movement
+    now asks as it is written, as it already asked of a batch and a bin.
+    """
+
+    def test_a_movement_taking_more_than_is_there_is_refused(self):
+        self.receive("2", "5")
+        with self.assertRaisesMessage(ValidationError, "cannot move 10"):
+            self.issue("10")
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("2"))
+
+    def test_what_is_there_may_be_taken(self):
+        self.receive("2", "5")
+        self.issue("2")
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+
+    def test_a_warehouse_that_allows_backorders_goes_below(self):
+        self.warehouse.allow_negative_stock = True
+        self.warehouse.save()
+        self.receive("2", "5")
+        self.issue("10")
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("-8"))

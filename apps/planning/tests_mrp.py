@@ -609,6 +609,9 @@ class WhatIsOnTheShelfTests(PlanningTestCase):
         self.assertEqual(self.orders()["PP-RAFFIA"].quantity, Decimal("1000"))
 
     def test_a_negative_shelf_is_a_shortage_in_its_own_right(self):
+        # Only a warehouse that allows it goes below nothing; every movement asks.
+        self.plant.allow_negative_stock = True
+        self.plant.save()
         StockMovement.objects.create(
             item=self.virgin, warehouse=self.plant,
             movement_type=MovementType.ADJUSTMENT, uom=self.kg,
