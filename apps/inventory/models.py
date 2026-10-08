@@ -824,8 +824,8 @@ class StockMovement(AuditModel):
 # imports them back.
     def _check_bin(self):
         """
-        A bin must be in this movement's warehouse, and must be somewhere
-        stock can actually sit.
+        A bin must be in this movement's warehouse, must be somewhere
+        stock can actually sit, and must hold what is taken out of it.
         """
         if self.bin_id is not None:
             if self.bin.warehouse_id != self.warehouse_id:
@@ -837,6 +837,20 @@ class StockMovement(AuditModel):
                     f"{self.bin} groups other bins rather than holding stock; name "
                     "one of the places inside it."
                 )
+            # As the batch is checked below, and here for every writer: a
+            # write-off of ten from a bin holding two left it at minus
+            # eight, while a transfer out of the same bin was refused.
+            if self.quantity < 0 and not self.warehouse.allow_negative_stock:
+                there = self.item.movements.filter(bin=self.bin)
+                if self.lot_id is not None:
+                    there = there.filter(lot=self.lot)
+                held = there.aggregate(total=Sum("quantity"))["total"] or Decimal("0")
+                wanted = -self.item.to_stock_quantity(self.quantity, self.uom)
+                if wanted > held:
+                    raise ValidationError(
+                        f"Only {format(Decimal(held).normalize(), 'f')} of {self.item} in "
+                        f"{self.bin}; cannot move {format(wanted.normalize(), 'f')}."
+                    )
         elif self.warehouse.requires_bins:
             raise ValidationError(
                 f"{self.warehouse} is binned; this movement must say where in it "
