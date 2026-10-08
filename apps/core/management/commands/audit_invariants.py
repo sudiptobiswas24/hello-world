@@ -97,6 +97,7 @@ class Command(BaseCommand):
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
+        findings += self.kept_settings_read_live(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -715,6 +716,35 @@ class Command(BaseCommand):
                                 "never names it: what that entry posted can still be edited.",
                             ))
                             break
+        return findings
+
+    # -- shape 4: a setting read live by a later posting ------------------
+    def kept_settings_read_live(self, labels, sources):
+        """
+        A field a record keeps from a related one, read through the relation instead.
+
+        A fixed asset's disposal read its category's accounts as they stood that
+        day: the category moved to new ones, and the disposal took 12,000 off an
+        account that never held the lathe while the old plant account kept it for
+        good. The asset now keeps what it stands on, and says so in `KEPT_FROM`
+        ({relation: (field, ...)}); reading one of those through the relation is
+        reading what the next record gets. Any record that keeps copies can
+        declare them and be held to it.
+        """
+        findings = []
+        code = "\n".join(non_test_text({path: text for path, text in sources[label].items()
+                                        if "migrations" not in path.parts}) for label in OUR_APPS)
+        for label in labels:
+            for model in django_apps.get_app_config(label).get_models():
+                for relation, names in (getattr(model, "KEPT_FROM", None) or {}).items():
+                    for name in names:
+                        for match in re.finditer(rf"\.{relation}\.{name}\b", code):
+                            line = code[:match.start()].count("\n") + 1
+                            findings.append((
+                                "kept setting read live",
+                                f"{label}.{model.__name__} keeps its own {name}, but "
+                                f"`{code.splitlines()[line - 1].strip()[:90]}` reads its {relation}'s.",
+                            ))
         return findings
 
     @staticmethod

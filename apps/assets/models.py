@@ -224,6 +224,9 @@ class FixedAsset(Extensible, AuditModel):
     # Copied from the category as the asset goes into service, unless
     # already kept: a capitalisation keeps the asset account it debited.
     STANDS_ON = ("asset_account", "accumulated_account", "method")
+    # Read through the category, these are what the next asset gets, not
+    # what this one stands on; `manage.py audit_invariants` refuses that read.
+    KEPT_FROM = {"category": STANDS_ON}
 
     def save(self, *args, **kwargs):
         # `clean()` is not called for an asset made in code — which is
@@ -305,9 +308,12 @@ class FixedAsset(Extensible, AuditModel):
     def depreciable_base(self):
         return self.cost - self.salvage_value
 
+    def stands_on(self, name):
+        """What it stands on: kept as it went into service, its category's while a draft."""
+        return getattr(self, name) or getattr(self.category, name)
+
     def monthly_charge(self):
-        # A draft's is its category's until it goes into service and keeps one.
-        if (self.method or self.category.method) == DepreciationMethod.NONE or not self.life_months:
+        if self.stands_on("method") == DepreciationMethod.NONE or not self.life_months:
             return Decimal("0")
         return round_money(self.depreciable_base() / self.life_months)
 
