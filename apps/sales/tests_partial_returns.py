@@ -106,6 +106,32 @@ class BatchesGoHomeTests(SalesTestCase):
         after = {lot.code: lot.on_hand_at(self.warehouse) for lot in (a, b)}
         self.assertEqual({code: after[code] - before[code] for code in after}, sent)
 
+    def test_a_batch_shipped_on_a_posted_delivery_is_not_deleted(self):
+        """O1 in docs/RISKS.md: the refusal read a field the allocation does not have."""
+        from django.core.exceptions import ValidationError
+        from django.utils import timezone
+
+        from apps.inventory.models import Item, Lot, MovementType, StockMovement
+
+        from .models import Delivery, DeliveryAllocation, DeliveryLine
+
+        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
+        self.item.refresh_from_db()
+        lot = Lot.objects.create(item=self.item, code="A")
+        StockMovement.objects.create(item=self.item, warehouse=self.warehouse, lot=lot,
+                                     movement_type=MovementType.RECEIPT, uom=self.uom,
+                                     quantity=Decimal("30"), unit_cost=Decimal("4"), occurred_at=timezone.now())
+        order = self.make_order("30", "25")
+        shipment = Delivery.objects.create(sales_order=order, delivery_date=datetime.date(2026, 3, 3))
+        line = DeliveryLine.objects.create(delivery=shipment, order_line=order.lines.get(),
+                                           warehouse=self.warehouse, quantity_shipped=Decimal("30"))
+        shipment.post()
+        allocation = DeliveryAllocation.objects.get(line=line)
+
+        with self.assertRaisesMessage(ValidationError, "Create a customer return instead"):
+            allocation.delete()
+        self.assertTrue(DeliveryAllocation.objects.filter(pk=allocation.pk).exists())
+
 
 class ReturnedAtWhatTheShipmentTookTests(SalesTestCase):
     """

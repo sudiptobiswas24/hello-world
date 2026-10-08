@@ -4564,9 +4564,11 @@ class DeliveryAllocation(AuditModel):
         return self.quantity * (self.movement.unit_cost or Decimal("0"))
 
     def delete(self, *args, **kwargs):
-        if self.delivery.posted:
+        # An allocation belongs to a line, not a delivery: it read
+        # self.delivery, which it does not have, and failed for everyone.
+        if self.line.delivery.posted:
             raise ValidationError(
-                "Cannot delete a line on a posted delivery. Create a customer return instead."
+                "Cannot delete a batch shipped on a posted delivery. Create a customer return instead."
             )
         super().delete(*args, **kwargs)
 
