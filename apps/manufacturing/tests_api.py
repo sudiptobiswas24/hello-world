@@ -12,8 +12,12 @@ import datetime
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
+from django.core.management import call_command
 from rest_framework.test import APIClient
 
+from .orders import MaterialIssue
+from .tests_conversion import ConversionTestCase
 from .tests_orders import TODAY, RunTestCase
 from .tests_woven import WovenTestCase
 
@@ -244,6 +248,89 @@ class TheAdminDoesNotOfferWhatTheModelWillRefuseTests(RunTestCase):
         # refusal. This BOM was typed, not computed.
         self.assertFalse(self.bom.is_computed)
         self.assertNotIn("quantity_produced", self.readonly(self.bom))
+
+
+class APostedDocumentIsVoidedNotDeletedTests(ConversionTestCase):
+    """
+    Found by probing as a production supervisor, whose role may delete a
+    draft. A posted issue, entry or booking deleted through the API came
+    back 204 and left its stock movements and its entry standing: after
+    the close, work in progress held 10,000, -47,125.67 and 360 against
+    runs that each said nothing was left.
+    """
+
+    def setUp(self):
+        super().setUp()
+        call_command("setup_roles", verbosity=0)
+        supervisor = get_user_model().objects.create_user("supervisor")
+        supervisor.groups.add(Group.objects.get(name="Production Supervisor"))
+        self.client = APIClient()
+        self.client.force_authenticate(supervisor)
+        self.job = self.order()
+        self.job.release(TODAY)
+
+    def deleting(self, path, document):
+        return self.client.delete(f"/api/manufacturing/{path}/{document.pk}/")
+
+    def refused(self, path, document):
+        response = self.deleting(path, document)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Cannot delete", str(response.data))
+        self.assertTrue(type(document).objects.filter(pk=document.pk).exists())
+
+    def test_a_posted_issue_is_not_deleted(self):
+        document = self.issue(self.job, [(self.virgin, "100")])
+        document.post()
+        self.refused("material-issues", document)
+        # 10,000 kg on the shelf, 100 drawn at 100.
+        self.assertEqual(self.virgin.on_hand_at(self.plant), Decimal("9900"))
+        self.assertEqual(self.job.material_cost(), Decimal("10000"))
+        self.assertEqual(self.balance(self.wip), Decimal("10000"))
+
+    def test_nor_is_a_voided_one(self):
+        document = self.issue(self.job, [(self.virgin, "100")])
+        document.post()
+        document.void(TODAY)
+        self.refused("material-issues", document)
+
+    def test_a_posted_entry_is_not_deleted(self):
+        self.full_issue(self.job).post()
+        entry = self.produce(self.job, "500")
+        entry.post()
+        self.refused("production-entries", entry)
+        self.assertEqual(self.job.quantity_produced(), Decimal("500"))
+        self.assertEqual(self.tape.on_hand_at(self.plant), Decimal("500"))
+
+    def test_a_posted_booking_is_not_deleted(self):
+        booking = self.book(self.job, "60")
+        booking.post()
+        self.refused("time-bookings", booking)
+        # An hour at 360.
+        self.assertEqual(self.job.conversion_cost(), Decimal("360.00"))
+        self.assertEqual(self.balance(self.wip), Decimal("360.00"))
+
+    def test_a_draft_is_still_deleted(self):
+        for path, document in (
+            ("material-issues", self.issue(self.job, [(self.virgin, "100")])),
+            ("production-entries", self.produce(self.job, "500")),
+            ("time-bookings", self.book(self.job, "60")),
+        ):
+            with self.subTest(path):
+                self.assertEqual(self.deleting(path, document).status_code, 204)
+                self.assertFalse(type(document).objects.filter(pk=document.pk).exists())
+
+    def test_the_admins_bulk_delete_leaves_a_posted_issue(self):
+        # It deletes by queryset, which never calls the model's delete():
+        # what stops it is the admin asking whether each row may go.
+        document = self.issue(self.job, [(self.virgin, "100")])
+        document.post()
+        root = get_user_model().objects.create_superuser("root", "root@example.com", "x")
+        self.client.force_login(root)
+        response = self.client.post("/admin/manufacturing/materialissue/", {
+            "action": "delete_selected", "_selected_action": [document.pk], "post": "yes",
+        })
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(MaterialIssue.objects.filter(pk=document.pk).exists())
 
 
 class RoutingApiTests(RunTestCase):
