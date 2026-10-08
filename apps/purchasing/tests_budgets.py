@@ -209,6 +209,19 @@ class BudgetApprovalTests(BudgetTestCase):
 
         self.assertEqual(over.status, "confirmed")
 
+    def test_a_confirmed_order_is_not_raised_past_its_budget(self):
+        # 2,000 of 10,000 confirmed; raised to 20,000 the budget would be
+        # 10,000 over, and nothing had asked.
+        order = self.order_of("100", "20")
+        line = order.lines.get()
+        line.quantity = Decimal("1000")
+        with self.assertRaisesMessage(ValidationError, "Budget OPS-26 would be 10000.00 over"):
+            line.save()
+        self.assertEqual(self.budget.available(), Decimal("8000.00"))
+        line.quantity = Decimal("500")
+        line.save()
+        self.assertEqual(self.budget.available(), Decimal("0.00"))
+
     def test_no_budget_on_the_account_means_no_constraint(self):
         self.budget.delete()
         order = self.order_of("100000", "20", confirm=False)
