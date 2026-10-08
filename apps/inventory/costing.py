@@ -284,37 +284,6 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
     return quantity * (value / held)
 
 
-def holds_value(item, warehouse, adjusts=None, lot=None):
-    """
-    Whether a value-only movement written here next would land on goods.
-
-    The mirror of `cost_of_removing` for value with no quantity, and for
-    the same reason beside the replays: a landed cost posted to the
-    inventory account that the shelf does not take parts the two for good.
-    It does not land when the receipt layer it names has gone (FIFO: the
-    replay drops it), when the shelf is valued at the standard and nothing
-    else, or when there is nothing there to carry it, which would leave
-    value on an empty shelf for whatever arrives next. A caller posts that
-    part somewhere else.
-    """
-    fold = _fold_to_start_from(item, warehouse, None, None)
-    method = item.costing_method
-    if method == CostingMethod.STANDARD:
-        return False
-    if method == CostingMethod.SPECIFIC:
-        _held, pools, _value = _replay_specific(item, warehouse, fold=fold)
-        return pools.get(lot.pk if lot is not None else None, (Decimal("0"),))[0] > 0
-    if method == CostingMethod.FIFO:
-        _held, layers, _value = _replay_fifo(item, warehouse, fold=fold)
-        if adjusts is not None:
-            # What _apply_adjustment does with it: onto that layer, or nowhere.
-            return any(source == adjusts.pk and quantity > 0 for quantity, _cost, source in layers)
-        return (sum((quantity for quantity, _cost, _source in layers), Decimal("0")) > 0
-                or sum((quantity * cost for quantity, cost, _source in layers), Decimal("0")) > 0)
-    held, _value = _replay_average(item, warehouse, fold=fold)
-    return held > 0
-
-
 def goods_held(item, warehouse, quantity, sources=(), lot=None):
     """
     [(source, quantity)]: how much of `quantity` of some goods, put on
@@ -357,6 +326,53 @@ def goods_held(item, warehouse, quantity, sources=(), lot=None):
         there, _value = _replay_average(item, warehouse, fold=fold)
     there = min(there, quantity)
     return [(sources[-1] if sources else None, there)] if there > 0 else []
+
+
+def value_still_held(movement):
+    """
+    What of a value-only movement's value its shelf still holds: the share
+    the goods it landed on that are still there bear. The mirror of
+    goods_held, for taking it back off.
+
+    Landed on ten and eight written off since, the two left carry a fifth
+    of it; the eight took the rest with them, wherever they went. Taken
+    back whole, 80 came off two units worth 26 and priced them at minus
+    27. Under FIFO it is what is left of the layer it raised; under the
+    average, and within a batch, each withdrawal since took its share of
+    the shelf's value, this included, as the replays take it.
+
+    Walked from the start, not from a fold: the movement may be older
+    than the fold, which keeps no trace of it.
+    """
+    amount = movement.value_adjustment or Decimal("0")
+    item = movement.item
+    method = item.costing_method
+    if amount <= 0 or method == CostingMethod.STANDARD:
+        return Decimal("0")
+    history = _movements(item, movement.warehouse)
+    if method == CostingMethod.FIFO and movement.adjusts_id is not None:
+        def raised_layer(layers):
+            return next((layer[0] for layer in layers
+                         if layer[2] == movement.adjusts_id and layer[0] > 0), Decimal("0"))
+
+        layers, raised = [], None
+        for row in history:
+            _fifo_step(layers, row, item)
+            if row.pk == movement.pk:
+                raised = raised_layer(layers)
+        if not raised:
+            return Decimal("0")
+        return amount * raised_layer(layers) / raised
+    left, held = None, Decimal("0")
+    for row in history:
+        if method == CostingMethod.SPECIFIC and row.lot_id != movement.lot_id:
+            continue
+        if row.quantity < 0 and left is not None and held > 0:
+            left -= left * min(-row.quantity, held) / held
+        held += row.quantity
+        if row.pk == movement.pk:
+            left = amount
+    return max(left or Decimal("0"), Decimal("0"))
 
 
 def unit_cost_for(item, warehouse, quantity, lot=None):
@@ -498,33 +514,38 @@ def _replay_fifo(item, warehouse=None, before_id=None, as_of=None, fold=None):
             for quantity, cost, pk in fold.state.get("layers", [])
         ]
     for movement in _movements(item, warehouse, before_id, as_of, fold):
-        if movement.quantity > 0:
-            layers.append([movement.quantity, movement.unit_cost or Decimal("0"), movement.pk])
-        elif movement.quantity < 0:
-            remaining = -movement.quantity
-            # A shortfall is priced at the newest layer as it stood before
-            # any of it was drawn, which is what cost_of_removing asks.
-            # Asked after the layers were emptied, the five beyond a shelf
-            # of three went below zero at nothing while the ledger was
-            # credited 50 for them.
-            shortfall_cost = _last_cost(layers, item)
-            while remaining > 0 and layers:
-                drawn = min(layers[0][0], remaining)
-                layers[0][0] -= drawn
-                remaining -= drawn
-                if layers[0][0] <= 0:
-                    layers.pop(0)
-            if remaining > 0:
-                # Below zero. A negative layer priced at the last known
-                # cost keeps quantity honest, and the next receipt fills
-                # it in the order everything else is filled.
-                layers.append([-remaining, shortfall_cost, movement.pk])
-        if movement.value_adjustment:
-            _apply_adjustment(layers, movement)
+        _fifo_step(layers, movement, item)
 
     quantity = sum((layer[0] for layer in layers), Decimal("0"))
     value = sum((layer[0] * layer[1] for layer in layers), Decimal("0"))
     return quantity, [(layer[0], layer[1], layer[2]) for layer in layers], value
+
+
+def _fifo_step(layers, movement, item):
+    """One movement through the FIFO layers: the walk _replay_fifo and value_still_held share."""
+    if movement.quantity > 0:
+        layers.append([movement.quantity, movement.unit_cost or Decimal("0"), movement.pk])
+    elif movement.quantity < 0:
+        remaining = -movement.quantity
+        # A shortfall is priced at the newest layer as it stood before
+        # any of it was drawn, which is what cost_of_removing asks.
+        # Asked after the layers were emptied, the five beyond a shelf
+        # of three went below zero at nothing while the ledger was
+        # credited 50 for them.
+        shortfall_cost = _last_cost(layers, item)
+        while remaining > 0 and layers:
+            drawn = min(layers[0][0], remaining)
+            layers[0][0] -= drawn
+            remaining -= drawn
+            if layers[0][0] <= 0:
+                layers.pop(0)
+        if remaining > 0:
+            # Below zero. A negative layer priced at the last known
+            # cost keeps quantity honest, and the next receipt fills
+            # it in the order everything else is filled.
+            layers.append([-remaining, shortfall_cost, movement.pk])
+    if movement.value_adjustment:
+        _apply_adjustment(layers, movement)
 
 
 def _apply_adjustment(layers, movement):

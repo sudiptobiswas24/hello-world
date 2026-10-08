@@ -648,14 +648,44 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
 
     def written_off_but_one(self):
+        self.written_off_leaving("1")
+
+    def written_off_leaving(self, left):
         from apps.inventory.models import AdjustmentReason, StockAdjustment, StockAdjustmentLine
 
         reason = AdjustmentReason.objects.create(code="SCRAP", name="Scrapped", account=self.expense)
         adjustment = StockAdjustment.objects.create(adjustment_date=datetime.date(2026, 1, 20),
                                                     warehouse=self.warehouse, reason=reason)
         StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.item, uom=self.uom,
-                                           quantity=Decimal("-9"))
+                                           quantity=Decimal(left) - Decimal("10"))
         adjustment.post()
+
+    # Released after eight of the ten went: the 80 came off the two left,
+    # worth 26, and priced them at minus 27. The two carry 16 of it; the
+    # eight took 64 with them, and that comes back out of cost of sales.
+
+    def released_after_eight_of_ten_went(self):
+        order, self.receipt = self.goods_received("10", "5")
+        application = self.landed()
+        self.written_off_leaving("2")
+        application.release()
+
+    def test_released_after_eight_went_the_two_left_give_back_their_share(self):
+        self.released_after_eight_of_ten_went()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("10.00"))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
+                          self.balance(self.freight_expense), self.balance(self.expense)),
+                         (Decimal("10.00"), Decimal("-64.00"), Decimal("80.00"), Decimal("104.00")))
+
+    def test_under_fifo_the_two_left_of_the_layer_give_back_their_share(self):
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.first_in_first_out()
+        self.released_after_eight_of_ten_went()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("10.00"))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
+                         (Decimal("10.00"), Decimal("-64.00")))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
 
 
 class OneChargeLandsOnceTests(ThirdPartyLandedCostTests):
