@@ -76,6 +76,8 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # they take the right to post, not merely the right to add an asset.
     action_permission_map = {
         "dispose": "assets.dispose_fixedasset",
+        # Whoever may write an asset off may take back writing it off in error.
+        "reinstate": "assets.dispose_fixedasset",
         "depreciate": "accounting.post_journalentry",
         "depreciate_all": "accounting.post_journalentry",
         "place_in_service": "accounting.post_journalentry",
@@ -125,6 +127,13 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             asset.dispose, on_date=_date(request, "on_date"), proceeds=proceeds,
             memo=request.data.get("memo", ""),
         )
+        return Response(self.get_serializer(asset).data)
+
+    @action(detail=True, methods=["post"])
+    def reinstate(self, request, pk=None):
+        """A disposal recorded in error, taken back: `on_date` only matters where its month has closed."""
+        asset = self.get_object()
+        _run(asset.reinstate, on_date=_date(request, "on_date"), memo=request.data.get("memo", ""))
         return Response(self.get_serializer(asset).data)
 
     @action(detail=True, methods=["post"])

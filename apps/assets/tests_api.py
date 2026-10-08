@@ -141,6 +141,29 @@ class WritingOffTakesItsOwnRightTests(ApiTestCase):
         asset.refresh_from_db()
         self.assertEqual(asset.status, AssetStatus.IN_SERVICE)
 
+    def test_whoever_may_write_an_asset_off_may_take_back_doing_it_in_error(self):
+        def person(name, *codenames):
+            user = get_user_model().objects.create_user(name, password="x")
+            user.user_permissions.add(*Permission.objects.filter(codename__in=codenames))
+            client = APIClient()
+            client.force_authenticate(user)
+            return client
+
+        asset = self.asset()
+        asset.dispose(on_date=datetime.date(2026, 3, 10))
+        path = f"/api/assets/assets/{asset.pk}/reinstate/"
+        clerk = person("asset_clerk", "add_fixedasset", "change_fixedasset", "view_fixedasset")
+        self.assertEqual(clerk.post(path, {}, format="json").status_code, 403)
+        controller = person("writes_off", "view_fixedasset", "dispose_fixedasset")
+        reinstated = controller.post(path, {"memo": "Wrong lathe written off"}, format="json")
+        self.assertEqual(reinstated.status_code, 200, reinstated.content)
+        self.assertEqual((reinstated.json()["status"], reinstated.json()["disposed_on"]),
+                         (AssetStatus.IN_SERVICE, None))
+        self.assertIsNotNone(reinstated.json()["reinstatement_entry"])
+        again = controller.post(path, {}, format="json")
+        self.assertEqual(again.status_code, 400)
+        self.assertIn("is not disposed of", str(again.json()))
+
 
 class UndoingCapitalisationOverTheApiTests(CapitalisationFixture):
     def test_a_draft_from_a_bill_is_uncapitalised_not_deleted(self):
