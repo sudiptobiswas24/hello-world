@@ -71,8 +71,11 @@ def race(sender, *calls, atomic=True):
 
     Each in a transaction of its own, as a request's write is; `atomic=False`
     for a step whose endpoint runs it outside one, so what it commits before
-    refusing stays committed.
+    refusing stays committed. `sender` may be a tuple of models, for two
+    steps whose first write after their checks is to different models: each
+    is held at the first of them it saves.
     """
+    senders = sender if isinstance(sender, tuple) else (sender,)
     barrier = threading.Barrier(len(calls), timeout=3)
     local = threading.local()
 
@@ -84,7 +87,8 @@ def race(sender, *calls, atomic=True):
             except threading.BrokenBarrierError:
                 pass  # The other is waiting on our lock: carry on and commit.
 
-    pre_save.connect(pause, sender=sender, weak=False, dispatch_uid="race")
+    for each in senders:
+        pre_save.connect(pause, sender=each, weak=False, dispatch_uid=("race", each))
     outcomes = [None] * len(calls)
 
     def run(index, call):
@@ -103,7 +107,8 @@ def race(sender, *calls, atomic=True):
         thread.start()
     for thread in threads:
         thread.join(30)
-    pre_save.disconnect(sender=sender, dispatch_uid="race")
+    for each in senders:
+        pre_save.disconnect(sender=each, dispatch_uid=("race", each))
     return outcomes
 
 
@@ -1021,3 +1026,65 @@ class EditRaceTests(RaceCase):
         job.refresh_from_db()
         self.assertIsNotNone(job.done_on)
         self.assertEqual(job.actual_minutes, Downtime.objects.get(pk=job.downtime_id).minutes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class FloorRaceTests(RaceCase):
+    """
+    Found in review of the floor's fixes: each read what it decided on
+    before holding what another step changes it through.
+    """
+
+    def test_two_looms_do_not_both_load_the_whole_doff(self):
+        """
+        One 100 kg doff loaded on two looms of two backflushed runs at once.
+        Each held only its own loom and run, read the whole doff as free,
+        and the creels held 200 kg of it. Holding the doff's place on the
+        shelf first, the second finds the first's load.
+        """
+        from apps.manufacturing.orders import WorkOrderOperation
+        from apps.manufacturing.tape_loads import CreelSide, TapeLoad, load_tape
+        from apps.manufacturing.tests_station import at
+        from apps.manufacturing import tests_tape_loads as loads
+
+        made = fixture(self, loads.TapeLoadTestCase)
+        other = made.released_run()
+        WorkOrder.objects.filter(pk__in=[made.run.pk, other.pk]).update(backflush=True)
+        WorkOrderOperation.objects.filter(work_order=made.run).update(machine=made.l17)
+        WorkOrderOperation.objects.filter(work_order=other).update(machine=made.l20)
+        when = at(run_fixture.TODAY, 9)
+        outcomes = race(TapeLoad, *[
+            lambda machine=machine: load_tape(made.station, made.operator, machine, "D-1", "100",
+                                              CreelSide.WARP, at=when)
+            for machine in (made.l17, made.l20)])
+        self.once(outcomes)
+        self.assertEqual(TapeLoad.objects.filter(lot=made.doffs["D-1"]).count(), 1)
+
+    def test_a_load_is_not_withdrawn_as_the_output_draws_on_it(self):
+        """
+        A load withdrawn as output on its backflushed run is booked. The
+        withdrawal read nothing drawn before holding the run, the output
+        read the load still on the creel, and both went through: the load
+        withdrawn, its tape drawn. Holding the run first, one of them
+        finds the other.
+        """
+        from apps.inventory.models import Lot
+        from apps.manufacturing.tape_loads import CreelSide, TapeLoad, drawn_by_output, load_tape, void_load
+        from apps.manufacturing.tests_station import at
+        from apps.manufacturing import tests_tape_loads as loads
+
+        made = fixture(self, loads.TapeLoadTestCase)
+        WorkOrder.objects.filter(pk=made.run.pk).update(backflush=True)
+        made.run.refresh_from_db()
+        load = load_tape(made.station, made.operator, made.l17, "D-1", "100", CreelSide.WARP,
+                         at=at(run_fixture.TODAY, 9))
+        entry = made.produce(made.run, "49", lot=Lot.objects.create(item=made.fabric, code="F-RACE"))
+        outcomes = race(
+            (TapeLoad, MaterialIssue),
+            lambda: ProductionEntry.objects.get(pk=entry.pk).post(),
+            lambda: void_load(TapeLoad.objects.get(pk=load.pk), made.station, made.supervisor,
+                              made.operator, "Wrong doff"))
+        self.once(outcomes)
+        load.refresh_from_db()
+        self.assertEqual(load.voided_at is None, drawn_by_output(made.run, made.doffs["D-1"]) > 0)

@@ -66,6 +66,7 @@ class TapeLoad(AuditModel):
 @transaction.atomic
 def load_tape(station, operator, machine, code, kg, side, at=None):
     """Put `kg` of doff `code` on `machine`'s warp or weft, issued to its run by batch."""
+    from apps.inventory.locking import lock_positions
     from apps.inventory.models import Lot
 
     from .machines import Machine
@@ -89,6 +90,14 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     if not run.components.filter(item=lot.item).exists():
         raise ValidationError(f"{lot} is {lot.item}; {run} does not weave it.")
     kg = _number(kg, "The kilos loaded")
+    # Held before what is free is read, the run and then the doff's place
+    # on the shelf, in the order every posting takes them: two looms
+    # loading the same doff at once each found all of it free.
+    lock_rows(run)
+    if not run.is_open():
+        raise ValidationError(f"{run} is {run.get_status_display().lower()}; nothing is "
+                              "loaded onto it.")
+    lock_positions([(lot.item, station.warehouse)])
     # A load on a backflushed run stays on the shelf until the output draws
     # it, so what other creels already hold of the doff is not free: one
     # 100 kg doff loaded twice at 100 kg was taken both times.
