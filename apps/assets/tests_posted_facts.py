@@ -13,7 +13,9 @@ The lathe: 12,000 from a bill dated 1 January 2026, twelve months at
 1,000, in service from 1 January.
 """
 
+import contextlib
 import datetime
+import io
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -205,10 +207,12 @@ class TheAuditAsksItTests(SimpleTestCase):
 class AssetsAlreadyOnTheBooksMigrationTests(TransactionTestCase):
     """
     Upgraded, an asset already on the books keeps what it stands on: the
-    asset account its capitalisation debited, even where its category has
-    moved since; otherwise its category's, as every entry of it read until
-    now. A draft from a bill keeps its asset account; one typed in keeps
-    nothing until it goes into service.
+    asset account its capitalisation debited, and the accumulated account
+    its charges credited, even where its category has moved since; straight
+    line where it has charges, though its category now says not depreciated;
+    otherwise its category's, as every entry of it read until now. A draft
+    from a bill keeps its asset account; one typed in keeps nothing until it
+    goes into service. What the books cannot tell is printed for the keeper.
     """
 
     before = [("assets", "0006_disposal_in_error_reinstated")]
@@ -249,13 +253,55 @@ class AssetsAlreadyOnTheBooksMigrationTests(TransactionTestCase):
         made("Drafted from a bill", "draft", draft_entry.pk)
         made("Drafted by hand", "draft")
 
+        # A category moved before the upgrade: to 1595, and to not depreciated. The lathe was
+        # charged January to March onto 1590; read off the category it was kept on 1595, and its
+        # disposal would have left 1590 holding 3,000, with the lathe stopped mid-life.
+        moved_accumulated = account.objects.create(code="1595", name="1595", account_type="asset")
+        moved = apps.get_model("assets", "AssetCategory").objects.create(
+            code="MOVED", name="Moved", asset_account_id=new_plant.pk, accumulated_account_id=moved_accumulated.pk,
+            expense_account_id=expense.pk, method="none")
+        charge = apps.get_model("assets", "DepreciationEntry")
+
+        def charged(fixed, month, onto):
+            day = datetime.date(2026, month + 1, 1) - datetime.timedelta(days=1)
+            posted = now.get_model("accounting", "JournalEntry").objects.create(date=day)
+            line.objects.create(entry=posted, account=expense, debit=Decimal("1000"))
+            line.objects.create(entry=posted, account=onto, credit=Decimal("1000"))
+            charge.objects.create(asset=fixed, period_end=day, amount=Decimal("1000"), journal_entry_id=posted.pk)
+
+        def numbered(name, number, **more):
+            return asset.objects.create(name=name, number=number, category=moved, status="in_service",
+                                        cost=Decimal("12000"), acquisition_date=datetime.date(2026, 1, 1),
+                                        in_service_date=datetime.date(2026, 1, 1), life_months=12, **more)
+
+        lathe = numbered("Moved lathe", "FA-2026-00010")
+        for month in (1, 2, 3):
+            charged(lathe, month, accumulated)
+        split = numbered("Split lathe", "FA-2026-00011")
+        charged(split, 1, accumulated)
+        charged(split, 2, moved_accumulated)
+        numbered("Old loom", "FA-2026-00012", opening_depreciation=Decimal("3000"),
+                 depreciated_before=datetime.date(2026, 1, 31))
+        numbered("Land", "FA-2026-00013")
+
+        printed = io.StringIO()
         executor = MigrationExecutor(connection)
-        executor.migrate(self.after)
+        with contextlib.redirect_stdout(printed):
+            executor.migrate(self.after)
         asset = executor.loader.project_state(self.after).apps.get_model("assets", "FixedAsset")
         self.assertEqual(
             sorted(asset.objects.values_list("name", "asset_account_id", "accumulated_account_id", "method")),
             [("Drafted by hand", None, None, ""), ("Drafted from a bill", old_plant.pk, None, ""),
              ("From a bill", old_plant.pk, accumulated.pk, "straight_line"),
+             ("Land", new_plant.pk, moved_accumulated.pk, "none"),
+             ("Moved lathe", new_plant.pk, accumulated.pk, "straight_line"),
+             ("Old loom", new_plant.pk, moved_accumulated.pk, "none"),
+             ("Split lathe", new_plant.pk, moved_accumulated.pk, "straight_line"),
              ("Typed in", new_plant.pk, accumulated.pk, "straight_line")])
+        told = printed.getvalue()
+        self.assertIn("FA-2026-00011 Split lathe: its charges were credited to 1590, 1595; it is kept on 1595", told)
+        self.assertIn("FA-2026-00012 Old loom: its category says not depreciated", told)
+        self.assertNotIn("FA-2026-00010", told)
+        self.assertNotIn("FA-2026-00013", told)
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
