@@ -463,7 +463,7 @@ class RequestForQuotation(AuditModel):
                 )
 
         for requisition in {line.requisition_line.requisition for line in lines if line.requisition_line_id}:
-            requisition.mark_ordered()
+            requisition.reconsider_ordered()
 
         invitation.awarded = True
         invitation.save(update_fields=["awarded", "updated_at"])
@@ -797,16 +797,25 @@ class PurchaseRequisition(AuditModel):
                 expected_date=self.needed_by,
             )
 
-        self.mark_ordered()
+        self.reconsider_ordered()
         return order
 
-    def mark_ordered(self):
-        """Ordered once every line is, by an order made from it or a request awarded on it."""
-        if self.status == RequisitionStatus.APPROVED and all(
-            line.quantity_ordered() >= line.quantity for line in self.lines.all()
-        ):
+    def reconsider_ordered(self):
+        """
+        Ordered once every line is on an order that stands, by an order made
+        from it or a request awarded on it; approved again the moment one is
+        not. "Ordered" is a stored fact, and a line taken off its draft order,
+        cut down, or its order cancelled each unmakes it: left standing, the
+        request dropped off the open list with nothing on order for it.
+        """
+        full = all(line.quantity_ordered() >= line.quantity for line in self.lines.all())
+        if self.status == RequisitionStatus.APPROVED and full:
             self.status = RequisitionStatus.ORDERED
-            self.save(update_fields=["status", "updated_at"])
+        elif self.status == RequisitionStatus.ORDERED and not full:
+            self.status = RequisitionStatus.APPROVED
+        else:
+            return
+        self.save(update_fields=["status", "updated_at"])
 
     @serialised("status")
     def create_rfq(self, lines=None, issue_date=None, response_due=None):
@@ -1902,9 +1911,8 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         self.save(update_fields=["status", "updated_at"])
         # What a requisition asked for is no longer on order, so it is open
         # to order again: "ordered" was a stored fact this cancel unmade.
-        PurchaseRequisition.objects.filter(
-            status=RequisitionStatus.ORDERED, lines__order_lines__order=self,
-        ).update(status=RequisitionStatus.APPROVED, updated_at=timezone.now())
+        for requisition in PurchaseRequisition.objects.filter(lines__order_lines__order=self).distinct():
+            requisition.reconsider_ordered()
         # A drop-ship called off: the customer's goods are this plant's to
         # send again, and its shelf's to hold for them.
         for line in self.lines.filter(sales_order_line__isnull=False).select_related("sales_order_line"):
@@ -2486,7 +2494,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             self.order.withdraw_approval()
         self._check_bom()
         self._check_drop_ship_quantity()
+        before = (PurchaseOrderLine.objects.filter(pk=self.pk).values_list("requisition_line_id", flat=True).first()
+                  if self.pk else None)
         super().save(*args, **kwargs)
+        self._reconsider_requisitions(before)
         if shrinking:
             self.order.refuse_coming_to_less_than_its_prepayments()
         if self.sales_order_line_id is not None:
@@ -2599,12 +2610,21 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         if order is not None:
             self._hold_for_prepayments()
         sales_line = self.sales_order_line
+        asked = self.requisition_line_id
         result = super().delete(*args, **kwargs)
+        self._reconsider_requisitions(asked)
         if order is not None:
             order.refuse_coming_to_less_than_its_prepayments()
         if sales_line is not None:
             sales_line.reclaim_stock()
         return result
+
+    def _reconsider_requisitions(self, also=None):
+        """The requests this line orders, and the one it ordered before, asked again whether they are on order."""
+        for line_id in {self.requisition_line_id if self.pk else None, also} - {None}:
+            line = PurchaseRequisitionLine.objects.filter(pk=line_id).select_related("requisition").first()
+            if line is not None:
+                line.requisition.reconsider_ordered()
 
     def _check_drop_ship_quantity(self, reopening=False):
         """
