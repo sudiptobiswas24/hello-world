@@ -346,6 +346,42 @@ class Employee(Extensible, AuditModel):
                 "terminate(cancel_future=True)."
             )
 
+    def _check_not_paid_on(self):
+        """
+        A posted pay run paid this person for the days they were employed
+        as they stood, and a start or leaving date moved across those days
+        restates it: June paid all 22 days, a leaving date of 15 June set
+        afterwards left the slip reading 11 days employed, and June's ESI
+        file filed 11. Leave, the register, timesheets and rates refuse the
+        same under a posted run; the run is voided to change it.
+        """
+        from .payroll import PayRunStatus, Payslip
+
+        previous = Employee.objects.filter(pk=self.pk).values("hire_date", "termination_date").first() \
+            if self.pk else None
+        if previous is None:
+            return
+        moved = []
+        before, after = previous["termination_date"], self.termination_date
+        if before != after:
+            # Employed or not from the day after the earlier of the two, to
+            # the later, or for good when either is open.
+            first = min(day for day in (before, after) if day is not None) + datetime.timedelta(days=1)
+            moved.append(("leaving date", first, max(before, after) if before and after else None))
+        before, after = previous["hire_date"], self.hire_date
+        if before != after:
+            moved.append(("start date", min(before, after), max(before, after) - datetime.timedelta(days=1)))
+        for what, first, last in moved:
+            paid = Payslip.objects.filter(employee_id=self.pk, run__status=PayRunStatus.POSTED,
+                                          run__period_end__gte=first)
+            if last is not None:
+                paid = paid.filter(run__period_start__lte=last)
+            paid = paid.select_related("run").order_by("run__period_start").first()
+            if paid is not None:
+                raise ValidationError(
+                    f"{paid.run} is posted and paid {self} for {paid.run.period_start}..{paid.run.period_end} "
+                    f"on the days they were employed then; void the run to change their {what}.")
+
     def save(self, *args, **kwargs):
         self._check_statutory_ids()
         # In save() and not only clean(), because Django never calls
@@ -354,6 +390,7 @@ class Employee(Extensible, AuditModel):
         # probe created records the way the rest of the codebase does.
         self.clean()
         self._check_nothing_dangling()
+        self._check_not_paid_on()
         super().save(*args, **kwargs)
 
 
