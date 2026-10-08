@@ -254,6 +254,8 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
         return quantity * (pool_value / pool_quantity)
 
     if method == CostingMethod.STANDARD:
+        if warehouse is not None and warehouse.holds_others_goods():
+            return Decimal("0")
         return quantity * (item.standard_cost or Decimal("0"))
 
     if method == CostingMethod.FIFO:
@@ -530,6 +532,13 @@ def _replay_standard(item, warehouse=None, before_id=None, as_of=None, fold=None
     quantity = fold.quantity if fold is not None else Decimal("0")
     for movement in _movements(item, warehouse, before_id, as_of, fold):
         quantity += movement.quantity
+    if warehouse is not None and warehouse.holds_others_goods():
+        # A vendor's consignment or a customer's material is on the
+        # premises and off the books; under every other method it comes
+        # in at nothing, and the standard is what the company's own stock
+        # is deemed to be worth. Valued here, ten of a vendor's at 5 read
+        # 50 against a ledger of nothing.
+        return quantity, Decimal("0")
     # Value from the standard in force now, never from the fold: the
     # standard changes, and a folded value would be what the shelf was
     # deemed to be worth under the old one.
