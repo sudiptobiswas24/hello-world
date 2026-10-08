@@ -551,3 +551,38 @@ class LandedCostUnderFifoTests(CostingTestCase):
         receipt_line.refresh_from_db()
         self.assertIsNotNone(receipt_line.stock_movement)
         self.assertEqual(receipt_line.stock_movement.quantity, Decimal("100.0000"))
+
+
+class BelowZeroTheShelfAgreesTests(CostingTestCase):
+    """
+    Three at 10 on a shelf that may go below zero, eight written off. The
+    write-off was credited 80, the five beyond the shelf at the last cost,
+    and the replay priced those five at nothing once the layers were
+    emptied: the shelf gave up 30. The next ten at 12 left the shelf at 120
+    against a ledger of 70.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.backorders = Warehouse.objects.create(code="B", name="Backorders",
+                                                   allow_negative_stock=True)
+        self.widget = self.item(CostingMethod.FIFO)
+        self.receive(self.widget, "3", "10", warehouse=self.backorders)
+
+    def write_off(self, quantity):
+        adjustment = StockAdjustment.objects.create(
+            adjustment_date=datetime.date(2026, 4, 1), warehouse=self.backorders, reason=self.reason)
+        StockAdjustmentLine.objects.create(adjustment=adjustment, item=self.widget, uom=self.each,
+                                           quantity=-Decimal(quantity))
+        adjustment.post()
+
+    def test_writing_off_past_the_shelf_takes_off_what_it_credits(self):
+        self.write_off("8")
+        self.assertEqual(self.widget.valuation_at(self.backorders), (Decimal("-5"), Decimal("-50")))
+        self.assertEqual(self.balance(self.inventory), Decimal("-80.00"))
+
+    def test_the_next_receipt_leaves_the_shelf_where_the_ledger_is(self):
+        self.write_off("8")
+        self.receive(self.widget, "10", "12", warehouse=self.backorders)
+        self.assertEqual(self.widget.valuation_at(self.backorders), (Decimal("5"), Decimal("70")))
+

@@ -333,9 +333,10 @@ def _last_cost(layers, item):
     return item.standard_cost or Decimal("0")
 
 
-def _last_cost_for_lot(item, warehouse, lot):
+def _last_cost_for_lot(item, warehouse, lot, before=None):
     """
-    What a batch cost the last time any of it arrived.
+    What a batch cost the last time any of it arrived, before `before`
+    when a replay asks it of a movement in the ledger.
 
     Only reached when the batch is empty and something is still going
     out of it — shipping into negative stock. The price it last came in
@@ -345,6 +346,9 @@ def _last_cost_for_lot(item, warehouse, lot):
     latest = item.movements.filter(lot=lot, quantity__gt=0)
     if warehouse is not None:
         latest = latest.filter(warehouse=warehouse)
+    if before is not None:
+        latest = latest.filter(models.Q(occurred_at__lt=before.occurred_at)
+                               | models.Q(occurred_at=before.occurred_at, id__lt=before.pk))
     latest = latest.order_by("-occurred_at", "-id").first()
     if latest is not None and latest.unit_cost is not None:
         return latest.unit_cost
@@ -372,14 +376,27 @@ def _replay_specific(item, warehouse=None, before_id=None, as_of=None, fold=None
             (None if key == "None" else int(key)): [Decimal(pair[0]), Decimal(pair[1])]
             for key, pair in fold.state.get("pools", {}).items()
         }
+    arrived_at = {}
     for movement in _movements(item, warehouse, before_id, as_of, fold):
         pool = pools.setdefault(movement.lot_id, [Decimal("0"), Decimal("0")])
         if movement.quantity > 0:
             pool[0] += movement.quantity
             pool[1] += movement.quantity * (movement.unit_cost or Decimal("0"))
+            arrived_at[movement.lot_id] = movement.unit_cost
         elif movement.quantity < 0:
             leaving = -movement.quantity
-            average = (pool[1] / pool[0]) if pool[0] > 0 else Decimal("0")
+            if pool[0] > 0:
+                average = pool[1] / pool[0]
+            elif movement.lot_id in arrived_at:
+                # An empty batch prices what still leaves it at what it last
+                # came in at, as cost_of_removing does: priced at nothing
+                # here, a write-off of a batch at minus three credited the
+                # ledger 700 and took nothing off the shelf.
+                average = arrived_at[movement.lot_id]
+                if average is None:
+                    average = item.standard_cost or Decimal("0")
+            else:
+                average = _last_cost_for_lot(item, warehouse, movement.lot_id, before=movement)
             pool[1] -= leaving * average
             pool[0] -= leaving
         if movement.value_adjustment:
@@ -439,6 +456,12 @@ def _replay_fifo(item, warehouse=None, before_id=None, as_of=None, fold=None):
             layers.append([movement.quantity, movement.unit_cost or Decimal("0"), movement.pk])
         elif movement.quantity < 0:
             remaining = -movement.quantity
+            # A shortfall is priced at the newest layer as it stood before
+            # any of it was drawn, which is what cost_of_removing asks.
+            # Asked after the layers were emptied, the five beyond a shelf
+            # of three went below zero at nothing while the ledger was
+            # credited 50 for them.
+            shortfall_cost = _last_cost(layers, item)
             while remaining > 0 and layers:
                 drawn = min(layers[0][0], remaining)
                 layers[0][0] -= drawn
@@ -449,7 +472,7 @@ def _replay_fifo(item, warehouse=None, before_id=None, as_of=None, fold=None):
                 # Below zero. A negative layer priced at the last known
                 # cost keeps quantity honest, and the next receipt fills
                 # it in the order everything else is filled.
-                layers.append([-remaining, _last_cost(layers, item), movement.pk])
+                layers.append([-remaining, shortfall_cost, movement.pk])
         if movement.value_adjustment:
             _apply_adjustment(layers, movement)
 
