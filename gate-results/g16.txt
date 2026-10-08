@@ -14,3 +14,16 @@ Ran 8 tests in 1468.842s
 OK
 
 ERROR/FAIL entries in either log: none
+
+Addendum: Asia/Kolkata lane re-run with Playwright installed
+The first Asia/Kolkata run above had no Playwright package in .venv, so the
+browser tests (apps/web/tests_browser.py, apps/manufacturing/tests_station_browser.py)
+skipped. After `pip install playwright` (1.63.0; Chromium at /opt/pw-browsers/chromium
+launched), the same command was run again on the same commit. Same lane command,
+no other change. The first run's numbers above are left as printed.
+Found 5316 test(s).
+Ran 5316 tests in 2216.613s
+OK (skipped=46)
+Skips fell from 154 to 46; the 46 match the PostgreSQL-only tests in
+apps/e2e/tests_races.py (no DATABASE_URL was set, as specified).
+ERROR/FAIL entries in the re-run: none
