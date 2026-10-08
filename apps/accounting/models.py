@@ -276,12 +276,20 @@ class JournalEntry(AuditModel):
 
     @serialised("posted")
     def reverse_by_hand(self, memo=""):
-        """A person's reversal, from the journal: only of an entry no document keeps."""
+        """A person's reversal, from the journal: only of an entry no document keeps, and never of a reversal."""
         document = self.recorded_by()
         if document is not None:
             raise ValidationError(
                 f"JE-{self.pk} was posted by {document._meta.verbose_name} {document}: correct it there "
                 "(a credit note, a void, a return), not by reversing its entry."
+            )
+        # As the journal screen already offers it. A document corrected twice keeps only its
+        # latest reversal, so the earlier one belongs to nothing; reversed by hand it put back
+        # a payment, a close or a disposal its document had taken back.
+        if self.reverses_id is not None:
+            raise ValidationError(
+                f"JE-{self.pk} reverses JE-{self.reverses_id}. To stand again, JE-{self.reverses_id} is "
+                "posted again as an entry of its own, not by reversing its reversal."
             )
         return self.create_reversal(memo=memo)
 

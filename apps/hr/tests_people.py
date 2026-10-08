@@ -111,6 +111,13 @@ class ClaimTests(PeopleTestCase):
         balances = {account.code: sum((row.debit - row.credit for row in JournalLine.objects.filter(
             account=account, entry__posted=True)), Decimal("0")) for account in (self.cash, bank, self.travel)}
         self.assertEqual(balances, {"1000": Decimal("0"), "1010": Decimal("-450"), "6200": Decimal("300")})
+        # Reversed a second time, the claim keeps only the latest reversal; the first belongs to
+        # nothing, and reversed from the journal it would pay the claim from petty cash again.
+        first_reversal = claim.voided_entry
+        claim.unpay("Bank account closed", on_date=datetime.date(2026, 6, 6))
+        self.assertIsNone(first_reversal.recorded_by())
+        with self.assertRaisesMessage(ValidationError, "not by reversing its reversal"):
+            first_reversal.reverse_by_hand()
 
     def test_what_is_refused(self):
         empty = ExpenseClaim.objects.create(employee=self.riley, claim_date=JUNE_1, purpose="Nothing")
