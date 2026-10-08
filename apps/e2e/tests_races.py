@@ -264,6 +264,22 @@ class SalesRaceTests(RaceCase):
         self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, Invoice.objects.get(pk=draft.pk).posted),
                       [(Decimal("5"), False), (Decimal("10"), True)])
 
+    def test_two_orders_do_not_both_ship_the_last_of_the_shelf(self):
+        # Five hundred on the shelf, nothing reserved, three hundred on each
+        # of two orders. The shelf was read before the positions were held,
+        # so both found five hundred and the second left minus a hundred.
+        from apps.inventory.models import StockMovement
+        from apps.sales.models import Delivery, DeliveryLine
+
+        drafts = []
+        for order in (self.make_order("300", "10"), self.make_order("300", "10")):
+            delivery = Delivery.objects.create(sales_order=order, delivery_date=datetime.date(2026, 3, 3))
+            DeliveryLine.objects.create(delivery=delivery, order_line=order.lines.get(),
+                                        warehouse=self.warehouse, quantity_shipped=Decimal("300"))
+            drafts.append(delivery.pk)
+        self.once(race(StockMovement, *[lambda pk=pk: Delivery.objects.get(pk=pk).post() for pk in drafts]))
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("200"))
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
