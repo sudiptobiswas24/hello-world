@@ -18,7 +18,7 @@ from apps.accounting.models import (
         round_money,
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
-from apps.core.approvals import ApprovableMixin, ApprovalStatus
+from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 from apps.core.models import (
@@ -724,6 +724,17 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
         if self.status == OrderStatus.CANCELLED:
             raise ValidationError("A cancelled order cannot be approved.")
         return True
+
+    def raised_by(self):
+        """
+        Its own authors and, for an order accepted from a quote, the quote's:
+        the price being approved was written there, by whoever wrote it.
+        """
+        found = super().raised_by()
+        # By its lines: accepting approves before the quote is marked with its order.
+        for quotation in Quotation.objects.filter(Q(sales_order=self) | Q(lines__order_lines__order=self)).distinct():
+            found |= authors(quotation, quotation.lines.all())
+        return found
 
     @serialised("status")
     def render_pdf(self, proforma=False):

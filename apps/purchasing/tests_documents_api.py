@@ -66,9 +66,10 @@ class RequisitionTests(DocumentsTestCase):
         return made["id"], line["id"]
 
     def test_asked_for_approved_and_ordered(self):
-        manager = self.as_("AP Manager")
-        requisition, _ = self.asked(manager)
-        self.assertEqual(self.ok(manager.post(f"/api/purchasing/requisitions/{requisition}/submit/"))["status"],
+        # Asked for by one person and approved by another: nobody approves their own request.
+        asker, manager = self.as_("Employee Self Service"), self.as_("AP Manager")
+        requisition, _ = self.asked(asker)
+        self.assertEqual(self.ok(asker.post(f"/api/purchasing/requisitions/{requisition}/submit/"))["status"],
                          "submitted")
         approved = self.ok(manager.post(f"/api/purchasing/requisitions/{requisition}/approve/",
                                         {"note": "Within budget"}, format="json"))
@@ -90,10 +91,10 @@ class RequisitionTests(DocumentsTestCase):
             f"/api/purchasing/requisitions/{requisition}/approve/").status_code, 403)
 
     def test_what_was_approved_is_what_is_ordered(self):
-        manager = self.as_("AP Manager")
-        requisition, line = self.asked(manager)
-        manager.post(f"/api/purchasing/requisitions/{requisition}/submit/")
-        manager.post(f"/api/purchasing/requisitions/{requisition}/approve/")
+        asker, manager = self.as_("Employee Self Service"), self.as_("AP Manager")
+        requisition, line = self.asked(asker)
+        asker.post(f"/api/purchasing/requisitions/{requisition}/submit/")
+        self.ok(manager.post(f"/api/purchasing/requisitions/{requisition}/approve/"))
         self.refused(manager.patch(f"/api/purchasing/requisition-lines/{line}/", {"quantity": "1000"},
                                    format="json"), "what is approved is what is ordered")
         self.refused(manager.post("/api/purchasing/requisition-lines/", {
@@ -105,10 +106,10 @@ class RequisitionTests(DocumentsTestCase):
         self.assertEqual(PurchaseRequisitionLine.objects.get(pk=line).quantity, Decimal("10"))
 
     def test_an_order_called_off_gives_the_requisition_back(self):
-        manager = self.as_("AP Manager")
-        requisition, _ = self.asked(manager)
-        manager.post(f"/api/purchasing/requisitions/{requisition}/submit/")
-        manager.post(f"/api/purchasing/requisitions/{requisition}/approve/")
+        asker, manager = self.as_("Employee Self Service"), self.as_("AP Manager")
+        requisition, _ = self.asked(asker)
+        asker.post(f"/api/purchasing/requisitions/{requisition}/submit/")
+        self.ok(manager.post(f"/api/purchasing/requisitions/{requisition}/approve/"))
         made = self.ok(manager.post(f"/api/purchasing/requisitions/{requisition}/order/",
                                     {"vendor": self.vendor.pk}, format="json"), 201)
         PurchaseOrder.objects.get(pk=made["order"]).cancel()

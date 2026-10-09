@@ -24,6 +24,7 @@ from apps.core.models import Party
 from .models import (
     BlanketOrder,
     BlanketOrderLine,
+    PurchaseOrder,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     RequestForQuotation,
@@ -43,7 +44,9 @@ def _quantity(value):
     return Decimal(value).quantize(Decimal("0.0001"))
 
 
-def _order_made(order):
+def _order_made(request, order):
+    """An order made from another document is the clicker's: it is who raised it, and so who does not approve it."""
+    PurchaseOrder.objects.filter(pk=order.pk, created_by__isnull=True).update(created_by=request.user)
     return Response({"order": order.pk, "number": order.number}, status=201)
 
 
@@ -159,7 +162,7 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """{vendor, order_date?, lines?: [ids]}: what is left of it, on one order to one vendor."""
         requisition = self.get_object()
         vendor = get_object_or_404(Party, pk=request.data.get("vendor"))
-        return _order_made(requisition.create_order(vendor, order_date=request.data.get("order_date"),
+        return _order_made(request, requisition.create_order(vendor, order_date=request.data.get("order_date"),
                                                     lines=_named_lines(requisition, request.data)))
 
     @action(detail=True, methods=["post"])
@@ -288,7 +291,7 @@ class RequestForQuotationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """{invitation, order_date?, record_prices?}: the business to one vendor, at the prices they quoted."""
         rfq = self.get_object()
         invitation = get_object_or_404(RfqInvitation, pk=request.data.get("invitation"), rfq=rfq)
-        return _order_made(rfq.award(invitation, order_date=request.data.get("order_date"),
+        return _order_made(request, rfq.award(invitation, order_date=request.data.get("order_date"),
                                      record_prices=flag(request.data, "record_prices", False)))
 
 
@@ -385,7 +388,7 @@ class BlanketOrderViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         quantities = quantities_by_line(request.data.get("quantities"), blanket.lines.all(), "agreement")
         if not quantities:
             raise DRFValidationError({"quantities": ["Say how much of which line to call off."]})
-        return _order_made(blanket.release(quantities, order_date=request.data.get("order_date"),
+        return _order_made(request, blanket.release(quantities, order_date=request.data.get("order_date"),
                                            expected_date=request.data.get("expected_date")))
 
 

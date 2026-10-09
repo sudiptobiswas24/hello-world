@@ -29,7 +29,7 @@ from apps.accounting.models import (
     round_money,
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
-from apps.core.approvals import ApprovableMixin, ApprovalStatus
+from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors, check_not_raised_by
 from apps.core.models import (
     Extensible,
     correction_date,
@@ -732,7 +732,16 @@ class PurchaseRequisition(AuditModel):
             "status", "decided_by", "decided_at", "decision_note", "updated_at",
         ])
 
+    def raised_by(self):
+        """Who made or changed it, and the person it asks for: nobody approves their own request."""
+        found = authors(self, self.lines.all())
+        requester = getattr(self.requested_by, "employee_profile", None) if self.requested_by_id else None
+        if requester is not None and requester.user_id:
+            found.add(requester.user_id)
+        return found
+
     def approve(self, by=None, note=""):
+        check_not_raised_by(by, self.raised_by(), self)
         self._decide(RequisitionStatus.APPROVED, by, note)
 
     def reject(self, by=None, note=""):

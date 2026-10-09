@@ -15,7 +15,15 @@ two sides cannot drift into approving differently.
 
 Lives in Core because it imports nothing from any module: the hook is
 abstract and the concrete thresholds stay with the document.
+
+A second pair of eyes is a different person's. Nothing asked who had
+raised what was approved: an AR Manager approved their own order at 40%
+against a 15% policy, and an AP Manager their own requisition. Nobody
+approves what they made or changed (`check_not_raised_by`), the one rule
+for orders, purchase orders, requisitions and a concession on a batch.
 """
+
+from collections import defaultdict
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -23,6 +31,43 @@ from django.db import models
 from django.utils import timezone
 
 from .models import serialised
+
+
+def authors(document, *parts):
+    """
+    The pks of every login that made or changed `document` or any row of
+    `parts` (querysets of what it is made of, such as its lines): their own
+    stamps and their history, which keeps every change and not only the
+    last.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from .history import EventKind, RecordEvent
+
+    rows = [document, *(row for part in parts for row in part)]
+    found = {getattr(row, name, None) for row in rows for name in ("created_by_id", "updated_by_id")}
+    by_kind = defaultdict(set)
+    for row in rows:
+        by_kind[ContentType.objects.get_for_model(type(row))].add(row.pk)
+    for kind, pks in by_kind.items():
+        found.update(RecordEvent.objects.filter(
+            content_type=kind, object_id__in=pks, kind__in=[EventKind.CREATED, EventKind.UPDATED],
+        ).values_list("who_id", flat=True))
+    found.discard(None)
+    return found
+
+
+def check_not_raised_by(by, raised_by, document):
+    """
+    Refuse an approver among those who raised `document` (`raised_by`, pks
+    of logins). A superuser is not asked: they hold every right and the
+    admin besides, and a rule that cannot bind them would only pretend to.
+    """
+    if by is None or by.is_superuser:
+        return
+    if by.pk in raised_by:
+        raise ValidationError(
+            f"{by.get_username()} raised or changed {document}; somebody else approves it.")
 
 
 class ApprovalStatus(models.TextChoices):
@@ -44,8 +89,16 @@ class ApprovableMixin(models.Model):
     approved_at = models.DateTimeField(null=True, blank=True, editable=False)
     approval_note = models.CharField(max_length=255, blank=True, editable=False)
 
+    # What an approver reads besides the document itself, by related name:
+    # whoever wrote a line wrote what is approved.
+    approval_parts = ("lines",)
+
     class Meta:
         abstract = True
+
+    def raised_by(self):
+        """The logins that made or changed this document or its parts: never its approver."""
+        return authors(self, *(getattr(self, name).all() for name in self.approval_parts))
 
     def approval_reasons(self):
         """
@@ -92,6 +145,7 @@ class ApprovableMixin(models.Model):
         if not self.can_be_approved():
             raise ValidationError("This document cannot be approved in its current state.")
         self.check_approver(by)
+        check_not_raised_by(by, self.raised_by(), self)
         if self.approved_at:
             raise ValidationError("This document has already been approved.")
         if not self.requires_approval():
