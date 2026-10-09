@@ -6,8 +6,9 @@ in the scenario table (rupees rounded half up, base without GST):
     30L -> 0;  30L more -> 10L over -> 1,000;  5L more -> 500
     no PAN at 5% -> 50,000;  a new financial year starts again at nothing
     10,00,550 over -> 1,000.55 -> 1,001;  10,00,449 over -> 1,000
-  194C 2%, 30,000 one bill or 1 lakh the year, then on the whole year:
+  194C 2%, 30,000 one bill (that bill alone) or 1 lakh the year (then the whole year):
     25k, 25k, 25k -> 0;  30k -> the year is 1,05,000 -> 2,100;  then 20k -> 400
+    20k -> 0;  35k -> 700 on 35k alone;  50k -> the year is 1,05,000 -> 70k -> 1,400
     one bill of 35k -> 700;  at a vendor's own 1% -> 350
   35,000 + 18% GST = 41,300; less 700 tax -> 40,600 to pay; payable and TDS clear
   a challan of 1,000 + 2,100 -> TDS payable 0, bank -3,100
@@ -162,6 +163,23 @@ class ContractTests(TdsTestCase):
         self.assertEqual((later.base, later.amount), (Decimal("20000.00"), Decimal("400.00")))
         with self.assertRaisesMessage(ValidationError, "already been deducted"):
             party.bills.order_by("pk").first().deduct_tds()
+
+    def test_a_bill_past_the_single_limit_is_taxed_alone(self):
+        """
+        s.194C(5): 20,000 (under 30,000, the year under a lakh: not taxed), then
+        35,000, past the single limit: base 35,000, tax 700, the 20,000 spared
+        (calc_stat/o102_194c.py). Then 50,000 takes the year to 1,05,000: the
+        spared 20,000 is caught up, base 70,000, tax 1,400.
+        """
+        party = self.contractor(pan="AAAPL1234C")
+        with self.assertRaisesMessage(ValidationError, "Nothing to deduct"):
+            self.bill("20000", vendor=party).deduct_tds()
+        alone = self.bill("35000", vendor=party).deduct_tds()
+        self.assertEqual((alone.base, alone.amount, alone.covered_bills.count()),
+                         (Decimal("35000.00"), Decimal("700.00"), 1))
+        crossing = self.bill("50000", vendor=party).deduct_tds()
+        self.assertEqual((crossing.base, crossing.amount, crossing.covered_bills.count()),
+                         (Decimal("70000.00"), Decimal("1400.00"), 2))
 
     def test_one_bill_past_the_single_limit(self):
         party = self.contractor(pan="AAAPL1234C")
