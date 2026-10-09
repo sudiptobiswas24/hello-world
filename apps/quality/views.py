@@ -76,7 +76,8 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
         inspection = self.get_object()
-        _run(inspection.post)
+        # The login posting a concession is who took the batch (decided_by), not a name typed in.
+        _run(inspection.post, by=request.user)
         return Response(self.get_serializer(inspection).data)
 
     @action(detail=True, methods=["post"])

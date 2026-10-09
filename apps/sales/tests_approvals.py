@@ -305,3 +305,70 @@ class QuotationApprovalTests(ApprovalTestCase):
         order = self.quote(discount="5").accept()
         self.assertEqual(order.status, OrderStatus.CONFIRMED)
         self.assertIsNone(order.approved_at)
+
+
+class NobodyApprovesTheirOwnOrderTests(ApprovalTestCase):
+    """
+    O85: approvals.py promises a second pair of eyes, and nothing asked
+    whose: an AR Manager approved their own order at 40% against a 15%
+    policy. Whoever made or changed the order, or wrote the quote it was
+    accepted from, does not approve it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        ApprovalPolicy.objects.create(code="STD", name="Standard", max_discount_percent=Decimal("15"))
+        self.manager = get_user_model().objects.create_user("ar")
+        self.manager.groups.add(Group.objects.get(name="AR Manager"))
+        self.rep = get_user_model().objects.create_user("rep")
+        self.client_ = APIClient()
+        self.client_.force_authenticate(self.manager)
+
+    def approve(self, order):
+        response = self.client_.post(f"/api/sales/sales-orders/{order.pk}/approve/", {}, format="json")
+        order.refresh_from_db()
+        return response.status_code, order.approval_status()
+
+    def test_an_ar_manager_does_not_approve_the_order_they_raised(self):
+        order = self.draft(discount="40")
+        order.created_by = self.manager
+        order.save(update_fields=["created_by"])
+        self.assertEqual(self.approve(order), (400, ApprovalStatus.PENDING))
+
+    def test_nor_one_whose_line_they_changed(self):
+        order = self.draft(discount="40")
+        order.created_by = self.rep
+        order.save(update_fields=["created_by"])
+        line = order.lines.get()
+        changed = self.client_.patch(f"/api/sales/sales-order-lines/{line.pk}/", {"discount_percent": "35"},
+                                     format="json")
+        self.assertEqual(changed.status_code, 200, changed.content)
+        self.assertEqual(self.approve(order), (400, ApprovalStatus.PENDING))
+
+    def test_the_reps_order_is_the_managers_to_approve(self):
+        order = self.draft(discount="40")
+        order.created_by = self.rep
+        order.save(update_fields=["created_by"])
+        self.assertEqual(self.approve(order), (200, ApprovalStatus.APPROVED))
+        self.assertEqual(order.approved_by, self.manager)
+
+    def test_the_quote_writer_does_not_approve_it_on_acceptance(self):
+        quotation = QuotationApprovalTests.quote(self)  # the same 40% quote
+        quotation.created_by = self.manager
+        quotation.save(update_fields=["created_by"])
+        with self.assertRaisesMessage(ValidationError, "somebody else approves it"):
+            quotation.accept(approve_as=self.manager)
+        quotation.refresh_from_db()
+        self.assertIsNone(quotation.sales_order)
+
+    def test_a_reps_quote_is_accepted_and_approved_by_the_manager(self):
+        quotation = QuotationApprovalTests.quote(self)  # the same 40% quote
+        quotation.created_by = self.rep
+        quotation.save(update_fields=["created_by"])
+        order = quotation.accept(approve_as=self.manager)
+        self.assertEqual((order.status, order.approved_by), (OrderStatus.CONFIRMED, self.manager))

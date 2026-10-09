@@ -277,3 +277,49 @@ class SuggestedVendorTests(RequisitionTestCase):
         self.line.save()
 
         self.assertEqual(requisition.suggested_vendors()[self.line], other)
+
+
+class NobodyApprovesTheirOwnRequisitionTests(RequisitionTestCase):
+    """
+    O85: setup_roles says nobody approves their own request, and nothing
+    asked. An AP Manager who is the requester, or who raised it, does not.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.hr.models import Employee
+
+        call_command("setup_roles", verbosity=0)
+        self.ap = get_user_model().objects.create_user("ap")
+        self.ap.groups.add(*Group.objects.filter(name__in=["AP Manager", "Employee Self Service"]))
+        Employee.objects.create(party=self.employee, employee_number="E-1",
+                                hire_date=datetime.date(2020, 1, 1), user=self.ap)
+        self.client_ = APIClient()
+        self.client_.force_authenticate(self.ap)
+
+    def approve(self, requisition):
+        response = self.client_.post(f"/api/purchasing/requisitions/{requisition.pk}/approve/", {},
+                                     format="json")
+        return response.status_code, PurchaseRequisition.objects.get(pk=requisition.pk).status
+
+    def test_the_requester_does_not_approve_their_own_requisition(self):
+        self.assertEqual(self.approve(self.requisition()), (400, RequisitionStatus.SUBMITTED))
+
+    def test_nor_does_the_one_who_raised_it_for_someone_else(self):
+        other = Party.objects.create(code="E-2", name="Ravi")
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.EMPLOYEE)
+        self.employee = other
+        requisition = self.requisition()
+        requisition.created_by = self.ap
+        requisition.save(update_fields=["created_by"])
+        self.assertEqual(self.approve(requisition), (400, RequisitionStatus.SUBMITTED))
+
+    def test_someone_elses_request_is_approved(self):
+        other = Party.objects.create(code="E-2", name="Ravi")
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.EMPLOYEE)
+        self.employee = other
+        self.assertEqual(self.approve(self.requisition()), (200, RequisitionStatus.APPROVED))

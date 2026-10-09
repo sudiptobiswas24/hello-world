@@ -195,3 +195,34 @@ class CrossOrderPrepaymentTests(PurchasingLifecycleTestCase):
 
         with self.assertRaisesMessage(ValidationError, "different vendor"):
             bill.apply_prepayment(prepayment)
+
+
+class NobodyApprovesTheirOwnOrderTests(TierTestCase):
+    """
+    O85: the order shares the approval mixin, which never asked who raised
+    the document. The buyer who raised or changed an order does not sign it.
+    """
+
+    def test_the_buyer_who_raised_it_does_not_approve_it(self):
+        order = self.order_of("4000")
+        order.created_by = self.manager
+        order.save(update_fields=["created_by"])
+        with self.assertRaisesMessage(ValidationError, "somebody else approves it"):
+            order.approve(by=self.manager)
+        order.refresh_from_db()
+        self.assertIsNone(order.approved_at)
+
+    def test_nor_the_one_who_changed_a_line_of_it(self):
+        order = self.order_of("4000")
+        line = order.lines.get()
+        line.updated_by = self.manager
+        line.save(update_fields=["updated_by"])
+        with self.assertRaisesMessage(ValidationError, "somebody else approves it"):
+            order.approve(by=self.manager)
+
+    def test_someone_else_does(self):
+        order = self.order_of("4000")
+        order.created_by = self.clerk
+        order.save(update_fields=["created_by"])
+        order.approve(by=self.manager)
+        self.assertEqual(order.approved_by, self.manager)

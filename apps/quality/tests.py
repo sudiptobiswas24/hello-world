@@ -472,3 +472,62 @@ class WhoSignedItOffTests(QualityTestCase):
         inspection = self.inspect(self.plan(), [87, 88, 89])
         inspection.post()
         self.assertFalse(inspection.self_approved())
+
+
+class AConcessionIsSignedByTheLoginTests(QualityTestCase):
+    """
+    O85: decided_by was a field anyone typed. With the second-person rule
+    on, an Inspector named the manager and passed it. The concession is
+    signed by whoever posts it, and with the rule on that is not someone
+    who measured, made or changed the inspection.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.core.models import PartyRole, PartyRoleAssignment
+        from apps.hr.models import Employee
+
+        from .models import QualitySettings
+
+        settings = QualitySettings.get()
+        settings.concessions_need_a_second_person = True
+        settings.save()
+        call_command("setup_roles", verbosity=0)
+        self.clients = {}
+        for code, party, role in (("QI", self.inspector, "Quality Inspector"), ("QM", self.manager, "Quality Manager")):
+            user = User.objects.create_user(code)
+            user.groups.add(Group.objects.get(name=role))
+            PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
+            Employee.objects.create(party=party, employee_number=code, hire_date=datetime.date(2020, 1, 1), user=user)
+            self.clients[code] = APIClient()
+            self.clients[code].force_authenticate(user)
+        self.failed = self.inspect(self.plan(), [92, 92, 92])
+        changed = self.clients["QI"].patch(f"/api/quality/inspections/{self.failed.pk}/", {
+            "disposition": Disposition.CONCESSION, "decided_by": self.manager.pk,
+            "decision_note": "Customer takes it."}, format="json")
+        self.assertEqual(changed.status_code, 200, changed.content)
+
+    def post(self, code):
+        response = self.clients[code].post(f"/api/quality/inspections/{self.failed.pk}/post/")
+        self.failed.refresh_from_db()
+        return response.status_code, self.failed.posted
+
+    def test_an_inspector_does_not_post_a_concession_in_the_managers_name(self):
+        self.assertIsNone(self.failed.decided_by)  # the typed name was not kept
+        self.assertEqual(self.post("QI"), (400, False))
+
+    def test_the_manager_posts_it_and_signs_it(self):
+        self.assertEqual(self.post("QM"), (200, True))
+        self.assertEqual(self.failed.decided_by, self.manager)
+
+    def test_nor_does_whoever_changed_it_when_someone_else_measured_it(self):
+        from .models import Inspection
+
+        Inspection.objects.filter(pk=self.failed.pk).update(inspected_by=None)
+        response = self.clients["QI"].post(f"/api/quality/inspections/{self.failed.pk}/post/")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("somebody else approves it", str(response.content))

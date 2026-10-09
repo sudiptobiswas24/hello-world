@@ -45,6 +45,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.core import windows
+from apps.core.approvals import authors, check_not_raised_by
 from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
 from apps.inventory.models import Item, Lot
 
@@ -631,8 +632,32 @@ class Inspection(AuditModel):
             and self.decided_by_id == self.inspected_by_id
         )
 
+    def raised_by(self):
+        """The logins that made or changed it or its readings, and the one it says measured it."""
+        found = authors(self, self.readings.all())
+        measured = getattr(self.inspected_by, "employee_profile", None) if self.inspected_by_id else None
+        if measured is not None and measured.user_id:
+            found.add(measured.user_id)
+        return found
+
+    @staticmethod
+    def _signer(by):
+        """The person a login is (hr links them; asked by attribute, so quality imports nothing of hr)."""
+        employee = getattr(by, "employee", None)
+        if employee is None:
+            raise ValidationError(
+                "A concession is signed by a person, and your login is not linked to an employee. "
+                "HR links it on your record.")
+        return employee.party
+
     @serialised("posted")
-    def post(self):
+    def post(self, by=None):
+        """
+        Judge it and release or hold the batch. `by` is the login posting
+        it: on a concession, the person taking the batch out of
+        specification. `decided_by` was a field anyone typed, so an
+        Inspector named the manager and passed the second-person rule.
+        """
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
         if not self.plan.is_active:
@@ -674,6 +699,8 @@ class Inspection(AuditModel):
                 raise ValidationError(
                     f"{self.lot} passed; there is nothing to concede."
                 )
+            if by is not None:
+                self.decided_by = self._signer(by)
             if self.decided_by_id is None or not self.decision_note:
                 raise ValidationError(
                     "A concession needs a name against it and a reason. An "
@@ -681,15 +708,14 @@ class Inspection(AuditModel):
                     "particular leaves nothing to answer with when the next "
                     "one is argued about."
                 )
-            if (
-                self.self_approved()
-                and QualitySettings.get().concessions_need_a_second_person
-            ):
-                raise ValidationError(
-                    f"{self.inspected_by} measured this batch and would also "
-                    "be taking it out of specification. This plant asks for a "
-                    "second person on a concession."
-                )
+            if QualitySettings.get().concessions_need_a_second_person:
+                if self.self_approved():
+                    raise ValidationError(
+                        f"{self.inspected_by} measured this batch and would also "
+                        "be taking it out of specification. This plant asks for a "
+                        "second person on a concession."
+                    )
+                check_not_raised_by(by, self.raised_by(), self)
         from .calibration import check_readings
 
         check_readings(self)
@@ -701,7 +727,7 @@ class Inspection(AuditModel):
         self.posted = True
         self.posted_at = timezone.now()
         super().save(update_fields=[
-            "number", "inspected_on", "result", "disposition", "posted", "lot_size", "sampling",
+            "number", "inspected_on", "result", "disposition", "decided_by", "posted", "lot_size", "sampling",
             "posted_at", "updated_at",
         ])
         return self
