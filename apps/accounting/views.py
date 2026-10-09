@@ -12,6 +12,8 @@ from rest_framework.response import Response
 
 from apps.core.api import flag
 from apps.core.audit import AuditableViewSetMixin
+from apps.core.models import Party
+from apps.core.scoping import scoped
 
 from decimal import Decimal, InvalidOperation
 
@@ -345,10 +347,32 @@ class FiscalPositionTaxMappingViewSet(AuditableViewSetMixin, viewsets.ModelViewS
 
 
 class PartyTaxProfileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    A party's tax standing, read and written within the party scope
+    (apps/core/scoping.py): a rep read another rep's customer's PAN here,
+    and the notes, files and history on it, which ask this queryset.
+    """
+
     queryset = PartyTaxProfile.objects.select_related("party", "fiscal_position")
     serializer_class = PartyTaxProfileSerializer
     filter_fields = ["party", "fiscal_position", "tax_exempt"]
     search_fields = ["gstin", "party__name"]
+
+    def get_queryset(self):
+        return scoped(super().get_queryset(), self.request.user, "party")
+
+    def _check_party(self, serializer):
+        party = serializer.validated_data.get("party", getattr(serializer.instance, "party", None))
+        if party is not None and not scoped(Party.objects.filter(pk=party.pk), self.request.user).exists():
+            raise DRFValidationError({"party": ["Not a party you may see."]})
+
+    def perform_create(self, serializer):
+        self._check_party(serializer)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._check_party(serializer)
+        super().perform_update(serializer)
 
 
 class PaymentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

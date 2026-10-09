@@ -216,6 +216,10 @@ class LotTraceApiTests(TraceTestCase):
         qa = User.objects.create_user("qa")
         qa.user_permissions.add(Permission.objects.get(
             content_type__app_label="inventory", codename="view_lot"))
+        # Who holds a batch is every customer's name: read by whoever sees every customer, as every
+        # role but the rep does (apps/sales/scoping.py), and to a rep only their own.
+        qa.user_permissions.add(Permission.objects.get(
+            content_type__app_label="sales", codename="view_every_customer"))
         self.client.force_authenticate(qa)
 
     def test_not_for_someone_who_cannot_see_batches(self):
@@ -248,3 +252,37 @@ class LotTraceApiTests(TraceTestCase):
         self.assertEqual(
             self.client.get("/api/manufacturing/lot-trace/99999/recall/").status_code, 400
         )
+
+
+class ARepReadsTheRecallOfTheirOwnCustomersTests(TraceTestCase):
+    """O84: the recall named every customer shipped a batch, to a rep carrying none of them."""
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        self.a_run()
+        self.ship("600")
+        call_command("setup_roles", verbosity=0)
+        self.rep = User.objects.create_user("rep-nobody")
+        self.rep.groups.add(Group.objects.get(name="Sales Rep"))
+
+    def recall_as(self, user):
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.get(f"/api/manufacturing/lot-trace/{self.polymer_lot.pk}/recall/")
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_a_rep_who_carries_nobody_reads_no_customer(self):
+        found = self.recall_as(self.rep)
+        self.assertEqual(found["customers"], [])
+        self.assertEqual([row for row in found["bales"] if row["customer"]], [])
+
+    def test_whoever_sees_every_customer_reads_who_holds_it(self):
+        manager = User.objects.create_user("planner")
+        from django.contrib.auth.models import Group
+
+        manager.groups.add(Group.objects.get(name="Production Planner"))
+        self.assertEqual([row["customer"] for row in self.recall_as(manager)["customers"]], [self.customer.code])

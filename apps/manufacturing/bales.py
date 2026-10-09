@@ -344,5 +344,6 @@ def bales_holding(lots):
         shipped = bale.delivery if bale.delivery_id and bale.delivery.posted else None
         rows.append({"bale": bale.number, "status": bale.status(),
                      "customer": shipped.sales_order.customer.name if shipped else None,
+                     "customer_id": shipped.sales_order.customer_id if shipped else None,
                      "delivery": shipped.number if shipped else None})
     return sorted(rows, key=lambda row: row["bale"])

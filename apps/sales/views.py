@@ -19,6 +19,7 @@ from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
 from apps.accounting.models import PartyTaxProfile
 from apps.accounting.serializers import PartyTaxProfileSerializer
 from apps.core.models import Party, PartyRole, to_date
+from apps.core.scoping import scoped
 from apps.core.views import NewPartyViewSet
 
 from apps.accounting.defaults import chosen_or_default
@@ -377,7 +378,11 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         start, end = to_date(request.query_params.get("from")), to_date(request.query_params.get("to"))
         if not start or not end:
             raise DRFValidationError({"from": ["Give the first and last days."]})
-        return Response(claims(start, end))
+        # The rep scope, as the list's: the report named every rep's customers to each.
+        rows = claims(start, end)
+        mine = set(scoped(Invoice.objects.filter(pk__in=[row["note"] for row in rows]), request.user, "customer")
+                   .values_list("pk", flat=True))
+        return Response([row for row in rows if row["note"] in mine])
 
     @action(detail=True, methods=["post"])
     def write_off(self, request, pk=None):
@@ -977,7 +982,8 @@ class SalesReportViewSet(viewsets.ViewSet):
 
     required_permission = "sales.view_invoice"
 
-    action_permission_map = {"statements": "sales.post_invoice"}
+    # Bad debt is the write-offs': reading invoices alone let a rep through.
+    action_permission_map = {"statements": "sales.post_invoice", "bad_debt": "sales.view_invoicewriteoff"}
 
     def list(self, request):
         return Response({"bad-debt": "bad-debt/", "statements": "statements/"})
@@ -993,8 +999,11 @@ class SalesReportViewSet(viewsets.ViewSet):
                 key: str(value) if not isinstance(value, (list, int, float)) else value
                 for key, value in rows.items()
             })
+        # The rep scope: the report named every rep's customers to each.
+        mine = set(scoped(Party.objects.filter(pk__in=[row["customer"].pk for row in rows]), request.user)
+                   .values_list("pk", flat=True))
         return Response([
-            {**row, "customer": str(row.get("customer", ""))} for row in rows
+            {**row, "customer": str(row.get("customer", ""))} for row in rows if row["customer"].pk in mine
         ])
 
     @action(detail=False, methods=["post"])

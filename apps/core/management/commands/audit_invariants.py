@@ -98,6 +98,7 @@ class Command(BaseCommand):
         findings += self.greenwich_dates(labels, sources)
         findings += self.unsettable_fields(labels)
         findings += self.undeclared_actions(labels)
+        findings += self.unscoped_party_reads(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
@@ -569,6 +570,68 @@ class Command(BaseCommand):
                         "and action_permission_map names no permission for it: say which.",
                     ))
         return findings
+
+    # Read unscoped on purpose or reported to the module that owns it, with
+    # the reason. An entry the check no longer needs is reported as stale.
+    UNSCOPED_PARTY_READS_REPORTED = {
+        "inventory.WarehouseViewSet": "stores: a warehouse held for a customer (held_for) names them to every rep",
+    }
+    SCOPE_WORDS = ("scoped(", "carried_by(", "for_rep(", "rep_limit(")
+    SCOPE_MIXINS = ("CustomerScopedMixin", "OwnedMixin")
+
+    def unscoped_party_reads(self, labels, viewsets=None, readers=None):
+        """
+        A viewset that reads a model naming a party (a foreign key to
+        core.Party) which the Sales Rep may view, with no party scope in
+        its queryset.
+
+        A rep sees their own customers and nobody else's, and the rule
+        held only where someone remembered it: a rep read another rep's
+        customer's PAN in the party tax profiles, and the notes, files and
+        history hung on one, which ask the same queryset. `readers` is the
+        rep's permissions (setup_roles' Sales Rep).
+        """
+        from apps.core.models import Party
+
+        if readers is None:
+            from apps.core.management.commands.setup_roles import ROLES
+
+            readers = set(ROLES["Sales Rep"])
+        findings, seen = [], set()
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            queryset = getattr(view, "queryset", None)
+            if queryset is None or not (hasattr(view, "list") or hasattr(view, "retrieve")):
+                continue
+            meta = queryset.model._meta
+            if meta.app_label not in labels or f"{meta.app_label}.view_{meta.model_name}" not in readers:
+                continue
+            if not any(field.is_relation and field.related_model is Party for field in meta.fields):
+                continue
+            key = f"{view.__module__.split('.')[1]}.{view.__name__}"
+            if self._scoped_view(view):
+                continue
+            seen.add(key)
+            if key in self.UNSCOPED_PARTY_READS_REPORTED:
+                continue
+            findings.append((
+                "party read past the rep scope",
+                f"{key} serves {meta.label}, which names a party and which a rep may view, with no party scope "
+                "in its queryset (apps/core/scoping.py scoped()).",
+            ))
+        if viewsets is None:
+            for key in sorted(key for key in set(self.UNSCOPED_PARTY_READS_REPORTED) - seen
+                              if key.split(".")[0] in labels):
+                findings.append(("stale exemption", f"{key} is scoped now, or gone: take it off the list."))
+        return findings
+
+    def _scoped_view(self, view):
+        if any(cls.__name__ in self.SCOPE_MIXINS for cls in view.__mro__):
+            return True
+        for cls in view.__mro__:
+            if "get_queryset" in cls.__dict__:
+                source = inspect.getsource(cls.__dict__["get_queryset"])
+                return any(word in source for word in self.SCOPE_WORDS)
+        return False
 
     @staticmethod
     def _routed_viewsets():
