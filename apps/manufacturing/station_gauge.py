@@ -103,15 +103,35 @@ def void_gauged(row, station, supervisor, operator, reason, noun):
         raise ValidationError(f"Say why the {noun} is withdrawn.")
     check_supervisor(station, supervisor, operator)
     row.entry.void(memo=f"Withdrawn at {station}: {reason.strip()}"[:255])
-    inspection = row.inspection
-    if inspection is not None:
-        if inspection.posted:
-            if inspection.voided_at is None:
-                inspection.void(reason.strip())
-        else:
-            inspection.readings.all().delete()
-            row.inspection = None
-            inspection.delete()
+    open_with_the_lab = withdraw_inspection(row.inspection, reason.strip())
+    if open_with_the_lab is not None:
+        row.inspection = None
+        discard_open(open_with_the_lab)
     row.voided_at = timezone.now()
     row.save(update_fields=["voided_at", "inspection", "updated_at"])
     return row
+
+
+def withdraw_inspection(inspection, reason):
+    """
+    What withdrawing a weighed batch does to its inspection: voided if it
+    stands, left as it is if quality voided it already, and handed back
+    if it is still open with the lab, for the caller to discard once its
+    row no longer names it.
+
+    One answer for every weighed batch — a doff, a film roll, a bundle of
+    bags — so that an inspection voided first cannot stop one of them and
+    not the others: a bag count's did, and its 500 bags stayed on the
+    shelf with nothing left to withdraw them by.
+    """
+    if inspection is None or not inspection.posted:
+        return inspection
+    if inspection.voided_at is None:
+        inspection.void(reason)
+    return None
+
+
+def discard_open(inspection):
+    """An inspection still open with the lab, for a batch no longer there."""
+    inspection.readings.all().delete()
+    inspection.delete()

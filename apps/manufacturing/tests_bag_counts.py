@@ -154,6 +154,22 @@ class VoidTests(ConversionTestCase):
             count.save()
 
 
+    def test_withdrawn_when_quality_voided_its_inspection_first(self):
+        """
+        Audit, 9 October: void_bags voided the inspection without asking
+        whether quality had already done so, as void_gauged asks, and was
+        refused: 500 bags stayed on the shelf for good.
+        """
+        count = self.count()
+        lot = count.inspection.lot
+        count.inspection.void("Scale read wrong; weighing again")
+        void_bags(count, self.supervisor, "Miscounted")
+        count.refresh_from_db()
+        self.assertFalse(count.is_standing())
+        self.assertEqual(count.inspection.voided_reason, "Scale read wrong; weighing again")
+        self.assertEqual(lot.on_hand_at(self.plant), Decimal("0"))
+
+
 class PerMachineAndOperatorTests(ConversionTestCase):
     def the_shift(self):
         self.count()
@@ -233,6 +249,17 @@ class BagStationApiTests(StationApiTestCase):
                           {"start": "2026-06-01", "end": "2026-06-01"}).json()
         self.assertEqual([(row["who"], row["bags"], row["conceded"]) for row in rows["by_machine"]],
                          [("C-1", 500, 1)])
+
+
+    def test_withdrawn_at_the_station_after_quality_voided_its_inspection(self):
+        self.post_cv("sign-in/", {"pin": self.pin})
+        body = self.post_cv("bags/", {"machine": "C-1", "bags": 500, "sample_grams": IN}).json()
+        count = BagCount.objects.get(pk=body["id"])
+        count.inspection.void("Scale read wrong; weighing again")
+        response = self.post_cv(f"bags/{body['id']}/void/",
+                                {"supervisor_pin": self.supervisor_pin, "reason": "Miscounted"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(count.inspection.lot.on_hand_at(self.plant), Decimal("0"))
 
 
 class AnInspectedSpecificationTests(ConversionTestCase):
