@@ -32,10 +32,13 @@ from apps.accounting.models import (
 from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus
 from apps.core.models import (
+    BILLED,
+    MOVED,
     Extensible,
     answer_to_its_document,
     correction_date,
     documents_it_answers_to,
+    refuse_changing_what_moved,
     AuditModel,
     Company,
     Currency,
@@ -1764,6 +1767,22 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         if _names_another(self, "vendor"):
             _require_vendor_role(self.vendor)
 
+    # Shared rule A (apps.core.models.refuse_changing_what_moved), the mirror
+    # of the sales order's: received from one vendor and accrued in one
+    # currency, the bill is not drafted to another vendor, in another.
+    FROZEN_ONCE_MOVED = {"vendor": MOVED, "currency": MOVED}
+
+    def what_moved_against_it(self, kind):
+        received = self.goods_receipts.filter(posted=True).first()
+        if received is not None:
+            return f"received goods on {received.number}"
+        billed = Bill.objects.filter(posted=True).filter(
+            Q(purchase_order=self) | Q(lines__order_line__order=self)).first()
+        if billed is not None:
+            return f"been billed on {billed.number}"
+        return ""
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_vendor()
         if self._state.adding and self.vendor_id:
@@ -1776,6 +1795,8 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                 self.incoterm = self.incoterm or profile.incoterm
                 self.port_of_loading = self.port_of_loading or profile.port_of_loading
         elif self.pk:
+            # Under its own lock: receipts and bills post under it.
+            refuse_changing_what_moved(self, lambda: lock_rows(self, refresh=False))
             before = PurchaseOrder.objects.filter(pk=self.pk).values("freight_terms", "incoterm").first()
             if (before and (before["freight_terms"], before["incoterm"]) != (self.freight_terms, self.incoterm)
                     and GoodsReceipt.objects.filter(purchase_order=self, posted=True).exists()):
@@ -2444,8 +2465,35 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         lock_rows(self, refresh=False)
         lock_rows(self.order, refresh=False)
 
+    # Shared rule A (apps.core.models.refuse_changing_what_moved), the mirror
+    # of the sales line's: a receipt line reads its item and unit from here,
+    # and the match reads its price and discount. Received as one widget and
+    # changed to another, the shelf held the first and the order the second.
+    FROZEN_ONCE_MOVED = {
+        "order": MOVED, "item": MOVED, "charge": MOVED, "uom": MOVED,
+        "unit_price": BILLED, "discount_percent": BILLED,
+    }
+
+    def what_moved_against_it(self, kind):
+        if kind == BILLED:
+            billed = self.quantity_billed()
+            return f"been billed for {format(billed.normalize(), 'f')}" if billed > 0 else ""
+        received = self.receipt_lines.filter(receipt__posted=True).select_related("receipt").first()
+        if received is not None:
+            return f"been received on {received.receipt.number}"
+        billed = self.bill_lines.filter(bill__posted=True).select_related("bill").first()
+        if billed is not None:
+            return f"been billed on {billed.bill.number}"
+        return ""
+
+    def _hold_with_its_orders(self):
+        """The line, then the order it is on and any it would move to: receipts and bills post under those."""
+        lock_rows(self, refresh=False)
+        lock_rows(*documents_it_answers_to(self, "order"), refresh=False)
+
     @transaction.atomic
     def save(self, *args, **kwargs):
+        refuse_changing_what_moved(self, self._hold_with_its_orders)
         shrinking = self._worth_less_than_stored()
         if shrinking:
             self._hold_for_prepayments()
@@ -2502,12 +2550,9 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                 )
                 if repriced and self.order.approved_at:
                     self.order.withdraw_approval()
-                if self.unit_price != previous.unit_price and self.quantity_billed() > 0:
-                    raise ValidationError(
-                        "This line has been billed; its price can no longer change. The "
-                        "agreed price is what the three-way match checks against, so "
-                        "moving it would retrospectively approve whatever was billed."
-                    )
+                # Its price and discount once billed: rule A, asked first thing above. The agreed
+                # price is what the three-way match checks against, so moving it would
+                # retrospectively approve whatever was billed.
         # A line added to an approved order changes the thing that was
         # approved just as surely as re-pricing one. Nothing caught this
         # because a new line has no previous version to compare against.

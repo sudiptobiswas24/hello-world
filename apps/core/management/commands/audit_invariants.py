@@ -95,6 +95,7 @@ class Command(BaseCommand):
         findings += self.mutable_posted_documents(labels, sources)
         # The same, widened to lines a route of their own writes (shared rule B).
         findings += self.lines_not_answering_to_their_document(labels, sources)
+        findings += self.frozen_fields_uncovered(labels, sources)
         findings += self.unconstrained_numbers(labels)
         findings += self.unsigned_money(labels)
         findings += self.greenwich_dates(labels, sources)
@@ -986,6 +987,63 @@ class Command(BaseCommand):
             if body and call in body:
                 return True
         return False
+
+    # Frozen once it moved (shared rule A): the fields a declaration must
+    # cover, by what they point at, and by name.
+    FROZEN_KINDS = {"inventory.item", "core.unitofmeasure", "core.currency", "accounting.chargetype"}
+    FROZEN_NAMES = {"customer", "vendor", "unit_price", "discount_percent"}
+
+    def frozen_fields_uncovered(self, labels, sources):
+        """
+        Shared rule A: a model that declares FROZEN_ONCE_MOVED covers what an
+        edit after shipping, receiving or billing would rewrite (its item,
+        unit, charge and currency, its customer or vendor, its price and
+        discount, and the document it is a line of), asks
+        refuse_changing_what_moved() in save(), and says what moved. And a
+        line that a posted document's line names as its `order_line` declares
+        it: the delivery line reads its item from there.
+
+        A shipped line's item changed to a gadget had the return put five
+        gadgets on the shelf; a received order moved to another vendor was
+        billed to them. Each was guarded by nothing but its draft-time
+        checks (O65, O68, O96).
+        """
+        from django.db import models as dj
+
+        findings = []
+        named = {field.related_model for model in django_apps.get_models() for field in model._meta.fields
+                 if field.name == "order_line" and isinstance(field, dj.ForeignKey)
+                 and any(self._is_posted_document(f.related_model) for f in model._meta.fields
+                         if isinstance(f, dj.ForeignKey) and f.remote_field.on_delete is dj.CASCADE)}
+        for label in labels:
+            code = non_test_text(sources[label])
+            for model in django_apps.get_app_config(label).get_models():
+                key = model._meta.label
+                frozen = getattr(model, "FROZEN_ONCE_MOVED", None)
+                if frozen is None:
+                    if model in named:
+                        findings.append(("frozen fields uncovered", f"{key} is named as the order line of a posted "
+                                         "document's line and declares no FROZEN_ONCE_MOVED."))
+                    continue
+                fields = {field.name: field for field in model._meta.fields}
+                owed = {name for name, field in fields.items()
+                        if name in self.FROZEN_NAMES
+                        or (isinstance(field, dj.ForeignKey) and (
+                            field.related_model._meta.label_lower in self.FROZEN_KINDS
+                            or field.remote_field.related_name == "lines"))}
+                for name in sorted(owed - set(frozen)):
+                    findings.append(("frozen fields uncovered", f"{key}.{name} can still change once things "
+                                     "have moved against it: FROZEN_ONCE_MOVED leaves it out."))
+                for name in sorted(set(frozen) - set(fields)):
+                    findings.append(("frozen fields uncovered", f"{key}.FROZEN_ONCE_MOVED names {name}, "
+                                     "which it does not have."))
+                if not self._calls(model, code, "save", "refuse_changing_what_moved("):
+                    findings.append(("frozen fields uncovered", f"{key} declares FROZEN_ONCE_MOVED and its save() "
+                                     "never asks refuse_changing_what_moved()."))
+                if not callable(getattr(model, "what_moved_against_it", None)):
+                    findings.append(("frozen fields uncovered", f"{key} declares FROZEN_ONCE_MOVED and cannot say "
+                                     "what moved against it (what_moved_against_it)."))
+        return findings
 
     def posted_as_calculated(self, labels, sources):
         """

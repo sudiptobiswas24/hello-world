@@ -641,6 +641,66 @@ class TradeRuleCase(PurchasingLifecycleTestCase):
         return client
 
 
+class AReceivedOrderStaysAsItMovedTests(TradeRuleCase):
+    """O96: a received or billed order's item, discount, vendor and currency could all still change."""
+
+    def test_a_received_lines_item_cannot_change(self):
+        from apps.inventory.models import Item
+
+        order = self.order()
+        self.receive(order, "10")
+        other = Item.objects.create(sku="WDG-2", name="Other widget", uom=self.uom)
+        line = order.lines.get()
+        line.item = other
+        with self.assertRaisesMessage(ValidationError, "been received on GRN-"):
+            line.save()
+        self.assertEqual(PurchaseOrderLine.objects.get(pk=line.pk).item, self.item)
+
+    def test_a_received_lines_item_cannot_change_through_the_api(self):
+        from apps.inventory.models import Item
+
+        order = self.order()
+        self.receive(order, "10")
+        other = Item.objects.create(sku="WDG-2", name="Other widget", uom=self.uom)
+        line = order.lines.get()
+        response = self.as_("Purchasing Clerk").patch(f"/api/purchasing/purchase-order-lines/{line.pk}/",
+                                                      {"item": other.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("item", response.json())
+
+    def test_a_billed_lines_discount_cannot_change(self):
+        order = self.order("10", "100")
+        self.receive(order, "10")
+        order.create_bill(self.payable, bill_date=JAN(10)).post()
+        line = order.lines.get()
+        line.discount_percent = Decimal("10")
+        with self.assertRaisesMessage(ValidationError, "been billed for 10"):
+            line.save()
+        self.assertEqual(PurchaseOrderLine.objects.get(pk=line.pk).net_amount(), Decimal("1000.00"))
+
+    def test_a_received_lines_price_may_still_be_agreed_before_its_bill(self):
+        order = self.order()
+        self.receive(order, "10")
+        line = order.lines.get()
+        line.unit_price = Decimal("4.50")
+        line.save()
+        self.assertEqual(PurchaseOrderLine.objects.get(pk=line.pk).unit_price, Decimal("4.50"))
+
+    def test_a_received_orders_vendor_cannot_change(self):
+        order = self.order()
+        self.receive(order, "10")
+        order.vendor = self.other_vendor()
+        with self.assertRaisesMessage(ValidationError, "received goods on GRN-"):
+            order.save()
+
+    def test_a_received_orders_currency_cannot_change(self):
+        order = self.order()
+        self.receive(order, "10")
+        order.currency = self.eur
+        with self.assertRaisesMessage(ValidationError, "currency can no longer change"):
+            order.save()
+
+
 class ABillLineBillsOnlyItsOwnOrderLineTests(TradeRuleCase):
     """O90: a typed bill line was never checked against the order line it names."""
 

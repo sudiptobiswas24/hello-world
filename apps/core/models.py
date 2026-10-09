@@ -247,6 +247,55 @@ def correction_date(on_date, original, refused, since):
     return day
 
 
+# -- Shared rule A: frozen once it moved -------------------------------------
+
+# What freezes a field: anything shipped, received, invoiced or billed
+# against the record, or only an invoice or bill (a price may still be
+# agreed again after the goods came, never after they were billed).
+MOVED, BILLED = "moved", "billed"
+
+
+def refuse_changing_what_moved(instance, hold):
+    """
+    Shared rule A: the fields a record declares frozen once it moved stay
+    as they were once anything has moved against it.
+
+    A shipped line's item was changed to another, and the return of the
+    five widgets that had gone put five gadgets on the shelf; a shipped
+    order was moved to another customer, in another currency, and the rest
+    was billed to them; the purchase side the same. Confirming and shipping
+    had asked about the customer, the currency and the item; an edit asked
+    nothing.
+
+    The model declares FROZEN_ONCE_MOVED, {field: MOVED or BILLED}, and
+    answers what_moved_against_it(kind): what has moved, as words that
+    follow "has" ("shipped on DO-0001"), or nothing. `hold` takes the locks
+    the documents that move it post under, so nothing posts between the
+    question and the write; it is called only when a frozen field changed.
+    Asked in save(), where every edit passes, the API's and the code's.
+    """
+    frozen = type(instance).FROZEN_ONCE_MOVED
+    if instance.pk is None:
+        return
+    fields = {name: instance._meta.get_field(name) for name in frozen}
+    stored = type(instance)._base_manager.filter(pk=instance.pk).values(
+        *(field.attname for field in fields.values())).first()
+    if stored is None:
+        return
+    changed = [name for name, field in fields.items()
+               if field.to_python(getattr(instance, field.attname)) != field.to_python(stored[field.attname])]
+    if not changed:
+        return
+    hold()
+    for name in changed:
+        moved = instance.what_moved_against_it(frozen[name])
+        if moved:
+            # Named as it stands, not as the edit would have it: "Gadget x10 has shipped" of five widgets.
+            as_stored = type(instance)._base_manager.get(pk=instance.pk)
+            raise ValidationError({name: [
+                f"{as_stored} has {moved}; its {fields[name].verbose_name} can no longer change."]})
+
+
 # -- Shared rule B: a line answers to its document ---------------------------
 
 def documents_it_answers_to(line, field):

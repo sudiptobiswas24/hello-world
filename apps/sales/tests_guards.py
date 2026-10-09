@@ -604,6 +604,53 @@ class TradeRuleCase(_AuditCase):
         return other
 
 
+class AShippedLineKeepsItsItemTests(TradeRuleCase):
+    """O65: five widgets shipped; the line changed to gadgets, the return put five gadgets on the shelf."""
+
+    def test_a_shipped_lines_item_does_not_change(self):
+        gadget = Item.objects.create(sku="GDG-1", name="Gadget", uom=self.uom, sale_price=Decimal("10"))
+        order = self.make_order("10", "100")
+        delivery = self.ship(order, "5")
+        line = order.lines.get()
+        response = self.as_("AR Manager").patch(f"/api/sales/sales-order-lines/{line.pk}/",
+                                                {"item": gadget.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("item", response.json())
+        self.assertIn("shipped on", response.json()["item"][0])
+        Delivery.objects.get(pk=delivery.pk).create_return(credit_invoices=False)
+        self.assertEqual((gadget.on_hand_at(self.warehouse), self.item.on_hand_at(self.warehouse)),
+                         (Decimal("0"), Decimal("500")))
+
+    def test_an_invoiced_lines_price_and_discount_do_not_change(self):
+        order = self.make_order("10", "100")
+        self.bill(order)
+        line = order.lines.get()
+        line.discount_percent = Decimal("10")
+        with self.assertRaisesMessage(ValidationError, "discount percent can no longer change"):
+            line.save()
+
+
+class AShippedOrderKeepsItsCustomerAndCurrencyTests(TradeRuleCase):
+    """O68: a shipped order moved to another customer, on credit hold, in another currency."""
+
+    def test_a_shipped_orders_customer_and_currency_do_not_change(self):
+        other = self.other_customer(on_hold=True)
+        order = self.make_order("10", "100")
+        self.ship(order, "5")
+        response = self.as_("AR Manager").patch(f"/api/sales/sales-orders/{order.pk}/",
+                                                {"customer": other.pk, "currency": self.eur.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        order.refresh_from_db()
+        self.assertEqual((order.customer, order.currency), (self.customer, self.usd))
+
+    def test_an_order_with_nothing_moved_still_changes(self):
+        other = self.other_customer()
+        order = self.make_order("10", "100")
+        order.customer = other
+        order.save()
+        self.assertEqual(SalesOrder.objects.get(pk=order.pk).customer, other)
+
+
 class APostedDeliveryKeepsItsLinesTests(TradeRuleCase):
     """O66: a posted delivery's line deleted over the API by Warehouse Staff."""
 
@@ -679,3 +726,60 @@ class OneShipmentIsInvoicedOnceTests(TradeRuleCase):
         line = order.lines.get()
         self.assertEqual((line.quantity_invoiced(), line.quantity_shipped(), self.balance(self.ar)),
                          (Decimal("5"), Decimal("5"), Decimal("500.00")))
+
+
+class AConfirmedOrderAsksThePolicyAgainTests(TradeRuleCase):
+    """O72: a confirmed line raised to 60% against a 15% policy, and a 60% line added, both stood."""
+
+    def setUp(self):
+        super().setUp()
+        from .models import ApprovalPolicy
+
+        ApprovalPolicy.objects.create(code="STD", name="Standard", max_discount_percent=Decimal("15"))
+
+    def test_a_confirmed_line_is_not_discounted_past_the_policy(self):
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                      unit_price=Decimal("100"), discount_percent=Decimal("10"),
+                                      revenue_account=self.revenue)
+        order.confirm()  # 10% is within 15%: no approval needed
+        line = order.lines.get()
+        line.discount_percent = Decimal("60")
+        with self.assertRaisesMessage(ValidationError, "needs approval"):
+            line.save()
+        self.assertEqual(order.lines.get().net_amount(), Decimal("900.00"))
+
+    def test_a_line_added_to_a_confirmed_order_asks_the_policy(self):
+        order = self.make_order("1", "100")
+        with self.assertRaisesMessage(ValidationError, "needs approval"):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                          unit_price=Decimal("100"), discount_percent=Decimal("60"),
+                                          revenue_account=self.revenue)
+        self.assertEqual(order.lines.count(), 1)
+
+    def test_a_line_within_the_policy_is_still_added(self):
+        order = self.make_order("1", "100")
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                      unit_price=Decimal("100"), discount_percent=Decimal("15"),
+                                      revenue_account=self.revenue)
+        self.assertEqual(order.lines.count(), 2)
+
+
+class ReopeningALineAsksTheCreditLimitTests(TradeRuleCase):
+    """O73: reopened with nothing asked, exposure 1,800 against a limit of 1,000."""
+
+    def test_reopening_a_line_asks_the_credit_limit(self):
+        from .models import committed_balance
+
+        CustomerProfile.objects.create(party=self.customer, credit_limit=Decimal("1000"))
+        first = self.make_order("10", "100")  # 1000, at the limit
+        self.ship(first, "2")
+        line = first.lines.get()
+        line.close_short("Customer wants no more")
+        self.make_order("8", "100")  # 800: 200 + 800 = 1000, within
+        self.assertEqual(committed_balance(self.customer), Decimal("1000.00"))
+        with self.assertRaisesMessage(ValidationError, "would be at 1800.00 against a credit limit of 1000"):
+            SalesOrderLine.objects.get(pk=line.pk).reopen()
+        self.assertTrue(SalesOrderLine.objects.get(pk=line.pk).is_closed_short())
+        self.assertEqual(committed_balance(self.customer), Decimal("1000.00"))
