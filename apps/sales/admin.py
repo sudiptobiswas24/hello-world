@@ -48,7 +48,7 @@ class SalesOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
 class InvoicePaymentInline(admin.TabularInline):
     model = InvoicePayment
     extra = 0
-    fields = ("payment", "amount")
+    fields = ("payment", "amount", "date")
 
 
 class InvoiceLineInline(PostedImmutableInlineMixin, admin.TabularInline):
