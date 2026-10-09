@@ -318,6 +318,19 @@ restart or timeout:
   it, or push it to a `claude/erp-*` backup branch before anything else.
 - **Gates.** A gate is done only when every lane printed OK on the same
   tip. Check docs/HANDOFF.md for the gate in flight.
+- **Snapshots.** While agents work, keep `scripts/snapshot_worktrees.sh
+  --every 600` running, detached: `setsid nohup ... &`. It pushes every
+  worktree, uncommitted and untracked files included, to
+  `claude/erp-wip-<worktree>`. A session paused by a usage or token
+  limit can lose its container, and with it every scratch worktree; the
+  snapshots are what survives. On a new machine, restore each one with
+  the three lines at the top of the script. Start the loop again after
+  any restart: it dies with the container.
+- **Agents in a new session cannot be resumed;** their transcripts stay
+  with the old one. Restore their worktrees from the snapshots, then
+  start one new agent per worktree. Give it docs/handoff/fix_common.md,
+  its ids from docs/HANDOFF.md, and `git diff HEAD` to see where its
+  predecessor stopped.
 
 ## Auditing
 

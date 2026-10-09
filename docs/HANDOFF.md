@@ -66,12 +66,17 @@ defects", is the one list of what is still open.
    row.
 2. **Fix wave 1, to be gated as g18, was started on 9 October.** Four
    agents worked on worktrees `fix_{sec,trade,stat,qual}` at ef7c0c3,
-   under the rules in the scratch file `briefs/fix_common.md`:
+   under the rules in docs/handoff/fix_common.md:
    - security and roles: O83-O88, O119, O120;
    - trading-document rules: O65-O68, O71-O73, O82, O90, O92, O96,
      O106, O107;
    - statutory: O50, O55, O57-O62, O102-O104;
    - quality and production: O110-O113, O115-O118, O121, O122.
+
+   Every ten minutes the worktrees, uncommitted edits included, are
+   snapshotted to `claude/erp-wip-<worktree>` (CLAUDE.md, "Snapshots"):
+   the fix_* worktrees, and the audit_* worktrees with their probes. If
+   the container was lost, restore from there before anything else.
 
    Each agent's work is reviewed by the auditor who found the defects
    before it joins the gate. If the session stopped part-way, look for
