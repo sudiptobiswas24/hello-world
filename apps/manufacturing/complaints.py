@@ -31,7 +31,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
 
 ZERO = Decimal("0")
 
@@ -308,18 +308,31 @@ class CorrectiveAction(AuditModel):
         return QualityAlert.objects.get(pk=self.alert_id)
 
     def _check_parent(self):
+        """
+        The complaint or alert is open, asked with it held.
+
+        close() holds it while it counts the actions; an action added at
+        the same moment was written after the count, and the complaint
+        closed with an action not done. Held here too, the one waits for
+        the other and then sees what it did. The action's own row, where a
+        step holds it, is taken first, as done() and an edit over the API
+        take it; nothing takes the complaint and then an action.
+        """
         if bool(self.complaint_id) == bool(self.alert_id):
             raise ValidationError("An action is on a complaint or on a quality alert, one or the other.")
         parent = self.parent()
+        lock_rows(parent)
         if not parent.is_open():
             raise ValidationError(f"{parent} is {parent.status}; reopen it to change it.")
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_parent()
         if not _text(self.description):
             raise ValidationError("Say what the action is.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
         if self.done_on is not None:
             raise ValidationError(f"{self} is done; it is part of the record.")

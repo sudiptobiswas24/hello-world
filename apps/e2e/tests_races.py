@@ -1203,6 +1203,31 @@ class FloorRaceTests(RaceCase):
 class ComplaintRaceTests(RaceCase):
     """A complaint decided while something is added to it or paid on it."""
 
+    def test_no_action_lands_on_a_complaint_as_it_closes(self):
+        """
+        Audit, 9 October: close() held the complaint and counted its actions;
+        an action added at the same moment read the complaint without holding
+        it, found it open, and the complaint closed with an action not done.
+        """
+        from apps.manufacturing.complaints import ActionKind, Complaint, ComplaintStatus, CorrectiveAction
+        from apps.manufacturing.tests_complaints import ComplaintTestCase
+
+        made = fixture(self, ComplaintTestCase)
+        complaint = made.ready()
+        outcomes = race(
+            (Complaint, CorrectiveAction),
+            lambda: Complaint.objects.get(pk=complaint.pk).close(
+                "Metal in regrind", by=made.qa, on_date=run_fixture.TODAY + datetime.timedelta(days=1)),
+            lambda: CorrectiveAction.objects.create(
+                complaint_id=complaint.pk, kind=ActionKind.PREVENTIVE,
+                description="Audit the regrind supplier", owner=made.plant_head,
+                due_on=run_fixture.TODAY + datetime.timedelta(days=30)),
+        )
+        self.once(outcomes)
+        complaint.refresh_from_db()
+        undone = CorrectiveAction.objects.filter(complaint=complaint, done_on__isnull=True).count()
+        self.assertFalse(complaint.status == ComplaintStatus.CLOSED and undone, outcomes)
+
     def test_a_complaint_is_not_paid_for_and_rejected_at_once(self):
         """settle() holds the complaint as reject() does, so one sees the other."""
         from apps.gst import tests_claims
