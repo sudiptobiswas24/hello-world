@@ -228,13 +228,30 @@ def tds_return(start, end):
     The quarter's deductions as the return lists them: who, their PAN,
     under what, how much was credited and deducted, and the challan that
     paid it over.
+
+    As the books stood at the quarter's end: a deduction of the quarter
+    reversed afterwards is still listed, and its reversal is a row of the
+    quarter it was made in, taking the amount back. Listed only while it
+    stood today, 700 deducted on 10 June and reversed on 5 July dropped out
+    of the April-June return while the ledger held 700 that quarter, and
+    the July-September return never said it went.
     """
-    rows = _live(TdsDeduction.objects.filter(date__gte=to_date(start), date__lte=to_date(end))) \
-        .select_related("bill__vendor", "section", "challan").order_by("section__code", "date", "pk")
-    return [{
-        "deduction": row.pk, "date": row.date, "section": row.section.code, "vendor": row.bill.vendor.name,
-        "pan": row.pan or "PANNOTAVBL", "bill": row.bill.number, "base": row.base,
-        "rate_percent": row.rate_percent, "amount": row.amount,
-        "challan": f"{row.challan.bsr_code}/{row.challan.challan_number}" if row.is_paid_over() else "",
-        "paid_on": row.challan.date if row.is_paid_over() else None,
-    } for row in rows]
+    start, end = to_date(start), to_date(end)
+    deducted = TdsDeduction.objects.filter(date__gte=start, date__lte=end).filter(
+        Q(reversed_entry__isnull=True) | Q(reversed_entry__date__gt=end))
+    taken_back = TdsDeduction.objects.filter(date__lt=start, reversed_entry__date__gte=start,
+                                             reversed_entry__date__lte=end)
+    rows = []
+    for row, sign in [(row, 1) for row in deducted.select_related("bill__vendor", "section", "challan")] + \
+            [(row, -1) for row in taken_back.select_related("bill__vendor", "section", "challan", "reversed_entry")]:
+        paid = sign > 0 and row.is_paid_over()
+        rows.append({
+            "deduction": row.pk, "date": row.date if sign > 0 else row.reversed_entry.date,
+            "section": row.section.code, "vendor": row.bill.vendor.name,
+            "pan": row.pan or "PANNOTAVBL", "bill": row.bill.number, "base": sign * row.base,
+            "rate_percent": row.rate_percent, "amount": sign * row.amount,
+            "challan": f"{row.challan.bsr_code}/{row.challan.challan_number}" if paid else "",
+            "paid_on": row.challan.date if paid else None,
+            "reverses": row.date if sign < 0 else None,
+        })
+    return sorted(rows, key=lambda row: (row["section"], row["date"], row["deduction"], row["amount"] < 0))

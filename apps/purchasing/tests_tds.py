@@ -285,6 +285,62 @@ class LedgerTests(TdsTestCase):
         self.assertEqual(self.balance(self.payable), Decimal("700.00"))
 
 
+class QuarterlyReturnTests(TdsTestCase):
+    """
+    One bill of 35,000 to a contractor on 10 June: 700 deducted under 194C,
+    owed in the April-June quarter. Reversed on 5 July. Each quarter's return
+    lists what its books say: April-June 700, July-September the reversal,
+    -700 (calc_stat/o58_tds_return.py).
+    """
+
+    Q1 = (datetime.date(2026, 4, 1), datetime.date(2026, 6, 30))
+    Q2 = (datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))
+
+    def booked(self, start, end):
+        rows = JournalLine.objects.filter(account=self.tds_payable, entry__posted=True,
+                                          entry__date__range=(start, end)).aggregate(d=Sum("debit"), c=Sum("credit"))
+        return (rows["c"] or Decimal("0")) - (rows["d"] or Decimal("0"))
+
+    def listed(self, start, end):
+        from .tds import tds_return
+
+        return sum((row["amount"] for row in tds_return(start, end)), Decimal("0"))
+
+    def test_a_quarters_return_still_lists_what_its_books_hold_after_a_later_reversal(self):
+        deduction = self.bill("35000", vendor=self.contractor(pan="AAACL1234F")).deduct_tds()
+        self.assertEqual(deduction.amount, Decimal("700"))
+        deduction.reverse(on_date=datetime.date(2026, 7, 5))
+        self.assertEqual((self.listed(*self.Q1), self.booked(*self.Q1)), (Decimal("700"), Decimal("700")))
+        self.assertEqual((self.listed(*self.Q2), self.booked(*self.Q2)), (Decimal("-700"), Decimal("-700")))
+        from .tds import tds_return
+
+        (row,) = tds_return(*self.Q2)
+        self.assertEqual((row["date"], row["reverses"], row["base"], row["challan"]),
+                         (datetime.date(2026, 7, 5), datetime.date(2026, 6, 10), Decimal("-35000.00"), ""))
+
+    def test_over_the_api_as_the_controller(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.bill("35000", vendor=self.contractor(pan="AAACL1234F")).deduct_tds().reverse(
+            on_date=datetime.date(2026, 7, 5))
+        user = User.objects.create_user("controller")
+        user.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(user)
+        url = "/api/purchasing/tds-deductions/quarter/"
+        [q1] = client.get(url, {"from": "2026-04-01", "to": "2026-06-30"}).json()
+        [q2] = client.get(url, {"from": "2026-07-01", "to": "2026-09-30"}).json()
+        self.assertEqual((q1["amount"], q2["amount"], q2["reverses"]), ("700.00", "-700.00", "2026-06-10"))
+
+    def test_reversed_within_its_quarter_it_is_in_neither(self):
+        deduction = self.bill("35000", vendor=self.contractor(pan="AAACL1234F")).deduct_tds()
+        deduction.reverse(on_date=datetime.date(2026, 6, 20))
+        self.assertEqual((self.listed(*self.Q1), self.listed(*self.Q2)), (Decimal("0"), Decimal("0")))
+
+
 class ApiTests(TdsTestCase):
     def setUp(self):
         super().setUp()
