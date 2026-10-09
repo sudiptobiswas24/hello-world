@@ -164,6 +164,29 @@ class ExpenseLineViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mode
     employee_path = "claim__employee"
     filter_fields = ["claim"]
 
+    def _check_claim(self, serializer):
+        """
+        A line is written onto one's own claim, as a claim is made for
+        oneself; HR records anyone's. Self Service wrote a 5,000 line onto a
+        colleague's draft, and a manager, reading a report's claim, could
+        change its figures.
+        """
+        user = self.request.user
+        if user.is_superuser or user.has_perm("hr.change_employee"):
+            return
+        me = _me(self.request)
+        for claim in {serializer.validated_data.get("claim"), getattr(serializer.instance, "claim", None)} - {None}:
+            if claim.employee_id != me.pk:
+                raise DRFValidationError({"claim": ["You write lines on your own claims; HR records anyone else's."]})
+
+    def perform_create(self, serializer):
+        self._check_claim(serializer)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._check_claim(serializer)
+        super().perform_update(serializer)
+
 
 # --- appraisals
 
@@ -200,18 +223,41 @@ class AppraisalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # One's own only once submitted: a draft is the reviewer's working notes.
         return queryset.filter(Q(reviewer=me) | Q(employee__in=me.reports()) | (Q(employee=me) & ~Q(status="draft")))
 
-    def perform_create(self, serializer):
-        reviewer = serializer.validated_data.get("reviewer")
+    def _as_hr(self):
         user = self.request.user
-        if reviewer is None or not (user.is_superuser or user.has_perm("hr.view_every_appraisal")):
+        return user.is_superuser or user.has_perm("hr.view_every_appraisal")
+
+    def _check_appraiser(self, serializer):
+        """
+        An appraisal is written by the person's manager (a manager above, or
+        their department's), and changed by its reviewer; HR's for anyone.
+        A Line Manager appraised a peer who does not report to them.
+        """
+        if self._as_hr():
+            return
+        me = _me(self.request)
+        current = serializer.instance
+        if current is not None and current.reviewer_id != me.pk:
+            raise DRFValidationError(["Only its reviewer changes an appraisal."])
+        employee = serializer.validated_data.get("employee", getattr(current, "employee", None))
+        if employee is not None and employee.pk not in me.reports():
+            raise DRFValidationError({"employee": [f"{employee} does not report to you: their manager appraises them."]})
+
+    def perform_create(self, serializer):
+        self._check_appraiser(serializer)
+        reviewer = serializer.validated_data.get("reviewer")
+        if reviewer is None or not self._as_hr():
             reviewer = _me(self.request)
         serializer.save(reviewer=reviewer)
+
+    def perform_update(self, serializer):
+        self._check_appraiser(serializer)
+        super().perform_update(serializer)
 
     @action(detail=True, methods=["post"])
     def submit(self, request, pk=None):
         appraisal = self.get_object()
-        if not (request.user.is_superuser or request.user.has_perm("hr.view_every_appraisal")) \
-                and appraisal.reviewer != _me(request):
+        if not self._as_hr() and appraisal.reviewer != _me(request):
             raise DRFValidationError(["Only its reviewer submits an appraisal."])
         _run(appraisal.submit)
         return Response(self.get_serializer(appraisal).data)

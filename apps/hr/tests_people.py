@@ -327,3 +327,61 @@ class RecruitmentTests(PeopleTestCase):
         self.assertEqual(jordan.get("/api/hr/applicants/").status_code, 200)
         self.assertEqual(jordan.post("/api/hr/applicants/", {"opening": opening.json()["id"], "name": "x"}, format="json").status_code, 403)
         self.assertEqual(self.as_(self.riley.user).get("/api/hr/job-openings/").status_code, 403)
+
+
+class APersonsOwnRecordsTests(PeopleTestCase):
+    """
+    O88: a person's own records took reads and writes from others. Leave
+    read through /employees/{id}/leave/ asked only view_employee; a line
+    went onto a colleague's claim; a Line Manager appraised a peer.
+    """
+
+    def leave_of(self, user, employee):
+        return self.as_(user).get(f"/api/hr/employees/{employee.pk}/leave/", {"year": 2026}).status_code
+
+    def test_leave_read_through_the_employee_takes_the_leave_rule(self):
+        inspector = self.login("Quality Inspector")
+        self.assertEqual(self.leave_of(inspector, self.riley), 403)
+        self.assertEqual(self.leave_of(self.manager.user, self.other), 404)
+        self.assertEqual(self.leave_of(self.manager.user, self.riley), 200)
+        self.assertEqual(self.leave_of(self.hr, self.other), 200)
+
+    def line(self, user, claim, amount="5000"):
+        return self.as_(user).post("/api/hr/expense-lines/", {
+            "claim": claim.pk, "spent_on": "2026-06-02", "expense_account": self.travel.pk,
+            "description": "Dinner", "amount": amount}, format="json")
+
+    def test_a_line_is_written_only_onto_ones_own_claim(self):
+        theirs = self.claim()
+        response = self.line(self.other.user, theirs)
+        self.assertEqual((response.status_code, theirs.lines.count()), (400, 2), response.content)
+        self.assertEqual(self.line(self.riley.user, theirs, "50").status_code, 201)
+        self.assertEqual(self.line(self.hr, theirs, "25").status_code, 201)
+        self.assertEqual(theirs.lines.count(), 4)
+
+    def test_a_line_already_on_a_claim_is_changed_only_by_its_claimant(self):
+        # The manager reads a report's claim, and as an employee holds the right to change lines: their own.
+        self.manager.user.groups.add(Group.objects.get(name="Employee Self Service"))
+        theirs = self.claim()
+        line = theirs.lines.get(description="Lunch")
+        changed = self.as_(User.objects.get(pk=self.manager.user.pk)).patch(
+            f"/api/hr/expense-lines/{line.pk}/", {"amount": "5000"}, format="json")
+        self.assertEqual(changed.status_code, 400, changed.content)
+        self.assertEqual(ExpenseLine.objects.get(pk=line.pk).amount, Decimal("150"))
+
+    def appraise(self, employee):
+        return self.as_(self.manager.user).post("/api/hr/appraisals/", {
+            "employee": employee.pk, "period_start": "2026-01-01", "period_end": "2026-06-30", "rating": 1,
+            "improvements": "Everything."}, format="json")
+
+    def test_an_appraisal_is_written_only_by_the_persons_manager(self):
+        self.assertEqual(self.appraise(self.other).status_code, 400)
+        self.assertFalse(Appraisal.objects.filter(employee=self.other).exists())
+        self.assertEqual(self.appraise(self.riley).status_code, 201)
+
+    def test_nor_moved_onto_someone_they_do_not_manage(self):
+        made = self.appraise(self.riley).json()
+        moved = self.as_(self.manager.user).patch(f"/api/hr/appraisals/{made['id']}/", {"employee": self.other.pk},
+                                                  format="json")
+        self.assertEqual(moved.status_code, 400, moved.content)
+        self.assertEqual(Appraisal.objects.get(pk=made["id"]).employee, self.riley)

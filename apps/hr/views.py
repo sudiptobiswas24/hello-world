@@ -4,6 +4,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
@@ -16,6 +17,21 @@ from .models import Department, Employee, LeavePolicy, LeaveRequest, leave_summa
 def _employee_of(user):
     """The employee a login belongs to, or None."""
     return Employee.objects.filter(user=user).first() if user.is_authenticated else None
+
+
+def leave_readable(user):
+    """
+    Whose leave a login reads: everyone's to whoever keeps the records (None),
+    otherwise their own and their reports' (a queryset of employees). One rule
+    for the leave list and for the leave read through an employee, which
+    asked only view_employee: an Inspector read a colleague's sick leave.
+    """
+    if user.is_superuser or user.has_perm("hr.view_every_leaverequest"):
+        return None
+    me = _employee_of(user)
+    if me is None:
+        return Employee.objects.none()
+    return Employee.objects.filter(Q(pk=me.pk) | Q(pk__in=me.reports()))
 
 
 def me_as_employee(user):
@@ -53,6 +69,8 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # ?missing=uan or esi_number: members of that scheme today with the
     # number blank (the morning check's list).
     extra_params = ("missing",)
+    # A person's leave is read under the leave rule, not the employee's (leave_readable).
+    action_permission_map = {"leave": "hr.view_leaverequest"}
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
@@ -72,6 +90,9 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def leave(self, request, pk=None):
         """Every allowance this person has, and where each stands."""
         employee = self.get_object()
+        readable = leave_readable(request.user)
+        if readable is not None and not readable.filter(pk=employee.pk).exists():
+            raise NotFound()
         # The plant's year, and a typed one refused in words: int() of
         # "2026a" was a 500, and timezone.now() is UTC's day.
         year = whole_number(request.query_params, "year", default=timezone.localdate().year, least=2000)
@@ -108,13 +129,8 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # colleague's leave, reasons and all, until the login knew whose
         # it was.
         queryset = super().get_queryset()
-        user = self.request.user
-        if user.is_superuser or user.has_perm("hr.view_every_leaverequest"):
-            return queryset
-        me = _employee_of(user)
-        if me is None:
-            return queryset.none()
-        return queryset.filter(Q(employee=me) | Q(employee__in=me.reports()))
+        readable = leave_readable(self.request.user)
+        return queryset if readable is None else queryset.filter(employee__in=readable)
 
     def perform_create(self, serializer):
         user = self.request.user
