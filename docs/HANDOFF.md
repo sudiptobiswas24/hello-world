@@ -58,28 +58,19 @@ g17 is pushed (b1d03ed). It holds:
 findings.md says what each fix branch held. docs/RISKS.md, "Open
 defects", is the one list of what is still open.
 
-1. **The owner chooses what comes next.** Two candidates were put to the
-   owner on 8 October:
-   - **Pilot path:** import the plant's real files (docs/IMPORT.md), then
-     the pilot in docs/PILOT.md. Before anything is filed with the
-     government, run a probe audit of GST and accounting, which have not
-     had one.
-   - **Another audit round:** sales, purchasing, accounting, GST, quality
-     and CRM have not had a probe audit like the 8 October one;
-     permissions and performance have never been audited.
+1. **The owner chose another audit round** (9 October), over the pilot.
+   The audits cover what the 8 October round did not:
+   - accounting with GST;
+   - sales;
+   - purchasing;
+   - permissions across every module;
+   - then quality and CRM.
 
-   If the owner has not answered, ask before starting either.
-2. **Decisions owed by the owner and the plant's accountant.** Put them
-   as one list; do not decide them:
-   - posting a pay run ahead of its pay date, which is allowed and is
-     voided on its own day (core `correction_date`);
-   - freight on goods already gone going to cost of sales rather than
-     to production cost (O42 is related);
-   - a leaver's overpayment recovered as a receivable from the former
-     employee: are there legal limits on recovering wages? (O28);
-   - partial returns taking the earliest route step first (O30);
-   - disposal reversing a closed month's charge (O9);
-   - dated corrections stamping stock when entered (O43).
+   Findings go into docs/RISKS.md the day they are seen. The fixes are
+   reviewed by someone other than their author before their gate.
+2. **The owner's decisions of 9 October** are in docs/RISKS.md,
+   "Decisions taken", item 20. Two are to build: O28, within the legal
+   cap on deductions, and O48.
 3. **Open defects** in docs/RISKS.md, by kind: books first, then race,
    then rule. O42 (a landed-cost release does not follow goods moved
    since) is next. Each fix needs a test that fails without it, and its

@@ -5,7 +5,7 @@ decision still owed, or a place the tests do not reach. Each says what
 would go wrong, how likely it is here, and what to do about it. Remove
 an entry only in the commit that removes the risk.
 
-Last reviewed: 2026-10-08.
+Last reviewed: 2026-10-09.
 
 ## Before the first real day
 
@@ -233,7 +233,6 @@ missing), **minor**.
 | O6 | payroll | The EPFO ECR reads the PF wage ceiling live, not as it stood for the month | books | open |
 | O7 | manufacturing | Release merges components by item and unit: the same item in two units freezes two rows that each count all its issues | books | open |
 | O8 | manufacturing | The WIP tile (apps/web/bank.py) reads the account in settings, not each run's recorded WIP account | books | open |
-| O9 | assets | `dispose()` reverses a closed month's charge on the disposal date; an existing test asserts it, so it may be intended | books | decide |
 | O10 | inventory, quality | A posted stock adjustment, stock count or quality inspection can be deleted (named in `DELETABLE_REPORTED`) | rule | open |
 | O11 | inventory | Cancelling a put-away transfer leaves its receipt route move standing | rule | open |
 | O12 | assets | `place_in_service` accepts an in-service date still to come | rule | open |
@@ -251,9 +250,8 @@ missing), **minor**.
 | O25 | frontend | RecordScreen's afterCreate comment says it decides where to go after a delete; the code does not (mistake 1) | minor | open |
 | O26 | assets | Capitalising a bill line has no API action | minor | open |
 | O27 | inventory | Migrations 0030 and 0037 have no migration test | rule | open |
-| O28 | payroll | A leaver's final pay too small for what is taken back: the shortfall becomes a receivable from the former employee; PF/ESI wages drop by what is taken back. A roll voided after the final slip was paid: the same receivable, and the void is not refused (quality corrections must stay possible). Decided, not built | books | to build |
+| O28 | payroll | A leaver's final pay too small for what is taken back: the shortfall becomes a receivable from the former employee; PF/ESI wages drop by what is taken back. A roll voided after the final slip was paid: the same receivable, and the void is not refused (quality corrections must stay possible). Confirmed by the owner on 9 October. What the final run takes back must stay within the legal limit on deductions from one wage payment (believed to be half the wages; the plant's accountant to confirm); the rest is the receivable. Not built | books | to build |
 | O29 | accounting, assets | A period closes while its depreciation is uncharged. Decided: refuse it, through a period-close check that accounting keeps and assets registers with. Not built | rule | to build |
-| O30 | inventory | A partial return across route steps takes the earliest place first | decide | owner's call |
 | O31 | payroll | A leaver's piece-work recovery happens only if the leaving date is set before the final run is calculated. Set after that run posts, no later run includes the person, and the overpayment is never recovered, with nothing said | books | open |
 | O32 | hr | `LeaveRequest.cancel(on_date)` takes any date: called in code with a day before the leave, it cancels a holiday already taken and restores the balance. The API passes no date | rule | open |
 | O34 | assets | The fixed-asset register is not footed against the ledger in the daily health checks | rule | open |
@@ -265,10 +263,10 @@ missing), **minor**.
 | O40 | core | Audit gaps: `per_unit_withdrawal_rates` skips inventory/models.py and `average_cost_at`; `shelf_read_before_lock` sees a read and a lock only inside one function | rule | open |
 | O41 | manufacturing | `_booked` converts each entry at today's unit factor; a conversion that depends on the date makes `quantity_produced` drift from what went on the shelf | books | minor |
 | O42 | purchasing | A landed-cost release takes off each shelf it landed on what that shelf still holds of it, and the rest out of cost of sales. Goods moved to another shelf after the landing (a put-away from the bay) carried their freight with them, but the release does not follow them: landed on the bay, put away, released, the bay gives up 0, cost of sales is credited 80, and the stock room keeps the 80. Shelf and ledger agree; the release does nothing. `value_still_held` must follow a transfer's value to the shelf it went to | books | open, next |
-| O43 | inventory | A dated correction (adjustment void, run issue and entry voids, transfer cancel, return, landed-cost release) stamps its stock movement when it is made and dates only its journal entry. The replays price movements in the order they were written, so stamping on the given day would reprice what came after; as written, a stock value asked as of a day between the two differs from the ledger by the correction | books | by design; decide |
 | O45 | manufacturing, core | Three admin mixins refuse the same thing (`PostedNotDeletedMixin`, `PostedImmutableAdminMixin`, `PostedDocumentAdminMixin`): fold into one (mistake 5) | rule | open |
 | O46 | core | `unlocked_open_runs` sees only `.is_open()`; a run's status compared to RELEASED by a function that does not hold the run goes unreported (station clock and job work were found by reading) | rule | open |
 | O47 | manufacturing | `TapeLoad.kg` keeps 3 places but `load_tape` accepts 4: 48.9796 kg is stored as 48.980, 0.0004 kg more than the shelf held | books | minor |
+| O48 | purchasing, manufacturing | Landed cost on goods no longer on a shelf goes to cost of sales. The owner decided on 9 October that the share on goods issued to production goes to production cost instead (the run they went into), and only the share on goods sold or written off goes to cost of sales. Not built. O42 touches the same code | books | to build |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
@@ -310,6 +308,22 @@ Upgrade notes, true of data made before the 8 October fixes:
     paisa is refused, naming the amounts either side. Advances paid *to*
     vendors carry no tax here: credit on them waits for the vendor's
     invoice.
+
+20. **Decided by the owner on 9 October 2026:**
+   - A pay run may be posted ahead of its pay date. It is voided on its
+     own pay date, or on any day after it that has come
+     (`correction_date`).
+   - Freight on goods issued to production goes to production cost (O48).
+   - A leaver's overpayment beyond what the final run may take back is a
+     receivable from the former employee (O28).
+   - A partial return across route steps takes goods from the earliest
+     step first.
+   - Disposing of an asset reverses a closed month's depreciation charge
+     on the disposal date: intended.
+   - A dated correction stamps its stock movement when it is made and
+     dates only its journal entry. The replays price movements in the
+     order they were written, so a stock value asked for a day between
+     the two differs from the ledger by the correction.
 
 ## Later items
 
