@@ -283,6 +283,23 @@ missing), **minor**.
 | O62 | purchasing, accounting | A TDS challan paid from the bank is a direct entry, not a payment, so its bank statement line cannot be matched; posting it books it twice (TDS payable +700, difference -700). HR expense claims paid from a bank have the same shape (not probed) | books | open, blocks real use; ChallanOnTheStatementProbe |
 | O63 | accounting | Race: a statement closes while one of its lines is unmatched (`close()` locks the statement; the line's save() reads `closed` unlocked): closed with a line unexplained. Shown on PostgreSQL | race | open; AccountingRaceProbe |
 | O64 | purchasing | Race: a TDS deduction reversed while a challan pays it (`TdsChallan.pay` reads what is owed unlocked, then updates): reversed and paid, TDS payable +700 paid for nothing. Shown on PostgreSQL | race | open; AccountingRaceProbe |
+| O65 | sales | A shipped order line's item can be changed (PATCH answered 200), and a return then invents stock: 5 widgets shipped, item changed to gadget, the return puts 5 gadgets on the shelf | books | open, blocks real use; EditAfterShippingProbe |
+| O66 | sales | A posted delivery's line can be deleted over the API (204 to Warehouse Staff): the order line reads 0 shipped while cost of sales and the shelf stay. `DeliveryLine` has no delete guard, and the deletable-posted check asks only documents, not their lines | books | open, blocks real use; ApiProbe |
+| O67 | sales | On a bill-on-delivery order one shipment can be invoiced twice: two drafts made before the first posts both post (post() checks invoice_limit(), not what shipped): 10 invoiced against 5 shipped | books | open, blocks real use; DeliveredPolicyProbe |
+| O68 | sales | A shipped order's customer and currency can be changed: the rest is then billed to the new customer (on credit hold) in another currency | books | open; EditAfterShippingProbe |
+| O69 | sales | A claim plus a quantity credit gives back more than was invoiced: invoice 1,000, claim 300, then a full credit or return credits 1,300 and leaves receivables at -300 | books | open; ClaimThenCreditProbe |
+| O70 | sales | A credit note refunded at another rate books its exchange difference the wrong way (every allocation passed as a receivable): receivables end at 40.00, not 0. Purchasing's mirror always passes the other side; a refunded debit note may share it (not probed) | books | open; ForeignDepositCycleProbe |
+| O71 | sales | An invoice line may bill any order line, another customer's included (the delivery line has this check, the invoice line not): Acme's line reads invoiced while another customer is billed | rule | open; ApiProbe, InvoiceLineOrderLineProbe |
+| O72 | sales | The discount policy is not asked again on a confirmed order: a line raised to 60% against a 15% policy ships and invoices; a 60% line added stands | rule | open; ConfirmedOrderPolicyProbe |
+| O73 | sales | Reopening a line closed short skips the credit limit: exposure 1,800 against a limit of 1,000 | rule | open; ReopenProbe |
+| O74 | sales | Commission on collection counts a voided (bounced) receipt | books | open; CommissionProbe |
+| O75 | sales | Commission on collection leaves out money taken as a deposit: 300 deposit plus 700 paid counts 700 | books | open; CommissionProbe |
+| O76 | sales | Commission is worked in the invoice's currency, not the base: 1,000 EUR at 1.1 counts 1,000, not 1,100 | books | open; CommissionProbe |
+| O77 | sales | The credit limit adds currencies at face value: 600 USD plus 380 EUR reads 980 against 1,000; the true figure is 1,018.00 | rule | open; CreditLimitProbe |
+| O78 | sales | An order in another currency takes the item's base price at face value: a EUR line priced 10 from 10 USD | books | open; PricingProbe |
+| O79 | sales | The price ignores the line's unit, and volume breaks compare quantities in it: 2 boxes of 12 at 10 each priced 10 a box (20.00, not 240.00). Purchasing's price resolution has no unit either (not probed) | books | open; PricingProbe |
+| O80 | sales | A write-off partly undone by a credit note cannot be recovered: recovery takes the whole write-off or nothing, and no receipt can be applied | books | open; WriteOffRecoveryProbe |
+| O81 | sales | The dunning mail asks for the whole balance and the last due date, not what the notice records as overdue (mistake 1) | minor | open; DunningProbe |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
