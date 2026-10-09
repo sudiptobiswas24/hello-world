@@ -261,6 +261,31 @@ class ActivityViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["due_on", "created_at"]
     action_permission_map = {"done": "sales.change_activity", "due": "sales.view_activity"}
 
+    def _check_subject(self, serializer):
+        """
+        What it is about is something the login may read: a rep logged calls
+        on another rep's lead (raising its score) and on their customer,
+        and read back its name.
+        """
+        user, data, current = self.request.user, serializer.validated_data, serializer.instance
+        lead = data.get("lead", getattr(current, "lead", None))
+        if lead is not None and not for_rep(Lead.objects.filter(pk=lead.pk), user, unowned_too=True).exists():
+            raise DRFValidationError({"lead": ["Not a lead of yours."]})
+        opportunity = data.get("opportunity", getattr(current, "opportunity", None))
+        if opportunity is not None and not for_rep(Opportunity.objects.filter(pk=opportunity.pk), user).exists():
+            raise DRFValidationError({"opportunity": ["Not an opportunity of yours."]})
+        party = data.get("party", getattr(current, "party", None))
+        if party is not None and not scoped(Party.objects.filter(pk=party.pk), user).exists():
+            raise DRFValidationError({"party": ["Not a customer you carry."]})
+
+    def perform_create(self, serializer):
+        self._check_subject(serializer)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._check_subject(serializer)
+        super().perform_update(serializer)
+
     @action(detail=True, methods=["post"])
     def done(self, request, pk=None):
         activity = self.get_object()

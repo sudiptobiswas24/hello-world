@@ -13,6 +13,11 @@ whoever asks; `inbox()` takes a dict to remember them in, so the command
 counts each once for every login. The one that is a person's own (their
 follow-ups) is marked `per_login` and counted for each.
 
+A count over rows that name a customer is `scoped`: a login the rep scope
+limits gets its own count, of what it may see, and not the plant's. The
+inbox told a rep how many invoices were overdue across every rep's
+customers.
+
 The last group is not what fell due but what was left incomplete and
 carries forward if nobody says so: a customer with no GST standing, an
 item with no HSN, a PF member with no UAN, money received and applied to
@@ -44,8 +49,18 @@ class Check:
     label: str
     permissions: tuple
     href: str
-    count: Callable  # (day) -> int, or (user, day) -> int where per_login
+    count: Callable  # (day) -> int, or (user, day) -> int where per_login, or (day, user) where scoped
     per_login: bool = False
+    scoped: bool = False  # its rows name a customer: counted again for a login the rep scope limits
+
+
+def _visible(queryset, user, path):
+    """Rows of `queryset` whose party (at `path`) `user` may see; all of them for the plant's count."""
+    if user is None:
+        return queryset
+    from apps.core.scoping import scoped
+
+    return scoped(queryset, user, path)
 
 
 def _maintenance_due(day):
@@ -91,11 +106,11 @@ def _attendance_unmarked(day):
     return sum(len(row["days"]) for row in unmarked_report(yesterday.replace(day=1), yesterday))
 
 
-def _deliveries_unsigned(day):
+def _deliveries_unsigned(day, user=None):
     from apps.sales.models import Delivery
 
-    return Delivery.objects.filter(posted=True, reverses__isnull=True, received_on__isnull=True,
-                                   delivery_date__lte=day - UNSIGNED_FOR).count()
+    return _visible(Delivery.objects.filter(posted=True, reverses__isnull=True, received_on__isnull=True,
+                                            delivery_date__lte=day - UNSIGNED_FOR), user, "sales_order__customer").count()
 
 
 def _unbilled_freight(day):
@@ -104,10 +119,11 @@ def _unbilled_freight(day):
     return len(unbilled_freight())
 
 
-def _invoices_overdue(day):
-    from apps.sales.models import ar_aging
+def _invoices_overdue(day, user=None):
+    from apps.sales.models import Invoice, ar_aging
 
-    return sum(bucket["count"] for key, bucket in ar_aging(as_of=day).items() if key != "current")
+    invoices = _visible(Invoice.objects.all(), user, "customer")
+    return sum(bucket["count"] for key, bucket in ar_aging(as_of=day, invoices=invoices).items() if key != "current")
 
 
 def _bills_overdue(day):
@@ -116,9 +132,10 @@ def _bills_overdue(day):
     return sum(bucket["count"] for key, bucket in ap_aging(as_of=day).items() if key != "current")
 
 
-def _drafts(model, date_field):
-    def count(day):
-        return apps.get_model(model).objects.filter(posted=False, **{f"{date_field}__lte": day - DRAFT_FOR}).count()
+def _drafts(model, date_field, party=None):
+    def count(day, user=None):
+        rows = apps.get_model(model).objects.filter(posted=False, **{f"{date_field}__lte": day - DRAFT_FOR})
+        return (_visible(rows, user, party) if party else rows).count()
     return count
 
 
@@ -153,10 +170,10 @@ def _recurring_journals_due(day):
     return sum(1 for schedule in RecurringJournal.objects.filter(is_active=True) if schedule.is_due(day))
 
 
-def _recurring_invoices_due(day):
+def _recurring_invoices_due(day, user=None):
     from apps.sales.models import RecurringInvoice
 
-    return sum(1 for schedule in RecurringInvoice.objects.filter(is_active=True)
+    return sum(1 for schedule in _visible(RecurringInvoice.objects.filter(is_active=True), user, "customer")
                if schedule.next_run_date and schedule.next_run_date <= day and not schedule.has_finished())
 
 
@@ -166,13 +183,13 @@ def _gst_in_use():
     return GstSettings.active() is not None
 
 
-def _customers_without_gst(day):
+def _customers_without_gst(day, user=None):
     """Customers whose GST standing is unknown, or registered with no GSTIN: the invoice will be wrong."""
     if not _gst_in_use():
         return 0
     from apps.core.models import Party
 
-    return customers_without_gst(Party.objects.all()).count()
+    return customers_without_gst(_visible(Party.objects.all(), user, None)).count()
 
 
 def customers_without_gst(parties):
@@ -221,12 +238,12 @@ def _esi_without_number(day):
 
 
 def _unapplied(direction):
-    def count(day):
+    def count(day, user=None):
         from apps.accounting.models import Payment
         from apps.accounting.settlement import unapplied
 
-        rows = unapplied(Payment.objects.filter(posted=True, voided_entry__isnull=True, direction=direction,
-                                                payment_date__lte=day - UNAPPLIED_FOR))
+        rows = unapplied(_visible(Payment.objects.filter(posted=True, voided_entry__isnull=True, direction=direction,
+                                                         payment_date__lte=day - UNAPPLIED_FOR), user, "party"))
         return sum(1 for payment in rows.select_related("journal_entry").prefetch_related("journal_entry__reversed_by")
                    if not payment.is_voided())
     return count
@@ -285,10 +302,10 @@ def invoices_without_irn(invoices):
             .filter(Q(einvoice__isnull=True) | Q(einvoice__irn="")))
 
 
-def _invoices_without_irn(day):
+def _invoices_without_irn(day, user=None):
     from apps.sales.models import Invoice
 
-    return invoices_without_irn(Invoice.objects.all()).count()
+    return invoices_without_irn(_visible(Invoice.objects.all(), user, "customer")).count()
 
 
 def _books_disagree(day):
@@ -320,21 +337,23 @@ CHECKS = [
     Check("attendance_unmarked", "Attendance days unmarked, day-rated", ("hr.view_attendanceday",),
           "/payroll/attendance-gaps", _attendance_unmarked),
     Check("deliveries_unsigned", "Deliveries a week out, not signed for", ("sales.view_delivery",),
-          "/sales/unacknowledged", _deliveries_unsigned),
+          "/sales/unacknowledged", _deliveries_unsigned, scoped=True),
     Check("unbilled_freight", "Freight not yet billed",
           ("purchasing.view_bill", "sales.view_delivery", "purchasing.view_purchaseorder"),
           "/purchasing/unbilled-freight", _unbilled_freight),
-    Check("invoices_overdue", "Invoices past due", ("sales.view_invoice",), "/sales/aging", _invoices_overdue),
+    Check("invoices_overdue", "Invoices past due", ("sales.view_invoice",), "/sales/aging", _invoices_overdue,
+          scoped=True),
     Check("bills_overdue", "Bills past due", ("purchasing.view_bill", "purchasing.view_purchaseorder"),
           "/purchasing/aging", _bills_overdue),
     Check("invoices_draft", "Invoices in draft over two days", ("sales.view_invoice",), "/sales/invoices?posted=false",
-          _drafts("sales.Invoice", "invoice_date")),
+          _drafts("sales.Invoice", "invoice_date", "customer"), scoped=True),
     Check("bills_draft", "Bills in draft over two days", ("purchasing.view_bill",), "/purchasing/bills?posted=false",
           _drafts("purchasing.Bill", "bill_date")),
     Check("journals_draft", "Journal entries in draft over two days", ("accounting.view_journalentry",),
           "/accounts/journals?posted=false", _drafts("accounting.JournalEntry", "date")),
     Check("deliveries_draft", "Deliveries in draft over two days", ("sales.view_delivery",),
-          "/sales/deliveries?posted=false", _drafts("sales.Delivery", "delivery_date")),
+          "/sales/deliveries?posted=false", _drafts("sales.Delivery", "delivery_date", "sales_order__customer"),
+          scoped=True),
     Check("stock_under_level", "Items under their reorder level", ("purchasing.view_purchaseorder",),
           "/purchasing/reorder", _stock_under_level),
     Check("meters_unread", "Meters unread yesterday", ("manufacturing.view_energymeter",), "/plant/energy",
@@ -344,12 +363,12 @@ CHECKS = [
     Check("recurring_journals_due", "Recurring journal entries due", ("accounting.view_recurringjournal",),
           "/accounts/recurring-journals?is_active=true", _recurring_journals_due),
     Check("recurring_invoices_due", "Recurring invoices due", ("sales.view_recurringinvoice",),
-          "/sales/recurring?is_active=true", _recurring_invoices_due),
+          "/sales/recurring?is_active=true", _recurring_invoices_due, scoped=True),
     Check("follow_ups_due", "Follow-ups due", ("sales.view_activity",), "/sales/activities?done_on__isnull=true",
           _follow_ups_due, per_login=True),
     # Left incomplete, and carried forward until said.
     Check("customers_without_gst", "Customers with no GST standing or GSTIN", ("accounting.view_partytaxprofile",),
-          "/sales/customers?gst=unknown", _customers_without_gst),
+          "/sales/customers?gst=unknown", _customers_without_gst, scoped=True),
     Check("items_without_hsn", "Items with no HSN code", ("inventory.view_item",),
           "/stores/items?without_hsn=true&is_active=true", _items_without_hsn),
     Check("pf_without_uan", "PF members with no UAN", ("hr.view_employee",), "/payroll/employees?missing=uan",
@@ -357,7 +376,7 @@ CHECKS = [
     Check("esi_without_number", "ESI members with no insurance number", ("hr.view_employee",),
           "/payroll/employees?missing=esi_number", _esi_without_number),
     Check("receipts_unapplied", "Money received a week ago, applied to nothing", ("accounting.view_payment",),
-          "/sales/receipts?unapplied=true", _unapplied("receipt")),
+          "/sales/receipts?unapplied=true", _unapplied("receipt"), scoped=True),
     Check("payments_unapplied", "Money paid a week ago, applied to nothing", ("accounting.view_payment",),
           "/purchasing/payments?unapplied=true", _unapplied("disbursement")),
     Check("bank_lines_unexplained", "Bank lines a week old, unexplained", ("accounting.view_bankstatement",),
@@ -367,7 +386,7 @@ CHECKS = [
     Check("wages_not_posted", "Last month's wages not posted", ("hr.view_payrun",), "/payroll/pay-runs",
           _wages_not_posted),
     Check("invoices_without_irn", "Invoices the e-invoice portal has not registered", ("gst.view_einvoice",),
-          "/sales/invoices?without_irn=true", _invoices_without_irn),
+          "/sales/invoices?without_irn=true", _invoices_without_irn, scoped=True),
     # The books against themselves, and the machine.
     Check("books_disagree", "Books that do not agree with themselves", ("core.check_health",), "/settings/health",
           _books_disagree),
@@ -382,14 +401,19 @@ def inbox(user, day=None, counted=None, everything=False):
     `everything`). `counted` ({key: count}) remembers the plant-wide
     answers between logins asked on the same day.
     """
+    from apps.core.scoping import visible_parties
+
     day = day or timezone.localdate()
     counted = {} if counted is None else counted
+    limited = visible_parties(user) is not None
     rows = []
     for check in CHECKS:
         if not all(user.has_perm(permission) for permission in check.permissions):
             continue
         if check.per_login:
             count = check.count(user, day)
+        elif check.scoped and limited:
+            count = check.count(day, user)
         else:
             if check.key not in counted:
                 counted[check.key] = check.count(day)

@@ -212,9 +212,11 @@ class Lead(AuditModel):
                                      phone=self.phone, created_by=user, updated_by=user)
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.CUSTOMER, created_by=user, updated_by=user)
         created(party, PartyRole.CUSTOMER, user)
+        # A lead nobody owned is the converting rep's, as the customer just made is: with no
+        # owner the opportunity was nobody's, so the rep who made it read 404.
         opportunity = Opportunity.objects.create(
             customer=party, title=self.interest or f"First business with {party.name}", lead=self,
-            campaign=self.campaign, owner=self.owner, created_by=user, updated_by=user)
+            campaign=self.campaign, owner=self.owner or owner_for(user, None), created_by=user, updated_by=user)
         self.converted_party = party
         self.converted_on = to_date(on_date) or timezone.localdate()
         self._close(LeadStatus.CONVERTED, ["converted_party", "converted_on"])

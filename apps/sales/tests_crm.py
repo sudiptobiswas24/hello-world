@@ -246,3 +246,48 @@ class CampaignTests(CrmTestCase):
         self.assertEqual(self.dana.get("/api/sales/campaigns/").status_code, 200)
         self.assertEqual(self.dana.post("/api/sales/campaigns/", {"code": "X", "name": "x", "starts_on": "2026-04-01"},
                                         format="json").status_code, 403)
+
+
+class RepScopeTests(CrmTestCase):
+    """
+    O119: a rep who converted an unowned lead could not see the opportunity
+    it made (no owner). O120: a rep logged calls on another rep's lead,
+    raising its score. One scope: what the rep may read is what they may
+    write about.
+    """
+
+    def test_a_rep_who_converts_an_unowned_lead_owns_its_opportunity(self):
+        unowned = self.manager.post("/api/sales/leads/", {"company_name": "Open Field Fertilisers"},
+                                    format="json").json()
+        converted = self.ravi.post(f"/api/sales/leads/{unowned['id']}/convert/", {"code": "C-OPEN"}, format="json")
+        self.assertEqual(converted.status_code, 200, converted.content)
+        opportunity = Opportunity.objects.get(pk=converted.json()["opportunity"])
+        seen = self.ravi.get(f"/api/sales/opportunities/{opportunity.pk}/").status_code
+        self.assertEqual((opportunity.owner_id, seen), (self.ravi_party.pk, 200))
+
+    def test_an_owned_lead_keeps_its_owner_whoever_converts_it(self):
+        lead = self.lead()  # Dana's
+        converted = self.manager.post(f"/api/sales/leads/{lead['id']}/convert/", {"code": "C-DANA"}, format="json")
+        self.assertEqual(converted.status_code, 200, converted.content)
+        self.assertEqual(Opportunity.objects.get(pk=converted.json()["opportunity"]).owner_id, self.dana_party.pk)
+
+    def test_a_rep_cannot_log_a_call_on_another_reps_lead(self):
+        lead = self.lead()  # Dana's
+        before = Lead.objects.get(pk=lead["id"]).score()
+        self.assertEqual(before, 70)
+        made = self.ravi.post("/api/sales/activities/", {"lead": lead["id"], "kind": "call", "summary": "Rang them"},
+                              format="json")
+        self.assertEqual((made.status_code, Activity.objects.filter(lead_id=lead["id"]).count()), (400, 0),
+                         made.content)
+        self.assertEqual(Lead.objects.get(pk=lead["id"]).score(), before)
+
+    def test_nor_on_another_reps_opportunity_but_on_their_own(self):
+        theirs = Opportunity.objects.create(customer=self.customer, title="Dana's", owner=self.dana_party)
+        refused = self.ravi.post("/api/sales/activities/", {"opportunity": theirs.pk, "kind": "call",
+                                                             "summary": "Rang them"}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        made = self.dana.post("/api/sales/activities/", {"opportunity": theirs.pk, "kind": "call",
+                                                          "summary": "Rang them"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        moved = self.ravi.patch(f"/api/sales/activities/{made.json()['id']}/", {"summary": "x"}, format="json")
+        self.assertEqual(moved.status_code, 404)

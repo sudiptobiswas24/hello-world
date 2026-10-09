@@ -337,3 +337,39 @@ class TheAuditAsksEveryActionThatWritesToNameItsRightTests(TestCase):
         from apps.core.management.commands.audit_invariants import OUR_APPS, Command
 
         self.assertEqual(Command().undeclared_actions(list(OUR_APPS)), [])
+
+
+class TheAuditAsksEveryPartyReadToKeepTheRepScopeTests(TestCase):
+    """O84's check: audit_invariants reports a viewset a rep reads, over a model naming a party, with no scope."""
+
+    def planted(self, scoped_too):
+        from rest_framework import viewsets
+
+        from apps.accounting.models import PartyTaxProfile
+        from apps.core.scoping import scoped
+
+        class Planted(viewsets.ReadOnlyModelViewSet):
+            queryset = PartyTaxProfile.objects.all()
+
+        class Kept(Planted):
+            def get_queryset(self):
+                return scoped(super().get_queryset(), self.request.user, "party")
+
+        return Kept if scoped_too else Planted
+
+    def found(self, view):
+        from apps.core.management.commands.audit_invariants import Command
+
+        return Command().unscoped_party_reads(["accounting"], [view], readers={"accounting.view_partytaxprofile"})
+
+    def test_a_planted_unscoped_read_is_reported(self):
+        self.assertEqual([shape for shape, _detail in self.found(self.planted(False))],
+                         ["party read past the rep scope"])
+
+    def test_a_scoped_one_is_not(self):
+        self.assertEqual(self.found(self.planted(True)), [])
+
+    def test_nor_one_the_rep_may_not_read(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        self.assertEqual(Command().unscoped_party_reads(["accounting"], [self.planted(False)], readers=set()), [])

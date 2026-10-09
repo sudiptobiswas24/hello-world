@@ -223,7 +223,7 @@ export const MODULES: Module[] = [
         keywords: "commission earned rep", load: () => import("../modules/sales/Commission"),
       },
       {
-        path: "bad-debts", label: "Bad debts", permission: "sales.view_invoice",
+        path: "bad-debts", label: "Bad debts", permission: "sales.view_invoicewriteoff",
         keywords: "write off bad debt recovered", load: () => import("../modules/sales/BadDebt"),
       },
     ],

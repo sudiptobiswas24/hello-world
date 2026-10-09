@@ -17,7 +17,8 @@ from rest_framework.response import Response
 
 from apps.core.api import plain, record_or_404
 from apps.core.audit import AuditableViewSetMixin
-from apps.core.models import to_date
+from apps.core.models import Party, to_date
+from apps.core.scoping import scoped
 from apps.core.permissions import ActionPermission, RequiredPermission
 from apps.inventory.models import Item, Lot, StockAdjustmentLine, Warehouse
 from apps.sales.models import SalesOrderLine
@@ -1877,6 +1878,13 @@ class LotTraceViewSet(viewsets.ViewSet):
     def recall(self, request, pk=None):
         lot = self._lot(pk)
         report = recall(lot, depth=self._depth(request))
+        # Who holds it, as far as the party scope lets this login see: the recall named every
+        # customer shipped the batch to a rep who carries none of them.
+        named = {row["customer"].pk for row in report["customers"]} | {row["customer_id"] for row in report["bales"]}
+        seen = set(scoped(Party.objects.filter(pk__in=named - {None}), request.user).values_list("pk", flat=True))
+        report["customers"] = [row for row in report["customers"] if row["customer"].pk in seen]
+        report["bales"] = [{key: value for key, value in row.items() if key != "customer_id"}
+                           for row in report["bales"] if row["customer_id"] is None or row["customer_id"] in seen]
         return Response({
             "lot": _lot_row(lot),
             "descendants": [
