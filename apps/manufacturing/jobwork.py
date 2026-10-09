@@ -49,6 +49,13 @@ INPUTS_DAYS = 365
 CAPITAL_GOODS_DAYS = 3 * 365
 
 
+def _refuse_closed(on_date, doing):
+    """What ITC-04 reports, issued or withdrawn, asks the period as an entry would."""
+    from apps.accounting.models import AccountingPeriod
+
+    AccountingPeriod.refuse_closed(on_date, doing)
+
+
 # Asked before a challan is voided, by modules that hold something against
 # it (an e-way bill). Each raises to refuse.
 CHALLAN_VOID_GUARDS = []
@@ -124,6 +131,9 @@ class JobWorkChallan(AuditModel):
         if not lines:
             raise ValidationError("A challan with nothing on it sends nothing.")
         self.challan_date = to_date(self.challan_date)
+        # It posts no entry, so nothing else asks: issued into a closed month,
+        # the half-year's ITC-04 already signed off grows a challan.
+        _refuse_closed(self.challan_date, f"{self} is not issued on {self.challan_date}")
         # Each run held before its status and its other challans are read:
         # two challans of 600 issued at once each found the other unissued.
         runs = {line.operation.work_order_id: line.operation.work_order for line in lines}
@@ -175,6 +185,9 @@ class JobWorkChallan(AuditModel):
         """
         if not self.posted or self.voided_at is not None:
             raise ValidationError(f"{self} is not an issued challan.")
+        # Withdrawn, it leaves the return of the month it went out in: a
+        # closed month's ITC-04 would lose it as surely as issuing grew it.
+        _refuse_closed(self.challan_date, f"{self}, issued on {self.challan_date}, is not withdrawn")
         lines = list(self.lines.select_related("operation__work_order"))
         # Held before what came back is read: a withdrawal read nothing back
         # while the vendor's receipt, counting this challan as sent, booked
@@ -287,6 +300,8 @@ class JobWorkLoss(AuditModel):
         line = self.line
         if not line.challan.posted or line.challan.voided_at is not None:
             raise ValidationError(f"{line.challan} is not an issued challan.")
+        # Reported on ITC-04 by its own date, and posting no entry.
+        _refuse_closed(self.loss_date, f"a loss is not recorded on {to_date(self.loss_date)}")
         if to_date(self.loss_date) < line.challan.challan_date:
             raise ValidationError(
                 f"{line.challan} went out on {line.challan.challan_date}; nothing on "
@@ -308,6 +323,7 @@ class JobWorkLoss(AuditModel):
         """Withdraw a loss recorded in error; the goods count as still out again."""
         if self.voided_at is not None:
             raise ValidationError("This loss is already withdrawn.")
+        _refuse_closed(self.loss_date, f"the loss recorded on {self.loss_date} is not withdrawn")
         self.voided_at = timezone.now()
         self._voiding = True
         try:

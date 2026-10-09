@@ -128,3 +128,87 @@ class RefusalAndApiTests(Itc04TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(len(response.json()["sent"]), 2)
         self.assertEqual(client.get("/api/gst/itc04/?start=April").status_code, 400)
+
+
+class ClosedMonthTests(Itc04TestCase):
+    """
+    May is closed: its books and its returns signed off. A challan posts no
+    entry, so it asks the period itself, issued or withdrawn, and so does a
+    loss at the job worker. The two challans of the fixture went out on 30 and
+    31 May, before the close.
+    """
+
+    def close_may(self):
+        from apps.accounting.models import AccountingPeriod
+
+        may = AccountingPeriod.objects.create(name="May", start_date=datetime.date(2026, 5, 1),
+                                              end_date=datetime.date(2026, 5, 31))
+        may.close()
+        return may
+
+    def test_a_challan_is_not_issued_into_a_closed_month(self):
+        before = len(itc04(*H1)["sent"])
+        self.close_may()
+        draft = self.challan("50", day=datetime.date(2026, 5, 15), post=False)
+        with self.assertRaisesMessage(ValidationError, "May is closed"):
+            draft.post()
+        self.assertEqual((before, len(itc04(*H1)["sent"])), (2, 2))
+
+    def test_reopened_it_is_issued(self):
+        self.close_may().reopen()
+        self.challan("50", day=datetime.date(2026, 5, 15))
+        self.assertEqual(len(itc04(*H1)["sent"]), 3)
+
+    def test_a_closed_months_challan_is_not_withdrawn(self):
+        self.close_may()
+        with self.assertRaisesMessage(ValidationError, "is not withdrawn"):
+            self.second.void()
+        self.assertEqual(len(itc04(*H1)["sent"]), 2)
+
+    def test_a_loss_is_not_recorded_nor_withdrawn_in_a_closed_month(self):
+        loss = JobWorkLoss.objects.create(line=self.first.lines.get(), loss_date=datetime.date(2026, 5, 31),
+                                          quantity=Decimal("12"))
+        self.close_may()
+        with self.assertRaisesMessage(ValidationError, "a loss is not recorded on 2026-05-31"):
+            JobWorkLoss.objects.create(line=self.second.lines.get(), loss_date=datetime.date(2026, 5, 31),
+                                       quantity=Decimal("3"))
+        with self.assertRaisesMessage(ValidationError, "is not withdrawn"):
+            loss.void()
+        self.assertEqual([row["losses_quantity"] for row in itc04(*H1)["received"]], [Decimal("12")])
+
+    def test_over_the_api_as_the_stores_manager(self):
+        from django.core.management import call_command
+        from django.contrib.auth.models import Group
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("stores")
+        user.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        self.close_may()
+        draft = self.challan("50", day=datetime.date(2026, 5, 15), post=False)
+        response = client.post(f"/api/manufacturing/job-work-challans/{draft.pk}/post/")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("May is closed", str(response.json()))
+        response = client.post(f"/api/manufacturing/job-work-challans/{self.second.pk}/void/")
+        self.assertEqual(response.status_code, 400, response.content)
+
+
+class TheAuditAsksTheCloseTests(Itc04TestCase):
+    """`audit_invariants` reports a record a GST return reads that posts no entry and asks no period."""
+
+    def findings(self, edit=lambda text: text):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        sources = app_sources()
+        sources["manufacturing"] = {path: edit(text) if path.name == "jobwork.py" else text
+                                    for path, text in sources["manufacturing"].items()}
+        return [detail.split(" ")[0] for _, detail in Command().reported_without_the_period(
+            ["gst", "manufacturing", "sales", "purchasing"], sources)]
+
+    def test_a_challan_and_a_loss_that_never_ask_are_reported(self):
+        self.assertEqual(self.findings(lambda text: text.replace("_refuse_closed(", "_left_open(")),
+                         ["manufacturing.JobWorkChallan", "manufacturing.JobWorkLine", "manufacturing.JobWorkLoss"])
+
+    def test_as_they_stand_they_are_not(self):
+        self.assertEqual(self.findings(), [])
