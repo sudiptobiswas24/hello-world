@@ -435,3 +435,100 @@ class EInvoiceApiTests(EInvoiceTestCase):
         self.assertEqual(response.status_code, 200, response.content)
         response = client.post("/api/gst/eway-bills/", {"invoice": invoice.pk}, format="json")
         self.assertEqual(response.status_code, 400)
+
+
+class PlaceOfSupplyTests(EInvoiceTestCase):
+    """
+    Where a sale of goods is, as the owner settled it on 9 October (calc_stat/o60_place.py).
+    1,000 of sacks from the Maharashtra plant, GST 18%:
+    (a) to the buyer's own site, registered or not: where the goods go (IGST Act s.10(1)(a));
+    (b) to someone else on the buyer's direction: the buyer's own state (s.10(1)(b)).
+    The invoice's tax, GSTR-1 and the e-way bill say one place.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.b2c = self.party("B2C", gst_state="27", gst_registration="unregistered")
+        self.address(self.b2c, "Shop 9, Main Road", "Nashik", "27", "422002")
+        # Someone the buyers sell on to, in Karnataka: the goods go to them on the buyer's word.
+        self.onward = self.party("KA-ONWARD", gstin=gstin("29AABCO4444D1Z"))
+
+    def site(self, party, kind=AddressType.SHIPPING):
+        return Address.objects.create(party=party, address_type=kind, line1="Plot 4, KIADB", city="Hubballi",
+                                      state="29", postal_code="580001")
+
+    def sale(self, customer, ship_to, what=None):
+        invoice = Invoice.objects.create(customer=customer, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.inr, shipping_address=ship_to)
+        kind = {"charge": what} if what is not None else {"item": self.sack}
+        line = InvoiceLine.objects.create(invoice=invoice, quantity=D("1"), unit_price=D("1000"),
+                                          revenue_account=self.revenue, **kind)
+        line.taxes.set(self.pair)
+        invoice.post()
+        return invoice, line
+
+    def taxes(self, line):
+        return sorted((row.tax.code, row.amount) for row in line.recorded_taxes.all())
+
+    def lorry(self, invoice):
+        payload = prepare_eway(invoice, vehicle_number="MH15CD4321").payload
+        return payload["toGstin"], payload["toStateCode"], payload["actToStateCode"], payload["transactionType"]
+
+    def test_an_unregistered_buyer_at_its_own_site_across_the_state_line(self):
+        """The probe: an unregistered Maharashtra buyer takes delivery at its own Karnataka site."""
+        invoice, line = self.sale(self.b2c, self.site(self.b2c))
+        self.assertEqual((self.taxes(line), invoice.place_of_supply), ([("IGST18", D("180.00"))], "29"))
+        (row,) = gstr1(*SEPTEMBER)["b2cs"]
+        self.assertEqual((row["supply"], row["place_of_supply"], row["taxable"], row["igst"], row["cgst"]),
+                         ("inter", "29", D("1000.00"), D("180.00"), D("0")))
+        self.assertEqual(self.lorry(invoice), ("URP", 29, 29, 2))
+
+    def test_a_registered_buyer_at_its_own_site_across_the_state_line(self):
+        invoice, line = self.sale(self.mh, self.site(self.mh))
+        self.assertEqual((self.taxes(line), invoice.place_of_supply), ([("IGST18", D("180.00"))], "29"))
+        (row,) = gstr1(*SEPTEMBER)["b2b"]
+        self.assertEqual((row["gstin"], row["place_of_supply"], row["items"][0]["igst"]),
+                         (self.mh.tax_profile.gstin, "29", D("180.00")))
+        self.assertEqual(self.lorry(invoice), (self.mh.tax_profile.gstin, 29, 29, 2))
+        self.assertEqual(build(invoice)["BuyerDtls"]["Pos"], "29")
+
+    def test_a_registered_buyer_sending_the_goods_on_to_someone_else(self):
+        invoice, line = self.sale(self.mh, self.site(self.onward))
+        self.assertEqual((self.taxes(line), invoice.place_of_supply),
+                         ([("CGST9", D("90.00")), ("SGST9", D("90.00"))], "27"))
+        (row,) = gstr1(*SEPTEMBER)["b2b"]
+        self.assertEqual((row["place_of_supply"], row["items"][0]["cgst"]), ("27", D("90.00")))
+        self.assertEqual(self.lorry(invoice), (self.mh.tax_profile.gstin, 27, 29, 2))
+
+    def test_an_unregistered_buyer_sending_the_goods_on_to_someone_else(self):
+        invoice, line = self.sale(self.b2c, self.site(self.onward))
+        self.assertEqual((self.taxes(line), invoice.place_of_supply),
+                         ([("CGST9", D("90.00")), ("SGST9", D("90.00"))], "27"))
+        (row,) = gstr1(*SEPTEMBER)["b2cs"]
+        self.assertEqual((row["supply"], row["place_of_supply"], row["cgst"]), ("intra", "27", D("90.00")))
+        self.assertEqual(self.lorry(invoice), ("URP", 27, 29, 2))
+
+    def test_an_address_of_no_party_is_not_placed_by_a_guess(self):
+        nobodys = Address.objects.create(line1="Plot 4, KIADB", city="Hubballi", state="29", postal_code="580001")
+        invoice = Invoice.objects.create(customer=self.b2c, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.inr, shipping_address=nobodys)
+        line = InvoiceLine.objects.create(invoice=invoice, item=self.sack, quantity=D("1"), unit_price=D("1000"),
+                                          revenue_account=self.revenue)
+        line.taxes.set(self.pair)
+        with self.assertRaisesMessage(ValidationError, "Say whose address it is"):
+            invoice.post()
+
+    def test_a_service_alone_is_where_the_buyer_is(self):
+        invoice, line = self.sale(self.b2c, self.site(self.b2c), what=self.freight6)
+        self.assertEqual((self.taxes(line), invoice.place_of_supply),
+                         ([("CGST9", D("90.00")), ("SGST9", D("90.00"))], "27"))
+
+    def test_the_order_is_taxed_where_its_invoice_will_be(self):
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        order = SalesOrder.objects.create(customer=self.b2c, order_date=DAY, currency=self.inr,
+                                          shipping_address=self.site(self.b2c))
+        line = SalesOrderLine.objects.create(order=order, item=self.sack, uom=self.sack.uom, quantity=D("1"),
+                                             unit_price=D("1000"), revenue_account=self.revenue)
+        line.taxes.set(self.pair)
+        self.assertEqual([(tax.code, amount) for tax, amount in line.tax_amounts()], [("IGST18", D("180.00"))])

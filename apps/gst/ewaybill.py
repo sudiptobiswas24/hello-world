@@ -316,16 +316,22 @@ def _invoice_payload(invoice):
         raise ValidationError(f"{invoice.number} bills only services; nothing moves.")
     overseas = document.registration == "overseas"
     buyer = invoice.customer
-    going_to = invoice.shipping_address or invoice.billing_address or buyer.shipping_address()
+    # Where the goods go, as the invoice's place of supply read it.
+    going_to = invoice.delivered_to()
     # For an export, where the goods go in India is the port.
     place = p.place(going_to, f"{buyer}'s delivery address" + (" (the port)" if overseas else ""))
     if overseas:
         billed_state = p.OTHER_COUNTRY
     else:
-        billed_state = document.gstin[:2] if document.gstin else document.place
+        # The place of supply the invoice was taxed at: where the goods go when
+        # they go to the buyer's own site, the buyer's own state when they go to
+        # someone else on its direction (accounting.gst.place_of_supply). Read
+        # from the registration instead, a registered buyer's goods taken to its
+        # own site in another state bore integrated tax while this said its own.
+        billed_state = document.place
         if not billed_state:
             raise ValidationError(f"{invoice.number} records no place of supply.")
-    billed_at = invoice.billing_address or buyer.billing_address()
+    billed_at = invoice.billed_to()
     two_places = billed_at is not None and going_to is not None and going_to.pk != billed_at.pk
     items = []
     for number, line in enumerate(goods, start=1):

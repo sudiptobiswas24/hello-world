@@ -256,18 +256,64 @@ def _anything_recorded():
     )
 
 
-def gst_taxes(profile, taxes):
+def place_of_supply(profile, delivery=None):
+    """
+    Where a supply to the party of `profile` is, as the IGST Act places it.
+
+    `delivery`, for a document that moves goods: () -> (ship-to, bill-to,
+    the buyer's id), asked only when the answer turns on it; None, or a
+    delivery that answers None, for one that moves none (a service, an
+    advance): the recipient's state on record (s.12), as it always was.
+
+    Goods delivered to the buyer itself, at any address of its own,
+    registered or not: where the movement ends, the ship-to's state
+    (s.10(1)(a)). An unregistered Maharashtra buyer taking delivery at its
+    own site in Karnataka bears integrated tax at 29, as the e-way bill
+    already said. Goods delivered to someone else on the buyer's direction,
+    bill to one and ship to another: the buyer's principal place of
+    business, the state of its registration or, unregistered, of the bill-to
+    (s.10(1)(b)). An address says whose it is by its party. One that belongs
+    to no party cannot say, and where the two answers differ the supply is
+    refused rather than placed by a guess.
+    """
+    if profile.gst_registration == "overseas":
+        return OVERSEAS_PLACE
+    on_record = profile.place_of_supply()
+    moving = delivery() if delivery is not None else None
+    if not moving:
+        return on_record
+    ship_to, bill_to, buyer_id = moving
+    principal = profile.gst_state if profile.gstin else (state_code(bill_to) or on_record)
+    if ship_to is None or (bill_to is not None and ship_to.pk == bill_to.pk):
+        return principal
+    found = state_code(ship_to)
+    if ship_to.party_id == buyer_id:
+        if found is None:
+            raise ValidationError(
+                f"The goods go to {ship_to.one_line()}, whose state, {ship_to.state or 'nothing'}, is "
+                "no GST state; where they go is the place of supply. Give the state's name or its "
+                "two-digit code.")
+        return found
+    if ship_to.party_id is None and (found or principal) != principal:
+        raise ValidationError(
+            f"The goods go to {ship_to.one_line()}, an address of no party. Delivered to the buyer's own "
+            f"site the supply is in {STATES.get(found, found)}; delivered to someone else on the buyer's "
+            f"direction it is in {STATES.get(principal, principal)}. Say whose address it is.")
+    return principal
+
+
+def gst_taxes(profile, taxes, place=None):
     """
     The taxes a supply to or from this party bears, under GST.
 
-    Inter-state when the party's state is not the company's; intra-state
-    otherwise. Called only for a party with no fiscal position of its
-    own, which outranks the state line.
+    Inter-state when the place of supply (`place`, or the party's state) is
+    not the company's; intra-state otherwise. Called only for a party with
+    no fiscal position of its own, which outranks the state line.
     """
     settings = GstSettings.active()
     if settings is None:
         return list(taxes)
-    state = profile.place_of_supply()
+    state = place or profile.place_of_supply()
     if not state:
         raise ValidationError(
             f"{profile.party} has no state on its tax profile, so there is no "

@@ -932,7 +932,8 @@ class PartyTaxProfile(AuditModel):
             return OVERSEAS_PLACE
         return self.gst_state
 
-    def applicable_taxes(self, taxes):
+    def applicable_taxes(self, taxes, place=None):
+        """`place`: where the supply is, when its document says (gst.place_of_supply); else the party's state."""
         from .gst import gst_taxes
 
         if self.tax_exempt:
@@ -941,7 +942,7 @@ class PartyTaxProfile(AuditModel):
             # What the party is (an exporter under bond, a unit in a
             # special economic zone) outranks where it is.
             return self.fiscal_position.map_taxes(taxes)
-        return gst_taxes(self, taxes)
+        return gst_taxes(self, taxes, place=place)
 
 
 class PaymentDirection(models.TextChoices):

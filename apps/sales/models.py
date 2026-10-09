@@ -483,7 +483,41 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
+class PlacedWhereTheGoodsGo:
+    """
+    A sale's place of supply, from where its goods go and whose address that
+    is (apps.accounting.gst.place_of_supply). The quotation, the order and the
+    invoice share it, and the e-way bill reads the invoice's delivered_to(),
+    so the tax charged, GSTR-1 and the e-way bill say one place.
+    """
+
+    def delivered_to(self):
+        """Where the goods go: the ship-to, else the bill-to, else the customer's own shipping address."""
+        return self.shipping_address or self.billing_address or self.customer.shipping_address()
+
+    def billed_to(self):
+        return self.billing_address or self.customer.billing_address()
+
+    def moves_goods(self):
+        """
+        Whether goods move on it: an advance moves none, and job work bills
+        the conversion of the customer's own goods, a service (its SAC).
+        """
+        if getattr(self, "is_down_payment", False) or getattr(self, "is_job_work", False):
+            return False
+        order = getattr(self, "sales_order", None)
+        if order is not None and order.is_job_work:
+            return False
+        return self.lines.filter(item__isnull=False).exclude(item__hsn_code__startswith="99").exists()
+
+    def place_for(self, profile):
+        from apps.accounting.gst import place_of_supply
+
+        return place_of_supply(profile, lambda: (
+            (self.delivered_to(), self.billed_to(), self.customer_id) if self.moves_goods() else None))
+
+
+class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
     order_date = models.DateField()
@@ -1223,6 +1257,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     def party_for_tax(self):
         return self.order.customer
 
+    def place_for(self, profile):
+        return self.order.place_for(profile)
+
     class Meta:
         constraints = [
             models.CheckConstraint(check=Q(quantity__gt=0), name="order_line_quantity_positive"),
@@ -1622,7 +1659,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return self.quantity_invoiced() >= self.invoice_limit()
 
 
-class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
+class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Sales invoice. Posting creates a balanced JournalEntry (Dr Accounts
     Receivable / Cr Revenue / Cr tax accounts) via Accounting — Sales
@@ -2864,6 +2901,9 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
 
     def party_for_tax(self):
         return self.invoice.customer
+
+    def place_for(self, profile):
+        return self.invoice.place_for(profile)
 
     def document(self):
         return self.invoice
@@ -4868,7 +4908,7 @@ class QuotationStatus(models.TextChoices):
     SUPERSEDED = "superseded", "Superseded by a revision"
 
 
-class Quotation(TaxedDocumentMixin, AuditModel):
+class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
     """
     A priced offer that hasn't been committed to. Kept separate from
     SalesOrder rather than folded in as another status: a quotation can
@@ -5192,6 +5232,9 @@ class QuotationLine(TaxedLineMixin, AuditModel):
 
     def party_for_tax(self):
         return self.quotation.customer
+
+    def place_for(self, profile):
+        return self.quotation.place_for(profile)
 
     class Meta:
         constraints = [
