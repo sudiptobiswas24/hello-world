@@ -328,6 +328,20 @@ missing), **minor**.
 | O107 | purchasing | Race: two hand-typed bills naming no order both bill the last of a line (post() locks only the bill's own order): payable -100 for 50 received. Shown on PostgreSQL | race | open; audit_pur races |
 | O108 | purchasing | Race: an RFQ award and a direct order on one requisition both go through (each holds a different lock): 20 ordered against a request for 10. Shown on PostgreSQL | race | open; audit_pur races |
 | O109 | purchasing, sales | Built and never called (shape 2): settlement discounts on both sides (`Bill.take_settlement_discount`, `Invoice.apply_settlement_discount`), `Bill.match_report`, `PurchaseRequisition.suggested_vendors`, `BlanketOrderLine.is_fully_released`. Each should be reached from its screen or action, or removed | rule | open |
+| O110 | manufacturing, quality | Production can draw from a quarantine warehouse: deliveries and transfers refuse it, a material issue does not. 40 kg issued, the QC shelf 100 to 60 | rule | open; QuarantineProbe |
+| O111 | quality | A rejected lot is released once its inspection plan is retired or made advisory: `check_released` returns early on today's plan while the lot still reads held. MRP has the same gap | rule | open; RetiredPlanProbe |
+| O112 | manufacturing, quality | A held doff can be loaded on a backflushed loom (no issue is made, so nothing checks); the roll woven from it can then never be booked | rule | open; TapeLoadProbe |
+| O113 | quality | A re-inspection dated earlier than the standing verdict is outranked without a word: passed 1 June, a rejection dated 30 May posted afterwards, the lot stays released | rule | open; ReinspectionProbe |
+| O114 | inventory, quality | A held lot can be transferred to another warehouse. Moving rejects to a rejects store is legitimate, so the owner decides which transfers a held lot may take | rule | decide |
+| O115 | purchasing | A component kept by batch cannot be sent to a subcontractor at all: `move_stock` is called with no lot (and `_consume_components` likewise). Everything a mandatory inspection plan covers is kept by batch | crash | open, blocks real use; BatchKeptComponentsToASubcontractorProbe |
+| O116 | manufacturing | A bag count cannot be voided once its inspection was voided (`void_bags` does not skip a voided inspection as `void_gauged` does): 500 bags stay on the shelf | crash | open; BagCountVoidProbe |
+| O117 | manufacturing | A complaint can be rejected after it was settled (`settle()` refuses a rejected one, `reject()` not the reverse): the rejected complaint still costs 500.00 | rule | open; ComplaintSettledThenRejectedProbe |
+| O118 | manufacturing | Race: an action added while its complaint closes (the action reads the complaint unlocked): closed with an action not done. Shown on PostgreSQL | race | open; ComplaintRaceProbe |
+| O119 | sales (CRM) | A rep who converts an unowned lead cannot see the opportunity it makes: its owner stays empty, so the rep reads 404 and it is missing from the pipeline | rule | open; RepScopeProbe |
+| O120 | sales (CRM) | A rep can log activities on another rep's lead or opportunity (201, naming it), raising that lead's score. One root with O84's activity side door | security | open; RepScopeProbe |
+| O121 | sales (CRM) | One sales order wins two opportunities: won value 350,000.00 where 250,000.00 was won | books | open; WonTwiceProbe |
+| O122 | sales (CRM) | The lead score counts notes as "calls or visits" | minor | open; ScoreProbe |
+| O123 | purchasing, quality | `GoodsReceipt.accept` never asks the lot's release status, so a lot quality rejected can be cleared onto a pickable shelf (downstream gates still hold it). Seen in code, not probed | rule | verify |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
