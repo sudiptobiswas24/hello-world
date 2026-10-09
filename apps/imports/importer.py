@@ -42,7 +42,7 @@ COLUMNS = {
                 "gstin", "gst_state", "gst_registration", "credit_limit", "address_line1",
                 "address_line2", "city", "state", "postal_code", "country"],
     "employees": ["employee_number", "name", "party_code", "hire_date", "department", "manager",
-                  "job_title", "email", "username", "roles", "sales_rep", "uan", "esi_number"],
+                  "job_title", "email", "username", "sales_rep", "uan", "esi_number"],
     "customer_reps": ["customer", "rep"],
     "items": ["sku", "name", "uom", "item_type", "hsn_code", "track_inventory", "costing_method",
               "tracking", "sale_price", "standard_cost", "stock_class"],
@@ -162,15 +162,23 @@ def _employees(rows, report, options):
     The people, each an employee of a party with the employee role, with
     their department, their manager and their login. Managers are named by
     employee number and may come later in the file: they are set once
-    everyone is in. A login is linked to its employee from the start, so
-    leave and self service work on the first day; a new one gets a random
-    first password, reported once, never shown on the screen.
+    everyone is in. A login is linked to its employee from the start; a
+    new one gets a random first password, reported once, never shown on
+    the screen.
+
+    No roles. The import takes core.import_records alone, and its file
+    gave roles to any login not yet an employee's: a Controller gave
+    their own login HR Admin. Roles are given on the Logins screen by
+    someone who holds them (apps/core/users_api.py), and an existing
+    login is linked only while it holds nothing, or linking it would
+    make whoever holds it this person, with this person's reports.
     """
     import secrets
 
-    from django.contrib.auth.models import Group, User
+    from django.contrib.auth.models import User
 
     from apps.core.models import Party, PartyRole, PartyRoleAssignment
+    from apps.core.users_api import holds_rights
     from apps.hr.models import Department, Employee
 
     made = {}
@@ -198,6 +206,9 @@ def _employees(rows, report, options):
                     uan=row.get("uan", ""), esi_number=row.get("esi_number", ""),
                 )
                 clean(employee, {"hire_date": "hire_date", "uan": "uan", "esi_number": "esi_number"})
+                if row.get("roles"):
+                    raise RowError("roles", "are given on the Logins screen, by someone who holds them; "
+                                            "an import gives none.")
                 username = row.get("username", "")
                 password = None
                 if username:
@@ -209,15 +220,10 @@ def _employees(rows, report, options):
                                                         first_name=party.name[:150])
                     elif Employee.objects.filter(user=user).exists():
                         raise RowError("username", f"{username!r} is already another employee's login.")
-                    names = [name.strip() for name in row.get("roles", "").split(";") if name.strip()]
-                    groups = list(Group.objects.filter(name__in=names))
-                    missing = sorted(set(names) - {group.name for group in groups})
-                    if missing:
-                        raise RowError("roles", f"no role {', '.join(missing)} (python manage.py setup_roles makes them).")
-                    user.groups.add(*groups)
+                    elif holds_rights(user):
+                        raise RowError("username", f"{username!r} already holds roles; an import links only a "
+                                                   "login that holds none. HR links it on the employee's record.")
                     employee.user = user
-                elif row.get("roles"):
-                    raise RowError("roles", "are a login's; give the username too.")
                 employee.save()
                 if yes_no(row, "sales_rep", False):
                     from apps.sales.models import SalesRep

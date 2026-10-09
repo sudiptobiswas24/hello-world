@@ -1,7 +1,8 @@
 """
 The HR Admin in the browser makes a login for the new bookkeeper with a
-first password, gives it its role from the page, and the person signs
-in; later deactivates it and the sign-in is refused.
+first password, gives it its role from the page (one they hold: nobody
+gives more than they have), and the person signs in; later deactivates
+it and the sign-in is refused.
 """
 
 import re
@@ -11,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import Group, User
 from django.test import Client
 
 from .tests_browser import BrowserTestCase
@@ -19,7 +20,10 @@ from .tests_browser import BrowserTestCase
 
 class LoginsInTheBrowserTests(BrowserTestCase):
     def test_made_given_a_role_and_let_go(self):
-        page = self.sign_in(self.person("HR Admin"), "/app/settings/logins/new")
+        # A role is given by someone who holds it: this HR Admin keeps the books too.
+        hr = self.person("HR Admin")
+        hr.groups.add(Group.objects.get(name="Bookkeeper"))
+        page = self.sign_in(hr, "/app/settings/logins/new")
         page.get_by_label("Login", exact=True).fill("asha")
         page.get_by_label("First name").fill("Asha")
         page.get_by_label("First password").fill("loom-shed-2026")
