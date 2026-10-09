@@ -121,12 +121,30 @@ class Complaint(AuditModel):
         finally:
             self._deciding = False
 
-    # -- the batches --------------------------------------------------
+    def _check_not_paid_and_refused(self, status, settled):
+        """
+        A complaint is not both rejected and paid for.
 
-    def settle(self, invoice, net, reason, memo=""):
-        """Money given back for this complaint, by a claim credit note on the customer's invoice."""
+        Asked by settle() and by reject() alike, each with the state it
+        would leave, so neither can be written without the other: settle()
+        refused a rejected complaint while reject() never asked about a
+        settled one, and a complaint read "not ours" still said it had cost
+        500.00. Each holds the complaint first.
+        """
+        if status != ComplaintStatus.REJECTED or not settled:
+            return
         if self.status == ComplaintStatus.REJECTED:
             raise ValidationError("A rejected complaint is not paid for; reopen it if it was upheld after all.")
+        notes = ", ".join(row.credit_note.number for row in self.settlements.select_related("credit_note"))
+        raise ValidationError(f"{self} was settled by {notes}: a complaint paid for was upheld. It "
+                              "cannot be rejected while that credit stands.")
+
+    # -- the batches --------------------------------------------------
+
+    @serialised("status")
+    def settle(self, invoice, net, reason, memo=""):
+        """Money given back for this complaint, by a claim credit note on the customer's invoice."""
+        self._check_not_paid_and_refused(self.status, settled=True)
         if invoice.customer_id != self.customer_id:
             raise ValidationError(f"{invoice.number} is {invoice.customer}'s, not {self.customer}'s.")
         with transaction.atomic():
@@ -196,6 +214,7 @@ class Complaint(AuditModel):
         reason = _text(reason)
         if not reason:
             raise ValidationError("Say why the complaint is not ours.")
+        self._check_not_paid_and_refused(ComplaintStatus.REJECTED, settled=self.settlements.exists())
         self.status, self.rejection_reason = ComplaintStatus.REJECTED, reason[:255]
         self.decided_on, self.decided_by = to_date(on_date) or timezone.localdate(), by
         self._decide(["status", "rejection_reason", "decided_on", "decided_by"])
