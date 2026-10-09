@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import GroupAdmin, UserAdmin
 from django.contrib.auth.models import Group, User
 
+from .admin_mixins import delete_selected
 from .audit import AuditableAdminMixin
 from .models import (
     Address,
@@ -186,3 +187,7 @@ admin.site.unregister(User)
 admin.site.register(User, SuperuserUserAdmin)
 admin.site.unregister(Group)
 admin.site.register(Group, SuperuserGroupAdmin)
+
+
+# Every changelist's "delete selected" asks each row's own delete() (admin_mixins).
+admin.site.add_action(delete_selected, "delete_selected")
