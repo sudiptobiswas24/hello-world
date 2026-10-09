@@ -68,6 +68,7 @@ class ForecastViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["item__sku", "item__name"]
     date_field = "starts_on"
     ordering_fields = ["starts_on"]
+    action_permission_map = {"accept": "planning.add_forecast"}
 
     @action(detail=False, methods=["get"])
     def coverage(self, request):
@@ -433,6 +434,8 @@ class MasterScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["item__sku", "item__name", "reason"]
     date_field = "week_of"
     ordering_fields = ["week_of"]
+    action_permission_map = {"commit": "planning.change_masterscheduleentry",
+                             "withdraw": "planning.change_masterscheduleentry"}
 
     def perform_create(self, serializer):
         _run(serializer.save)

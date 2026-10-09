@@ -148,6 +148,10 @@ class CalibrationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "instrument__code", "instrument__name"]
     date_field = "calibrated_on"
     ordering_fields = ["calibrated_on", "number"]
+    # Posting decides which inspections are now in doubt; voiding takes that
+    # back. The Inspector records one; the manager decides it (as the screen
+    # has always shown it).
+    action_permission_map = {"post": "quality.change_calibration", "void": "quality.change_calibration"}
 
     def perform_update(self, serializer):
         _run(serializer.save)

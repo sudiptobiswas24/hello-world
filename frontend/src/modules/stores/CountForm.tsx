@@ -40,7 +40,7 @@ export default function CountForm() {
           { key: "counted_quantity", label: "Counted", kind: "quantity", width: "9rem" },
           { key: "variance", label: "Difference", kind: "quantity", width: "9rem" },
         ],
-        adder: { label: "Add a count", permission: "inventory.add_stockcount", when: counting,
+        adder: { label: "Add a count", permission: "inventory.add_stockcountline", when: counting,
           url: (record) => `/api/inventory/stock-counts/${record.id}/add/`,
           fields: [
             { key: "item", label: "Item", kind: "pick", pick: ITEM },

@@ -179,7 +179,7 @@ class NoDoubleBookingTests(LeaveTestCase):
     def test_a_cancelled_request_frees_its_days(self):
         person = self.employee("D3")
         first = self.request(person, datetime.date(2027, 7, 1), datetime.date(2027, 7, 9))
-        first.cancel()
+        first.cancel(by=first.employee)
         second = self.request(person, datetime.date(2027, 7, 6), datetime.date(2027, 7, 15))
         self.assertEqual(second.status, LeaveStatus.PENDING)
 
@@ -236,7 +236,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         booking = self.request(person, self.NEXT_JULY, self.NEXT_JULY + datetime.timedelta(days=2))
         booking.approve(by=self.boss)
         booking.withdraw_approval(by=self.boss)
-        booking.cancel()
+        booking.cancel(by=booking.employee)
         self.assertEqual(leave_taken(person, self.policy, self.NEXT_JULY.year), Decimal("0"))
 
     def test_a_holiday_already_taken_is_not_sent_back_to_be_cancelled(self):
@@ -265,7 +265,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         booking.approve(by=self.boss)
         with self.assertRaisesMessage(ValidationError, "cancel it rather than delete it"):
             booking.delete()
-        booking.cancel()
+        booking.cancel(by=booking.employee)
         booking.delete()
         self.assertFalse(LeaveRequest.objects.filter(pk=booking.pk).exists())
 
@@ -284,7 +284,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         person = self.employee("W3")
         booking = self.request(person, datetime.date(2027, 7, 1), datetime.date(2027, 7, 9))
         booking.approve(by=self.boss)
-        booking.cancel()
+        booking.cancel(by=booking.employee)
         self.assertEqual(booking.status, LeaveStatus.CANCELLED)
         self.assertEqual(leave_taken(person, self.policy, 2027), Decimal("0"))
 
@@ -295,14 +295,14 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         person = self.employee("W6")
         booking = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
         booking.approve(by=self.boss)
-        booking.cancel(on_date=datetime.date(2027, 7, 8))
+        booking.cancel(by=booking.employee, on_date=datetime.date(2027, 7, 8))
         booking.refresh_from_db()
         self.assertEqual((booking.status, booking.end_date, booking.days_taken),
                          (LeaveStatus.APPROVED, datetime.date(2027, 7, 7), Decimal("3.00")))
 
         unstarted = self.request(person, datetime.date(2027, 7, 12), datetime.date(2027, 7, 16))
         unstarted.approve(by=self.boss)
-        unstarted.cancel(on_date=datetime.date(2027, 7, 12))
+        unstarted.cancel(by=unstarted.employee, on_date=datetime.date(2027, 7, 12))
         self.assertEqual((unstarted.status, leave_taken(person, self.policy, 2027)),
                          (LeaveStatus.CANCELLED, Decimal("3.00")))
 
@@ -311,7 +311,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         booking = self.request(person, datetime.date(2026, 2, 2), datetime.date(2026, 2, 6))
         booking.approve(by=self.boss)
         with self.assertRaises(ValidationError) as caught:
-            booking.cancel()
+            booking.cancel(by=booking.employee)
         self.assertIn("has been taken", str(caught.exception))
 
     def test_approved_dates_cannot_be_edited(self):
@@ -500,7 +500,7 @@ class BalanceTests(LeaveTestCase):
         booking = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
         booking.approve(by=self.boss)
         self.assertEqual(leave_balance(person, self.policy, 2027), Decimal("20.00"))
-        booking.cancel()
+        booking.cancel(by=booking.employee)
         self.assertEqual(leave_balance(person, self.policy, 2027), Decimal("25.00"))
 
     def test_more_than_the_allowance_is_refused(self):
@@ -635,3 +635,69 @@ class HrDecidesAnyonesLeaveTests(LeaveTestCase):
         own = self.booking(hr)
         with self.assertRaisesMessage(ValidationError, "cannot decide their own"):
             own.approve(by=hr, as_hr=True)
+
+
+class WhoCancelsLeaveTests(LeaveTestCase):
+    """
+    O83: cancel named no permission and took add_leaverequest, which
+    everyone who may ask for leave holds, and cancel() asked nobody. Leave
+    is cancelled by the person, or by whoever decides it: their manager
+    holding the decide right, or HR.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.Group, self.User, self.APIClient = Group, User, APIClient
+        self.person = self.employee("A1")
+        self.booking = self.request(self.person, datetime.date(2027, 7, 1), datetime.date(2027, 7, 3))
+        self.booking.approve(by=self.boss)
+
+    def as_(self, employee, *roles):
+        user = self.User.objects.create_user(f"u{self.User.objects.count()}")
+        user.groups.add(*self.Group.objects.filter(name__in=roles))
+        if employee is not None:
+            employee.user = user
+            employee.save()
+        client = self.APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def cancel(self, client):
+        response = client.post(f"/api/hr/leave-requests/{self.booking.pk}/cancel/", {}, format="json")
+        return response.status_code, LeaveRequest.objects.get(pk=self.booking.pk).status
+
+    def test_someone_who_reads_every_leave_but_decides_none_does_not_cancel_it(self):
+        payroll = self.as_(self.employee("PAY", manager=None), "Payroll Officer", "Employee Self Service")
+        self.assertEqual(self.cancel(payroll), (400, LeaveStatus.APPROVED))
+
+    def test_a_colleague_does_not_even_see_it(self):
+        colleague = self.as_(self.employee("PEER"), "Employee Self Service")
+        self.assertEqual(self.cancel(colleague), (404, LeaveStatus.APPROVED))
+
+    def test_a_manager_without_the_decide_right_does_not_cancel_a_reports_leave(self):
+        # Over A1 in the org chart, and so reading their leave, but holding no right to decide it.
+        manager = self.as_(self.boss, "Employee Self Service")
+        self.assertEqual(self.cancel(manager), (400, LeaveStatus.APPROVED))
+
+    def test_the_person_cancels_their_own(self):
+        self.assertEqual(self.cancel(self.as_(self.person, "Employee Self Service")), (200, LeaveStatus.CANCELLED))
+
+    def test_the_manager_who_decides_it_cancels_it(self):
+        self.assertEqual(self.cancel(self.as_(self.boss, "Line Manager", "Employee Self Service")),
+                         (200, LeaveStatus.CANCELLED))
+
+    def test_hr_cancels_anyones(self):
+        self.assertEqual(self.cancel(self.as_(self.employee("HR", manager=None), "HR Admin")),
+                         (200, LeaveStatus.CANCELLED))
+
+    def test_the_model_asks_too(self):
+        with self.assertRaisesMessage(ValidationError, "Say who is cancelling it"):
+            self.booking.cancel()
+        with self.assertRaisesMessage(ValidationError, "cancelled by them, or by whoever decides it"):
+            self.booking.cancel(by=self.employee("OTHER"))
+        self.assertEqual(LeaveRequest.objects.get(pk=self.booking.pk).status, LeaveStatus.APPROVED)

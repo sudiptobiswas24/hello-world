@@ -108,10 +108,10 @@ class LeaveRequestTests(TestCase):
         request = self.make_request()
         request.approve(by=self.manager)
         with self.assertRaises(ValidationError):
-            request.cancel()
+            request.cancel(by=request.employee)
 
     def test_pending_request_can_be_cancelled(self):
         request = self.make_request()
-        request.cancel()
+        request.cancel(by=request.employee)
         request.refresh_from_db()
         self.assertEqual(request.status, LeaveStatus.CANCELLED)

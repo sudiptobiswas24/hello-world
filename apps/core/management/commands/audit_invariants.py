@@ -97,6 +97,7 @@ class Command(BaseCommand):
         findings += self.unsigned_money(labels)
         findings += self.greenwich_dates(labels, sources)
         findings += self.unsettable_fields(labels)
+        findings += self.undeclared_actions(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
@@ -528,6 +529,64 @@ class Command(BaseCommand):
                         "without a word.",
                     ))
         return findings
+
+    WRITES = {"post", "put", "patch", "delete"}
+
+    def undeclared_actions(self, labels, viewsets=None):
+        """
+        An @action that writes, on a viewset ModelPermissions guards, that
+        its action_permission_map does not name.
+
+        DRF maps every POST to add_<model>. Fifteen actions on one record
+        named nothing and so took only that: the Inspector voided the
+        calibration that had put their own inspection in doubt, and anyone
+        who could ask for leave cancelled anyone's. Unnamed, an action now
+        takes change_<model> (core.permissions); this asks its author to
+        say which, as a decision usually has a right of its own.
+        """
+        from apps.core.permissions import ModelPermissions
+
+        findings = []
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            queryset = getattr(view, "queryset", None)
+            if queryset is None or queryset.model._meta.app_label not in labels:
+                continue
+            if not any(isinstance(cls, type) and issubclass(cls, ModelPermissions)
+                       for cls in getattr(view, "permission_classes", ())):
+                continue
+            declared = getattr(view, "action_permission_map", {})
+            for extra in view.get_extra_actions():
+                writes = {method for method in extra.mapping if method in self.WRITES}
+                named = declared.get(extra.__name__)
+                if isinstance(named, dict):
+                    writes -= {method.lower() for method, permission in named.items() if permission}
+                elif named:
+                    writes = set()
+                if writes:
+                    findings.append((
+                        "action without a declared permission",
+                        f"{view.__module__}.{view.__name__}.{extra.__name__} writes ({', '.join(sorted(writes))}) "
+                        "and action_permission_map names no permission for it: say which.",
+                    ))
+        return findings
+
+    @staticmethod
+    def _routed_viewsets():
+        from django.urls import get_resolver
+
+        found = []
+
+        def walk(patterns):
+            for pattern in patterns:
+                if hasattr(pattern, "url_patterns"):
+                    walk(pattern.url_patterns)
+                    continue
+                view = getattr(pattern.callback, "cls", None)
+                if view is not None and hasattr(view, "get_extra_actions") and view not in found:
+                    found.append(view)
+
+        walk(get_resolver().url_patterns)
+        return found
 
     # What reads a shelf to decide on it, and what holds the shelf.
     SHELF_READS = {"on_hand_at", "available_at", "reserved_at", "check_available", "cost_of_removing"}

@@ -315,7 +315,8 @@ class Employee(Extensible, AuditModel):
                         f"{request} spans {on_date}. Shorten or cancel it before "
                         "setting a leaving date inside it."
                     )
-                request.cancel(on_date=on_date)
+                # HR's decision, taken with the leaving date, not the person's.
+                request.cancel(on_date=on_date, as_hr=True)
                 cancelled.append(request)
             for entry in hours:
                 entry.timesheet.send_back() if entry.timesheet.status != "draft" else None
@@ -890,10 +891,28 @@ class LeaveRequest(AuditModel):
         ])
         return self
 
-    @serialised("status")
-    def cancel(self, on_date=None):
+    def check_canceller(self, by, as_hr=False, may_decide=False):
         """
-        Give the days back.
+        Who may give the days back: the person themselves, or whoever
+        decides their leave (`may_decide`, the view's hr.decide_leaverequest,
+        and managing them; `as_hr`, hr.decide_any_leaverequest, anyone's).
+
+        The cancel action asked only add_leaverequest, which everyone who
+        may ask for leave holds, and cancel() asked nobody: a manager with
+        no say over a colleague cancelled their approved holiday.
+        """
+        if as_hr or (by is not None and by.pk == self.employee_id):
+            return
+        if by is None:
+            raise ValidationError("Say who is cancelling it: the person, or whoever decides their leave.")
+        if not may_decide:
+            raise ValidationError(f"{self.employee}'s leave is cancelled by them, or by whoever decides it.")
+        self.check_approver(by)
+
+    @serialised("status")
+    def cancel(self, on_date=None, by=None, as_hr=False, may_decide=False):
+        """
+        Give the days back, as `by` (see check_canceller).
 
         The first version accepted only pending requests, which made an
         approved holiday permanent: somebody who comes back early, or
@@ -901,6 +920,7 @@ class LeaveRequest(AuditModel):
         balance stayed spent. Leave already taken is a different matter —
         those days are gone — so only the future can be given back.
         """
+        self.check_canceller(by, as_hr, may_decide)
         if self.status in (LeaveStatus.CANCELLED, LeaveStatus.REJECTED):
             raise ValidationError("This leave request is already closed.")
         on_date = to_date(on_date) or timezone.localdate()

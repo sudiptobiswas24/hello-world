@@ -297,6 +297,8 @@ class TaxViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = TaxSerializer
     filter_fields = ["group", "scope", "is_active", "gst_head", "computation"]
     search_fields = ["code", "name"]
+    # A POST that works an amount out and keeps nothing: reading taxes.
+    action_permission_map = {"preview": "accounting.view_tax"}
 
     @action(detail=False, methods=["post"])
     def preview(self, request):

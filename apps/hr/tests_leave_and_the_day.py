@@ -109,7 +109,7 @@ class ADayWorkedIsNotTakenOffTests(TheDayTestCase):
         whole = self.leave(7)
         with self.assertRaisesMessage(ValidationError, "is marked half a day on 2026-10-07"):
             whole.approve(by=self.boss)
-        whole.cancel()
+        whole.cancel(by=whole.employee)
         # Half a day off is what the other half was.
         self.leave(7, half=True).approve(by=self.boss)
 
@@ -118,7 +118,7 @@ class ADayWorkedIsNotTakenOffTests(TheDayTestCase):
         whole = self.leave(8)
         with self.assertRaisesMessage(ValidationError, "has 8.00 hours on a timesheet for 2026-10-08"):
             whole.approve(by=self.boss)
-        whole.cancel()
+        whole.cancel(by=whole.employee)
         self.leave(8, half=True).approve(by=self.boss)
 
     def test_a_sunday_worked_is_no_claim_on_the_week_off(self):
@@ -182,7 +182,7 @@ class UnderAPostedRunTests(TheDayTestCase):
         with self.assertRaisesMessage(ValidationError, "void the run to send back this leave"):
             LeaveRequest.objects.get(pk=request.pk).withdraw_approval(by=self.boss)
         with self.assertRaisesMessage(ValidationError, "void the run to cancel this leave"):
-            LeaveRequest.objects.get(pk=request.pk).cancel(on_date=D(2026, 10, 1))
+            LeaveRequest.objects.get(pk=request.pk).cancel(by=request.employee, on_date=D(2026, 10, 1))
         request.refresh_from_db()
         self.assertEqual(request.status, "approved")
 

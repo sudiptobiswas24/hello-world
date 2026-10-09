@@ -98,6 +98,8 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "approve": "hr.decide_leaverequest",
         "reject": "hr.decide_leaverequest",
+        # The person's own (who may ask for leave), or their decider's: which, the record says (check_canceller).
+        "cancel": ("hr.add_leaverequest", "hr.decide_leaverequest"),
     }
 
     def get_queryset(self):
@@ -170,7 +172,8 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def cancel(self, request, pk=None):
         leave_request = self.get_object()
         try:
-            leave_request.cancel()
+            leave_request.cancel(by=_employee_of(request.user), as_hr=self._as_hr(request),
+                                 may_decide=request.user.has_perm("hr.decide_leaverequest"))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(leave_request).data)

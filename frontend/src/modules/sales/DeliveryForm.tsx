@@ -236,7 +236,7 @@ export default function DeliveryForm() {
         {!delivery.posted && can("sales.post_delivery") && (
           <ActionButton primary pending={act.pending} disabled={delivery.lines.length === 0} onClick={() => void post()}>Ship</ActionButton>
         )}
-        {delivery.posted && !delivery.reverses && can("sales.add_delivery") && (
+        {delivery.posted && !delivery.reverses && can("sales.post_delivery") && (
           <ActionButton pending={act.pending} onClick={() => void backorder()}>Backorder the rest</ActionButton>
         )}
         {delivery.posted && !delivery.reverses && can("sales.post_delivery") && returning === null && (
