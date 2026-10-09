@@ -60,7 +60,7 @@ class PurchasingTestCase(TestCase):
         receipt.post()
         return receipt
 
-    def make_bill(self, quantity=Decimal("2"), unit_price=Decimal("40")):
+    def make_bill(self, quantity=Decimal("2"), unit_price=Decimal("40"), order_line=None):
         bill = Bill.objects.create(
             vendor=self.vendor,
             bill_date="2026-01-01",
@@ -68,6 +68,7 @@ class PurchasingTestCase(TestCase):
         )
         BillLine.objects.create(
             bill=bill,
+            order_line=order_line,
             item=self.item,
             description="Parts",
             quantity=quantity,
@@ -438,7 +439,11 @@ class BillPostingAccountTests(PurchasingTestCase):
     def test_a_stocked_line_clears_the_accrual_a_receipt_made(self):
         order_line = self.make_order_line(Decimal("2"))
         self.receive(order_line, Decimal("2"))
-        bill = self.make_bill(Decimal("2"), Decimal("5"))
+        # Naming the order line it pays: without it the bill is refused (O92), as the order's own
+        # bill would then pay for the same goods again.
+        with self.assertRaisesMessage(ValidationError, "Name the order line this bill pays"):
+            self.make_bill(Decimal("2"), Decimal("5")).post()
+        bill = self.make_bill(Decimal("2"), Decimal("5"), order_line=order_line)
         bill.post()
 
         entry = bill.journal_entry

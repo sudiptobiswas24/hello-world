@@ -10,6 +10,8 @@ a probe while rewriting the clearing for foreign currency.
 import datetime
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
+
 from django.db.models import Sum
 
 from apps.accounting.models import Account, AccountType, JournalLine
@@ -126,8 +128,12 @@ class AReceiptFromBeforeTests(DiscountTestCase):
 
 
 class TheFallbacksTakeTheirOwnDiscountTests(DiscountTestCase):
-    def test_a_bill_naming_no_order_line_clears_its_net_figure(self):
-        """45 accrued; an unlinked bill at 5.00 less ten per cent is 45."""
+    def test_a_bill_naming_no_order_line_for_goods_on_order_is_refused(self):
+        """
+        45 accrued; an unlinked bill at 5.00 less ten per cent is refused, and the
+        accrual stays for the order's own bill. It used to clear the 45, and the
+        order's bill then paid the same goods again (O92).
+        """
         order = self.order()
         self.receive(order, "10")
         bill = Bill.objects.create(
@@ -138,8 +144,9 @@ class TheFallbacksTakeTheirOwnDiscountTests(DiscountTestCase):
             bill=bill, item=self.item, quantity=Decimal("10"),
             unit_price=Decimal("5"), discount_percent=Decimal("10"),
         )
-        bill.post()
-        self.assertEqual(self.balance(self.grni), Decimal("0"))
+        with self.assertRaisesMessage(ValidationError, "Name the order line this bill pays"):
+            bill.post()
+        self.assertEqual(self.balance(self.grni), Decimal("-45.00"))
         self.assertEqual(self.balance(self.ppv), Decimal("0"))
 
     def test_a_debit_note_on_a_line_with_nothing_frozen_takes_the_discount(self):

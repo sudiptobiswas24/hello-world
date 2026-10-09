@@ -33,6 +33,8 @@ from apps.core.models import (
     PartyRoleAssignment,
     PaymentTerms,
     UnitOfMeasure,
+    answer_to_its_document,
+    documents_it_answers_to,
     lock_rows,
     only_one,
     prefetched,
@@ -61,6 +63,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    refuse_naming_another_order_line,
 )
 
 from apps.accounting.settlement import (
@@ -2424,8 +2427,12 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         refuse_money_kept_as(self, "receivable_account", changed_only=False)
         # What the order has already been billed, and taken up front, is
         # read below and decided on; two invoices for one order posting
-        # at once must not both see the same room.
-        lock_rows(self.sales_order)
+        # at once must not both see the same room. Every order a line
+        # bills, too, whether or not the invoice names it: deliveries and
+        # returns post under the same locks, so what shipped is read as
+        # it stands.
+        lock_rows(self.sales_order, *SalesOrder.objects.filter(
+            pk__in=self.lines.exclude(order_line=None).values("order_line__order")))
         order = self.sales_order
         if order is not None and not self.is_credit_note() and order.status != OrderStatus.CONFIRMED:
             # Asked as a delivery asks, under the same lock: a draft made before the
@@ -2441,22 +2448,42 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
             raise ValidationError(
                 "This invoice has no value to post. Give its lines a quantity and price."
             )
-        if not self.is_credit_note():
-            for line in self.lines.all():
-                if not line.order_line_id:
-                    continue
-                already = line.order_line.quantity_invoiced()
-                order_line = line.order_line
-                limit = order_line.quantity if order_line.is_charge() else order_line.invoice_limit()
-                if already + line.quantity > limit:
-                    from apps.core.api import plain
+        going = defaultdict(Decimal)
+        for line in self.lines.select_related("order_line__order"):
+            if not line.order_line_id:
+                continue
+            # Rule B, asked again under the orders' locks: the invoice's customer, currency or order
+            # may have changed since the line was saved.
+            refuse_naming_another_order_line(line, self, "customer", "sales_order")
+            if self.is_credit_note():
+                continue
+            from apps.core.api import plain
 
-                    what = ("shipped quantity of a line closed short"
-                            if order_line.is_closed_short() else "ordered quantity")
-                    raise ValidationError(
-                        f"Invoicing {plain(line.quantity)} of {order_line.item} would exceed the "
-                        f"{what} ({plain(limit)}; {plain(already)} already invoiced)."
-                    )
+            order_line = line.order_line
+            if order_line.order.status != OrderStatus.CONFIRMED:
+                raise ValidationError(
+                    f"{order_line.label()} is on {order_line.order}, which is "
+                    f"{order_line.order.get_status_display().lower()}; only a confirmed order is invoiced.")
+            # The room create_invoice() drafts to, asked again as it posts: a draft made before
+            # another posted bills only what is left, and on a bill-on-delivery order only what
+            # shipped. Two drafts for one shipment of 5 each posted, and 10 were billed.
+            already = order_line.quantity_invoiced()
+            going[order_line.pk] += line.quantity
+            limit = order_line.quantity if order_line.is_charge() else order_line.invoice_limit()
+            if already + going[order_line.pk] > limit:
+                what = ("shipped quantity of a line closed short"
+                        if order_line.is_closed_short() else "ordered quantity")
+                raise ValidationError(
+                    f"Invoicing {plain(going[order_line.pk])} of {order_line.item} would exceed the "
+                    f"{what} ({plain(limit)}; {plain(already)} already invoiced)."
+                )
+            if going[order_line.pk] > order_line.quantity_invoiceable():
+                shipped = order_line.quantity_shipped()
+                raise ValidationError(
+                    f"{order_line.order} bills on delivery: {plain(shipped)} of {order_line.item} has "
+                    f"shipped and {plain(already)} is already invoiced, so {plain(going[order_line.pk])} "
+                    "cannot be invoiced."
+                )
         if not self.number:
             if self.is_credit_note():
                 self.number = DocumentSequence.next_for(
@@ -2919,11 +2946,16 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     def quantity_creditable(self):
         return self.quantity - self.quantity_credited()
 
+    def locked_before_it(self):
+        """The invoices it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "invoice")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.invoice_id and Invoice.objects.filter(pk=self.invoice_id, posted=True).exists():
-            raise ValidationError(
-                "Cannot modify a line on a posted invoice. Issue a credit note instead."
-            )
+        # Shared rule B: the invoice it leaves and the one it joins, both held.
+        answer_to_its_document(
+            self, "invoice", "Cannot modify a line on a posted invoice. Issue a credit note instead.")
+        refuse_naming_another_order_line(self, self.invoice, "customer", "sales_order")
         # An order line may leave it blank; a sale cannot post without one,
         # and invoicing such a line was a database error rather than a
         # sentence. Here, where every invoice line is made.
@@ -2932,11 +2964,10 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                                     else default_account("revenue", "revenue_account"))
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.invoice.posted:
-            raise ValidationError(
-                "Cannot delete a line on a posted invoice. Issue a credit note instead."
-            )
+        answer_to_its_document(
+            self, "invoice", "Cannot delete a line on a posted invoice. Issue a credit note instead.")
         super().delete(*args, **kwargs)
 
 
@@ -3898,6 +3929,9 @@ class Delivery(AuditModel):
         lines = list(self.lines.all())
         if not lines:
             raise ValidationError("Cannot post a delivery with no lines.")
+        for line in lines:
+            # Rule B, asked again as it posts: the delivery's order may have changed since the line was saved.
+            line._check_line()
 
         is_return = self.is_return()
         if is_return and not self.reverses.posted:
@@ -4496,15 +4530,27 @@ class DeliveryLine(AuditModel):
             )
         return plan
 
+    def locked_before_it(self):
+        """The deliveries it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "delivery")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.delivery_id and Delivery.objects.filter(pk=self.delivery_id, posted=True).exists():
-            raise ValidationError(
-                "Cannot modify a line on a posted delivery. Create a customer return instead."
-            )
+        # Shared rule B: the delivery it leaves and the one it joins, both held.
+        answer_to_its_document(
+            self, "delivery", "Cannot modify a line on a posted delivery. Create a customer return instead.")
         # In save() rather than only clean(): deliveries are built in code,
         # where nothing calls full_clean() for us.
         self._check_line()
         super().save(*args, **kwargs)
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        # A posted delivery's line deleted over the API left the order line reading nothing shipped
+        # while cost of sales and the shelf kept the shipment.
+        answer_to_its_document(
+            self, "delivery", "Cannot delete a line on a posted delivery. Create a customer return instead.")
+        return super().delete(*args, **kwargs)
 
 
 class DeliveryAllocation(AuditModel):

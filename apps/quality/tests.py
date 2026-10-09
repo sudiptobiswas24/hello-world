@@ -472,3 +472,33 @@ class WhoSignedItOffTests(QualityTestCase):
         inspection = self.inspect(self.plan(), [87, 88, 89])
         inspection.post()
         self.assertFalse(inspection.self_approved())
+
+
+class AReadingStaysOnItsPostedInspectionTests(QualityTestCase):
+    """
+    O82: a reading's save() asked only the inspection it moved to. An
+    Inspector moved a reading off a posted inspection into a draft by PATCH,
+    and the posted verdict lost a reading it was judged on.
+    """
+
+    def test_an_inspector_cannot_move_a_reading_off_a_posted_inspection(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        plan = self.plan()
+        posted = self.inspect(plan, [87, 88, 89])
+        posted.post()
+        draft = self.inspect(plan, [87, 88, 89])
+        call_command("setup_roles", verbosity=0)
+        inspector = User.objects.create_user("qi")
+        inspector.groups.add(Group.objects.get(name="Quality Inspector"))
+        client = APIClient()
+        client.force_authenticate(inspector)
+        reading = posted.readings.first()
+        response = client.patch(f"/api/quality/readings/{reading.pk}/", {"inspection": draft.pk}, format="json")
+        self.assertEqual((response.status_code, Inspection.objects.get(pk=posted.pk).readings.count()),
+                         (400, 3), response.content)
+        with self.assertRaisesMessage(ValidationError, "which is posted"):
+            Reading.objects.get(pk=reading.pk).delete()
+        self.assertEqual(Inspection.objects.get(pk=posted.pk).readings.count(), 3)

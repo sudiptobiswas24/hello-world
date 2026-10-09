@@ -276,6 +276,20 @@ class SalesRaceTests(RaceCase):
         self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, Invoice.objects.get(pk=draft.pk).posted),
                       [(Decimal("5"), False), (Decimal("10"), True)])
 
+    def test_one_shipment_is_invoiced_once_at_once(self):
+        """
+        O67: bill on delivery, 5 of 10 shipped, two drafts of 5 posting at once.
+        Each holds the order its lines bill and asks what shipped and is not
+        yet invoiced: one posts, AR 500.00.
+        """
+        from apps.sales.models import InvoicePolicy
+
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        self.ship(order, "5")
+        drafts = [order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1)).pk for _ in range(2)]
+        self.once(race(JournalEntry, *[lambda pk=pk: Invoice.objects.get(pk=pk).post() for pk in drafts]))
+        self.assertEqual(self.balance(self.ar), Decimal("500.00"))
+
     def test_two_orders_do_not_both_ship_the_last_of_the_shelf(self):
         # Five hundred on the shelf, nothing reserved, three hundred on each
         # of two orders. The shelf was read before the positions were held,
@@ -401,6 +415,77 @@ class PurchasingRaceTests(RaceCase):
             lambda bill=bill: BillPayment.objects.create(
                 bill_id=bill.pk, payment_id=payment.pk, amount=Decimal("50"))
             for bill in bills]))
+
+
+    def typed_bill(self, order_line, quantity, order=None):
+        from apps.purchasing.models import BillLine
+
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 10), purchase_order=order,
+                                   payable_account=self.payable)
+        BillLine.objects.create(bill=bill, order_line=order_line, item=self.item, quantity=Decimal(quantity),
+                                unit_price=Decimal("5"), expense_account=self.expense)
+        return bill
+
+    def test_two_typed_bills_naming_no_order_do_not_both_bill_the_last_of_a_line(self):
+        """
+        O107: 10 @ 5 received; two typed bills naming no order, each for the 10.
+        post() held only the bill's own order, which is none: payable -100 for 50
+        received. It holds every order its lines bill now.
+        """
+        order = self.make_order("10", "5")
+        self.receive(order, "10")
+        drafts = [self.typed_bill(order.lines.get(), "10").pk for _ in range(2)]
+        self.once(race(JournalEntry, *[lambda pk=pk: Bill.objects.get(pk=pk).post() for pk in drafts]))
+        self.assertEqual((self.balance(self.payable), self.balance(self.grni)), (Decimal("-50.00"), Decimal("0")))
+
+    def test_a_line_added_to_a_bill_as_it_posts_is_on_what_posted(self):
+        """
+        O106: 20 received @ 5; a draft bill of 10 posts while a second line of 10 is
+        added. The line read "not posted" without the bill's lock: the bill showed
+        100.00 and payables held 50.00. Either order is right, so long as what the
+        bill shows is what it posted.
+        """
+        from apps.purchasing.models import BillLine
+
+        order = self.make_order("20", "5")
+        self.receive(order, "20")
+        draft = self.typed_bill(order.lines.get(), "10", order=order)
+
+        def add_line():
+            BillLine.objects.create(bill=Bill.objects.get(pk=draft.pk), order_line=order.lines.get(), item=self.item,
+                                    quantity=Decimal("10"), unit_price=Decimal("5"), expense_account=self.expense)
+
+        outcomes = race((JournalEntry, BillLine), lambda: Bill.objects.get(pk=draft.pk).post(), add_line)
+        bill = Bill.objects.get(pk=draft.pk)
+        self.assertTrue(bill.posted, outcomes)
+        self.assertEqual((bill.total(), -self.balance(self.payable)),
+                         (Decimal("50.00") * bill.lines.count(), bill.total()), outcomes)
+
+    def test_a_line_added_to_a_receipt_as_it_posts_is_what_moved(self):
+        """
+        O106, the receipt: 20 ordered; a draft receipt of 10 posts while a second
+        line of 10 is added. The order line read 20 received while 10 moved.
+        """
+        from apps.inventory.models import StockMovement
+        from apps.purchasing.models import GoodsReceipt, GoodsReceiptLine
+
+        order = self.make_order("20", "5")
+        draft = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
+        GoodsReceiptLine.objects.create(receipt=draft, order_line=order.lines.get(), warehouse=self.warehouse,
+                                        quantity_received=Decimal("10"))
+
+        def add_line():
+            GoodsReceiptLine.objects.create(receipt=GoodsReceipt.objects.get(pk=draft.pk),
+                                            order_line=order.lines.get(), warehouse=self.warehouse,
+                                            quantity_received=Decimal("10"))
+
+        outcomes = race((StockMovement, GoodsReceiptLine), lambda: GoodsReceipt.objects.get(pk=draft.pk).post(),
+                        add_line)
+        receipt = GoodsReceipt.objects.get(pk=draft.pk)
+        moved = self.item.on_hand_at(self.warehouse)
+        self.assertTrue(receipt.posted, outcomes)
+        self.assertEqual((order.lines.get().quantity_received(), moved),
+                         (Decimal("10") * receipt.lines.count(), Decimal("10") * receipt.lines.count()), outcomes)
 
 
 @tag("race")

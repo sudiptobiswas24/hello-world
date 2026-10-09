@@ -90,8 +90,9 @@ class BuyAndSellTests(TestCase):
         bill = Bill.objects.create(
             vendor=self.vendor, bill_date=datetime.date(2026, 2, 6), payable_account=self.ap
         )
+        # Names the order line it pays: a typed bill for received goods without it is refused (O92).
         BillLine.objects.create(
-            bill=bill, item=self.item, description="Widgets",
+            bill=bill, order_line=order_line, item=self.item, description="Widgets",
             quantity=Decimal(quantity), unit_price=Decimal(unit_cost),
             expense_account=self.cogs,
         )

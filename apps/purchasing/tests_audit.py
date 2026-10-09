@@ -569,3 +569,194 @@ class DebitAfterDiscountTests(VendorSettlementDiscountTests):
         bill = self.paid_with_discount()
         note = bill.create_debit_note(memo="One back", quantities={bill.lines.get(): Decimal("1")})
         self.assertEqual((note.reversed_discount, note.refund_due()), (Decimal("0.10"), Decimal("4.90")))
+
+
+# -- what has moved stays as it moved (shared rule A), and a line answers to its
+# document (shared rule B). The 9 October purchasing audit's probes, kept as
+# regression tests with their numbers.
+
+JAN = lambda day: datetime.date(2026, 1, day)  # noqa: E731
+
+
+class TradeRuleCase(PurchasingLifecycleTestCase):
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Currency, ExchangeRate
+
+        acc = lambda code, name, kind: Account.objects.create(code=code, name=name, account_type=kind)  # noqa: E731
+        self.ppv = acc("5900", "Purchase price variance", AccountType.EXPENSE)
+        self.fx_loss = acc("7100", "FX loss", AccountType.EXPENSE)
+        self.fx_gain = acc("7000", "FX gain", AccountType.INCOME)
+        company = Company.get()
+        company.purchase_price_variance_account = self.ppv
+        company.default_purchase_expense_account = self.expense
+        company.fx_loss_account = self.fx_loss
+        company.fx_gain_account = self.fx_gain
+        company.purchase_price_tolerance_percent = Decimal("0")
+        company.save()
+        self.eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=self.eur, rate=Decimal("90"), valid_from=JAN(1))
+
+    def balance(self, account):
+        from django.db.models import Sum
+
+        from apps.accounting.models import JournalLine
+
+        rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(d=Sum("debit"), c=Sum("credit"))
+        return (rows["d"] or Decimal("0")) - (rows["c"] or Decimal("0"))
+
+    def order(self, quantity="10", price="5", discount="0", policy=BillPolicy.RECEIVED):
+        from .models import PurchaseOrder
+
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=JAN(1), bill_policy=policy)
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal(quantity),
+                                         unit_price=Decimal(price), discount_percent=Decimal(discount))
+        order.confirm()
+        return order
+
+    def hand_bill(self, line, quantity, price, vendor=None, order=None, currency=None, item=None, reference=""):
+        bill = Bill.objects.create(vendor=vendor or self.vendor, bill_date=JAN(10), purchase_order=order,
+                                   payable_account=self.payable, currency=currency or self.usd, reference=reference)
+        BillLine.objects.create(bill=bill, order_line=line, item=item or self.item, quantity=Decimal(quantity),
+                                unit_price=Decimal(price), expense_account=self.expense)
+        return bill
+
+    def other_vendor(self):
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+
+        other = Party.objects.create(code="V-2", name="Another supplier", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.VENDOR)
+        return other
+
+    def as_(self, role):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user(role.replace(" ", "_").lower())
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+
+class ABillLineBillsOnlyItsOwnOrderLineTests(TradeRuleCase):
+    """O90: a typed bill line was never checked against the order line it names."""
+
+    def test_a_bill_for_one_vendor_cannot_bill_anothers_order(self):
+        order = self.order()
+        self.receive(order, "10")
+        with self.assertRaisesMessage(ValidationError, "is for V-2"):
+            self.hand_bill(order.lines.get(), "10", "5", vendor=self.other_vendor()).post()
+        self.assertEqual((order.lines.get().quantity_billed(), self.balance(self.grni)), (Decimal("0"), Decimal("-50.00")))
+
+    def test_a_bill_in_another_currency_cannot_bill_the_order(self):
+        order = self.order()
+        self.receive(order, "10")
+        with self.assertRaisesMessage(ValidationError, "in EUR"):
+            self.hand_bill(order.lines.get(), "10", "5", order=order, currency=self.eur).post()
+        self.assertEqual((self.balance(self.payable), self.balance(self.fx_loss)), (Decimal("0"), Decimal("0")))
+
+    def test_a_typed_bill_naming_no_order_cannot_bill_a_cancelled_one(self):
+        order = self.order(policy=BillPolicy.ORDERED)
+        order.cancel()
+        bill = self.hand_bill(order.lines.get(), "10", "5")
+        with self.assertRaisesMessage(ValidationError, "only a confirmed order is billed"):
+            bill.post()
+        self.assertEqual(self.balance(self.payable), Decimal("0"))
+
+    def test_a_bill_line_names_the_item_its_order_line_ordered(self):
+        from apps.inventory.models import Item
+
+        order = self.order()
+        self.receive(order, "10")
+        other = Item.objects.create(sku="WDG-2", name="Other widget", uom=self.uom)
+        with self.assertRaisesMessage(ValidationError, "this line bills WDG-2"):
+            self.hand_bill(order.lines.get(), "10", "5", order=order, item=other).post()
+        self.assertEqual(self.balance(self.grni), Decimal("-50.00"))
+
+    def test_the_vendor_changed_after_the_line_is_asked_again_as_it_posts(self):
+        order = self.order()
+        self.receive(order, "10")
+        bill = self.hand_bill(order.lines.get(), "10", "5")
+        bill.vendor = self.other_vendor()
+        bill.save()
+        with self.assertRaisesMessage(ValidationError, "is for V-2"):
+            Bill.objects.get(pk=bill.pk).post()
+
+
+class ATypedBillDoesNotPayForGoodsOnOrderTests(TradeRuleCase):
+    """O92: a typed bill naming no order line and the order's own bill both paid one receipt: payable -100."""
+
+    def test_a_hand_bill_with_no_link_and_a_generated_bill_do_not_both_pay_one_receipt(self):
+        order = self.order()
+        self.receive(order, "10")
+        with self.assertRaisesMessage(ValidationError, "Name the order line this bill pays"):
+            self.hand_bill(None, "10", "5").post()
+        order.create_bill(self.payable, bill_date=JAN(12)).post()
+        self.assertEqual((self.balance(self.grni), self.balance(self.payable)), (Decimal("0"), Decimal("-50.00")))
+
+    def test_another_vendors_goods_are_not_cleared_by_it(self):
+        order = self.order()
+        self.receive(order, "10")
+        bill = self.hand_bill(None, "10", "5", vendor=self.other_vendor())
+        bill.post()
+        # Nothing of V-2's is on order: the line expenses, and V-1's accrual waits for V-1's bill.
+        self.assertEqual((self.balance(self.grni), self.balance(self.expense)), (Decimal("-50.00"), Decimal("50.00")))
+
+
+class TypedBillsOneAfterTheOtherTests(TradeRuleCase):
+    """O107, one after the other: the second typed bill for the last 10 of a line is refused."""
+
+    def test_two_typed_bills_naming_no_order_do_not_both_bill_the_last_of_a_line(self):
+        order = self.order()
+        self.receive(order, "10")
+        line = order.lines.get()
+        first, second = (self.hand_bill(line, "10", "5", reference=ref) for ref in ("A-1", "A-2"))
+        first.post()
+        with self.assertRaisesMessage(ValidationError, "10 already billed"):
+            Bill.objects.get(pk=second.pk).post()
+        self.assertEqual(self.balance(self.payable), Decimal("-50.00"))
+
+    def test_two_lines_of_one_bill_on_one_order_line_count_together(self):
+        order = self.order()
+        self.receive(order, "10")
+        bill = self.hand_bill(order.lines.get(), "10", "5")
+        BillLine.objects.create(bill=bill, order_line=order.lines.get(), item=self.item, quantity=Decimal("10"),
+                                unit_price=Decimal("5"), expense_account=self.expense)
+        with self.assertRaisesMessage(ValidationError, "would exceed the ordered quantity"):
+            bill.post()
+
+
+class ALineStaysOnItsPostedDocumentTests(TradeRuleCase):
+    """O82: a bill or receipt line asked only the document it joined."""
+
+    def test_a_line_is_not_moved_off_a_posted_bill(self):
+        order = self.order("20", "5")
+        self.receive(order, "20")
+        posted = self.hand_bill(order.lines.get(), "10", "5", order=order)
+        posted.post()
+        draft = self.hand_bill(order.lines.get(), "10", "5", order=order)
+        line = posted.lines.get()
+        line.bill = draft
+        with self.assertRaisesMessage(ValidationError, "posted bill"):
+            line.save()
+        with self.assertRaisesMessage(ValidationError, "posted bill"):
+            BillLine.objects.get(pk=line.pk).delete()
+        self.assertEqual((Bill.objects.get(pk=posted.pk).total(), self.balance(self.payable)),
+                         (Decimal("50.00"), Decimal("-50.00")))
+
+    def test_a_line_is_not_moved_off_a_posted_receipt(self):
+        from .models import GoodsReceipt, GoodsReceiptLine
+
+        order = self.order("20", "5")
+        posted = self.receive(order, "10")
+        draft = GoodsReceipt.objects.create(purchase_order=order, receipt_date=JAN(6))
+        line = posted.lines.get()
+        line.receipt = draft
+        with self.assertRaisesMessage(ValidationError, "posted goods receipt"):
+            line.save()
+        with self.assertRaisesMessage(ValidationError, "posted goods receipt"):
+            GoodsReceiptLine.objects.get(pk=line.pk).delete()
+        self.assertEqual(order.lines.get().quantity_received(), Decimal("10"))

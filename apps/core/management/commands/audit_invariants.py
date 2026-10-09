@@ -93,6 +93,8 @@ class Command(BaseCommand):
         findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
+        # The same, widened to lines a route of their own writes (shared rule B).
+        findings += self.lines_not_answering_to_their_document(labels, sources)
         findings += self.unconstrained_numbers(labels)
         findings += self.unsigned_money(labels)
         findings += self.greenwich_dates(labels, sources)
@@ -872,6 +874,118 @@ class Command(BaseCommand):
                      for key in sorted(set(self.DELETABLE_REPORTED) - reported)
                      if key.split(".")[0] in labels]
         return findings
+
+    @staticmethod
+    def _is_posted_document(model):
+        """Posted is a flag on some documents and a status on others (a pay run, a remittance)."""
+        if "posted" in {f.name for f in model._meta.get_fields()}:
+            return True
+        status = next((f for f in model._meta.fields if f.name == "status"), None)
+        return status is not None and "posted" in dict(status.choices or ())
+
+    @staticmethod
+    def _written_by_own_route():
+        """Every model an API route of its own creates, edits or deletes."""
+        from django.urls import get_resolver
+        from rest_framework import mixins
+
+        writers = (mixins.CreateModelMixin, mixins.UpdateModelMixin, mixins.DestroyModelMixin)
+        written = set()
+
+        def walk(patterns):
+            for pattern in patterns:
+                if hasattr(pattern, "url_patterns"):
+                    walk(pattern.url_patterns)
+                    continue
+                view = getattr(pattern.callback, "cls", None)
+                if view is None or not issubclass(view, writers):
+                    continue
+                queryset = getattr(view, "queryset", None)
+                serializer = getattr(view, "serializer_class", None)
+                model = (queryset.model if queryset is not None
+                         else getattr(getattr(serializer, "Meta", None), "model", None))
+                if model is not None:
+                    written.add(model)
+
+        walk(get_resolver().url_patterns)
+        return written
+
+    # Lines of posted documents, reachable by their own route, that ask only
+    # the document they join, unlocked: found when the check was widened to
+    # lines (O82) and reported to the module that owns each rather than fixed
+    # from outside it. Each comes off when it calls answer_to_its_document.
+    LINES_REPORTED = {
+        "inventory.StockAdjustmentLine": "stores: asks only the adjustment it joins, unlocked",
+        "inventory.StockCountLine": "stores: asks only the count it joins, unlocked",
+        "manufacturing.CustomerMaterialReceiptLine": "production: asks only the receipt it joins, unlocked",
+        "manufacturing.CustomerMaterialReturnLine": "production: asks only the return it joins, unlocked",
+        "manufacturing.MaterialIssueLine": "production: asks only the issue it joins, unlocked",
+        "manufacturing.ProductionByproduct": "production: asks only the entry it joins, unlocked",
+        "manufacturing.ProductionScrap": "production: asks only the entry it joins, unlocked",
+    }
+    # Rows hanging off a posted document that are not its lines, with the reason.
+    NOT_LINES = {
+        "sales.InvoicePayment": "an allocation: deleting it is how it is undone, posted invoice or not",
+        "purchasing.BillPayment": "an allocation: deleting it is how it is undone, posted bill or not",
+        "sales.DunningNotice": "a notice sent about an invoice, which is always posted",
+        "accounting.JournalLine": "asks both entries itself (_on_a_posted_entry)",
+    }
+
+    def lines_not_answering_to_their_document(self, labels, sources):
+        """
+        Shared rule B, as far as a machine can see it: a line of a posted
+        document that its own API route writes calls answer_to_its_document()
+        in save() and in delete(), which holds both the document it leaves
+        and the one it joins and asks both.
+
+        The deletable-posted check asked documents only. A posted delivery's
+        line was deleted over the API (O66), with the order line reading
+        nothing shipped while cost of sales stayed; a line's save() asked
+        only the document it moved to, so a Sales Rep moved the only line
+        off a posted invoice (O82); and a line added while its bill posted
+        read "posted" without the lock (O106).
+        """
+        from django.db import models as dj
+
+        findings, reported = [], set()
+        for model in sorted(self._written_by_own_route(), key=lambda m: m._meta.label):
+            label = model._meta.app_label
+            if label not in labels:
+                continue
+            documents = [field for field in model._meta.fields
+                         if isinstance(field, dj.ForeignKey) and field.remote_field.on_delete is dj.CASCADE
+                         and self._is_posted_document(field.related_model)]
+            key = model._meta.label
+            if not documents or key in self.NOT_LINES:
+                continue
+            code = non_test_text(sources[label])
+            missing = [method for method in ("save", "delete")
+                       if not self._calls(model, code, method, "answer_to_its_document(")]
+            if not missing:
+                continue
+            if key in self.LINES_REPORTED:
+                reported.add(key)
+                continue
+            findings.append((
+                "line not answering to its document",
+                f"{key} is a line of {documents[0].related_model._meta.label}, written by its own route, "
+                f"and its {' and '.join(f'{m}()' for m in missing)} do not call answer_to_its_document(): "
+                "the document it leaves goes unasked, or unheld.",
+            ))
+        findings += [("stale exemption", f"{key} answers to its document now; take it off LINES_REPORTED.")
+                     for key in sorted(set(self.LINES_REPORTED) - reported) if key.split(".")[0] in labels]
+        return findings
+
+    def _calls(self, model, code, method, call):
+        """Whether `method` of `model`, or of a class it is built from in the same app, calls `call`."""
+        for cls in model.__mro__:
+            if cls is models.Model:
+                break
+            found = self._class_body(code, cls.__name__)
+            body = found and self._method_body(found, method)
+            if body and call in body:
+                return True
+        return False
 
     def posted_as_calculated(self, labels, sources):
         """

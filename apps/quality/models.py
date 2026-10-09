@@ -45,7 +45,9 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.core import windows
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import (
+    AuditModel, DocumentSequence, answer_to_its_document, documents_it_answers_to, serialised, to_date,
+)
 from apps.inventory.models import Item, Lot
 
 
@@ -790,27 +792,30 @@ class Reading(AuditModel):
         shown = self.value if self.value is not None else self.present
         return f"{self.plan_line.characteristic.code}: {shown}"
 
+    def locked_before_it(self):
+        """The inspections it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "inspection")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if getattr(self, "_judging", False):
             super().save(*args, **kwargs)
             return
-        if self.inspection.posted:
-            raise ValidationError(
-                f"Cannot change a reading on {self.inspection}, which is "
-                "posted. Void it and take another."
-            )
+        # Shared rule B: the inspection it leaves and the one it joins, both held. Asked of the one
+        # it joined alone, a reading was moved off a posted inspection into a draft.
+        answer_to_its_document(
+            self, "inspection",
+            lambda inspection: f"Cannot change a reading on {inspection}, which is posted. Void it and take another.")
         if self.plan_line.plan_id != self.inspection.plan_id:
             raise ValidationError(
                 f"{self.plan_line} is not a line of {self.inspection.plan}."
             )
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.inspection.posted:
-            raise ValidationError(
-                f"Cannot remove a reading from {self.inspection}, which is "
-                "posted."
-            )
+        answer_to_its_document(
+            self, "inspection", lambda inspection: f"Cannot remove a reading from {inspection}, which is posted.")
         return super().delete(*args, **kwargs)
 
 

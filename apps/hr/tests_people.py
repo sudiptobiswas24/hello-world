@@ -239,6 +239,26 @@ class ClaimTests(PeopleTestCase):
         self.assertEqual(self.as_(self.hr).get("/api/hr/expense-claims/").json()[0]["id"], claim_id)
 
 
+class AClaimKeepsItsLinesOnceSubmittedTests(PeopleTestCase):
+    """
+    O82: a line's save() asked only the claim it moved to. Self Service moved a
+    line off their own approved claim onto a draft: approved at 100, it read 0.
+    """
+
+    def test_a_line_is_not_moved_off_an_approved_claim(self):
+        approved = self.claim(lines=(("Taxi", "travel", "100"),))
+        approved.submit()
+        approved.approve(self.manager)
+        draft = self.claim(lines=(("Tea", "meals", "1"),))
+        line = approved.lines.get()
+        response = self.as_(self.riley.user).patch(f"/api/hr/expense-lines/{line.pk}/", {"claim": draft.pk},
+                                                   format="json")
+        self.assertEqual((response.status_code, approved.lines.count(), approved.total()),
+                         (400, 1, Decimal("100.00")), response.content)
+        removed = self.as_(self.riley.user).delete(f"/api/hr/expense-lines/{line.pk}/")
+        self.assertEqual((removed.status_code, approved.lines.count()), (400, 1), removed.content)
+
+
 class AppraisalTests(PeopleTestCase):
     def test_written_submitted_and_acknowledged(self):
         with self.assertRaisesMessage(ValidationError, "Nobody appraises themselves"):

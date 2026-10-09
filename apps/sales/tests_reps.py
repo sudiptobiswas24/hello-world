@@ -6,6 +6,7 @@ carries Beta, nobody carries Gamma, and an AR Manager sees all three.
 """
 
 import datetime
+from decimal import Decimal
 
 from django.contrib.auth.models import Group, Permission, User
 from django.core.exceptions import ValidationError
@@ -216,6 +217,33 @@ class RepWritesOnlyTheirOwnTests(RepTestCase):
         invoice.post()
         note = invoice.create_credit_note(memo="Torn bags")
         self.assertIsNone(note.sales_rep)
+
+
+class ALineMovedOffAPostedInvoiceTests(RepTestCase):
+    """
+    O82: a line's save() asked only the invoice it moved to. A Sales Rep moved
+    the only line off a posted invoice by PATCH: it read no lines, its entry
+    still 100.
+    """
+
+    def test_a_rep_cannot_move_a_line_off_a_posted_invoice(self):
+        posted = self.make_invoice()
+        posted.post()
+        before = posted.subtotal()
+        draft = self.make_invoice()
+        line = posted.lines.get()
+        response = self.as_user(self.rep_a).patch(f"/api/sales/invoice-lines/{line.pk}/",
+                                                  {"invoice": draft.pk}, format="json")
+        posted.refresh_from_db()
+        self.assertEqual((response.status_code, posted.lines.count(), posted.subtotal()),
+                         (400, 1, before), response.content)
+        self.assertEqual(before, Decimal("100.00"))
+
+    def test_nor_delete_it(self):
+        posted = self.make_invoice()
+        posted.post()
+        response = self.as_user(self.rep_a).delete(f"/api/sales/invoice-lines/{posted.lines.get().pk}/")
+        self.assertEqual((response.status_code, posted.lines.count()), (400, 1), response.content)
 
 
 class AssigningRepsTests(RepTestCase):
