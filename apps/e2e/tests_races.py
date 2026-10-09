@@ -1196,3 +1196,30 @@ class FloorRaceTests(RaceCase):
         running = MachineClock.objects.filter(operation__work_order=made.bag_run,
                                               stopped_at__isnull=True).exists()
         self.assertNotEqual(closed, running)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class ComplaintRaceTests(RaceCase):
+    """A complaint decided while something is added to it or paid on it."""
+
+    def test_a_complaint_is_not_paid_for_and_rejected_at_once(self):
+        """settle() holds the complaint as reject() does, so one sees the other."""
+        from apps.gst import tests_claims
+        from apps.manufacturing.complaints import Complaint, ComplaintStatus
+        from apps.manufacturing.tests_complaints import person
+
+        made = fixture(self, tests_claims.ClaimTests)
+        invoice = made.sell(made.buyer, "10000")
+        head = person("EMP-0601", "Quality head")
+        complaint = Complaint.objects.create(customer=made.buyer, received_on=tests_claims.DAY,
+                                             category="seam", description="Seams opened in the silo")
+        outcomes = race(
+            (Invoice, Complaint),
+            lambda: Complaint.objects.get(pk=complaint.pk).settle(invoice, Decimal("500"), "quality"),
+            lambda: Complaint.objects.get(pk=complaint.pk).reject("Not our sacks after all", by=head),
+        )
+        self.once(outcomes)
+        complaint.refresh_from_db()
+        self.assertFalse(complaint.status == ComplaintStatus.REJECTED and complaint.settlements.exists(),
+                         outcomes)

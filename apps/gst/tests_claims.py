@@ -146,3 +146,38 @@ class ClaimApiTests(GstReturnTestCase):
         # Settled today: the note is dated the day it is given.
         [row] = claims(DAY, DAY.replace(month=12, day=31))
         self.assertEqual(row["complaint"], complaint.number)
+
+    def test_a_settled_complaint_is_not_rejected_nor_a_rejected_one_settled(self):
+        """
+        Audit, 9 October: settle() refused a rejected complaint and reject()
+        never asked about a settled one, so a complaint read "not ours" and
+        still said it had cost 500.00. One check now, asked by both.
+        """
+        from apps.manufacturing.complaints import Complaint
+        from apps.manufacturing.tests_complaints import person
+
+        head = person("EMP-0601", "Quality head")
+        settled = Complaint.objects.create(customer=self.buyer, received_on=DAY, category="seam",
+                                           description="Seams opened in the silo")
+        ar = self.as_("AR Manager")
+        made = ar.post(f"/api/manufacturing/complaints/{settled.pk}/settle/", {
+            "invoice": self.invoice.pk, "net": "500", "reason": "quality"}, format="json")
+        self.assertEqual(made.status_code, 200, made.content)
+        quality = self.as_("Quality Manager")
+        refused = quality.post(f"/api/manufacturing/complaints/{settled.pk}/reject/", {
+            "reason": "Not our sacks after all", "by": head.pk}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("cannot be rejected while that credit stands", refused.content.decode())
+        settled.refresh_from_db()
+        self.assertEqual((settled.status, settled.cost()), ("open", D("500.00")))
+
+        rejected = Complaint.objects.create(customer=self.buyer, received_on=DAY, category="seam",
+                                            description="Seams opened in the silo")
+        done = quality.post(f"/api/manufacturing/complaints/{rejected.pk}/reject/", {
+            "reason": "Not our sacks", "by": head.pk}, format="json")
+        self.assertEqual(done.status_code, 200, done.content)
+        paid = ar.post(f"/api/manufacturing/complaints/{rejected.pk}/settle/", {
+            "invoice": self.invoice.pk, "net": "500", "reason": "quality"}, format="json")
+        self.assertEqual(paid.status_code, 400, paid.content)
+        self.assertIn("A rejected complaint is not paid for", paid.content.decode())
+        self.assertEqual(rejected.cost(), D("0"))
