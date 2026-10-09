@@ -243,7 +243,7 @@ missing), **minor**.
 | O17 | core, gst | Nine viewsets do not use `AuditableViewSetMixin`, so their edits take no lock: countries, party tags, saved filters, notes, follow-ups, attachments, and the e-invoice, e-way bill and GSTR-2B deletes | race | open |
 | O18 | hr | The punch-file import reads an attendance day (and whether it was entered by hand) before taking the employee's lock | race | open |
 | O20 | payroll | Whether posting a run under the employee locks also closes the run-post against leave and attendance race is unproven | race | open, needs a `race()` proof |
-| O21 | sales | Deleting a line of an approved order locks the order before the line; closing short locks the line first | race | open, check against 8f31e5a |
+| O21 | sales | Deleting a line of an approved order locks the order before the line; closing short locks the line first | race | open, check against 8f31e5a. Purchasing has the same order (seen in code by the purchasing audit) |
 | O22 | all | Admin edits read their row without a lock | race | minor |
 | O23 | inventory | The adjustment post endpoint answers with a stale `total_value` (lines prefetched before posting) | minor | open |
 | O24 | accounting | `Account.currency` is read by nothing | minor | open |
@@ -307,6 +307,27 @@ missing), **minor**.
 | O86 | core, hr, admin | One person can let themselves in: an HR Admin made a login with the Controller role and set a real Controller's password; a Controller holding only the import right added HR Admin to their own login through the employees import; a staff HR Admin set is_superuser on themselves in Django's user admin | security | open, blocks real use; HrAdminLetsThemselvesInTests, ImportGivesRolesTests, AdminUserFormTests |
 | O87 | admin | The admin's "delete selected" skips each model's delete(): a staff HR Admin deleted approved leave the API refuses. Same gap by scan on fixed assets, requisitions, blanket orders, RFQs and quotes, bank statements, maintenance jobs, downtime and specifications (wider than O10 and O22) | rule | open; AdminBulkDeleteTests |
 | O88 | hr | A person's own records leak or take writes from others: a colleague's sick leave read through /employees/{id}/leave/ (asks only view_employee); Self Service wrote a 5,000 line onto a colleague's draft claim; a Line Manager appraised a peer who does not report to them | security | open; LeaveReadThroughTheEmployeeTests, ExpenseLinesTests, AppraisalOfSomeoneNotTheirsTests |
+| O89 | purchasing | A bill posted before any of its goods arrive leaves goods-received-not-invoiced uncleared for good: billed 10 @ 5, then received, GRNI -50 and purchases 50 (expected 0 and 0). A drop-ship billed before receipt has the same posting (code only) | books | open; audit_pur probes |
+| O90 | purchasing | A hand-typed bill line is never checked against the order line it names (the receipt line has that check): one vendor billed another's order line; a EUR bill on a USD order posted 4,450 as exchange loss; a bill for WDG-2 cleared WDG-1's accrual; a bill naming no order billed a cancelled one | rule | open; audit_pur probes |
+| O91 | purchasing | The match's price check ignores the agreed discount: 10 @ 100 less 10% agreed, billed at 100 with tolerance 0, posts with 100 of price variance | rule | open; audit_pur probes |
+| O92 | purchasing | A hand bill naming no order line and a generated bill both pay one receipt: payable -100 for 50 received | books | open; audit_pur probes |
+| O93 | purchasing | Billing one receipt in parts leaves a paisa on GRNI: each bill's accrual is rounded on its own | books | minor; audit_pur probes |
+| O94 | purchasing | A return is debited to the oldest bill, not the one that paid for the goods returned: 15.00 debited and 4.00 variance kept, expected 16.20 and 2.80 | books | minor; audit_pur probes |
+| O95 | purchasing | The same vendor invoice number in another case is accepted: INV-77 and inv-77 both post | rule | minor; audit_pur probes |
+| O96 | purchasing | A received or billed purchase order can still be edited: its line's item and discount, and the order's vendor and currency. The mirror of O65 and O68 in sales; one shared rule should close both | books | open; audit_pur probes |
+| O97 | purchasing | A blanket release drops the agreed discount: 10 @ 100 less 5% released at 1,000.00, expected 950.00 | books | open; audit_pur probes |
+| O98 | purchasing | A vendor price has no unit: 100 a kg agreed, 2 t ordered with no price typed came out at 100.00 a tonne. The mirror of O79 in sales | books | open; audit_pur probes |
+| O99 | purchasing | A hand-typed price passes the approval rule whenever an agreed price exists, used or not: agreed 5.00, typed 50.00, confirmed with no approval reasons. `price_against_agreement` exists and nothing calls it | rule | open; audit_pur probes |
+| O100 | purchasing | `preferred_vendor` compares prices across currencies at face value | rule | minor; audit_pur probes |
+| O101 | purchasing, assets | Capitalising a received stock line takes its cost out of GRNI and leaves it in stock too: GRNI -12,000, inventory 12,000, plant 12,000 | books | open; audit_pur probes |
+| O102 | purchasing | Under 194C, one bill over 30,000 draws the year's earlier untaxed bills into the deduction: 20,000 then 35,000 taxes 55,000 (1,100), where s.194C(5) taxes 35,000 (700) | statutory | open; audit_pur probes |
+| O103 | purchasing | The MSME 45-day limit drives only the MSME report, not the due date or the payment run: a micro vendor on net 60 is legally due on day 45 and the run misses it | statutory | open; audit_pur probes |
+| O104 | purchasing | The MSME category is read from the vendor as it stands today: a micro vendor's unpaid bill drops off the 43B(h) list once the vendor is reclassified | statutory | minor; audit_pur probes |
+| O105 | purchasing, sales | A prepayment or deposit drawdown credits whatever account is set today, not the one it was held in: after the setting moved, 1400 keeps +15 and 1401 goes to -15 | books | minor; audit_pur probes |
+| O106 | purchasing | Race: a line added to a bill or a goods receipt as it posts. The line's save() reads "posted" without the document's lock: a bill shows 100.00 while payables hold 50.00; an order line reads 20 received while 10 moved. Shown on PostgreSQL | race | open; audit_pur races |
+| O107 | purchasing | Race: two hand-typed bills naming no order both bill the last of a line (post() locks only the bill's own order): payable -100 for 50 received. Shown on PostgreSQL | race | open; audit_pur races |
+| O108 | purchasing | Race: an RFQ award and a direct order on one requisition both go through (each holds a different lock): 20 ordered against a request for 10. Shown on PostgreSQL | race | open; audit_pur races |
+| O109 | purchasing, sales | Built and never called (shape 2): settlement discounts on both sides (`Bill.take_settlement_discount`, `Invoice.apply_settlement_discount`), `Bill.match_report`, `PurchaseRequisition.suggested_vendors`, `BlanketOrderLine.is_fully_released`. Each should be reached from its screen or action, or removed | rule | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
