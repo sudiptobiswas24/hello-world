@@ -150,7 +150,7 @@ class InvoicePaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = InvoicePayment
-        fields = ["id", "invoice", "invoice_number", "payment", "payment_number", "amount"]
+        fields = ["id", "invoice", "invoice_number", "payment", "payment_number", "amount", "date"]
 
 
 class DeliveryLineSerializer(serializers.ModelSerializer):

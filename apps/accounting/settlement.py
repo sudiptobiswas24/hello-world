@@ -101,6 +101,99 @@ def _post_exchange_difference(
     return entry
 
 
+class RealisedOnItsOwnDay:
+    """
+    What a payment applied to a document realises, on the day it is applied.
+    InvoicePayment and BillPayment share it, each saying through
+    `settles()` what it settles: (document, its date, party, control
+    account, is_receivable), and each keeping `date`, `fx_entry` and
+    `fx_released_entry`.
+
+    The exchange difference was dated on the payment's own day. A foreign
+    receipt of 15 February, applied in March once February had closed,
+    could then never be applied at all: its entry fell in the closed month.
+    The difference is realised when the payment is applied, so it is dated
+    on the allocation's day: the day given, or today. Never before the
+    payment or the document (the money cannot settle what it predates),
+    and never a day to come (correction_date), and the period it falls in
+    must be open, as for any entry.
+
+    The edit and the delete are dated the same way: re-pointing or
+    re-sizing an allocation re-states its difference on the day of the
+    edit, the old one reversed and the new one posted that day; deleting
+    it reverses the difference on the day it is deleted. Re-stated on the
+    first day instead, an edit to a closed month's allocation could not be
+    made either.
+    """
+
+    def settles(self):
+        raise NotImplementedError
+
+    def day_applied(self):
+        """
+        The day this allocation is made or re-stated: its `date` when one is
+        given (on an edit, when it is changed), else today.
+        """
+        from apps.core.models import correction_date, to_date
+
+        document, document_date, *_ = self.settles()
+        stored = (type(self).objects.filter(pk=self.pk).values_list("date", flat=True).first()
+                  if self.pk else None)
+        given = self.date if self.date != stored else None
+        verb = "received" if self.payment.direction == PaymentDirection.RECEIPT else "paid"
+        earliest, since = max(
+            (to_date(self.payment.payment_date), f"it was {verb}"),
+            (to_date(document_date), f"{document.number or document} is dated"),
+            *([(stored, "it was last applied")] if stored else []),
+        )
+        return correction_date(given, earliest, f"{self.payment.number} is not applied to "
+                                                f"{document.number or document} on", since)
+
+    def realise_exchange_difference(self, previous):
+        """
+        Reverse what this allocation realised before (`previous`, its old
+        entry) and realise what it realises now, both on its own day.
+        """
+        document, _, party, control_account, is_receivable = self.settles()
+        if previous is not None:
+            previous.create_reversal(entry_date=self.date, memo=f"Re-stating exchange difference on {self}")
+        entry = post_settlement_fx(
+            party=party, control_account=control_account, amount=self.amount,
+            document_rate=document.exchange_rate, payment_rate=self.payment.exchange_rate,
+            date=self.date, reference=document.number,
+            memo=f"Exchange difference settling {document.number}", is_receivable=is_receivable,
+        )
+        if entry is not None:
+            self.fx_entry = entry
+            super(RealisedOnItsOwnDay, self).save(update_fields=["fx_entry", "updated_at"])
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        from django.utils import timezone
+
+        if self.fx_entry_id and not self.fx_released_entry_id:
+            self.fx_entry.create_reversal(
+                entry_date=max(timezone.localdate(), self.fx_entry.date),
+                memo=f"Releasing exchange difference on {self}")
+        return super().delete(*args, **kwargs)
+
+    def release_exchange_difference(self, on_date):
+        """
+        Its payment returned, the difference it realised never was: reversed
+        once, on the day the bank returned it (Payment.void asks that day of
+        the rule), or on the day it was realised when that came later.
+        Left standing, the control account kept it after the void, at a rate
+        the money never came at, and the gain or loss stayed in the profit
+        and loss.
+        """
+        if self.fx_entry_id and not self.fx_released_entry_id:
+            document, *_ = self.settles()
+            self.fx_released_entry = self.fx_entry.create_reversal(
+                entry_date=max(on_date, self.fx_entry.date),
+                memo=f"Exchange difference on {document.number} released: {self.payment.number} returned")
+            super(RealisedOnItsOwnDay, self).save(update_fields=["fx_released_entry", "updated_at"])
+
+
 @transaction.atomic
 def post_drawdown(
     *, party, held_account, control_account, amount, held_rate, document_rate,

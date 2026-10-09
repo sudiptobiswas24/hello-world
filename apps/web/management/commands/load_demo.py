@@ -454,7 +454,7 @@ class Command(BaseCommand):
                         currency=currency or inr, bank_account=bank, counterpart_account=ar,
                         reference=f"NEFT {customer.code[-4:]}{invoice.pk:05d}")
                     payment.post()
-                    Allocation.objects.create(invoice=invoice, payment=payment, amount=amount)
+                    Allocation.objects.create(invoice=invoice, payment=payment, amount=amount, date=received)
                 return invoice
 
             sell(sahyadri, on(2026, 7, 6), [(cement, "180000", "9.80")], paid="1")
@@ -573,7 +573,8 @@ class Command(BaseCommand):
                                                      payment_date=paid_on, currency=inr, bank_account=bank,
                                                      counterpart_account=ap, reference=f"RTGS {po.pk:04d}")
                     payment.post()
-                    M("purchasing.BillPayment").objects.create(bill=b, payment=payment, amount=b.total())
+                    M("purchasing.BillPayment").objects.create(bill=b, payment=payment, amount=b.total(),
+                                                               date=paid_on)
 
             buy(granule, on(2026, 7, 3), [(virgin, "15000", "112")], pay=True)
             buy(western, on(2026, 7, 8), [(filler, "4000", "38"), (uv, "150", "310")], pay=True)

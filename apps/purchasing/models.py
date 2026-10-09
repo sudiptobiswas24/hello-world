@@ -64,7 +64,7 @@ from apps.accounting.settlement import (
     oldest_overdue,
     owed_beyond,
     post_drawdown,
-    post_settlement_fx,
+    RealisedOnItsOwnDay,
     refuse_other_control_account,
     booked_beside,
     settlement_discount_to_take,
@@ -4829,7 +4829,7 @@ class PrepaymentApplication(AuditModel):
         return f"{self.prepayment} -> {self.bill} ({self.amount})"
 
 
-class BillPayment(AuditModel):
+class BillPayment(RealisedOnItsOwnDay, AuditModel):
     """
     Applies part (or all) of a Payment to a Bill — the mirror of Sales'
     InvoicePayment.
@@ -4844,6 +4844,11 @@ class BillPayment(AuditModel):
     bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name="payment_allocations")
     payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="bill_allocations")
     amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField(
+        blank=True,
+        help_text="The day the payment was applied: the exchange difference is realised that day. "
+                  "Left out, today; never before the payment or the document, nor a day to come.",
+    )
     fx_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
         related_name="+", editable=False,
@@ -4944,50 +4949,17 @@ class BillPayment(AuditModel):
         self.full_clean()
         # Re-posting rather than adjusting: an allocation can be re-pointed
         # or re-sized after the fact, and the exchange difference it caused
-        # has to move with it or the control account keeps the old one.
-        if self.fx_entry_id:
-            self.fx_entry.create_reversal(
-                memo=f"Re-stating exchange difference on {self}"
-            )
-            self.fx_entry = None
+        # has to move with it or the control account keeps the old one. Both
+        # on the allocation's own day (RealisedOnItsOwnDay).
+        previous = self.fx_entry if self.fx_entry_id else None
+        self.date = self.day_applied()
+        self.fx_entry = None
         super().save(*args, **kwargs)
-        self._post_fx()
+        self.realise_exchange_difference(previous)
 
-    def _post_fx(self):
-        entry = post_settlement_fx(
-            party=self.bill.vendor,
-            control_account=self.bill.payable_account,
-            amount=self.amount,
-            document_rate=self.bill.exchange_rate,
-            payment_rate=self.payment.exchange_rate,
-            date=to_date(self.payment.payment_date),
-            reference=self.bill.number,
-            memo=f"Exchange difference settling {self.bill.number}",
-            is_receivable=False,
-        )
-        if entry is not None:
-            self.fx_entry = entry
-            super(BillPayment, self).save(update_fields=["fx_entry", "updated_at"])
-
-    @transaction.atomic
-    def delete(self, *args, **kwargs):
-        if self.fx_entry_id and not self.fx_released_entry_id:
-            self.fx_entry.create_reversal(
-                memo=f"Releasing exchange difference on {self}"
-            )
-        super().delete(*args, **kwargs)
-
-    def release_exchange_difference(self, on_date):
-        """
-        Its payment returned, the difference it realised never was: reversed on that day, once.
-        Left standing, the payable kept it after the void, at a
-        rate the money never came at, and the gain or loss stayed in the profit and loss.
-        """
-        if self.fx_entry_id and not self.fx_released_entry_id:
-            self.fx_released_entry = self.fx_entry.create_reversal(
-                entry_date=on_date,
-                memo=f"Exchange difference on {self.bill.number} released: {self.payment.number} returned")
-            super(BillPayment, self).save(update_fields=["fx_released_entry", "updated_at"])
+    def settles(self):
+        document = self.bill
+        return document, document.bill_date, document.vendor, document.payable_account, False
 
 
 @transaction.atomic

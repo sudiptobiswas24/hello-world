@@ -1200,10 +1200,13 @@ class Command(BaseCommand):
     DATED_ELSEWHERE = {
         "accounting.Payment.void": "refuses a day before the payment and a day to come in its own words, "
                                    "written before the rule",
+        "accounting.RealisedOnItsOwnDay.release_exchange_difference":
+            "dated on the payment's void, which Payment.void asked of both refusals, or on the day the "
+            "difference was realised when that came later: a void is never refused for it",
         **dict.fromkeys((
             "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
-            "sales.Invoice.recover_write_off", "sales.InvoicePayment.release_exchange_difference",
-            "sales.CustomerTds.reverse", "purchasing.BillPayment.release_exchange_difference",
+            "sales.Invoice.recover_write_off",
+            "sales.CustomerTds.reverse",
             "purchasing.TdsDeduction.reverse", "purchasing.TdsChallan.void",
             "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
             "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",

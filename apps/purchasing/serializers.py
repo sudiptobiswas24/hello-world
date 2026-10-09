@@ -97,7 +97,7 @@ class BillPaymentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BillPayment
-        fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount"]
+        fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount", "date"]
 
 
 class BillSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
