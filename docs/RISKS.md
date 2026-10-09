@@ -278,7 +278,7 @@ missing), **minor**.
 | O57 | purchasing, gst | A debit note copies its bill's reference and posts at once, so the supplier's credit-note number can never be recorded, and GSTR-2B pairing works only when the dates happen to match | statutory | open; Gstr2bNoteProbe |
 | O58 | purchasing | The TDS return lists only deductions that stand today: 700 deducted 10 June and reversed 5 July drops out of the April-June return while the ledger held 700 that quarter | statutory | open; TdsReturnProbe |
 | O59 | gst | GSTR-1 table 13 leaves out down-payment invoices, which take INV numbers: INV-1 to INV-3 reported as 2 issued, 0 cancelled | statutory | open; DocumentsIssuedProbe |
-| O60 | accounting, gst | Place of supply uses the party's state only, not where the goods go: an unregistered Maharashtra buyer taking delivery in Karnataka is charged CGST and SGST at 27, not IGST at 29 (IGST Act s.10(1)(a)); the e-way bill already says 29. The adviser to confirm the rule for registered bill-to-ship-to | statutory | open; PlaceOfSupplyProbe |
+| O60 | accounting, gst | Place of supply uses the party's state only, not where the goods go: an unregistered Maharashtra buyer taking delivery in Karnataka is charged CGST and SGST at 27, not IGST at 29; the e-way bill already says 29. Decided 9 October: goods delivered to the buyer at any of its own addresses take the ship-to (IGST Act s.10(1)(a)); goods delivered to a third party on the buyer's direction take the buyer's principal place of business (s.10(1)(b)). The tax adviser to confirm this reading | statutory | open, in fix wave 1; PlaceOfSupplyProbe |
 | O61 | manufacturing, gst | A job-work challan can be issued into a closed month: it posts no entry, so nothing asks the period, and the closed half-year's ITC-04 changes | statutory | open; ClosedMonthChallanProbe |
 | O62 | purchasing, accounting | A TDS challan paid from the bank is a direct entry, not a payment, so its bank statement line cannot be matched; posting it books it twice (TDS payable +700, difference -700). HR expense claims paid from a bank have the same shape (not probed) | books | open, blocks real use; ChallanOnTheStatementProbe |
 | O63 | accounting | Race: a statement closes while one of its lines is unmatched (`close()` locks the statement; the line's save() reads `closed` unlocked): closed with a line unexplained. Shown on PostgreSQL | race | open; AccountingRaceProbe |
@@ -332,7 +332,6 @@ missing), **minor**.
 | O111 | quality | A rejected lot is released once its inspection plan is retired or made advisory: `check_released` returns early on today's plan while the lot still reads held. MRP has the same gap | rule | open; RetiredPlanProbe |
 | O112 | manufacturing, quality | A held doff can be loaded on a backflushed loom (no issue is made, so nothing checks); the roll woven from it can then never be booked | rule | open; TapeLoadProbe |
 | O113 | quality | A re-inspection dated earlier than the standing verdict is outranked without a word: passed 1 June, a rejection dated 30 May posted afterwards, the lot stays released | rule | open; ReinspectionProbe |
-| O114 | inventory, quality | A held lot can be transferred to another warehouse. Moving rejects to a rejects store is legitimate, so the owner decides which transfers a held lot may take | rule | decide |
 | O115 | purchasing | A component kept by batch cannot be sent to a subcontractor at all: `move_stock` is called with no lot (and `_consume_components` likewise). Everything a mandatory inspection plan covers is kept by batch | crash | open, blocks real use; BatchKeptComponentsToASubcontractorProbe |
 | O116 | manufacturing | A bag count cannot be voided once its inspection was voided (`void_bags` does not skip a voided inspection as `void_gauged` does): 500 bags stay on the shelf | crash | open; BagCountVoidProbe |
 | O117 | manufacturing | A complaint can be rejected after it was settled (`settle()` refuses a rejected one, `reject()` not the reverse): the rejected complaint still costs 500.00 | rule | open; ComplaintSettledThenRejectedProbe |
@@ -399,6 +398,13 @@ Upgrade notes, true of data made before the 8 October fixes:
      dates only its journal entry. The replays price movements in the
      order they were written, so a stock value asked for a day between
      the two differs from the ledger by the correction.
+   - A held lot (on hold, rejected or quarantined) may be transferred,
+     for example to a rejects store. Release checks guard what consumes
+     or ships a lot, not where it is kept (was O114).
+   - Place of supply for goods: the ship-to when the goods are delivered
+     to the buyer at one of its own addresses; the buyer's principal
+     place of business when delivered to a third party on the buyer's
+     direction (O60). The tax adviser to confirm.
 
 ## Later items
 
