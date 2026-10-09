@@ -354,14 +354,13 @@ class TheWalkThroughReceiptsTests(ForeignTestCase):
 
 
 class ABillThatNamesNoOrderLineTests(ForeignTestCase):
-    def test_it_is_cleared_at_its_own_price_and_rate_as_before(self):
+    def test_it_is_refused_for_goods_received_on_the_order(self):
         """
-        No link, no agreed price and no particular receipt: cleared at
-        what it bills, at its own rate, with no variance and no
-        exchange line — the rule these bills always had. Received at
-        1.2 and billed unlinked at 1.3, the accrual keeps the 5 the
-        link would have explained, which is why a foreign purchase
-        should be billed against its order line.
+        No link, no agreed price and no particular receipt. It used to be
+        cleared at what it billed, at its own rate: received at 1.2 and
+        billed unlinked at 1.3, the accrual kept 5 the link would have
+        explained, and the order's own bill could still pay for the same
+        goods (O92). Refused now, with the accrual of 60 left as it was.
         """
         order = self.order()
         self.receive_on(order, "10", 5)
@@ -372,8 +371,7 @@ class ABillThatNamesNoOrderLineTests(ForeignTestCase):
             bill=bill, item=self.item, quantity=Decimal("10"),
             unit_price=Decimal("5"),
         )
-        bill.post()
-        self.assertEqual(self.balance(self.payable), Decimal("-65.00"))
-        self.assertEqual(self.balance(self.grni), Decimal("5.00"))
-        self.assertEqual(self.balance(self.fx_loss), Decimal("0"))
-        self.assertEqual(self.balance(self.ppv), Decimal("0"))
+        with self.assertRaisesMessage(ValidationError, "Name the order line this bill pays"):
+            bill.post()
+        self.assertEqual(self.balance(self.payable), Decimal("0"))
+        self.assertEqual(self.balance(self.grni), Decimal("-60.00"))

@@ -17,6 +17,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    refuse_naming_another_order_line,
 )
 from apps.accounting.models import (
     Account,
@@ -32,7 +33,9 @@ from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors, check_not_raised_by
 from apps.core.models import (
     Extensible,
+    answer_to_its_document,
     correction_date,
+    documents_it_answers_to,
     AuditModel,
     Company,
     Currency,
@@ -3862,7 +3865,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         refuse_money_kept_as(self, "payable_account", changed_only=False)
         # What the order has been billed, and paid up front, is decided on
         # below; two bills for one order must not both see the same room.
-        lock_rows(self.purchase_order)
+        # Every order a line bills too, whether or not the bill names it:
+        # two typed bills naming no order each found the last 10 of a line
+        # unbilled, and both posted.
+        lock_rows(self.purchase_order, *PurchaseOrder.objects.filter(
+            pk__in=self.lines.exclude(order_line=None).values("order_line__order")))
         order = self.purchase_order
         if order is not None and not self.is_debit_note() and order.status != OrderStatus.CONFIRMED:
             # Asked as a receipt asks, under the same lock: a draft made before the order was
@@ -4095,30 +4102,41 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         three times and nothing would notice — the identical defect that
         turned up in Sales, where one 1,000 order was invoiced for 3,000.
         """
-        tolerance = Company.get().purchase_price_tolerance_percent or Decimal("0")
-        for line in self.lines.all():
-            if not line.order_line_id:
-                continue
-            order_line = line.order_line
-            already = order_line.quantity_billed()
-            limit = order_line.bill_limit()
-            if already + line.quantity > limit:
-                from apps.core.api import plain
+        from apps.core.api import plain
 
+        tolerance = Company.get().purchase_price_tolerance_percent or Decimal("0")
+        going = defaultdict(Decimal)
+        for line in self.lines.select_related("order_line__order"):
+            if not line.order_line_id:
+                self._refuse_paying_for_goods_on_order(line)
+                continue
+            # Rule B, asked again under the orders' locks: the bill's vendor, currency or order may
+            # have changed since the line was saved, and the line's order been cancelled.
+            refuse_naming_another_order_line(line, self, "vendor", "purchase_order")
+            order_line = line.order_line
+            if order_line.order.status != OrderStatus.CONFIRMED:
+                raise ValidationError(
+                    f"{order_line.label()} is on {order_line.order}, which is "
+                    f"{order_line.order.get_status_display().lower()}; only a confirmed order is billed.")
+            already = order_line.quantity_billed()
+            # Two lines of one bill on one order line count together.
+            going[order_line.pk] += line.quantity
+            limit = order_line.bill_limit()
+            if already + going[order_line.pk] > limit:
                 what = "received quantity of a line closed short" if order_line.is_closed_short() else "ordered quantity"
                 raise ValidationError(
-                    f"Billing {plain(line.quantity)} of {order_line.item} would exceed the {what} "
+                    f"Billing {plain(going[order_line.pk])} of {order_line.item} would exceed the {what} "
                     f"({plain(limit)}; {plain(already)} already billed)."
                 )
             # A charge never arrives, so the receipt leg of the match does
             # not apply to it — the quantity and price legs still do.
             if order_line.order.bill_policy == BillPolicy.RECEIVED and not order_line.is_charge():
                 received = order_line.quantity_received()
-                if already + line.quantity > received:
+                if already + going[order_line.pk] > received:
                     raise ValidationError(
                         f"Only {received} of {order_line.item} has been received and "
                         f"{already} is already billed; this order is billed on receipt, "
-                        f"so {line.quantity} cannot be billed yet."
+                        f"so {going[order_line.pk]} cannot be billed yet."
                     )
             ordered_price = order_line.unit_price or Decimal("0")
             if line.unit_price > ordered_price:
@@ -4129,6 +4147,31 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                         f"{line.unit_price}, beyond the {tolerance}% tolerance. Agree a "
                         "revised price on the order, or query the bill."
                     )
+
+    def _refuse_paying_for_goods_on_order(self, line):
+        """
+        A line naming no order line, for stocked goods this vendor has
+        delivered on an order and not yet been billed for, is refused: it
+        names the order line it pays.
+
+        Nothing counts a line without the link against any order, so the
+        order still owed the whole bill: 10 @ 5 received, a typed bill for
+        the item cleared the 50 of accrual, the order's own bill then paid
+        the same 50 again, and payables stood at -100 for 50 received.
+        """
+        if not (line.item_id and line.item.track_inventory):
+            return
+        lines = PurchaseOrderLine.objects.filter(item_id=line.item_id, order__vendor_id=self.vendor_id)
+        if self.purchase_order_id:
+            lines = lines.filter(order_id=self.purchase_order_id)
+        waiting = [(order_line, order_line.quantity_received() - order_line.quantity_billed())
+                   for order_line in lines.select_related("order")]
+        waiting = [f"{order_line.order} ({format(left.normalize(), 'f')})"
+                   for order_line, left in waiting if left > 0]
+        if waiting:
+            raise ValidationError({"order_line": [
+                f"{line.item} has come in from {self.vendor} and is not billed on {', '.join(waiting)}. "
+                "Name the order line this bill pays, or the order's own bill would pay for it again."]})
 
     def match_report(self):
         """Ordered / received / billed per line, for anyone checking a bill."""
@@ -4788,7 +4831,10 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         if self.order_line_id:
             candidates = [self.order_line]
         else:
-            lines = PurchaseOrderLine.objects.filter(item_id=self.item_id)
+            # This vendor's goods only: another vendor's accrual is theirs to bill. And a bill
+            # posts a line like this only when nothing of the vendor's is waiting
+            # (Bill._refuse_paying_for_goods_on_order), so posting finds nothing here to clear.
+            lines = PurchaseOrderLine.objects.filter(item_id=self.item_id, order__vendor_id=self.bill.vendor_id)
             if self.bill.purchase_order_id:
                 lines = lines.filter(order_id=self.bill.purchase_order_id)
             candidates = list(lines)
@@ -4941,11 +4987,16 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
             )
         return account
 
+    def locked_before_it(self):
+        """The bills it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "bill")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.bill_id and Bill.objects.filter(pk=self.bill_id, posted=True).exists():
-            raise ValidationError(
-                "Cannot modify a line on a posted bill. Issue a debit note instead."
-            )
+        # Shared rule B: the bill it leaves and the one it joins, both held. A line added as the
+        # bill posted showed 100.00 on a bill whose payable held 50.00.
+        answer_to_its_document(self, "bill", "Cannot modify a line on a posted bill. Issue a debit note instead.")
+        refuse_naming_another_order_line(self, self.bill, "vendor", "purchase_order")
         if self.debits_line_id:
             self.refuse_giving_back_what_moved()
         super().save(*args, **kwargs)
@@ -4976,11 +5027,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 "can be debited."
             )
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.bill.posted:
-            raise ValidationError(
-                "Cannot delete a line on a posted bill. Issue a debit note instead."
-            )
+        answer_to_its_document(self, "bill", "Cannot delete a line on a posted bill. Issue a debit note instead.")
         super().delete(*args, **kwargs)
 
 
@@ -5945,6 +5994,9 @@ class GoodsReceipt(AuditModel):
         lines = list(self.lines.all())
         if not lines:
             raise ValidationError("Cannot post a goods receipt with no lines.")
+        for line in lines:
+            # Rule B, asked again as it posts: the receipt's order may have changed since the line was saved.
+            line._check_line()
 
         is_return = bool(self.reverses_id)
         if is_return and not self.reverses.posted:
@@ -7087,11 +7139,16 @@ class GoodsReceiptLine(AuditModel):
         if self.order_line_id and self.receipt_id and self.order_line.order_id != self.receipt.purchase_order_id:
             raise ValidationError("This line's order_line must belong to the receipt's purchase_order.")
 
+    def locked_before_it(self):
+        """The receipts it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "receipt")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.receipt_id and GoodsReceipt.objects.filter(pk=self.receipt_id, posted=True).exists():
-            raise ValidationError(
-                "Cannot modify a line on a posted goods receipt. Create a return instead."
-            )
+        # Shared rule B: the receipt it leaves and the one it joins, both held. A line added as the
+        # receipt posted had its order line read 20 received while 10 moved.
+        answer_to_its_document(
+            self, "receipt", "Cannot modify a line on a posted goods receipt. Create a return instead.")
         # In save() rather than only clean(): receipts are built in code,
         # where nothing calls full_clean() for us.
         self._check_line()
@@ -7105,11 +7162,10 @@ class GoodsReceiptLine(AuditModel):
             self.warehouse_id = self.order_line.warehouse_id
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.receipt.posted:
-            raise ValidationError(
-                "Cannot delete a line on a posted goods receipt. Create a return instead."
-            )
+        answer_to_its_document(
+            self, "receipt", "Cannot delete a line on a posted goods receipt. Create a return instead.")
         super().delete(*args, **kwargs)
 
 

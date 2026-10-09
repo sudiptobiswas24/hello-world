@@ -42,7 +42,9 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
+from apps.core.models import (
+    AuditModel, DocumentSequence, answer_to_its_document, documents_it_answers_to, lock_rows, serialised, to_date,
+)
 
 ZERO = Decimal("0")
 INPUTS_DAYS = 365
@@ -249,11 +251,16 @@ class JobWorkLine(AuditModel):
     def __str__(self):
         return f"{self.challan}: {self.description}"
 
+    def locked_before_it(self):
+        """The challans it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "challan")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         from apps.accounting.gst import validate_hsn
 
-        if JobWorkChallan.objects.filter(pk=self.challan_id, posted=True).exists():
-            raise ValidationError(f"{self.challan} is issued; its lines are fixed.")
+        # Shared rule B: the challan it leaves and the one it joins, both held.
+        answer_to_its_document(self, "challan", lambda challan: f"{challan} is issued; its lines are fixed.")
         if not self.operation.is_outside:
             raise ValidationError(
                 f"{self.operation} is done on our own machines; nothing goes out for it."
@@ -263,9 +270,9 @@ class JobWorkLine(AuditModel):
             raise ValidationError("A challan line needs its HSN code.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if JobWorkChallan.objects.filter(pk=self.challan_id, posted=True).exists():
-            raise ValidationError(f"{self.challan} is issued; its lines are fixed.")
+        answer_to_its_document(self, "challan", lambda challan: f"{challan} is issued; its lines are fixed.")
         return super().delete(*args, **kwargs)
 
     def due_back_by(self):

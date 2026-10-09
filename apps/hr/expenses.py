@@ -18,7 +18,10 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
+from apps.core.models import (
+    AuditModel, DocumentSequence, answer_to_its_document, correction_date, documents_it_answers_to, serialised,
+    to_date,
+)
 
 from .models import Employee
 
@@ -222,11 +225,17 @@ class ExpenseLine(AuditModel):
     def __str__(self):
         return f"{self.description}: {self.amount}"
 
-    def _check_open(self):
-        claim = ExpenseClaim.objects.get(pk=self.claim_id)
-        if claim.status != ClaimStatus.DRAFT:
-            raise ValidationError(f"{claim}: {ExpenseClaim.LINES_FIXED}")
+    def locked_before_it(self):
+        """The claims it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "claim")
 
+    def _check_open(self):
+        # Shared rule B: the claim it leaves and the one it joins, both held and both drafts. Asked of
+        # the one it joined alone, a line was moved off an approved claim onto a draft.
+        answer_to_its_document(self, "claim", lambda claim: f"{claim}: {ExpenseClaim.LINES_FIXED}",
+                               fixed=lambda claim: claim.status != ClaimStatus.DRAFT)
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_open()
         self.description = _text(self.description)
@@ -237,6 +246,7 @@ class ExpenseLine(AuditModel):
         self.spent_on = to_date(self.spent_on) or timezone.localdate()
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
         self._check_open()
         return super().delete(*args, **kwargs)

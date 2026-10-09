@@ -35,6 +35,58 @@ def refuse_included(taxes):
             )
 
 
+def _currency_or_base(currency_id):
+    """A document with no currency is in the company's own."""
+    if currency_id is not None:
+        return currency_id
+    base = Company.get().currency()
+    return base.pk if base is not None else None
+
+
+def refuse_naming_another_order_line(line, document, party, order):
+    """
+    Shared rule B, the order-line half (apps.core.models.answer_to_its_document
+    is the other): an invoice or bill line bills only an order line of its own
+    document's party and currency, on its own document's order where the
+    document names one, for the item or charge that line ordered.
+
+    The delivery and the receipt line had this and the invoice and bill line
+    did not: Acme's line read invoiced while another customer was billed, a
+    euro bill on a dollar order posted 4,450 as exchange loss, and a bill for
+    one widget cleared another's accrual. One function for both sides, so a
+    fix to either is a fix to both (CLAUDE.md, mistake 5).
+
+    `party` is the field the document and the order both name it by
+    ("customer", "vendor"); `order` the one the document names its order by
+    ("sales_order", "purchase_order"). A line naming neither item nor charge
+    takes the order line's. Asked when the line is saved and again, under the
+    order's lock, when the document posts: the document's party or order may
+    have changed since.
+    """
+    if not line.order_line_id:
+        return
+    order_line = line.order_line
+    placed = order_line.order
+    named = getattr(document, f"{order}_id")
+    label = order_line.label()
+    if named and named != placed.pk:
+        raise ValidationError({"order_line": [
+            f"{label} is on {placed}; {document} bills {getattr(document, order)}."]})
+    if getattr(placed, f"{party}_id") != getattr(document, f"{party}_id"):
+        raise ValidationError({"order_line": [
+            f"{label} is on {getattr(placed, party)}'s order {placed}; {document} is for "
+            f"{getattr(document, party)}."]})
+    if _currency_or_base(placed.currency_id) != _currency_or_base(document.currency_id):
+        raise ValidationError({"order_line": [
+            f"{label} is on {placed}, in {placed.currency}; {document} is in {document.currency}."]})
+    if line.item_id is None and line.charge_id is None:
+        line.item_id, line.charge_id = order_line.item_id, order_line.charge_id
+    if (line.item_id, line.charge_id) != (order_line.item_id, order_line.charge_id):
+        raise ValidationError({"order_line": [
+            f"{placed} ordered {order_line.item or order_line.charge} on that line; this line bills "
+            f"{line.item or line.charge}."]})
+
+
 class TaxedLineMixin(models.Model):
     """
     Money arithmetic for one line of a trading document: gross, discount,

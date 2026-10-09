@@ -364,6 +364,17 @@ class WithdrawingAChallanTests(JobWorkTestCase):
         draft.delete()
         self.assertFalse(JobWorkChallan.objects.filter(pk=draft.pk).exists())
 
+    def test_a_line_is_not_moved_off_an_issued_challan(self):
+        # O82: the line asked only the challan it joined, so an issued
+        # challan's line could be moved onto a draft and ITC-04 lose it.
+        issued = self.challan("600")
+        draft = self.challan("100", post=False)
+        line = issued.lines.get()
+        line.challan = draft
+        with self.assertRaisesMessage(ValidationError, "its lines are fixed"):
+            line.save()
+        self.assertEqual(JobWorkChallan.objects.get(pk=issued.pk).lines.count(), 1)
+
     def test_not_twice(self):
         challan = self.challan("600")
         challan.void()

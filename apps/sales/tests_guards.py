@@ -566,3 +566,116 @@ class PricingTests(SalesGuardTestCase):
         )
         with self.assertRaises(ValidationError):
             price_list.full_clean()
+
+
+# -- what has moved stays as it moved (shared rule A), and a line answers to its
+# document (shared rule B). The 9 October sales audit's probes, kept as
+# regression tests with their numbers.
+
+from .tests_base import SalesTestCase as _AuditCase  # noqa: E402
+
+
+class TradeRuleCase(_AuditCase):
+    def setUp(self):
+        super().setUp()
+        from django.core.management import call_command
+
+        from apps.core.models import ExchangeRate
+
+        self.eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=self.eur, rate=Decimal("1.1"), valid_from=datetime.date(2026, 1, 1))
+        call_command("setup_roles", verbosity=0)
+
+    def as_(self, role):
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        user = User.objects.create_user(role.replace(" ", "_").lower())
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def other_customer(self, on_hold=False):
+        other = Party.objects.create(code="C-2", name="Other")
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.CUSTOMER)
+        if on_hold:
+            CustomerProfile.objects.create(party=other, credit_hold=True, credit_hold_reason="Unpaid since May")
+        return other
+
+
+class APostedDeliveryKeepsItsLinesTests(TradeRuleCase):
+    """O66: a posted delivery's line deleted over the API by Warehouse Staff."""
+
+    def test_a_posted_delivery_keeps_its_lines(self):
+        order = self.make_order("10", "100")
+        delivery = self.ship(order, "5")
+        line = delivery.lines.get()
+        response = self.as_("Warehouse Staff").delete(f"/api/sales/delivery-lines/{line.pk}/")
+        self.assertEqual((response.status_code, order.lines.get().quantity_shipped(),
+                          self.item.on_hand_at(self.warehouse)), (400, Decimal("5"), Decimal("495")))
+
+    def test_a_line_is_not_moved_off_a_posted_delivery(self):
+        order = self.make_order("10", "100")
+        posted = self.ship(order, "5")
+        draft = order.create_delivery(warehouse=self.warehouse)
+        line = posted.lines.get()
+        line.delivery = draft
+        with self.assertRaisesMessage(ValidationError, "posted delivery"):
+            line.save()
+
+
+class AnInvoiceLineBillsOnlyItsOwnOrderTests(TradeRuleCase):
+    """O71: an invoice line naming another customer's order line."""
+
+    def test_an_invoice_line_cannot_bill_another_customers_order_line(self):
+        other = self.other_customer()
+        order = self.make_order("10", "100")  # Acme's
+        invoice = Invoice.objects.create(customer=other, invoice_date=datetime.date(2026, 3, 1),
+                                         receivable_account=self.ar, currency=self.usd)
+        with self.assertRaisesMessage(ValidationError, "Acme"):
+            InvoiceLine.objects.create(invoice=invoice, order_line=order.lines.get(), item=self.item,
+                                       quantity=Decimal("10"), unit_price=Decimal("1"), revenue_account=self.revenue)
+        self.assertEqual((order.lines.get().quantity_invoiced(), order.invoice_status()), (Decimal("0"), "none"))
+
+    def test_an_invoice_line_bills_only_its_own_invoices_order_through_the_api(self):
+        other = self.other_customer()
+        order = self.make_order("10", "100")
+        client = self.as_("AR Manager")
+        made = client.post("/api/sales/invoices/", {"customer": other.pk, "invoice_date": "2026-03-01",
+                                                    "currency": self.usd.pk, "receivable_account": self.ar.pk},
+                           format="json")
+        self.assertEqual(made.status_code, 201, made.data)
+        line = client.post("/api/sales/invoice-lines/", {
+            "invoice": made.data["id"], "order_line": order.lines.get().pk, "item": self.item.pk,
+            "quantity": "10", "unit_price": "1.00", "revenue_account": self.revenue.pk}, format="json")
+        self.assertEqual(line.status_code, 400, line.content)
+        self.assertIn("order_line", line.json())
+
+    def test_the_customer_changed_after_the_line_is_asked_again_as_it_posts(self):
+        other = self.other_customer()
+        order = self.make_order("10", "100")
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1))
+        invoice.customer = other
+        invoice.save()
+        with self.assertRaisesMessage(ValidationError, "Acme"):
+            Invoice.objects.get(pk=invoice.pk).post()
+        self.assertEqual(order.lines.get().quantity_invoiced(), Decimal("0"))
+
+
+class OneShipmentIsInvoicedOnceTests(TradeRuleCase):
+    """O67: on a bill-on-delivery order two drafts for one shipment of 5 both posted: 10 billed."""
+
+    def test_one_shipment_is_not_invoiced_twice(self):
+        from .models import InvoicePolicy
+
+        order = self.make_order("10", "100", policy=InvoicePolicy.DELIVERED)
+        self.ship(order, "5")
+        first = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1))
+        second = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1))  # the first still a draft
+        first.post()
+        with self.assertRaisesMessage(ValidationError, "bills on delivery"):
+            Invoice.objects.get(pk=second.pk).post()
+        line = order.lines.get()
+        self.assertEqual((line.quantity_invoiced(), line.quantity_shipped(), self.balance(self.ar)),
+                         (Decimal("5"), Decimal("5"), Decimal("500.00")))

@@ -247,6 +247,50 @@ def correction_date(on_date, original, refused, since):
     return day
 
 
+# -- Shared rule B: a line answers to its document ---------------------------
+
+def documents_it_answers_to(line, field):
+    """
+    The document `line` names now and the one it named as stored, as rows
+    to hold: the one it would leave and the one it would join.
+    """
+    fk = line._meta.get_field(field)
+    ids = {getattr(line, fk.attname)}
+    if line.pk is not None:
+        ids.add(type(line)._base_manager.filter(pk=line.pk).values_list(fk.attname, flat=True).first())
+    return [fk.related_model(pk=pk) for pk in sorted(ids - {None})]
+
+
+def answer_to_its_document(line, field, refused, fixed=None):
+    """
+    Shared rule B: a line is changed, added or removed only while both the
+    document it leaves and the one it joins take changes.
+
+    Asked of the one it joins alone, a Sales Rep moved the only line off a
+    posted invoice into a draft: the invoice read no lines and its entry
+    still said 100. Asked without the document's lock, a line was added to
+    a bill as it posted: the bill showed 100.00 while payables held 50.00.
+    So both are held (lock_rows) before either is read, and read again from
+    the database once held, never from the object in hand.
+
+    `fixed(document)` says whether the document takes no change to its
+    lines (default: it is posted); `refused` is the refusal, words or
+    words worked out from the document. Call it first in the line's save()
+    and delete(), inside their transaction, and name the same rows in the
+    line's locked_before_it() (documents_it_answers_to), so an edit through
+    the API holds the document before the line, as posting does.
+    """
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("answer_to_its_document() outside a transaction holds nothing.")
+    held = documents_it_answers_to(line, field)
+    lock_rows(*held, refresh=False)
+    fixed = fixed or (lambda document: document.posted)
+    model = line._meta.get_field(field).related_model
+    for document in model._base_manager.filter(pk__in=[row.pk for row in held]):
+        if fixed(document):
+            raise ValidationError(refused(document) if callable(refused) else refused)
+
+
 class Country(TimeStampedModel):
     code = models.CharField(max_length=2, unique=True, help_text="ISO 3166-1 alpha-2, e.g. US")
     name = models.CharField(max_length=128)
