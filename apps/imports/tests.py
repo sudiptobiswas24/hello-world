@@ -197,10 +197,10 @@ class TheCommandTests(ImportTestCase):
             self.call("open_invoices", "customer,reference,date,amount\n")
 
 
-EMPLOYEES = """employee_number,name,hire_date,department,manager,job_title,username,roles
-E-200,Ravi Kulkarni,2024-04-01,WEAVE,E-100,Loom operator,ravi,Employee Self Service
-E-100,Meena Joshi,2019-06-01,WEAVE,,Weaving supervisor,meena,Line Manager;Employee Self Service
-E-300,Sunil Pawar,2025-01-15,,,Helper,,
+EMPLOYEES = """employee_number,name,hire_date,department,manager,job_title,username
+E-200,Ravi Kulkarni,2024-04-01,WEAVE,E-100,Loom operator,ravi
+E-100,Meena Joshi,2019-06-01,WEAVE,,Weaving supervisor,meena
+E-300,Sunil Pawar,2025-01-15,,,Helper,
 """
 
 
@@ -223,9 +223,9 @@ class EmployeesTests(ImportTestCase):
         self.assertEqual((ravi.manager.employee_number, ravi.department.code, ravi.user.username),
                          ("E-100", "WEAVE", "ravi"))
         self.assertTrue(ravi.party.role_assignments.filter(role="employee").exists())
+        # Logins, with no roles: those are given on the Logins screen by someone who holds them.
         meena = User.objects.get(username="meena")
-        self.assertEqual(sorted(meena.groups.values_list("name", flat=True)),
-                         ["Employee Self Service", "Line Manager"])
+        self.assertEqual(list(meena.groups.all()), [])
         self.assertIsNone(Employee.objects.get(employee_number="E-300").user)
         # A first password for each new login, and it works.
         self.assertEqual(sorted(name for name, _ in report.passwords), ["meena", "ravi"])
@@ -237,7 +237,10 @@ class EmployeesTests(ImportTestCase):
 
         from apps.hr.models import Employee
 
-        bad = EMPLOYEES + "\n".join([
+        # An old file, with the roles column the template no longer has.
+        old_file = "\n".join(f"{line},roles" if number == 0 else f"{line},"
+                             for number, line in enumerate(EMPLOYEES.strip().split("\n")))
+        bad = old_file + "\n" + "\n".join([
             "E-400,Bad role,2025-01-01,,,,anita,Weaver",
             "E-500,No such manager,2025-01-01,,E-999,,,",
             "E-600,Roles without a login,2025-01-01,,,,,Line Manager",
@@ -268,6 +271,54 @@ class EmployeesTests(ImportTestCase):
             self.assertIn("2 new login(s)", said.getvalue())
             self.assertNotIn(dict(read_passwords(out))["ravi"], said.getvalue())
             self.assertEqual(stat.S_IMODE(os.stat(out).st_mode), 0o600)
+
+
+class ImportGivesNoRolesTests(ImportTestCase):
+    """
+    O86: the import takes core.import_records alone, and its employees
+    file gave roles, to a new login or to any not yet an employee's: a
+    Controller gave their own login HR Admin. It gives none now, and links
+    only a login that holds none.
+    """
+
+    HEADING = "employee_number,name,hire_date,username,roles\n"
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+
+        call_command("setup_roles", verbosity=0)
+        self.controller = User.objects.create_user("ctl")
+        self.controller.groups.add(Group.objects.get(name="Controller"))
+
+    def test_a_role_in_the_file_is_refused_and_nothing_kept(self):
+        from django.contrib.auth.models import User
+
+        from apps.hr.models import Employee
+
+        report = run("employees", self.HEADING + "E-9,Asha,2024-04-01,asha,Line Manager\n", commit=True)
+        self.assertEqual((self.errors(report), report.committed), ([(2, "roles")], False))
+        self.assertFalse(User.objects.filter(username="asha").exists())
+        self.assertFalse(Employee.objects.exists())
+
+    def test_a_login_that_holds_a_role_is_not_linked(self):
+        from apps.hr.models import Employee
+
+        report = run("employees", self.HEADING + "E-9,Controller,2024-04-01,ctl,\n", commit=True)
+        self.assertEqual((self.errors(report), report.committed), ([(2, "username")], False))
+        self.assertFalse(Employee.objects.exists())
+        self.assertEqual(list(self.controller.groups.values_list("name", flat=True)), ["Controller"])
+
+    def test_a_login_that_holds_nothing_is_linked_and_given_nothing(self):
+        from django.contrib.auth.models import User
+
+        from apps.hr.models import Employee
+
+        idle = User.objects.create_user("idle")
+        report = run("employees", "employee_number,name,hire_date,username\nE-9,Idle,2024-04-01,idle\n",
+                     commit=True)
+        self.assertTrue(report.committed, report.errors)
+        self.assertEqual((Employee.objects.get().user, list(idle.groups.all()), report.passwords), (idle, [], []))
 
 
 def read_passwords(path):

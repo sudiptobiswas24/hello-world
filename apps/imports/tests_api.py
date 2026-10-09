@@ -61,3 +61,20 @@ class ImportApiTests(ImportTestCase):
         self.assertEqual(self.as_("Bookkeeper").get(RECORDS).status_code, 403)
         self.assertEqual(self.as_("HR Admin").post(f"{RECORDS}run/", {"kind": "parties", "text": "code\n"},
                                                   format="json").status_code, 403)
+
+
+class TheImportGivesNoRolesTests(ImportTestCase):
+    """O86, through the screen: a Controller holding only the import right gave their own login HR Admin."""
+
+    def test_the_controller_gives_themselves_nothing_through_the_import(self):
+        call_command("setup_roles", verbosity=0)
+        controller = User.objects.create_user("ctl")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(controller)
+        text = "employee_number,name,hire_date,username,roles\nE-9,Controller,2024-04-01,ctl,HR Admin\n"
+        response = client.post(f"{RECORDS}run/", {"kind": "employees", "text": text, "commit": True}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["committed"], [row[:2] for row in response.json()["errors"]]),
+                         (False, [[2, "roles"]]))
+        self.assertEqual(list(controller.groups.values_list("name", flat=True)), ["Controller"])

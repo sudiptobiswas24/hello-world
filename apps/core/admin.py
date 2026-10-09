@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.contrib.auth.admin import GroupAdmin, UserAdmin
+from django.contrib.auth.models import Group, User
 
 from .audit import AuditableAdminMixin
 from .models import (
@@ -143,3 +145,44 @@ class CompanyAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+class SuperusersOnly:
+    """
+    Logins and roles in the admin, for superusers alone.
+
+    Django's own user admin asks only auth.change_user, which the HR Admin
+    holds to keep logins on the office's Logins screen. There it cannot
+    give a role it does not hold or touch a login above it (users_api); in
+    the admin a staff HR Admin ticked is_superuser on themselves. A role's
+    permissions are the same question one step removed.
+    """
+
+    def has_module_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+
+class SuperuserUserAdmin(SuperusersOnly, UserAdmin):
+    pass
+
+
+class SuperuserGroupAdmin(SuperusersOnly, GroupAdmin):
+    pass
+
+
+admin.site.unregister(User)
+admin.site.register(User, SuperuserUserAdmin)
+admin.site.unregister(Group)
+admin.site.register(Group, SuperuserGroupAdmin)
