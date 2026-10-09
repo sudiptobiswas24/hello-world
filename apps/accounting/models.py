@@ -215,6 +215,25 @@ class AccountingPeriod(AuditModel):
             covering = covering.select_for_update()
         return next((period for period in covering.order_by("pk") if period.closed), None)
 
+    @classmethod
+    def refuse_closed(cls, on_date, doing):
+        """
+        Refuse `doing` on a day a closed period covers: the one period check.
+
+        JournalEntry.post() asks it of every entry. A document that posts no
+        entry but is reported to the government all the same (a job-work
+        challan and the losses on it, on ITC-04) asks it itself, as it is
+        issued and as it is withdrawn: nothing else would, and the closed
+        half-year's return would change under it. `doing` says what is
+        refused, "JWC-2026-00001 is not issued on 2026-05-15".
+        """
+        blocking = cls.blocking(on_date, lock=True)
+        if blocking is not None:
+            raise ValidationError(
+                f"{blocking} is closed: {doing}. Nothing further is dated into it; "
+                "date it in an open period, or reopen that one."
+            )
+
     @serialised("closed")
     def close(self, by=None, note=""):
         if self.closed:
@@ -346,13 +365,9 @@ class JournalEntry(AuditModel):
             raise ValidationError("This journal entry is already posted.")
         # The one chokepoint every module posts through, so the period
         # lock only has to be enforced here. A guard per document type
-        # would be six guards, and the seventh would be forgotten.
-        blocking = AccountingPeriod.blocking(self.date, lock=True)
-        if blocking is not None:
-            raise ValidationError(
-                f"{blocking} is closed; nothing further can be posted into it. "
-                "Date the entry in an open period, or reopen that one."
-            )
+        # would be six guards, and the seventh would be forgotten. What
+        # posts no entry asks the same rule itself (refuse_closed).
+        AccountingPeriod.refuse_closed(self.date, f"an entry is not posted on {to_date(self.date)}")
         if not self.is_balanced():
             raise ValidationError(
                 f"Cannot post an unbalanced entry (debit={self.total_debit()}, "

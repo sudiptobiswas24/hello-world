@@ -102,6 +102,7 @@ class Command(BaseCommand):
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
         findings += self.kept_settings_read_live(labels, sources)
         findings += self.corrections_dated_without_the_rule(labels, sources)
+        findings += self.reported_without_the_period(labels, sources)
         findings += self.posted_as_calculated(labels, sources)
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
@@ -1125,6 +1126,68 @@ class Command(BaseCommand):
         findings += [("stale exemption", f"{key} is exempted from correction_date() but is no longer a step "
                                          "that needs it.")
                      for key in sorted(set(self.DATED_ELSEWHERE) - exempted) if key.split(".")[0] in labels]
+        return findings
+
+    # -- shape 1: a document reported without an entry, dated into a closed month --
+    def reported_without_the_period(self, labels, sources):
+        """
+        A record a GST module reads that posts no entry and never asks the period.
+
+        JournalEntry.post() refuses a closed month, so whatever posts an entry is held
+        by it. A job-work challan posts none: issued on 15 May with May closed, the
+        signed-off half-year's ITC-04 grew a challan, and nothing asked. Every model
+        the gst app reads from another module either keeps a journal entry, or asks
+        AccountingPeriod.refuse_closed() itself, or belongs to a document that does
+        (a challan's line, through its challan).
+        """
+        from apps.accounting.models import JournalEntry
+
+        imported = set()
+        for path, text in sorted(sources.get("gst", {}).items()):
+            if "test" in path.name or "migrations" in path.parts:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if not isinstance(node, ast.ImportFrom) or not (node.module or "").startswith("apps."):
+                    continue
+                label = node.module.split(".")[1]
+                if label != "gst" and label in labels:
+                    imported.update((label, alias.name) for alias in node.names)
+
+        def code_of(label):
+            return non_test_text({path: text for path, text in sources.get(label, {}).items()
+                                  if "migrations" not in path.parts})
+
+        def issued(model):
+            """A document is issued and withdrawn (posted, voided); a setting is neither."""
+            return any(field.name in ("posted", "voided_at") for field in model._meta.concrete_fields)
+
+        def asks(model):
+            if any(field.is_relation and field.related_model is JournalEntry
+                   for field in model._meta.concrete_fields):
+                return True
+            body = self._class_body(code_of(model._meta.app_label), model.__name__) or ""
+            return "refuse_closed(" in body
+
+        findings = []
+        for label, name in sorted(imported):
+            try:
+                model = django_apps.get_model(label, name)
+            except LookupError:
+                continue  # a function or a constant, not a record
+            if not issued(model):
+                # A line is issued and withdrawn with its document; anything else is a setting.
+                model = next((field.related_model for field in model._meta.concrete_fields
+                              if field.many_to_one and not field.null and issued(field.related_model)
+                              and field.related_model._meta.app_label == model._meta.app_label), None)
+                if model is None:
+                    continue
+            if not asks(model):
+                findings.append((
+                    "reported without the period",
+                    f"{label}.{name} is read by a GST return; {model.__name__} posts no entry and never asks "
+                    "AccountingPeriod.refuse_closed(): issued or withdrawn in a closed month, that "
+                    "month's return changes.",
+                ))
         return findings
 
     @staticmethod
