@@ -289,3 +289,79 @@ class ComponentsComeBackAtWhatTheyCostTests(SubcontractTestCase):
         receipt.create_return(debit_bills=False)
         self.assertEqual(self.frame.valuation_at(self.subcontractor)[1].quantize(Decimal("0.0001")),
                          Decimal("100.0000"))
+
+
+class BatchKeptComponentsTests(SubcontractTestCase):
+    """
+    Audit, 9 October: a frame kept by batch could not go to the
+    subcontractor at all; the move named no batch and was refused. And
+    everything a mandatory inspection plan covers is kept by batch. The
+    batches go, are consumed and come back as a delivery picks them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.inventory.models import Lot
+
+        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
+        self.frame.refresh_from_db()
+        StockMovement.objects.filter(item=self.frame).delete()
+        self.lot_model = Lot
+
+    def batch(self, code, quantity, expires=None):
+        batch = self.lot_model.objects.create(item=self.frame, code=code, expires_on=expires)
+        StockMovement.objects.create(item=self.frame, warehouse=self.warehouse,
+                                     movement_type=MovementType.RECEIPT, uom=self.frame.uom,
+                                     quantity=Decimal(quantity), unit_cost=Decimal("8"), lot=batch,
+                                     occurred_at=timezone.now())
+        return batch
+
+    def test_a_batch_kept_component_is_sent_by_its_batch(self):
+        batch = self.batch("F-1", "100")
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.assertEqual((batch.on_hand_at(self.subcontractor), batch.on_hand_at(self.warehouse)),
+                         (Decimal("10"), Decimal("90")))
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("80.00"))
+
+    def test_the_soonest_to_expire_goes_and_is_consumed(self):
+        sooner = self.batch("F-1", "40", datetime.date(2026, 12, 31))
+        later = self.batch("F-2", "60", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.assertEqual((sooner.on_hand_at(self.subcontractor), later.on_hand_at(self.subcontractor)),
+                         (Decimal("10"), Decimal("0")))
+        self.receive(order, "10")
+        self.assertEqual(sooner.on_hand_at(self.subcontractor), Decimal("0"))
+        # frame 8 + two motors at 12 + 5 of assembly
+        self.assertEqual(self.assembly.average_cost_at(self.warehouse), Decimal("37.0000"))
+
+    def test_a_batch_quality_holds_is_not_sent(self):
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        held = self.batch("F-1", "40", datetime.date(2026, 12, 31))
+        good = self.batch("F-2", "60", datetime.date(2027, 6, 30))
+        check = Characteristic.objects.create(code="FLAT", name="Flatness", uom=self.uom)
+        plan = InspectionPlan.objects.create(item=self.frame, is_mandatory=False)
+        line = PlanLine.objects.create(plan=plan, characteristic=check, lower_limit=Decimal("0"),
+                                       upper_limit=Decimal("1"))
+        inspection = Inspection.objects.create(lot=held, plan=plan, inspected_on=datetime.date(2026, 1, 2))
+        Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("3"))
+        inspection.post()
+        self.subcontract_order("10").issue_components(self.warehouse)
+        self.assertEqual((held.on_hand_at(self.subcontractor), good.on_hand_at(self.subcontractor)),
+                         (Decimal("0"), Decimal("10")))
+
+    def test_assemblies_sent_back_put_each_batch_back(self):
+        """Ten frames from two batches, 4 and 6; five assemblies back put 2 and 3 back."""
+        first = self.batch("F-1", "4", datetime.date(2026, 12, 31))
+        second = self.batch("F-2", "96", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "10")
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("0"), Decimal("0")))
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("5")}, debit_bills=False)
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("2"), Decimal("3")))
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("40.00"))

@@ -55,6 +55,7 @@ from apps.inventory.models import (
     lock_position,
     lock_positions,
     move_stock,
+    plan_issue,
     plan_putaway,
 )
 from apps.accounting.settlement import (
@@ -2180,14 +2181,22 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         )
         moved = []
         for item, quantity in plan.items():
-            # The value the shelf gives up arrives with the vendor, as any
-            # move between the company's shelves: a per-unit rate with no
-            # remainder lost a little on every issue.
-            move_stock(
-                item, from_warehouse, self.subcontract_warehouse, quantity,
-                reference=self.number, occurred_at=occurred_at,
-                notes=f"Components to subcontractor for {self.number}",
-            )
+            # Batch by batch, as a delivery picks for a line naming none:
+            # the soonest to expire that the release gate lets go
+            # (plan_issue). Moved as no batch, a component kept by batch was
+            # refused outright, and everything a mandatory inspection plan
+            # covers is kept by batch.
+            for lot, from_bin, part in plan_issue(item, from_warehouse, quantity,
+                                                  on_date=to_date(occurred_at)):
+                # The value the shelf gives up arrives with the vendor, as any
+                # move between the company's shelves: a per-unit rate with no
+                # remainder lost a little on every issue.
+                move_stock(
+                    item, from_warehouse, self.subcontract_warehouse, part, lot=lot,
+                    from_bin=from_bin, to_bin=plan_putaway(item, self.subcontract_warehouse),
+                    reference=self.number, occurred_at=occurred_at,
+                    notes=f"Components to subcontractor for {self.number}",
+                )
             moved.append((item, quantity))
         return moved
 
@@ -5753,6 +5762,16 @@ def payment_run(due_by=None, vendor=None):
     return sorted(rows.values(), key=lambda row: -row["total"])
 
 
+def _consumed_note(receipt, line):
+    """
+    What a subcontract receipt writes on the components it consumes for
+    `line`, so that its return finds that line's batches and no other
+    line's: one component may go into two lines, and by batch one line
+    consumes it in several movements.
+    """
+    return f"Consumed by subcontractor for {receipt.number}, line {line.pk}"
+
+
 class GoodsReceipt(AuditModel):
     """
     Closes the loop between Purchasing and Inventory: posting a receipt
@@ -6478,25 +6497,42 @@ class GoodsReceipt(AuditModel):
                 movement_type=MovementType.ISSUE,
                 reference=self.reverses.number,
                 notes__startswith="Consumed by subcontractor",
-            ).first()
-            if consumed is not None:
-                quantity = round_money(-consumed.quantity * share)
-                cost = consumed.unit_cost or Decimal("0")
+            )
+            # Each batch the line consumed, as its consumption named it; a
+            # receipt from before then wrote one movement, found as it was.
+            taken = list(consumed.filter(
+                notes=_consumed_note(self.reverses, original)).order_by("id")) if original else []
+            if not taken:
+                taken = [movement for movement in [consumed.first()] if movement is not None]
+            if taken:
+                # Back to the batches they came out of, each its share, the
+                # last taking what rounding leaves of the whole.
+                back = round_money(sum((-movement.quantity for movement in taken), Decimal("0")) * share)
+                rows, given = [], Decimal("0")
+                for index, movement in enumerate(taken):
+                    quantity = (back - given if index == len(taken) - 1
+                                else round_money(-movement.quantity * share))
+                    given += quantity
+                    rows.append((movement.lot, movement.bin, quantity,
+                                 movement.unit_cost or Decimal("0")))
             else:
                 # A receipt from before consumption was recorded this way.
-                quantity = round_money(component.quantity_per * line.quantity_received)
-                cost = component.item.average_cost_at(warehouse) or (
-                    component.item.average_cost()
-                ) or (component.item.standard_cost or Decimal("0"))
-            StockMovement.objects.create(
-                item=component.item, warehouse=warehouse,
-                movement_type=MovementType.RECEIPT, uom=component.item.uom,
-                quantity=quantity, unit_cost=cost,
-                reference=self.number,
-                occurred_at=timezone.now(),
-                notes=f"Components returned with {self.number}",
-            )
-            restored += quantity * cost
+                rows = [(None, None, round_money(component.quantity_per * line.quantity_received),
+                         component.item.average_cost_at(warehouse) or (
+                             component.item.average_cost()
+                         ) or (component.item.standard_cost or Decimal("0")))]
+            for lot, storage_bin, quantity, cost in rows:
+                if quantity <= 0:
+                    continue
+                StockMovement.objects.create(
+                    item=component.item, warehouse=warehouse,
+                    movement_type=MovementType.RECEIPT, uom=component.item.uom,
+                    lot=lot, bin=storage_bin, quantity=quantity, unit_cost=cost,
+                    reference=self.number,
+                    occurred_at=timezone.now(),
+                    notes=f"Components returned with {self.number}",
+                )
+                restored += quantity * cost
         return restored / line.quantity_received
 
     def _consume_components(self, line):
@@ -6516,27 +6552,36 @@ class GoodsReceipt(AuditModel):
             if not component.item.track_inventory:
                 continue
             used = round_money(component.quantity_per * line.quantity_received)
-            # What the replay will take off, exactly: the rule every
-            # outbound path follows (inventory/costing.py).
-            taking = component.item.cost_of_removing(warehouse, used) if used else Decimal("0")
-            # Eight places: a return puts the components back at this rate,
-            # and four lost 0.001 on thirty frames worth 100.
-            cost = (taking / used).quantize(Decimal("0.00000001")) if used else Decimal("0")
             on_hand = component.item.on_hand_at(warehouse)
             if used > on_hand:
                 raise ValidationError(
                     f"The subcontractor is short {used - on_hand} of {component.item}; "
                     "issue the components before receiving the finished item."
                 )
-            StockMovement.objects.create(
-                item=component.item, warehouse=warehouse,
-                movement_type=MovementType.ISSUE, uom=component.item.uom,
-                quantity=-used, unit_cost=cost,
-                reference=self.number,
-                occurred_at=timezone.now(),
-                notes=f"Consumed by subcontractor for {self.number}",
-            )
-            consumed += taking
+            if used <= 0:
+                continue
+            # Batch by batch, as they were sent and as a delivery picks:
+            # the soonest to expire at the subcontractor's that the release
+            # gate lets go. Expiry is no bar here: what the vendor used it
+            # used before this receipt says so.
+            for lot, storage_bin, part in plan_issue(component.item, warehouse, used,
+                                                     on_date=self.receipt_date, allow_expired=True):
+                # What the replay will take off, exactly: the rule every
+                # outbound path follows (inventory/costing.py), asked of each
+                # batch as the one before it is written.
+                taking = component.item.cost_of_removing(warehouse, part, lot=lot)
+                # Eight places: a return puts the components back at this rate,
+                # and four lost 0.001 on thirty frames worth 100.
+                cost = (taking / part).quantize(Decimal("0.00000001"))
+                StockMovement.objects.create(
+                    item=component.item, warehouse=warehouse,
+                    movement_type=MovementType.ISSUE, uom=component.item.uom,
+                    lot=lot, bin=storage_bin, quantity=-part, unit_cost=cost,
+                    reference=self.number,
+                    occurred_at=timezone.now(),
+                    notes=_consumed_note(self, line),
+                )
+                consumed += taking
         # Per finished unit at full precision. Each component's share was
         # rounded to the paisa and multiplied back up: 1,000 sacks came in
         # 2.90 short of what went into them, and the shelf never agreed
