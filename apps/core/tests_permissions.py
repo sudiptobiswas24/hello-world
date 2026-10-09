@@ -200,3 +200,140 @@ class ModelPermissionsAloneTests(TestCase):
         user = User.objects.get(pk=user.pk)
         self.assertTrue(ModelPermissions().has_permission(SimpleNamespace(user=user, method="POST"),
                                                          view))
+
+
+def _routes():
+    """(url, method, action, view class) for every DRF route under /api/, a record's id as 999999."""
+    import re
+
+    from django.urls import URLResolver, get_resolver
+
+    group = re.compile(r"\(\?P<(\w+)>([^)]*)\)")
+
+    def walk(patterns, prefix=""):
+        for pattern in patterns:
+            if isinstance(pattern, URLResolver):
+                yield from walk(pattern.url_patterns, prefix + str(pattern.pattern))
+            else:
+                yield prefix + str(pattern.pattern), pattern
+
+    found = []
+    for route, pattern in walk(get_resolver().url_patterns):
+        cls, actions = getattr(pattern.callback, "cls", None), getattr(pattern.callback, "actions", None)
+        if "(?P<format>" in route or not route.startswith("api/") or cls is None or actions is None:
+            continue
+        url = "/" + group.sub("999999", route).replace("^", "").replace("$", "").replace("\\.", ".")
+        # Listed first: a request through the view adds "head" to its actions.
+        found += [(url, method, action, cls) for method, action in list(actions.items())]
+    return found
+
+
+class NoActionOnARecordTakesOnlyTheRightToAddTests(TestCase):
+    """
+    O83: DRF maps every POST to add_. Fifteen actions on one record named
+    no permission and so took only the right to add one: a calibration
+    voided, a schedule committed, a quote declined, anyone's leave
+    cancelled. Asked mechanically of every action that names nothing: a
+    login holding add_ and view_ of the model and nothing else gets none
+    of them past the gate. (What one names is its author's choice, which
+    the audit's "action without a declared permission" asks for.)
+    """
+
+    def test_no_action_on_a_record_takes_only_the_right_to_add(self):
+        from apps.core.permissions import ModelPermissions
+
+        through = []
+        for index, (url, method, action, cls) in enumerate(_routes()):
+            if method != "post" or action == "create" or "999999" not in url:
+                continue
+            if not any(issubclass(c, ModelPermissions) for c in cls.permission_classes):
+                continue
+            if action in getattr(cls, "action_permission_map", {}):
+                continue
+            meta = cls.queryset.model._meta
+            user = User.objects.create_user(f"adder-{index}")
+            grant(user, f"{meta.app_label}.add_{meta.model_name}", f"{meta.app_label}.view_{meta.model_name}")
+            client = APIClient()
+            client.force_authenticate(user)
+            response = client.post(url, {}, format="json")
+            if response.status_code not in (401, 403):
+                through.append(f"POST {url} [{cls.__name__}.{action}] -> {response.status_code}")
+        self.assertEqual(through, [], "\n" + "\n".join(through))
+
+
+class AnActionThatNamesNothingTakesChangeTests(TestCase):
+    """The floor under the audit's check: an unnamed action that writes asks change_, never add_."""
+
+    def view(self):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+
+        class Planted(viewsets.GenericViewSet):
+            queryset = JournalEntry.objects.all()
+
+            @action(detail=True, methods=["post"])
+            def poke(self, request, pk=None):
+                return None
+
+        view = Planted()
+        view.action = "poke"
+        return view
+
+    def asks(self, *permissions):
+        from types import SimpleNamespace
+
+        from apps.core.permissions import ModelPermissions
+
+        user = User.objects.create_user(f"u-{User.objects.count()}")
+        grant(user, "accounting.view_journalentry", *permissions)
+        user = User.objects.get(pk=user.pk)
+        return ModelPermissions().has_permission(SimpleNamespace(user=user, method="POST"), self.view())
+
+    def test_the_right_to_add_is_not_enough(self):
+        self.assertFalse(self.asks("accounting.add_journalentry"))
+
+    def test_the_right_to_change_is(self):
+        self.assertTrue(self.asks("accounting.change_journalentry"))
+
+
+class TheAuditAsksEveryActionThatWritesToNameItsRightTests(TestCase):
+    """O83's check: audit_invariants reports an action that writes and names no permission."""
+
+    def planted(self):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+
+        class Planted(viewsets.ModelViewSet):
+            queryset = JournalEntry.objects.all()
+            action_permission_map = {"post_it": "accounting.post_journalentry",
+                                     "both": {"GET": "accounting.view_journalentry"}}
+
+            @action(detail=True, methods=["post"])
+            def post_it(self, request, pk=None):
+                return None
+
+            @action(detail=True, methods=["post"])
+            def void_it(self, request, pk=None):
+                return None
+
+            @action(detail=True, methods=["get", "post"])
+            def both(self, request, pk=None):
+                return None
+
+            @action(detail=True, methods=["get"])
+            def report(self, request, pk=None):
+                return None
+
+        return Planted
+
+    def test_a_planted_unnamed_write_is_reported_and_named_ones_and_reads_are_not(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        found = Command().undeclared_actions(["accounting"], [self.planted()])
+        self.assertEqual([detail.split(" writes ")[0].rsplit(".", 1)[1] for _shape, detail in found],
+                         ["both", "void_it"])
+
+    def test_every_routed_viewset_names_its_writes(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command
+
+        self.assertEqual(Command().undeclared_actions(list(OUR_APPS)), [])

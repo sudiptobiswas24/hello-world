@@ -350,6 +350,9 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         "write_off": "sales.write_off_invoice",
         "claim": "sales.post_invoice",
         "claims": "sales.view_invoice",
+        # Only a posted invoice is sent: a copy of what was decided, as the
+        # order's and the delivery's are.
+        "send": "sales.change_invoice",
     }
 
     @action(detail=False, methods=["post"])
@@ -562,6 +565,9 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
     action_permission_map = {
         "post_delivery": "sales.post_delivery",
         "customer_return": "sales.post_delivery",
+        # Whether what a short shipment left is still owed: the shipper's
+        # decision, beside posting it.
+        "backorder": "sales.post_delivery",
         "transport": "sales.change_delivery",
         "received": "sales.change_delivery",
         "send": "sales.change_delivery",
@@ -758,7 +764,9 @@ class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mode
     queryset = Quotation.objects.select_related("customer").prefetch_related(
         "lines__item", "lines__charge", "lines__taxes")
     serializer_class = QuotationSerializer
-    action_permission_map = {"accept": "sales.add_salesorder"}
+    action_permission_map = {"accept": "sales.add_salesorder", "send": "sales.change_quotation",
+                             "mark_sent": "sales.change_quotation", "revise": "sales.change_quotation",
+                             "decline": "sales.change_quotation"}
 
     @action(detail=True, methods=["get"])
     def pdf(self, request, pk=None):
@@ -1009,6 +1017,7 @@ class ThirdPartyReleaseViewSet(CustomerScopedMixin, AuditableViewSetMixin, views
     search_fields = ["number", "their_reference", "customer__name"]
     date_field = "inspected_on"
     ordering_fields = ["inspected_on", "number"]
+    action_permission_map = {"record": "sales.add_thirdpartyrelease", "void": "sales.change_thirdpartyrelease"}
 
     @action(detail=False, methods=["post"])
     def record(self, request):

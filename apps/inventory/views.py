@@ -294,7 +294,9 @@ class StockCountViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "memo"]
     date_field = "count_date"
     ordering_fields = ["count_date", "number"]
-    action_permission_map = {"post": "inventory.change_stockcount"}
+    # Putting an item on the sheet adds a line, as the count lines' own
+    # address does: the counter's, while posting the differences is not.
+    action_permission_map = {"post": "inventory.change_stockcount", "add": "inventory.add_stockcountline"}
 
     @action(detail=True, methods=["post"])
     def add(self, request, pk=None):

@@ -2109,6 +2109,7 @@ class BaleViewSet(viewsets.ReadOnlyModelViewSet):
         Prefetch("packing__adjustment__lines", queryset=StockAdjustmentLine.objects.select_related("item", "movement")),
     )
     action_permission_map = {
+        "pack": "manufacturing.add_bale",
         "break_": "manufacturing.change_bale",
         "load": "manufacturing.change_bale",
         "unload": "manufacturing.change_bale",
@@ -2269,6 +2270,8 @@ class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSe
     filter_fields = ["operation", "operation__work_order", "machine"]
     search_fields = ["operation__work_order__number", "operation__name", "memo"]
     date_field = "reported_on"
+    action_permission_map = {"record": "manufacturing.add_operationreport",
+                             "void": "manufacturing.change_operationreport"}
 
     @action(detail=False, methods=["post"])
     def record(self, request):
@@ -2327,6 +2330,7 @@ class RebatchViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     search_fields = ["number", "reason", "item__sku"]
     date_field = "rebatched_on"
     ordering_fields = ["rebatched_on", "number"]
+    action_permission_map = {"record": "manufacturing.add_rebatch", "void": "manufacturing.change_rebatch"}
 
     @action(detail=False, methods=["post"])
     def record(self, request):

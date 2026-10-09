@@ -35,7 +35,7 @@ export default function StepCountForm() {
         { key: "voided_reason", label: "Voided because", readOnly: true, existingOnly: true },
       ]}
       actions={[
-        { label: "Void", path: "void", permission: "manufacturing.add_operationreport", danger: true,
+        { label: "Void", path: "void", permission: "manufacturing.change_operationreport", danger: true,
           when: (row) => !row.voided_at, done: "Voided", fields: [{ key: "reason", label: "Why", wide: true }] },
       ]}
     />

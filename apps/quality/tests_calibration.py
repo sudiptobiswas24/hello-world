@@ -260,3 +260,42 @@ class CalibrationApiTests(CalibrationTestCase):
                                  "due_on": "2026-12-12"}])
         self.assertEqual(client.get("/api/quality/instruments/due/",
                                     {"within": "soon"}).status_code, 400)
+
+
+class WhoDecidesACalibrationTests(CalibrationTestCase):
+    """
+    O83: post and void named no permission and took add_calibration. The
+    Inspector, who holds add, voided the failed calibration that had made
+    their own inspection suspect. Both take change now, the manager's.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        D = datetime.date
+        self.calibrate(D(2026, 1, 10))
+        self.measured(D(2026, 3, 1)).post()
+        self.found = self.calibrate(D(2026, 6, 15), CalibrationResult.FAIL)
+        call_command("setup_roles", verbosity=0)
+        self.people = {}
+        for role in ("Quality Inspector", "Quality Manager"):
+            user = User.objects.create_user(role)
+            user.groups.add(Group.objects.get(name=role))
+            self.people[role] = APIClient()
+            self.people[role].force_authenticate(user)
+
+    def test_the_inspector_does_not_withdraw_the_calibration_that_found_their_balance_out(self):
+        self.assertEqual(len(self.found.suspect_inspections()), 1)
+        response = self.people["Quality Inspector"].post(f"/api/quality/calibrations/{self.found.pk}/void/",
+                                                         {"reason": "Lab error"}, format="json")
+        self.found.refresh_from_db()
+        self.assertEqual((response.status_code, self.found.voided_at), (403, None), response.content)
+
+    def test_the_manager_does(self):
+        response = self.people["Quality Manager"].post(f"/api/quality/calibrations/{self.found.pk}/void/",
+                                                       {"reason": "Lab error"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.found.refresh_from_db()
+        self.assertIsNotNone(self.found.voided_at)
