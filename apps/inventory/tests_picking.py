@@ -159,6 +159,39 @@ class TheDocumentAsksTests(PickingTestCase):
         self.assertEqual([lot.code for lot, _b, _q in line.lots_shipped()], ["GOOD"])
         self.assertEqual(gone_off.on_hand_at(self.warehouse), Decimal("50"))
 
+    def reject(self, lot):
+        """Rejected under a mandatory plan, which is then retired."""
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        check = Characteristic.objects.create(code="POT", name="Potency", uom=self.each)
+        plan = InspectionPlan.objects.create(item=lot.item, is_mandatory=True)
+        line = PlanLine.objects.create(plan=plan, characteristic=check,
+                                       lower_limit=Decimal("95"), upper_limit=Decimal("105"))
+        inspection = Inspection.objects.create(lot=lot, plan=plan,
+                                               inspected_on=datetime.date(2026, 6, 1))
+        Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("80"))
+        inspection.post()
+        plan.is_active = False
+        plan.save()
+
+    def test_a_batch_quality_holds_is_not_picked_whatever_its_plan_says_today(self):
+        """
+        Audit, 9 October: a line naming no batch was the line the release
+        gate never asked about. Once the plan was retired, the rejected
+        batch soonest to expire went onto the lorry.
+        """
+        held = self.lot("HELD", "2026-08-01")
+        good = self.lot("GOOD", "2026-12-01")
+        self.stock("3000", lot=held)
+        self.stock("500", lot=good)
+        self.reject(held)
+        _delivery, line = self.ship(self.batched, "200")
+        self.assertEqual([lot.code for lot, _b, _q in line.lots_shipped()], ["GOOD"])
+        self.assertEqual((held.on_hand_at(self.warehouse), good.on_hand_at(self.warehouse)),
+                         (Decimal("3000"), Decimal("300")))
+        with self.assertRaisesMessage(ValidationError, "3000 is on the shelf and held by quality"):
+            self.ship(self.batched, "400")
+
     def test_a_batch_named_by_hand_is_honoured_over_the_suggestion(self):
         # A picker who says which batch they took is reporting a fact.
         sooner = self.lot("SOONER", "2026-08-01")

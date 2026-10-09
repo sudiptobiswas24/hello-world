@@ -1305,6 +1305,17 @@ class WorkOrder(AuditModel):
                 "back as salvage, which is a shortage with a document over it."
             )
 
+    def reworks(self, item):
+        """
+        The held batch of `item` this run may draw, or None: the one it was
+        raised to put right, and only by a run that makes what it is.
+        Asked by every door into the run, so the exemption is one batch
+        wide at each of them.
+        """
+        if self.rework_of_id and item.pk == self.item_id:
+            return self.rework_of
+        return None
+
     def backflush_for(self, quantity):
         """
         What booking `quantity` of output draws from the shelf.
@@ -2520,8 +2531,11 @@ class MaterialIssueLine(AuditModel):
                     "drawing good stock instead books salvage the plant never "
                     "made."
                 )
-            return
-        check_released(self.item, self.lot, action="go into a run")
+        # The warehouse too: a quarantine bay holds goods nobody has
+        # accepted, and a run drew 40 kg out of one that a delivery and a
+        # transfer both refused.
+        check_released(self.item, self.lot, action="go into a run",
+                       warehouse=issue.warehouse, reworking=order.reworks(self.item))
 
     def _check_return(self, issue):
         """

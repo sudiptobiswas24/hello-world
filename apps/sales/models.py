@@ -3944,14 +3944,12 @@ class Delivery(AuditModel):
                 # Nothing was ever on hand to check: the vendor shipped it.
                 if self.is_drop_ship:
                     continue
-                # Quarantined stock is owned and valued but not cleared.
-                # Nothing else stops a picker choosing that warehouse, so
-                # the refusal has to live where the stock actually moves.
-                if line.warehouse.is_quarantine:
-                    raise ValidationError(
-                        f"{line.warehouse} holds goods awaiting inspection; accept them "
-                        "before shipping."
-                    )
+                # Quarantined stock is owned and valued but not cleared, and
+                # a batch quality holds is not cleared either: the release
+                # gate answers both, as it does for every way into a run.
+                # A batch picked for the line rather than named on it is
+                # chosen among those the gate lets go (`allocate`).
+                check_released(item, line.lot, action="be shipped", warehouse=line.warehouse)
                 if line.warehouse.consignment_vendor_id:
                     raise ValidationError(
                         f"{line.warehouse} holds {line.warehouse.consignment_vendor}'s "
@@ -4012,8 +4010,6 @@ class Delivery(AuditModel):
                         f"Batch {line.lot.code} expired on {line.lot.expires_on} "
                         "and cannot be shipped. Write it off instead."
                     )
-                if not is_return:
-                    check_released(item, line.lot, action="be shipped")
 
         self.delivery_date = to_date(self.delivery_date)
         if not self.number:

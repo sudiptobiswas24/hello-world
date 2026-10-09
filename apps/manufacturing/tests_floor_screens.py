@@ -60,6 +60,30 @@ class IssueTests(FloorScreensTestCase):
                          (self.run_.number, "TAPE-1000 · PP tape, 1000 denier", "PP-RAFFIA · PP homopolymer"))
 
 
+    def test_the_supervisor_draws_nothing_out_of_the_quarantine_bay(self):
+        """Audit, 9 October: 40 kg went into a run out of the bay a delivery refused."""
+        from django.utils import timezone
+
+        from apps.inventory.models import MovementType, StockMovement, Warehouse
+
+        bay = Warehouse.objects.create(code="QC", name="Quality hold", is_quarantine=True)
+        StockMovement.objects.create(item=self.virgin, warehouse=bay, movement_type=MovementType.RECEIPT,
+                                     uom=self.kg, quantity=Decimal("100"), unit_cost=Decimal("100"),
+                                     occurred_at=timezone.now())
+        supervisor = self.as_("Production Supervisor")
+        issue = supervisor.post("/api/manufacturing/material-issues/", {
+            "work_order": self.run_.pk, "issue_date": str(TODAY), "warehouse": bay.pk}, format="json")
+        self.assertEqual(issue.status_code, 201, issue.content)
+        number = issue.json()["id"]
+        line = supervisor.post("/api/manufacturing/material-issue-lines/", {
+            "issue": number, "item": self.virgin.pk, "quantity": "40", "uom": self.kg.pk}, format="json")
+        self.assertEqual(line.status_code, 201, line.content)
+        posted = supervisor.post(f"/api/manufacturing/material-issues/{number}/post/", {}, format="json")
+        self.assertEqual(posted.status_code, 400, posted.content)
+        self.assertIn("holds goods awaiting inspection", posted.content.decode())
+        self.assertEqual(self.virgin.on_hand_at(bay), Decimal("100"))
+
+
 class BookingTests(FloorScreensTestCase):
     def test_a_booking_names_its_step_and_the_run_comes_with_it(self):
         supervisor = self.as_("Production Supervisor")

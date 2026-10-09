@@ -252,3 +252,68 @@ class TheEdgesTests(TapeLoadTestCase):
             void_load(load, other, self.supervisor, self.operator, "x")
         with self.assertRaisesMessage(ValidationError, "approved by somebody else"):
             void_load(load, self.station, self.operator, self.operator, "x")
+
+
+class AHeldDoffIsRefusedAtTheCreelTests(TapeLoadTestCase):
+    """
+    Audit, 9 October: D-1 rejected under a mandatory plan on the tape. On a
+    run that issues at the creel the issue refused it; on a backflushed run
+    nothing was issued, so nothing asked, and the roll woven from it could
+    then never be booked. The creel asks the release gate on every run.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.quality.models import (
+            Characteristic,
+            Inspection,
+            InspectionPlan,
+            PlanLine,
+            Reading,
+        )
+        from apps.quality.release import release_status
+
+        InspectionPlan.objects.filter(item=self.tape).update(is_active=False)
+        denier = Characteristic.objects.create(code="DENP", name="Denier probe", uom=self.kg)
+        self.plan = InspectionPlan.objects.create(item=self.tape, is_mandatory=True)
+        line = PlanLine.objects.create(plan=self.plan, characteristic=denier,
+                                       lower_limit=Decimal("950"), upper_limit=Decimal("1050"),
+                                       sample_size=1)
+        inspection = Inspection.objects.create(lot=self.doffs["D-1"], plan=self.plan,
+                                               inspected_on=TODAY)
+        Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("1200"))
+        inspection.post()
+        self.assertEqual(release_status(self.doffs["D-1"]), "held")
+
+    def standing(self):
+        return TapeLoad.objects.filter(lot=self.doffs["D-1"], voided_at__isnull=True).count()
+
+    def test_on_a_run_that_issues(self):
+        with self.assertRaisesMessage(ValidationError, "D-1 is held: rejected on"):
+            self.load("D-1", "30", CreelSide.WARP, 9)
+        self.assertEqual(self.standing(), 0)
+
+    def test_on_a_backflushed_run(self):
+        WorkOrder.objects.filter(pk=self.run.pk).update(backflush=True)
+        self.run.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "D-1 is held: rejected on"):
+            self.load("D-1", "30", CreelSide.WARP, 9)
+        self.assertEqual(self.standing(), 0)
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("100"))
+
+    def test_and_over_the_station(self):
+        from django.contrib.auth.models import Permission, User
+        from rest_framework.test import APIClient
+
+        WorkOrder.objects.filter(pk=self.run.pk).update(backflush=True)
+        device = User.objects.create_user("loom-exit")
+        device.user_permissions.add(Permission.objects.get(codename="weigh_at_station"))
+        client = APIClient()
+        client.force_authenticate(device)
+        base = f"/api/manufacturing/stations/{self.station.code}/"
+        client.post(base + "sign-in/", {"pin": self.operator.issue_pin()}, format="json")
+        response = client.post(base + "load-tape/", {"machine": "L-17", "doff": "D-1",
+                                                     "kg": "30", "side": "warp"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("D-1 is held", response.content.decode())
+        self.assertEqual(self.standing(), 0)

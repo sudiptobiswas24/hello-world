@@ -302,6 +302,27 @@ class WhatTheMachineMayTakeTests(RollsTestCase):
         self.assertIsNone(mount.issue)
         self.assertEqual(self.fabric_lot.on_hand_at(self.plant), Decimal("104.4000"))
 
+    def test_a_held_roll_is_not_mounted_on_a_backflushed_run_either(self):
+        """
+        As a doff at the creel: a backflushed run issues nothing at the
+        mount, so the release gate is asked there, on every run.
+        """
+        from apps.quality.models import Inspection, InspectionPlan, Reading
+
+        from .orders import WorkOrder
+
+        plan = InspectionPlan.objects.get(item=self.fabric, is_active=True)
+        line = plan.lines.get()
+        inspection = Inspection.objects.create(lot=self.fabric_lot, plan=plan, inspected_on=TODAY)
+        for number in range(line.sample_size):
+            Reading.objects.create(inspection=inspection, plan_line=line,
+                                   value=line.lower_limit - 10, sample_reference=f"S{number}")
+        inspection.post()
+        WorkOrder.objects.filter(pk=self.lam_run.pk).update(backflush=True)
+        with self.assertRaisesMessage(ValidationError, f"{self.fabric_lot.code} is held: rejected"):
+            self.mount()
+        self.assertFalse(RollMount.objects.filter(lot=self.fabric_lot).exists())
+
     def test_withdrawn_once(self):
         self.mount()
         roll = self.laminated()

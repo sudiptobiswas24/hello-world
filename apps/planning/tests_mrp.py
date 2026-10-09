@@ -608,6 +608,36 @@ class WhatIsOnTheShelfTests(PlanningTestCase):
         # Not yet inspected is not passed, so none of it is cover.
         self.assertEqual(self.orders()["PP-RAFFIA"].quantity, Decimal("1000"))
 
+    def test_a_rejected_batch_is_not_cover_once_its_plan_is_retired(self):
+        """
+        Audit, 9 October: planning read today's plan before the verdict, so
+        retiring the plan made 5,000 kg of rejected polymer cover again and
+        the shortage disappeared from the plan.
+        """
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        self.virgin.tracking = TrackingMode.LOT
+        self.virgin.save()
+        characteristic = Characteristic.objects.create(code="MFI", name="Melt flow index", uom=self.kg)
+        inspection_plan = InspectionPlan.objects.create(item=self.virgin, is_mandatory=True)
+        line = PlanLine.objects.create(plan=inspection_plan, characteristic=characteristic,
+                                       lower_limit=Decimal("2"), upper_limit=Decimal("4"))
+        lot = Lot.objects.create(item=self.virgin, code="L1")
+        StockMovement.objects.create(
+            item=self.virgin, warehouse=self.plant,
+            movement_type=MovementType.RECEIPT, uom=self.kg,
+            quantity=Decimal("5000"), unit_cost=Decimal("90"), lot=lot,
+            occurred_at=timezone.now(),
+        )
+        inspection = Inspection.objects.create(lot=lot, plan=inspection_plan,
+                                               inspected_on=timezone.localdate())
+        Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("5"))
+        inspection.post()
+        inspection_plan.is_active = False
+        inspection_plan.save()
+        self.rule(self.virgin, minimum="1000")
+        self.assertEqual(self.orders()["PP-RAFFIA"].quantity, Decimal("1000"))
+
     def test_a_negative_shelf_is_a_shortage_in_its_own_right(self):
         # Only a warehouse that allows it goes below nothing; every movement asks.
         self.plant.allow_negative_stock = True

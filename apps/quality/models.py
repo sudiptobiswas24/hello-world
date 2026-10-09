@@ -45,7 +45,14 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.core import windows
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import (
+    AuditModel,
+    DocumentSequence,
+    correction_date,
+    lock_rows,
+    serialised,
+    to_date,
+)
 from apps.inventory.models import Item, Lot
 
 
@@ -631,6 +638,36 @@ class Inspection(AuditModel):
             and self.decided_by_id == self.inspected_by_id
         )
 
+    def _check_follows_the_standing_verdict(self):
+        """
+        A re-inspection is dated no earlier than the verdict it overturns.
+
+        The latest verdict speaks for a batch. One dated before the
+        verdict standing now cannot be the latest, so posted after it, it
+        stood beside it unheard: passed on 1 June, a rejection dated 30 May
+        was posted, read "rejected", and left the lot released. Refused
+        rather than ranked by when it was posted, so that the order of the
+        dates is the order of the decisions for every reader of them — the
+        release gate, a certificate, the strength report — and voiding the
+        latest hands the question back to the one dated before it. A
+        retained sample tested again is measured, and dated, the day it is
+        tested; which sample it was is the reading's own reference.
+
+        Under a lock on the batch, so two inspections of it posting at once
+        each see the other's date.
+        """
+        from .release import latest_inspection
+
+        lock_rows(self.lot, refresh=False)
+        standing = latest_inspection(self.lot)
+        if standing is None or standing.pk == self.pk:
+            return
+        self.inspected_on = correction_date(
+            self.inspected_on, standing.inspected_on,
+            f"{self.lot} cannot be inspected again on",
+            f"{standing.number} decided it",
+        )
+
     @serialised("posted")
     def post(self):
         if self.posted:
@@ -657,6 +694,7 @@ class Inspection(AuditModel):
                 "past the pallet."
             )
         self.inspected_on = to_date(self.inspected_on)
+        self._check_follows_the_standing_verdict()
         self.result = self._judge()
         if not self.disposition:
             self.disposition = (

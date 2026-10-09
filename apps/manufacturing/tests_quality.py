@@ -175,6 +175,106 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         self.issue_the_drum().post()
         self.assertEqual(release_status(self.drum), "released")
 
+    def refused(self):
+        with self.assertRaisesMessage(ValidationError, "PP-A is held: rejected on"):
+            self.issue_the_drum().post()
+        self.assertEqual(self.drum.on_hand_at(self.plant), Decimal("3000"))
+
+    def test_a_rejected_batch_stays_held_when_its_plan_is_retired(self):
+        """
+        Audit, 9 October: the gate read today's plan before the verdict, so
+        retiring the plan let the rejected drum into a run: 2,900 kg left.
+        """
+        self.inspect(1200)
+        self.plan.is_active = False
+        self.plan.save()
+        self.refused()
+
+    def test_or_made_advisory(self):
+        self.inspect(1200)
+        InspectionPlan.objects.filter(pk=self.plan.pk).update(is_mandatory=False)
+        self.refused()
+
+    def test_a_reinspection_dated_before_the_standing_verdict_is_refused(self):
+        """
+        Passed on 1 June; a rejection dated 30 May, posted afterwards, stood
+        beside the pass unheard and the lot read released. Refused: the
+        latest verdict is the latest dated.
+        """
+        self.inspect(1000)
+        retest = Inspection.objects.create(lot=self.drum, plan=self.plan,
+                                           inspected_on=TODAY - datetime.timedelta(days=2))
+        Reading.objects.create(inspection=retest, plan_line=self.line, value=Decimal("1200"))
+        with self.assertRaisesMessage(
+            ValidationError,
+            "cannot be inspected again on 2026-05-30: QC-2026-00001 decided it on 2026-06-01",
+        ):
+            retest.post()
+        self.assertEqual(release_status(self.drum), "released")
+        self.assertEqual(Inspection.objects.filter(lot=self.drum, posted=True).count(), 1)
+
+    def test_a_retest_dated_the_day_it_is_measured_speaks(self):
+        self.inspect(1000)
+        retest = self.inspect(1200)
+        self.assertEqual(release_status(self.drum), "held")
+        retest.void("Retained sample was the wrong drum")
+        self.assertEqual(release_status(self.drum), "released")
+
+    def test_a_held_batch_may_still_be_moved_to_a_rejects_store(self):
+        """
+        The owner's decision on O114: a transfer is not a way into a run, and
+        moving rejects to a rejects store is what a plant does with them. The
+        gate is not asked; the batch is as held where it lands.
+        """
+        from apps.inventory.models import Warehouse
+        from apps.inventory.transfers import StockTransfer, StockTransferLine
+
+        self.inspect(1200)
+        rejects = Warehouse.objects.create(code="REJ", name="Rejects store")
+        transfer = StockTransfer.objects.create(from_warehouse=self.plant, to_warehouse=rejects,
+                                                transfer_date=TODAY)
+        StockTransferLine.objects.create(transfer=transfer, item=self.virgin, uom=self.kg,
+                                         lot=self.drum, quantity=Decimal("100"))
+        transfer.post()
+        self.assertEqual((self.drum.on_hand_at(rejects), self.drum.on_hand_at(self.plant)),
+                         (Decimal("100"), Decimal("2900")))
+        self.assertEqual(release_status(self.drum), "held")
+        from .orders import MaterialIssue, MaterialIssueLine
+
+        run = self.order("1000")
+        run.release(TODAY)
+        document = MaterialIssue.objects.create(work_order=run, issue_date=TODAY, warehouse=rejects)
+        MaterialIssueLine.objects.create(issue=document, item=self.virgin, quantity=Decimal("100"),
+                                         uom=self.kg, lot=self.drum, line_number=1)
+        with self.assertRaisesMessage(ValidationError, "PP-A is held: rejected on"):
+            document.post()
+        self.assertEqual(self.drum.on_hand_at(rejects), Decimal("100"))
+
+    def test_a_run_does_not_draw_from_the_quarantine_bay(self):
+        """
+        Audit, 9 October: a delivery and a transfer refused the bay, an
+        issue did not, and 40 kg of filler went into a run out of it.
+        """
+        from apps.inventory.models import MovementType, StockMovement, Warehouse
+        from django.utils import timezone
+
+        from .orders import MaterialIssue, MaterialIssueLine
+
+        hold = Warehouse.objects.create(code="QC", name="Quality hold", is_quarantine=True)
+        StockMovement.objects.create(
+            item=self.filler, warehouse=hold, movement_type=MovementType.RECEIPT,
+            uom=self.kg, quantity=Decimal("100"), unit_cost=Decimal("30"),
+            occurred_at=timezone.now(),
+        )
+        run = self.order("1000")
+        run.release(TODAY)
+        document = MaterialIssue.objects.create(work_order=run, issue_date=TODAY, warehouse=hold)
+        MaterialIssueLine.objects.create(issue=document, item=self.filler,
+                                         quantity=Decimal("40"), uom=self.kg, line_number=1)
+        with self.assertRaisesMessage(ValidationError, "QC - Quality hold holds goods awaiting inspection"):
+            document.post()
+        self.assertEqual(self.filler.on_hand_at(hold), Decimal("100"))
+
 
 class TheMeasurementExplainsTheMoneyTests(RunTestCase):
     def setUp(self):
