@@ -253,6 +253,8 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
 @transaction.atomic
 def void_bags(count, supervisor, reason):
     """Take a count back: its production and its inspection with it."""
+    from .station_gauge import discard_open, withdraw_inspection
+
     if not count.is_standing():
         raise ValidationError(f"{count} is already void.")
     _check_supervisor(count.station, supervisor, count.operator, count.shift_date,
@@ -261,14 +263,13 @@ def void_bags(count, supervisor, reason):
     if not reason:
         raise ValidationError("Say why the count is withdrawn.")
     count.entry.void(memo=f"Count voided: {reason}"[:255])
-    inspection = count.inspection
-    open_with_the_lab = not inspection.posted
-    if open_with_the_lab:
+    # As a doff or a film roll is withdrawn: an inspection quality voided
+    # first is left voided rather than refusing the whole withdrawal.
+    open_with_the_lab = withdraw_inspection(count.inspection, reason)
+    if open_with_the_lab is not None:
         # Still with the lab: taken off its list rather than left open
         # for a bundle that is no longer there.
         count.inspection = None
-    else:
-        inspection.void(reason)
     count.voided_by, count.void_reason = supervisor, reason
     count._voiding = True
     try:
@@ -276,9 +277,8 @@ def void_bags(count, supervisor, reason):
     finally:
         # Left set, the next save of this object would pass the guard too.
         count._voiding = False
-    if open_with_the_lab:
-        inspection.readings.all().delete()
-        inspection.delete()
+    if open_with_the_lab is not None:
+        discard_open(open_with_the_lab)
     return count
 
 
