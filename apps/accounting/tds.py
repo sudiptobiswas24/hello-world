@@ -6,10 +6,13 @@ Two shapes of threshold, and they are not the same rule twice:
 
 - On the excess (194Q, goods bought): nothing until the year's purchases
   from a seller pass the threshold, then tax on what they pass it by.
-- On the whole (194C contractors, 194J professionals, 194I rent): nothing
-  until one bill passes the single limit or the year passes the annual
-  one, and then on everything in the year not yet taxed, earlier bills
-  included. The catch-up is the rule, not a correction.
+- On the whole (194C contractors, 194J professionals, 194I rent): a bill
+  past the single limit is taxed, that bill alone; once the year passes
+  the annual limit, everything in the year not yet taxed is, earlier
+  bills included. The catch-up is the rule, not a correction, but only
+  the annual limit makes it: s.194C(5) spares a sum not over 30,000
+  unless the year's aggregate exceeds a lakh, so 20,000 then 35,000 taxes
+  35,000 (700), and the 20,000 waits for the year to cross a lakh.
 
 Tax is a whole number of rupees (section 288B), rounded half up. The base
 is the taxable value, GST left out, as the CBDT reads it when the bill
@@ -98,21 +101,28 @@ class TdsSection(AuditModel):
 
     def owed(self, rate, this, year_before, untaxed_before):
         """
-        (base, tax) on a bill of `this`, with `year_before` already billed
-        by the party this year and `untaxed_before` of it never taxed.
+        (base, tax, caught up) on a bill of `this`, with `year_before` already
+        billed by the party this year and `untaxed_before` of it never taxed.
+        `caught up`: the base takes in those earlier bills, which are then
+        covered by this deduction.
         """
         this, year_before = Decimal(this), Decimal(year_before)
         if self.mode == ThresholdMode.EXCESS:
             limit = self.annual_threshold
             base = max(Decimal("0"), year_before + this - limit) - max(Decimal("0"), year_before - limit)
+            return base, rupees(base * Decimal(rate) / 100), False
+        no_limit = self.single_threshold is None and self.annual_threshold is None
+        year_crossed = self.annual_threshold is not None and year_before + this > self.annual_threshold
+        if no_limit or year_crossed:
+            base, caught_up = Decimal(untaxed_before) + this, True
+        elif self.single_threshold is not None and this > self.single_threshold:
+            # Past the single limit, the bill is taxed alone (s.194C(5)): the
+            # year's earlier bills under it are spared until the year passes
+            # its own limit.
+            base, caught_up = this, False
         else:
-            crossed = (
-                (self.single_threshold is None and self.annual_threshold is None)
-                or (self.single_threshold is not None and this > self.single_threshold)
-                or (self.annual_threshold is not None and year_before + this > self.annual_threshold)
-            )
-            base = Decimal(untaxed_before) + this if crossed else Decimal("0")
-        return base, rupees(base * Decimal(rate) / 100)
+            base, caught_up = Decimal("0"), False
+        return base, rupees(base * Decimal(rate) / 100), caught_up
 
 
 def deduction_terms(party, section=None):
