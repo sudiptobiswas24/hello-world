@@ -120,7 +120,15 @@ class TaxedLineMixin(models.Model):
                     "and one across a state line bear different taxes."
                 )
             return taxes
-        return profile.applicable_taxes(taxes)
+        return profile.applicable_taxes(taxes, place=self.place_for(profile))
+
+    def place_for(self, profile):
+        """
+        Where this line's supply is: its document says, when it moves goods
+        to a buyer (a sale, see gst.place_of_supply); otherwise the party's
+        state on record.
+        """
+        return profile.place_of_supply()
 
     def tax_amounts(self):
         """[(tax, amount)] for this line, honouring inclusive and compound taxes."""
@@ -411,6 +419,10 @@ class PostedTaxDocumentMixin(models.Model):
     def corrected_document(self):
         return None
 
+    def place_for(self, profile):
+        """Where the supply is (gst.place_of_supply): a sale that moves goods says; else the party's state."""
+        return profile.place_of_supply()
+
     def record_taxes(self):
         """
         Write down what every line bore. Called last in posting, after the
@@ -429,7 +441,8 @@ class PostedTaxDocumentMixin(models.Model):
             profile = getattr(self.tax_party(), "tax_profile", None)
             self.party_gstin = profile.gstin if profile else ""
             self.party_registration = profile.gst_registration if profile else ""
-            self.place_of_supply = (profile.place_of_supply() or "") if profile else ""
+            # The place its lines were taxed at: one rule for both.
+            self.place_of_supply = (self.place_for(profile) or "") if profile else ""
 
         for line, amounts in self.line_tax_amounts().items():
             for tax, amount in amounts:
