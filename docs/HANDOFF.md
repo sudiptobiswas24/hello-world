@@ -58,19 +58,32 @@ g17 is pushed (b1d03ed). It holds:
 findings.md says what each fix branch held. docs/RISKS.md, "Open
 defects", is the one list of what is still open.
 
-1. **The owner chose another audit round** (9 October), over the pilot.
-   The audits cover what the 8 October round did not:
-   - accounting with GST;
-   - sales;
-   - purchasing;
-   - permissions across every module;
-   - then quality and CRM.
+1. **Audit round 2 is done (9 October):** accounting with GST, sales,
+   purchasing, permissions, quality and CRM. It found 91 defects, each
+   proven by a failing probe, now registered as O49-O123. The probes are
+   in the scratch worktrees `audit_{acc,sales,pur,perm,qc}`. If those are
+   gone, each row names its probe class, which can be rewritten from the
+   row.
+2. **Fix wave 1, to be gated as g18, was started on 9 October.** Four
+   agents worked on worktrees `fix_{sec,trade,stat,qual}` at ef7c0c3,
+   under the rules in the scratch file `briefs/fix_common.md`:
+   - security and roles: O83-O88, O119, O120;
+   - trading-document rules: O65-O68, O71-O73, O82, O90, O92, O96,
+     O106, O107;
+   - statutory: O50, O55, O57-O62, O102-O104;
+   - quality and production: O110-O113, O115-O118, O121, O122.
 
-   Findings go into docs/RISKS.md the day they are seen. The fixes are
-   reviewed by someone other than their author before their gate.
-2. **The owner's decisions of 9 October** are in docs/RISKS.md,
-   "Decisions taken", item 20. Two are to build: O28, within the legal
-   cap on deductions, and O48.
+   Each agent's work is reviewed by the auditor who found the defects
+   before it joins the gate. If the session stopped part-way, look for
+   these worktrees and their commits first (CLAUDE.md, "Interrupted
+   work").
+
+   Fix wave 2 (g19) takes the rest: exchange and settlement, pricing,
+   GRNI residues, commission, the remaining races, the inert features,
+   and the older rows (O2, O42, O48, O28 and others).
+
+   Owed by the owner: O114, a held lot's transfer. Owed by the tax
+   adviser: O60 for registered bill-to-ship-to buyers.
 3. **Open defects** in docs/RISKS.md, by kind: books first, then race,
    then rule. O42 (a landed-cost release does not follow goods moved
    since) is next. Each fix needs a test that fails without it, and its
