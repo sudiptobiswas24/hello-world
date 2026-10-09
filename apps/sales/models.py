@@ -22,6 +22,8 @@ from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 from apps.core.models import (
+    BILLED,
+    MOVED,
     Extensible,
     Address,
     AuditModel,
@@ -39,6 +41,7 @@ from apps.core.models import (
     lock_rows,
     only_one,
     prefetched,
+    refuse_changing_what_moved,
     serialised,
     to_date,
 )
@@ -618,11 +621,29 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
         if _names_another(self, "customer"):
             _require_customer_role(self.customer)
 
+    # Shared rule A (apps.core.models.refuse_changing_what_moved): shipped to
+    # one customer and billed in one currency, the rest is not billed to
+    # another, in another.
+    FROZEN_ONCE_MOVED = {"customer": MOVED, "currency": MOVED}
+
+    def what_moved_against_it(self, kind):
+        shipped = self.deliveries.filter(posted=True).first()
+        if shipped is not None:
+            return f"shipped on {shipped.number}"
+        invoiced = (Invoice.objects.filter(posted=True).filter(
+            Q(sales_order=self) | Q(lines__order_line__order=self)).first())
+        if invoiced is not None:
+            return f"been invoiced on {invoiced.number}"
+        return ""
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self._check_customer()
         if self._state.adding:
             self._apply_customer_defaults()
         else:
+            # Under its own lock: deliveries and invoices post under it.
+            refuse_changing_what_moved(self, lambda: lock_rows(self, refresh=False))
             before = SalesOrder.objects.filter(pk=self.pk).values(
                 "status", "is_job_work", "third_party_inspection", "freight_terms", "incoterm").first()
             if before and before["status"] == OrderStatus.DRAFT:
@@ -707,6 +728,21 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
                 "confirmed order is not raised past it; take the rest as a new order, which "
                 "asks for approval.")
 
+    def refuse_going_past_the_policy(self):
+        """
+        What confirming asks of the policy, asked again of a confirmed order
+        whose line is added, re-priced, re-discounted or raised: a line raised
+        to 60% against a 15% policy after confirming shipped and invoiced with
+        nobody asked. An approval does not carry over: the change withdrew it
+        (SalesOrderLine.save), as it covered the order someone read.
+        """
+        reasons = self.policy_reasons()
+        if reasons:
+            raise ValidationError(
+                f"{self} is confirmed, and this change needs approval: {' '.join(reasons)} A "
+                "confirmed order is not changed past the policy; take it as a new order, which "
+                "asks for approval.")
+
     def cost_total(self):
         """
         What this order's goods cost, at weighted average across warehouses.
@@ -760,7 +796,15 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
             reasons.append(
                 f"{self.customer} would be {exposure} against a credit limit of {limit}."
             )
+        return reasons + self.policy_reasons()
 
+    def policy_reasons(self):
+        """
+        What the approval policy finds in the order itself: discounts, value,
+        margin. The credit limit is the customer's, and asked on its own
+        (refuse_going_over_the_credit_limit) when a confirmed order grows.
+        """
+        reasons = []
         policy = ApprovalPolicy.active()
         if policy is None:
             return reasons
@@ -1432,8 +1476,12 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(f"{self} is not closed short.")
         if self.order.status != OrderStatus.CONFIRMED:
             raise ValidationError(f"{self.order} is {self.order.status}; it cannot owe anything.")
+        # Owed again is promised again: what raising a confirmed line asks, under the customer's lock as
+        # confirming takes it. Reopened unasked, a customer at their limit of 1,000 stood at 1,800.
+        lock_rows(self.order.customer, refresh=False)
         self.closed_short_at, self.closed_short_reason = None, ""
         super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        SalesOrder.objects.get(pk=self.order_id).refuse_going_over_the_credit_limit()
         self.reclaim_stock()
 
     def _worth_less_than_stored(self):
@@ -1460,8 +1508,38 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         lock_rows(self, refresh=False)
         lock_rows(self.order, refresh=False)
 
+    # Shared rule A (apps.core.models.refuse_changing_what_moved). A delivery
+    # line reads its item and unit from here, so a shipped line changed to a
+    # gadget had five gadgets put back on the shelf when the widgets came
+    # back. The price and discount may still be agreed again before the
+    # goods are billed, never after.
+    FROZEN_ONCE_MOVED = {
+        "order": MOVED, "item": MOVED, "charge": MOVED, "uom": MOVED,
+        "unit_price": BILLED, "discount_percent": BILLED,
+    }
+
+    def what_moved_against_it(self, kind):
+        if kind == BILLED:
+            billed = self.quantity_invoiced()
+            return f"been invoiced for {format(billed.normalize(), 'f')}" if billed > 0 else ""
+        shipped = self.delivery_lines.filter(delivery__posted=True).select_related("delivery").first()
+        if shipped is not None:
+            return f"shipped on {shipped.delivery.number}"
+        invoiced = self.invoice_lines.filter(invoice__posted=True).select_related("invoice").first()
+        if invoiced is not None:
+            return f"been invoiced on {invoiced.invoice.number}"
+        return ""
+
+    def _hold_with_its_orders(self):
+        """The line, then the order it is on and any it would move to: deliveries and invoices post under those."""
+        lock_rows(self, refresh=False)
+        lock_rows(*documents_it_answers_to(self, "order"), refresh=False)
+
     @transaction.atomic
     def save(self, *args, **kwargs):
+        refuse_changing_what_moved(self, self._hold_with_its_orders)
+        stored = SalesOrderLine.objects.filter(pk=self.pk).values(
+            "unit_price", "discount_percent", "quantity").first() if self.pk else None
         shrinking = self._worth_less_than_stored()
         if shrinking:
             self._hold_for_deposits()
@@ -1528,11 +1606,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                         f"{committed} of this line has already been shipped or invoiced; "
                         f"the quantity cannot drop below that."
                     )
-                if self.unit_price != previous.unit_price and self.quantity_invoiced() > 0:
-                    raise ValidationError(
-                        "This line has been invoiced; its price can no longer change. "
-                        "Issue a credit note instead."
-                    )
+                # Its price and discount once invoiced: rule A, asked first thing above.
                 # An approval covers the order someone looked at. Re-price
                 # it afterwards and the approval is for something else.
                 repriced = (
@@ -1547,6 +1621,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         # because a new line has no previous version to compare against.
         if self._state.adding and self.order_id and self.order.approved_at:
             self.order.withdraw_approval()
+        # The policy, asked again of a confirmed order: a line added, re-priced, re-discounted or raised.
+        asks_the_policy = stored is None or (
+            (stored["unit_price"], stored["discount_percent"]) != (self.unit_price, self.discount_percent)
+            or self.quantity > stored["quantity"])
         super().save(*args, **kwargs)
         if self.order.status == OrderStatus.DRAFT:
             self.order.check_place()
@@ -1554,6 +1632,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             self.order.refuse_coming_to_less_than_its_deposits()
         if growing:
             SalesOrder.objects.get(pk=self.order_id).refuse_going_over_the_credit_limit()
+        if asks_the_policy:
+            order = SalesOrder.objects.get(pk=self.order_id)
+            if order.status == OrderStatus.CONFIRMED:
+                order.refuse_going_past_the_policy()
         # Re-sizing or re-warehousing a line on a confirmed order changes
         # what it has promised, so the claim has to follow. Leaving the old
         # one standing holds stock for a quantity nobody is waiting for.
