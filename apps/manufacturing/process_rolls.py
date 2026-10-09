@@ -215,6 +215,7 @@ def _issue_roll(run, lot, warehouse, on_date, label):
 def mount_roll(station, operator, machine, code, at=None):
     """Put a roll on a laminator, flexo or BCS; the roll before is finished."""
     from apps.inventory.models import Lot
+    from apps.quality.release import check_released
 
     from .machines import Machine
     from .station import LineKind
@@ -242,6 +243,10 @@ def mount_roll(station, operator, machine, code, at=None):
             raise ValidationError(f"No roll {code}.")
         if not run.components.filter(item=lot.item).exists():
             raise ValidationError(f"{lot} is {lot.item}; {run} does not use it.")
+        # On every run, as a tape load asks: a backflushed run issues
+        # nothing at the mount, so nothing else would.
+        check_released(lot.item, lot, action="go into a run", warehouse=station.warehouse,
+                       reworking=run.reworks(lot.item))
     previous = _open_mount(machine)
     if previous is not None:
         previous.finished_at = at

@@ -57,8 +57,7 @@ from apps.core.models import to_date
 from apps.inventory.tracking import TrackingMode, lots_at
 from apps.manufacturing.bom import default_bom_for, drawn
 from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
-from apps.quality.release import plan_for, release_status
-from apps.quality.models import ReleaseStatus
+from apps.quality.release import may_be_drawn
 
 from .capacity import LoadBook, schedule_make
 from .forecast import Forecast, forecast_demand
@@ -138,15 +137,13 @@ def unusable_on_hand(item, warehouse, on_date):
     """
     if item.tracking == TrackingMode.NONE:
         return ZERO
-    inspected = plan_for(item)
-    mandatory = inspected is not None and inspected.is_mandatory
     total = ZERO
     for lot, quantity in lots_at(item, warehouse):
         if quantity <= 0:
             continue
-        if lot.has_expired(on_date):
-            total += quantity
-        elif mandatory and release_status(lot) != ReleaseStatus.RELEASED:
+        # The release gate's answer, not one worked out here from today's
+        # plan: a rejected drum counted as cover once its plan was retired.
+        if lot.has_expired(on_date) or not may_be_drawn(item, lot):
             total += quantity
     return total
 
@@ -164,12 +161,10 @@ def expiring_unused(item, warehouse, on_date, demands):
     """
     if item.tracking == TrackingMode.NONE:
         return []
-    inspected = plan_for(item)
-    mandatory = inspected is not None and inspected.is_mandatory
     batches = sorted(
         ((lot, quantity) for lot, quantity in lots_at(item, warehouse)
          if quantity > 0 and lot.expires_on is not None and not lot.has_expired(on_date)
-         and not (mandatory and release_status(lot) != ReleaseStatus.RELEASED)),
+         and may_be_drawn(item, lot)),
         key=lambda row: (row[0].expires_on, row[0].pk),
     )
     if not batches:

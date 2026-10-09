@@ -68,6 +68,7 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     """Put `kg` of doff `code` on `machine`'s warp or weft, issued to its run by batch."""
     from apps.inventory.locking import lock_positions
     from apps.inventory.models import Lot
+    from apps.quality.release import check_released
 
     from .machines import Machine
     from .orders import IssueDirection, MaterialIssue, MaterialIssueLine
@@ -89,6 +90,11 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
         raise ValidationError(f"No doff {code}.")
     if not run.components.filter(item=lot.item).exists():
         raise ValidationError(f"{lot} is {lot.item}; {run} does not weave it.")
+    # Asked here, on every run: a backflushed run issues nothing at the
+    # creel, so a held doff went on the loom unasked and the roll woven
+    # from it could never be booked.
+    check_released(lot.item, lot, action="go into a run", warehouse=station.warehouse,
+                   reworking=run.reworks(lot.item))
     kg = _number(kg, "The kilos loaded")
     # Held before what is free is read, the run and then the doff's place
     # on the shelf, in the order every posting takes them: two looms

@@ -110,6 +110,7 @@ class Command(BaseCommand):
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
         findings += self.movements_written_around_save(labels, sources)
+        findings += self.release_past_the_gate(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -693,6 +694,58 @@ class Command(BaseCommand):
                             "shelf read before its lock",
                             f"{key} reads the shelf at line {min(reads)} and holds it only at line "
                             f"{min(locks)}; two at once both decide on what they read. Lock first.",
+                        ))
+        return findings
+
+    # Where the release question is answered: apps/quality/release.py.
+    RELEASE_GATE = ("quality", "release.py")
+    ISSUES_ONLY_UNLESS_BACKFLUSHED = re.compile(r"\bnot\s+[\w.]+\.backflush\b")
+
+    def release_past_the_gate(self, labels, sources):
+        """
+        A batch let into a run, or counted as usable, without the release gate.
+
+        A held lot reached production by several doors, each answering
+        for itself: planning worked "usable" out of today's plan and the
+        verdict, so a rejected drum was cover again once its plan was
+        retired; a tape load and a roll mount asked only through the issue
+        they make, which a backflushed run does not, so a rejected doff
+        went onto a loom. The gate (`check_released`, `why_held`,
+        `may_be_drawn`) is the one answer; asked of each function:
+
+        - one that reads both today's plan (`plan_for`) and a verdict
+          (`release_status`) outside the gate is deciding release itself;
+        - one that issues only when the run does not backflush, and never
+          asks `check_released`, lets the backflushed run past.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                gate = (label, path.name) == self.RELEASE_GATE
+                tree = ast.parse(text)
+                nested = {id(inner) for outer in ast.walk(tree)
+                          if isinstance(outer, (ast.FunctionDef, ast.AsyncFunctionDef))
+                          for inner in ast.walk(outer)
+                          if inner is not outer and isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                for fn in ast.walk(tree):
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or id(fn) in nested:
+                        continue
+                    body = ast.unparse(fn)
+                    key = f"{label}/{path.name}:{fn.lineno} {fn.name}()"
+                    if not gate and "plan_for(" in body and "release_status(" in body:
+                        findings.append((
+                            "release decided outside the gate",
+                            f"{key} reads today's plan and a batch's verdict and decides from them; "
+                            "ask the gate (apps.quality.release.why_held / may_be_drawn), which "
+                            "holds a rejected batch whatever the plan says today.",
+                        ))
+                    if self.ISSUES_ONLY_UNLESS_BACKFLUSHED.search(body) and "check_released(" not in body:
+                        findings.append((
+                            "release asked only by the issue",
+                            f"{key} issues only when the run does not backflush and never asks "
+                            "check_released(): on a backflushed run a held batch goes in unasked.",
                         ))
         return findings
 

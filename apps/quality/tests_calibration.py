@@ -22,6 +22,8 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
+from apps.inventory.models import Lot
+
 from .calibration import Calibration, CalibrationResult, Instrument, due
 from .models import Characteristic, Inspection, Reading
 from .tests import QualityTestCase
@@ -138,7 +140,10 @@ class FoundOutTests(CalibrationTestCase):
         same_day = self.measured(D(2026, 6, 15)).post()
         other = Instrument.objects.create(code="BAL-2", name="Other", interval_days=180)
         self.calibrate(D(2026, 1, 10), instrument=other)
-        self.measured(D(2026, 6, 3), instrument=other).post()
+        # Another roll: R-001's verdict of 15 June stands, and a verdict on
+        # it dated before that is refused (O113).
+        self.measured(D(2026, 6, 3), instrument=other,
+                      lot=Lot.objects.create(item=self.fabric, code="R-002")).post()
         found = self.calibrate(D(2026, 6, 15), CalibrationResult.ADJUSTED)
         self.assertEqual(found.suspect_inspections(), [march, june, same_day])
         self.assertNotIn(before, found.suspect_inspections())

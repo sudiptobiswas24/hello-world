@@ -128,6 +128,23 @@ def _expiry_order(lot):
     return (lot.expires_on is None, lot.expires_on or datetime.date.max, lot.pk)
 
 
+# Why a batch may not be drawn whatever the shelf holds, said by the
+# module that decides it (quality registers its release gate when it
+# loads): `fn(item, lot) -> words, or ""`. Here so a pick asks without
+# inventory importing whoever answers.
+LOT_HOLDS = []
+
+
+def register_lot_hold(ask):
+    if ask not in LOT_HOLDS:
+        LOT_HOLDS.append(ask)
+
+
+def lot_held(item, lot):
+    """Why this batch may not be drawn, in words, or ""."""
+    return next((said for said in (ask(item, lot) for ask in LOT_HOLDS) if said), "")
+
+
 def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
     """
     Choose which lots to ship, soonest to expire first.
@@ -139,7 +156,10 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
     order they were created.
 
     Expired stock is skipped rather than silently included. Shipping it
-    is the one outcome a tracked item exists to prevent.
+    is the one outcome a tracked item exists to prevent. So is a batch
+    quality holds: chosen for nobody in particular, a rejected drum went
+    onto a lorry once its inspection plan was retired, because the line
+    that named no batch was the line nothing asked about.
     """
     quantity = Decimal(quantity)
     if quantity <= 0:
@@ -149,11 +169,15 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
     taken = []
     remaining = quantity
     skipped = Decimal("0")
+    held = Decimal("0")
     for lot, available in lots_at(item, warehouse):
         if remaining <= 0:
             break
         if not allow_expired and lot.has_expired(on_date):
             skipped += available
+            continue
+        if lot_held(item, lot):
+            held += available
             continue
         drawn = min(available, remaining)
         taken.append((lot, drawn))
@@ -166,6 +190,8 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
         )
         if skipped:
             message += f" {skipped} is on the shelf but expired."
+        if held:
+            message += f" {format(held.normalize(), 'f')} is on the shelf and held by quality."
         raise ValidationError(message)
     return taken
 

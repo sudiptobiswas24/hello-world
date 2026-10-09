@@ -96,39 +96,63 @@ def release_status(lot):
     return ReleaseStatus.HELD
 
 
-def check_released(item, lot, action="issue"):
+def why_held(item, lot, warehouse=None, action="issue", reworking=None):
     """
-    Refuse a batch that has not been passed, where the item says it must
-    be.
+    Why `lot` of `item` may not be drawn from `warehouse`, in words, or "".
 
-    An item with no plan, or an advisory one, passes straight through:
-    most of what a plant moves is not inspected and this must not stand
-    in its way.
+    The one release gate. Every way a batch goes into a run or onto a
+    lorry asks it: a delivery, a material issue, a backflush (which is an
+    issue), a tape load or a roll mount on any run, a pick that chooses
+    batches for itself, and planning, which counts only what passes it.
+    Each door that answered for itself was a door a held lot walked
+    through: a backflushed loom loaded a rejected doff because only the
+    issue asked, and production drew from the quarantine bay because
+    only a delivery looked at the warehouse.
+
+    **The standing verdict holds, whatever the plan says today.** A batch
+    rejected or held for rework stays held when its plan is retired or
+    made advisory: the plan says what must be measured from now on, and
+    retiring it measured nothing. Today's plan answers only the question
+    no verdict has answered yet: whether a batch nobody inspected may go.
+
+    `reworking` is the batch a rework run was raised for: that run may
+    draw it held, as no other may (see `MaterialIssueLine`).
     """
+    if warehouse is not None and warehouse.is_quarantine:
+        return (f"{warehouse} holds goods awaiting inspection; accept them into a "
+                f"store before they can {action}.")
+    if lot is not None and reworking is not None and lot.pk == reworking.pk:
+        return ""
+    status = release_status(lot) if lot is not None else None
+    if status == ReleaseStatus.HELD:
+        held = latest_inspection(lot)
+        if held is None:
+            return (f"{lot} is held: it was re-made from a batch that is held or not "
+                    f"yet inspected. Inspect it before it can {action}.")
+        return (f"{lot} is held: {held.get_disposition_display().lower()} on "
+                f"{held.inspected_on} ({held.number}). It cannot {action}.")
     plan = plan_for(item)
     if plan is None or not plan.is_mandatory:
-        return
+        # Most of what a plant moves is not inspected, and nothing has
+        # said this batch is bad: this must not stand in its way.
+        return ""
     if lot is None:
-        raise ValidationError(
-            f"{item} has a mandatory inspection plan, so it moves by batch and "
-            f"this line does not name one. Nothing can {action} a quantity "
-            "nobody can point at a measurement for."
-        )
-    status = release_status(lot)
-    if status == ReleaseStatus.RELEASED:
-        return
+        return (f"{item} has a mandatory inspection plan, so it moves by batch and "
+                f"this line does not name one. Nothing can {action} a quantity "
+                "nobody can point at a measurement for.")
     if status == ReleaseStatus.UNINSPECTED:
-        raise ValidationError(
-            f"{lot} has not been inspected and {item} says it must be. Not yet "
-            f"inspected is not passed, so it cannot {action} yet."
-        )
-    held = latest_inspection(lot)
-    if held is None:
-        raise ValidationError(
-            f"{lot} is held: it was re-made from a batch that is held or not yet "
-            f"inspected. Inspect it before it can {action}."
-        )
-    raise ValidationError(
-        f"{lot} is held: {held.get_disposition_display().lower()} on "
-        f"{held.inspected_on} ({held.number}). It cannot {action}."
-    )
+        return (f"{lot} has not been inspected and {item} says it must be. Not yet "
+                f"inspected is not passed, so it cannot {action} yet.")
+    return ""
+
+
+def check_released(item, lot, action="issue", warehouse=None, reworking=None):
+    """Refuse what `why_held` says may not be drawn."""
+    said = why_held(item, lot, warehouse=warehouse, action=action, reworking=reworking)
+    if said:
+        raise ValidationError(said)
+
+
+def may_be_drawn(item, lot):
+    """Whether the gate lets this batch go, for whatever counts or chooses usable stock."""
+    return not why_held(item, lot)
