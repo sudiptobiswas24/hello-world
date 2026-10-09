@@ -447,7 +447,9 @@ class TheAuditAsksTests(TestCase):
 
         from apps.core.management.commands.audit_invariants import Command
 
-        return Command().corrections_dated_without_the_rule(["hr"], {"hr": {Path("apps/hr/example.py"): text}})
+        # Only the planted file is given, so every exemption of hr's reads as stale: not asked here.
+        return [finding for finding in Command().corrections_dated_without_the_rule(
+            ["hr"], {"hr": {Path("apps/hr/example.py"): text}}) if finding[0] != "stale exemption"]
 
     def test_a_reversal_dated_by_its_caller_is_reported_until_it_asks_the_rule(self):
         unasked = ("class Slip:\n    def void(self, on_date=None):\n"

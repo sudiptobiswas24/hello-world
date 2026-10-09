@@ -66,6 +66,22 @@ class ClaimTests(GstReturnTestCase):
         with self.assertRaisesMessage(ValidationError, "not a credit note"):
             note.credit_claim(D("1"), "torn")
 
+    def test_a_claim_is_not_credited_before_its_invoice(self):
+        """The audit's probe: an invoice of 10 September, a claim of 100 dated 20 August."""
+        import datetime
+
+        from django.utils import timezone
+
+        from apps.accounting.models import JournalLine
+
+        invoice = self.sell(self.buyer, "1000")
+        with self.assertRaisesMessage(ValidationError, "is not credited on 2026-08-20: it was issued on 2026-09-10"):
+            invoice.credit_claim(D("100"), "torn", on_date=datetime.date(2026, 8, 20))
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            invoice.credit_claim(D("100"), "torn", on_date=timezone.localdate() + datetime.timedelta(days=1))
+        self.assertFalse(invoice.credit_notes.exists())
+        self.assertFalse(JournalLine.objects.filter(account=self.revenue, debit__gt=0).exists())
+
     def test_what_quality_cost_the_quarter(self):
         invoice = self.sell(self.buyer, "10000")
         invoice.credit_claim(D("500"), "torn", on_date=DAY)
@@ -107,6 +123,13 @@ class ClaimApiTests(GstReturnTestCase):
         self.assertIn("reason", bad.json())
         [row] = ar.get("/api/sales/invoices/claims/", {"from": "2026-09-01", "to": "2026-09-30"}).json()
         self.assertEqual((row["reason"], row["net"], row["total"]), ("torn", "500.00", "590.00"))
+
+    def test_not_dated_before_its_invoice_over_the_api(self):
+        response = self.as_("AR Manager").post(
+            "/api/sales/invoices/claim/", {"invoice": self.invoice.pk, "net": "100", "reason": "torn",
+                                           "date": "2026-08-20"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("it was issued on 2026-09-10", response.content.decode())
 
     def test_a_complaint_settled_says_what_it_cost(self):
         from apps.manufacturing.complaints import Complaint
