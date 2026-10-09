@@ -1200,6 +1200,10 @@ class Command(BaseCommand):
     DATED_ELSEWHERE = {
         "accounting.Payment.void": "refuses a day before the payment and a day to come in its own words, "
                                    "written before the rule",
+        "accounting.RecurringJournal.generate_one": "a schedule's run, posted forward on its own day; it "
+                                                    "corrects nothing",
+        "sales.RecurringInvoice.generate_one": "a schedule's run, posted forward on its own day; it corrects "
+                                               "nothing",
         "accounting.RealisedOnItsOwnDay.release_exchange_difference":
             "dated on the payment's void, which Payment.void asked of both refusals, or on the day the "
             "difference was realised when that came later: a void is never refused for it",
@@ -1207,6 +1211,11 @@ class Command(BaseCommand):
             "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
             "sales.Invoice.recover_write_off",
             "sales.CustomerTds.reverse",
+            # Seen when the check was widened to steps that post afresh (O55), not yet fixed:
+            "sales.Invoice.apply_settlement_discount", "sales.Invoice.apply_deposit",
+            "sales.Invoice.credit_old_supply", "purchasing.Bill.apply_prepayment",
+            "purchasing.Bill.take_settlement_discount", "purchasing.Bill.debit_old_supply",
+            "hr.ExpenseClaim.pay",
             "purchasing.TdsDeduction.reverse", "purchasing.TdsChallan.void",
             "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
             "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",
@@ -1216,16 +1225,32 @@ class Command(BaseCommand):
     # An entry is taken back by create_reversal(), or written by hand
     # naming the entry it undoes: the landed-cost release posts its own.
     REVERSES = re.compile(r"\.create_reversal\(|\b(reverses|undoing)=")
+    # Or posts one afresh: a write-off, a claim credited, a discount taken, money held drawn
+    # down. Nothing is taken back, and it is dated anywhere all the same.
+    POSTS = re.compile(r"\bJournalEntry\.objects\.create\(|\bpost_drawdown\(|\bpost_settlement_fx\(|\.post\(")
+
+    @staticmethod
+    def _code(fn):
+        """A function's statements, its docstring left out: a docstring that names a call is not the call."""
+        body = fn.body
+        if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
+                and isinstance(body[0].value.value, str):
+            body = body[1:]
+        return "\n".join(ast.unparse(statement) for statement in body)
 
     def corrections_dated_without_the_rule(self, labels, sources):
         """
-        A step that reverses an entry on the day it is given, never asking correction_date().
+        A step that reverses or posts an entry on the day it is given, never asking correction_date().
 
         A lathe bought on 1 January was disposed of on 15 December before, and its
         capitalisation undone on 1 December: the plant account stood at -12,000 over the
         year end. Dated on a day still to come, a correction has the document read done
         while the books do not. apps.core.models.correction_date() refuses both, and a step
         that takes `on_date` and reverses an entry asks it, or says here why not.
+
+        A correction that posts afresh rather than reversing is the same shape: a write-off
+        dated 20 August of an invoice of 10 September left receivables at -1,000 on
+        31 August, and the check, looking only for reversals, could not see it.
         """
         findings, exempted = [], set()
         for label in labels:
@@ -1234,9 +1259,10 @@ class Command(BaseCommand):
                     continue
                 for cls in (node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.ClassDef)):
                     for fn in (node for node in cls.body if isinstance(node, ast.FunctionDef)):
-                        body = ast.unparse(fn)
+                        code = self._code(fn)
+                        reverses = self.REVERSES.search(code)
                         if "on_date" not in {arg.arg for arg in fn.args.args + fn.args.kwonlyargs} \
-                                or not self.REVERSES.search(body) or "correction_date(" in body:
+                                or not (reverses or self.POSTS.search(code)) or "correction_date(" in code:
                             continue
                         key = f"{label}.{cls.name}.{fn.name}"
                         if key in self.DATED_ELSEWHERE:
@@ -1244,9 +1270,9 @@ class Command(BaseCommand):
                             continue
                         findings.append((
                             "correction dated anywhere",
-                            f"{key} ({path.name}:{fn.lineno}) reverses an entry on the day it is given and "
-                            "never asks correction_date(): before what it takes back, or on a day to come, "
-                            "the document and the books disagree.",
+                            f"{key} ({path.name}:{fn.lineno}) {'reverses' if reverses else 'posts'} an entry on "
+                            "the day it is given and never asks correction_date(): before what it corrects, or "
+                            "on a day to come, the document and the books disagree.",
                         ))
         findings += [("stale exemption", f"{key} is exempted from correction_date() but is no longer a step "
                                          "that needs it.")

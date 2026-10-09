@@ -33,6 +33,7 @@ from apps.core.models import (
     PartyRoleAssignment,
     PaymentTerms,
     UnitOfMeasure,
+    correction_date,
     lock_rows,
     only_one,
     prefetched,
@@ -1954,10 +1955,14 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         nothing and a dead invoice ages in AR forever, overstating assets.
 
         Dr Bad debt expense / Cr Accounts receivable.
+
+        Never before the invoice, nor on a day to come: a write-off of
+        20 August of an invoice of 10 September left receivables at -1,000
+        on 31 August.
         """
-        on_date = to_date(on_date) or timezone.localdate()
         if not self.posted:
             raise ValidationError("Only a posted invoice can be written off.")
+        on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not written off on", "it was issued")
         if self.is_credit_note():
             raise ValidationError("A credit note cannot be written off.")
 
@@ -2629,7 +2634,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         rate in dispute): a price adjustment, not a return. `net` is before
         tax; it is spread over the lines by value, the last taking what
         rounding leaves, and each line's tax follows from what it bore.
-        No goods move and no quantity stops being returnable.
+        No goods move and no quantity stops being returnable. Credited
+        neither before the invoice nor on a day to come (correction_date).
         """
         reasons = dict(type(self)._meta.get_field("claim_reason").choices)
         if reason not in reasons:
@@ -2638,6 +2644,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             lock_rows(self)
             if not self.posted:
                 raise ValidationError("Only a posted invoice can be credited.")
+            on_date = correction_date(on_date, self.invoice_date, f"A claim on {self.number} is not credited on",
+                                      "it was issued")
             if self.is_credit_note():
                 raise ValidationError("A claim is credited against the invoice, not a credit note.")
             if self.is_down_payment:
