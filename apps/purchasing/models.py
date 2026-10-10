@@ -734,7 +734,7 @@ class PurchaseRequisition(AuditModel):
 
     def raised_by(self):
         """Who made or changed it, and the person it asks for: nobody approves their own request."""
-        found = authors(self, self.lines.all())
+        found = authors(self, "lines")
         requester = getattr(self.requested_by, "employee_profile", None) if self.requested_by_id else None
         if requester is not None and requester.user_id:
             found.add(requester.user_id)

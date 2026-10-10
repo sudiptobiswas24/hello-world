@@ -733,7 +733,7 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
         found = super().raised_by()
         # By its lines: accepting approves before the quote is marked with its order.
         for quotation in Quotation.objects.filter(Q(sales_order=self) | Q(lines__order_lines__order=self)).distinct():
-            found |= authors(quotation, quotation.lines.all())
+            found |= authors(quotation, "lines")
         return found
 
     @serialised("status")
@@ -5050,11 +5050,13 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             )
 
     @serialised("status", "number")
-    def create_revision(self, quotation_date=None, valid_until=None):
+    def create_revision(self, quotation_date=None, valid_until=None, by=None):
         """
         Supersede this quote with a fresh, editable copy. Resending with
         different terms has to leave a trail: the customer was told one
         thing and is now being told another, and both need to be on record.
+        `by` is who revised it, stamped on the copy and its lines: copied in
+        code they named nobody, so its writer could approve it.
         """
         if self.status == QuotationStatus.DRAFT:
             raise ValidationError(
@@ -5081,6 +5083,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
             sales_rep=self.sales_rep,
             revision=self.revision + 1,
             revision_of=self,
+            created_by=by, updated_by=by,
         )
         for line in self.lines.all():
             revision_line = QuotationLine.objects.create(
@@ -5089,6 +5092,7 @@ class Quotation(TaxedDocumentMixin, AuditModel):
                 quantity=line.quantity, unit_price=line.unit_price,
                 discount_percent=line.discount_percent,
                 revenue_account=line.revenue_account,
+                created_by=by, updated_by=by,
             )
             revision_line.taxes.set(line.taxes.all())
 

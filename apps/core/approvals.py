@@ -36,15 +36,17 @@ from .models import serialised
 def authors(document, *parts):
     """
     The pks of every login that made or changed `document` or any row of
-    `parts` (querysets of what it is made of, such as its lines): their own
-    stamps and their history, which keeps every change and not only the
-    last.
+    its `parts` (related names: what it is made of, such as its lines):
+    their own stamps and their history, which keeps every change and not
+    only the last. A revision (`revision_of`) counts the authors of what
+    it revises, back to the first: a quote's writer revised it and
+    approved the revision, which had been copied in code with no names.
     """
     from django.contrib.contenttypes.models import ContentType
 
     from .history import EventKind, RecordEvent
 
-    rows = [document, *(row for part in parts for row in part)]
+    rows = [document, *(row for name in parts for row in getattr(document, name).all())]
     found = {getattr(row, name, None) for row in rows for name in ("created_by_id", "updated_by_id")}
     by_kind = defaultdict(set)
     for row in rows:
@@ -53,6 +55,9 @@ def authors(document, *parts):
         found.update(RecordEvent.objects.filter(
             content_type=kind, object_id__in=pks, kind__in=[EventKind.CREATED, EventKind.UPDATED],
         ).values_list("who_id", flat=True))
+    earlier = getattr(document, "revision_of", None)
+    if earlier is not None:
+        found |= authors(earlier, *parts)
     found.discard(None)
     return found
 
@@ -98,7 +103,7 @@ class ApprovableMixin(models.Model):
 
     def raised_by(self):
         """The logins that made or changed this document or its parts: never its approver."""
-        return authors(self, *(getattr(self, name).all() for name in self.approval_parts))
+        return authors(self, *self.approval_parts)
 
     def approval_reasons(self):
         """
