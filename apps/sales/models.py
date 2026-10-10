@@ -750,13 +750,17 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
     def approve(self, by=None, note=""):
         """Approve, and write down what the approval covered: a confirmed order changes within it."""
         super().approve(by=by, note=note)
+        self.approved_figures = self.figures_as_kept()
+        SalesOrder.objects.filter(pk=self.pk).update(approved_figures=self.approved_figures)
+
+    def figures_as_kept(self):
+        """policy_figures() as approved_figures keeps them; sales 0064 seeds orders approved before 0063 so."""
         figures = self.policy_figures()
-        self.approved_figures = {
+        return {
             "discounts": {str(pk): str(value) for pk, value in figures["discounts"].items()},
             "total": str(figures["total"]),
             "margin": None if figures["margin"] is None else str(figures["margin"]),
         }
-        SalesOrder.objects.filter(pk=self.pk).update(approved_figures=self.approved_figures)
 
     def _covered(self):
         """What the approval covered, or nothing when there is none standing."""
