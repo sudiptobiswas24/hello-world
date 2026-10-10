@@ -19,6 +19,8 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 
+from apps.core.models import lock_rows
+
 from .base import RowError, by_code, clean, codes, date, decimal, required, whole_number, yes_no
 
 SPEC_MODELS = {
@@ -170,6 +172,12 @@ def _open_orders(side):
                 report.refuse(number, "", " ".join(error.messages))
         if report.errors:
             return
+        # Every order, then every customer, in key order, before the first is confirmed: one
+        # transaction confirms them all, and each confirmation takes its order and then its
+        # customer, so the second order was taken after the first customer (the lock order).
+        lock_rows(*(order for _, order in orders.values()), refresh=False)
+        lock_rows(*{order.customer_id: order.customer for _, order in orders.values()
+                    if getattr(order, "customer_id", None)}.values(), refresh=False)
         for number, order in orders.values():
             try:
                 with transaction.atomic():

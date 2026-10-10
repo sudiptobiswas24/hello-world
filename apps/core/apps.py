@@ -5,3 +5,11 @@ class CoreConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "apps.core"
     label = "core"
+
+    def ready(self):
+        from django.conf import settings
+
+        if getattr(settings, "LOCK_ORDER_SENTINEL", False):
+            from apps.core import lock_order
+
+            lock_order.install()

@@ -1408,3 +1408,41 @@ class OpportunityRaceTests(RaceCase):
             lambda pk=pk: Opportunity.objects.get(pk=pk).win(SalesOrder.objects.get(pk=order.pk))
             for pk in (first.pk, second.pk)]))
         self.assertEqual(Opportunity.objects.filter(sales_order=order, stage=Stage.WON).count(), 1)
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class TwoReturnsOnAConsolidatedInvoiceTests(RaceCase):
+    """
+    O169: one invoice bills orders O1 and O2; their deliveries are returned at
+    the same moment. Each return held only its own order and the stock, then
+    its credit note reached for both orders: deadlock on PostgreSQL. A return
+    now holds every order its notes will take, first.
+    """
+    from apps.sales import tests_base as _fixture
+
+    setUp = _fixture.SalesTestCase.setUp
+    make_order, ship, balance = (_fixture.SalesTestCase.make_order, _fixture.SalesTestCase.ship,
+                                 _fixture.SalesTestCase.balance)
+
+    def test_two_returns_on_two_orders_of_one_invoice_do_not_deadlock(self):
+        from decimal import Decimal as D
+
+        from apps.inventory.models import StockMovement
+        from apps.sales.models import Delivery, Invoice, InvoiceLine
+
+        first, second = self.make_order("5", "100"), self.make_order("5", "100")
+        deliveries = [self.ship(first, "5"), self.ship(second, "5")]
+        invoice = Invoice.objects.create(customer=self.customer, invoice_date=datetime.date(2026, 3, 1),
+                                         currency=self.usd, receivable_account=self.ar)
+        for order in (first, second):
+            InvoiceLine.objects.create(invoice=invoice, order_line=order.lines.get(), quantity=D("5"),
+                                       unit_price=D("100"), revenue_account=self.revenue)
+        invoice.post()
+
+        def give_back(pk):
+            def call():
+                delivery = Delivery.objects.get(pk=pk)
+                delivery.create_return(quantities={delivery.lines.get(): D("2")})
+            return call
+
+        outcomes = race((StockMovement, Invoice), *[give_back(d.pk) for d in deliveries])
+        self.assertEqual(outcomes, ["done", "done"], f"AR {self.balance(self.ar)}")
+        self.assertEqual(Invoice.objects.filter(credits=invoice, posted=True).count(), 2)

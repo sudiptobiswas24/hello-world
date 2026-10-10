@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -32,6 +33,13 @@ def _env_list(name):
 # safe ones and a missing secret stops it starting; anywhere else is a
 # developer's machine, where `manage.py test` must work with nothing set.
 PRODUCTION = os.environ.get("DJANGO_ENV", "development").lower() == "production"
+
+# Under `manage.py test`, every row lock is ranked against the written lock
+# order and a transaction taking them out of turn fails (apps/core/lock_order.py).
+# Never in production: it re-reads what each locking query returned.
+# LOCK_ORDER_SENTINEL=0 turns it off, to watch a reverted race deadlock in the database.
+LOCK_ORDER_SENTINEL = (not PRODUCTION and sys.argv[1:2] == ["test"]
+                       and os.environ.get("LOCK_ORDER_SENTINEL", "1") != "0")
 
 DEV_SECRET_KEY = "django-insecure-!9b4h^4ur4@@q_&9k-)e2^yo+ge*%436b)7olcl5ydq%#4+0=1"
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or DEV_SECRET_KEY

@@ -32,6 +32,8 @@ from django.db import connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
+from apps.core.lock_order import unchecked
+
 M = apps.get_model
 # The day the story was written for; loaded later, it moves with the calendar.
 WRITTEN_FOR = datetime.date(2026, 10, 7)
@@ -112,7 +114,9 @@ class Command(BaseCommand):
         """One section in its own transaction: a failure is reported, rolled back and named at the end."""
         self.stdout.write(f"  {name}")
         try:
-            with transaction.atomic():
+            # Alone on an empty installation, each section in one transaction: many orders and
+            # customers in turn, which no second person can be taking the other way round.
+            with transaction.atomic(), unchecked("the demo loads an empty installation, alone"):
                 yield
         except Exception as exc:  # reported here and refused at the end, never swallowed
             failed.append(name)

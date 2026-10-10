@@ -2503,8 +2503,15 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return Budget.for_account(account, self.order.order_date)
 
     def locked_before_it(self):
-        """The order it is on and any it would move to: held before the line, by the lock order (apps.core.models)."""
-        return documents_it_answers_to(self, "order")
+        """
+        The order it is on and any it would move to, then the customer's order a drop-ship line
+        delivers: held before the line, by the lock order (apps.core.models). Reopened, the line
+        weighed the customer's order while it held the line (the lock-order sentinel).
+        """
+        from apps.sales.models import SalesOrder
+
+        sold = SalesOrder.objects.filter(lines=self.sales_order_line_id).order_by("pk") if self.sales_order_line_id else []
+        return documents_it_answers_to(self, "order") + list(sold)
 
     def _hold_for_prepayments(self):
         """Its order, then the line, as close_short() takes them: what the order holds up front is weighed next."""
@@ -3425,7 +3432,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not self.purchase_order_id or self.is_prepayment or self.is_debit_note():
             return []
         applied = []
-        for prepayment in self.purchase_order.prepayments().order_by("bill_date", "pk"):
+        prepayments = list(self.purchase_order.prepayments().order_by("bill_date", "pk"))
+        lock_rows(*prepayments, refresh=False)  # in key order, the ones made after it too, before any is drawn
+        for prepayment in prepayments:
             if self.amount_due() <= 0:
                 break
             if prepayment.prepayment_unapplied() <= 0:
@@ -3732,7 +3741,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
         orders = list(PurchaseOrder.objects.filter(Q(pk=self.purchase_order_id) | Q(pk__in=billed)).order_by("pk"))
-        return orders + ([Bill(pk=self.debits_id)] if self.debits_id else [])
+        # The prepayments it draws down as it posts, made before it: rows of one model are taken in
+        # key order, and apply_prepayment() takes the pair that way (O175, the sales mirror).
+        drawn = list(PurchaseOrder(pk=self.purchase_order_id).prepayments().filter(pk__lt=self.pk).order_by("pk")) if (
+            self.pk and self.purchase_order_id and not self.is_prepayment and not self.debits_id) else []
+        return orders + ([Bill(pk=self.debits_id)] if self.debits_id else []) + drawn
 
     def save(self, *args, **kwargs):
         updating = set(kwargs.get("update_fields") or ())
@@ -5987,8 +6000,17 @@ class GoodsReceipt(AuditModel):
     OBJECTION_FIELDS = {"objected_on", "objection", "objection_removed_on", "updated_at", "updated_by"}
 
     def locked_before_it(self):
-        """Its order, held before the receipt by the lock order (apps.core.models)."""
-        return [PurchaseOrder(pk=self.purchase_order_id) if self.purchase_order_id else None]
+        """
+        Its order, then the customer's order a drop-ship delivers to, held before the receipt by the
+        lock order (apps.core.models): posting a drop-ship ships that order, and took it after the
+        receipt (the lock-order sentinel).
+        """
+        from apps.sales.models import SalesOrder
+
+        sold = PurchaseOrder.objects.filter(pk=self.purchase_order_id).values_list("drop_ship_for", flat=True).first() \
+            if self.purchase_order_id else None
+        return [PurchaseOrder(pk=self.purchase_order_id) if self.purchase_order_id else None,
+                SalesOrder(pk=sold) if sold else None]
 
     def save(self, *args, **kwargs):
         updating = set(kwargs.get("update_fields") or ())
@@ -6771,12 +6793,14 @@ class GoodsReceipt(AuditModel):
                     )
                 remaining -= taken
 
+        # Every bill before the first note, in key order (O169, the sales mirror).
+        lock_rows(*allocations, refresh=False)
         return [
             bill.create_debit_note(
                 memo=f"Goods returned on {self.number}", quantities=quantities,
                 accruals=returned.get(bill, {}),
             )
-            for bill, quantities in allocations.items()
+            for bill, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
         ]
 
     @transaction.atomic
@@ -6818,7 +6842,25 @@ class GoodsReceipt(AuditModel):
         entry.post()
         return entry
 
-    @serialised("posted", held_first=True)
+    def locked_before_returning(self):
+        """
+        Its order and every order of each bill that billed its lines, in key order, then the
+        customer's order a drop-ship delivered to: a return debits those bills, each debit note
+        holds all of its bill's orders before the bill, and a drop-ship's return reverses the
+        delivery on the customer's order. The sales mirror's deadlock (O169).
+        """
+        from apps.sales.models import SalesOrder
+
+        billed = Bill.objects.filter(posted=True, debits__isnull=True,
+                                     lines__order_line__in=self.lines.values("order_line"))
+        orders = list(PurchaseOrder.objects.filter(
+            Q(pk=self.purchase_order_id) | Q(pk__in=billed.values("purchase_order"))
+            | Q(pk__in=BillLine.objects.filter(bill__in=billed).values("order_line__order"))
+        ).order_by("pk"))
+        sold = sorted({order.drop_ship_for_id for order in orders if order.drop_ship_for_id})
+        return orders + [SalesOrder(pk=pk) for pk in sold]
+
+    @serialised("posted", held_first="locked_before_returning")
     def create_return(self, quantities=None, debit_bills=True, from_inspection=False):
         """
         Send goods back. By default all of them; pass `quantities` as
