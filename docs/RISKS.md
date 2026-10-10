@@ -374,6 +374,7 @@ missing), **minor**.
 | O154 | purchasing, gst | Debit notes raised by a receipt return (`create_return(debit_bills=True)`) post at once, so the supplier's credit-note number can never be recorded on them; GSTR-2B pairs them only on date and value. O57's fix covers hand-made debit notes only | statutory | open |
 | O155 | purchasing | MSME "acceptance" is read as the day goods cleared inspection when that came within 15 days of receipt, otherwise the receipt day (O103's fix). The tax adviser to confirm the reading of the MSMED Act | statutory | decide |
 | O156 | frontend | The TDS return screen has no "reverses" column; the bank statement screen can match a line only to a payment, so a line for a direct entry (a TDS challan, an expense claim) is matched only through the API or auto-match | minor | open |
+| O157 | core | In the fix-wave-1 security commits: HR sets a new login's first password, so after a role HR does not hold is confirmed (O142), HR can still sign in as that login until the person changes the password. Intended fix: confirming such a role makes the HR-set password unusable, and the confirmer issues the first password | security | queued, wave 1 follow-up |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
