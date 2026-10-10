@@ -1355,4 +1355,4 @@ from .history import RecordEvent  # noqa: E402,F401
 from .chatter import FollowUp, Note  # noqa: E402,F401
 from .saved_filters import SavedFilter  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401
-from .roles import RoleProposal  # noqa: E402,F401
+from .roles import KeptCredential, RoleProposal  # noqa: E402,F401

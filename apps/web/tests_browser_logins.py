@@ -3,8 +3,8 @@ The HR Admin in the browser makes a login for the new bookkeeper with a
 first password and gives it its role from the page. Not holding that
 role, HR only proposes it (O142, the owner's two-person rule); a
 bookkeeper, signed in beside, finds it waiting for them and confirms it,
-and the person has the role. Later HR deactivates the login and the
-sign-in is refused.
+issuing asha's password with it: the one HR chose stops working (O157).
+Later HR deactivates the login and the sign-in is refused.
 """
 
 import re
@@ -44,8 +44,14 @@ class LoginsInTheBrowserTests(BrowserTestCase):
         books.get_by_role("link", name="asha").click()
         books.wait_for_url(re.compile(r"/settings/role-proposals/\d+$"))
         books.get_by_role("button", name="Confirm").click()
+        confirm = books.get_by_role("form", name="Confirm")
+        confirm.get_by_label("Their password").fill("ledger-desk-2026")
+        confirm.get_by_role("button", name="Confirm").click()
         expect(books.locator("main")).to_contain_text("Confirmed")
         self.assertEqual(list(asha.groups.values_list("name", flat=True)), ["Bookkeeper"])
+        # O157: the first password the HR Admin chose stops working; the one the bookkeeper issued is asha's.
+        self.assertFalse(Client().login(username="asha", password="loom-shed-2026"))
+        self.assertTrue(Client().login(username="asha", password="ledger-desk-2026"))
 
         page.reload()
         roles = page.locator("section.related", has_text="Roles").first
@@ -54,5 +60,5 @@ class LoginsInTheBrowserTests(BrowserTestCase):
         expect(page.locator("main")).to_contain_text("Deactivated")
         asha.refresh_from_db()
         self.assertFalse(asha.is_active)
-        self.assertFalse(Client().login(username="asha", password="loom-shed-2026"))
+        self.assertFalse(Client().login(username="asha", password="ledger-desk-2026"))
         self.assertEqual(self.problems, [])

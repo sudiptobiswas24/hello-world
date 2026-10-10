@@ -50,6 +50,12 @@ class UsersApiTests(TestCase):
         self.assertEqual(revoked.json()["roles"], [])
         self.assertEqual(hr.post(f"{USERS}{pk}/grant/", {"role": "Wizard"}, format="json").status_code, 400)
 
+        # O157: with Bookkeeper proposed and the HR Admin not holding it, its password is not theirs to set.
+        self.assertEqual(hr.post(f"{USERS}{pk}/set_password/", {"password": "printing-line-9"}, format="json")
+                         .status_code, 403)
+        proposal = RoleProposal.objects.get(user_id=pk, status="pending")
+        self.assertEqual(hr.post(f"/api/core/role-proposals/{proposal.pk}/decline/", {}, format="json").status_code,
+                         200)
         weak = hr.post(f"{USERS}{pk}/set_password/", {"password": "asha"}, format="json")
         self.assertEqual(weak.status_code, 400, weak.content)
         self.assertEqual(hr.post(f"{USERS}{pk}/set_password/", {"password": "printing-line-9"}, format="json").status_code, 200)
@@ -330,3 +336,189 @@ class TheAdminsUserFormTests(TestCase):
         with override_settings(ALLOWED_HOSTS=["testserver"]):
             self.assertEqual(self.client.get(f"/admin/auth/user/{self.hr.pk}/change/").status_code, 200)
             self.assertEqual(self.client.get("/admin/auth/group/").status_code, 200)
+
+
+PW = "First-Pw-2026-xq"
+
+
+class KeeperAndHolder(TestCase):
+    """The keeper (HR Admin) and a holder of the role it proposes (Bookkeeper), each a person in the role."""
+
+    PROPOSALS = "/api/core/role-proposals/"
+
+    def setUp(self):
+        call_command("setup_roles", verbosity=0)
+        self.hr = self.person("hr", "HR Admin")
+        self.bk = self.person("bk", "Bookkeeper")
+        self.hrc = self.api(self.hr)
+
+    def person(self, name, *roles):
+        user = User.objects.create_user(name)
+        user.groups.add(*Group.objects.filter(name__in=roles))
+        return user
+
+    def api(self, user):
+        client = APIClient()
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        return client
+
+    def make(self, username, roles, **also):
+        response = self.hrc.post(USERS, {"username": username, "password": PW, "roles": roles, **also}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        return User.objects.get(username=username)
+
+    def pending(self, user, role):
+        return RoleProposal.objects.get(user=user, group__name=role, status="pending")
+
+    def confirm(self, user, proposal, **body):
+        return self.api(user).post(f"{self.PROPOSALS}{proposal.pk}/confirm/", body, format="json")
+
+    def signs_in(self, username, password):
+        return APIClient().login(username=username, password=password)
+
+    def holds(self, user, role):
+        return user.groups.filter(name=role).exists()
+
+
+class KeeperKnowsNoCredentialAboveItTests(KeeperAndHolder):
+    """
+    O157: whoever sets a login's password or email can sign in as it. The
+    keeper set asha's first password, a Bookkeeper confirmed asha's role,
+    and the keeper signed in as asha, confirmed its own next proposal and
+    gave itself the role (review_sec2 F1). Now the keeper sets neither on
+    a login holding or proposed for a role above it, and what it set
+    stops working when such a role is given. Asked as the people in their
+    roles, through the API, with the reviewer's numbers.
+    """
+
+    def test_the_keepers_first_password_stops_working_when_the_role_is_confirmed(self):
+        asha = self.make("asha", ["Bookkeeper"])
+        # Holding nothing above the keeper yet, it is the keeper's to sign in as.
+        self.assertTrue(self.signs_in("asha", PW))
+        self.assertEqual(self.confirm(self.bk, self.pending(asha, "Bookkeeper")).status_code, 200)
+        self.assertFalse(self.signs_in("asha", PW), "HR signs in as the Bookkeeper with the first password it chose")
+        reset = self.hrc.post(f"{USERS}{asha.pk}/set_password/", {"password": "Another-Pw-2026-xq"}, format="json")
+        self.assertEqual(reset.status_code, 403)
+
+    def test_the_reviewers_chain_stops_after_the_one_honest_confirm(self):
+        asha = self.make("asha", ["Bookkeeper"])                                    # 1: HR makes asha
+        self.assertEqual(self.confirm(self.bk, self.pending(asha, "Bookkeeper")).status_code, 200)  # 2: bk confirms
+        self.assertFalse(self.signs_in("asha", PW))                                 # 3: HR cannot be asha
+        puppet = self.make("puppet", ["HR Admin", "Bookkeeper"])                    # 4: HR Admin given, Bookkeeper proposed
+        self.assertTrue(self.signs_in("puppet", PW))
+        # 5 and 6 need asha's login, which HR no longer has. The honest confirm of puppet's role lapses HR's password
+        # for puppet too, and a Bookkeeper cannot issue one to a login holding HR Admin above them.
+        proposal = self.pending(puppet, "Bookkeeper")
+        refused = self.confirm(self.bk, proposal, password="Bk-Chose-2026-xq")
+        self.assertEqual(refused.status_code, 403, refused.content)
+        self.assertEqual(RoleProposal.objects.get(pk=proposal.pk).status, "pending")
+        self.assertEqual(self.confirm(self.bk, proposal).status_code, 200)
+        self.assertFalse(self.signs_in("puppet", PW))
+        self.hr.refresh_from_db()
+        self.assertFalse(self.holds(self.hr, "Bookkeeper"))
+
+    def test_the_confirmer_issues_the_next_password(self):
+        asha = self.make("asha", ["Bookkeeper"])
+        confirmed = self.confirm(self.bk, self.pending(asha, "Bookkeeper"), password="Bk-Chose-2026-xq")
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertEqual((self.signs_in("asha", PW), self.signs_in("asha", "Bk-Chose-2026-xq")), (False, True))
+
+    def test_an_existing_colleague_is_not_the_keepers_once_a_role_above_it_is_proposed(self):
+        ravi = self.person("ravi", "HR Admin")
+        self.assertEqual(self.hrc.post(f"{USERS}{ravi.pk}/set_password/", {"password": PW}, format="json").status_code,
+                         200)
+        self.assertEqual(self.hrc.post(f"{USERS}{ravi.pk}/grant/", {"role": "Bookkeeper"}, format="json").status_code,
+                         200)
+        # Proposed, not yet confirmed: neither credential is the keeper's to set now.
+        self.assertEqual(self.hrc.post(f"{USERS}{ravi.pk}/set_password/", {"password": "Other-Pw-2026-xq"},
+                                       format="json").status_code, 403)
+        self.assertEqual(self.hrc.patch(f"{USERS}{ravi.pk}/", {"email": "hr-mailbox@example.com"}, format="json")
+                         .status_code, 403)
+        self.assertEqual(self.confirm(self.bk, self.pending(ravi, "Bookkeeper")).status_code, 200)
+        self.assertEqual(self.hrc.post(f"{USERS}{ravi.pk}/set_password/", {"password": "Other-Pw-2026-xq"},
+                                       format="json").status_code, 403)
+        self.assertFalse(self.signs_in("ravi", PW), "HR set ravi's password, proposed a role, and signs in as ravi")
+
+    def test_the_keepers_email_takes_no_reset_after_the_confirm_until_set_again(self):
+        from django.core import mail
+
+        asha = self.make("asha", ["Bookkeeper"], email="hr-mailbox@example.com")
+        Client().post("/accounts/password_reset/", {"email": "hr-mailbox@example.com"})
+        self.assertEqual(len(mail.outbox), 1)  # holding nothing above the keeper, it is the keeper's
+        self.assertEqual(self.confirm(self.bk, self.pending(asha, "Bookkeeper"),
+                                      password="Bk-Chose-2026-xq").status_code, 200)
+        reset = Client().post("/accounts/password_reset/", {"email": "hr-mailbox@example.com"})
+        self.assertEqual((reset.status_code, len(mail.outbox)), (302, 1))
+        # Set again by someone who may keep the login, it is trusted again.
+        root = User.objects.create_superuser("root", password="not-listed-x9")
+        self.assertEqual(self.api(root).patch(f"{USERS}{asha.pk}/", {"email": "asha@example.com"}, format="json")
+                         .status_code, 200)
+        Client().post("/accounts/password_reset/", {"email": "asha@example.com"})
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_a_role_given_by_any_door_lapses_what_the_keeper_set(self):
+        asha = self.make("asha", [])
+        root = User.objects.create_superuser("root", password="not-listed-x9")
+        self.assertEqual(self.api(root).post(f"{USERS}{asha.pk}/grant/", {"role": "Controller"}, format="json")
+                         .status_code, 200)
+        self.assertFalse(self.signs_in("asha", PW))
+        # A role the keeper holds itself lapses nothing.
+        ravi = self.make("ravi", [])
+        self.assertEqual(self.hrc.post(f"{USERS}{ravi.pk}/grant/", {"role": "HR Admin"}, format="json").status_code, 200)
+        self.assertTrue(self.signs_in("ravi", PW))
+
+
+class AProposalLapsesTests(KeeperAndHolder):
+    """O192, O193, O194: a proposal is only as live as its proposer and its login, and counts as held."""
+
+    def test_O192_a_proposal_lapses_with_its_proposers_right_to_propose(self):
+        a = self.make("a", ["Bookkeeper"])
+        self.hr.groups.clear()
+        self.hr.is_active = False
+        self.hr.save()
+        got = (self.confirm(self.bk, self.pending(a, "Bookkeeper")).status_code, self.holds(a, "Bookkeeper"))
+        self.assertEqual(got, (400, False), "a proposal by a keeper who has since lost the right is still confirmable")
+        self.assertEqual(self.api(self.bk).get(self.PROPOSALS, {"waiting": "true"}).json(), [])
+        # Another keeper proposes it afresh, and that one is confirmed.
+        hr2 = self.person("hr2", "HR Admin")
+        self.assertEqual(self.api(hr2).post(f"{USERS}{a.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+                         .status_code, 200)
+        self.assertEqual(self.confirm(self.bk, self.pending(a, "Bookkeeper")).status_code, 200)
+        self.assertEqual(list(RoleProposal.objects.filter(user=a).values_list("status", flat=True)),
+                         ["confirmed", "lapsed"])
+
+    def test_O192_taking_the_keepers_role_away_marks_its_proposals_lapsed(self):
+        a = self.make("a", ["Bookkeeper"])
+        hr2 = self.person("hr2", "HR Admin")
+        self.assertEqual(self.api(hr2).post(f"{USERS}{self.hr.pk}/revoke/", {"role": "HR Admin"}, format="json")
+                         .status_code, 200)
+        self.assertEqual(RoleProposal.objects.get(user=a).status, "lapsed")
+        self.assertEqual(self.confirm(self.bk, RoleProposal.objects.get(user=a)).status_code, 400)
+
+    def test_O193_a_proposal_lapses_when_its_login_is_switched_off(self):
+        asha = self.make("asha", ["Bookkeeper"])
+        proposal = self.pending(asha, "Bookkeeper")
+        self.assertEqual(self.hrc.post(f"{USERS}{asha.pk}/deactivate/", {}, format="json").status_code, 200)
+        self.assertEqual(self.api(self.bk).get(self.PROPOSALS, {"waiting": "true"}).json(), [])
+        confirmed = self.confirm(self.bk, proposal).status_code
+        self.assertEqual((confirmed, self.holds(asha, "Bookkeeper")), (400, False),
+                         "a role is given to a switched-off login by confirming its pending proposal")
+        self.assertEqual(RoleProposal.objects.get(pk=proposal.pk).status, "lapsed")
+
+    def test_O194_a_login_with_a_role_proposed_is_linked_as_if_it_held_it(self):
+        import datetime
+
+        from apps.hr.models import Employee
+        from apps.hr.tests_people import make_employee_party
+
+        asha = self.make("asha", ["Controller"])
+        boss = Employee.objects.create(party=make_employee_party("B1", "B1"), employee_number="B1",
+                                       hire_date=datetime.date(2025, 1, 1))
+        linked = self.hrc.patch(f"/api/hr/employees/{boss.pk}/", {"user": asha.pk}, format="json")
+        self.assertEqual(linked.status_code, 400, linked.content)
+        self.assertIn("Controller", str(linked.content))
+        # Withdrawn, it is an empty login again, and linked.
+        self.assertEqual(self.hrc.post(f"{self.PROPOSALS}{self.pending(asha, 'Controller').pk}/decline/", {},
+                                       format="json").status_code, 200)
+        self.assertEqual(self.hrc.patch(f"/api/hr/employees/{boss.pk}/", {"user": asha.pk}, format="json")
+                         .status_code, 200)

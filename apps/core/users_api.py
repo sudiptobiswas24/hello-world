@@ -21,6 +21,15 @@ reactivating or setting the password of a login ask it too: a login
 holding a role its keeper may not give, a permission of its own beyond
 the keeper's, or the admin site is not theirs (`check_may_administer`).
 
+A password or email is a credential: whoever sets one can sign in as
+the login (O157). The keeper sets them only on a login holding and
+proposed for nothing they could not give (`check_may_know`), and what
+they set is kept as theirs, so a role confirmed for the login later
+lapses it (roles.lapse_on_giving): the keeper no longer signs in as a
+Bookkeeper it chose the first password for. Whoever confirms a role may
+issue the next password with the confirm, if the login holds nothing
+else above them.
+
 Taking access away is always the keeper's: deactivating a leaver or
 taking a role off a login gives nobody anything, and the HR Admin could
 not deactivate a departing rep. Nobody changes their own roles or
@@ -30,6 +39,7 @@ person by one rule (`refused_link`).
 """
 
 from django.contrib.auth import password_validation
+from django.contrib.auth.forms import PasswordResetForm
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers, viewsets
@@ -40,7 +50,8 @@ from rest_framework.response import Response
 
 from .api import required
 from .audit import AuditableViewSetMixin
-from .roles import ProposalStatus, give_or_propose, may_give
+from .roles import (KeptCredential, ProposalStatus, give_or_propose, lapse_what_died, may_give, record_credential,
+                    trusted_for_reset)
 
 
 def roles_beyond(actor, groups):
@@ -83,6 +94,45 @@ def check_may_administer(actor, user):
             f"{user.get_username()} holds {', '.join(beyond)}, which you do not: someone who does keeps that login.")
 
 
+def check_may_know(actor, user):
+    """
+    Refuse what would let `actor` know `user`'s credentials (setting its
+    password or email, linking it to a person) unless the login holds,
+    and has proposed for it, nothing `actor` could not give
+    (check_may_administer). A role proposed and confirmed later lapses
+    what was set before it (roles.lapse_on_giving); one pending now would
+    be confirmed for a login whose password the keeper has just chosen.
+    """
+    check_may_administer(actor, user)
+    if actor.is_superuser:
+        return
+    proposed = roles_beyond(actor, Group.objects.filter(
+        proposals__user=user, proposals__status=ProposalStatus.PENDING).distinct())
+    if proposed:
+        raise PermissionDenied(
+            f"{user.get_username()} has {', '.join(proposed)} proposed, which you do not hold: its password and "
+            "email are set by someone who does, or once the proposal is decided.")
+
+
+def issue_password(actor, user, password):
+    """`actor` sets `user`'s password, checked as any password is, and is kept as knowing it (roles.KeptCredential)."""
+    check_may_know(actor, user)
+    try:
+        password_validation.validate_password(password, user)
+    except DjangoValidationError as refused:
+        raise DRFValidationError({"password": refused.messages})
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    record_credential(user, KeptCredential.PASSWORD, actor)
+
+
+class TrustedEmailResetForm(PasswordResetForm):
+    """The reset form, mailing no login whose email was set by someone it has since been given a role above (O157)."""
+
+    def get_users(self, email):
+        return (user for user in super().get_users(email) if trusted_for_reset(user))
+
+
 # What every employee holds: a login holding no more is anybody's to link to a person.
 EMPLOYEES_OWN = ("Employee Self Service",)
 
@@ -101,12 +151,15 @@ def refused_link(actor, login):
     """
     if actor is not None and actor.is_superuser:
         return None
+    # A role proposed counts as held (O194): linked first, it was confirmed for a person after.
+    proposed = login.role_proposals.filter(status=ProposalStatus.PENDING)
     if not (login.is_superuser or login.is_staff or login.user_permissions.exists()
-            or login.groups.exclude(name__in=EMPLOYEES_OWN).exists()):
+            or login.groups.exclude(name__in=EMPLOYEES_OWN).exists()
+            or proposed.exclude(group__name__in=EMPLOYEES_OWN).exists()):
         return None
     if actor is not None and actor.has_perm("auth.change_user"):
         try:
-            check_may_administer(actor, login)
+            check_may_know(actor, login)
         except PermissionDenied as refused:
             return str(refused.detail)
         return None
@@ -156,7 +209,12 @@ class UserSerializer(serializers.ModelSerializer):
         if not password:
             raise serializers.ValidationError({"password": ["A new login needs a first password."]})
         user = User.objects.create_user(password=password, **validated_data)
-        _given_or_proposed(self.context["request"].user, user, groups)
+        me = self.context["request"].user
+        # Set before any role is proposed: one confirmed later lapses them (roles.lapse_on_giving).
+        record_credential(user, KeptCredential.PASSWORD, me)
+        if user.email:
+            record_credential(user, KeptCredential.EMAIL, me)
+        _given_or_proposed(me, user, groups)
         return user
 
     def update(self, instance, validated_data):
@@ -166,11 +224,20 @@ class UserSerializer(serializers.ModelSerializer):
         me = self.context["request"].user
         if instance.pk == me.pk and (groups is not None or validated_data.get("is_active") is False):
             raise serializers.ValidationError({"non_field_errors": ["Your own roles and standing are someone else's to change."]})
+        # An email set, or set again after it lapsed, is one the setter can reset the password through.
+        email = validated_data.get("email")
+        email_set = email is not None and (email.lower() != instance.email.lower() or KeptCredential.objects.filter(
+            user=instance, kind=KeptCredential.EMAIL, lapsed=True).exists())
+        if email_set and instance.pk != me.pk:
+            check_may_know(me, instance)
         user = super().update(instance, validated_data)
+        if email_set:
+            record_credential(user, KeptCredential.EMAIL, me)
         if groups is not None:
             # Taken away at once; given, or proposed, one by one.
             user.groups.remove(*[group for group in user.groups.all() if group not in groups])
             _given_or_proposed(me, user, [group for group in groups if not user.groups.filter(pk=group.pk).exists()])
+        lapse_what_died(me, user)
         return user
 
 
@@ -232,12 +299,7 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """A new password ({"password"}), checked as any password is; the person changes it at their next sign-in if they wish."""
         user = self.get_object()
         required(request.data, "password", message="Give the new password.")
-        try:
-            password_validation.validate_password(str(request.data["password"]), user)
-        except DjangoValidationError as refused:
-            raise DRFValidationError({"password": refused.messages})
-        user.set_password(str(request.data["password"]))
-        user.save(update_fields=["password"])
+        issue_password(request.user, user, str(request.data["password"]))
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=["post"])
@@ -256,6 +318,7 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         user = self.get_object()
         self._not_myself(request, user, "Taking a role from yourself")
         user.groups.remove(self._role(request))
+        lapse_what_died(request.user, user)
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=["post"])
@@ -265,6 +328,7 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         self._not_myself(request, user, "Deactivating your own login")
         user.is_active = False
         user.save(update_fields=["is_active"])
+        lapse_what_died(request.user, user)
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=["post"])

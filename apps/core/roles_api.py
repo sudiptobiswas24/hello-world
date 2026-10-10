@@ -6,6 +6,7 @@ it. Each holder finds the ones waiting for them on "Roles to confirm".
 """
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
@@ -85,8 +86,22 @@ class RoleProposalViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
-        """Give the proposed role: by someone who holds it, not its proposer, not on their own login."""
-        return self._decided(request, "confirm")
+        """
+        Give the proposed role: by someone who holds it, not its proposer,
+        not on their own login. A password or email its proposer set no
+        longer works once it is given (roles.lapse_on_giving, O157);
+        {"password"} issues the login's next one with the confirm, by a
+        confirmer who may keep the login (users_api.check_may_know).
+        """
+        from .users_api import issue_password
+
+        password = str(request.data.get("password") or "")
+        with transaction.atomic():
+            response = self._decided(request, "confirm")
+            if password:
+                proposal = RoleProposal.objects.select_related("user").get(pk=response.data["id"])
+                issue_password(request.user, proposal.user, password)
+        return response
 
     @action(detail=True, methods=["post"])
     def decline(self, request, pk=None):

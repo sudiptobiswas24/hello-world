@@ -29,6 +29,7 @@ export default function RoleProposals() {
         { label: "Waiting", params: { status: "pending" } },
         { label: "Confirmed", params: { status: "confirmed" } },
         { label: "Declined", params: { status: "declined" } },
+        { label: "Lapsed", params: { status: "lapsed" } },
       ]}
     />
   );
