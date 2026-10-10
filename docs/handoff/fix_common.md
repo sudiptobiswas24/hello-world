@@ -36,9 +36,11 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
 
 - Never mention a model name anywhere else. Do not push.
 
-## Report (at most 30 lines)
-- Commit hashes and subjects, with the ids each closes.
-- For each fix, the test that failed without it and its failure line.
-- What you could not do, and why.
-- Defects you saw and did not fix: file:line, a scenario with numbers, kind (crash, books, race, rule, statutory, security, minor).
+## Report
+- Write the full report to a file of your own in the scratchpad, reports/<your-agent-name>.md:
+  - commits with the ids each closes;
+  - for each fix, the test that failed without it, with its failure line;
+  - what you could not do;
+  - defects seen and not fixed, each with file:line, a scenario with numbers, and its kind.
+- Return at most 10 lines: the commit count and tip, the ids closed, anything that blocks, and the report file's path. The integrator reads the file only when it needs the detail.
 - No praise.
