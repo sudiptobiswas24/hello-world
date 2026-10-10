@@ -158,6 +158,13 @@ def _follow_ups_due(user, day):
     return follow_ups_due(user, day)
 
 
+def _roles_to_confirm(user, day):
+    """Roles the HR Admin proposed that this login holds and may confirm (apps/core/roles.py)."""
+    from apps.core.roles import waiting_for
+
+    return waiting_for(user).count()
+
+
 def _complaint_actions_overdue(day):
     from apps.manufacturing.complaints import overdue_actions
 
@@ -366,6 +373,8 @@ CHECKS = [
           "/sales/recurring?is_active=true", _recurring_invoices_due, scoped=True),
     Check("follow_ups_due", "Follow-ups due", ("sales.view_activity",), "/sales/activities?done_on__isnull=true",
           _follow_ups_due, per_login=True),
+    Check("roles_to_confirm", "Roles proposed for you to confirm", ("core.view_roleproposal",),
+          "/settings/role-proposals?status=pending", _roles_to_confirm, per_login=True),
     # Left incomplete, and carried forward until said.
     Check("customers_without_gst", "Customers with no GST standing or GSTIN", ("accounting.view_partytaxprofile",),
           "/sales/customers?gst=unknown", _customers_without_gst, scoped=True),

@@ -52,6 +52,23 @@ export default function LoginForm() {
               url: (_row, record) => `/api/core/users/${String(record.id)}/revoke/`, body: (row) => ({ role: row.name }) },
           ],
         },
+        {
+          // A role the keeper does not hold is only proposed: someone who holds it confirms it.
+          title: "Roles proposed", permission: "core.view_roleproposal", endpoint: "/api/core/role-proposals/",
+          query: (record) => ({ user: String(record.id), status: "pending" }),
+          href: (row) => `/settings/role-proposals/${String(row.id)}`,
+          columns: [
+            { key: "role", label: "Role" },
+            { key: "proposed_by_name", label: "Proposed by" },
+            { key: "proposed_at", label: "On", kind: "date", width: "8rem" },
+          ],
+          rowActions: [
+            { label: "Confirm", permission: "core.confirm_roleproposal", method: "POST", done: "Confirmed: the role is given",
+              when: (row) => Boolean(row.may_confirm), url: (row) => `/api/core/role-proposals/${String(row.id)}/confirm/` },
+            { label: "Withdraw", permission: "core.confirm_roleproposal", method: "POST", done: "Withdrawn",
+              when: (row) => Boolean(row.may_decline), url: (row) => `/api/core/role-proposals/${String(row.id)}/decline/` },
+          ],
+        },
       ]}
     />
   );

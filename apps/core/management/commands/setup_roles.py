@@ -603,6 +603,11 @@ for _role in ROLES:
 for _role in ("Controller", "AR Manager", "AP Manager", "Stores Manager", "Quality Manager", "HR Admin",
               "Production Planner", "GST Officer"):
     ROLES[_role] = [*ROLES[_role], "core.delete_attachment", "core.change_followup", "core.delete_followup"]
+# A role the HR Admin does not hold is only proposed, and given when someone
+# who holds it confirms (apps/core/roles.py): every role reads the proposals
+# for its own role and may confirm them. Which one, the proposal decides.
+for _role in ROLES:
+    ROLES[_role] = [*ROLES[_role], "core.view_roleproposal", "core.confirm_roleproposal"]
 
 
 class Command(BaseCommand):
