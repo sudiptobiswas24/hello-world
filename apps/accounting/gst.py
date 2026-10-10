@@ -269,37 +269,58 @@ def place_of_supply(profile, delivery=None):
     registered or not: where the movement ends, the ship-to's state
     (s.10(1)(a)). An unregistered Maharashtra buyer taking delivery at its
     own site in Karnataka bears integrated tax at 29, as the e-way bill
-    already said. Goods delivered to someone else on the buyer's direction,
-    bill to one and ship to another: the buyer's principal place of
-    business, the state of its registration or, unregistered, of the bill-to
-    (s.10(1)(b)). An address says whose it is by its party. One that belongs
-    to no party cannot say, and where the two answers differ the supply is
-    refused rather than placed by a guess.
+    already said; so does a registered Maharashtra buyer whose one address,
+    billed and shipped to, is in Karnataka (O161). An address that is the
+    bill-to as well is the buyer's own, whoever it names. Goods delivered
+    to someone else on the buyer's direction, bill to one and ship to
+    another: the buyer's principal place of business, the state of its
+    registration or, unregistered, of the bill-to (s.10(1)(b)). An address
+    says whose it is by its party.
+
+    Reading never refuses (O162): a draft whose address cannot be placed
+    still lists and opens, at the buyer's principal place, so it can be put
+    right. `place_refusal` says what is wrong, and the document asks it as
+    it is saved and as it posts.
     """
+    return _placed(profile, delivery)[0]
+
+
+def place_refusal(profile, delivery=None):
+    """Why a supply with this delivery cannot be placed, or None (see place_of_supply)."""
+    return _placed(profile, delivery)[1]
+
+
+def _placed(profile, delivery):
+    """(place, refusal): the place of supply, and the sentence a document cannot be saved or posted with."""
     if profile.gst_registration == "overseas":
-        return OVERSEAS_PLACE
+        return OVERSEAS_PLACE, None
     on_record = profile.place_of_supply()
     moving = delivery() if delivery is not None else None
     if not moving:
-        return on_record
+        return on_record, None
     ship_to, bill_to, buyer_id = moving
     principal = profile.gst_state if profile.gstin else (state_code(bill_to) or on_record)
-    if ship_to is None or (bill_to is not None and ship_to.pk == bill_to.pk):
-        return principal
+    if ship_to is None:
+        return principal, None
     found = state_code(ship_to)
-    if ship_to.party_id == buyer_id:
+    billed_there = bill_to is not None and ship_to.pk == bill_to.pk
+    if billed_there and found is None:
+        # The buyer's billing address, with no state of its own: the
+        # buyer's state on record stands for it, as it always has.
+        return principal, None
+    if billed_there or ship_to.party_id == buyer_id:
         if found is None:
-            raise ValidationError(
+            return principal, (
                 f"The goods go to {ship_to.one_line()}, whose state, {ship_to.state or 'nothing'}, is "
                 "no GST state; where they go is the place of supply. Give the state's name or its "
                 "two-digit code.")
-        return found
+        return found, None
     if ship_to.party_id is None and (found or principal) != principal:
-        raise ValidationError(
+        return principal, (
             f"The goods go to {ship_to.one_line()}, an address of no party. Delivered to the buyer's own "
             f"site the supply is in {STATES.get(found, found)}; delivered to someone else on the buyer's "
             f"direction it is in {STATES.get(principal, principal)}. Say whose address it is.")
-    return principal
+    return principal, None
 
 
 def gst_taxes(profile, taxes, place=None):

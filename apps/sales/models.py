@@ -511,11 +511,35 @@ class PlacedWhereTheGoodsGo:
             return False
         return self.lines.filter(item__isnull=False).exclude(item__hsn_code__startswith="99").exists()
 
+    def _delivery(self):
+        return (self.delivered_to(), self.billed_to(), self.customer_id) if self.moves_goods() else None
+
     def place_for(self, profile):
         from apps.accounting.gst import place_of_supply
 
-        return place_of_supply(profile, lambda: (
-            (self.delivered_to(), self.billed_to(), self.customer_id) if self.moves_goods() else None))
+        return place_of_supply(profile, self._delivery)
+
+    def check_place(self):
+        """
+        Refuse an address the supply cannot be placed by (gst.place_refusal),
+        asked as the document or a line of it is saved and as it posts. Never
+        as it is read: one draft with a bad ship-to made the whole invoice
+        list answer 400, and the draft could not be opened to mend it (O162).
+        A credit note keeps its invoice's place and is not asked again.
+        """
+        from apps.accounting.gst import place_refusal
+
+        if self.pk is None or not self.customer_id:
+            return
+        original = self.corrected_document() if hasattr(self, "corrected_document") else None
+        if original is not None and original.taxes_recorded:
+            return
+        profile = getattr(self.customer, "tax_profile", None)
+        if profile is None:
+            return
+        problem = place_refusal(profile, self._delivery)
+        if problem:
+            raise ValidationError(problem)
 
 
 class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
@@ -598,6 +622,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
         else:
             before = SalesOrder.objects.filter(pk=self.pk).values(
                 "status", "is_job_work", "third_party_inspection", "freight_terms", "incoterm").first()
+            if before and before["status"] == OrderStatus.DRAFT:
+                self.check_place()
             if (before and before["status"] != OrderStatus.DRAFT
                     and before["is_job_work"] != self.is_job_work):
                 # Whether the customer supplies the material decides who
@@ -1519,6 +1545,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         if self._state.adding and self.order_id and self.order.approved_at:
             self.order.withdraw_approval()
         super().save(*args, **kwargs)
+        if self.order.status == OrderStatus.DRAFT:
+            self.order.check_place()
         if shrinking:
             self.order.refuse_coming_to_less_than_its_deposits()
         if growing:
@@ -2361,6 +2389,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 "This invoice is posted and immutable. Issue a credit note instead."
             )
         self._check_kind()
+        if not self._state.adding and not self.posted:
+            self.check_place()
         if self._state.adding:
             self._apply_customer_defaults()
             if not self.receivable_account_id:
@@ -2475,6 +2505,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             raise ValidationError("This invoice is already posted.")
         # Asked again as it posts: the account may have been made a bank's since the draft named it.
         refuse_money_kept_as(self, "receivable_account", changed_only=False)
+        # The address may have been edited since the draft was saved.
+        self.check_place()
         # What the order has already been billed, and taken up front, is
         # read below and decided on; two invoices for one order posting
         # at once must not both see the same room.
@@ -2989,7 +3021,9 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         if not self.revenue_account_id:
             self.revenue_account = (self.charge.account_for(is_sale=True) if self.charge_id
                                     else default_account("revenue", "revenue_account"))
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            self.invoice.check_place()
 
     def delete(self, *args, **kwargs):
         if self.invoice.posted:
@@ -4995,6 +5029,7 @@ class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
             )
         if not internal_only:
             self._check_terms()
+            self.check_place()
         if self._state.adding and self.customer_id:
             customer = self.customer
             self.currency = self.currency or customer.default_currency
@@ -5283,7 +5318,9 @@ class QuotationLine(TaxedLineMixin, AuditModel):
                     f"No price found for {self.item}: set one on the item, add it to a "
                     "price list, or give the line an explicit unit price."
                 )
-        super().save(*args, **kwargs)
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            self.quotation.check_place()
 
 
 def _require_employee_role(party):
