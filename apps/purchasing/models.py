@@ -3426,13 +3426,42 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         A term with no installment lines gives a single row, so a plain
         net-30 document behaves exactly as it always did.
+
+        A micro or small vendor's bill falls due no later than the MSME Act
+        says (msme.msme_due), whatever the terms: on net 60 a micro vendor
+        is owed on day 45, and the payment run, the aging and dunning all
+        read their days from here.
         """
-        return installment_schedule(
+        rows = installment_schedule(
             terms=self.payment_terms if self.payment_terms_id else None,
             document_date=self.bill_date,
             total=self.total(),
             settled=self.total() - self.amount_due(),
         )
+        act = self.act_pay_by()
+        if act is not None:
+            for row in rows:
+                row["due_date"] = min(row["due_date"], act) if row["due_date"] else act
+        return rows
+
+    def act_pay_by(self):
+        """
+        The day the MSME Act says it is paid by, for a micro or small vendor's
+        posted bill; else None. Not a debit note's refund, nor money paid up
+        front: the Act times payment for what was supplied.
+        """
+        from .msme import COVERED, msme_due
+
+        if not self.posted or self.msme_category not in COVERED or self.is_debit_note() or self.is_prepayment:
+            return None
+        return msme_due(self)
+
+    def pay_by(self):
+        """The day it is due in full: its terms', or the MSME Act's when that comes first."""
+        due, act = to_date(self.due_date), self.act_pay_by()
+        if act is None:
+            return due
+        return min(due, act) if due else act
 
     def amount_overdue(self, as_of=None):
         """
@@ -5553,7 +5582,7 @@ def payment_run(due_by=None, vendor=None):
         })
         row["total"] += due
         row["bills"].append({
-            "bill": bill, "due_date": bill.due_date, "amount_due": due,
+            "bill": bill, "due_date": bill.pay_by(), "amount_due": due,
             "days_overdue": bill.days_overdue(due_by),
         })
     return sorted(rows.values(), key=lambda row: -row["total"])

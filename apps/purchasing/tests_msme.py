@@ -211,3 +211,74 @@ class CategoryKeptMigrationTests(TransactionTestCase):
                          [("M", False, ""), ("M", True, "micro"), ("P", True, "")])
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class DueByTheActTests(MsmeTestCase):
+    """
+    A micro vendor's bill is due by the earlier of its terms and 45 days from
+    acceptance, and the payment run lists it by that day (calc_stat/o103_msme.py):
+      bill 1 June, net 60, nothing received: terms 31 July, the Act 16 July;
+      the same bill for goods received 10 June: the Act 25 July;
+      net 30: 1 July, the terms come first.
+    """
+
+    def listed(self, day):
+        from .models import payment_run
+
+        return [entry["bill"].pk for run in payment_run(due_by=day) for entry in run["bills"]]
+
+    def test_the_payment_run_lists_a_micro_vendors_bill_by_the_acts_45_days(self):
+        from .models import payment_run
+
+        bill = self.bill("1000", terms=self.net60)
+        (row,) = msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=datetime.date(2026, 7, 17))
+        self.assertEqual((row["due"], bill.due_date, bill.pay_by()),
+                         (datetime.date(2026, 7, 16), datetime.date(2026, 7, 31), datetime.date(2026, 7, 16)))
+        self.assertNotIn(bill.pk, self.listed(datetime.date(2026, 7, 15)))
+        self.assertIn(bill.pk, self.listed(datetime.date(2026, 7, 16)))
+        (entry,) = [entry for run in payment_run(due_by=datetime.date(2026, 7, 17)) for entry in run["bills"]]
+        self.assertEqual((entry["due_date"], entry["days_overdue"]), (datetime.date(2026, 7, 16), 1))
+
+    def test_from_the_day_the_goods_came(self):
+        from .models import GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine
+
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=JUNE)
+        line = PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                                unit_price=Decimal("100"))
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 6, 10))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                        quantity_received=Decimal("10"))
+        receipt.post()
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=JUNE, payable_account=self.payable,
+                                   payment_terms=self.net60, purchase_order=order)
+        BillLine.objects.create(bill=bill, order_line=line, item=self.item, quantity=Decimal("10"),
+                                unit_price=Decimal("100"), expense_account=self.expense)
+        bill.post()
+        bill = Bill.objects.get(pk=bill.pk)
+        self.assertEqual(bill.pay_by(), datetime.date(2026, 7, 25))
+
+    def test_terms_that_come_first_stand(self):
+        bill = self.bill("1000", terms=self.net30)
+        self.assertEqual(bill.pay_by(), datetime.date(2026, 7, 1))
+
+    def test_a_medium_vendors_bill_keeps_its_terms(self):
+        PartyTaxProfile.objects.filter(party=self.vendor).update(msme_category="medium")
+        bill = self.bill("1000", terms=self.net60)
+        self.assertEqual(bill.pay_by(), datetime.date(2026, 7, 31))
+        self.assertNotIn(bill.pk, self.listed(datetime.date(2026, 7, 16)))
+
+    def test_over_the_api_as_the_ap_manager(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        bill = self.bill("1000", terms=self.net60)
+        user = User.objects.create_user("ap")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.get("/api/purchasing/purchasing-reports/payment-run/", {"due_by": "2026-07-16"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn(bill.number, response.content.decode())
