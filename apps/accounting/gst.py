@@ -260,8 +260,8 @@ def document_number_key(number):
     """
     INV/2026-27/0012 and INV-2026-27-12 are one number to a clerk: the
     letters and the digit runs, without their separators or leading zeros.
-    GSTR-2B pairs by it, and a debit note's supplier credit note is unique
-    by it within the supplier's financial year.
+    GSTR-2B pairs by it, as a hint; it is no uniqueness rule, since "X/1/12"
+    and "X/11/2" come out the same (purchasing.supplier_note_key is the rule).
     """
     parts = re.findall(r"[A-Z]+|\d+", (number or "").upper())
     return "".join(part.lstrip("0") or "0" if part.isdigit() else part for part in parts)
