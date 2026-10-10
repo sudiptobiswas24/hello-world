@@ -17,6 +17,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    refuse_correcting_a_note,
     refuse_correcting_another_line,
     refuse_correcting_past_what_it_holds,
     refuse_naming_another_order_line,
@@ -3164,6 +3165,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("A debit note cannot also be a prepayment.")
         if self.debits_id and self.debits.vendor_id != self.vendor_id:
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
+        refuse_correcting_a_note(self, "debits")
 
     def amount_paid(self):
         # A voided payment is money that never arrived — a bounced cheque,
@@ -3802,7 +3804,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             for line in self.lines.select_related("debits_line__bill"):
                 refuse_correcting_another_line(line, self, "debits_line", "debits")
             if not original.is_prepayment and not self.corrects_old_supply:
-                refuse_correcting_past_what_it_holds(given_back, "debits_line", BillLine.quantity_debited)
+                refuse_correcting_past_what_it_holds(given_back, "debits_line", BillLine.quantity_debited, on="bill")
             # Debit at the rate the bill was booked at, never today's, so
             # correcting an old foreign-currency bill can't book an FX gain.
             self.exchange_rate = original.exchange_rate or Decimal("1")
@@ -4867,7 +4869,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # bill posted showed 100.00 on a bill whose payable held 50.00.
         answer_to_its_document(self, "bill", "Cannot modify a line on a posted bill. Issue a debit note instead.")
         refuse_naming_another_order_line(self, self.bill, "vendor", "purchase_order")
-        refuse_correcting_another_line(self, self.bill, "debits_line", "debits")
+        refuse_correcting_another_line(self, self.bill, "debits_line", "debits", fill=True)
         if self.debits_line_id:
             self.refuse_giving_back_what_moved()
         super().save(*args, **kwargs)
