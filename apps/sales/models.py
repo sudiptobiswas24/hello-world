@@ -756,7 +756,7 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
         SalesOrder.objects.filter(pk=self.pk).update(approved_figures=self.approved_figures)
 
     def figures_as_kept(self):
-        """policy_figures() as approved_figures keeps them; sales 0064 seeds orders approved before 0063 so."""
+        """policy_figures() as approved_figures keeps them."""
         figures = self.policy_figures()
         return {
             "discounts": {str(pk): str(value) for pk, value in figures["discounts"].items()},
@@ -770,7 +770,8 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
         if not kept:
             return {"discounts": {}, "total": None, "margin": None}
         return {"discounts": {int(pk): Decimal(value) for pk, value in kept["discounts"].items()},
-                "total": Decimal(kept["total"]),
+                # None: sales 0064 found no total the approval was for (O186); held to the order before the change.
+                "total": None if kept["total"] is None else Decimal(kept["total"]),
                 "margin": None if kept["margin"] is None else Decimal(kept["margin"])}
 
     def refuse_going_past_the_policy(self, before):
