@@ -538,6 +538,12 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
     port_of_discharge = models.CharField(max_length=64, blank=True)
     sacks_per_bale = models.PositiveIntegerField(null=True, blank=True)
     marking = models.TextField(blank=True)
+    approved_figures = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="What the approval covered, as the order stood when it was given: each line's "
+                  "discount, the total and the margin. A confirmed order changes within it; past it, "
+                  "it is refused (SalesOrder.refuse_going_past_the_policy).",
+    )
 
     class Meta:
         ordering = ["-order_date", "-id"]
@@ -673,18 +679,74 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
                 "confirmed order is not raised past it; take the rest as a new order, which "
                 "asks for approval.")
 
-    def refuse_going_past_the_policy(self):
+    def policy_figures(self):
+        """What the policy weighs, as the order stands: each line's discount, the total, the margin."""
+        return {"discounts": {line.pk: line.discount_percent for line in self.lines.all()},
+                "total": self.total(), "margin": self.margin_percent()}
+
+    @serialised("approved_at")
+    def approve(self, by=None, note=""):
+        """Approve, and write down what the approval covered: a confirmed order changes within it."""
+        super().approve(by=by, note=note)
+        figures = self.policy_figures()
+        self.approved_figures = {
+            "discounts": {str(pk): str(value) for pk, value in figures["discounts"].items()},
+            "total": str(figures["total"]),
+            "margin": None if figures["margin"] is None else str(figures["margin"]),
+        }
+        SalesOrder.objects.filter(pk=self.pk).update(approved_figures=self.approved_figures)
+
+    def _covered(self):
+        """What the approval covered, or nothing when there is none standing."""
+        kept = self.approved_figures if self.approved_at else None
+        if not kept:
+            return {"discounts": {}, "total": None, "margin": None}
+        return {"discounts": {int(pk): Decimal(value) for pk, value in kept["discounts"].items()},
+                "total": Decimal(kept["total"]),
+                "margin": None if kept["margin"] is None else Decimal(kept["margin"])}
+
+    def refuse_going_past_the_policy(self, before):
         """
-        What confirming asks of the policy, asked again of a confirmed order
-        whose line is added, re-priced, re-discounted or raised: a line raised
-        to 60% against a 15% policy after confirming shipped and invoiced with
-        nobody asked. An approval does not carry over: the change withdrew it
-        (SalesOrderLine.save), as it covered the order someone read.
+        What confirming asks of the policy, asked again of a confirmed order on
+        every change to its lines, cuts and deletes included, and refused only
+        where the change goes past what was already standing: the order as it
+        was before the change (`before`, policy_figures()) or what an approval
+        covered, whichever reaches further.
+
+        Asked of nothing, a line raised to 60% against a 15% policy shipped
+        and invoiced (O72). Asked of everything, an order approved for one 20%
+        line could not take one more of an undiscounted line; and a cut that
+        took an order under the margin floor was never asked at all (O141).
         """
-        reasons = self.policy_reasons()
+        policy = ApprovalPolicy.active()
+        if policy is None:
+            return
+        after, covered = self.policy_figures(), self._covered()
+
+        def furthest(values, low=False):
+            values = [value for value in values if value is not None]
+            return (min if low else max)(values) if values else None
+
+        reasons = []
+        if policy.max_discount_percent is not None:
+            for line in self.lines.all():
+                discount = line.discount_percent
+                allowed = furthest([before["discounts"].get(line.pk), covered["discounts"].get(line.pk)])
+                if discount > policy.max_discount_percent and (allowed is None or discount > allowed):
+                    reasons.append(f"'{line.label()}' is discounted {discount}%, above the "
+                                   f"{policy.max_discount_percent}% limit.")
+        if policy.max_order_value is not None and after["total"] > policy.max_order_value:
+            allowed = furthest([before["total"], covered["total"]])
+            if allowed is None or after["total"] > allowed:
+                reasons.append(f"The order is {after['total']}, above the {policy.max_order_value} limit.")
+        margin = after["margin"]
+        if policy.min_margin_percent is not None and margin is not None and margin < policy.min_margin_percent:
+            allowed = furthest([before["margin"], covered["margin"]], low=True)
+            if allowed is None or margin < allowed:
+                reasons.append(f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor.")
         if reasons:
             raise ValidationError(
-                f"{self} is confirmed, and this change needs approval: {' '.join(reasons)} A "
+                f"{self} is confirmed, and this change needs approval beyond what it has: {' '.join(reasons)} A "
                 "confirmed order is not changed past the policy; take it as a new order, which "
                 "asks for approval.")
 
@@ -1486,11 +1548,22 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         if self.pk is not None:
             lock_rows(self, refresh=False)
 
+    def _policy_before(self):
+        """
+        A confirmed order's figures before this line changes, held as its
+        lines are (the order, then the line), or None for an order not
+        confirmed: what refuse_going_past_the_policy() weighs the change by.
+        """
+        if not self.order_id or not SalesOrder.objects.filter(
+                pk=self.order_id, status=OrderStatus.CONFIRMED).exists():
+            return None
+        self._hold_with_its_orders()
+        return SalesOrder.objects.get(pk=self.order_id).policy_figures()
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         refuse_changing_what_moved(self, self._hold_with_its_orders)
-        stored = SalesOrderLine.objects.filter(pk=self.pk).values(
-            "unit_price", "discount_percent", "quantity").first() if self.pk else None
+        before = self._policy_before()
         shrinking = self._worth_less_than_stored()
         if shrinking:
             self._hold_for_deposits()
@@ -1560,33 +1633,29 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                         f"the quantity cannot drop below that."
                     )
                 # Its price and discount once invoiced: rule A, asked first thing above.
-                # An approval covers the order someone looked at. Re-price
-                # it afterwards and the approval is for something else.
+                # An approval covers the order someone looked at. Re-price a
+                # draft afterwards and the approval is for something else. A
+                # confirmed order keeps it: a change within what it covered
+                # stands, and one past it is refused below.
                 repriced = (
                     self.unit_price != previous.unit_price
                     or self.quantity != previous.quantity
                     or self.discount_percent != previous.discount_percent
                 )
-                if repriced and self.order.approved_at:
+                if repriced and self.order.approved_at and before is None:
                     self.order.withdraw_approval()
-        # A line added to an approved order changes the thing that was
+        # A line added to an approved draft changes the thing that was
         # approved just as surely as re-pricing one. Nothing caught this
         # because a new line has no previous version to compare against.
-        if self._state.adding and self.order_id and self.order.approved_at:
+        if self._state.adding and self.order_id and self.order.approved_at and before is None:
             self.order.withdraw_approval()
-        # The policy, asked again of a confirmed order: a line added, re-priced, re-discounted or raised.
-        asks_the_policy = stored is None or (
-            (stored["unit_price"], stored["discount_percent"]) != (self.unit_price, self.discount_percent)
-            or self.quantity > stored["quantity"])
         super().save(*args, **kwargs)
         if shrinking:
             self.order.refuse_coming_to_less_than_its_deposits()
         if growing:
             SalesOrder.objects.get(pk=self.order_id).refuse_going_over_the_credit_limit()
-        if asks_the_policy:
-            order = SalesOrder.objects.get(pk=self.order_id)
-            if order.status == OrderStatus.CONFIRMED:
-                order.refuse_going_past_the_policy()
+        if before is not None:
+            SalesOrder.objects.get(pk=self.order_id).refuse_going_past_the_policy(before)
         # Re-sizing or re-warehousing a line on a confirmed order changes
         # what it has promised, so the claim has to follow. Leaving the old
         # one standing holds stock for a quantity nobody is waiting for.
@@ -1613,8 +1682,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "This line has been shipped or invoiced and can no longer be removed."
             )
+        before = self._policy_before()
         # Refused first: a refusal after it left the approval withdrawn for a line still there.
-        if self.order_id and self.order.approved_at:
+        # A confirmed order keeps its approval; what the removal leaves is weighed below.
+        if self.order_id and self.order.approved_at and before is None:
             self.order.withdraw_approval()
         order = SalesOrder.objects.filter(pk=self.order_id, status=OrderStatus.CONFIRMED).first()
         if order is not None:
@@ -1626,6 +1697,8 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         super().delete(*args, **kwargs)
         if order is not None:
             order.refuse_coming_to_less_than_its_deposits()
+            # A cut is a change too: the dearest line taken off left an order under the margin floor.
+            SalesOrder.objects.get(pk=order.pk).refuse_going_past_the_policy(before)
 
     def promised_date(self):
         """

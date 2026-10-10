@@ -822,6 +822,30 @@ class AConfirmedOrderAsksThePolicyAgainTests(TradeRuleCase):
                                           revenue_account=self.revenue)
         self.assertEqual(order.lines.count(), 1)
 
+    def test_an_approved_order_takes_one_more_of_its_compliant_line(self):
+        """O141: approved for a 20% line, one more of an undiscounted line was refused."""
+        from django.contrib.auth.models import User
+
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                      unit_price=Decimal("100"), discount_percent=Decimal("20"),
+                                      revenue_account=self.revenue)
+        plain = SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("5"),
+                                              unit_price=Decimal("100"), revenue_account=self.revenue)
+        order.approve(by=User.objects.create_user("approver"))
+        order.confirm()
+        plain = SalesOrderLine.objects.get(pk=plain.pk)
+        plain.quantity = Decimal("6")
+        plain.save()
+        discounted = order.lines.get(discount_percent=Decimal("20"))
+        discounted.discount_percent = Decimal("25")
+        with self.assertRaisesMessage(ValidationError, "needs approval beyond what it has"):
+            discounted.save()
+        order.refresh_from_db()
+        self.assertIsNotNone(order.approved_at)
+        self.assertEqual(order.total(), Decimal("1400.00"))
+
     def test_a_line_within_the_policy_is_still_added(self):
         order = self.make_order("1", "100")
         SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
@@ -881,3 +905,61 @@ class ACreditLineCreditsOnlyItsNotesInvoiceTests(TradeRuleCase):
         with self.assertRaisesMessage(ValidationError, "Only 0 of"):
             typed_note().post()
         self.assertEqual((line.quantity_creditable(), self.balance(self.ar)), (Decimal("0"), Decimal("0.00")))
+
+
+class ACutIsAskedTheMarginFloorTests(TradeRuleCase):
+    """
+    O141: cuts and deletes of a confirmed order's lines were asked nothing. Floor
+    40%; widgets cost 4.00, the dear item 90.00, each sold at 100.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.utils import timezone
+
+        from apps.inventory.models import MovementType
+
+        from .models import ApprovalPolicy
+
+        ApprovalPolicy.objects.create(code="STD", name="Standard", min_margin_percent=Decimal("40"))
+        self.dear = Item.objects.create(sku="DEAR-1", name="Dear", uom=self.uom)
+        StockMovement.objects.create(item=self.dear, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+                                     uom=self.uom, quantity=Decimal("100"), unit_cost=Decimal("90"),
+                                     occurred_at=timezone.now())
+
+    def order(self, widgets, approve=False):
+        from django.contrib.auth.models import User
+
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd)
+        for item, quantity in ((self.item, widgets), (self.dear, "10")):
+            SalesOrderLine.objects.create(order=order, item=item, uom=self.uom, quantity=Decimal(quantity),
+                                          unit_price=Decimal("100"), revenue_account=self.revenue)
+        if approve:
+            order.approve(by=User.objects.create_user("approver"))
+        order.confirm()
+        return order
+
+    def test_a_cut_under_the_margin_floor_is_refused(self):
+        order = self.order("10")
+        self.assertEqual(order.margin_percent(), Decimal("53.00"))
+        widgets = order.lines.get(item=self.item)
+        widgets.quantity = Decimal("1")  # 17.82%
+        with self.assertRaisesMessage(ValidationError, "Gross margin is 17.82%, below the 40.00% floor"):
+            widgets.save()
+        with self.assertRaisesMessage(ValidationError, "Gross margin is 10.00%, below the 40.00% floor"):
+            order.lines.get(item=self.item).delete()
+        self.assertEqual(SalesOrder.objects.get(pk=order.pk).margin_percent(), Decimal("53.00"))
+
+    def test_an_approved_order_cuts_within_what_was_approved(self):
+        order = self.order("4", approve=True)  # approved at 34.57%, under the floor
+        self.assertEqual(order.margin_percent(), Decimal("34.57"))
+        dear = order.lines.get(item=self.dear)
+        dear.quantity = Decimal("8")  # 38.67%: still under the floor, not under what was approved
+        dear.save()
+        widgets = order.lines.get(item=self.item)
+        widgets.quantity = Decimal("1")  # 4 + 720 on 900: 19.56%
+        with self.assertRaisesMessage(ValidationError, "Gross margin is 19.56%, below the 40.00% floor"):
+            widgets.save()
+        order = SalesOrder.objects.get(pk=order.pk)
+        self.assertEqual((order.margin_percent(), order.approved_at is not None), (Decimal("38.67"), True))
