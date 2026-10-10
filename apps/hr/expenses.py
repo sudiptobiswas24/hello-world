@@ -184,6 +184,22 @@ class ExpenseClaim(AuditModel):
             self._move(["status", "paid_on", "paid_from", "voided_entry", "decision_note"])
 
 
+def claims_paid():
+    """
+    The entries claims were paid by, and those that reversed them: money out
+    of a cash or bank account that no Payment carries
+    (accounting.register_bank_movements). A claim paid again keeps its new
+    entry and its last reversal, which names the entry it reversed.
+    """
+    from apps.accounting.models import JournalEntry
+
+    claims = ExpenseClaim.objects
+    return JournalEntry.objects.filter(
+        Q(pk__in=claims.filter(journal_entry__isnull=False).values("journal_entry"))
+        | Q(pk__in=claims.filter(voided_entry__isnull=False).values("voided_entry"))
+        | Q(pk__in=claims.filter(voided_entry__isnull=False).values("voided_entry__reverses")))
+
+
 class ExpenseLine(AuditModel):
     claim = models.ForeignKey(ExpenseClaim, on_delete=models.CASCADE, related_name="lines")
     spent_on = models.DateField()

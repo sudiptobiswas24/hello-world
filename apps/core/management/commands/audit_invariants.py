@@ -103,6 +103,7 @@ class Command(BaseCommand):
         findings += self.kept_settings_read_live(labels, sources)
         findings += self.corrections_dated_without_the_rule(labels, sources)
         findings += self.reported_without_the_period(labels, sources)
+        findings += self.bank_movements_unregistered(labels, sources)
         findings += self.posted_as_calculated(labels, sources)
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
@@ -1155,6 +1156,42 @@ class Command(BaseCommand):
         findings += [("stale exemption", f"{key} is exempted from correction_date() but is no longer a step "
                                          "that needs it.")
                      for key in sorted(set(self.DATED_ELSEWHERE) - exempted) if key.split(".")[0] in labels]
+        return findings
+
+    # -- shape 1: money through a bank that a statement cannot be matched to --
+    def bank_movements_unregistered(self, labels, sources):
+        """
+        A document that pays from a bank or cash account by an entry of its own, never registered.
+
+        A TDS challan paid over from the bank was a journal entry, not a Payment, so its
+        statement line could be explained only by posting it again: the bank went to
+        -1,400 for 700 paid. A document that takes a money account
+        (refuse_as_money_account) and writes an entry registers its entries with
+        accounting.register_bank_movements(), by a function that names it, so a line is
+        matched to them; Payment is what the statement matches already.
+        """
+        findings = []
+        for label in labels:
+            texts = {path: text for path, text in sources.get(label, {}).items()
+                     if "test" not in path.name and "migrations" not in path.parts
+                     and "management" not in path.parts}
+            code = "\n".join(texts.values())
+            registered = set(re.findall(r"register_bank_movements\((\w+)\)", code))
+            named = "\n".join(ast.unparse(node) for text in texts.values() for node in ast.walk(ast.parse(text))
+                              if isinstance(node, ast.FunctionDef) and node.name in registered)
+            for path, text in sorted(texts.items()):
+                for cls in (node for node in ast.walk(ast.parse(text)) if isinstance(node, ast.ClassDef)):
+                    body = ast.unparse(cls)
+                    if (label, cls.name) == ("accounting", "Payment") or "refuse_as_money_account(" not in body \
+                            or "JournalEntry.objects.create(" not in body:
+                        continue
+                    if not re.search(rf"\b{cls.name}\b", named):
+                        findings.append((
+                            "bank movement unregistered",
+                            f"{label}.{cls.name} ({path.name}) pays through a money account by an entry of its own "
+                            "and is not registered with register_bank_movements(): its statement line can only be "
+                            "posted, and the books take it twice.",
+                        ))
         return findings
 
     # -- shape 1: a document reported without an entry, dated into a closed month --

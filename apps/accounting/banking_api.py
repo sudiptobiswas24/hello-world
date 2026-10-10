@@ -17,7 +17,7 @@ from apps.core.api import flag, record_or_404
 from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party
 
-from .models import Account, BankStatement, BankStatementLine, Payment, round_money
+from .models import Account, BankStatement, BankStatementLine, JournalEntry, Payment, round_money
 from .bank_import import import_lines
 
 
@@ -46,14 +46,21 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = BankStatementLine
         fields = ["id", "statement", "date", "description", "reference", "amount", "payment",
-                  "payment_number", "returned_payment", "returned_payment_number", "journal_entry", "resolved"]
+                  "payment_number", "returned_payment", "returned_payment_number", "journal_entry",
+                  "booked_entry", "resolved"]
         # Set by matching and posting, which check what they set.
-        read_only_fields = ["payment", "returned_payment", "journal_entry"]
+        read_only_fields = ["payment", "returned_payment", "journal_entry", "booked_entry"]
 
 
 def _payment_row(payment):
     return {"id": payment.pk, "number": payment.number, "party_name": payment.party.name,
             "date": payment.payment_date, "amount": payment.signed_base_amount()}
+
+
+def _entry_row(entry, amount):
+    """Money a document booked through the bank (a TDS challan, a claim paid out), as a payment's row reads."""
+    return {"entry": entry.pk, "number": entry.reference or f"JE-{entry.pk}", "party_name": entry.memo,
+            "date": entry.date, "amount": amount}
 
 
 class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -96,7 +103,8 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         return Response({
             "ledger_balance": round_money(report["ledger_balance"]),
             "statement_balance": report["statement_balance"],
-            "unpresented": [_payment_row(payment) for payment in report["unpresented"]],
+            "unpresented": [_payment_row(payment) for payment in report["unpresented"]]
+            + [_entry_row(entry, amount) for entry, amount in report["unpresented_entries"]],
             "unpresented_total": round_money(report["unpresented_total"]),
             "unresolved_lines": len(report["unresolved_lines"]),
             "statement_difference": round_money(report["statement_difference"]),
@@ -117,9 +125,16 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def match(self, request, pk=None):
-        """Say a line ({"line"}) is a payment ({"payment"})."""
+        """
+        Say a line ({"line"}) is a payment ({"payment"}), or money a document
+        booked through the bank ({"entry"}: a TDS challan, an expense claim paid out).
+        """
         statement = self.get_object()
         line = self._line(statement, request)
+        if request.data.get("entry") not in (None, ""):
+            entry = record_or_404(JournalEntry, request.data.get("entry"), "entry")
+            _refused(lambda: line.match_entry(entry))
+            return Response(self.get_serializer(statement).data)
         payment = record_or_404(Payment, request.data.get("payment"), "payment")
         _refused(lambda: line.match(payment))
         return Response(self.get_serializer(statement).data)
