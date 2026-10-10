@@ -427,3 +427,78 @@ class UndoingTakesTheDecisionRightTests(TdsTestCase):
             if status != 403:
                 through.append(f"{url} -> {status}")
         self.assertEqual(through, [])
+class ChallanOnTheStatementTests(TdsTestCase):
+    """
+    700 deducted on 10 June and paid over by challan on 7 July from the bank.
+    July's statement: opening 0, one line of -700, closing -700; the books say
+    -700 too. The line is the challan: matched to it, not posted again, which
+    took the bank to -1,400 (calc_stat/o62_statement.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import BankStatement, BankStatementLine
+
+        self.bill("35000", vendor=self.contractor(pan="AAACL1234F")).deduct_tds()
+        self.challan = TdsChallan.pay(self.contract, datetime.date(2026, 6, 1), datetime.date(2026, 7, 7), self.bank,
+                                      "00001", "0510002")
+        self.july = BankStatement.objects.create(bank_account=self.bank, start_date=datetime.date(2026, 7, 1),
+                                                 end_date=datetime.date(2026, 7, 31), opening_balance=Decimal("0"),
+                                                 closing_balance=Decimal("-700"))
+        self.line = BankStatementLine.objects.create(statement=self.july, date=datetime.date(2026, 7, 7),
+                                                     amount=Decimal("-700"))
+
+    def test_a_challan_on_the_bank_statement_can_be_explained_and_closed(self):
+        # Unmatched, the challan reads as not yet presented and the line as unexplained, as a payment does.
+        before = self.july.reconciliation()
+        self.assertEqual((before["unpresented_total"], len(before["unresolved_lines"])), (Decimal("-700.00"), 1))
+        self.line.match_entry(self.challan.journal_entry)
+        report = self.july.reconciliation()
+        self.assertEqual((report["difference"], report["unresolved_lines"], self.balance(self.tds_payable),
+                          self.balance(self.bank)), (Decimal("0"), [], Decimal("0"), Decimal("-700")))
+        self.july.close()
+
+    def test_the_obvious_one_is_matched_by_itself(self):
+        self.assertEqual(self.july.auto_match(), [self.line])
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.booked_entry_id, self.challan.journal_entry_id)
+
+    def test_a_challan_returned_unpaid_is_two_lines_matched(self):
+        from apps.accounting.models import BankStatementLine
+
+        self.challan.void(on_date=datetime.date(2026, 7, 9))
+        back = BankStatementLine.objects.create(statement=self.july, date=datetime.date(2026, 7, 9),
+                                                amount=Decimal("700"))
+        self.july.closing_balance = Decimal("0")
+        self.july.save()
+        self.line.match_entry(self.challan.journal_entry)
+        back.match_entry(TdsChallan.objects.get(pk=self.challan.pk).voided_entry)
+        self.assertEqual((self.july.reconciliation()["difference"], self.balance(self.tds_payable)),
+                         (Decimal("0"), Decimal("-700")))
+
+    def test_what_is_refused(self):
+        from apps.accounting.models import JournalEntry, JournalLine, Payment
+
+        other = Account.objects.create(code="1020", name="Other bank", account_type=AccountType.ASSET,
+                                       holds_money=True)
+        by_hand = JournalEntry.objects.create(date=datetime.date(2026, 7, 7), memo="Transfer")
+        JournalLine.objects.create(entry=by_hand, account=self.bank, credit=Decimal("700"))
+        JournalLine.objects.create(entry=by_hand, account=other, debit=Decimal("700"))
+        by_hand.post()
+        paid = Payment.objects.create(party=self.vendor, direction="disbursement", payment_date=datetime.date(2026, 7, 7),
+                                      amount=Decimal("700"), bank_account=self.bank, counterpart_account=self.payable)
+        paid.post()
+        for entry, said in ((by_hand, "is not money a document moved"), (paid.journal_entry, "match a payment")):
+            with self.subTest(entry=entry), self.assertRaisesMessage(ValidationError, said):
+                self.line.match_entry(entry)
+        self.line.amount = Decimal("-701")
+        self.line.save()
+        with self.assertRaisesMessage(ValidationError, "moved -700.00"):
+            self.line.match_entry(self.challan.journal_entry)
+        self.line.amount = Decimal("-700")
+        self.line.save()
+        self.line.match_entry(self.challan.journal_entry)
+        with self.assertRaisesMessage(ValidationError, "already explained"):
+            self.line.match_entry(self.challan.journal_entry)
+        self.line.unmatch()
+        self.assertIsNone(self.line.booked_entry_id)

@@ -430,3 +430,78 @@ class ALoginIsLinkedToAPersonAsTheImportLinksOneTests(PeopleTestCase):
         self.assertEqual(self.link(clerk, self.unlinked("E104"), self.bare("ess", "Employee Self Service")),
                          (200, True))
         self.assertEqual(self.link(clerk, self.unlinked("E105"), self.bare("lm", "Line Manager")), (400, False))
+class ClaimOnTheStatementTests(PeopleTestCase):
+    """
+    A claim of 300 + 150 = 450 paid from the bank on 7 July. July's statement:
+    opening 0, one line -450, closing -450; the books say -450 too. The line is
+    the claim's payment: matched to it, not posted again (calc_stat/o62_statement.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import BankStatement, BankStatementLine
+
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        self.paid = self.claim()
+        self.paid.submit()
+        self.paid.approve(self.manager)
+        self.paid.pay(self.bank, on_date=datetime.date(2026, 7, 7))
+        self.july = BankStatement.objects.create(bank_account=self.bank, start_date=datetime.date(2026, 7, 1),
+                                                 end_date=datetime.date(2026, 7, 31), opening_balance=Decimal("0"),
+                                                 closing_balance=Decimal("-450"))
+        self.line = BankStatementLine.objects.create(statement=self.july, date=datetime.date(2026, 7, 7),
+                                                     amount=Decimal("-450"))
+
+    def balance(self, account):
+        return sum((row.debit - row.credit for row in JournalLine.objects.filter(account=account, entry__posted=True)),
+                   Decimal("0"))
+
+    def test_a_claim_paid_from_the_bank_is_matched_on_its_statement(self):
+        self.line.match_entry(self.paid.journal_entry)
+        report = self.july.reconciliation()
+        self.assertEqual((report["difference"], report["unresolved_lines"], self.balance(self.bank),
+                          self.balance(self.travel), self.balance(self.meals)),
+                         (Decimal("0"), [], Decimal("-450"), Decimal("300"), Decimal("150")))
+        self.july.close()
+
+    def test_paid_in_june_and_on_the_bank_in_july_it_is_not_yet_presented_at_junes_end(self):
+        from apps.accounting.models import BankStatement
+
+        june = BankStatement.objects.create(bank_account=self.bank, start_date=datetime.date(2026, 6, 1),
+                                            end_date=datetime.date(2026, 6, 30), opening_balance=Decimal("0"),
+                                            closing_balance=Decimal("0"))
+        late = self.claim()
+        late.submit()
+        late.approve(self.manager)
+        late.pay(self.bank, on_date=datetime.date(2026, 6, 30))
+        report = june.reconciliation()
+        self.assertEqual((report["ledger_balance"], report["unpresented_total"], report["difference"]),
+                         (Decimal("-450"), Decimal("-450"), Decimal("0")))
+
+    def test_matched_by_the_bookkeeper_over_the_api(self):
+        client = self.as_(self.books)
+        response = client.post(f"/api/accounting/bank-statements/{self.july.pk}/match/",
+                               {"line": self.line.pk, "entry": self.paid.journal_entry_id}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.booked_entry_id, self.paid.journal_entry_id)
+        report = client.get(f"/api/accounting/bank-statements/{self.july.pk}/reconciliation/").json()
+        self.assertEqual((report["difference"], report["unresolved_lines"]), ("0.00", 0))
+
+
+class TheAuditSeesAnUnregisteredBankMovementTests(TestCase):
+    """`audit_invariants` reports a document that pays from a bank by its own entry and is not registered."""
+
+    def findings(self, edit=lambda path, text: text):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        sources = app_sources()
+        sources["hr"] = {path: edit(path, text) for path, text in sources["hr"].items()}
+        return [detail.split(" ")[0] for _, detail in Command().bank_movements_unregistered(["hr"], sources)]
+
+    def test_a_claim_paid_from_the_bank_unregistered_is_reported(self):
+        self.assertEqual(self.findings(lambda path, text: text.replace("register_bank_movements(claims_paid)", "")
+                                       if path.name == "apps.py" else text), ["hr.ExpenseClaim"])
+
+    def test_as_it_stands_it_is_not(self):
+        self.assertEqual(self.findings(), [])

@@ -972,6 +972,39 @@ def register_void_follow_up(follow_up):
         VOID_FOLLOW_UPS.append(follow_up)
 
 
+# Money a document moves through a bank without a Payment: a TDS challan paid
+# over, an expense claim paid out. Each module that books one says which
+# entries are its documents' (the payment, and the reversal that voided it),
+# without accounting importing it. A statement line is then matched to the
+# entry rather than posted a second time, and a reconciliation counts the entry
+# as not yet presented until a line is. A challan's line could only be posted:
+# the books then said -1,400 for 700 paid.
+BANK_MOVEMENTS = []
+
+
+def register_bank_movements(entries):
+    """entries() -> a JournalEntry queryset: what the module's documents posted, wherever the money went."""
+    if entries not in BANK_MOVEMENTS:
+        BANK_MOVEMENTS.append(entries)
+
+
+def bank_movements(bank_account):
+    """The posted entries a document moved through `bank_account`, by what each module registered."""
+    if not BANK_MOVEMENTS:
+        return JournalEntry.objects.none()
+    registered = Q(pk__in=BANK_MOVEMENTS[0]().values("pk"))
+    for entries in BANK_MOVEMENTS[1:]:
+        registered |= Q(pk__in=entries().values("pk"))
+    return JournalEntry.objects.filter(registered, posted=True, lines__account=bank_account).distinct()
+
+
+def moved_through(entry, bank_account):
+    """What `entry` moved through `bank_account`, signed as the bank sees it: money in is positive."""
+    rows = entry.lines.filter(account=bank_account).aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    # At the paisa on either database: SQLite sums to whatever places the figures had.
+    return round_money((rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0")))
+
+
 class Payment(AuditModel):
     """
     Money actually moving, posted to the ledger. Deliberately generic and
@@ -1304,6 +1337,19 @@ class BankStatement(AuditModel):
         ).exclude(pk__in=matched)
         return list(payments)
 
+    def unpresented_entries(self):
+        """
+        [(entry, amount)]: money a document moved through this account by the
+        statement's end (bank_movements) that no statement line is matched to.
+        A payment that was taken back is two such entries, and they net to
+        nothing until the bank shows either.
+        """
+        # Presented by the statement's end: a line of a later statement leaves it unpresented at this one's.
+        matched = BankStatementLine.objects.filter(booked_entry__isnull=False, date__lte=self.end_date).values(
+            "booked_entry")
+        entries = bank_movements(self.bank_account).filter(date__lte=self.end_date).exclude(pk__in=matched)
+        return [(entry, moved_through(entry, self.bank_account)) for entry in entries.order_by("date", "pk")]
+
     def reconciliation(self):
         """
         Books to bank, with every reconciling item named.
@@ -1312,13 +1358,16 @@ class BankStatement(AuditModel):
         not seen yet equals what the bank says it is holding.
         """
         unpresented = self.unpresented()
-        adjustment = sum((payment.signed_base_amount() for payment in unpresented), Decimal("0"))
+        unpresented_entries = self.unpresented_entries()
+        adjustment = sum((payment.signed_base_amount() for payment in unpresented), Decimal("0")) + sum(
+            (amount for _, amount in unpresented_entries), Decimal("0"))
         ledger = self.ledger_balance()
         return {
             "statement": self,
             "ledger_balance": ledger,
             "statement_balance": self.closing_balance,
             "unpresented": unpresented,
+            "unpresented_entries": unpresented_entries,
             "unpresented_total": adjustment,
             "unresolved_lines": self.unresolved_lines(),
             "statement_difference": self.statement_difference(),
@@ -1386,13 +1435,17 @@ class BankStatement(AuditModel):
             if line.is_resolved():
                 continue
             candidates = [
-                payment for payment in self.unpresented()
+                (line.match, payment) for payment in self.unpresented()
                 if payment.signed_base_amount() == line.amount
                 and abs((to_date(payment.payment_date) - to_date(line.date)).days)
                 <= tolerance_days
+            ] + [
+                (line.match_entry, entry) for entry, amount in self.unpresented_entries()
+                if amount == line.amount and abs((to_date(entry.date) - to_date(line.date)).days) <= tolerance_days
             ]
             if len(candidates) == 1:
-                line.match(candidates[0])
+                match, what = candidates[0]
+                match(what)
                 matched.append(line)
         return matched
 
@@ -1425,19 +1478,25 @@ class BankStatementLine(AuditModel):
         Payment, null=True, blank=True, on_delete=models.PROTECT, related_name="returned_line",
         help_text="The payment the bank took back on this line: a cheque returned unpaid, a transfer recalled.",
     )
+    booked_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Money a document already booked through the bank, not as a payment: a TDS challan, an "
+                  "expense claim paid out. Matched to it, not posted again.",
+    )
 
     class Meta:
         ordering = ["date", "id"]
         constraints = [
             models.CheckConstraint(check=~Q(amount=0), name="statement_line_amount_not_zero"),
             models.UniqueConstraint(fields=["payment"], name="one_statement_line_per_payment"),
+            models.UniqueConstraint(fields=["booked_entry"], name="one_statement_line_per_booked_entry"),
         ]
 
     def __str__(self):
         return f"{self.date:%d %b %Y} {self.description} {self.amount}"
 
     def is_resolved(self):
-        return bool(self.payment_id or self.journal_entry_id or self.returned_payment_id)
+        return bool(self.payment_id or self.journal_entry_id or self.returned_payment_id or self.booked_entry_id)
 
     def save(self, *args, **kwargs):
         if self.statement_id and BankStatement.objects.filter(
@@ -1463,7 +1522,7 @@ class BankStatementLine(AuditModel):
             raise ValidationError("This line was posted to the ledger; reverse it first.")
         super().delete(*args, **kwargs)
 
-    @serialised("payment", "journal_entry", "returned_payment")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
     def match(self, payment):
         """Say this line is that payment."""
         if self.is_resolved():
@@ -1501,10 +1560,38 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["payment", "updated_at"])
         return self
 
-    @serialised("payment", "journal_entry", "returned_payment")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
+    def match_entry(self, entry):
+        """
+        Say this line is money a document already booked through the bank (a
+        TDS challan, an expense claim paid out), as match() says it of a
+        payment. Explained by posting instead, the books took it twice.
+        """
+        if self.is_resolved():
+            raise ValidationError("This line is already explained.")
+        bank = self.statement.bank_account
+        if not bank_movements(bank).filter(pk=entry.pk).exists():
+            raise ValidationError(f"JE-{entry.pk} is not money a document moved through {bank}: match a "
+                                  "payment as a payment, and post what nothing booked.")
+        elsewhere = BankStatementLine.objects.filter(booked_entry=entry).select_related("statement").first()
+        if elsewhere is not None:
+            raise ValidationError(f"JE-{entry.pk} is already matched, on the statement {elsewhere.statement}.")
+        moved = moved_through(entry, bank)
+        if moved != self.amount:
+            raise ValidationError(f"The bank shows {self.amount} and JE-{entry.pk} moved {moved}. Matching them "
+                                  "would hide the difference.")
+        self.booked_entry = entry
+        self.save(update_fields=["booked_entry", "updated_at"])
+        return self
+
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
     def unmatch(self):
         if self.journal_entry_id:
             raise ValidationError("This line was posted, not matched. Reverse it instead.")
+        if self.booked_entry_id:
+            self.booked_entry = None
+            self.save(update_fields=["booked_entry", "updated_at"])
+            return
         if not (self.payment_id or self.returned_payment_id):
             raise ValidationError("This line is not matched.")
         # The return comes off after the payment's own line, as it went on before it: alone, that
@@ -1514,7 +1601,7 @@ class BankStatementLine(AuditModel):
         self.payment = self.returned_payment = None
         self.save(update_fields=["payment", "returned_payment", "updated_at"])
 
-    @serialised("payment", "journal_entry", "returned_payment")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
     def post_to(self, account, party=None, memo=""):
         """
         Explain a line that is not a payment at all — a bank charge,
@@ -1551,7 +1638,7 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["journal_entry", "updated_at"])
         return entry
 
-    @serialised("payment", "journal_entry", "returned_payment")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
     def reverse_posting(self, on_date=None):
         """
         Take back a line posted to the wrong account. `unmatch` said to

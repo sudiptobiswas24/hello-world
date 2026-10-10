@@ -223,6 +223,16 @@ class TdsChallan(AuditModel):
         return self.voided_entry
 
 
+def challans_paid():
+    """
+    The entries challans paid tax over by, and those that voided them: money
+    through the bank that no Payment carries (accounting.register_bank_movements).
+    """
+    paid = TdsChallan.objects.values("journal_entry")
+    voided = TdsChallan.objects.filter(voided_entry__isnull=False).values("voided_entry")
+    return JournalEntry.objects.filter(Q(pk__in=paid) | Q(pk__in=voided))
+
+
 def tds_return(start, end):
     """
     The quarter's deductions as the return lists them: who, their PAN,
