@@ -3055,6 +3055,17 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     settlement_reversal_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
     )
+    msme_category = models.CharField(
+        max_length=8, blank=True, editable=False,
+        choices=[("micro", "Micro"), ("small", "Small"), ("medium", "Medium")],
+        help_text="The vendor's MSME category as its Udyam registration said when the bill posted: whether "
+                  "the Act's 45 days bind it, and section 43B(h) with them. A vendor reclassified later "
+                  "moves no bill.",
+    )
+
+    # What a bill keeps of its vendor's profile when it posts, and reads from itself after
+    # (audit_invariants, kept_settings_read_live).
+    KEPT_FROM = {"tax_profile": ("msme_category",)}
 
     class Meta:
         ordering = ["-bill_date", "-id"]
@@ -3718,6 +3729,16 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             self.payment_terms.due_date(self.bill_date)
             if self.payment_terms_id else self.bill_date
         )
+        # Whether the MSME Act binds it is a fact of the day it was booked: read
+        # live, a micro vendor's unpaid bill left the 43B(h) list once the vendor
+        # was reclassified. A debit note is its bill's.
+        if self.is_debit_note():
+            self.msme_category = self.debits.msme_category
+        else:
+            from apps.accounting.models import PartyTaxProfile
+
+            profile = PartyTaxProfile.objects.filter(party_id=self.vendor_id).first()
+            self.msme_category = profile.msme_category if profile else ""
 
         if self.is_debit_note():
             original = self.debits
@@ -3752,7 +3773,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         super(Bill, self).save(update_fields=[
             "number", "bill_date", "due_date", "exchange_rate", "journal_entry",
             "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
-            "place_of_supply", "posted_total", "updated_at",
+            "place_of_supply", "posted_total", "msme_category", "updated_at",
         ])
 
         self._record_landed_cost()
