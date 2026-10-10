@@ -14,6 +14,9 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
 - Fix the root cause once, shared, so the next instance cannot be written. If the shape can be seen in code, add or widen an `audit_invariants` check, with a test that it reports a planted instance.
 - Shared rules have ONE owner each; your brief says which ones are yours. If you need a rule another agent owns, do not build your own: write your fix against the smallest local check, and say so in the report.
 
+## Budget
+- About 60 tool calls. Start from the file:line in your ids' rows; do not survey the codebase. Read ranges (grep -n, sed -n), never whole large files. At the budget, commit what is done and report what is left.
+
 ## Proving each fix
 - Each fix has a test that fails without it. Revert the fix, watch the test fail, restore it. Report the failure line.
 - Race fixes need a race() test in apps/e2e/tests_races.py, run on PostgreSQL with your own database:

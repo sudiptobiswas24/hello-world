@@ -108,10 +108,22 @@ defects", is the one list of what is still open.
   and CLAUDE.md lessons.
 - Decide; do not ask, unless a choice is truly theirs and blocking. Say
   in a line what was decided.
-- Run work in parallel with subagents, at most three or four at once.
-  Keep the Opus model. Write narrow briefs: grep and line ranges, never
-  whole large files, capped reports. Tokens are a concern; avoid many
-  small turns.
+- **Token spend (owner, 10 October).** The session limit is the constraint.
+  - Model per job: Sonnet for audits, reviews and probes; Opus only for
+    fixes to money, stock, locks or permissions; Sonnet for small
+    mechanical fixes.
+  - At most two agents at once.
+  - Briefs name the exact files and lines (the register has them).
+  - About 60 tool calls per agent; at that point it commits and reports.
+  - New work goes to a fresh agent with a tight brief. Resume an agent
+    only for work cut off mid-way: a resumed agent re-reads its whole
+    transcript.
+  - Independent review for costing, locking, security and statutory
+    fixes; the integrator's diff read for small ones.
+  - Reports: 10 lines back, the detail in a file.
+  - The integrating session reads ranges, never whole logs or diffs. It
+    does not edit CLAUDE.md mid-session. It starts fresh after each gate
+    push.
 - More compute means more cloud sessions, each with its own machine.
   Check a remote lane's skip count before trusting it.
 - No pull requests unless asked. PR #4 is the owner's; watch it, do not
