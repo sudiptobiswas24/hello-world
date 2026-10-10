@@ -267,6 +267,13 @@ def build(invoice):
     overseas = document.registration == "overseas"
     buyer = invoice.customer
     billed_at = invoice.billing_address or buyer.billing_address()
+    shipped = invoice.shipping_address
+    if (not overseas and shipped is not None and billed_at is not None and shipped.pk == billed_at.pk
+            and p.state_code(billed_at) not in (None, document.gstin[:2])):
+        # Billed and delivered at the buyer's site in another state (O161
+        # places the supply there, O181): the buyer is the registration's,
+        # at its own address, and the site is where it was shipped.
+        billed_at = buyer.billing_address()
     billed = p.place(billed_at, f"{buyer}",
                      registered_state=None if overseas else document.gstin[:2],
                      domestic=not overseas)
@@ -284,7 +291,6 @@ def build(invoice):
     }
     # Shipped somewhere other than billed. Not for an export: the goods
     # leave by a port, and the block is optional there.
-    shipped = invoice.shipping_address
     if not overseas and shipped is not None and shipped.pk != billed_at.pk:
         ship = p.place(shipped, f"{buyer}'s delivery address")
         payload["ShipDtls"] = _block(ship, document.gstin, p.party_name(buyer))

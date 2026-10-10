@@ -236,8 +236,10 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
         # Not before it was booked, nor a day to come (O165).
         on_date = correction_date(on_date, self.movement_date, f"{self} is not voided on", "it was booked")
         # Voided, it leaves the return for its own date's period; and with no
-        # entry to reverse, nothing else asks the void's day (O158).
-        _refuse_closed(self.movement_date, f"{self}, booked on {self.movement_date}, is not voided")
+        # entry to reverse, nothing else asks the void's day (O158). One at a
+        # value is reversed by an entry dated in an open month (O181).
+        if not self.journal_entry_id:
+            _refuse_closed(self.movement_date, f"{self}, booked on {self.movement_date}, is not voided")
         _refuse_closed(on_date, f"{self} is not voided on {on_date}")
         # A movement at no value writes no entry — `_post_entry` drops
         # zero rows — so there may be nothing to reverse, and the void

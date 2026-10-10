@@ -1992,6 +1992,14 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         if not self.posted:
             raise ValidationError("Only a posted invoice can be written off.")
         on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not written off on", "it was issued")
+        # Nor before the last money it settles against (O181): 600 received
+        # on 25 September and 400 written off on 15 September read 1,000 owed
+        # as 600 between the two.
+        received = [to_date(row.payment.payment_date) for row in self.payment_allocations.all()
+                    if not row.payment.is_voided()]
+        if received and on_date < max(received):
+            raise ValidationError(f"{self.number} is not written off on {on_date}: "
+                                  f"money against it was received on {max(received)}.")
         if self.is_credit_note():
             raise ValidationError("A credit note cannot be written off.")
 

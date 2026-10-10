@@ -82,6 +82,19 @@ class StatementBalanceTests(SalesTestCase):
         self.assertEqual(statement["closing_balance"], Decimal("0"))
         self.assertIn("Written off", [entry.kind for entry in statement["entries"]])
 
+    def test_a_write_off_is_not_dated_before_the_money_it_settles_against(self):
+        # O181 (review_stat2 #9): invoice of 1,000 on 1 Mar, 600 received on 10 Mar.
+        # The 400 left written off on 5 Mar read 600 owed between the two, not 1,000.
+        invoice = self.bill(self.make_order("10", "100"))
+        self.allocate(self.receipt("600", on=datetime.date(2026, 3, 10)), invoice, "600")
+        with self.assertRaisesMessage(ValidationError, "is not written off on 2026-03-05: money against it was "
+                                                       "received on 2026-03-10"):
+            invoice.write_off(on_date=datetime.date(2026, 3, 5))
+        self.assertEqual(invoice.write_offs.count(), 0)
+        invoice.write_off(on_date=datetime.date(2026, 3, 10))
+        self.assertEqual(invoice.write_offs.get().amount, Decimal("400.00"))
+        self.assert_foots()
+
     def test_a_recovered_write_off_puts_the_debt_back(self):
         invoice = self.bill(self.make_order("10", "100"))
         invoice.write_off(on_date=datetime.date(2026, 9, 1))

@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounting.gst import GstSettings, gstin_check_character
@@ -246,6 +247,18 @@ class AReceiptOfNoValueAsksThePeriodTests(Itc04TestCase):
         with self.assertRaisesMessage(ValidationError, "is not voided on 2099-01-01: that day has not come"):
             receipt.void(on_date=datetime.date(2099, 1, 1))
         self.assertEqual(len(itc04(*H1)["received"]), 1)
+
+    def test_a_value_receipt_of_a_closed_month_is_voided_in_an_open_one(self):
+        # O181 (review_stat2 #10): booked back at 1,400 on 1 June, June closed. Its
+        # entry is reversed today, in an open month: a correction, not refused.
+        receipt = self.back(self.lamination, "100", "1400")
+        self.close_june()
+        reversal = receipt.void()
+        receipt.refresh_from_db()
+        self.assertEqual((reversal.date, receipt.voided_entry_id, receipt.journal_entry.date),
+                         (timezone.localdate(), reversal.pk, datetime.date(2026, 6, 1)))
+        with self.assertRaisesMessage(ValidationError, "Jun is closed"):
+            self.back(self.lamination, "10", "140").void(on_date=datetime.date(2026, 6, 30))
 
     def test_voided_after_its_month_closed(self):
         receipt = self.back(self.lamination, "100", "0")

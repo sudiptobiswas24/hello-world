@@ -492,6 +492,25 @@ class PlaceOfSupplyTests(EInvoiceTestCase):
         self.assertEqual(self.lorry(invoice), (self.mh.tax_profile.gstin, 29, 29, 2))
         self.assertEqual(build(invoice)["BuyerDtls"]["Pos"], "29")
 
+    def test_a_registered_buyer_billed_and_delivered_at_its_site_across_the_state_line(self):
+        # O181 (review_stat2 #8): the Karnataka site as bill-to and ship-to posts at 29;
+        # the e-invoice refused it ("MH-REG is in Karnataka, but the registration is
+        # in Maharashtra"). The buyer is its registration at its own address; the site
+        # is where the goods went.
+        site = self.site(self.mh)
+        invoice = Invoice.objects.create(customer=self.mh, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.inr, shipping_address=site, billing_address=site)
+        line = InvoiceLine.objects.create(invoice=invoice, item=self.sack, quantity=D("2"), unit_price=D("1000"),
+                                          revenue_account=self.revenue)
+        line.taxes.set(self.pair)
+        invoice.post()
+        self.assertEqual((self.taxes(line), invoice.place_of_supply), ([("IGST18", D("360.00"))], "29"))
+        payload = build(invoice)
+        buyer, ship = payload["BuyerDtls"], payload["ShipDtls"]
+        self.assertEqual((buyer["Gstin"], buyer["Stcd"], buyer["Pin"], buyer["Loc"], buyer["Pos"]),
+                         (self.mh.tax_profile.gstin, "27", 422001, "Nashik", "29"))
+        self.assertEqual((ship["Stcd"], ship["Pin"], ship["Loc"]), ("29", 580001, "Hubballi"))
+
     def test_a_registered_buyer_sending_the_goods_on_to_someone_else(self):
         invoice, line = self.sale(self.mh, self.site(self.onward))
         self.assertEqual((self.taxes(line), invoice.place_of_supply),
