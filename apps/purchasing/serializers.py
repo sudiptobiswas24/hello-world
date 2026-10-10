@@ -134,6 +134,8 @@ class BillSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
             "currency",
             "payment_terms",
             "reference",
+            "supplier_note_number",
+            "supplier_note_date",
             "purchase_order",
             "payable_account",
             "debits",

@@ -2952,6 +2952,16 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         max_length=64, blank=True,
         help_text="The vendor's own invoice number — what they will quote when chasing payment.",
     )
+    supplier_note_number = models.CharField(
+        max_length=64, blank=True,
+        help_text="On a debit note: the number of the credit note the supplier issued for it, which "
+                  "its GSTR-1 and so the company's GSTR-2B carry. Given when the note is made, or "
+                  "while it is a draft.",
+    )
+    supplier_note_date = models.DateField(
+        null=True, blank=True,
+        help_text="On a debit note: the date of the supplier's credit note.",
+    )
     currency = models.ForeignKey(
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -3059,6 +3069,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 condition=Q(debits__isnull=True) & ~Q(reference=""),
                 name="one_bill_per_vendor_reference",
             ),
+            # A supplier's credit note is answered by one debit note: two would
+            # each take the credit back.
+            models.UniqueConstraint(
+                fields=["vendor", "supplier_note_number"],
+                condition=Q(debits__isnull=False) & ~Q(supplier_note_number=""),
+                name="one_debit_note_per_supplier_credit_note",
+            ),
         ]
 
     def __str__(self):
@@ -3100,6 +3117,28 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("A debit note cannot also be a prepayment.")
         if self.debits_id and self.debits.vendor_id != self.vendor_id:
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
+        self._check_supplier_note()
+
+    def _check_supplier_note(self):
+        """
+        The supplier's credit note a debit note records: only on a debit note,
+        not dated before the bill it corrects nor on a day to come.
+        """
+        self.supplier_note_number = (self.supplier_note_number or "").strip()
+        self.supplier_note_date = to_date(self.supplier_note_date)
+        if not (self.supplier_note_number or self.supplier_note_date):
+            return
+        if not self.debits_id:
+            raise ValidationError({"supplier_note_number": [
+                "Only a debit note records a supplier's credit note; a bill's own number is its reference."]})
+        day = self.supplier_note_date
+        if day is not None and day < to_date(self.debits.bill_date):
+            raise ValidationError({"supplier_note_date": [
+                f"{self.debits} is dated {to_date(self.debits.bill_date)}; the supplier's credit note on it "
+                f"is not dated {day}."]})
+        if day is not None and day > timezone.localdate():
+            raise ValidationError({"supplier_note_date": [f"The supplier's credit note is not dated {day}: "
+                                                          "that day has not come."]})
 
     def amount_paid(self):
         # A voided payment is money that never arrived — a bounced cheque,
@@ -4006,11 +4045,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
     @serialised("posted")
-    def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None):
+    def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None,
+                          supplier_note_number="", supplier_note_date=None):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
-        partial goods return needs.
+        partial goods return needs. `supplier_note_number` and
+        `supplier_note_date` record the supplier's credit note for it, which
+        GSTR-2B pairs the note with.
 
         Sales has had partial credit notes since its first pass. The
         purchase side could only ever reverse a bill in full, so a vendor
@@ -4024,8 +4066,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("Only a posted bill can be corrected with a debit note.")
         if self.debits_id:
             raise ValidationError("Cannot issue a debit note against a debit note.")
+        supplier_note = {"supplier_note_number": supplier_note_number or "",
+                         "supplier_note_date": to_date(supplier_note_date)}
         if self.is_prepayment:
-            return self._debit_prepayment(memo, quantities, amount)
+            return self._debit_prepayment(memo, quantities, amount, supplier_note)
         if amount is not None:
             raise ValidationError("A bill is debited by the quantities of its lines, not by an amount.")
 
@@ -4053,6 +4097,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             payment_terms=self.payment_terms,
             payable_account=self.payable_account,
             debits=self,
+            **supplier_note,
         )
         for line, quantity in selected:
             note_line = BillLine.objects.create(
@@ -4080,7 +4125,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         debit_note.post(memo=memo)
         return debit_note
 
-    def debit_old_supply(self, lines, memo="", on_date=None, old_value=None):
+    def debit_old_supply(self, lines, memo="", on_date=None, old_value=None,
+                         supplier_note_number="", supplier_note_date=None):
         """
         A debit note with GST on a bill the old system booked: the mirror
         of Invoice.credit_old_supply (apps/accounting/old_supply.py).
@@ -4104,6 +4150,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 reference=self.reference, currency=self.currency,
                 payment_terms=self.payment_terms, payable_account=self.payable_account,
                 debits=self, corrects_old_supply=True, old_bill_value=old_value,
+                supplier_note_number=supplier_note_number or "", supplier_note_date=to_date(supplier_note_date),
             )
             for fields, taxes in checked:
                 line = BillLine.objects.create(bill=note, **fields)
@@ -4151,7 +4198,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"would exceed the order total of {order.total_words(worth)}."
             )
 
-    def _debit_prepayment(self, memo, quantities, amount=None):
+    def _debit_prepayment(self, memo, quantities, amount=None, supplier_note=None):
         """
         Take back what is left of a prepayment, or `amount` of it. The mirror of
         sales' `_credit_deposit`, and for the same reason: part of it may
@@ -4187,6 +4234,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             payment_terms=self.payment_terms,
             payable_account=self.payable_account,
             debits=self,
+            **(supplier_note or {}),
         )
         BillLine.objects.create(
             bill=debit_note,
