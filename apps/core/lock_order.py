@@ -211,6 +211,13 @@ def install():
             _state(connection)["held"].add((instance._meta.label_lower, instance.pk))
 
     post_save.connect(made, weak=False, dispatch_uid="apps.core.lock_order.made")
+
+    def updated(sender, instance, created, using, **kwargs):  # PROBE: a save() of a row locks it too
+        if created or kwargs.get("raw"):
+            return
+        taken(connections[using], instance._meta.label_lower, [instance.pk])
+
+    post_save.connect(updated, weak=False, dispatch_uid="probe.updated")
     compiler.SQLCompiler.execute_sql = checked_execute_sql
     compiler.SQLCompiler._lock_order_installed = True
     transaction.Atomic.__exit__ = checked_exit
