@@ -32,6 +32,7 @@ offline tool's shape; validate it in that tool before uploading.
 
 import calendar
 import datetime
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -375,7 +376,7 @@ def gstr1(start, end):
             {"hsn": code, "uqc": uqc, "rate": rate} | totals
             for (code, uqc, rate), totals in sorted(rows.items())
         ]
-    result["documents"] = _documents_issued(documents)
+    result["documents"] = _documents_issued(start, end)
     received, adjusted = _advances(start, end, settings.state)
     result["advances_received"], result["advances_adjusted"] = _rows(received), _rows(adjusted)
     result["warnings"] = sorted(set(result["warnings"]))
@@ -444,15 +445,55 @@ def _advances(start, end, state):
     return received, adjusted
 
 
-def _documents_issued(documents):
-    series = defaultdict(list)
-    for document in documents:
-        series["credit_notes" if document.is_note else "invoices"].append(document.number)
-    return [
-        {"kind": kind, "from": min(numbers), "to": max(numbers), "total": len(numbers),
-         "cancelled": 0}
-        for kind, numbers in sorted(series.items())
-    ]
+# Table 13's natures of document, as the portal numbers them (doc_num).
+DOCUMENT_NATURES = {
+    "invoices": (1, "Invoices for outward supply"),
+    "credit_notes": (5, "Credit Note"),
+    "job_work_challans": (9, "Delivery Challan for job work"),
+}
+
+
+def _series_of(number):
+    """'INV-2026-00012' -> ('INV-2026-', 12): the series a number belongs to, and its place in it."""
+    match = re.search(r"(\d+)(\D*)$", number)
+    if match is None:
+        return number, 0
+    return number[:match.start()] + "#" + match.group(2), int(match.group(1))
+
+
+def _documents_issued(start, end):
+    """
+    Table 13: every number a series gave out in the period, whatever table
+    its document is reported in, or none. A down payment takes an invoice
+    number and is no supply: read from the supplies reported, INV-1 to
+    INV-3 with the down payment between them said 2 were issued in a range
+    of three. Job-work challans are a nature of their own; one withdrawn is
+    cancelled.
+    """
+    from apps.manufacturing.jobwork import JobWorkChallan
+
+    numbered = Invoice.objects.filter(posted=True, invoice_date__gte=start, invoice_date__lte=end).exclude(number="")
+    # (number, when withdrawn): an invoice is never withdrawn (a credit note takes it back).
+    kinds = (
+        ("invoices", ((number, None) for number in
+                      numbered.filter(credits__isnull=True).values_list("number", flat=True))),
+        ("credit_notes", ((number, None) for number in
+                          numbered.filter(credits__isnull=False).values_list("number", flat=True))),
+        ("job_work_challans", JobWorkChallan.objects.filter(
+            posted=True, challan_date__gte=start, challan_date__lte=end).exclude(number="").values_list(
+            "number", "voided_at")),
+    )
+    rows = []
+    for kind, issued in kinds:
+        series = defaultdict(list)
+        for number, withdrawn in issued:
+            key, place = _series_of(number)
+            series[key].append((place, number, withdrawn is not None))
+        for numbers in (sorted(found) for _, found in sorted(series.items())):
+            cancelled = sum(1 for _, _, withdrawn in numbers if withdrawn)
+            rows.append({"kind": kind, "from": numbers[0][1], "to": numbers[-1][1], "total": len(numbers),
+                         "cancelled": cancelled})
+    return rows
 
 
 def gstr3b(start, end):
@@ -633,13 +674,16 @@ def gstr1_json(result):
             ]
             for table in ("b2b", "b2c")
         },
+        # doc_num is the nature of the document (1 invoices, 5 credit notes, 9 job-work
+        # challans), not a running count: counted, credit notes went out as nature 1.
         "doc_issue": {"doc_det": [
-            {"doc_num": number, "docs": [{
-                "num": 1, "from": series["from"], "to": series["to"],
+            {"doc_num": DOCUMENT_NATURES[kind][0], "doc_typ": DOCUMENT_NATURES[kind][1], "docs": [{
+                "num": index, "from": series["from"], "to": series["to"],
                 "totnum": series["total"], "cancel": series["cancelled"],
                 "net_issue": series["total"] - series["cancelled"],
-            }]}
-            for number, series in enumerate(result["documents"], start=1)
+            } for index, series in enumerate(
+                (row for row in result["documents"] if row["kind"] == kind), start=1)]}
+            for kind in DOCUMENT_NATURES if any(row["kind"] == kind for row in result["documents"])
         ]},
     }
 

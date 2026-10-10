@@ -270,6 +270,10 @@ class SeptemberReturnTests(GstReturnTestCase):
         issued = {row["kind"]: row["total"] for row in gstr1(*SEPTEMBER)["documents"]}
         self.assertEqual(issued, {"invoices": 8, "credit_notes": 3})
 
+    def test_each_nature_of_document_goes_out_as_its_own_number(self):
+        details = gstr1_json(gstr1(*SEPTEMBER))["doc_issue"]["doc_det"]
+        self.assertEqual([(row["doc_num"], row["docs"][0]["totnum"]) for row in details], [(1, 8), (5, 3)])
+
     def test_3b_outward_tax_is_what_the_ledger_holds(self):
         result = gstr3b(*SEPTEMBER)
         taxed = result["3.1a"]
@@ -375,7 +379,10 @@ class RefusalTests(GstReturnTestCase):
 
         result = gstr1(*SEPTEMBER)
         self.assertEqual(result["nil"], {})
-        self.assertEqual(result["documents"], [])
+        # Neither is a supply, but each took a number in its series, and table 13
+        # accounts for every number given out (O59).
+        self.assertEqual([(row["kind"], row["total"]) for row in result["documents"]],
+                         [("invoices", 1), ("credit_notes", 1)])
         self.assertEqual(gstr3b(*SEPTEMBER)["3.1c"]["taxable"], D("0"))
 
     def test_the_registration_cannot_move_under_recorded_documents(self):
@@ -625,3 +632,29 @@ class EdgeTests(GstReturnTestCase):
         result = gstr3b(*SEPTEMBER)
         self.assertEqual(result["5"], {"inter": D("30"), "intra": D("0")})
         self.assertEqual(result["5_non_gst"], {"inter": D("70"), "intra": D("0")})
+
+
+class DocumentsIssuedTests(GstReturnTestCase):
+    """
+    September: an invoice, a down payment on an order, another invoice. The
+    three take INV numbers one after another, and table 13 says the series
+    ran from the first to the last: 3 issued, none cancelled
+    (calc_stat/o59_table13.py).
+    """
+
+    def test_the_invoice_series_reported_holds_every_number_in_its_range(self):
+        Company.objects.update(customer_deposit_account=Account.objects.create(
+            code="2300", name="Deposits", account_type=AccountType.LIABILITY))
+        buyer = self.party("MH-C", gstin=gstin("27AABCL1111L1Z"))
+        first = self.sell(buyer, "1000")
+        order = SalesOrder.objects.create(customer=buyer, order_date=datetime.date(2026, 9, 10), currency=self.inr)
+        SalesOrderLine.objects.create(order=order, item=self.sack, uom=self.sack.uom, quantity=D("1"),
+                                      unit_price=D("1000"), revenue_account=self.revenue)
+        order.confirm()
+        deposit = order.create_down_payment_invoice(self.ar, amount=D("300"), invoice_date=datetime.date(2026, 9, 10))
+        deposit.post()
+        last = self.sell(buyer, "2000")
+        issued = gstr1(datetime.date(2026, 9, 1), datetime.date(2026, 9, 30))["documents"]
+        row = next(row for row in issued if row["kind"] == "invoices")
+        self.assertEqual((row["from"], row["to"], row["total"], row["cancelled"]), (first.number, last.number, 3, 0))
+        self.assertEqual(deposit.number, "INV-2026-00002")
