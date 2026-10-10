@@ -339,8 +339,38 @@ class AcceptedOnDeliveryTests(MsmeTestCase):
         self.assertEqual(bill.pay_by(), datetime.date(2026, 8, 4))
         (entry,) = [entry for run in payment_run(due_by=datetime.date(2026, 7, 16)) for entry in run["bills"]]
         self.assertEqual(entry["amount_due"], Decimal("600.00"))
-        (row,) = msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=datetime.date(2026, 7, 20))
-        self.assertEqual((row["due"], row["at_risk"]), (datetime.date(2026, 8, 4), Decimal("600.00")))
+        rows = msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=datetime.date(2026, 7, 20))
+        self.assertEqual([(row["amount"], row["due"], row["days_late"], row["at_risk"]) for row in rows],
+                         [(Decimal("600.00"), datetime.date(2026, 7, 16), 4, Decimal("600.00")),
+                          (Decimal("400.00"), datetime.date(2026, 8, 4), 0, Decimal("0"))])
+
+    def report(self, as_of):
+        return [(row["amount"], row["due"], row["due_pending"], row["paid_on"], row["days_late"], row["unpaid"],
+                 row["at_risk"]) for row in msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=as_of)]
+
+    def test_each_delivery_is_late_from_its_own_day_in_the_report(self):
+        # O180 (review_stat2 #6): 600 due 16 Jul and 400 due 4 Aug, paid together on
+        # 10 Aug, read as one bill due 4 Aug, 6 days late; the 600 was 25 days late.
+        order, line = self.order()
+        self.receive(order, line, JUNE, "6")
+        self.receive(order, line, datetime.date(2026, 6, 20), "4")
+        bill = self.bill_for(order, line, datetime.date(2026, 6, 25), "10")
+        self.pay(bill, "700", datetime.date(2026, 8, 1))
+        self.assertEqual(self.report(datetime.date(2026, 8, 10)), [
+            (Decimal("600.00"), datetime.date(2026, 7, 16), False, datetime.date(2026, 8, 1), 16, Decimal("0.00"),
+             Decimal("0")),
+            (Decimal("400.00"), datetime.date(2026, 8, 4), False, None, 6, Decimal("300.00"), Decimal("300.00"))])
+        self.pay(bill, "300", datetime.date(2026, 8, 10))
+        self.assertEqual([row[4] for row in self.report(datetime.date(2026, 8, 10))], [16, 6])
+
+    def test_a_standing_objection_is_due_pending_not_on_time(self):
+        # O180: an objection never removed read due none, 0 days late, 0 at risk.
+        order, line = self.order()
+        receipt, _ = self.receive(order, line, datetime.date(2026, 6, 10), "10")
+        self.bill_for(order, line, datetime.date(2026, 6, 25), "10")
+        receipt.record_objection(datetime.date(2026, 6, 12), "Letter PUR/14: short count")
+        self.assertEqual(self.report(datetime.date(2026, 12, 31)),
+                         [(Decimal("1000.00"), None, True, None, None, Decimal("1000.00"), Decimal("0"))])
 
     def test_an_objection_is_keyed_by_a_login_on_record_from_stores_or_accounts(self):
         """
