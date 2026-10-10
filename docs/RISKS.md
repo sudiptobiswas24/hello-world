@@ -384,6 +384,8 @@ missing), **minor**.
 | O164 | accounting, hr, gst | In the fix-wave-1 statutory commits: O62's `post_to` still double-books a line a challan or claim already booked, and a claim paid and unpaid twice drops its first pair from the bank movements (with O151); O58 lists reversals as negative rows; O59 leaves delivery challans out of table 13 (docs/handoff/reports/review_stat.md #9-#11, #13) | minor | queued |
 | O165 | manufacturing | `OutsideMovement.void` does not ask `correction_date()`: a job-worker receipt's void can be dated before the receipt | rule | queued, wave 1 follow-up |
 | O166 | gst | The e-way bill codes a sales delivery as a delivery challan ("CHL", gst/ewaybill.py near line 500), though a sales delivery travels on its tax invoice. The tax adviser to decide | statutory | decide |
+| O167 | purchasing | Purchasing has the O72/O141 shape: a confirmed purchase order's approval is withdrawn on any re-price, and only the budget is asked again, never the order value, line value or agreed-price policy (`PurchaseOrderLine.save`) | rule | open |
+| O168 | core | In the fix-wave-1 trading commits: a document's orders are read just before its lock is taken, so an order line added in that instant has its order locked after the document, against the written lock order. Posting re-locks it | race | minor, unproven |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
