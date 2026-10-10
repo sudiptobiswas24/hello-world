@@ -294,8 +294,24 @@ def normalise(number):
     letters and the digit runs, without their separators or leading
     zeros. GSTN compares exactly; the figures are compared after.
     """
-    parts = re.findall(r"[A-Z]+|\d+", (number or "").upper())
-    return "".join(part.lstrip("0") or "0" if part.isdigit() else part for part in parts)
+    from apps.accounting.gst import document_number_key
+
+    return document_number_key(number)
+
+
+def refuse_supplier_note_change(note, number):
+    """
+    A debit note's supplier credit-note number, once a GSTR-2B line of that
+    supplier carries it, is what the pairing stands on: it is not changed
+    after (O159). Registered with purchasing in GstConfig.ready().
+    """
+    gstin = getattr(getattr(note.vendor, "tax_profile", None), "gstin", "")
+    key = normalise(number)
+    for line in Gstr2bLine.objects.filter(supplier_gstin=gstin, kind="credit_note").select_related("statement"):
+        if normalise(line.number) == key:
+            raise ValidationError({"supplier_note_number": [
+                f"GSTR-2B for {line.statement.period} carries {line.number} from {note.vendor}; the number "
+                f"{note} records stands as it was matched."]})
 
 
 def _figures(document):
