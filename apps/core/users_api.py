@@ -13,12 +13,20 @@ admin's and are not shown.
 Nor does anyone give more than they hold. Changing another login was
 asked only auth.change_user, so an HR Admin made a second login with
 the Controller role, and set a real Controller's password and signed in
-as them. A role is given only by a login that holds it, and a login
-that holds anything its keeper does not (a role, a permission of its
-own, the admin site) is not theirs to change, set the password of or
-switch on and off (`refused_grant`, `check_may_administer`). A
-superuser is asked neither. The employees import gives no roles at all
-and links only a login that holds nothing (`holds_rights`).
+as them. A role the keeper holds they give; one they do not they only
+propose, and it is given when someone who holds it confirms (O142, the
+owner's two-person rule: apps/core/roles.py, whose `may_give` is the
+one place that says who gives a role on their own). Making, changing,
+reactivating or setting the password of a login ask it too: a login
+holding a role its keeper may not give, a permission of its own beyond
+the keeper's, or the admin site is not theirs (`check_may_administer`).
+
+Taking access away is always the keeper's: deactivating a leaver or
+taking a role off a login gives nobody anything, and the HR Admin could
+not deactivate a departing rep. Nobody changes their own roles or
+standing, and a superuser is asked none of this. The employees import
+gives no roles at all and links only a login that holds nothing
+(`holds_rights`).
 """
 
 from django.contrib.auth import password_validation
@@ -32,20 +40,21 @@ from rest_framework.response import Response
 
 from .api import required
 from .audit import AuditableViewSetMixin
+from .roles import ProposalStatus, give_or_propose, may_give
 
 
 def roles_beyond(actor, groups):
-    """The names, sorted, of those of `groups` that `actor` does not hold: none for a superuser."""
-    if actor.is_superuser:
-        return []
-    held = set(actor.groups.values_list("pk", flat=True))
-    return sorted(group.name for group in groups if group.pk not in held)
+    """The names, sorted, of those of `groups` that `actor` may not give on their own (roles.may_give)."""
+    return sorted(group.name for group in groups if not may_give(actor, group))
 
 
-def refused_grant(actor, groups):
-    """Why `actor` may not give `groups`, or None: a role is given by who holds it, or having it is one login away."""
-    beyond = roles_beyond(actor, groups)
-    return f"{', '.join(beyond)} is given by someone who holds it, and you do not." if beyond else None
+def _given_or_proposed(actor, user, groups):
+    """Each role given, or proposed for someone who holds it to confirm (roles.give_or_propose)."""
+    try:
+        for group in groups:
+            give_or_propose(actor, user, group)
+    except DjangoValidationError as refused:
+        raise DRFValidationError({"roles": refused.messages})
 
 
 def _own_permissions(user):
@@ -55,10 +64,12 @@ def _own_permissions(user):
 
 def check_may_administer(actor, user):
     """
-    Refuse changing a login that holds what `actor` does not: a role, a
-    permission given to it alone, or the admin site. Its password set, its
-    email changed (a reset goes there) or its roles moved, it is the
-    actor's to sign in as.
+    Refuse changing a login that holds what `actor` could not give it: a
+    role (may_give), a permission given to it alone, or the admin site.
+    Its password set, its email changed (a reset goes there), its roles
+    moved or the login switched back on, it is the actor's to sign in as.
+    Taking access away, or giving or proposing a role, is not asked this
+    (UserViewSet.KEEPER_GAINS_NOTHING).
     """
     if actor.is_superuser:
         return
@@ -93,6 +104,9 @@ class UserSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["roles"] = sorted(instance.groups.values_list("name", flat=True))
+        # Proposed and not yet confirmed by someone who holds them (apps/core/roles.py).
+        data["proposed_roles"] = sorted(instance.role_proposals.filter(status=ProposalStatus.PENDING)
+                                        .values_list("group__name", flat=True))
         return data
 
     def validate_roles(self, names):
@@ -100,9 +114,6 @@ class UserSerializer(serializers.ModelSerializer):
         missing = sorted(set(names) - {group.name for group in groups})
         if missing:
             raise serializers.ValidationError(f"No role {', '.join(missing)}.")
-        said = refused_grant(self.context["request"].user, groups)
-        if said:
-            raise serializers.ValidationError(said)
         return groups
 
     def validate_password(self, value):
@@ -119,7 +130,7 @@ class UserSerializer(serializers.ModelSerializer):
         if not password:
             raise serializers.ValidationError({"password": ["A new login needs a first password."]})
         user = User.objects.create_user(password=password, **validated_data)
-        user.groups.set(groups)
+        _given_or_proposed(self.context["request"].user, user, groups)
         return user
 
     def update(self, instance, validated_data):
@@ -131,7 +142,9 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"non_field_errors": ["Your own roles and standing are someone else's to change."]})
         user = super().update(instance, validated_data)
         if groups is not None:
-            user.groups.set(groups)
+            # Taken away at once; given, or proposed, one by one.
+            user.groups.remove(*[group for group in user.groups.all() if group not in groups])
+            _given_or_proposed(me, user, [group for group in groups if not user.groups.filter(pk=group.pk).exists()])
         return user
 
 
@@ -162,10 +175,17 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         raise DRFValidationError({"non_field_errors": [
             "A login is deactivated, not deleted: what it did stays signed by it."]})
 
+    # What gives the keeper no way to be the login, so a login above them is
+    # still theirs to act on: switching it off or taking a role from it (taking
+    # access away), and giving it a role they hold or proposing one for its
+    # holders to confirm (roles.py). Its password, email or switching it back
+    # on would make it theirs (check_may_administer).
+    KEEPER_GAINS_NOTHING = ("retrieve", "deactivate", "revoke", "grant")
+
     def get_object(self):
-        """The login, and for anything but reading it, one the signed-in person may keep."""
+        """The login, and for what would let the keeper be it, one the signed-in person may keep."""
         user = super().get_object()
-        if self.action != "retrieve":
+        if self.action not in self.KEEPER_GAINS_NOTHING:
             check_may_administer(self.request.user, user)
         return user
 
@@ -196,14 +216,13 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def grant(self, request, pk=None):
-        """Give this login a role ({"role"}: its name or id)."""
+        """Give this login a role ({"role"}: its name or id), or propose one the keeper does not hold (roles.py)."""
         user = self.get_object()
         self._not_myself(request, user, "Giving yourself a role")
-        role = self._role(request)
-        said = refused_grant(request.user, [role])
-        if said:
-            raise DRFValidationError({"role": [said]})
-        user.groups.add(role)
+        try:
+            give_or_propose(request.user, user, self._role(request))
+        except DjangoValidationError as refused:
+            raise DRFValidationError({"role": refused.messages})
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=["post"])

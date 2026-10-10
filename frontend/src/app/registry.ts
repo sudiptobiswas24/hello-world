@@ -1133,6 +1133,11 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/settings/LoginForm"),
       },
       {
+        path: "role-proposals", label: "Roles to confirm", permission: "core.view_roleproposal",
+        keywords: "roles proposed confirm grant access second person", load: () => import("../modules/settings/RoleProposals"),
+        detail: () => import("../modules/settings/RoleProposalForm"),
+      },
+      {
         path: "import", label: "Bring old records in", permission: "core.import_records",
         keywords: "import csv go-live cutover opening balances old system migrate upload", load: () => import("../modules/settings/ImportRecords"),
       },

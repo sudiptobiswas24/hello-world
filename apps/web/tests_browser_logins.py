@@ -1,8 +1,10 @@
 """
 The HR Admin in the browser makes a login for the new bookkeeper with a
-first password, gives it its role from the page (one they hold: nobody
-gives more than they have), and the person signs in; later deactivates
-it and the sign-in is refused.
+first password and gives it its role from the page. Not holding that
+role, HR only proposes it (O142, the owner's two-person rule); a
+bookkeeper, signed in beside, finds it waiting for them and confirms it,
+and the person has the role. Later HR deactivates the login and the
+sign-in is refused.
 """
 
 import re
@@ -12,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import User
 from django.test import Client
 
 from .tests_browser import BrowserTestCase
@@ -20,10 +22,7 @@ from .tests_browser import BrowserTestCase
 
 class LoginsInTheBrowserTests(BrowserTestCase):
     def test_made_given_a_role_and_let_go(self):
-        # A role is given by someone who holds it: this HR Admin keeps the books too.
-        hr = self.person("HR Admin")
-        hr.groups.add(Group.objects.get(name="Bookkeeper"))
-        page = self.sign_in(hr, "/app/settings/logins/new")
+        page = self.sign_in(self.person("HR Admin"), "/app/settings/logins/new")
         page.get_by_label("Login", exact=True).fill("asha")
         page.get_by_label("First name").fill("Asha")
         page.get_by_label("First password").fill("loom-shed-2026")
@@ -36,10 +35,21 @@ class LoginsInTheBrowserTests(BrowserTestCase):
         form = page.get_by_role("form", name="Give a role")
         form.get_by_label("Role").select_option(label="Bookkeeper")
         form.get_by_role("button", name="Give a role").click()
-        roles = page.locator("section.related", has_text="Roles")
-        expect(roles.locator("tbody")).to_contain_text("Bookkeeper")
+        proposed = page.locator("section.related", has_text="Roles proposed")
+        expect(proposed.locator("tbody")).to_contain_text("Bookkeeper")
+        self.assertEqual(list(asha.groups.all()), [])
+
+        books = self.new_page()
+        self.sign_in(self.person("Bookkeeper"), "/app/settings/role-proposals", page=books)
+        books.get_by_role("link", name="asha").click()
+        books.wait_for_url(re.compile(r"/settings/role-proposals/\d+$"))
+        books.get_by_role("button", name="Confirm").click()
+        expect(books.locator("main")).to_contain_text("Confirmed")
         self.assertEqual(list(asha.groups.values_list("name", flat=True)), ["Bookkeeper"])
 
+        page.reload()
+        roles = page.locator("section.related", has_text="Roles").first
+        expect(roles.locator("tbody")).to_contain_text("Bookkeeper")
         page.get_by_role("button", name="Deactivate").click()
         expect(page.locator("main")).to_contain_text("Deactivated")
         asha.refresh_from_db()
