@@ -244,6 +244,9 @@ class GoodsReceiptSerializer(serializers.ModelSerializer):
             "reverses",
             "posted",
             "posted_at",
+            "objected_on",
+            "objection",
+            "objection_removed_on",
             "lines",
         ]
-        read_only_fields = ["reverses", "posted", "posted_at"]
+        read_only_fields = ["reverses", "posted", "posted_at", "objected_on", "objection", "objection_removed_on"]

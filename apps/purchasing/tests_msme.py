@@ -19,7 +19,8 @@ from django.test import TransactionTestCase, tag
 from apps.accounting.models import Account, AccountType, PartyTaxProfile, Payment, PaymentDirection
 from apps.core.models import Party, PartyRole, PartyRoleAssignment, PaymentTerms
 
-from .models import Bill, BillLine, BillPayment
+from .models import (Bill, BillLine, BillPayment, GoodsReceipt, GoodsReceiptLine, PurchaseOrder, PurchaseOrderLine,
+                     ReceiptInspection)
 from .msme import msme_bills
 from .tests_lifecycle import PurchasingLifecycleTestCase
 
@@ -282,3 +283,100 @@ class DueByTheActTests(MsmeTestCase):
         response = client.get("/api/purchasing/purchasing-reports/payment-run/", {"due_by": "2026-07-16"})
         self.assertEqual(response.status_code, 200, response.content)
         self.assertIn(bill.number, response.content.decode())
+
+
+class AcceptedOnDeliveryTests(MsmeTestCase):
+    """
+    O160 (review_stat #3, #4). MSMED Act s.2(b): goods are accepted on the day
+    of delivery unless the company objects in writing within 15 days, and
+    then on the day the objection is removed; each delivery on its own day.
+    Net 60, 10 x 100 (calc_fix_stat/o160_msme.py):
+      A received 10 Jun, a routine QC pass 20 Jun, billed 25 Jun: 25 Jul, not 4 Aug;
+      B 6 received 1 Jun and 4 on 20 Jun, one bill on 25 Jun: 600 by 16 Jul, 400 by 4 Aug;
+      C received 10 Jun, objected to in writing 18 Jun, removed 30 Jun: 14 Aug;
+        an objection on 26 Jun (day 16) moves nothing; while one stands, the terms' 24 Aug.
+    """
+
+    def order(self):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=JUNE)
+        line = PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                                unit_price=Decimal("100"))
+        order.confirm()
+        return order, line
+
+    def receive(self, order, line, day, quantity):
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=day)
+        received = GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                                   quantity_received=Decimal(quantity))
+        receipt.post()
+        return GoodsReceipt.objects.get(pk=receipt.pk), received
+
+    def bill_for(self, order, line, day, quantity):
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=day, payable_account=self.payable,
+                                   payment_terms=self.net60, purchase_order=order)
+        BillLine.objects.create(bill=bill, order_line=line, item=self.item, quantity=Decimal(quantity),
+                                unit_price=Decimal("100"), expense_account=self.expense)
+        bill.post()
+        return Bill.objects.get(pk=bill.pk)
+
+    def test_a_routine_inspection_is_no_objection(self):
+        order, line = self.order()
+        _, received = self.receive(order, line, datetime.date(2026, 6, 10), "10")
+        ReceiptInspection.objects.create(receipt_line=received, quantity=Decimal("10"), accepted=True,
+                                         inspected_on=datetime.date(2026, 6, 20))
+        self.assertEqual(self.bill_for(order, line, datetime.date(2026, 6, 25), "10").pay_by(),
+                         datetime.date(2026, 7, 25))
+
+    def test_each_delivery_a_bill_covers_is_due_on_its_own_day(self):
+        from .models import payment_run
+
+        order, line = self.order()
+        self.receive(order, line, JUNE, "6")
+        self.receive(order, line, datetime.date(2026, 6, 20), "4")
+        bill = self.bill_for(order, line, datetime.date(2026, 6, 25), "10")
+        self.assertEqual([(row["due_date"], row["amount"]) for row in bill.installments()],
+                         [(datetime.date(2026, 7, 16), Decimal("600.00")), (datetime.date(2026, 8, 4), Decimal("400.00"))])
+        self.assertEqual(bill.pay_by(), datetime.date(2026, 8, 4))
+        (entry,) = [entry for run in payment_run(due_by=datetime.date(2026, 7, 16)) for entry in run["bills"]]
+        self.assertEqual(entry["amount_due"], Decimal("600.00"))
+        (row,) = msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=datetime.date(2026, 7, 20))
+        self.assertEqual((row["due"], row["at_risk"]), (datetime.date(2026, 8, 4), Decimal("600.00")))
+
+    def test_two_bills_for_two_deliveries(self):
+        order, line = self.order()
+        self.receive(order, line, JUNE, "6")
+        self.receive(order, line, datetime.date(2026, 6, 20), "4")
+        first = self.bill_for(order, line, datetime.date(2026, 6, 5), "6")
+        second = self.bill_for(order, line, datetime.date(2026, 6, 25), "4")
+        self.assertEqual((first.pay_by(), second.pay_by()), (datetime.date(2026, 7, 16), datetime.date(2026, 8, 4)))
+
+    def test_an_objection_in_writing_moves_it_to_the_day_it_is_removed(self):
+        from django.contrib.auth.models import Group, Permission, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        stores = User.objects.create_user("stores")
+        stores.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(stores)
+        reader = User.objects.create_user("reader")
+        reader.user_permissions.add(Permission.objects.get(content_type__app_label="purchasing",
+                                                           codename="view_goodsreceipt"))
+        reading = APIClient()
+        reading.force_authenticate(reader)
+        order, line = self.order()
+        receipt, _ = self.receive(order, line, datetime.date(2026, 6, 10), "10")
+        bill = self.bill_for(order, line, datetime.date(2026, 6, 25), "10")
+        url = f"/api/purchasing/goods-receipts/{receipt.pk}/objection/"
+        written = {"objected_on": "2026-06-18", "objection": "Letter PUR/14: bags 2 g under the agreed GSM"}
+        self.assertEqual(reading.post(url, written, format="json").status_code, 403)
+        late = client.post(url, {**written, "objected_on": "2026-06-26"}, format="json")
+        self.assertEqual(late.status_code, 400, late.content)
+        self.assertEqual(client.post(url, written, format="json").status_code, 200)
+        self.assertEqual(Bill.objects.get(pk=bill.pk).pay_by(), datetime.date(2026, 8, 24))
+        removed = client.post(url, {"objection_removed_on": "2026-06-30"}, format="json")
+        self.assertEqual(removed.status_code, 200, removed.content)
+        self.assertEqual(Bill.objects.get(pk=bill.pk).pay_by(), datetime.date(2026, 8, 14))
+        self.assertEqual(client.delete(url).status_code, 200)
+        self.assertEqual(Bill.objects.get(pk=bill.pk).pay_by(), datetime.date(2026, 7, 25))

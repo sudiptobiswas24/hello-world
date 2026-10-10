@@ -3567,11 +3567,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             total=self.total(),
             settled=self.total() - self.amount_due(),
         )
-        act = self.act_pay_by()
-        if act is not None:
-            for row in rows:
-                row["due_date"] = min(row["due_date"], act) if row["due_date"] else act
-        return rows
+        act = self.act_schedule()
+        if act is None:
+            return rows
+        from .msme import earlier_of
+
+        # Each delivery's part by its own day (O160), the terms' where they come first.
+        return earlier_of(rows, act, settled=self.total() - self.amount_due())
 
     def act_pay_by(self):
         """
@@ -3579,11 +3581,17 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         posted bill; else None. Not a debit note's refund, nor money paid up
         front: the Act times payment for what was supplied.
         """
-        from .msme import COVERED, msme_due
+        from .msme import msme_due
+
+        return msme_due(self) if self.act_schedule() is not None else None
+
+    def act_schedule(self):
+        """[(due or None, amount)]: each delivery's part of a micro or small vendor's posted bill, by the Act's day."""
+        from .msme import COVERED, msme_schedule
 
         if not self.posted or self.msme_category not in COVERED or self.is_debit_note() or self.is_prepayment:
             return None
-        return msme_due(self)
+        return msme_schedule(self)
 
     def pay_by(self):
         """The day it is due in full: its terms', or the MSME Act's when that comes first."""
@@ -5756,6 +5764,16 @@ class GoodsReceipt(AuditModel):
                   "did.",
     )
     reference = models.CharField(max_length=64, blank=True)
+    # MSMED Act s.2(b): an objection in writing within 15 days of delivery
+    # moves acceptance to the day it is removed. A routine inspection is
+    # not one (O160). Recorded on the posted receipt by record_objection().
+    objected_on = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="The day the company objected to these goods in writing (MSMED Act s.2(b)).")
+    objection = models.CharField(
+        max_length=255, blank=True, editable=False, help_text="What the written objection said, or its reference.")
+    objection_removed_on = models.DateField(
+        null=True, blank=True, editable=False, help_text="The day the supplier removed the objection.")
     reverses = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by"
     )
@@ -5796,12 +5814,74 @@ class GoodsReceipt(AuditModel):
             return False
         return GoodsReceipt.objects.filter(pk=self.pk, posted=True).exists()
 
+    # What a posted receipt may still take: the written objection to it and
+    # its removal, facts about the supplier's goods, not stock or money.
+    OBJECTION_FIELDS = {"objected_on", "objection", "objection_removed_on", "updated_at"}
+
     def save(self, *args, **kwargs):
-        if self._was_posted_in_db():
+        updating = set(kwargs.get("update_fields") or ())
+        if self._was_posted_in_db() and not (updating and updating <= self.OBJECTION_FIELDS):
             raise ValidationError(
                 "This goods receipt is posted and immutable. Create a return instead."
             )
         super().save(*args, **kwargs)
+
+    def _objectable(self):
+        if not self.posted or self.reverses_id:
+            raise ValidationError("An objection is made to goods received: a posted receipt, not a return.")
+
+    @serialised("objected_on", "objection", "objection_removed_on")
+    def record_objection(self, day, text):
+        """
+        The company's objection in writing to these goods (MSMED Act s.2(b)):
+        made within 15 days of delivery, it moves the day of acceptance, and
+        so a micro or small supplier's due date, to the day it is removed.
+        Made later, the goods were accepted on delivery and it moves nothing.
+        """
+        from .msme import TO_OBJECT
+
+        self._objectable()
+        day, text = to_date(day), (text or "").strip()
+        if self.objected_on is not None:
+            raise ValidationError(f"{self} was objected to on {self.objected_on}; one objection stands for it.")
+        if not text:
+            raise ValidationError({"objection": ["An objection is made in writing: say what it said."]})
+        received = to_date(self.receipt_date)
+        if day is None or day < received or day > received + datetime.timedelta(days=TO_OBJECT):
+            raise ValidationError({"objected_on": [
+                f"{self} was delivered on {received}; an objection moves acceptance only when made in writing "
+                f"by {received + datetime.timedelta(days=TO_OBJECT)}, and not before the goods came."]})
+        if day > timezone.localdate():
+            raise ValidationError({"objected_on": [f"An objection is not made on {day}: that day has not come."]})
+        self.objected_on, self.objection = day, text
+        self.save(update_fields=sorted(self.OBJECTION_FIELDS))
+        return self
+
+    @serialised("objected_on", "objection_removed_on")
+    def remove_objection(self, day):
+        """The day the supplier removed the objection: the goods are accepted on it."""
+        self._objectable()
+        day = to_date(day)
+        if self.objected_on is None:
+            raise ValidationError(f"{self} has no objection to remove.")
+        if self.objection_removed_on is not None:
+            raise ValidationError(f"The objection to {self} was removed on {self.objection_removed_on}.")
+        if day is None or day < self.objected_on or day > timezone.localdate():
+            raise ValidationError({"objection_removed_on": [
+                f"The objection was made on {self.objected_on}; it is removed on a day from then to today."]})
+        self.objection_removed_on = day
+        self.save(update_fields=sorted(self.OBJECTION_FIELDS))
+        return self
+
+    @serialised("objected_on", "objection", "objection_removed_on")
+    def withdraw_objection(self):
+        """An objection keyed in error: none was made, so the goods were accepted on delivery."""
+        self._objectable()
+        if self.objected_on is None:
+            raise ValidationError(f"{self} has no objection to withdraw.")
+        self.objected_on, self.objection, self.objection_removed_on = None, "", None
+        self.save(update_fields=sorted(self.OBJECTION_FIELDS))
+        return self
 
     def delete(self, *args, **kwargs):
         if self.posted:

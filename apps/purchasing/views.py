@@ -388,6 +388,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         # (quality.change_inspection posts one), never with the right to record one (O128). Failing
         # sends the goods back and debits the bills.
         "accept": "purchasing.change_receiptinspection",
+        "objection": "purchasing.post_goodsreceipt",
         "reject": "purchasing.change_receiptinspection",
     }
 
@@ -407,6 +408,23 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                         for row in ReceiptInspection.objects.filter(receipt_line__receipt=receipt)
                         .select_related("receipt_line__order_line__item").order_by("id")],
         })
+
+    @action(detail=True, methods=["post", "delete"])
+    def objection(self, request, pk=None):
+        """
+        The company's written objection to the goods (MSMED Act s.2(b), O160):
+        POST {objected_on, objection} records it, within 15 days of delivery;
+        POST {objection_removed_on} records the day the supplier removed it;
+        DELETE withdraws one keyed in error.
+        """
+        receipt = self.get_object()
+        if request.method == "DELETE":
+            receipt.withdraw_objection()
+        elif request.data.get("objection_removed_on"):
+            receipt.remove_objection(request.data["objection_removed_on"])
+        else:
+            receipt.record_objection(request.data.get("objected_on"), str(request.data.get("objection") or ""))
+        return Response(self.get_serializer(GoodsReceipt.objects.get(pk=receipt.pk)).data)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
