@@ -25,7 +25,7 @@ export default function LoginForm() {
         { key: "first_name", label: "First name" },
         { key: "last_name", label: "Last name" },
         { key: "email", label: "Email", hint: "Where the morning's checks go" },
-        { key: "password", label: "First password", newOnly: true, hint: "Hand it over once; they can change it at sign-in" },
+        { key: "password", label: "First password", newOnly: true, hint: "Hand it over once; they can change it at sign-in. It stops working if a role you do not hold is confirmed for them" },
         { key: "employee_number", label: "Employee", readOnly: true, existingOnly: true,
           show: (row) => (row.employee_number ? `${String(row.employee_number)} · ${String(row.employee_name ?? "")}` : "Not linked: set it on the employee") },
         { key: "last_login", label: "Last signed in", readOnly: true, existingOnly: true, kind: "date" },

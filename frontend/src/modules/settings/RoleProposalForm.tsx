@@ -6,6 +6,7 @@ const STATE: Record<string, { label: string; tone: string }> = {
   pending: { label: "Waiting", tone: "open" },
   confirmed: { label: "Confirmed", tone: "done" },
   declined: { label: "Declined", tone: "draft" },
+  lapsed: { label: "Lapsed", tone: "draft" },
 };
 
 /** One proposed role: confirmed by someone who holds it, declined, or withdrawn by whoever proposed it. */
@@ -29,7 +30,10 @@ export default function RoleProposalForm() {
       ]}
       actions={[
         { label: "Confirm", path: "confirm", permission: "core.confirm_roleproposal", primary: true,
-          when: (row: Row) => Boolean(row.may_confirm), done: "Confirmed: the role is given" },
+          when: (row: Row) => Boolean(row.may_confirm), done: "Confirmed: the role is given",
+          // A password the proposer set stops working once the role is given (O157): the confirmer may issue the next.
+          fields: [{ key: "password", label: "Their password",
+            hint: "Optional. A password set by whoever proposed this stops working now; hand this one over yourself" }] },
         { label: "Decline", path: "decline", permission: "core.confirm_roleproposal", danger: true,
           when: (row: Row) => Boolean(row.may_decline), done: "Declined: the role is not given" },
       ]}
