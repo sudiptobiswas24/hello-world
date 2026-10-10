@@ -213,13 +213,16 @@ class Lead(AuditModel):
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.CUSTOMER, created_by=user, updated_by=user)
         created(party, PartyRole.CUSTOMER, user)
         # A lead nobody owned is the converting rep's, as the customer just made is: with no
-        # owner the opportunity was nobody's, so the rep who made it read 404.
+        # owner the opportunity was nobody's, so the rep who made it read 404, and the lead stayed
+        # in every rep's list naming the new customer (O119, O144).
+        owner = self.owner or owner_for(user, None)
         opportunity = Opportunity.objects.create(
             customer=party, title=self.interest or f"First business with {party.name}", lead=self,
-            campaign=self.campaign, owner=self.owner or owner_for(user, None), created_by=user, updated_by=user)
+            campaign=self.campaign, owner=owner, created_by=user, updated_by=user)
+        self.owner = owner
         self.converted_party = party
         self.converted_on = to_date(on_date) or timezone.localdate()
-        self._close(LeadStatus.CONVERTED, ["converted_party", "converted_on"])
+        self._close(LeadStatus.CONVERTED, ["owner", "converted_party", "converted_on"])
         return party, opportunity
 
     # How warm a lead is, read from its facts each time and never stored:

@@ -351,6 +351,21 @@ class RepSideDoorTests(RepTestCase):
         self.assertEqual(made.status_code, 201, made.content)
 
 
+class ConvertedLeadTests(RepTestCase):
+    """O144: an unowned lead stayed unowned once rep B converted it, so rep A read B's new customer off it."""
+
+    def test_rep_a_does_not_read_the_customer_rep_b_made_from_an_unowned_lead(self):
+        from .crm import Lead
+
+        lead = Lead.objects.create(company_name="Gamma Cement", contact_name="Mr G")
+        converted = self.as_user(self.rep_b).post(f"/api/sales/leads/{lead.pk}/convert/", {"code": "GCEM"},
+                                                  format="json")
+        self.assertEqual(converted.status_code, 200, converted.content)
+        rows = self.as_user(self.rep_a).get("/api/sales/leads/", {"page_size": 200}).json()
+        self.assertEqual([row["company_name"] for row in rows if row["id"] == lead.pk], [])
+        self.assertEqual(Lead.objects.get(pk=lead.pk).owner, self.rep_b.employee.party)
+
+
 @tag("migration")
 class EveryoneKeepsSeeingEveryCustomerMigrationTests(TransactionTestCase):
     """Upgraded without setup_roles, nobody but a Sales Rep is limited."""

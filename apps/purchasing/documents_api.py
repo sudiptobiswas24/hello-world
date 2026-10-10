@@ -122,7 +122,8 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     ordering_fields = ["request_date", "number"]
     action_permission_map = {
         "submit": "purchasing.change_purchaserequisition",
-        "cancel": "purchasing.change_purchaserequisition",
+        # The requester's own, or the decider's: which, the requisition says (check_canceller).
+        "cancel": ("purchasing.decide_purchaserequisition", "purchasing.change_purchaserequisition"),
         "approve": "purchasing.decide_purchaserequisition",
         "reject": "purchasing.decide_purchaserequisition",
         "order": "purchasing.add_purchaseorder",
@@ -154,7 +155,7 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         requisition = self.get_object()
-        requisition.cancel()
+        requisition.cancel(by=request.user, may_decide=request.user.has_perm("purchasing.decide_purchaserequisition"))
         return self._answer(requisition)
 
     @action(detail=True, methods=["post"])

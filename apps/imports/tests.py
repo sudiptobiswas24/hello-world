@@ -309,6 +309,17 @@ class ImportGivesNoRolesTests(ImportTestCase):
         self.assertFalse(Employee.objects.exists())
         self.assertEqual(list(self.controller.groups.values_list("name", flat=True)), ["Controller"])
 
+    def test_a_login_holding_only_an_employees_own_role_is_linked(self):
+        from django.contrib.auth.models import Group, User
+
+        from apps.hr.models import Employee
+
+        ess = User.objects.create_user("ess")
+        ess.groups.add(Group.objects.get(name="Employee Self Service"))
+        report = run("employees", "employee_number,name,hire_date,username\nE-9,Ess,2024-04-01,ess\n", commit=True)
+        self.assertTrue(report.committed, report.errors)
+        self.assertEqual(Employee.objects.get().user, ess)
+
     def test_a_login_that_holds_nothing_is_linked_and_given_nothing(self):
         from django.contrib.auth.models import User
 
