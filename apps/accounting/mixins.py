@@ -8,7 +8,7 @@ a price, a discount and some taxes on it".
 """
 
 from collections import defaultdict
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -147,40 +147,82 @@ def line_value(line):
     return line.quantity * (line.unit_price or Decimal("0")) * (1 - (line.discount_percent or 0) / Decimal("100"))
 
 
-def refuse_correcting_past_what_it_holds(lines, corrects, already, on):
+def value_left(corrected, corrects, already, on):
+    """
+    What is left to give back of `corrected`, an invoice or bill line: its
+    value (unrounded, every posted note on it counted, a claim's money
+    included) and its quantity (`already(line)`, goods notes only).
+    """
+    notes = type(corrected)._base_manager.filter(**{corrects: corrected, f"{on}__posted": True})
+    value = line_value(corrected) - sum((line_value(note) for note in notes), Decimal("0"))
+    return value, corrected.quantity - already(corrected)
+
+
+def priced_to_give_back(corrected, quantity, corrects, already, on):
+    """
+    The note lines, as (quantity, unit price, discount), that give back
+    `quantity` of `corrected`: at its own price, or at the goods' share of
+    what is left of it when a claim has given back money on it (O185):
+    10 x 100 with a claim of 100 gives back 900 for the ten, and the claim
+    keeps what it gave. The share is a total divided last; when the paisa
+    does not divide it, one unit takes what is left, so the whole comes back.
+    """
+    left, held = value_left(corrected, corrects, already, on)
+    share = left if quantity == held else (left * quantity / held if held > 0 else Decimal("0"))
+    if share >= quantity * (corrected.unit_price or Decimal("0")) * (1 - corrected.discount_percent / Decimal("100")):
+        return [(quantity, corrected.unit_price, corrected.discount_percent)]
+    share = max(share, Decimal("0"))
+    price = (share / quantity).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    if quantity * price == share or quantity <= 1:
+        return [(quantity, price, Decimal("0"))]
+    rest = (share - (quantity - 1) * price).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return [(quantity - 1, price, Decimal("0")), (Decimal("1"), rest, Decimal("0"))]
+
+
+def refuse_correcting_past_what_it_holds(lines, corrects, already, on, by_value_only=False):
     """
     A note gives back no more of a line than it holds: `already(line)` is
     what posted notes have given back of it, by quantity, and two lines of
-    this note on one line count together. For notes by quantity only: a
-    claim or a down payment given back is money, not goods.
+    this note on one line count together. A claim (`by_value_only`) gives
+    back money, not goods: it is held to the value left alone.
 
-    And no more than it is worth (O171): by quantity alone, ten at 1,000
-    given back on a line of ten at 100 posted, receivables -9,000. By value
-    every posted note on the line counts, a claim's money included; unrounded,
-    so three notes of one on a line of three add up to it exactly. `on` is
-    the note line's document field ("invoice", "bill").
+    And no more than it is worth, per unit (O171, O185): by quantity alone,
+    ten at 1,000 given back on a line of ten at 100 posted, receivables
+    -9,000; by the line's total value alone, one at 1,000 posted and the
+    other nine could not be given back. So a note's value on a line is held
+    to its quantity's share of the value left: every posted note on the line
+    counted, a claim's money included, unrounded, so three notes of one on a
+    line of three add up to it exactly. `on` is the note line's document
+    field ("invoice", "bill").
     """
     from apps.core.api import plain
 
     going = defaultdict(Decimal)
     worth = defaultdict(Decimal)
+    held = {}
     for line in lines:
         corrected = getattr(line, corrects) if getattr(line, f"{corrects}_id") else None
         if corrected is None:
             continue
+        held[corrected.pk] = corrected
         going[corrected.pk] += line.quantity
         worth[corrected.pk] += line_value(line)
+        if by_value_only:
+            continue
         given = already(corrected)
         if given + going[corrected.pk] > corrected.quantity:
             raise ValidationError({corrects: [
                 f"Only {plain(max(corrected.quantity - given, Decimal('0')))} of {corrected.label()} on "
                 f"{corrected.document()} is left to give back; this note gives back {plain(going[corrected.pk])}."]})
-        notes = type(line)._base_manager.filter(**{corrects: corrected, f"{on}__posted": True})
-        left = line_value(corrected) - sum((line_value(n) for n in notes), Decimal("0"))
-        if worth[corrected.pk] > left:
+    for pk, corrected in held.items():
+        left, quantity = value_left(corrected, corrects, already, on)
+        cap = left if by_value_only or going[pk] == quantity else (
+            left * going[pk] / quantity if quantity > 0 else Decimal("0"))
+        if worth[pk] > cap:
+            share = "" if cap == left else f" ({plain(going[pk])} of {plain(quantity)} left: {round_money(max(cap, Decimal('0')))})"
             raise ValidationError({corrects: [
                 f"{corrected.label()} on {corrected.document()} has {round_money(max(left, Decimal('0')))} "
-                f"left to give back; this note gives back {round_money(worth[corrected.pk])}."]})
+                f"left to give back{share}; this note gives back {round_money(worth[pk])}."]})
 
 
 class TaxedLineMixin(models.Model):

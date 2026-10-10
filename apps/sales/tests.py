@@ -272,3 +272,73 @@ class LocksTakenInTheWrittenOrderTests(_SalesTestCase):
         response = client.patch(f"/api/sales/sales-order-lines/{line.pk}/", {"order": here.pk}, format="json")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(_SalesOrderLine.objects.get(pk=line.pk).order_id, here.pk)
+
+
+class AReturnAfterAClaimGivesBackWhatIsLeftTests(_SalesTestCase):  # O185
+    def typed_note(self, invoice, line, quantity, price):
+        note = _Invoice.objects.create(customer=self.customer, invoice_date=_REVIEW_DAY, currency=self.usd,
+                                       receivable_account=self.ar, credits=invoice)
+        _InvoiceLine.objects.create(invoice=note, credits_line=line, item=self.item, quantity=Decimal(quantity),
+                                    unit_price=Decimal(price), revenue_account=self.revenue)
+        return _Invoice.objects.get(pk=note.pk)
+
+    def test_a_claim_then_the_whole_return_credits_what_is_left(self):
+        order = self.make_order("10", "100")
+        delivery = self.ship(order, "10")
+        invoice = self.bill(order)
+        invoice.credit_claim(Decimal("100"), "rate", on_date=_REVIEW_DAY)
+        on_hand = self.item.on_hand_at(self.warehouse)
+        returned = _Delivery.objects.get(pk=delivery.pk).create_return()
+        note = _Invoice.objects.get(credits=invoice, claim_reason="")
+        self.assertEqual(note.subtotal(), Decimal("900.00"))
+        self.assertEqual(self.balance(self.ar), Decimal("0"))
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand + Decimal("10"))
+        self.assertTrue(returned.posted)
+
+    def test_a_claim_then_two_part_returns_credit_450_each(self):
+        order = self.make_order("10", "100")
+        delivery = self.ship(order, "10")
+        invoice = self.bill(order)
+        invoice.credit_claim(Decimal("100"), "rate", on_date=_REVIEW_DAY)
+        for _ in range(2):
+            delivery = _Delivery.objects.get(pk=delivery.pk)
+            delivery.create_return(quantities={delivery.lines.get(): Decimal("5")})
+        notes = _Invoice.objects.filter(credits=invoice, claim_reason="").order_by("pk")
+        self.assertEqual([note.subtotal() for note in notes], [Decimal("450.00"), Decimal("450.00")])
+        self.assertEqual(self.balance(self.ar), Decimal("0"))
+
+    def test_a_share_the_paisa_does_not_divide_comes_back_whole(self):
+        invoice = self.bill(self.make_order("3", "100"))
+        invoice.credit_claim(Decimal("100"), "rate", on_date=_REVIEW_DAY)
+        note = _Invoice.objects.get(pk=invoice.pk).create_credit_note()
+        self.assertEqual(sorted((line.quantity, line.unit_price) for line in note.lines.all()),
+                         [(Decimal("1"), Decimal("66.68")), (Decimal("2"), Decimal("66.66"))])
+        self.assertEqual(self.balance(self.ar), Decimal("0"))
+
+    def test_one_unit_at_ten_times_the_price_is_refused_and_the_rest_still_credits(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        note = self.typed_note(invoice, invoice.lines.get(), "1", "1000")
+        said = _refused(note.post)
+        self.assertIn("1 of 10 left: 100.00); this note gives back 1000.00", said)
+        _Invoice.objects.get(pk=invoice.pk).create_credit_note()
+        self.assertEqual(self.balance(self.ar), Decimal("0"))
+
+    def test_five_units_at_150_on_a_line_at_100_are_refused(self):
+        invoice = self.bill(self.make_order("10", "100"))
+        said = _refused(self.typed_note(invoice, invoice.lines.get(), "5", "150").post)
+        self.assertIn("5 of 10 left: 500.00); this note gives back 750.00", said)
+
+    def test_a_claim_is_not_spread_onto_a_line_given_back_whole(self):
+        order = self.make_order("10", "100")
+        _SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                       unit_price=Decimal("100"), revenue_account=self.revenue)
+        invoice = _SalesOrder.objects.get(pk=order.pk).create_invoice(self.ar, invoice_date=_REVIEW_DAY)
+        invoice.post()
+        first, second = invoice.lines.order_by("pk")
+        self.typed_note(invoice, first, "10", "100").post()
+        _Invoice.objects.get(pk=invoice.pk).credit_claim(Decimal("1000"), "rate", on_date=_REVIEW_DAY)
+        given = {line.pk: sum((note.quantity * note.unit_price for note in
+                               _InvoiceLine.objects.filter(credits_line=line, invoice__posted=True)), Decimal("0"))
+                 for line in (first, second)}
+        self.assertEqual(given, {first.pk: Decimal("1000"), second.pk: Decimal("1000")})
+        self.assertEqual(self.balance(self.ar), Decimal("0"))

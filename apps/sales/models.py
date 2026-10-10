@@ -70,8 +70,10 @@ from apps.accounting.mixins import (
     TaxedLineMixin,
     refuse_correcting_a_note,
     refuse_correcting_another_line,
+    priced_to_give_back,
     refuse_correcting_past_what_it_holds,
     refuse_naming_another_order_line,
+    value_left,
 )
 
 from apps.accounting.settlement import (
@@ -2761,8 +2763,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             given_back = list(self.lines.select_related("credits_line__invoice"))
             for line in given_back:
                 refuse_correcting_another_line(line, self, "credits_line", "credits")
-            if not self.claim_reason and not self.credits.is_down_payment:
-                refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited, on="invoice")
+            if not self.credits.is_down_payment:
+                # A claim too, by value: spread onto a line already given back whole, it over-credited it (O185).
+                refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited,
+                                                     on="invoice", by_value_only=bool(self.claim_reason))
         going = defaultdict(Decimal)
         for line in self.lines.select_related("order_line__order"):
             if not line.order_line_id:
@@ -2900,20 +2904,23 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             raise ValidationError("Nothing to credit.")
 
         credit_note = self._credit_note()
-        for line, quantity in selected:
-            credit_line = InvoiceLine.objects.create(
-                invoice=credit_note,
-                order_line=line.order_line,
-                credits_line=line,
-                item=line.item,
-                charge=line.charge,
-                description=line.description,
-                quantity=quantity,
-                unit_price=line.unit_price,
-                discount_percent=line.discount_percent,
-                revenue_account=line.revenue_account,
-            )
-            credit_line.taxes.set(line.taxes.all())
+        for line, wanted in selected:
+            # At what is left of the line's value: after a claim, not its whole price (O185).
+            for quantity, price, discount in priced_to_give_back(
+                    line, wanted, "credits_line", InvoiceLine.quantity_credited, on="invoice"):
+                credit_line = InvoiceLine.objects.create(
+                    invoice=credit_note,
+                    order_line=line.order_line,
+                    credits_line=line,
+                    item=line.item,
+                    charge=line.charge,
+                    description=line.description,
+                    quantity=quantity,
+                    unit_price=price,
+                    discount_percent=discount,
+                    revenue_account=line.revenue_account,
+                )
+                credit_line.taxes.set(line.taxes.all())
         credit_note.post(memo=memo)
         return credit_note
 
@@ -2946,12 +2953,19 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             left = self.subtotal() - credited
             if net > left:
                 raise ValidationError({"net": f"Only {left} of {self.number} before tax is left to credit."})
-            lines = [line for line in self.lines.all() if line.net_amount() > 0]
-            whole = sum((line.net_amount() for line in lines), Decimal("0"))
+            # Spread by what is left of each line, not its whole value: a line already given back whole
+            # takes none of it (O185).
+            lefts = [(line, value_left(line, "credits_line", InvoiceLine.quantity_credited, on="invoice")[0])
+                     for line in self.lines.all()]
+            lefts = [(line, left) for line, left in lefts if left > 0]
+            whole = sum((left for _, left in lefts), Decimal("0"))
+            if net > whole:
+                raise ValidationError({"net": f"Only {round_money(whole)} of {self.number} before tax is left to credit."})
+            lines = [line for line, _ in lefts]
             note = self._credit_note(on_date, claim_reason=reason)
             used = Decimal("0")
-            for index, line in enumerate(lines):
-                share = net - used if index == len(lines) - 1 else round_money(net * line.net_amount() / whole)
+            for index, (line, left) in enumerate(lefts):
+                share = net - used if index == len(lines) - 1 else round_money(net * left / whole)
                 used += share
                 if share <= 0:
                     continue

@@ -903,3 +903,18 @@ class ADebitNoteDebitsABillNeverANoteTests(ADebitLineDebitsOnlyItsNotesBillTests
         with self.assertRaisesMessage(ValidationError, "is itself a note"):
             Bill.objects.create(vendor=self.vendor, bill_date=JAN(12), payable_account=self.payable,
                                 currency=self.usd, debits=note)
+
+
+class ADebitLineIsHeldToItsShareOfTheLineTests(ADebitLineDebitsOnlyItsNotesBillTests.__mro__[1]):  # O185
+    billed = ADebitLineDebitsOnlyItsNotesBillTests.billed
+
+    def test_one_unit_at_the_whole_lines_value_is_refused(self):
+        bill = self.billed()
+        line = bill.lines.get()
+        note = Bill.objects.create(vendor=self.vendor, bill_date=JAN(12), payable_account=self.payable,
+                                   currency=self.usd, debits=bill)
+        BillLine.objects.create(bill=note, debits_line=line, order_line=line.order_line, item=self.item,
+                                quantity=Decimal("1"), unit_price=line.unit_price * 10, expense_account=self.expense)
+        with self.assertRaisesMessage(ValidationError, "(1 of 10 left:"):
+            Bill.objects.get(pk=note.pk).post()
+        self.assertEqual(bill.lines.get().quantity_debitable(), Decimal("10"))
