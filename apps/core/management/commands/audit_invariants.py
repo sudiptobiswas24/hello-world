@@ -1194,6 +1194,15 @@ class Command(BaseCommand):
                         ))
         return findings
 
+    # A document a return reads whose journal entry is nullable (empty while a draft)
+    # but which cannot post without one, so JournalEntry.post asks its period.
+    POSTS_AN_ENTRY_EVERY_TIME = {
+        "sales.Invoice": "post() refuses a total of nothing; a credit note posts its own entry",
+        "purchasing.Bill": "post() refuses a bill of no value and always writes its entry",
+        "accounting.Payment": "a check constraint keeps its amount above nothing; posting writes its entry",
+        "sales.Delivery": "read by the e-way bill, which is made for a delivery already posted; no return lists it",
+    }
+
     # -- shape 1: a document reported without an entry, dated into a closed month --
     def reported_without_the_period(self, labels, sources):
         """
@@ -1208,16 +1217,62 @@ class Command(BaseCommand):
         """
         from apps.accounting.models import JournalEntry
 
-        imported = set()
-        for path, text in sorted(sources.get("gst", {}).items()):
-            if "test" in path.name or "migrations" in path.parts:
-                continue
+        def code_files(label):
+            return {path: text for path, text in sources.get(label, {}).items()
+                    if "test" not in path.name and "migrations" not in path.parts}
+
+        # Every function and method, by app and name, with the module it is in.
+        defined = {}
+        for label in labels:
+            for path, text in code_files(label).items():
+                lines = text.splitlines()
+                for node in ast.walk(ast.parse(text)):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        body = textwrap.dedent("\n".join(lines[node.lineno - 1:node.end_lineno]))
+                        defined.setdefault((label, node.name), []).append((path.stem, body))
+        # The reverse accessors (`operation.outside_movements`) that reach a model by no name of its own.
+        reached_by = {}
+        for model in django_apps.get_models():
+            for field in model._meta.get_fields():
+                if field.is_relation and field.auto_created and not field.concrete:
+                    reached_by.setdefault(field.get_accessor_name(), set()).add(field.related_model)
+
+        # What the returns read: models imported into apps/gst by name, and those reached
+        # from the functions it imports, through every function or method they call in
+        # their own app (O158: ITC-04 reads OutsideMovement through jobwork.allocation()
+        # and operation.outside_receipts(), and the first version of this check stopped
+        # at the import).
+        imported, todo = set(), []
+        for path, text in sorted(code_files("gst").items()):
             for node in ast.walk(ast.parse(text)):
                 if not isinstance(node, ast.ImportFrom) or not (node.module or "").startswith("apps."):
                     continue
                 label = node.module.split(".")[1]
                 if label != "gst" and label in labels:
-                    imported.update((label, alias.name) for alias in node.names)
+                    for alias in node.names:
+                        imported.add((label, alias.name))
+                        todo.append((label, alias.name, node.module.split(".")[-1]))
+        names = {model.__name__: model for model in django_apps.get_models()}
+        followed = set()
+        while todo:
+            label, name, module = todo.pop()
+            if (label, name) in followed:
+                continue
+            followed.add((label, name))
+            bodies = [body for stem, body in defined.get((label, name), []) if module is None or stem == module]
+            if len(bodies) != 1:
+                continue  # a model, a constant, or a name too common to follow
+            for word in set(re.findall(r"\b[A-Za-z_]\w*\b", bodies[0])):
+                found = {names[word]} if word in names else reached_by.get(word, set())
+                if len(found) == 1:
+                    (model,) = found
+                    if model._meta.app_label in labels:
+                        imported.add((model._meta.app_label, model.__name__))
+            for node in ast.walk(ast.parse(bodies[0])):
+                if isinstance(node, ast.Call):
+                    called = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                    if called and (label, called) in defined:
+                        todo.append((label, called, None))
 
         def code_of(label):
             return non_test_text({path: text for path, text in sources.get(label, {}).items()
@@ -1228,8 +1283,13 @@ class Command(BaseCommand):
             return any(field.name in ("posted", "voided_at") for field in model._meta.concrete_fields)
 
         def asks(model):
-            if any(field.is_relation and field.related_model is JournalEntry
+            # An entry that is always there asks for it. One that may be left out (a
+            # nullable journal entry: a value of nothing posts none) does not, unless
+            # posting is known to refuse a document of no value.
+            if any(field.is_relation and field.related_model is JournalEntry and not field.null
                    for field in model._meta.concrete_fields):
+                return True
+            if model._meta.label in self.POSTS_AN_ENTRY_EVERY_TIME:
                 return True
             body = self._class_body(code_of(model._meta.app_label), model.__name__) or ""
             return "refuse_closed(" in body
