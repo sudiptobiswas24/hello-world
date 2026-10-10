@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("sales", "0062_allocation_keeps_its_cost"),
+        ("sales", "0063_allocation_dated_on_its_own_day"),
     ]
 
     operations = [

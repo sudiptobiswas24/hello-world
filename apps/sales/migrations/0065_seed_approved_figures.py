@@ -64,7 +64,7 @@ def seed(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("sales", "0063_salesorder_approved_figures"),
+        ("sales", "0064_salesorder_approved_figures"),
     ]
 
     operations = [

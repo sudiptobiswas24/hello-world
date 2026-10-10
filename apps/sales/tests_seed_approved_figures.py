@@ -1,4 +1,4 @@
-"""O174, O186: sales 0064 seeds approved_figures for orders approved before 0063, from what the approval stood on."""
+"""O174, O186: sales 0065 seeds approved_figures for orders approved before 0064 (numbered 0064 and 0063 before integration), from what the approval stood on."""
 
 import datetime
 from decimal import Decimal
@@ -50,9 +50,9 @@ class AnOrderApprovedBefore0063KeepsItsApprovalTests(TransactionTestCase):
                                               currency=self.usd)
 
         executor = MigrationExecutor(connection)
-        executor.migrate([("sales", "0063_salesorder_approved_figures")])
+        executor.migrate([("sales", "0064_salesorder_approved_figures")])
         executor.loader.build_graph()
-        executor.migrate([("sales", "0064_seed_approved_figures")])
+        executor.migrate([("sales", "0065_seed_approved_figures")])
 
         self.assertEqual(SalesOrder.objects.get(pk=uncut.pk).approved_figures,
                          {"discounts": {str(uncut_line.pk): "20.00"}, "total": None, "margin": None})
@@ -76,7 +76,7 @@ class AnOrderCutBeforeTheSeedKeepsItsApprovalTests(SalesTestCase):  # O186, the 
         order, line = AnOrderApprovedBefore0063KeepsItsApprovalTests.approved_at_20(self)
         AnOrderApprovedBefore0063KeepsItsApprovalTests.put(self, line, "10")
         SalesOrder.objects.filter(pk=order.pk).update(approved_figures=None)
-        import_module("apps.sales.migrations.0064_seed_approved_figures").seed(apps, None)
+        import_module("apps.sales.migrations.0065_seed_approved_figures").seed(apps, None)
         self.assertEqual(SalesOrder.objects.get(pk=order.pk).approved_figures["discounts"], {str(line.pk): "20.00"})
         AnOrderApprovedBefore0063KeepsItsApprovalTests.put(self, line, "20")
         self.assertEqual(SalesOrderLine.objects.get(pk=line.pk).discount_percent, Decimal("20.00"))
