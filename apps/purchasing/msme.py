@@ -13,6 +13,7 @@ Derived each time from the bills and their payments; nothing is stored.
 import datetime
 from decimal import Decimal
 
+from django.db import models
 from django.utils import timezone
 
 from apps.core.models import to_date
@@ -24,49 +25,140 @@ COVERED = ("micro", "small")
 AGREED_AT_MOST, UNAGREED, TO_OBJECT = 45, 15, 15
 
 
-def accepted_on(bill):
+def acceptance(receipt):
     """
-    The day the goods a bill is for were accepted (MSMED Act s.2): the day
-    they were cleared out of inspection, where one was kept and came
-    within the 15 days an objection is made in; else the day they were
-    received. The receipt is the one the bill follows: the latest of its
-    order lines' received on or before its date, or, billed ahead of its
-    goods, the first after. A bill for nothing received (a service, a
-    line typed with no order) runs from its own date.
+    The day a delivery was accepted (MSMED Act s.2(b) Explanation): the day
+    of delivery, unless the company objected in writing within 15 days of
+    it, and then the day the supplier removed the objection; None while it
+    stands. A routine inspection, passed or not, is no objection (O160): a
+    QC pass on 20 June does not move goods delivered on 10 June.
     """
-    from .models import GoodsReceipt, ReceiptInspection
+    if receipt.objected_on is None:
+        return to_date(receipt.receipt_date)
+    return to_date(receipt.objection_removed_on)
 
-    billed = to_date(bill.bill_date)
-    order_lines = [line.order_line_id for line in bill.lines.all() if line.order_line_id]
-    if not order_lines:
-        return billed
-    receipts = GoodsReceipt.objects.filter(posted=True, reverses__isnull=True,
-                                           lines__order_line__in=order_lines).distinct()
-    receipt = (receipts.filter(receipt_date__lte=billed).order_by("-receipt_date", "-pk").first()
-               or receipts.order_by("receipt_date", "pk").first())
-    if receipt is None:
-        return billed
-    received = to_date(receipt.receipt_date)
-    cleared = [to_date(day) for day in ReceiptInspection.objects.filter(
-        receipt_line__receipt=receipt, receipt_line__order_line__in=order_lines, accepted=True,
-    ).values_list("inspected_on", flat=True)]
-    cleared = max(cleared) if cleared else None
-    if cleared is not None and received < cleared <= received + datetime.timedelta(days=TO_OBJECT):
-        return cleared
-    return received
+
+def lots(bill):
+    """
+    [(accepted on, amount)]: what each delivery a bill is for comes to,
+    by the day that delivery was accepted. A bill for several deliveries
+    owes each on its own day (O160): 6 received on 1 June and 4 on 20 June,
+    billed together on 25 June, are 600 from 1 June and 400 from 20 June.
+
+    An order line's deliveries are billed oldest first: what earlier bills
+    took of them is passed over. A quantity billed beyond what has come,
+    and a line for no order (a charge, a service), run from the bill's own
+    date. Amounts are the bill's total shared by line value and quantity,
+    each cumulative figure rounded, so they add to the total exactly.
+    """
+    from .models import BillLine, GoodsReceiptLine
+
+    billed, total = to_date(bill.bill_date), bill.total()
+    taxes = bill.line_tax_amounts()
+    parts = []  # (day, value) before the share is rounded
+    for line in bill.lines.all():
+        value = line.subtotal() + sum((amount for tax, amount in taxes.get(line, []) if not tax.reverse_charge),
+                                      Decimal("0"))
+        if not line.order_line_id or not line.quantity:
+            parts.append((billed, value))
+            continue
+        before = BillLine.objects.filter(
+            order_line_id=line.order_line_id, bill__posted=True, bill__debits__isnull=True,
+            bill__is_prepayment=False,
+        ).exclude(bill=bill).filter(
+            models.Q(bill__bill_date__lt=billed) | models.Q(bill__bill_date=billed, bill__pk__lt=bill.pk))
+        passed = sum((quantity for quantity in before.values_list("quantity", flat=True)), Decimal("0"))
+        left = line.quantity
+        for received in GoodsReceiptLine.objects.filter(
+                order_line_id=line.order_line_id, receipt__posted=True, receipt__reverses__isnull=True,
+        ).select_related("receipt").order_by("receipt__receipt_date", "receipt__pk", "pk"):
+            if left <= 0:
+                break
+            here = received.quantity_received
+            skip = min(passed, here)
+            passed, here = passed - skip, here - skip
+            take = min(here, left)
+            if take > 0:
+                parts.append((acceptance(received.receipt), value * take / line.quantity))
+                left -= take
+        if left > 0:
+            parts.append((billed, value * left / line.quantity))
+    whole = sum((value for _, value in parts), Decimal("0"))
+    if not parts or whole <= 0:
+        return [(billed, total)]
+    by_day, running, given = {}, Decimal("0"), Decimal("0")
+    for day, value in parts:
+        running += value
+        upto = (total * running / whole).quantize(Decimal("0.01"))
+        by_day[day] = by_day.get(day, Decimal("0")) + upto - given
+        given = upto
+    return sorted(by_day.items(), key=lambda row: (row[0] is None, row[0] or datetime.date.max))
+
+
+def _act_day(bill, accepted):
+    if accepted is None:
+        return None  # an objection stands: the Act has not started the clock
+    if bill.payment_terms_id and bill.due_date:
+        return min(to_date(bill.due_date), accepted + datetime.timedelta(days=AGREED_AT_MOST))
+    return accepted + datetime.timedelta(days=UNAGREED)
+
+
+def msme_schedule(bill):
+    """
+    [(due, amount)]: each delivery's part of the bill and the day the Act
+    says it is paid by: the day agreed (its terms), never more than 45 days
+    from that delivery's acceptance; 15 days where nothing was agreed. None
+    for a part whose objection stands.
+    """
+    rows = {}
+    for accepted, amount in lots(bill):
+        day = _act_day(bill, accepted)
+        rows[day] = rows.get(day, Decimal("0")) + amount
+    return sorted(rows.items(), key=lambda row: (row[0] is None, row[0] or datetime.date.max))
 
 
 def msme_due(bill):
     """
-    The day the Act says a bill is paid by: the day agreed (its terms), and
-    never more than 45 days from acceptance; 15 days where nothing was
-    agreed. Net 60 on a bill of 1 June for goods received that day is due
-    on 16 July, not 31 July.
+    The day the Act says a bill is paid by in full: its last part's day.
+    Net 60 on a bill of 1 June for goods received that day is due on
+    16 July, not 31 July. None while an objection to a part stands.
     """
-    start = accepted_on(bill)
-    if bill.payment_terms_id and bill.due_date:
-        return min(to_date(bill.due_date), start + datetime.timedelta(days=AGREED_AT_MOST))
-    return start + datetime.timedelta(days=UNAGREED)
+    days = [day for day, _ in msme_schedule(bill)]
+    return None if not days or None in days else max(days)
+
+
+def earlier_of(rows, act, settled):
+    """
+    The terms' installments ([{due_date, amount}]) and the Act's parts
+    ([(due or None, amount)]) laid over each other, money in order: each
+    rupee is due on the earlier of the two days that claim it. Money
+    received is applied to the earliest first, as installment_schedule does.
+    """
+    out, act = [], [[day, amount] for day, amount in act]
+    i = 0
+    for row in rows:
+        left = row["amount"]
+        while left > 0:
+            day, amount = act[i] if i < len(act) else (None, left)
+            take = min(left, amount)
+            due = min(row["due_date"], day) if (day and row["due_date"]) else (row["due_date"] or day)
+            if out and out[-1]["due_date"] == due:
+                out[-1]["amount"] += take
+            else:
+                out.append({"due_date": due, "amount": take})
+            left -= take
+            if i < len(act):
+                act[i][1] -= take
+                if act[i][1] <= 0:
+                    i += 1
+        if row["amount"] <= 0:
+            out.append({"due_date": row["due_date"], "amount": row["amount"]})
+    remaining = Decimal(settled)
+    for row in out:
+        applied = min(remaining, row["amount"])
+        remaining -= applied
+        row["settled"], row["outstanding"] = applied, row["amount"] - applied
+    return out
 
 
 def _standing(bill, day):
@@ -101,12 +193,20 @@ def msme_bills(start, end, as_of=None):
         unpaid = max(total - other - sum((amount for _, amount in paid), Decimal("0")), Decimal("0"))
         paid_on = max(day for day, _ in paid) if unpaid <= 0 and paid else None
         last = paid_on or as_of
-        late = max((last - due).days, 0)
+        late = max((last - due).days, 0) if due else 0
+        # Each delivery's part is late from its own day (O160), oldest settled first.
+        settled = total - unpaid
+        past = Decimal("0")
+        for day, amount in msme_schedule(bill):
+            applied = min(settled, amount)
+            settled -= applied
+            if day is not None and as_of > day:
+                past += amount - applied
         rows.append({
             "bill": bill.pk, "number": bill.number, "vendor": bill.vendor.name,
             "category": bill.msme_category, "udyam": getattr(getattr(bill.vendor, "tax_profile", None), "udyam_number", ""),
             "bill_date": to_date(bill.bill_date), "total": total, "due": due, "paid_on": paid_on,
             "days_late": late, "unpaid": unpaid,
-            "at_risk": unpaid if unpaid > 0 and as_of > due else Decimal("0"),
+            "at_risk": past,
         })
     return rows
