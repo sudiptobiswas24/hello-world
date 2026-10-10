@@ -21,7 +21,7 @@ export const INSPECTION_PANELS: PanelDef[] = [{
     { key: "warehouse", label: "Held at", width: "10rem" },
     { key: "quantity", label: "Waiting", kind: "quantity", width: "9rem" },
   ],
-  adder: { label: "Pass", permission: "purchasing.add_receiptinspection",
+  adder: { label: "Pass", permission: "purchasing.change_receiptinspection",
     url: (receipt) => `/api/purchasing/goods-receipts/${receipt.id}/accept/`,
     fields: (receipt) => [
       { key: "line", label: "Line", kind: "choice", choices: lineChoices(receipt) },
@@ -39,7 +39,7 @@ export const INSPECTION_PANELS: PanelDef[] = [{
     { key: "accepted", label: "", width: "7rem", render: (row) => (row.accepted ? "Passed" : "Failed") },
     { key: "note", label: "Why" },
   ],
-  adder: { label: "Fail and send back", permission: "purchasing.add_receiptinspection",
+  adder: { label: "Fail and send back", permission: "purchasing.change_receiptinspection",
     url: (receipt) => `/api/purchasing/goods-receipts/${receipt.id}/reject/`,
     fields: (receipt) => [
       { key: "line", label: "Line", kind: "choice", choices: lineChoices(receipt) },

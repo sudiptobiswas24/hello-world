@@ -320,3 +320,36 @@ class ApiTests(TdsTestCase):
             format="json")
         self.assertEqual(changed.status_code, 200, changed.content)
         self.assertEqual(changed.json()["tds_rate_percent"], "1.0000")
+
+
+class UndoingTakesTheDecisionRightTests(TdsTestCase):
+    """
+    O128: a TDS deduction's reverse and a challan's void took the right to
+    record one (add_), so anyone who may record one may undo one. They take
+    the bill poster's right now; goods failed back to a vendor take the
+    inspection's decision right, not the right to record one.
+    """
+
+    ROUTES = (
+        ("/api/purchasing/tds-deductions/999999/reverse/", "tdsdeduction"),
+        ("/api/purchasing/tds-challans/999999/void/", "tdschallan"),
+        ("/api/purchasing/goods-receipts/999999/reject/", "goodsreceipt"),
+        ("/api/purchasing/goods-receipts/999999/accept/", "goodsreceipt"),
+    )
+
+    def test_the_right_to_record_one_does_not_undo_it(self):
+        from django.contrib.auth.models import Permission, User
+        from rest_framework.test import APIClient
+
+        through = []
+        for index, (url, model) in enumerate(self.ROUTES):
+            user = User.objects.create_user(f"recorder-{index}")
+            user.user_permissions.add(*Permission.objects.filter(
+                content_type__app_label="purchasing",
+                codename__in=[f"add_{model}", f"view_{model}", "add_receiptinspection", "view_receiptinspection"]))
+            client = APIClient()
+            client.force_authenticate(User.objects.get(pk=user.pk))
+            status = client.post(url, {}, format="json").status_code
+            if status != 403:
+                through.append(f"{url} -> {status}")
+        self.assertEqual(through, [])
