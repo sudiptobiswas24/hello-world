@@ -41,7 +41,9 @@ class TdsDeductionViewSet(viewsets.ReadOnlyModelViewSet):
     filter_fields = ["bill", "section", "challan", "reversed_entry__isnull"]
     search_fields = ["bill__number", "bill__vendor__name", "pan"]
     date_field = "date"
-    action_permission_map = {"reverse": "purchasing.add_tdsdeduction",
+    # Undoing a deduction posts against the bill it came from: the bill poster's decision, never
+    # the right to record one (O128).
+    action_permission_map = {"reverse": "purchasing.post_bill",
                              "quarter": "purchasing.view_tdsdeduction"}
 
     @action(detail=True, methods=["post"])
@@ -76,7 +78,8 @@ class TdsChallanViewSet(viewsets.ReadOnlyModelViewSet):
     filter_fields = ["section", "voided_entry__isnull"]
     search_fields = ["challan_number", "bsr_code"]
     date_field = "date"
-    action_permission_map = {"pay": "purchasing.add_tdschallan", "void": "purchasing.add_tdschallan"}
+    # Voiding a challan reverses the payment over to the government: the poster's decision (O128).
+    action_permission_map = {"pay": "purchasing.add_tdschallan", "void": "purchasing.post_bill"}
 
     @action(detail=False, methods=["post"])
     def pay(self, request):

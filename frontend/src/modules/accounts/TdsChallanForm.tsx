@@ -27,7 +27,7 @@ export default function TdsChallanForm() {
         { key: "amount", label: "Amount", kind: "money", existingOnly: true, readOnly: true },
       ]}
       actions={[
-        { label: "Void", path: "void", permission: "purchasing.add_tdschallan", danger: true, when: (row) => !row.voided,
+        { label: "Void", path: "void", permission: "purchasing.post_bill", danger: true, when: (row) => !row.voided,
           done: "Voided: the tax is owed again" },
       ]}
     />

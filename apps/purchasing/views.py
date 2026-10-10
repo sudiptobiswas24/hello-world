@@ -363,8 +363,11 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post_receipt": "purchasing.post_goodsreceipt",
         "return_receipt": "purchasing.post_goodsreceipt",
-        "accept": "purchasing.add_receiptinspection",
-        "reject": "purchasing.add_receiptinspection",
+        # Passing or failing held goods is the inspection's decision, taken as quality's own are
+        # (quality.change_inspection posts one), never with the right to record one (O128). Failing
+        # sends the goods back and debits the bills.
+        "accept": "purchasing.change_receiptinspection",
+        "reject": "purchasing.change_receiptinspection",
     }
 
     @action(detail=True, methods=["get"])

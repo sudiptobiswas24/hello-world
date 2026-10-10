@@ -24,7 +24,7 @@ export default function TdsDeductionForm() {
         { key: "challan_label", label: "Challan", readOnly: true },
       ]}
       actions={[
-        { label: "Reverse", path: "reverse", permission: "purchasing.add_tdsdeduction", danger: true,
+        { label: "Reverse", path: "reverse", permission: "purchasing.post_bill", danger: true,
           when: (row) => !row.reversed && !row.challan_label, done: "Reversed: the bill owes it again" },
       ]}
     />
