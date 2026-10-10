@@ -92,6 +92,31 @@ def row_lock_query(model, pk, no_key=False):
         "pk", flat=True)
 
 
+# The lock order: every path that holds more than one of these rows takes
+# them first to last, whichever of them it needs, and nothing takes an
+# earlier one once it holds a later one. Two paths taking the same two rows
+# the other way round wait for each other, and PostgreSQL ends one of them
+# as a deadlock: a customer return holding the order while it credited the
+# invoice, and a credit note on that invoice holding it while it reached
+# for the order, did exactly that (O137).
+#
+#   1. a purchase order, then a sales order (a drop-ship receipt ships the
+#      customer's order);
+#   2. an order's lines;
+#   3. the customer whose credit limit is weighed;
+#   4. the documents that move against an order: deliveries and receipts,
+#      then invoices and bills, each before the return or the note that
+#      corrects it;
+#   5. those documents' lines.
+#
+# A document names its order(s) in locked_before_it() and its posting and
+# correcting methods are @serialised(..., held_first=True), which takes
+# them before the document; an edit through the API takes them the same
+# way (lock_for_change). An order line names its order(s) the same way.
+# lock_rows() orders only what one call takes, by model and key: the order
+# between calls is this list's.
+
+
 def lock_rows(*instances, refresh=True):
     """
     Hold these rows until the transaction ends, in one fixed order, and
@@ -142,7 +167,7 @@ def lock_for_change(instance):
     list(row_lock_query(type(instance), instance.pk, no_key=True))
 
 
-def serialised(*state):
+def serialised(*state, held_first=False):
     """
     Make a method that changes a document's state one at a time per
     document.
@@ -160,6 +185,11 @@ def serialised(*state):
     waits for the first and then sees what it did. Only those fields are
     re-read: anything else the caller set and has not saved stays as the
     caller left it.
+
+    `held_first`: the rows the document names in locked_before_it(), its
+    order or orders, are held before the document itself, by the lock
+    order above. For the methods that reach an order while holding the
+    document: posting, returning, crediting and debiting.
     """
     import functools
 
@@ -168,6 +198,8 @@ def serialised(*state):
         def inner(self, *args, **kwargs):
             with transaction.atomic():
                 if self.pk is not None:
+                    if held_first:
+                        lock_rows(*self.locked_before_it(), refresh=False)
                     lock_rows(self, refresh=False)
                     if state:
                         self.refresh_from_db(fields=list(state))
