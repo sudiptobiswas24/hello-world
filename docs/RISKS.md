@@ -416,6 +416,9 @@ missing), **minor**.
 | O196 | core, hr | O194 in reverse: HR links an empty login to an employee, then proposes Controller for it, and a Controller confirms: a Controller login linked to an employee, which the link rule would refuse (docs/handoff/reports/fix_sec.md, seen #1) | security | open |
 | O197 | core | `UserViewSet.perform_create` and `perform_update` run without a transaction: a create refused while giving roles answers 400 but leaves the login made, with no roles (docs/handoff/reports/fix_sec.md, seen #3) | rule | open |
 | O198 | core | A keeper-set password lapses only when a role is given: a permission of its own or is_staff given in the admin does not lapse it. `KeptCredential.value` keeps a copy of the keeper-set password hash (exposed nowhere). Credentials set before the lapse rule carry no record of who set them | security | minor |
+| O199 | accounting | The per-unit note cap (`priced_to_give_back`): for a fractional quantity, a share the paisa does not divide leaves under one paisa per line on the receivable, and the last unit's rounding can post up to half a paisa over the unrounded cap (docs/handoff/reports/fix_trade.md, seen #2) | books | minor |
+| O200 | sales | Migration sales 0064: an approval whose note names no figures leaves a line cut after it seeded at what it holds; charge lines are never matched by label; total and margin are seeded empty unless the note names them (docs/handoff/reports/fix_trade.md, seen #3) | books | minor |
+| O201 | accounting | A typed note line may credit any revenue account, not the one its original line used (docs/handoff/reports/fix_trade.md, seen #4) | books | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
