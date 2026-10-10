@@ -212,3 +212,22 @@ class TheAuditAsksTheCloseTests(Itc04TestCase):
 
     def test_as_they_stand_they_are_not(self):
         self.assertEqual(self.findings(), [])
+
+
+class ChallansInTableThirteenTests(Itc04TestCase):
+    """
+    The fixture's two challans went out on 30 and 31 May; the second is withdrawn.
+    GSTR-1 table 13 for May: job-work challans, nature 9, JWC-1 to JWC-2, 2 issued,
+    1 cancelled, 1 net (calc_stat/o59_table13.py).
+    """
+
+    def test_issued_and_withdrawn_challans_are_counted(self):
+        from .returns import gstr1, gstr1_json
+
+        self.second.void()
+        result = gstr1(datetime.date(2026, 5, 1), datetime.date(2026, 5, 31))
+        (row,) = result["documents"]
+        self.assertEqual((row["kind"], row["from"], row["to"], row["total"], row["cancelled"]),
+                         ("job_work_challans", self.first.number, self.second.number, 2, 1))
+        (detail,) = gstr1_json(result)["doc_issue"]["doc_det"]
+        self.assertEqual((detail["doc_num"], detail["docs"][0]["net_issue"]), (9, 1))
