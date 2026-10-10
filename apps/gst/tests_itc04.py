@@ -238,6 +238,15 @@ class AReceiptOfNoValueAsksThePeriodTests(Itc04TestCase):
             self.back(self.lamination, "100", "0")
         self.assertEqual(len(itc04(*H1)["received"]), 0)
 
+    def test_not_voided_before_it_was_booked_nor_ahead(self):
+        # O165: OutsideMovement.void took any day. Booked back on 1 June.
+        receipt = self.back(self.lamination, "100", "1400")
+        with self.assertRaisesMessage(ValidationError, "is not voided on 2026-05-31: it was booked on 2026-06-01"):
+            receipt.void(on_date=datetime.date(2026, 5, 31))
+        with self.assertRaisesMessage(ValidationError, "is not voided on 2099-01-01: that day has not come"):
+            receipt.void(on_date=datetime.date(2099, 1, 1))
+        self.assertEqual(len(itc04(*H1)["received"]), 1)
+
     def test_voided_after_its_month_closed(self):
         receipt = self.back(self.lamination, "100", "0")
         self.assertIsNone(receipt.journal_entry_id)

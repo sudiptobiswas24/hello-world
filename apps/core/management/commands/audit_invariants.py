@@ -1215,8 +1215,7 @@ class Command(BaseCommand):
             "sales.CustomerTds.reverse",
             "purchasing.TdsDeduction.reverse", "purchasing.TdsChallan.void",
             "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
-            "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",
-            "manufacturing.OutsideMovement.void"), NOT_YET_ON_THE_RULE),
+            "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void"), NOT_YET_ON_THE_RULE),
     }
 
     # An entry is taken back by create_reversal(), or written by hand
