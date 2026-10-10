@@ -5,7 +5,7 @@ reads their own (and leads nobody owns), writes only as themselves, and
 opens an opportunity only on a customer they carry.
 """
 
-from django.db.models import Count, Q
+from django.db.models import Count
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -17,7 +17,8 @@ from apps.core.audit import AuditableViewSetMixin
 from apps.core.models import Party
 from apps.core.scoping import scoped
 
-from .crm import Activity, Campaign, Lead, Opportunity, follow_ups_due, for_rep, owner_for, pipeline
+from .crm import (Activity, Campaign, Lead, Opportunity, contacts_made, follow_ups_due, for_rep, owner_for,
+                  pipeline)
 
 
 class OwnedMixin:
@@ -83,7 +84,7 @@ class LeadSerializer(serializers.ModelSerializer):
 class LeadViewSet(OwnedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     # The calls and visits made, counted once for the page: the score reads it.
     queryset = Lead.objects.select_related("owner", "campaign", "converted_party").annotate(
-        done_count=Count("activities", filter=Q(activities__done_on__isnull=False)))
+        done_count=Count("activities", filter=contacts_made("activities__")))
     serializer_class = LeadSerializer
     unowned_too = True
     filter_fields = ["status", "owner", "campaign", "source"]

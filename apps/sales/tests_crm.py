@@ -234,6 +234,30 @@ class ActivityTests(CrmTestCase):
         self.assertNotIn("follow_ups_due", {row["key"] for row in inbox(self.ravi.user)})
 
 
+class TheScoreCountsCallsAndVisitsTests(CrmTestCase):
+    """
+    Audit, 9 October: every activity done counted as "a call or visit made",
+    a note that found their website among them. A lead from nowhere in
+    particular, asked today: fresh +10. A call and a visit done add 5 each;
+    a note and a mail done add nothing: 20.
+    """
+
+    def test_a_note_is_not_a_call_or_visit(self):
+        lead = Lead.objects.create(company_name="Quiet Traders")
+        Activity.objects.create(lead=lead, kind="note", summary="Found their website").done()
+        self.assertEqual(Lead.objects.get(pk=lead.pk).score(), 10)
+
+    def test_only_calls_and_visits_count_and_the_list_says_the_same(self):
+        lead = Lead.objects.create(company_name="Quiet Traders")
+        for kind in ("call", "visit", "note", "email"):
+            Activity.objects.create(lead=lead, kind=kind, summary=f"A {kind}").done()
+        Activity.objects.create(lead=lead, kind="call", summary="Not yet rung")
+        self.assertEqual(Lead.objects.get(pk=lead.pk).score(), 20)
+        [row] = [row for row in self.manager.get("/api/sales/leads/").json() if row["id"] == lead.pk]
+        self.assertEqual((row["score"], row["score_summary"]),
+                         (20, "from other +0, 2 calls or visits made +10, fresh: asked within a fortnight +10"))
+
+
 class CampaignTests(CrmTestCase):
     def test_kept_by_the_manager_and_read_by_the_rep(self):
         refused = self.manager.post("/api/sales/campaigns/", {
