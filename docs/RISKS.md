@@ -359,7 +359,7 @@ missing), **minor**.
 | O139 | sales, purchasing | In the fix-wave-1 trading commits: a drop-ship on its way does not count as moved, so the sales line's item can change before the vendor delivers; `PurchaseOrderLine.sales_order_line` is not frozen, so a received drop-ship can be re-pointed and its return reverses nothing | books | being fixed in wave 1 |
 | O140 | sales, purchasing | In the fix-wave-1 trading commits: rule B does not check `InvoiceLine.credits_line` (nor, likely, `BillLine.debits_line`): another customer's invoice credited Acme's invoice line, which then had nothing left to credit | books | being fixed in wave 1 |
 | O141 | sales | In the fix-wave-1 trading commits: O72's fix refuses every change to an approved order, within policy too (one more undiscounted line on an order approved for a 20% line), and asks nothing of cuts and deletes, which can take an order under the margin floor | rule | being fixed in wave 1 |
-| O142 | core, hr | In the fix-wave-1 security commits: O86's fix overreaches. An HR Admin cannot deactivate a departing rep or give a new login the Bookkeeper role; every role but HR's own needs a superuser. Taking access away is refused too. Who may grant a role HR does not hold is the owner's decision | security | being fixed in wave 1; decide |
+| O142 | core, hr | In the fix-wave-1 security commits: O86's fix overreaches. An HR Admin cannot deactivate a departing rep or give a new login the Bookkeeper role; every role but HR's own needs a superuser. Taking access away is refused too. Decided 10 October: a two-person rule (HR proposes a role it does not hold; a holder of that role, or a superuser, confirms; nobody acts on their own login) | security | being fixed in wave 1 |
 | O143 | sales, core | In the fix-wave-1 security commits: self-approval through a quote revision. `create_revision` copies lines with no stamps or history and `authors()` does not follow `revision_of`, so the writer of a 40% quote revises it and approves the revision (200) | rule | being fixed in wave 1 |
 | O144 | purchasing, sales | In the fix-wave-1 security commits: requisition cancel still takes `change_purchaserequisition` though `decide_purchaserequisition` exists (Self Service cancelled a colleague's approved requisition); a converted lead stays unowned, so another rep lists it naming the new customer; the employee screen links any login to any employee | security | being fixed in wave 1 |
 
@@ -426,6 +426,14 @@ Upgrade notes, true of data made before the 8 October fixes:
      to the buyer at one of its own addresses; the buyer's principal
      place of business when delivered to a third party on the buyer's
      direction (O60). The tax adviser to confirm.
+21. **Decided by the owner on 10 October 2026:**
+   - Giving a login a role its keeper does not hold takes two people:
+     the keeper proposes, and a holder of that role (or a superuser)
+     confirms. Taking access away takes one. Nobody changes their own
+     login's roles (O142).
+   - Whoever made or changed a document cannot approve it, including
+     someone who keyed in a requisition for a person without a login
+     (O85).
 
 ## Later items
 
