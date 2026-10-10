@@ -1546,6 +1546,11 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         invoiced = self.invoice_lines.filter(invoice__posted=True).select_related("invoice").first()
         if invoiced is not None:
             return f"been invoiced on {invoiced.invoice.number}"
+        # A drop-ship on its way: its receipt ships this line as it then stands, so a widget awaited
+        # from the vendor was delivered to the customer's books as a gadget.
+        awaited = quantities_awaited([self])[self.pk]
+        if awaited > 0:
+            return f"a drop-ship on its way ({format(awaited.normalize(), 'f')})"
         return ""
 
     def _hold_with_its_orders(self):

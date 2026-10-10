@@ -361,3 +361,68 @@ class TheCustomersOrderWaitsForItsDropShipTests(DropShipTestCase):
         self.sales_line.refresh_from_db()
         self.assertEqual((self.sales_line.is_closed_short(), self.sales_line.quantity_open()),
                          (True, Decimal("0")))
+
+
+class ADropShipKeepsWhatItDeliversTests(PurchasingLifecycleTestCase):
+    """
+    O139: rule A asked only what had moved. A drop-ship on its way had not, so the
+    customer's line could change its item before the vendor delivered; and a
+    received drop-ship line could be re-pointed at another customer line.
+    """
+
+    def drop_ship_fixture(self):
+        self.cogs = Account.objects.create(code="5001", name="COGS", account_type=AccountType.EXPENSE)
+        self.revenue = Account.objects.create(code="4000", name="Revenue", account_type=AccountType.INCOME)
+        company = Company.get()
+        company.default_cogs_account = self.cogs
+        company.default_purchase_expense_account = self.expense
+        company.save()
+        self.customer = Party.objects.create(code="C-1", name="Acme", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=self.customer, role=PartyRole.CUSTOMER)
+        VendorPrice.objects.create(vendor=self.vendor, item=self.item, currency=self.usd, unit_price=Decimal("6"))
+        sale = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 1, 1),
+                                         currency=self.usd, invoice_policy=InvoicePolicy.DELIVERED)
+        SalesOrderLine.objects.create(order=sale, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                      unit_price=Decimal("10"), revenue_account=self.revenue)
+        sale.confirm()
+        order = PurchaseOrder.create_for_drop_ship(sale, self.vendor, order_date=datetime.date(2026, 1, 2))
+        order.confirm()
+        return sale, order
+
+    def test_a_line_awaited_from_a_vendor_keeps_its_item(self):
+        from apps.inventory.models import Item
+
+        sale, order = self.drop_ship_fixture()
+        gadget = Item.objects.create(sku="GDG-1", name="Gadget", uom=self.uom)
+        line = sale.lines.get()
+        line.item = gadget
+        with self.assertRaisesMessage(ValidationError, "has a drop-ship on its way (10); its item can no longer change"):
+            line.save()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 10))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.get(), warehouse=self.warehouse,
+                                        quantity_received=Decimal("10"))
+        receipt.post()
+        line = SalesOrderLine.objects.get(pk=line.pk)
+        self.assertEqual((line.item, line.quantity_shipped()), (self.item, Decimal("10")))
+
+    def test_a_received_drop_ship_line_keeps_the_customer_line_it_delivered(self):
+        from .models import PurchaseOrderLine
+
+        sale, order = self.drop_ship_fixture()
+        first = sale.lines.get()
+        second = SalesOrderLine.objects.create(order=sale, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                               unit_price=Decimal("10"), revenue_account=self.revenue)
+        PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                         unit_price=Decimal("6"), sales_order_line=second)
+        po_line = order.lines.get(sales_order_line=first)
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 10))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=po_line, warehouse=self.warehouse,
+                                        quantity_received=Decimal("10"))
+        receipt.post()
+        po_line = PurchaseOrderLine.objects.get(pk=po_line.pk)
+        po_line.sales_order_line = second
+        with self.assertRaisesMessage(ValidationError, "its sales order line can no longer change"):
+            po_line.save()
+        GoodsReceipt.objects.get(pk=receipt.pk).create_return(debit_bills=False)
+        self.assertEqual((SalesOrderLine.objects.get(pk=first.pk).quantity_shipped(),
+                          SalesOrderLine.objects.get(pk=second.pk).quantity_shipped()), (Decimal("0"), Decimal("0")))
