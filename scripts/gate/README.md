@@ -61,6 +61,9 @@ Commit as `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F
 - `failgroups.py <log>` groups a test log's failures by module and last
   error line.
 - `names.py` is a crude unbound-name check.
+- `structcheck.py` compares each merged test file's classes and methods with the
+  branches they came from. Run it after any integration whose conflicts were kept
+  both ways: a conflict inside a class, kept both ways, still parses.
 - `fastsettings.py` skips migrations in test databases. It is used for
   quick runs and for the Asia/Kolkata lane:
   `PYTHONPATH=scripts/gate manage.py test ... --settings=fastsettings`.

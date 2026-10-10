@@ -484,14 +484,6 @@ class AConcessionIsSignedByTheLoginTests(QualityTestCase):
 
     def setUp(self):
         super().setUp()
-class AReadingStaysOnItsPostedInspectionTests(QualityTestCase):
-    """
-    O82: a reading's save() asked only the inspection it moved to. An
-    Inspector moved a reading off a posted inspection into a draft by PATCH,
-    and the posted verdict lost a reading it was judged on.
-    """
-
-    def test_an_inspector_cannot_move_a_reading_off_a_posted_inspection(self):
         from django.contrib.auth.models import Group, User
         from django.core.management import call_command
         from rest_framework.test import APIClient
@@ -539,6 +531,20 @@ class AReadingStaysOnItsPostedInspectionTests(QualityTestCase):
         response = self.clients["QI"].post(f"/api/quality/inspections/{self.failed.pk}/post/")
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("somebody else approves it", str(response.content))
+
+
+class AReadingStaysOnItsPostedInspectionTests(QualityTestCase):
+    """
+    O82: a reading's save() asked only the inspection it moved to. An
+    Inspector moved a reading off a posted inspection into a draft by PATCH,
+    and the posted verdict lost a reading it was judged on.
+    """
+
+    def test_an_inspector_cannot_move_a_reading_off_a_posted_inspection(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
         plan = self.plan()
         posted = self.inspect(plan, [87, 88, 89])
         posted.post()
