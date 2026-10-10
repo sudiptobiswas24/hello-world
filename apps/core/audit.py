@@ -96,5 +96,6 @@ class AuditableViewSetMixin:
             record_by_id(model, int(pk), request.user, EventKind.DELETED, summary=getattr(self, "_deleting", ""))
         elif action not in (None, "create", "update", "partial_update", "destroy") and getattr(self, "detail", False) \
                 and action not in WRITES_ITS_OWN_HISTORY and pk.isdigit():
-            record_by_id(model, int(pk), request.user, EventKind.ACTION, action=action)
+            record_by_id(model, int(pk), request.user, EventKind.ACTION, action=action,
+                         summary=getattr(self, "_action_summary", ""))
         return response

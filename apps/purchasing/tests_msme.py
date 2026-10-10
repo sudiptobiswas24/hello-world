@@ -342,6 +342,47 @@ class AcceptedOnDeliveryTests(MsmeTestCase):
         (row,) = msme_bills(JUNE, datetime.date(2026, 6, 30), as_of=datetime.date(2026, 7, 20))
         self.assertEqual((row["due"], row["at_risk"]), (datetime.date(2026, 8, 4), Decimal("600.00")))
 
+    def test_an_objection_is_keyed_by_a_login_on_record_from_stores_or_accounts(self):
+        """
+        O179 (review_stat2 #5): the dates are the letter's, so they can be keyed
+        after the event; each keying now leaves who did it and what was keyed.
+        The AP Manager, who gets the letter, may key one as well as the stores.
+        """
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.core.history import RecordEvent
+
+        call_command("setup_roles", verbosity=0)
+        clients = {}
+        for role in ("AP Manager", "Warehouse Staff", "Purchasing Clerk"):
+            user = User.objects.create_user(role.replace(" ", "").lower())
+            user.groups.add(Group.objects.get(name=role))
+            clients[role] = APIClient()
+            clients[role].force_authenticate(user)
+        order, line = self.order()
+        receipt, _ = self.receive(order, line, datetime.date(2026, 6, 10), "10")
+        url = f"/api/purchasing/goods-receipts/{receipt.pk}/objection/"
+        ap, stores = clients["AP Manager"], clients["Warehouse Staff"]
+        written = {"objected_on": "2026-06-12", "objection": "Letter PUR/14: short count"}
+        self.assertEqual(clients["Purchasing Clerk"].post(url, written, format="json").status_code, 403)
+        for body in ({**written, "objected_on": "2026-06-09"}, {**written, "objected_on": "2099-01-01"},
+                     {**written, "objection": ["a"]}, {**written, "objection": "y" * 256}):
+            self.assertEqual(ap.post(url, body, format="json").status_code, 400, body)
+        self.assertEqual(ap.post(url, written, format="json").status_code, 200)
+        self.assertEqual(GoodsReceipt.objects.get(pk=receipt.pk).updated_by.username, "apmanager")
+        self.assertEqual(stores.post(url, {"objection_removed_on": "2099-01-01"}, format="json").status_code, 400)
+        self.assertEqual(stores.post(url, {"objection_removed_on": "2026-06-20"}, format="json").status_code, 200)
+        self.assertEqual(GoodsReceipt.objects.get(pk=receipt.pk).updated_by.username, "warehousestaff")
+        self.assertEqual(ap.delete(url).status_code, 200)
+        self.assertEqual(
+            [(event.who.username, event.summary)
+             for event in RecordEvent.objects.filter(object_id=receipt.pk, action="objection").order_by("pk")],
+            [("apmanager", "objection made 2026-06-12"),
+             ("warehousestaff", "objection of 2026-06-12 removed 2026-06-20"),
+             ("apmanager", "objection withdrawn: was made 2026-06-12, removed 2026-06-20")])
+
     def test_two_bills_for_two_deliveries(self):
         order, line = self.order()
         self.receive(order, line, JUNE, "6")
