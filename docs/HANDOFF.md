@@ -109,6 +109,8 @@ defects", is the one list of what is still open.
 - Decide; do not ask, unless a choice is truly theirs and blocking. Say
   in a line what was decided.
 - **Token spend (owner, 10 October).** The session limit is the constraint.
+  - Reasoning effort stays high for every agent; never lowered to save
+    tokens (owner, 10 October).
   - Model per job: Sonnet for audits, reviews and probes; Opus only for
     fixes to money, stock, locks or permissions; Sonnet for small
     mechanical fixes.
