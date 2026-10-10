@@ -92,6 +92,14 @@ class ClaimTests(PeopleTestCase):
         with self.assertRaisesMessage(ValidationError, "1100 - AR is not a bank, cash or card account"):
             self.approved().pay(receivable)
 
+    def test_not_paid_before_it_was_claimed(self):
+        # O163: ExpenseClaim.pay took any day. Claimed 1 June. A day ahead stands (the test below).
+        card = Account.objects.create(code="2300", name="Company card", account_type=AccountType.LIABILITY,
+                                      holds_money=True)
+        claim = self.approved()
+        with self.assertRaisesMessage(ValidationError, "is not paid on 2026-05-31: it was claimed on 2026-06-01"):
+            claim.pay(card, on_date=datetime.date(2026, 5, 31))
+
     def test_paid_by_the_company_card(self):
         card = Account.objects.create(code="2300", name="Company card", account_type=AccountType.LIABILITY,
                                       holds_money=True)
@@ -233,7 +241,8 @@ class ClaimTests(PeopleTestCase):
                          (200, "approved", "Jordan Park"), approved.content)
         self.assertEqual(jordan.post(f"/api/hr/expense-claims/{claim_id}/pay/", {"paid_from": self.cash.pk}, format="json").status_code, 403)
         books = self.as_(self.books)
-        paid = books.post(f"/api/hr/expense-claims/{claim_id}/pay/", {"paid_from": self.cash.pk, "on_date": "2026-06-03"}, format="json")
+        # Paid on the day it was claimed: 3 June was before this claim, made today (O163).
+        paid = books.post(f"/api/hr/expense-claims/{claim_id}/pay/", {"paid_from": self.cash.pk, "on_date": made.json()["claim_date"]}, format="json")
         self.assertEqual((paid.status_code, paid.json()["status"], paid.json()["paid_from_name"], paid.json()["total"]),
                          (200, "paid", "Cash", "300.00"), paid.content)
         self.assertEqual(self.as_(self.hr).get("/api/hr/expense-claims/").json()[0]["id"], claim_id)

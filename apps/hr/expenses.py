@@ -152,7 +152,11 @@ class ExpenseClaim(AuditModel):
         from apps.accounting.money import refuse_as_money_account
 
         refuse_as_money_account(paid_from, "paid_from")
+        # Not before it was claimed (O163). A day ahead stands: a cheque written for the 11th
+        # on the 8th, which unpay() then cancels on that day (correction_date's exception).
         on_date = to_date(on_date) or timezone.localdate()
+        if on_date < to_date(self.claim_date):
+            raise ValidationError(f"{self} is not paid on {on_date}: it was claimed on {to_date(self.claim_date)}.")
         by_account = defaultdict(lambda: ZERO)
         for line in self.lines.select_related("expense_account"):
             by_account[line.expense_account] += line.amount

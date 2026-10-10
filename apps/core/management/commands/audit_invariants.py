@@ -1201,6 +1201,8 @@ class Command(BaseCommand):
     DATED_ELSEWHERE = {
         "accounting.Payment.void": "refuses a day before the payment and a day to come in its own words, "
                                    "written before the rule",
+        "hr.ExpenseClaim.pay": "refuses a day before its claim in its own words; a day ahead stands, a cheque "
+                               "for a day to come, which unpay() cancels on that day (O163)",
         "accounting.RecurringJournal.generate_one": "a schedule's run, posted forward on its own day; it "
                                                     "corrects nothing",
         "sales.RecurringInvoice.generate_one": "a schedule's run, posted forward on its own day; it corrects "
@@ -1210,13 +1212,7 @@ class Command(BaseCommand):
             "difference was realised when that came later: a void is never refused for it",
         **dict.fromkeys((
             "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
-            "sales.Invoice.recover_write_off",
             "sales.CustomerTds.reverse",
-            # Seen when the check was widened to steps that post afresh (O55), not yet fixed:
-            "sales.Invoice.apply_settlement_discount", "sales.Invoice.apply_deposit",
-            "sales.Invoice.credit_old_supply", "purchasing.Bill.apply_prepayment",
-            "purchasing.Bill.take_settlement_discount", "purchasing.Bill.debit_old_supply",
-            "hr.ExpenseClaim.pay",
             "purchasing.TdsDeduction.reverse", "purchasing.TdsChallan.void",
             "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
             "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void",

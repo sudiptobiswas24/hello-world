@@ -33,6 +33,34 @@ class CreditAfterSettlementTests(SalesTestCase):
         invoice.apply_settlement_discount(on_date=datetime.date(2026, 3, 8))
         return invoice
 
+    def test_steps_that_post_afresh_are_dated_on_the_rule(self):
+        """
+        O163 (review_stat #7a, #8): a write-off was recovered on a day before
+        it was made; a settlement discount and a deposit taken before the
+        invoice existed were accepted.
+        """
+        from apps.sales.models import InvoicePayment
+
+        invoice = self.bill(self.make_order("10", "100"))
+        before = invoice.invoice_date - datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"takes no settlement discount on {before}"):
+            invoice.apply_settlement_discount(on_date=before)
+        with self.assertRaisesMessage(ValidationError, f"is not applied to {invoice.number} on {before}"):
+            invoice.apply_deposit(invoice, on_date=before)
+        receipt = self.receipt("500", on=invoice.invoice_date)
+        made = InvoicePayment.objects.create(invoice=invoice, payment=receipt, amount=Decimal("500"),
+                                             date=invoice.invoice_date)
+        made.amount = Decimal("400")
+        made.save()
+        made.refresh_from_db()
+        # An edit that gives no new day keeps the day the allocation was made.
+        self.assertEqual((made.amount, made.date), (Decimal("400.00"), invoice.invoice_date))
+        invoice.write_off(reason="Customer gone")
+        write_off = invoice.write_offs.get()
+        earlier = write_off.journal_entry.date - datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"is not recovered on {earlier}: it was written off"):
+            invoice.recover_write_off(write_off, on_date=earlier)
+
     def test_a_written_off_invoice_credited_in_full_owes_nothing_back(self):
         invoice = self.bill(self.make_order("10", "100"))
         invoice.write_off(reason="Customer gone")

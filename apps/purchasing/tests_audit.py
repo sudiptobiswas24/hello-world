@@ -411,6 +411,15 @@ class VendorSettlementDiscountTests(AuditTestCase):
         self.assertEqual(self.balance(self.discount_received), Decimal("-1.00"))
         self.assertEqual(self.balance(self.payable), Decimal("-49.00"))
 
+    def test_not_taken_before_the_bill_nor_a_prepayment_applied(self):
+        # O163: take_settlement_discount and apply_prepayment took any day.
+        bill = self.discounted_bill()
+        before = bill.bill_date - datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"takes no settlement discount on {before}"):
+            bill.take_settlement_discount(on_date=before)
+        with self.assertRaisesMessage(ValidationError, f"is not applied to {bill.number} on {before}"):
+            bill.apply_prepayment(bill, on_date=before)
+
     def test_it_expires(self):
         bill = self.discounted_bill()
         with self.assertRaisesMessage(ValidationError, "No settlement discount is available"):
