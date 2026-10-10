@@ -368,6 +368,12 @@ missing), **minor**.
 | O148 | purchasing, quality | In the fix-wave-1 quality commits: a batch released when sent and rejected afterwards blocks receipt of the assemblies made from it ("held by quality"). The same question as O135 | rule | queued; decide with O135; SubcontractHeldAfterSendingProbe |
 | O149 | purchasing | In the fix-wave-1 quality commits: a subcontract return gives each batch its proportional share rounded to 2 places: returned one at a time, F-1 0.99 and F-2 2.01 come back (F-2 gains 0.01 it never had), and a 3-of-10 return puts back fractional frames | books | queued; SubcontractReturnByBatchProbe |
 | O150 | manufacturing | The O118 lock was not applied to a complaint's batches: a reject and a batch added at once both finish (a rejected complaint names a batch; shown on PostgreSQL); removing the only batch as it closes has the same unlocked read | race | queued; ComplaintLotRaceProbe |
+| O151 | hr | An expense claim paid, unpaid and paid again overwrites `journal_entry` and `voided_entry`: after a second unpay, the first payment and its reversal belong to no claim and `claims_paid` cannot find them (hr/expenses.py:144-185) | books | open |
+| O152 | gst | The e-invoice `ShipDtls` carries the buyer's GSTIN and name even when the goods go to a third party (gst/einvoice.py:289) | statutory | open |
+| O153 | gst | The e-way bill's `transactionType` is 2 (bill-to-ship-to) for delivery to the buyer's own other address, where NIC's meaning is a third party (gst/ewaybill.py:366). The tax adviser to decide | statutory | decide |
+| O154 | purchasing, gst | Debit notes raised by a receipt return (`create_return(debit_bills=True)`) post at once, so the supplier's credit-note number can never be recorded on them; GSTR-2B pairs them only on date and value. O57's fix covers hand-made debit notes only | statutory | open |
+| O155 | purchasing | MSME "acceptance" is read as the day goods cleared inspection when that came within 15 days of receipt, otherwise the receipt day (O103's fix). The tax adviser to confirm the reading of the MSMED Act | statutory | decide |
+| O156 | frontend | The TDS return screen has no "reverses" column; the bank statement screen can match a line only to a payment, so a line for a direct entry (a TDS challan, an expense claim) is matched only through the API or auto-match | minor | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
