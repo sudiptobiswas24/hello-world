@@ -168,17 +168,18 @@ def _employees(rows, report, options):
 
     No roles. The import takes core.import_records alone, and its file
     gave roles to any login not yet an employee's: a Controller gave
-    their own login HR Admin. Roles are given on the Logins screen by
-    someone who holds them (apps/core/users_api.py), and an existing
-    login is linked only while it holds nothing, or linking it would
-    make whoever holds it this person, with this person's reports.
+    their own login HR Admin. Roles are given on the Logins screen
+    (apps/core/roles.py), and an existing login is linked as the employee
+    page links one (users_api.refused_link): holding no more than an
+    employee's own, or by whoever may keep it, or linking it would make
+    whoever holds it this person, with this person's reports.
     """
     import secrets
 
     from django.contrib.auth.models import User
 
     from apps.core.models import Party, PartyRole, PartyRoleAssignment
-    from apps.core.users_api import holds_rights
+    from apps.core.users_api import refused_link
     from apps.hr.models import Department, Employee
 
     made = {}
@@ -220,9 +221,10 @@ def _employees(rows, report, options):
                                                         first_name=party.name[:150])
                     elif Employee.objects.filter(user=user).exists():
                         raise RowError("username", f"{username!r} is already another employee's login.")
-                    elif holds_rights(user):
-                        raise RowError("username", f"{username!r} already holds roles; an import links only a "
-                                                   "login that holds none. HR links it on the employee's record.")
+                    else:
+                        said = refused_link(options.get("by"), user)
+                        if said:
+                            raise RowError("username", said)
                     employee.user = user
                 employee.save()
                 if yes_no(row, "sales_rep", False):
@@ -449,6 +451,7 @@ def run(kind, text, *, commit=False, user=None, **options):
     report = Report(kind=kind)
     rows = list(enumerate(read(text), start=2))  # row 1 is the header
     report.rows = len(rows)
+    options = {**options, "by": user}  # who brings it in: links a login only as they may (employees)
     with transaction.atomic(), stamped_by(user):
         if kind in PER_ROW:
             for number, row in rows:

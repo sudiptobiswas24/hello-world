@@ -3,7 +3,7 @@ from collections import defaultdict
 from decimal import ROUND_CEILING, Decimal
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -754,8 +754,26 @@ class PurchaseRequisition(AuditModel):
             raise ValidationError("Say why the requisition was rejected.")
         self._decide(RequisitionStatus.REJECTED, by, note)
 
+    def check_canceller(self, by, may_decide=False):
+        """
+        Who calls a request off: the person who asked for it, or whoever
+        decides requisitions (`may_decide`, the view's
+        purchasing.decide_purchaserequisition). Cancel asked only the right
+        to change one, which Self Service holds: a colleague cancelled
+        someone else's approved request.
+        """
+        if may_decide:
+            return
+        requester = getattr(self.requested_by, "employee_profile", None) if self.requested_by_id else None
+        if by is not None and requester is not None and requester.user_id == by.pk:
+            return
+        raise PermissionDenied(
+            f"{self} is called off by {self.requested_by}, who asked for it, or by whoever decides requisitions.")
+
     @serialised("status")
-    def cancel(self):
+    def cancel(self, by=None, may_decide=False):
+        """Call the request off, as `by` (check_canceller)."""
+        self.check_canceller(by, may_decide)
         if self.status == RequisitionStatus.ORDERED:
             raise ValidationError(
                 "This requisition has been ordered. Cancel the purchase order instead."

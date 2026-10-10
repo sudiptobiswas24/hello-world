@@ -25,8 +25,8 @@ Taking access away is always the keeper's: deactivating a leaver or
 taking a role off a login gives nobody anything, and the HR Admin could
 not deactivate a departing rep. Nobody changes their own roles or
 standing, and a superuser is asked none of this. The employees import
-gives no roles at all and links only a login that holds nothing
-(`holds_rights`).
+gives no roles at all, and it and the employee page link a login to a
+person by one rule (`refused_link`).
 """
 
 from django.contrib.auth import password_validation
@@ -83,9 +83,35 @@ def check_may_administer(actor, user):
             f"{user.get_username()} holds {', '.join(beyond)}, which you do not: someone who does keeps that login.")
 
 
-def holds_rights(user):
-    """Whether a login holds anything at all: a role, a permission of its own, the admin site."""
-    return bool(user.is_superuser or user.is_staff or user.groups.exists() or user.user_permissions.exists())
+# What every employee holds: a login holding no more is anybody's to link to a person.
+EMPLOYEES_OWN = ("Employee Self Service",)
+
+
+def refused_link(actor, login):
+    """
+    Why `actor` may not make `login` an employee's, or None.
+
+    A login linked to an employee is that person, with their reports: the
+    employee page linked any login to anyone, the Controller's to a
+    manager's record among them. A login holding nothing beyond an
+    employee's own (EMPLOYEES_OWN) is linked by whoever keeps employees;
+    one holding more, only by whoever keeps logins and may keep that one
+    (check_may_administer). `actor` None is the import's command line.
+    The employees import and the employee page both ask this.
+    """
+    if actor is not None and actor.is_superuser:
+        return None
+    if not (login.is_superuser or login.is_staff or login.user_permissions.exists()
+            or login.groups.exclude(name__in=EMPLOYEES_OWN).exists()):
+        return None
+    if actor is not None and actor.has_perm("auth.change_user"):
+        try:
+            check_may_administer(actor, login)
+        except PermissionDenied as refused:
+            return str(refused.detail)
+        return None
+    return (f"{login.get_username()} holds roles beyond an employee's own; whoever keeps logins links it "
+            "to a person.")
 
 
 class UserSerializer(serializers.ModelSerializer):

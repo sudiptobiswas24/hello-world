@@ -10,6 +10,7 @@ from rest_framework.response import Response
 
 from apps.core.api import record_or_404, whole_number
 from apps.core.audit import AuditableViewSetMixin
+from apps.core.users_api import refused_link
 
 from .models import Department, Employee, LeavePolicy, LeaveRequest, leave_summary
 
@@ -71,6 +72,23 @@ class EmployeeViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     extra_params = ("missing",)
     # A person's leave is read under the leave rule, not the employee's (leave_readable).
     action_permission_map = {"leave": "hr.view_leaverequest"}
+
+    def _check_login(self, serializer):
+        """The login linked to a person, as the import links one (users_api.refused_link)."""
+        login = serializer.validated_data.get("user")
+        if login is None or (serializer.instance is not None and serializer.instance.user_id == login.pk):
+            return
+        said = refused_link(self.request.user, login)
+        if said:
+            raise DRFValidationError({"user": [said]})
+
+    def perform_create(self, serializer):
+        self._check_login(serializer)
+        super().perform_create(serializer)
+
+    def perform_update(self, serializer):
+        self._check_login(serializer)
+        super().perform_update(serializer)
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)

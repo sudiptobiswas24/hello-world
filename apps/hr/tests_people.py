@@ -385,3 +385,46 @@ class APersonsOwnRecordsTests(PeopleTestCase):
                                                   format="json")
         self.assertEqual(moved.status_code, 400, moved.content)
         self.assertEqual(Appraisal.objects.get(pk=made["id"]).employee, self.riley)
+
+
+class ALoginIsLinkedToAPersonAsTheImportLinksOneTests(PeopleTestCase):
+    """
+    O144: the employee page linked any login to any employee, the
+    Controller's to a manager's record among them. A login holding no more
+    than an employee's own is linked by whoever keeps employees; one holding
+    more, only by whoever keeps logins and may keep that one.
+    """
+
+    def link(self, by, employee, login):
+        response = self.as_(by).patch(f"/api/hr/employees/{employee.pk}/", {"user": login.pk}, format="json")
+        employee.refresh_from_db()
+        return response.status_code, employee.user_id == login.pk
+
+    def bare(self, name, *roles):
+        user = User.objects.create_user(name)
+        user.groups.add(*Group.objects.filter(name__in=roles))
+        return user
+
+    def unlinked(self, number):
+        return Employee.objects.create(party=make_employee_party(number, number), employee_number=number,
+                                       hire_date=datetime.date(2025, 1, 1), manager=self.manager)
+
+    def test_the_controllers_login_is_not_linked_by_hr(self):
+        controller = self.bare("ctl", "Controller")
+        self.assertEqual(self.link(self.hr, self.unlinked("E100"), controller), (400, False))
+
+    def test_a_login_of_hrs_own_standing_or_less_is(self):
+        self.assertEqual(self.link(self.hr, self.unlinked("E101"), self.bare("new-joiner")), (200, True))
+        self.assertEqual(self.link(self.hr, self.unlinked("E102"), self.bare("self-service", "Employee Self Service")),
+                         (200, True))
+        self.assertEqual(self.link(self.hr, self.unlinked("E103"), self.bare("hr-two", "HR Admin")), (200, True))
+
+    def test_someone_who_keeps_employees_but_not_logins_links_only_an_employees_own(self):
+        from django.contrib.auth.models import Permission
+
+        clerk = User.objects.create_user("hr-clerk")
+        clerk.user_permissions.add(*Permission.objects.filter(codename__in=["view_employee", "change_employee"]))
+        clerk = User.objects.get(pk=clerk.pk)
+        self.assertEqual(self.link(clerk, self.unlinked("E104"), self.bare("ess", "Employee Self Service")),
+                         (200, True))
+        self.assertEqual(self.link(clerk, self.unlinked("E105"), self.bare("lm", "Line Manager")), (400, False))

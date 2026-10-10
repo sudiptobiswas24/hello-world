@@ -161,7 +161,7 @@ class WhenTheFirmedDocumentGoesAwayTests(PlanningTestCase):
         virgin = self.orders()["PP-RAFFIA"]
         virgin.firm()
         self.assertFalse(virgin.has_lapsed())
-        virgin.requisition_line.requisition.cancel()
+        virgin.requisition_line.requisition.cancel(may_decide=True)
         self.assertTrue(virgin.has_lapsed())
 
     def test_the_run_lists_what_has_lapsed(self):

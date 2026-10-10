@@ -115,7 +115,7 @@ class RequisitionLifecycleTests(RequisitionTestCase):
 
     def test_cancelling(self):
         requisition = self.requisition()
-        requisition.cancel()
+        requisition.cancel(may_decide=True)
         self.assertEqual(requisition.status, RequisitionStatus.CANCELLED)
 
 
@@ -243,7 +243,7 @@ class RequisitionToOrderTests(RequisitionTestCase):
         requisition.refresh_from_db()
 
         with self.assertRaisesMessage(ValidationError, "Cancel the purchase order instead"):
-            requisition.cancel()
+            requisition.cancel(may_decide=True)
 
     def test_the_order_traces_back_to_the_request(self):
         requisition = self.approved()
@@ -323,3 +323,55 @@ class NobodyApprovesTheirOwnRequisitionTests(RequisitionTestCase):
         PartyRoleAssignment.objects.create(party=other, role=PartyRole.EMPLOYEE)
         self.employee = other
         self.assertEqual(self.approve(self.requisition()), (200, RequisitionStatus.APPROVED))
+
+
+class WhoCallsARequestOffTests(RequisitionTestCase):
+    """
+    O144: cancel took change_purchaserequisition, which Self Service holds,
+    and asked nothing of who: a colleague cancelled someone's approved
+    requisition. The person who asked for it, or whoever decides them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        from apps.hr.models import Employee
+
+        call_command("setup_roles", verbosity=0)
+        self.Group = Group
+        self.requisition_ = self.requisition()
+        self.requisition_.approve(by=self.manager)
+        self.dana = self.login("dana", "Employee Self Service")
+        Employee.objects.create(party=self.employee, employee_number="E-1", hire_date=datetime.date(2020, 1, 1),
+                                user=self.dana)
+
+    def login(self, name, role):
+        user = get_user_model().objects.create_user(name)
+        user.groups.add(self.Group.objects.get(name=role))
+        return user
+
+    def cancel(self, user):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post(f"/api/purchasing/requisitions/{self.requisition_.pk}/cancel/", {}, format="json")
+        return response.status_code, PurchaseRequisition.objects.get(pk=self.requisition_.pk).status
+
+    def test_a_colleague_does_not_cancel_someone_elses_approved_requisition(self):
+        self.assertEqual(self.cancel(self.login("someone-else", "Employee Self Service")),
+                         (403, RequisitionStatus.APPROVED))
+
+    def test_the_person_who_asked_for_it_does(self):
+        self.assertEqual(self.cancel(self.dana), (200, RequisitionStatus.CANCELLED))
+
+    def test_whoever_decides_requisitions_does(self):
+        self.assertEqual(self.cancel(self.login("ap", "AP Manager")), (200, RequisitionStatus.CANCELLED))
+
+    def test_the_model_asks_too(self):
+        from django.core.exceptions import PermissionDenied
+
+        with self.assertRaises(PermissionDenied):
+            PurchaseRequisition.objects.get(pk=self.requisition_.pk).cancel(by=self.manager)
