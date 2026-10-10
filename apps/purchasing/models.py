@@ -33,6 +33,7 @@ from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors, check_not_raised_by
 from apps.core.models import (
     BILLED,
+    CONFIRMED,
     MOVED,
     Extensible,
     answer_to_its_document,
@@ -1796,11 +1797,14 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
             _require_vendor_role(self.vendor)
 
     # Shared rule A (apps.core.models.refuse_changing_what_moved), the mirror
-    # of the sales order's: received from one vendor and accrued in one
-    # currency, the bill is not drafted to another vendor, in another.
-    FROZEN_ONCE_MOVED = {"vendor": MOVED, "currency": MOVED}
+    # of the sales order's: confirmed with one vendor in one currency, with
+    # its standing and budgets asked, it is not moved to another unasked.
+    FROZEN_ONCE_MOVED = {"vendor": CONFIRMED, "currency": CONFIRMED}
 
     def what_moved_against_it(self, kind):
+        if kind == CONFIRMED:
+            stored = PurchaseOrder.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+            return "" if stored in (None, OrderStatus.DRAFT) else f"been {OrderStatus(stored).label.lower()}"
         received = self.goods_receipts.filter(posted=True).first()
         if received is not None:
             return f"received goods on {received.number}"
@@ -2508,12 +2512,20 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     # of the sales line's: a receipt line reads its item and unit from here,
     # and the match reads its price and discount. Received as one widget and
     # changed to another, the shelf held the first and the order the second.
+    # Its order from confirmation, as the sales line's.
     FROZEN_ONCE_MOVED = {
-        "order": MOVED, "item": MOVED, "charge": MOVED, "uom": MOVED,
+        "order": CONFIRMED, "item": MOVED, "charge": MOVED, "uom": MOVED,
         "unit_price": BILLED, "discount_percent": BILLED,
     }
 
     def what_moved_against_it(self, kind):
+        if kind == CONFIRMED:
+            stored = PurchaseOrderLine.objects.filter(pk=self.pk).values_list("order", flat=True).first()
+            leaving = PurchaseOrder.objects.filter(pk=stored).exclude(status=OrderStatus.DRAFT).first()
+            if leaving is not None:
+                return f"been confirmed on {leaving}"
+            joining = PurchaseOrder.objects.filter(pk=self.order_id).exclude(status=OrderStatus.DRAFT).first()
+            return f"to be made afresh on {joining}, which is confirmed" if joining is not None else ""
         if kind == BILLED:
             billed = self.quantity_billed()
             return f"been billed for {format(billed.normalize(), 'f')}" if billed > 0 else ""

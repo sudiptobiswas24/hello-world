@@ -244,9 +244,13 @@ class StatementShapeTests(SalesTestCase):
             currency=eur, rate=Decimal("1.1"), valid_from=datetime.date(2026, 1, 1)
         )
         self.bill(self.make_order("10", "100"))
-        order = self.make_order("1", "100")
-        order.currency = eur
-        order.save()
+        # Taken in euros from the start: a confirmed order's currency is frozen (O138).
+        from .models import SalesOrder, SalesOrderLine
+
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1), currency=eur)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                      unit_price=Decimal("100"), revenue_account=self.revenue)
+        order.confirm()
         invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1))
         invoice.currency = eur
         invoice.save()

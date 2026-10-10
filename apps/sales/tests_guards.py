@@ -643,12 +643,76 @@ class AShippedOrderKeepsItsCustomerAndCurrencyTests(TradeRuleCase):
         order.refresh_from_db()
         self.assertEqual((order.customer, order.currency), (self.customer, self.usd))
 
-    def test_an_order_with_nothing_moved_still_changes(self):
+    def test_a_draft_order_still_changes(self):
         other = self.other_customer()
-        order = self.make_order("10", "100")
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd)
         order.customer = other
         order.save()
         self.assertEqual(SalesOrder.objects.get(pk=order.pk).customer, other)
+
+
+class AConfirmedOrderKeepsItsCustomerAndLinesTests(TradeRuleCase):
+    """
+    O138: rule A waited for the first movement, so a confirmed order's customer
+    could change, or a line move between confirmed orders, with nothing confirm()
+    asks asked.
+    """
+
+    def other_customer(self, limit=None):
+        other = super().other_customer()
+        CustomerProfile.objects.create(party=other, credit_limit=limit)
+        return other
+
+    def confirmed(self, customer, quantity, price):
+        order = SalesOrder.objects.create(customer=customer, order_date=datetime.date(2026, 3, 1), currency=self.usd)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal(quantity),
+                                      unit_price=Decimal(price), revenue_account=self.revenue)
+        order.confirm()
+        return order
+
+    def test_a_line_moved_onto_a_confirmed_order_is_refused(self):
+        from .models import committed_balance
+
+        other = self.other_customer(limit=Decimal("500"))
+        theirs = self.confirmed(other, "1", "100")  # 100 of 500
+        ours = self.make_order("10", "100")  # Acme, no limit
+        response = self.as_("AR Manager").patch(f"/api/sales/sales-order-lines/{ours.lines.get().pk}/",
+                                                {"order": theirs.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("been confirmed on", response.json()["order"][0])
+        self.assertEqual(committed_balance(other), Decimal("100.00"))
+
+    def test_a_draft_line_is_not_moved_onto_a_confirmed_order(self):
+        other = self.other_customer(limit=Decimal("500"))
+        theirs = self.confirmed(other, "1", "100")
+        draft = SalesOrder.objects.create(customer=other, order_date=datetime.date(2026, 3, 1), currency=self.usd)
+        line = SalesOrderLine.objects.create(order=draft, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                             unit_price=Decimal("100"), revenue_account=self.revenue)
+        line.order = theirs
+        with self.assertRaisesMessage(ValidationError, "made afresh on"):
+            line.save()
+
+    def test_a_line_moved_off_an_order_leaves_it_worth_its_deposits(self):
+        ours = self.make_order("10", "100")
+        ours.create_down_payment_invoice(self.ar, amount=Decimal("800"), invoice_date=datetime.date(2026, 3, 1)).post()
+        second = self.make_order("1", "100")
+        response = self.as_("AR Manager").patch(f"/api/sales/sales-order-lines/{ours.lines.get().pk}/",
+                                                {"order": second.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        ours = SalesOrder.objects.get(pk=ours.pk)
+        self.assertEqual((ours.total(), ours.deposit_total()), (Decimal("1000.00"), Decimal("800.00")))
+
+    def test_a_confirmed_order_moved_to_another_customer_is_refused(self):
+        from .models import committed_balance
+
+        other = self.other_customer(limit=Decimal("500"))
+        ours = self.make_order("10", "100")  # confirmed for Acme, nothing shipped
+        response = self.as_("AR Manager").patch(f"/api/sales/sales-orders/{ours.pk}/", {"customer": other.pk},
+                                                format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("has been confirmed; its customer can no longer change", response.json()["customer"][0])
+        self.assertEqual(committed_balance(other), Decimal("0"))
 
 
 class APostedDeliveryKeepsItsLinesTests(TradeRuleCase):
