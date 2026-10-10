@@ -17,6 +17,8 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    refuse_correcting_another_line,
+    refuse_correcting_past_what_it_holds,
     refuse_naming_another_order_line,
 )
 from apps.accounting.models import (
@@ -3521,11 +3523,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     def locked_before_it(self):
         """
-        Its order and every order its lines bill: held before the bill, by the lock order
-        (apps.core.models). A return to the vendor holds the order before it debits the bill.
+        Its order and every order its lines bill, then the bill a debit note debits: held before
+        the bill, in that order (apps.core.models, the lock order). A return to the vendor holds
+        the order before it debits the bill.
         """
         billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
-        return list(PurchaseOrder.objects.filter(Q(pk=self.purchase_order_id) | Q(pk__in=billed)))
+        orders = list(PurchaseOrder.objects.filter(Q(pk=self.purchase_order_id) | Q(pk__in=billed)).order_by("pk"))
+        return orders + ([Bill(pk=self.debits_id)] if self.debits_id else [])
 
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
@@ -3780,6 +3784,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             lock_rows(*(line.debits_line for line in given_back))
             for line in given_back:
                 line.refuse_giving_back_what_moved()
+            # Rule B's correcting half, asked again under the debited bill's lock (held first): a note
+            # gives back only lines of the bill it debits, and no more of each than is left.
+            for line in self.lines.select_related("debits_line__bill"):
+                refuse_correcting_another_line(line, self, "debits_line", "debits")
+            if not original.is_prepayment and not self.corrects_old_supply:
+                refuse_correcting_past_what_it_holds(given_back, "debits_line", BillLine.quantity_debited)
             # Debit at the rate the bill was booked at, never today's, so
             # correcting an old foreign-currency bill can't book an FX gain.
             self.exchange_rate = original.exchange_rate or Decimal("1")
@@ -4844,6 +4854,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         # bill posted showed 100.00 on a bill whose payable held 50.00.
         answer_to_its_document(self, "bill", "Cannot modify a line on a posted bill. Issue a debit note instead.")
         refuse_naming_another_order_line(self, self.bill, "vendor", "purchase_order")
+        refuse_correcting_another_line(self, self.bill, "debits_line", "debits")
         if self.debits_line_id:
             self.refuse_giving_back_what_moved()
         super().save(*args, **kwargs)

@@ -87,6 +87,61 @@ def refuse_naming_another_order_line(line, document, party, order):
             f"{line.item or line.charge}."]})
 
 
+def refuse_correcting_another_line(line, document, corrects, original):
+    """
+    Shared rule B, the correcting half: a credit or debit note's line gives
+    back only a line of the document the note corrects, posted, in the
+    note's currency, and for the same order line where it names one.
+
+    Asked of the order line alone, another customer's invoice named Acme's
+    invoice line as the one it credited: Acme's line then had nothing left
+    to credit. `corrects` is the line's pointer ("credits_line",
+    "debits_line"), `original` the note's ("credits", "debits"); the party
+    is the note's own check (a note is for its original's party). Asked
+    when the line is saved and again when the note posts, under the
+    original's lock (refuse_correcting_past_what_it_holds asks how much).
+    """
+    if not getattr(line, f"{corrects}_id"):
+        return
+    corrected = getattr(line, corrects)
+    held = corrected.document()
+    noted = getattr(document, f"{original}_id")
+    if noted != held.pk:
+        raise ValidationError({corrects: [
+            f"{corrected.label()} is on {held}; {document} corrects "
+            f"{getattr(document, original) if noted else 'no document'}."]})
+    if not held.posted:
+        raise ValidationError({corrects: [f"{held} has not posted; there is nothing on it to give back."]})
+    if _currency_or_base(held.currency_id) != _currency_or_base(document.currency_id):
+        raise ValidationError({corrects: [f"{held} is in {held.currency}; {document} is in {document.currency}."]})
+    if line.order_line_id and line.order_line_id != corrected.order_line_id:
+        raise ValidationError({"order_line": [
+            f"{corrected.label()} billed {corrected.order_line or 'no order line'}; this line names "
+            f"{line.order_line}."]})
+
+
+def refuse_correcting_past_what_it_holds(lines, corrects, already):
+    """
+    A note gives back no more of a line than it holds: `already(line)` is
+    what posted notes have given back of it, by quantity, and two lines of
+    this note on one line count together. For notes by quantity only: a
+    claim or a down payment given back is money, not goods.
+    """
+    from apps.core.api import plain
+
+    going = defaultdict(Decimal)
+    for line in lines:
+        corrected = getattr(line, corrects) if getattr(line, f"{corrects}_id") else None
+        if corrected is None:
+            continue
+        going[corrected.pk] += line.quantity
+        given = already(corrected)
+        if given + going[corrected.pk] > corrected.quantity:
+            raise ValidationError({corrects: [
+                f"Only {plain(max(corrected.quantity - given, Decimal('0')))} of {corrected.label()} on "
+                f"{corrected.document()} is left to give back; this note gives back {plain(going[corrected.pk])}."]})
+
+
 class TaxedLineMixin(models.Model):
     """
     Money arithmetic for one line of a trading document: gross, discount,
