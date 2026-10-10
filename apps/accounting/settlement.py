@@ -132,13 +132,18 @@ class RealisedOnItsOwnDay:
     def day_applied(self):
         """
         The day this allocation is made or re-stated: its `date` when one is
-        given (on an edit, when it is changed), else today.
+        given (on an edit, when it is changed); made afresh with none, today;
+        edited with none, the day it was made.
         """
         from apps.core.models import correction_date, to_date
 
         document, document_date, *_ = self.settles()
         stored = (type(self).objects.filter(pk=self.pk).values_list("date", flat=True).first()
                   if self.pk else None)
+        if stored is not None and self.date == stored:
+            # An edit that gives no new day keeps the day it was made (O163);
+            # its re-statement is posted there, so a closed month asks for one.
+            return stored
         given = self.date if self.date != stored else None
         verb = "received" if self.payment.direction == PaymentDirection.RECEIPT else "paid"
         earliest, since = max(

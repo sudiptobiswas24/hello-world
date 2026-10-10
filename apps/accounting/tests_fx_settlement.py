@@ -413,12 +413,20 @@ class RealisedOnTheAllocationsDayTests(FxSettlementTestCase):
         self.assertEqual(self.loss_by_day(), [])
 
     def test_an_edit_restates_it_on_the_day_of_the_edit(self):
-        """Applied on 1 March, March then closed: cut to 600 today, 100 reversed and 60 realised today."""
+        """
+        Applied on 1 March, March then closed. An edit that gives no day keeps
+        1 March (O163: it was moved to today without a word), so March refuses
+        it; given today, 100 is reversed and 60 realised today.
+        """
         allocation = self.apply(date=self.MAR_1)
         self.close("Mar", self.MAR_1, datetime.date(2026, 3, 31))
         allocation.amount = Decimal("600")
-        allocation.save()
+        with self.assertRaisesMessage(ValidationError, "Mar is closed"):
+            allocation.save()
+        allocation = type(allocation).objects.get(pk=allocation.pk)
         today = timezone.localdate()
+        allocation.amount, allocation.date = Decimal("600"), today
+        allocation.save()
         self.assertEqual(self.loss_by_day(), [(self.MAR_1, Decimal("100.00")), (today, Decimal("-40.00"))])
         self.assertEqual(allocation.date, today)
         with self.assertRaisesMessage(ValidationError, "it was last applied on"):

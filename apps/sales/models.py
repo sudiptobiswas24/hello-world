@@ -1928,7 +1928,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         who pays the discounted amount leaves a small balance outstanding
         forever, and dunning chases them for it.
         """
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, self.invoice_date, f"{self.number} takes no settlement discount on",
+                                  "it was invoiced")
         amount = settlement_discount_to_take(self, on_date, force)
 
         account = Company.get().settlement_discount_account
@@ -2046,8 +2047,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             raise ValidationError(f"Credit notes have undone {undone} of what was written off on {self.number}; "
                                   "that is not recovered again.")
 
+        # Not before the write-off it undoes, nor ahead (O163).
         entry = write_off.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.localdate(),
+            entry_date=correction_date(on_date, write_off.journal_entry.date,
+                                       f"The write-off of {self.number} is not recovered on", "it was written off"),
             memo=f"Bad debt recovered {self.number}",
         )
         write_off.recovered_entry = entry
@@ -2139,7 +2142,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         payment first would block the final invoice on a slow payer for
         no accounting reason.
         """
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, max(to_date(self.invoice_date), to_date(deposit.invoice_date)),
+                                  f"{deposit.number} is not applied to {self.number} on",
+                                  "the later of the two is dated")
         # Both: what is left on the deposit and what is due on the invoice
         # are each read here, and another drawdown could spend either.
         lock_rows(self, deposit)
@@ -2215,7 +2220,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 break
             if deposit.deposit_unapplied() <= 0:
                 continue
-            applied.append(self.apply_deposit(deposit, on_date=on_date))
+            # Drawn down on the later of this invoice's day and the deposit's: never before
+            # the deposit was booked (correction_date, O163).
+            day = max(to_date(on_date), to_date(deposit.invoice_date)) if on_date else None
+            applied.append(self.apply_deposit(deposit, on_date=day))
         return applied
 
     def amount_paid(self):
@@ -2720,6 +2728,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 raise ValidationError(
                     f"{self.customer} is unregistered: say what the old invoice was for in "
                     "all, which decides whether the note is reported as a large one.")
+            on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not credited on",
+                                      "it was invoiced")
             note = self._credit_note(on_date, corrects_old_supply=True, old_invoice_value=old_value)
             for fields, taxes in checked:
                 line = InvoiceLine.objects.create(invoice=note, **fields)

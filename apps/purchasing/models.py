@@ -3260,7 +3260,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         and still add up to what is owed; requiring payment first would
         block the real bill on the company's own slow payment run.
         """
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, max(to_date(self.bill_date), to_date(prepayment.bill_date)),
+                                  f"{prepayment.number} is not applied to {self.number} on",
+                                  "the later of the two is dated")
         # What is left on the prepayment and due on the bill are each read
         # here, and another drawdown could spend either.
         lock_rows(self, prepayment)
@@ -3317,7 +3319,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 break
             if prepayment.prepayment_unapplied() <= 0:
                 continue
-            applied.append(self.apply_prepayment(prepayment, on_date=on_date))
+            # Drawn down on the later of this bill's day and the prepayment's: never before
+            # the prepayment was booked (correction_date, O163).
+            day = max(to_date(on_date), to_date(prepayment.bill_date)) if on_date else None
+            applied.append(self.apply_prepayment(prepayment, on_date=day))
         return applied
 
     def discount_due_date(self):
@@ -3376,7 +3381,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
         Dr Accounts payable / Cr settlement discount received.
         """
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, self.bill_date, f"{self.number} takes no settlement discount on",
+                                  "it was billed")
         amount = settlement_discount_to_take(self, on_date, force)
 
         account = Company.get().settlement_discount_received_account
@@ -4222,7 +4228,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 old_value = next((note.old_bill_value for note in earlier
                                   if note.old_bill_value is not None), None)
             note = Bill.objects.create(
-                vendor=self.vendor, bill_date=to_date(on_date) or timezone.localdate(),
+                vendor=self.vendor, bill_date=correction_date(on_date, self.bill_date,
+                                                              f"{self.number} is not debited on", "it was billed"),
                 reference=self.reference, currency=self.currency,
                 payment_terms=self.payment_terms, payable_account=self.payable_account,
                 debits=self, corrects_old_supply=True, old_bill_value=old_value,

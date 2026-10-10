@@ -15,6 +15,8 @@ all, leaving 106,200.00 owed. Inter-state to an unregistered buyer,
 3,000.00 at 18% IGST is 540.00, 3,540.00 in all.
 """
 
+import datetime
+
 from django.core.exceptions import ValidationError
 
 from apps.purchasing.models import Bill, BillLine
@@ -26,7 +28,9 @@ from .tests import DAY, SEPTEMBER, D, GstReturnTestCase, gstin
 from .tests_einvoice import EInvoiceTestCase
 
 OCTOBER = month("2026-10")
-LATER = DAY.replace(month=10, day=12)
+# A day that has come: a correction is not dated ahead (correction_date, O163); 12 October was,
+# until that day, and passed only because nothing asked.
+LATER = DAY.replace(month=10, day=1)
 
 
 class OldSupplyTestCase(GstReturnTestCase):
@@ -168,6 +172,19 @@ class TheMirrorOnBillsTests(OldSupplyTestCase):
         self.assertEqual(bill.amount_due(), D("53100.00"))
         three = gstr3b(*OCTOBER)
         self.assertEqual((three["4A5"]["cgst"], three["4A5"]["sgst"]), (D("-450.00"), D("-450.00")))
+
+    def test_neither_note_is_dated_before_what_it_corrects(self):
+        # O163: credit_old_supply and debit_old_supply took any day.
+        before = DAY - datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"is not credited on {before}: it was invoiced on {DAY}"):
+            self.opening().credit_old_supply(
+                [{"description": "Rate difference on OLD/1", "item": self.sack, "quantity": D("1"),
+                  "unit_price": D("10000"), "taxes": self.pair, "revenue_account": self.revenue}], on_date=before)
+        bill = self.opening_bill()
+        with self.assertRaisesMessage(ValidationError, f"is not debited on {before}"):
+            bill.debit_old_supply(
+                [{"description": "Short-weight granules", "item": self.sack, "quantity": D("1"),
+                  "unit_price": D("5000"), "taxes": self.pair, "expense_account": self.expense}], on_date=before)
 
     def test_only_a_bill_from_the_old_system(self):
         current = self.buy(self.vendor, "1000")
