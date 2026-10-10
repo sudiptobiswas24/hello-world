@@ -39,7 +39,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
 
 from .orders import VoidedNotDeleted
 
@@ -233,7 +233,8 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
                     f"Some of {self} has already gone back to the vendor. "
                     "Void that return first."
                 )
-        on_date = to_date(on_date) or timezone.localdate()
+        # Not before it was booked, nor a day to come (O165).
+        on_date = correction_date(on_date, self.movement_date, f"{self} is not voided on", "it was booked")
         # Voided, it leaves the return for its own date's period; and with no
         # entry to reverse, nothing else asks the void's day (O158).
         _refuse_closed(self.movement_date, f"{self}, booked on {self.movement_date}, is not voided")
