@@ -22,7 +22,8 @@ from django.db import models, transaction
 from django.db.models import Count, F, Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, Party, PartyRole, PartyRoleAssignment, serialised, to_date
+from apps.core.models import (AuditModel, DocumentSequence, Party, PartyRole, PartyRoleAssignment, lock_rows,
+                              serialised, to_date)
 
 ZERO = Decimal("0")
 PAISA = Decimal("0.01")
@@ -411,6 +412,15 @@ class Opportunity(AuditModel):
             raise ValidationError(f"{self} is {self.get_stage_display().lower()}.")
         if sales_order is not None and sales_order.customer_id != self.customer_id:
             raise ValidationError({"sales_order": f"{sales_order} is {sales_order.customer}'s, not {self.customer}'s."})
+        if sales_order is not None:
+            # One order is one piece of business won: credited to two
+            # opportunities, 250,000 won read as 350,000. Asked with the
+            # order held, so two wins naming it at once cannot both find it free.
+            lock_rows(sales_order, refresh=False)
+            won = Opportunity.objects.filter(sales_order=sales_order).exclude(pk=self.pk).first()
+            if won is not None:
+                raise ValidationError({"sales_order": f"{sales_order.number} already won {won}; one order "
+                                                      "wins one opportunity."})
         self.sales_order = sales_order
         self._close(Stage.WON, on_date, ["sales_order"])
 

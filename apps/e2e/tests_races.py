@@ -1248,3 +1248,22 @@ class ComplaintRaceTests(RaceCase):
         complaint.refresh_from_db()
         self.assertFalse(complaint.status == ComplaintStatus.REJECTED and complaint.settlements.exists(),
                          outcomes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class OpportunityRaceTests(RaceCase):
+    def test_one_order_wins_one_opportunity_at_once(self):
+        """Two opportunities won with one order at the same moment: the order is held, one is refused."""
+        from apps.sales import tests_crm
+        from apps.sales.crm import Opportunity, Stage
+
+        made = fixture(self, tests_crm.CrmTestCase)
+        order = made.make_order("10", "100")
+        first = Opportunity.objects.create(customer=made.customer, title="Cement sacks", value=Decimal("250000"))
+        second = Opportunity.objects.create(customer=made.customer, title="Cement sacks again",
+                                            value=Decimal("100000"))
+        self.once(race(Opportunity, *[
+            lambda pk=pk: Opportunity.objects.get(pk=pk).win(SalesOrder.objects.get(pk=order.pk))
+            for pk in (first.pk, second.pk)]))
+        self.assertEqual(Opportunity.objects.filter(sales_order=order, stage=Stage.WON).count(), 1)

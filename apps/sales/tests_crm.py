@@ -202,6 +202,27 @@ class OpportunityTests(CrmTestCase):
     def rep_party_of_nobody(self):
         return Party.objects.create(code="NOT-A-CUSTOMER", name="Granules Ltd")
 
+    def test_one_order_wins_one_opportunity(self):
+        """
+        Audit, 9 October: one order won two opportunities, and the pipeline
+        read 350,000.00 won where 250,000.00 was.
+        """
+        order = self.make_order("10", "100")
+        first = Opportunity.objects.create(customer=self.customer, title="Cement sacks", value=Decimal("250000"))
+        second = Opportunity.objects.create(customer=self.customer, title="Cement sacks again",
+                                            value=Decimal("100000"))
+        won = self.manager.post(f"/api/sales/opportunities/{first.pk}/win/", {"sales_order": order.pk},
+                                format="json")
+        self.assertEqual(won.status_code, 200, won.content)
+        again = self.manager.post(f"/api/sales/opportunities/{second.pk}/win/", {"sales_order": order.pk},
+                                  format="json")
+        self.assertEqual(again.status_code, 400, again.content)
+        self.assertIn(f"{order.number} already won {first}", again.content.decode())
+        [row] = [row for row in self.manager.get("/api/sales/opportunities/pipeline/").json()
+                 if row["stage"] == "won"]
+        self.assertEqual((row["count"], row["value"]), (1, "250000.00"))
+        self.assertEqual(Opportunity.objects.get(pk=second.pk).stage, "new")
+
 
 class ActivityTests(CrmTestCase):
     def test_logged_against_one_thing_and_followed_up(self):
