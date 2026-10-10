@@ -276,6 +276,35 @@ class SalesRaceTests(RaceCase):
         self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, Invoice.objects.get(pk=draft.pk).posted),
                       [(Decimal("5"), False), (Decimal("10"), True)])
 
+    def test_a_return_and_a_credit_note_on_one_invoice_do_not_deadlock(self):
+        """
+        O137: 10 shipped and invoiced; 3 taken back while 2 are credited. The
+        return held the order and reached for the invoice to credit it; the
+        credit note held the invoice and reached for the order: "deadlock
+        detected". Both take the order first now, and both stand.
+        """
+        from apps.inventory.models import StockMovement
+        from apps.sales.models import Delivery, DeliveryLine, InvoiceLine
+
+        order = self.make_order("10", "100")
+        delivery = self.ship(order, "10")
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 3, 1))
+        invoice.post()
+        delivery_line, invoice_line = delivery.lines.get().pk, invoice.lines.get().pk
+
+        def give_back():
+            Delivery.objects.get(pk=delivery.pk).create_return(
+                quantities={DeliveryLine.objects.get(pk=delivery_line): Decimal("3")})
+
+        def credit():
+            Invoice.objects.get(pk=invoice.pk).create_credit_note(
+                quantities={InvoiceLine.objects.get(pk=invoice_line): Decimal("2")})
+
+        outcomes = race((StockMovement, Invoice), give_back, credit)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual((order.lines.get().quantity_invoiced(), self.balance(self.ar)),
+                         (Decimal("5"), Decimal("500.00")))
+
     def test_one_shipment_is_invoiced_once_at_once(self):
         """
         O67: bill on delivery, 5 of 10 shipped, two drafts of 5 posting at once.
@@ -416,6 +445,33 @@ class PurchasingRaceTests(RaceCase):
                 bill_id=bill.pk, payment_id=payment.pk, amount=Decimal("50"))
             for bill in bills]))
 
+
+    def test_a_return_and_a_debit_note_on_one_bill_do_not_deadlock(self):
+        """
+        O137, the mirror: 10 received and billed @ 5; 3 sent back while 2 are
+        debited. Both stand: payable -25.00, and GRNI -10.00 for the 2 still
+        here and no longer billed.
+        """
+        from apps.inventory.models import StockMovement
+        from apps.purchasing.models import BillLine, GoodsReceipt, GoodsReceiptLine
+
+        order = self.make_order("10", "5")
+        receipt = self.receive(order, "10")
+        bill = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
+        bill.post()
+        receipt_line, bill_line = receipt.lines.get().pk, bill.lines.get().pk
+
+        def send_back():
+            GoodsReceipt.objects.get(pk=receipt.pk).create_return(
+                quantities={GoodsReceiptLine.objects.get(pk=receipt_line): Decimal("3")})
+
+        def debit():
+            Bill.objects.get(pk=bill.pk).create_debit_note(
+                quantities={BillLine.objects.get(pk=bill_line): Decimal("2")})
+
+        outcomes = race((StockMovement, Bill), send_back, debit)
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        self.assertEqual((self.balance(self.payable), self.balance(self.grni)), (Decimal("-25.00"), Decimal("-10.00")))
 
     def typed_bill(self, order_line, quantity, order=None):
         from apps.purchasing.models import BillLine

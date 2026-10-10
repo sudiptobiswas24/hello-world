@@ -2460,10 +2460,13 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         account = self.expense_account or (self.charge.expense_account if self.is_charge() else None)
         return Budget.for_account(account, self.order.order_date)
 
+    def locked_before_it(self):
+        """The order it is on and any it would move to: held before the line, by the lock order (apps.core.models)."""
+        return documents_it_answers_to(self, "order")
+
     def _hold_for_prepayments(self):
-        """The line, then its order, as close_short() takes them: what the order holds up front is weighed next."""
-        lock_rows(self, refresh=False)
-        lock_rows(self.order, refresh=False)
+        """Its order, then the line, as close_short() takes them: what the order holds up front is weighed next."""
+        self._hold_with_its_orders()
 
     # Shared rule A (apps.core.models.refuse_changing_what_moved), the mirror
     # of the sales line's: a receipt line reads its item and unit from here,
@@ -2487,9 +2490,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return ""
 
     def _hold_with_its_orders(self):
-        """The line, then the order it is on and any it would move to: receipts and bills post under those."""
-        lock_rows(self, refresh=False)
-        lock_rows(*documents_it_answers_to(self, "order"), refresh=False)
+        """The order it is on and any it would move to, then the line: receipts and bills post under those."""
+        lock_rows(*self.locked_before_it(), refresh=False)
+        if self.pk is not None:
+            lock_rows(self, refresh=False)
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -2568,6 +2572,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         budget = (self.budget() if not shrinking and PurchaseApprovalPolicy.active() is not None
                   and self._worth_more_than_stored() else None)
         if budget is not None:
+            self._hold_with_its_orders()  # the order and the line before the budget, as confirming takes it
             lock_rows(budget, refresh=False)
         super().save(*args, **kwargs)
         if budget is not None and budget.available() < 0:
@@ -2824,7 +2829,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             return Decimal("0")
         return max(self.quantity - self.quantity_received(), Decimal("0"))
 
-    @serialised("closed_short_at")
+    @serialised("closed_short_at", held_first=True)
     def close_short(self, reason):
         """
         The vendor will send no more: nothing further is expected,
@@ -2857,7 +2862,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             # No longer coming from the vendor: the shelf's to send, and hold.
             self.sales_order_line.reclaim_stock()
 
-    @serialised("closed_short_at")
+    @serialised("closed_short_at", held_first=True)
     def reopen(self):
         """Expected again after all."""
         if not self.is_closed_short():
@@ -3501,6 +3506,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return Bill.objects.filter(pk=self.pk, posted=True).exists()
 
+    def locked_before_it(self):
+        """
+        Its order and every order its lines bill: held before the bill, by the lock order
+        (apps.core.models). A return to the vendor holds the order before it debits the bill.
+        """
+        billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
+        return list(PurchaseOrder.objects.filter(Q(pk=self.purchase_order_id) | Q(pk__in=billed)))
+
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
             raise ValidationError("This bill is posted and immutable. Issue a debit note instead.")
@@ -3698,7 +3711,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             )
         return entry
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def post(self, memo=None, apply_prepayments=True):
         if self.posted:
             raise ValidationError("This bill is already posted.")
@@ -4043,7 +4056,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return all(debited.get(line.pk) == line.quantity for line in original_lines)
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
@@ -5725,6 +5738,10 @@ class GoodsReceipt(AuditModel):
             return False
         return GoodsReceipt.objects.filter(pk=self.pk, posted=True).exists()
 
+    def locked_before_it(self):
+        """Its order, held before the receipt by the lock order (apps.core.models)."""
+        return [PurchaseOrder(pk=self.purchase_order_id) if self.purchase_order_id else None]
+
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
             raise ValidationError(
@@ -5737,7 +5754,7 @@ class GoodsReceipt(AuditModel):
             raise ValidationError("Posted goods receipts cannot be deleted. Create a return instead.")
         super().delete(*args, **kwargs)
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def post(self):
         if self.posted:
             raise ValidationError("This goods receipt is already posted.")
@@ -6165,7 +6182,7 @@ class GoodsReceipt(AuditModel):
             if line.quantity_uninspected() > 0
         }
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def accept(self, warehouse, quantities=None, occurred_at=None):
         """
         Clear inspected goods into a warehouse they can be shipped from.
@@ -6220,7 +6237,7 @@ class GoodsReceipt(AuditModel):
             moved.append((item, quantity))
         return moved
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def reject(self, quantities=None, note="", debit_bills=True):
         """
         Send failed goods back to the vendor.
@@ -6459,7 +6476,7 @@ class GoodsReceipt(AuditModel):
         entry.post()
         return entry
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def create_return(self, quantities=None, debit_bills=True, from_inspection=False):
         """
         Send goods back. By default all of them; pass `quantities` as

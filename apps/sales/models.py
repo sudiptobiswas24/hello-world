@@ -1369,7 +1369,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             return shipped
         return max(self.quantity, shipped)
 
-    @serialised("closed_short_at")
+    @serialised("closed_short_at", held_first=True)
     def close_short(self, reason):
         """The customer wants no more: nothing further is owed, planned or held."""
         if self.is_charge():
@@ -1394,7 +1394,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         self.order.refuse_coming_to_less_than_its_deposits()
         release_for(self, f"Closed short: {reason}"[:255])
 
-    @serialised("closed_short_at")
+    @serialised("closed_short_at", held_first=True)
     def reopen(self):
         """Owed again after all, and held again where the stock allows."""
         if not self.is_closed_short():
@@ -1428,10 +1428,13 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return (stored.order.status == OrderStatus.CONFIRMED and self.unit_price is not None
                 and self.net_amount() > stored.net_amount())
 
+    def locked_before_it(self):
+        """The order it is on and any it would move to: held before the line, by the lock order (apps.core.models)."""
+        return documents_it_answers_to(self, "order")
+
     def _hold_for_deposits(self):
-        """The line, then its order, as close_short() takes them: what the order holds up front is weighed next."""
-        lock_rows(self, refresh=False)
-        lock_rows(self.order, refresh=False)
+        """Its order, then the line, as close_short() takes them: what the order holds up front is weighed next."""
+        self._hold_with_its_orders()
 
     # Shared rule A (apps.core.models.refuse_changing_what_moved). A delivery
     # line reads its item and unit from here, so a shipped line changed to a
@@ -1456,9 +1459,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         return ""
 
     def _hold_with_its_orders(self):
-        """The line, then the order it is on and any it would move to: deliveries and invoices post under those."""
-        lock_rows(self, refresh=False)
-        lock_rows(*documents_it_answers_to(self, "order"), refresh=False)
+        """The order it is on and any it would move to, then the line: deliveries and invoices post under those."""
+        lock_rows(*self.locked_before_it(), refresh=False)
+        if self.pk is not None:
+            lock_rows(self, refresh=False)
 
     @transaction.atomic
     def save(self, *args, **kwargs):
@@ -1470,7 +1474,9 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
             self._hold_for_deposits()
         growing = not shrinking and self._worth_more_than_stored()
         if growing:
-            # Under the customer's lock, as confirming one of their orders takes it.
+            # Under the customer's lock, as confirming one of their orders takes it: after the
+            # order and the line, by the lock order (apps.core.models), as reopen() takes them.
+            self._hold_with_its_orders()
             lock_rows(self.order.customer, refresh=False)
         if self.pk:
             from .call_offs import called_off, plain
@@ -2387,6 +2393,14 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
             return False
         return Invoice.objects.filter(pk=self.pk, posted=True).exists()
 
+    def locked_before_it(self):
+        """
+        Its order and every order its lines bill: held before the invoice, by the lock order
+        (apps.core.models). A return holds the order before it credits the invoice.
+        """
+        billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
+        return list(SalesOrder.objects.filter(Q(pk=self.sales_order_id) | Q(pk__in=billed)))
+
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
             raise ValidationError(
@@ -2501,7 +2515,7 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
             return False
         return all(credited.get(line.pk) == line.quantity for line in original_lines)
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def post(self, memo=None, apply_deposits=True):
         if self.posted:
             raise ValidationError("This invoice is already posted.")
@@ -2630,7 +2644,7 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
             billing_address=self.billing_address, shipping_address=self.shipping_address, sales_rep=self.sales_rep,
             credits=self, **extra)
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def create_credit_note(self, memo="", quantities=None, amount=None):
         """
         Credit this invoice. By default the whole thing; pass
@@ -3977,6 +3991,10 @@ class Delivery(AuditModel):
             return False
         return Delivery.objects.filter(pk=self.pk, posted=True).exists()
 
+    def locked_before_it(self):
+        """Its order, held before the delivery by the lock order (apps.core.models)."""
+        return [SalesOrder(pk=self.sales_order_id) if self.sales_order_id else None]
+
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
             raise ValidationError(
@@ -4001,7 +4019,7 @@ class Delivery(AuditModel):
         """The route through the shelves for this draft shipment, before anything moves."""
         return pick_list_for([self])
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def post(self):
         if self.posted:
             raise ValidationError("This delivery is already posted.")
@@ -4357,7 +4375,7 @@ class Delivery(AuditModel):
                 outstanding[line.order_line] = remaining
         return outstanding
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def create_backorder(self, delivery_date=None):
         """Raise a draft delivery for whatever this shipment left behind."""
         if not self.posted:
@@ -4391,7 +4409,7 @@ class Delivery(AuditModel):
             )
         return backorder
 
-    @serialised("posted")
+    @serialised("posted", held_first=True)
     def create_return(self, credit_invoices=True, quantities=None):
         """
         Take goods back: reverse the stock movement and, unless this is a
