@@ -5,7 +5,7 @@ import re
 from decimal import Decimal
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -149,7 +149,34 @@ def lock_in_turn(rows):
         lock_rows(row, refresh=False)
 
 
-def lock_for_change(instance):
+def as_it_would_be(instance, incoming):
+    """
+    A copy of `instance` naming the documents an edit's `incoming` fields
+    would move it to, for locked_before_it(): the stored row names only the
+    one it leaves. Two edits moving lines between two draft orders the
+    opposite ways each held the order the line left and the line, then
+    reached for the other order in save() (O175).
+    """
+    if not incoming:
+        return instance
+    moved = type(instance)(**{field.attname: getattr(instance, field.attname)
+                              for field in instance._meta.concrete_fields})
+    moved._state.adding = False
+    for name, value in incoming.items():
+        try:
+            field = instance._meta.get_field(name)
+        except FieldDoesNotExist:
+            continue
+        if field.concrete and field.many_to_one:
+            try:
+                setattr(moved, field.attname,
+                        None if value in ("", None) else field.target_field.to_python(value))
+            except (ValidationError, TypeError):
+                continue
+    return moved
+
+
+def lock_for_change(instance, incoming=None):
     """
     Hold `instance`'s row for a change made from outside its own methods,
     an edit or a delete through the API (apps/core/audit.py), which reads
@@ -163,15 +190,17 @@ def lock_for_change(instance):
     deadlock: a stoppage corrected as the repair on it is completed, which
     takes the job and then the stoppage.
 
+    `incoming`: the fields the edit sends, so that a document it would
+    move the row to is held with the one it leaves (as_it_would_be).
+
     The row FOR NO KEY UPDATE, the lock its own UPDATE takes anyway, only
     sooner: a second change waits, and a delivery line being written for
     an order line does not.
     """
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("lock_for_change() outside a transaction locks nothing.")
-    before = getattr(instance, "locked_before_it", None)
-    if before is not None:
-        lock_in_turn(before())
+    if getattr(instance, "locked_before_it", None) is not None:
+        lock_in_turn(as_it_would_be(instance, incoming).locked_before_it())
     list(row_lock_query(type(instance), instance.pk, no_key=True))
 
 
@@ -197,7 +226,10 @@ def serialised(*state, held_first=False):
     `held_first`: the rows the document names in locked_before_it(), its
     order or orders, are held before the document itself, by the lock
     order above. For the methods that reach an order while holding the
-    document: posting, returning, crediting and debiting.
+    document: posting, returning, crediting and debiting. A method name
+    instead of True names the method listing them, for a path that reaches
+    further than the document's own orders (a return, which corrects every
+    invoice that billed what it takes back).
     """
     import functools
 
@@ -207,7 +239,8 @@ def serialised(*state, held_first=False):
             with transaction.atomic():
                 if self.pk is not None:
                     if held_first:
-                        lock_in_turn(self.locked_before_it())
+                        lock_in_turn(getattr(self, held_first if isinstance(held_first, str)
+                                             else "locked_before_it")())
                     lock_rows(self, refresh=False)
                     if state:
                         self.refresh_from_db(fields=list(state))

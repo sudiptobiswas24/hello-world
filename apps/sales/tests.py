@@ -173,3 +173,65 @@ class CreditNoteTests(SalesTestCase):
         credit_note = invoice.create_credit_note()
         with self.assertRaises(ValidationError):
             credit_note.create_credit_note()
+
+
+# The second trading review (O169-O172, O174, O175): docs/handoff/reports/review_trade2.md.
+import datetime  # noqa: E402
+
+from django.contrib.auth.models import User as _User  # noqa: E402
+from rest_framework.test import APIClient as _APIClient  # noqa: E402
+
+from .models import Delivery as _Delivery  # noqa: E402
+from .models import Invoice as _Invoice  # noqa: E402
+from .models import InvoiceLine as _InvoiceLine  # noqa: E402
+from .models import SalesOrder as _SalesOrder  # noqa: E402
+from .models import SalesOrderLine as _SalesOrderLine  # noqa: E402
+from .tests_base import SalesTestCase as _SalesTestCase  # noqa: E402
+
+_REVIEW_DAY = datetime.date(2026, 3, 1)
+
+
+def _refused(call):
+    try:
+        call()
+    except ValidationError as exc:
+        return "; ".join(exc.messages)
+    return ""
+
+
+class LocksTakenInTheWrittenOrderTests(_SalesTestCase):
+    """Each failed under the lock-order sentinel before its fix: a deadlock path with two people."""
+
+    def test_a_return_on_the_second_order_of_a_consolidated_invoice(self):  # O169
+        first, second = self.make_order("5", "100"), self.make_order("5", "100")
+        self.ship(first, "5")
+        delivery = self.ship(second, "5")
+        invoice = _Invoice.objects.create(customer=self.customer, invoice_date=_REVIEW_DAY, currency=self.usd,
+                                          receivable_account=self.ar)
+        for order in (first, second):
+            _InvoiceLine.objects.create(invoice=invoice, order_line=order.lines.get(), quantity=Decimal("5"),
+                                        unit_price=Decimal("100"), revenue_account=self.revenue)
+        invoice.post()
+        delivery = _Delivery.objects.get(pk=delivery.pk)
+        delivery.create_return(quantities={delivery.lines.get(): Decimal("2")})
+        self.assertEqual([o.pk for o in delivery.locked_before_returning()], [first.pk, second.pk])
+        self.assertEqual(_SalesOrderLine.objects.get(order=second).quantity_invoiced(), Decimal("3"))
+
+    def test_an_invoice_takes_the_older_deposit_it_draws_before_itself(self):  # O175
+        order = self.make_order("10", "100")
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal("800"), invoice_date=_REVIEW_DAY)
+        deposit.post()
+        invoice = self.bill(order)
+        self.assertEqual(_Invoice.objects.get(pk=invoice.pk).locked_before_it()[-1].pk, deposit.pk)
+        self.assertEqual(_Invoice.objects.get(pk=deposit.pk).deposit_unapplied(), Decimal("0"))
+
+    def test_a_line_moved_between_draft_orders_holds_both_orders_first(self):  # O175
+        here, there = (_SalesOrder.objects.create(customer=self.customer, order_date=_REVIEW_DAY, currency=self.usd)
+                       for _ in range(2))
+        line = _SalesOrderLine.objects.create(order=there, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                              unit_price=Decimal("1"), revenue_account=self.revenue)
+        client = _APIClient()
+        client.force_authenticate(_User.objects.create_superuser("mover"))
+        response = client.patch(f"/api/sales/sales-order-lines/{line.pk}/", {"order": here.pk}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(_SalesOrderLine.objects.get(pk=line.pk).order_id, here.pk)

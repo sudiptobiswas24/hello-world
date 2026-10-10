@@ -2326,7 +2326,9 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         if not self.sales_order_id or self.is_down_payment or self.is_credit_note():
             return []
         applied = []
-        for deposit in self.sales_order.deposits().order_by("invoice_date", "pk"):
+        deposits = list(self.sales_order.deposits().order_by("invoice_date", "pk"))
+        lock_rows(*deposits, refresh=False)  # in key order, the ones made after it too, before any is drawn
+        for deposit in deposits:
             if self.amount_due() <= 0:
                 break
             if deposit.deposit_unapplied() <= 0:
@@ -2496,7 +2498,12 @@ class Invoice(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel
         """
         billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
         orders = list(SalesOrder.objects.filter(Q(pk=self.sales_order_id) | Q(pk__in=billed)).order_by("pk"))
-        return orders + ([Invoice(pk=self.credits_id)] if self.credits_id else [])
+        # The deposits it draws down as it posts, made before it: rows of one model are taken in key
+        # order, and apply_deposit() takes the pair that way. Holding the invoice first, posting
+        # reached back for an older deposit a drawdown on it already held (O175).
+        drawn = list(SalesOrder(pk=self.sales_order_id).deposits().filter(pk__lt=self.pk).order_by("pk")) if (
+            self.pk and self.sales_order_id and not self.is_down_payment and not self.credits_id) else []
+        return orders + ([Invoice(pk=self.credits_id)] if self.credits_id else []) + drawn
 
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
@@ -4459,11 +4466,14 @@ class Delivery(AuditModel):
                 per_invoice[invoice_line] = per_invoice.get(invoice_line, Decimal("0")) + taken
                 remaining -= taken
 
+        # Every invoice before the first note, in key order: a note is made after them all, and an
+        # invoice taken after a note already made would be taken against the key order (O169).
+        lock_rows(*allocations, refresh=False)
         return [
             invoice.create_credit_note(
                 memo=f"Goods returned on {self.number}", quantities=quantities
             )
-            for invoice, quantities in allocations.items()
+            for invoice, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
         ]
 
     def shortfall(self):
@@ -4515,7 +4525,21 @@ class Delivery(AuditModel):
             )
         return backorder
 
-    @serialised("posted", held_first=True)
+    def locked_before_returning(self):
+        """
+        Its order and every order of each invoice that billed its lines, in key order: a return
+        credits those invoices, and each credit note holds all of its invoice's orders before the
+        invoice. Holding only its own order, two returns on two orders of one invoice each held one
+        order and the stock, and wanted the other's: deadlock (O169).
+        """
+        billed = Invoice.objects.filter(posted=True, credits__isnull=True,
+                                        lines__order_line__in=self.lines.values("order_line"))
+        return list(SalesOrder.objects.filter(
+            Q(pk=self.sales_order_id) | Q(pk__in=billed.values("sales_order"))
+            | Q(pk__in=InvoiceLine.objects.filter(invoice__in=billed).values("order_line__order"))
+        ).order_by("pk"))
+
+    @serialised("posted", held_first="locked_before_returning")
     def create_return(self, credit_invoices=True, quantities=None):
         """
         Take goods back: reverse the stock movement and, unless this is a

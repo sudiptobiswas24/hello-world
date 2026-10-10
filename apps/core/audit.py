@@ -68,7 +68,7 @@ class AuditableViewSetMixin:
         """
         found = super().get_object()
         if getattr(self, "_changing", False):
-            lock_for_change(found)
+            lock_for_change(found, getattr(self.request, "data", None))
             found = super().get_object()
         return found
 
