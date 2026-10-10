@@ -325,6 +325,8 @@ class JournalEntry(AuditModel):
         for relation in self._meta.get_fields(include_hidden=True):
             if not relation.auto_created or relation.concrete or relation.related_model in (JournalEntry, JournalLine):
                 continue
+            if relation.related_model._meta.auto_created:
+                continue  # a many-to-many's own table: the document is asked through the relation itself
             found = relation.related_model._base_manager.filter(**{relation.field.name: self}).first()
             if found is not None:
                 return found
@@ -1615,6 +1617,14 @@ class BankStatementLine(AuditModel):
         if self.is_resolved():
             raise ValidationError("This line is already explained.")
         bank = self.statement.bank_account
+        # A line a document already booked (a challan, a claim) is matched to it, not
+        # posted a second time: the bank and the account it went to would carry it twice (O164).
+        matched = BankStatementLine.objects.filter(booked_entry__isnull=False).values("booked_entry")
+        for entry in bank_movements(bank).filter(date=to_date(self.date)).exclude(pk__in=matched):
+            if moved_through(entry, bank) == self.amount:
+                raise ValidationError(
+                    f"JE-{entry.pk} ({entry.reference or entry.memo}) already moved {self.amount} through {bank} on "
+                    f"{entry.date} and no line is matched to it: match this line to it rather than post it again.")
         memo = memo or self.description or f"Bank statement {self.statement}"
         entry = JournalEntry.objects.create(
             date=to_date(self.date), reference=self.reference, memo=memo

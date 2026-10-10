@@ -192,12 +192,13 @@ class ClaimTests(PeopleTestCase):
         balances = {account.code: sum((row.debit - row.credit for row in JournalLine.objects.filter(
             account=account, entry__posted=True)), Decimal("0")) for account in (self.cash, bank, self.travel)}
         self.assertEqual(balances, {"1000": Decimal("0"), "1010": Decimal("-450"), "6200": Decimal("300")})
-        # Reversed a second time, the claim keeps only the latest reversal; the first belongs to
-        # nothing, and reversed from the journal it would pay the claim from petty cash again.
+        # Reversed a second time, the claim still keeps the first reversal (O164: it belonged to
+        # nothing, and left the bank's movements); reversed from the journal it would pay the
+        # claim from petty cash again, so it is corrected on the claim.
         first_reversal = claim.voided_entry
         claim.unpay("Bank account closed", on_date=datetime.date(2026, 6, 6))
-        self.assertIsNone(first_reversal.recorded_by())
-        with self.assertRaisesMessage(ValidationError, "not by reversing its reversal"):
+        self.assertEqual(first_reversal.recorded_by(), claim)
+        with self.assertRaisesMessage(ValidationError, "was posted by expense claim"):
             first_reversal.reverse_by_hand()
 
     def test_what_is_refused(self):
@@ -486,6 +487,27 @@ class ClaimOnTheStatementTests(PeopleTestCase):
         report = june.reconciliation()
         self.assertEqual((report["ledger_balance"], report["unpresented_total"], report["difference"]),
                          (Decimal("-450"), Decimal("-450"), Decimal("0")))
+
+    def test_the_claims_line_is_not_posted_a_second_time(self):
+        # O164 (review_stat #10): post_to booked the claim's 450 again, the bank at -900.
+        with self.assertRaisesMessage(ValidationError, f"JE-{self.paid.journal_entry_id} ("):
+            self.line.post_to(self.travel)
+        self.assertEqual((self.balance(self.bank), self.balance(self.travel)), (Decimal("-450"), Decimal("300")))
+        self.line.match_entry(self.paid.journal_entry)
+
+    def test_paid_and_unpaid_twice_keeps_every_pair(self):
+        # O164 (review_stat #9): the second unpay dropped the first payment and its reversal from the bank.
+        from apps.accounting.models import bank_movements
+
+        first = self.paid.journal_entry
+        self.paid.unpay("Wrong account", on_date=datetime.date(2026, 7, 8))
+        first_back = ExpenseClaim.objects.get(pk=self.paid.pk).voided_entry
+        self.paid.pay(self.bank, on_date=datetime.date(2026, 7, 9))
+        second = ExpenseClaim.objects.get(pk=self.paid.pk).journal_entry
+        self.paid.unpay("Paid twice", on_date=datetime.date(2026, 7, 10))
+        second_back = ExpenseClaim.objects.get(pk=self.paid.pk).voided_entry
+        self.assertEqual(set(bank_movements(self.bank)), {first, first_back, second, second_back})
+        self.assertEqual(len({first, first_back, second, second_back}), 4)
 
     def test_matched_by_the_bookkeeper_over_the_api(self):
         client = self.as_(self.books)
