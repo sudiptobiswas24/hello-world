@@ -199,6 +199,43 @@ def _refused(call):
     return ""
 
 
+class ACreditNoteGivesBackOnlyWhatItsLineHoldsTests(_SalesTestCase):
+    def note_on(self, invoice, **line):
+        note = _Invoice.objects.create(customer=self.customer, invoice_date=_REVIEW_DAY, currency=self.usd,
+                                       receivable_account=self.ar, credits=invoice)
+        return note, _InvoiceLine.objects.create(invoice=note, credits_line=invoice.lines.get(), item=self.item,
+                                                 revenue_account=self.revenue, **line)
+
+    def test_a_note_against_a_credit_note_is_refused(self):  # O170
+        invoice = self.bill(self.make_order("10", "100"))
+        note = invoice.create_credit_note(quantities={invoice.lines.get(): Decimal("5")})
+        second = _Invoice(customer=self.customer, invoice_date=_REVIEW_DAY, currency=self.usd,
+                          receivable_account=self.ar, credits=note)
+        self.assertIn("is itself a note", _refused(second.save))
+
+    def test_a_typed_note_at_ten_times_the_price_is_refused(self):  # O171
+        invoice = self.bill(self.make_order("10", "100"))
+        note, _ = self.note_on(invoice, quantity=Decimal("10"), unit_price=Decimal("1000"))
+        before = self.balance(self.ar)
+        said = _refused(lambda: _Invoice.objects.get(pk=note.pk).post())
+        self.assertIn("1000.00 left to give back; this note gives back 10000.00", said)
+        self.assertEqual(self.balance(self.ar), before)
+
+    def test_a_typed_note_line_takes_the_order_line_it_gives_back(self):  # O172
+        order = self.make_order("10", "100")
+        invoice = self.bill(order)
+        note, line = self.note_on(invoice, quantity=Decimal("10"), unit_price=Decimal("100"))
+        self.assertEqual(line.order_line_id, invoice.lines.get().order_line_id)
+        _Invoice.objects.get(pk=note.pk).post()
+        self.assertEqual(_SalesOrderLine.objects.get(order=order).quantity_invoiced(), Decimal("0"))
+
+    def test_a_note_line_naming_no_order_line_does_not_post(self):  # O172, a line written before the fix
+        invoice = self.bill(self.make_order("10", "100"))
+        note, line = self.note_on(invoice, quantity=Decimal("10"), unit_price=Decimal("100"))
+        _InvoiceLine.objects.filter(pk=line.pk).update(order_line=None)
+        self.assertIn("this line names None", _refused(lambda: _Invoice.objects.get(pk=note.pk).post()))
+
+
 class LocksTakenInTheWrittenOrderTests(_SalesTestCase):
     """Each failed under the lock-order sentinel before its fix: a deadlock path with two people."""
 

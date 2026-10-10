@@ -68,6 +68,7 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    refuse_correcting_a_note,
     refuse_correcting_another_line,
     refuse_correcting_past_what_it_holds,
     refuse_naming_another_order_line,
@@ -2581,6 +2582,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             raise ValidationError("A credit note cannot also be a down payment.")
         if self.credits_id and self.credits.customer_id != self.customer_id:
             raise ValidationError("A credit note must be for the same customer as the invoice it credits.")
+        refuse_correcting_a_note(self, "credits")
 
     def _was_posted_in_db(self):
         if not self.pk:
@@ -2756,7 +2758,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             for line in given_back:
                 refuse_correcting_another_line(line, self, "credits_line", "credits")
             if not self.claim_reason and not self.credits.is_down_payment:
-                refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited)
+                refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited, on="invoice")
         going = defaultdict(Decimal)
         for line in self.lines.select_related("order_line__order"):
             if not line.order_line_id:
@@ -3273,7 +3275,7 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         answer_to_its_document(
             self, "invoice", "Cannot modify a line on a posted invoice. Issue a credit note instead.")
         refuse_naming_another_order_line(self, self.invoice, "customer", "sales_order")
-        refuse_correcting_another_line(self, self.invoice, "credits_line", "credits")
+        refuse_correcting_another_line(self, self.invoice, "credits_line", "credits", fill=True)
         # An order line may leave it blank; a sale cannot post without one,
         # and invoicing such a line was a database error rather than a
         # sentence. Here, where every invoice line is made.

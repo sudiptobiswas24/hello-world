@@ -87,7 +87,22 @@ def refuse_naming_another_order_line(line, document, party, order):
             f"{line.item or line.charge}."]})
 
 
-def refuse_correcting_another_line(line, document, corrects, original):
+def refuse_correcting_a_note(document, original):
+    """
+    A note corrects an invoice or a bill, never another note. Crediting the
+    credit note of 500 on an invoice of 1,000 with a second note of 500 took
+    receivables to 0 with the goods still out (O170). `original` is the
+    note's pointer ("credits", "debits"). Asked of the note in save() and
+    of each of its lines, so the posting asks it again.
+    """
+    corrected = getattr(document, original) if getattr(document, f"{original}_id") else None
+    if corrected is not None and getattr(corrected, f"{original}_id"):
+        raise ValidationError({original: [
+            f"{corrected} is itself a note, correcting {getattr(corrected, original)}; "
+            f"correct {getattr(corrected, original)} instead."]})
+
+
+def refuse_correcting_another_line(line, document, corrects, original, fill=False):
     """
     Shared rule B, the correcting half: a credit or debit note's line gives
     back only a line of the document the note corrects, posted, in the
@@ -105,6 +120,13 @@ def refuse_correcting_another_line(line, document, corrects, original):
         return
     corrected = getattr(line, corrects)
     held = corrected.document()
+    refuse_correcting_a_note(held, original)
+    # A claim gives back money on the line, not goods: its line names no order line (quantity_invoiced).
+    claim = bool(getattr(document, "claim_reason", ""))
+    if fill and not claim and not line.order_line_id:
+        # The order line of the line it gives back: left blank, the order
+        # line read invoiced 10 after the whole 10 were credited (O172).
+        line.order_line_id = corrected.order_line_id
     noted = getattr(document, f"{original}_id")
     if noted != held.pk:
         raise ValidationError({corrects: [
@@ -114,32 +136,51 @@ def refuse_correcting_another_line(line, document, corrects, original):
         raise ValidationError({corrects: [f"{held} has not posted; there is nothing on it to give back."]})
     if _currency_or_base(held.currency_id) != _currency_or_base(document.currency_id):
         raise ValidationError({corrects: [f"{held} is in {held.currency}; {document} is in {document.currency}."]})
-    if line.order_line_id and line.order_line_id != corrected.order_line_id:
+    if (line.order_line_id or not claim) and line.order_line_id != corrected.order_line_id:
         raise ValidationError({"order_line": [
             f"{corrected.label()} billed {corrected.order_line or 'no order line'}; this line names "
             f"{line.order_line}."]})
 
 
-def refuse_correcting_past_what_it_holds(lines, corrects, already):
+def line_value(line):
+    """A line's value before tax, unrounded: what partial notes on it add up to exactly."""
+    return line.quantity * (line.unit_price or Decimal("0")) * (1 - (line.discount_percent or 0) / Decimal("100"))
+
+
+def refuse_correcting_past_what_it_holds(lines, corrects, already, on):
     """
     A note gives back no more of a line than it holds: `already(line)` is
     what posted notes have given back of it, by quantity, and two lines of
     this note on one line count together. For notes by quantity only: a
     claim or a down payment given back is money, not goods.
+
+    And no more than it is worth (O171): by quantity alone, ten at 1,000
+    given back on a line of ten at 100 posted, receivables -9,000. By value
+    every posted note on the line counts, a claim's money included; unrounded,
+    so three notes of one on a line of three add up to it exactly. `on` is
+    the note line's document field ("invoice", "bill").
     """
     from apps.core.api import plain
 
     going = defaultdict(Decimal)
+    worth = defaultdict(Decimal)
     for line in lines:
         corrected = getattr(line, corrects) if getattr(line, f"{corrects}_id") else None
         if corrected is None:
             continue
         going[corrected.pk] += line.quantity
+        worth[corrected.pk] += line_value(line)
         given = already(corrected)
         if given + going[corrected.pk] > corrected.quantity:
             raise ValidationError({corrects: [
                 f"Only {plain(max(corrected.quantity - given, Decimal('0')))} of {corrected.label()} on "
                 f"{corrected.document()} is left to give back; this note gives back {plain(going[corrected.pk])}."]})
+        notes = type(line)._base_manager.filter(**{corrects: corrected, f"{on}__posted": True})
+        left = line_value(corrected) - sum((line_value(n) for n in notes), Decimal("0"))
+        if worth[corrected.pk] > left:
+            raise ValidationError({corrects: [
+                f"{corrected.label()} on {corrected.document()} has {round_money(max(left, Decimal('0')))} "
+                f"left to give back; this note gives back {round_money(worth[corrected.pk])}."]})
 
 
 class TaxedLineMixin(models.Model):

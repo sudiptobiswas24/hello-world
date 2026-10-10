@@ -890,3 +890,16 @@ class ALineStaysOnItsPostedDocumentTests(TradeRuleCase):
         with self.assertRaisesMessage(ValidationError, "posted goods receipt"):
             GoodsReceiptLine.objects.get(pk=line.pk).delete()
         self.assertEqual(order.lines.get().quantity_received(), Decimal("10"))
+
+
+class ADebitNoteDebitsABillNeverANoteTests(ADebitLineDebitsOnlyItsNotesBillTests.__mro__[1]):  # O170
+    billed = ADebitLineDebitsOnlyItsNotesBillTests.billed
+
+    def test_a_debit_note_against_a_debit_note_is_refused(self):
+        from .models import Bill
+
+        bill = self.billed()
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("5")})
+        with self.assertRaisesMessage(ValidationError, "is itself a note"):
+            Bill.objects.create(vendor=self.vendor, bill_date=JAN(12), payable_account=self.payable,
+                                currency=self.usd, debits=note)
