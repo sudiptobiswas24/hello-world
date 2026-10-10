@@ -509,14 +509,67 @@ class PlaceOfSupplyTests(EInvoiceTestCase):
         self.assertEqual(self.lorry(invoice), ("URP", 27, 29, 2))
 
     def test_an_address_of_no_party_is_not_placed_by_a_guess(self):
+        # Refused as the goods line is saved (O162), not left to fail every read of the draft.
         nobodys = Address.objects.create(line1="Plot 4, KIADB", city="Hubballi", state="29", postal_code="580001")
         invoice = Invoice.objects.create(customer=self.b2c, invoice_date=DAY, receivable_account=self.ar,
                                          currency=self.inr, shipping_address=nobodys)
+        with self.assertRaisesMessage(ValidationError, "Say whose address it is"):
+            InvoiceLine.objects.create(invoice=invoice, item=self.sack, quantity=D("1"), unit_price=D("1000"),
+                                       revenue_account=self.revenue)
+        self.assertFalse(invoice.lines.exists())
+
+    def test_a_draft_whose_ship_to_cannot_be_placed_still_lists_and_opens(self):
+        """
+        O162: one draft whose ship-to (the buyer's own) lost its state made GET
+        /api/sales/invoices/ and its detail answer 400 for everyone. Reading
+        never refuses now; the save and the post do.
+        """
+        from apps.core.management.commands import setup_roles  # noqa: F401
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        site = self.site(self.b2c)
+        invoice = Invoice.objects.create(customer=self.b2c, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.inr, shipping_address=site)
         line = InvoiceLine.objects.create(invoice=invoice, item=self.sack, quantity=D("1"), unit_price=D("1000"),
                                           revenue_account=self.revenue)
         line.taxes.set(self.pair)
-        with self.assertRaisesMessage(ValidationError, "Say whose address it is"):
+        Address.objects.filter(pk=site.pk).update(state="")  # edited after the draft was made
+        call_command("setup_roles", verbosity=0)
+        controller = User.objects.create_user("controller")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(controller)
+        self.assertEqual(client.get("/api/sales/invoices/").status_code, 200)
+        self.assertEqual(client.get(f"/api/sales/invoices/{invoice.pk}/").status_code, 200)
+        invoice.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "is no GST state"):
             invoice.post()
+        with self.assertRaisesMessage(ValidationError, "is no GST state"):
+            invoice.save()
+        blank = Address.objects.create(party=self.b2c, address_type=AddressType.SHIPPING, line1="x", city="y",
+                                       state="", postal_code="1")
+        other = Invoice.objects.create(customer=self.b2c, invoice_date=DAY, receivable_account=self.ar,
+                                       currency=self.inr, shipping_address=blank)
+        with self.assertRaisesMessage(ValidationError, "is no GST state"):
+            InvoiceLine.objects.create(invoice=other, item=self.sack, quantity=D("1"), unit_price=D("1000"),
+                                       revenue_account=self.revenue)
+
+    def test_a_registered_buyer_billed_and_shipped_at_one_address_across_the_state_line(self):
+        """
+        O161: a Maharashtra-GSTIN buyer whose one address, bill-to and ship-to,
+        is in Karnataka receives the goods at its own address there: place 29,
+        IGST 180 on 1,000 (s.10(1)(a)), not CGST 90 + SGST 90 at 27.
+        """
+        site = self.site(self.mh)
+        invoice = Invoice.objects.create(customer=self.mh, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.inr, shipping_address=site, billing_address=site)
+        line = InvoiceLine.objects.create(invoice=invoice, item=self.sack, quantity=D("1"), unit_price=D("1000"),
+                                          revenue_account=self.revenue)
+        line.taxes.set(self.pair)
+        invoice.post()
+        self.assertEqual((self.taxes(line), invoice.place_of_supply), ([("IGST18", D("180.00"))], "29"))
 
     def test_a_service_alone_is_where_the_buyer_is(self):
         invoice, line = self.sale(self.b2c, self.site(self.b2c), what=self.freight6)
