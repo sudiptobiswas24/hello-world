@@ -385,7 +385,8 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "post_receipt": "purchasing.post_goodsreceipt",
         "return_receipt": "purchasing.post_goodsreceipt",
         "accept": "purchasing.add_receiptinspection",
-        "objection": "purchasing.post_goodsreceipt",
+        # The stores, who saw the goods, or accounts payable, who got the letter (O179).
+        "objection": "purchasing.object_goodsreceipt",
         "reject": "purchasing.add_receiptinspection",
     }
 
@@ -415,12 +416,16 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         DELETE withdraws one keyed in error.
         """
         receipt = self.get_object()
+        was = (receipt.objected_on, receipt.objection_removed_on)
         if request.method == "DELETE":
-            receipt.withdraw_objection()
+            receipt.withdraw_objection(by=request.user)
+            self._action_summary = f"objection withdrawn: was made {was[0]}, removed {was[1] or 'never'}"
         elif request.data.get("objection_removed_on"):
-            receipt.remove_objection(request.data["objection_removed_on"])
+            receipt.remove_objection(request.data["objection_removed_on"], by=request.user)
+            self._action_summary = f"objection of {was[0]} removed {receipt.objection_removed_on}"
         else:
-            receipt.record_objection(request.data.get("objected_on"), str(request.data.get("objection") or ""))
+            receipt.record_objection(request.data.get("objected_on"), request.data.get("objection"), by=request.user)
+            self._action_summary = f"objection made {receipt.objected_on}"
         return Response(self.get_serializer(GoodsReceipt.objects.get(pk=receipt.pk)).data)
 
     @action(detail=True, methods=["post"])

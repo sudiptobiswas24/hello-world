@@ -289,6 +289,10 @@ ROLES = {
         "accounting.post_payment",
         # A transporter's freight bill is matched to the deliveries it carried.
         *view("sales", "delivery"),
+        # The supplier's goods objected to in writing move an MSME bill's
+        # day; the letter often comes through accounts (O179).
+        *view("purchasing", "goodsreceipt"),
+        "purchasing.object_goodsreceipt",
         # Tax deducted from what vendors are paid, and paid over by challan.
         *crud("purchasing", "tdsdeduction", actions=("add", "view")),
         *crud("purchasing", "tdschallan", actions=("add", "view")),
@@ -303,6 +307,7 @@ ROLES = {
         *crud("purchasing", "goodsreceiptline"),
         *crud("purchasing", "receiptinspection", actions=("view",)),
         "purchasing.post_goodsreceipt",
+        "purchasing.object_goodsreceipt",
         *crud("sales", "delivery"),
         *crud("sales", "deliveryline"),
         "sales.post_delivery",

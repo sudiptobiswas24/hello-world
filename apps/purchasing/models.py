@@ -5780,7 +5780,8 @@ class GoodsReceipt(AuditModel):
     class Meta:
         ordering = ["-receipt_date", "-id"]
         indexes = [models.Index(fields=["receipt_date", "id"], name="receipt_by_date")]
-        permissions = [("post_goodsreceipt", "Can post goods receipts and returns")]
+        permissions = [("post_goodsreceipt", "Can post goods receipts and returns"),
+                       ("object_goodsreceipt", "Can record an objection to goods received and its removal")]
         constraints = [
             models.UniqueConstraint(
                 fields=["number"], condition=~Q(number=""), name="unique_goods_receipt_number"
@@ -5803,7 +5804,10 @@ class GoodsReceipt(AuditModel):
 
     # What a posted receipt may still take: the written objection to it and
     # its removal, facts about the supplier's goods, not stock or money.
-    OBJECTION_FIELDS = {"objected_on", "objection", "objection_removed_on", "updated_at"}
+    # Who keyed each is the receipt's updated_by and a line in its history
+    # (the view's summary says what was keyed), since the dates are the
+    # letter's and can be keyed after the event (O179).
+    OBJECTION_FIELDS = {"objected_on", "objection", "objection_removed_on", "updated_at", "updated_by"}
 
     def save(self, *args, **kwargs):
         updating = set(kwargs.get("update_fields") or ())
@@ -5818,7 +5822,7 @@ class GoodsReceipt(AuditModel):
             raise ValidationError("An objection is made to goods received: a posted receipt, not a return.")
 
     @serialised("objected_on", "objection", "objection_removed_on")
-    def record_objection(self, day, text):
+    def record_objection(self, day, text, by=None):
         """
         The company's objection in writing to these goods (MSMED Act s.2(b)):
         made within 15 days of delivery, it moves the day of acceptance, and
@@ -5828,7 +5832,14 @@ class GoodsReceipt(AuditModel):
         from .msme import TO_OBJECT
 
         self._objectable()
+        if text is not None and not isinstance(text, str):
+            raise ValidationError({"objection": ["An objection is made in writing: give what it said as text."]})
         day, text = to_date(day), (text or "").strip()
+        longest = GoodsReceipt._meta.get_field("objection").max_length
+        if len(text) > longest:
+            raise ValidationError({"objection": [
+                f"Say what the objection said in at most {longest} characters, not {len(text)}; "
+                "the letter itself is filed with its number."]})
         if self.objected_on is not None:
             raise ValidationError(f"{self} was objected to on {self.objected_on}; one objection stands for it.")
         if not text:
@@ -5841,11 +5852,12 @@ class GoodsReceipt(AuditModel):
         if day > timezone.localdate():
             raise ValidationError({"objected_on": [f"An objection is not made on {day}: that day has not come."]})
         self.objected_on, self.objection = day, text
+        self.updated_by = by or self.updated_by
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
         return self
 
     @serialised("objected_on", "objection_removed_on")
-    def remove_objection(self, day):
+    def remove_objection(self, day, by=None):
         """The day the supplier removed the objection: the goods are accepted on it."""
         self._objectable()
         day = to_date(day)
@@ -5857,16 +5869,18 @@ class GoodsReceipt(AuditModel):
             raise ValidationError({"objection_removed_on": [
                 f"The objection was made on {self.objected_on}; it is removed on a day from then to today."]})
         self.objection_removed_on = day
+        self.updated_by = by or self.updated_by
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
         return self
 
     @serialised("objected_on", "objection", "objection_removed_on")
-    def withdraw_objection(self):
+    def withdraw_objection(self, by=None):
         """An objection keyed in error: none was made, so the goods were accepted on delivery."""
         self._objectable()
         if self.objected_on is None:
             raise ValidationError(f"{self} has no objection to withdraw.")
         self.objected_on, self.objection, self.objection_removed_on = None, "", None
+        self.updated_by = by or self.updated_by
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
         return self
 
