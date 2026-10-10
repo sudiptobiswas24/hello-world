@@ -169,9 +169,11 @@ def _standing(bill, day):
 
 def msme_bills(start, end, as_of=None):
     """
-    Bills dated `start` to `end` from micro and small vendors: when each was
-    due under the Act, when it was paid, how late, and what was still
-    unpaid on `as_of` past its date (the year-end figure 43B(h) adds back).
+    Bills dated `start` to `end` from micro and small vendors, a row for
+    each delivery's part of each: when it was due under the Act, when it was
+    paid, how late, and what was still unpaid on `as_of` past its date (the
+    year-end figure 43B(h) adds back). A part whose objection stands has no
+    due day yet: `due_pending`, and no days late.
     """
     from .models import BILL_FIGURES, Bill
 
@@ -184,29 +186,38 @@ def msme_bills(start, end, as_of=None):
         "bill_date", "pk")
     rows = []
     for bill in bills:
-        due = msme_due(bill)
         # What settles it other than money paid out (debit notes, tax
         # deducted, a discount) is counted whenever it happened.
         total = bill.total()
         other = total - bill.amount_due() - bill.amount_paid()
-        paid = _standing(bill, as_of)
-        unpaid = max(total - other - sum((amount for _, amount in paid), Decimal("0")), Decimal("0"))
-        paid_on = max(day for day, _ in paid) if unpaid <= 0 and paid else None
-        last = paid_on or as_of
-        late = max((last - due).days, 0) if due else 0
-        # Each delivery's part is late from its own day (O160), oldest settled first.
-        settled = total - unpaid
-        past = Decimal("0")
-        for day, amount in msme_schedule(bill):
-            applied = min(settled, amount)
-            settled -= applied
-            if day is not None and as_of > day:
-                past += amount - applied
-        rows.append({
-            "bill": bill.pk, "number": bill.number, "vendor": bill.vendor.name,
-            "category": bill.msme_category, "udyam": getattr(getattr(bill.vendor, "tax_profile", None), "udyam_number", ""),
-            "bill_date": to_date(bill.bill_date), "total": total, "due": due, "paid_on": paid_on,
-            "days_late": late, "unpaid": unpaid,
-            "at_risk": past,
-        })
+        udyam = getattr(getattr(bill.vendor, "tax_profile", None), "udyam_number", "")
+        # One row per delivery's part, each late from its own day (O180), the
+        # oldest settled first: 600 due 16 Jul and 400 due 4 Aug, paid together
+        # on 10 Aug, are 25 and 6 days late, not one bill 6 days late.
+        money = ([(None, other)] if other > 0 else []) + sorted(_standing(bill, as_of), key=lambda row: row[0])
+        for due, amount in msme_schedule(bill):
+            left, paid_on = amount, None
+            while left > 0 and money:
+                day, held = money[0]
+                take = min(left, held)
+                left -= take
+                if day is not None and take > 0:
+                    paid_on = max(paid_on or day, day)
+                if held - take > 0:
+                    money[0] = (day, held - take)
+                else:
+                    money.pop(0)
+            unpaid = max(left, Decimal("0"))
+            paid_on = paid_on if unpaid <= 0 else None
+            rows.append({
+                "bill": bill.pk, "number": bill.number, "vendor": bill.vendor.name,
+                "category": bill.msme_category, "udyam": udyam,
+                "bill_date": to_date(bill.bill_date), "total": total, "amount": amount,
+                # An objection that stands: the Act's clock has not started for
+                # this delivery, so it is pending, not on time.
+                "due": due, "due_pending": due is None, "paid_on": paid_on,
+                "days_late": None if due is None else max(((paid_on or as_of) - due).days, 0),
+                "unpaid": unpaid,
+                "at_risk": unpaid if due is not None and as_of > due else Decimal("0"),
+            })
     return rows

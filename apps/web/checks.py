@@ -81,7 +81,7 @@ def _contractor_licences(day):
 def _msme_at_risk(day):
     from apps.purchasing.msme import msme_bills
 
-    return sum(1 for row in msme_bills(day - 365 * DAY, day, as_of=day) if row["at_risk"] > 0)
+    return len({row["bill"] for row in msme_bills(day - 365 * DAY, day, as_of=day) if row["at_risk"] > 0})
 
 
 def _attendance_unmarked(day):
