@@ -45,9 +45,10 @@ def msme_bills(start, end, as_of=None):
     from .models import BILL_FIGURES, Bill
 
     as_of = to_date(as_of) or timezone.localdate()
+    # The category the bill was booked under, not the vendor's today (Bill.msme_category).
     bills = Bill.objects.filter(
         posted=True, debits__isnull=True, is_prepayment=False, bill_date__gte=to_date(start),
-        bill_date__lte=to_date(end), vendor__tax_profile__msme_category__in=COVERED,
+        bill_date__lte=to_date(end), msme_category__in=COVERED,
     ).select_related("vendor__tax_profile", "payment_terms").prefetch_related(*BILL_FIGURES).order_by(
         "bill_date", "pk")
     rows = []
@@ -64,7 +65,7 @@ def msme_bills(start, end, as_of=None):
         late = max((last - due).days, 0)
         rows.append({
             "bill": bill.pk, "number": bill.number, "vendor": bill.vendor.name,
-            "category": bill.vendor.tax_profile.msme_category, "udyam": bill.vendor.tax_profile.udyam_number,
+            "category": bill.msme_category, "udyam": getattr(getattr(bill.vendor, "tax_profile", None), "udyam_number", ""),
             "bill_date": to_date(bill.bill_date), "total": total, "due": due, "paid_on": paid_on,
             "days_late": late, "unpaid": unpaid,
             "at_risk": unpaid if unpaid > 0 and as_of > due else Decimal("0"),

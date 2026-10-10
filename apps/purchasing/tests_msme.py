@@ -14,6 +14,7 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.test import TransactionTestCase, tag
 
 from apps.accounting.models import Account, AccountType, PartyTaxProfile, Payment, PaymentDirection
 from apps.core.models import Party, PartyRole, PartyRoleAssignment, PaymentTerms
@@ -25,7 +26,7 @@ from .tests_lifecycle import PurchasingLifecycleTestCase
 JUNE = datetime.date(2026, 6, 1)
 
 
-class MsmeTests(PurchasingLifecycleTestCase):
+class MsmeTestCase(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
         self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
@@ -53,6 +54,8 @@ class MsmeTests(PurchasingLifecycleTestCase):
                  if row["bill"] == bill.pk]
         return row
 
+
+class MsmeTests(MsmeTestCase):
     def test_late_by_the_days_past_the_acts_date(self):
         bill = self.bill(terms=self.net30)
         self.pay(bill, "10000", datetime.date(2026, 7, 15))
@@ -121,3 +124,90 @@ class MsmeTests(PurchasingLifecycleTestCase):
         self.assertEqual((row["due"], row["paid_on"], row["days_late"], row["total"]),
                          ("2026-07-01", "2026-07-15", 14, "10000.00"))
         self.assertEqual(as_("Warehouse Staff").get(url, query).status_code, 403)
+
+
+class KeptOnTheBillTests(MsmeTestCase):
+    """
+    The category is the bill's, as its vendor's Udyam registration said when it
+    posted. Booked from a micro vendor on 1 June, net 60, 1,000, unpaid at
+    31 March; the vendor is medium from April. Still at risk: 1,000.00.
+    """
+
+    def test_a_bill_from_a_micro_vendor_stays_on_the_list_when_the_vendor_grows(self):
+        bill = self.bill("1000", terms=self.net60)
+        self.assertEqual(bill.msme_category, "micro")
+        profile = PartyTaxProfile.objects.get(party=self.vendor)
+        profile.msme_category = "medium"
+        profile.save()
+        rows = msme_bills(datetime.date(2026, 4, 1), datetime.date(2027, 3, 31), as_of=datetime.date(2027, 3, 31))
+        self.assertEqual([(row["category"], row["at_risk"]) for row in rows], [("micro", Decimal("1000.00"))])
+
+    def test_a_vendor_that_becomes_micro_later_brings_no_earlier_bill(self):
+        PartyTaxProfile.objects.filter(party=self.vendor).update(msme_category="medium")
+        self.bill("1000", terms=self.net60)
+        PartyTaxProfile.objects.filter(party=self.vendor).update(msme_category="micro")
+        self.assertEqual(msme_bills(JUNE, JUNE, as_of=datetime.date(2027, 3, 31)), [])
+
+    def test_a_debit_note_is_its_bills(self):
+        bill = self.bill("1000", terms=self.net60)
+        PartyTaxProfile.objects.filter(party=self.vendor).update(msme_category="medium")
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("0.5")})
+        self.assertEqual(note.msme_category, "micro")
+
+    def test_the_controller_reads_the_category_booked(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        self.bill("1000", terms=self.net60)
+        PartyTaxProfile.objects.filter(party=self.vendor).update(msme_category="medium")
+        user = User.objects.create_user("controller")
+        user.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(user)
+        [row] = client.get("/api/purchasing/purchasing-reports/msme/",
+                           {"start": "2026-06-01", "end": "2026-06-30", "as_of": "2027-03-31"}).json()
+        self.assertEqual((row["category"], row["at_risk"]), ("micro", "1000.00"))
+
+    def test_the_audit_reports_the_category_read_live(self):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        sources = app_sources()
+        self.assertEqual(Command().kept_settings_read_live(["purchasing"], sources), [])
+        sources["purchasing"] = {path: text.replace('"category": bill.msme_category',
+                                                    '"category": bill.vendor.tax_profile.msme_category')
+                                 if path.name == "msme.py" else text for path, text in sources["purchasing"].items()}
+        (finding,) = Command().kept_settings_read_live(["purchasing"], sources)
+        self.assertIn("purchasing.Bill keeps its own msme_category", finding[1])
+
+
+@tag("migration")
+class CategoryKeptMigrationTests(TransactionTestCase):
+    """Bills posted before the bill kept a category read their vendor's; that is what they keep."""
+
+    before = [("purchasing", "0060_allocation_dated_on_its_own_day")]
+    after = [("purchasing", "0061_bill_keeps_its_msme_category")]
+
+    def test_posted_bills_take_their_vendors_category(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        model = executor.loader.project_state(self.before).apps.get_model
+        micro = model("core", "Party").objects.create(code="M", name="Micro")
+        plain = model("core", "Party").objects.create(code="P", name="Plain")
+        model("accounting", "PartyTaxProfile").objects.create(party=micro, msme_category="micro",
+                                                              udyam_number="UDYAM-MH-26-0012345")
+        payable = model("accounting", "Account").objects.create(code="2000", name="AP", account_type="liability")
+        for party, posted in ((micro, True), (micro, False), (plain, True)):
+            model("purchasing", "Bill").objects.create(vendor=party, bill_date=JUNE, payable_account=payable,
+                                                      posted=posted)
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        Bill = executor.loader.project_state(self.after).apps.get_model("purchasing", "Bill")
+        self.assertEqual(sorted(Bill.objects.values_list("vendor__code", "posted", "msme_category")),
+                         [("M", False, ""), ("M", True, "micro"), ("P", True, "")])
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
