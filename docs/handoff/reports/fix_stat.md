@@ -76,3 +76,63 @@ makemigrations --check "No changes detected" before each commit.
    (review #15, still true). Kind: statutory / minor.
 3. A buyer's shared bill-to/ship-to address with a blank state places at the state on record without a word
    (kept deliberately, see O161 above). Kind: minor.
+
+# Second pass: O160, O163, O165, O164 (tip c7d2407)
+
+| commit | ids | what |
+|---|---|---|
+| 0e3bfc3 | O160 | written objection recorded on a receipt; acceptance = delivery day or the objection's removal; each delivery's share due on its own day |
+| 8cea3c3 | O163 | recover_write_off and six of the seven steps on correction_date; allocation edit keeps its day |
+| 4b2383e | O165 | OutsideMovement.void on correction_date |
+| c7d2407 | O164 | post_to refuses a line already booked; a claim keeps every entry it posted |
+
+## Tests that failed without each fix
+- O160 `apps.purchasing.tests_msme.AcceptedOnDeliveryTests`: routine inspection `date(2026, 8, 4) != date(2026, 7, 25)`;
+  several deliveries `[(2026-08-04, 1000.00)] != [(2026-07-16, 600.00), (2026-08-04, 400.00)]`; objection API
+  `404 != 403`. `test_two_bills_for_two_deliveries` passed before and after (a guard).
+- O163 `apps.sales.tests_credit_after_settlement...test_steps_that_post_afresh_are_dated_on_the_rule`,
+  `apps.purchasing.tests_audit...test_not_taken_before_the_bill_nor_a_prepayment_applied`,
+  `apps.gst.tests_old_supply...test_neither_note_is_dated_before_what_it_corrects`,
+  `apps.hr.tests_people.ClaimTests.test_not_paid_before_it_was_claimed`: `ValidationError not raised`.
+  With only settlement.py reverted: `(400.00, date(2026, 10, 10)) != (400.00, date(2026, 3, 1))`.
+- O165 `apps.gst.tests_itc04.AReceiptOfNoValueAsksThePeriodTests.test_not_voided_before_it_was_booked_nor_ahead`:
+  `ValidationError not raised`.
+- O164 `apps.hr.tests_people.ClaimOnTheStatementTests.test_the_claims_line_is_not_posted_a_second_time`:
+  `ValidationError not raised`; `...test_paid_and_unpaid_twice_keeps_every_pair`: `Items in the second set but not the first`.
+
+Gate runs, each with audit_invariants clean and makemigrations --check clean: purchasing 866 OK (O160);
+sales+purchasing+accounting+hr+gst 2429 OK (O163); manufacturing+gst 1812 OK (O165);
+accounting+hr+purchasing+sales+e2e+core 2678 OK, 63 skipped (O164).
+
+## Decisions and questions for the coordinator
+- O163, `ExpenseClaim.pay`: not fully on correction_date. It refuses a day before its claim, but a day ahead
+  stands, because `test_a_payment_dated_ahead_is_reversed_on_its_own_day_and_no_other` relies on paying ahead
+  (unpay then cancels on that day). The step is back on DATED_ELSEWHERE with that reason. If the owner wants
+  pay-ahead refused, change that test and swap in correction_date.
+- O163, deposits and prepayments: the automatic draw-down at posting now uses the later of the document's day
+  and the deposit's or prepayment's day. 28 fixtures post a final invoice in March against a deposit made
+  today; refusing those posts would have been the alternative.
+- O163, tests changed because they encoded the defect: fx `test_an_edit_restates_it_on_the_day_of_the_edit`
+  (an edit with no day into closed March is now refused; with today given it re-states today); the hr API
+  claim test paid a claim made today on 3 June; gst old-supply `LATER` was 12 Oct, two days ahead of today,
+  and is now 1 Oct.
+- O164, test changed: `ClaimTests.test_submitted_decided_by_the_manager_and_paid_as_one_journal` asserted the
+  first reversal "belongs to nothing" after a second unpay; it now belongs to the claim. `recorded_by()` skips
+  many-to-many tables so it returns the claim, not the link row.
+- O164 post_to: it refuses only a same-day, same-amount registered movement that no line is matched to yet. A
+  cheque that clears days later is not caught; that would need a wider window and risks false refusals.
+- O160: objections are fields on GoodsReceipt (`objected_on`, `objection`, `objection_removed_on`), one per
+  receipt, recorded under `purchasing.post_goodsreceipt` (Warehouse Staff). Whether purchasing should hold
+  that permission instead is for the owner. Returns (`reverses`) are not netted out of a delivery's share.
+  Charges, and quantity billed ahead of its goods, run from the bill's date.
+- Data migrations purchasing 0063 and 0064 and hr 0021 were read and run under the suite's migrate, but not
+  tested with MigrationExecutor. Nothing was run on PostgreSQL or Asia/Kolkata.
+- O166 (e-way bill "CHL") was left untouched, as told.
+
+## Defects seen and not fixed
+1. apps/purchasing/msme.py `lots()`: return receipts are left out, so a returned quantity still counts in the
+   delivery it came from. Example: 10 received 1 Jun, 4 returned 5 Jun, 4 re-delivered 20 Jun, all 10 billed
+   25 Jun. The first 10 units are drawn from the 1 Jun lot, so the whole 1,000 is due 16 Jul. The 400 that
+   came back on 20 Jun is owed by 4 Aug. The error runs early (it pays sooner), not late. Kind: statutory, minor.
+2. apps/sales/models.py `write_off` (review #7b, not in the brief): a write-off can still be dated before a
+   later allocation, so receivables read 600 on a day 1,000 was owed. Kind: rule.

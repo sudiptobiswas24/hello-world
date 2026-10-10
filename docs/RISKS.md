@@ -393,6 +393,7 @@ missing), **minor**.
 | O173 | purchasing | `PurchaseOrder.drop_ship_for` is not frozen: re-pointed after receipt, the return reverses nothing and the sale line stays shipped (docs/handoff/reports/review_trade2.md #5) | books | queued |
 | O174 | sales | Migration sales 0063 adds `approved_figures` with no backfill: an order approved before it cannot restore a discount it was approved for (docs/handoff/reports/review_trade2.md #6) | minor | queued |
 | O175 | sales, accounting | Two unproven races: `lock_for_change` against save() when lines move between two draft orders in opposite directions; `apply_deposit`'s pk-order locking against Invoice.post (docs/handoff/reports/review_trade2.md #7) | race | queued |
+| O176 | hr | Paying an expense claim may be dated ahead (refused only before the claim); an existing test relies on paying ahead, so `ExpenseClaim.pay` stays exempted from the correction-date check. Refusing a day still to come would match the rule that nothing is posted for a day that has not come | rule | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
