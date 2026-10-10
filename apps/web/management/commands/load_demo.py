@@ -32,7 +32,7 @@ from django.db import connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
-from apps.core.lock_order import unchecked
+from apps.core.models import lock_rows
 
 M = apps.get_model
 # The day the story was written for; loaded later, it moves with the calendar.
@@ -114,9 +114,7 @@ class Command(BaseCommand):
         """One section in its own transaction: a failure is reported, rolled back and named at the end."""
         self.stdout.write(f"  {name}")
         try:
-            # Alone on an empty installation, each section in one transaction: many orders and
-            # customers in turn, which no second person can be taking the other way round.
-            with transaction.atomic(), unchecked("the demo loads an empty installation, alone"):
+            with transaction.atomic():
                 yield
         except Exception as exc:  # reported here and refused at the end, never swallowed
             failed.append(name)
@@ -427,6 +425,9 @@ class Command(BaseCommand):
             Delivery, DeliveryLine = M("sales.Delivery"), M("sales.DeliveryLine")
             Payment, Allocation = M("accounting.Payment"), M("sales.InvoicePayment")
             invoices = []
+            # One transaction confirms every customer's orders in date order; held first, in key
+            # order, each confirm finds its customer already held (O183).
+            lock_rows(sahyadri, konkan, narmada, malwa, godavari, kaveri, gulf, refresh=False)
 
             def order(customer, when, lines, currency=None):
                 o = Order.objects.create(customer=customer, order_date=when, currency=currency or inr)
