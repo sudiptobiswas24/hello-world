@@ -382,6 +382,8 @@ missing), **minor**.
 | O162 | sales | In the fix-wave-1 statutory commits: one draft invoice with a buyer's own ship-to and a blank state makes GET /api/sales/invoices/ and its detail answer 400 for everyone (docs/handoff/reports/review_stat.md #6) | crash | queued, blocks real use |
 | O163 | sales, accounting | In the fix-wave-1 statutory commits: O55's reverse path is open (`recover_write_off` takes any date); seven steps of the same shape were only exempted (`apply_settlement_discount`, `apply_deposit`, `credit_old_supply`, `apply_prepayment`, `take_settlement_discount`, `debit_old_supply`, `ExpenseClaim.pay`); an allocation edit silently moves its date to the edit's day (O50) (docs/handoff/reports/review_stat.md #7, #8, #14) | rule | queued |
 | O164 | accounting, hr, gst | In the fix-wave-1 statutory commits: O62's `post_to` still double-books a line a challan or claim already booked, and a claim paid and unpaid twice drops its first pair from the bank movements (with O151); O58 lists reversals as negative rows; O59 leaves delivery challans out of table 13 (docs/handoff/reports/review_stat.md #9-#11, #13) | minor | queued |
+| O165 | manufacturing | `OutsideMovement.void` does not ask `correction_date()`: a job-worker receipt's void can be dated before the receipt | rule | queued, wave 1 follow-up |
+| O166 | gst | The e-way bill codes a sales delivery as a delivery challan ("CHL", gst/ewaybill.py near line 500), though a sales delivery travels on its tax invoice. The tax adviser to decide | statutory | decide |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
