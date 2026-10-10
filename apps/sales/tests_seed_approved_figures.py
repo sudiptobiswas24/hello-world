@@ -14,8 +14,16 @@ from .tests_base import SalesTestCase
 
 @tag("migration")
 class AnOrderApprovedBefore0063KeepsItsApprovalTests(TransactionTestCase):
-    serialized_rollback = True
+    # Not serialized_rollback: restoring the snapshot collides with content
+    # types another test already made, and errored in setUpClass whenever this
+    # ran after one (apps/e2e/tests_races.py says the same). The schema is put
+    # back to the latest migrations instead, as the assets migration test does.
     setUp = SalesTestCase.setUp
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
 
     def approved_at_20(self):
         order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
