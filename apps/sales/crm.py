@@ -76,6 +76,18 @@ class ActivityKind(models.TextChoices):
     FOLLOW_UP = "follow_up", "Follow-up"
 
 
+# What a lead's score counts as somebody having spoken to them: a call or
+# a visit, made. A note, a mail or a follow-up is something done about the
+# lead rather than with it; counted, a note that found their website scored
+# as a call.
+CONTACT_KINDS = (ActivityKind.CALL, ActivityKind.VISIT)
+
+
+def contacts_made(through=""):
+    """Calls and visits done, asked of activities or through `through` ("activities__")."""
+    return Q(**{f"{through}done_on__isnull": False, f"{through}kind__in": CONTACT_KINDS})
+
+
 def _active_rep(party):
     from .models import SalesRep
 
@@ -251,7 +263,7 @@ class Lead(AuditModel):
         # A list annotates `done_count` once for the page; one lead asks.
         done = getattr(self, "done_count", None)
         if done is None:
-            done = self.activities.filter(done_on__isnull=False).count() if self.pk else 0
+            done = self.activities.filter(contacts_made()).count() if self.pk else 0
         if done:
             reasons.append((min(done, 4) * 5, f"{done} call{'s' if done != 1 else ''} or visit{'s' if done != 1 else ''} made"))
         age = (today - to_date(self.created_at)).days if self.created_at else 0
