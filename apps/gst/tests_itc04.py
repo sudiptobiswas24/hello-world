@@ -11,7 +11,7 @@ from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
 from apps.accounting.gst import GstSettings, gstin_check_character
-from apps.accounting.models import FiscalPosition, PartyTaxProfile
+from apps.accounting.models import AccountingPeriod, FiscalPosition, PartyTaxProfile
 from apps.manufacturing.jobwork import JobWorkLoss
 from apps.manufacturing.tests_jobwork import JobWorkTestCase
 from apps.manufacturing.tests_orders import TODAY
@@ -197,11 +197,11 @@ class ClosedMonthTests(Itc04TestCase):
 class TheAuditAsksTheCloseTests(Itc04TestCase):
     """`audit_invariants` reports a record a GST return reads that posts no entry and asks no period."""
 
-    def findings(self, edit=lambda text: text):
+    def findings(self, edit=lambda text: text, where="jobwork.py"):
         from apps.core.management.commands.audit_invariants import Command, app_sources
 
         sources = app_sources()
-        sources["manufacturing"] = {path: edit(text) if path.name == "jobwork.py" else text
+        sources["manufacturing"] = {path: edit(text) if path.name == where else text
                                     for path, text in sources["manufacturing"].items()}
         return [detail.split(" ")[0] for _, detail in Command().reported_without_the_period(
             ["gst", "manufacturing", "sales", "purchasing"], sources)]
@@ -212,6 +212,40 @@ class TheAuditAsksTheCloseTests(Itc04TestCase):
 
     def test_as_they_stand_they_are_not(self):
         self.assertEqual(self.findings(), [])
+
+    def test_a_receipt_reached_through_a_function_and_a_relation_is_reported(self):
+        # O158: ITC-04 reads OutsideMovement through jobwork.allocation() and
+        # operation.outside_receipts(); it has a journal entry, but at no value posts none.
+        self.assertEqual(self.findings(lambda text: text.replace("_refuse_closed(", "_left_open("), "outside.py"),
+                         ["manufacturing.OutsideMovement"])
+
+
+class AReceiptOfNoValueAsksThePeriodTests(Itc04TestCase):
+    """
+    O158 (review_stat #1). Challans of 30 and 31 May stand; June is closed. 100 kg
+    booked back from the laminator at value 0 posts no entry, so JournalEntry.post
+    never asked June: it was accepted and ITC-04's "received" went from 0 rows to 1;
+    voided after June closed it went from 1 to 0. Both are refused now.
+    """
+
+    def close_june(self):
+        AccountingPeriod.objects.create(name="Jun", start_date=datetime.date(2026, 6, 1),
+                                        end_date=datetime.date(2026, 6, 30)).close()
+
+    def test_booked_at_nothing_into_a_closed_month(self):
+        self.close_june()
+        with self.assertRaisesMessage(ValidationError, "vendor work is not booked on 2026-06-01"):
+            self.back(self.lamination, "100", "0")
+        self.assertEqual(len(itc04(*H1)["received"]), 0)
+
+    def test_voided_after_its_month_closed(self):
+        receipt = self.back(self.lamination, "100", "0")
+        self.assertIsNone(receipt.journal_entry_id)
+        self.assertEqual(len(itc04(*H1)["received"]), 1)
+        self.close_june()
+        with self.assertRaisesMessage(ValidationError, "booked on 2026-06-01, is not voided"):
+            receipt.void()
+        self.assertEqual(len(itc04(*H1)["received"]), 1)
 
 
 class ChallansInTableThirteenTests(Itc04TestCase):

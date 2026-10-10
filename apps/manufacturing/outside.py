@@ -178,6 +178,10 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
                     f"{order} can make at most {ceiling}, and the vendor would "
                     f"have processed {back + now} of it."
                 )
+        # ITC-04 reports it by its date whether or not it posts an entry, and
+        # at no value it posts none (`_post_entry` drops zero rows), so it
+        # asks the period itself, as a challan does (O158).
+        _refuse_closed(self.movement_date, f"vendor work is not booked on {self.movement_date}")
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "manufacturing.outside", self.movement_date,
@@ -230,6 +234,10 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
                     "Void that return first."
                 )
         on_date = to_date(on_date) or timezone.localdate()
+        # Voided, it leaves the return for its own date's period; and with no
+        # entry to reverse, nothing else asks the void's day (O158).
+        _refuse_closed(self.movement_date, f"{self}, booked on {self.movement_date}, is not voided")
+        _refuse_closed(on_date, f"{self} is not voided on {on_date}")
         # A movement at no value writes no entry — `_post_entry` drops
         # zero rows — so there may be nothing to reverse, and the void
         # is still a real void of the quantity.
@@ -240,3 +248,9 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
         self.voided_at = timezone.now()
         super().save(update_fields=["voided_entry", "voided_at", "updated_at"])
         return self.voided_entry
+
+
+def _refuse_closed(on_date, doing):
+    from .jobwork import _refuse_closed as ask
+
+    ask(on_date, doing)
