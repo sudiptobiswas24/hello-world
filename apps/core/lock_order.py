@@ -107,8 +107,7 @@ def _survey(kind, *key):
 
 def taken(connection, label, pks):
     """Rank the rows `label` `pks` (None: not known) just locked on `connection`."""
-    if not connection.in_atomic_block or not _in_a_transaction_of_its_own(connection) or \
-            getattr(connection, "_lock_order_off", False):
+    if not connection.in_atomic_block or not _in_a_transaction_of_its_own(connection):
         return
     state = _state(connection)
     for pk in (pks if pks is not None else [None]):
@@ -135,30 +134,6 @@ def taken(connection, label, pks):
             raise LockOrderViolation(message)
         if top is None or mine > top:
             state["top"] = mine
-
-
-class unchecked:
-    """
-    Not ranked inside this block: for a loader that runs alone, on an
-    installation nobody else is using, and makes a whole section in one
-    transaction (the demo: the second customer's order is confirmed after
-    the first's customer is held). Say why at the call.
-    """
-
-    def __init__(self, why, using="default"):
-        self.why, self.using = why, using
-
-    def __enter__(self):
-        from django.db import connections
-
-        self.connection = connections[self.using]
-        self.was = getattr(self.connection, "_lock_order_off", False)
-        self.connection._lock_order_off = True
-        return self
-
-    def __exit__(self, *exc):
-        self.connection._lock_order_off = self.was
-        return False
 
 
 def forget(connection):
