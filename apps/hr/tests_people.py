@@ -340,6 +340,8 @@ class APersonsOwnRecordsTests(PeopleTestCase):
         return self.as_(user).get(f"/api/hr/employees/{employee.pk}/leave/", {"year": 2026}).status_code
 
     def test_leave_read_through_the_employee_takes_the_leave_rule(self):
+        # Refused at the gate, 403, where the audit's probe looked for 404: the action asks the
+        # leave view right itself now, which the inspector does not hold (reviewed, on purpose).
         inspector = self.login("Quality Inspector")
         self.assertEqual(self.leave_of(inspector, self.riley), 403)
         self.assertEqual(self.leave_of(self.manager.user, self.other), 404)

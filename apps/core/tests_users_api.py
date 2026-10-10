@@ -304,6 +304,8 @@ class TheAdminsUserFormTests(TestCase):
         self.hr.groups.add(Group.objects.get(name="HR Admin"))
 
     def test_a_staff_hr_admin_cannot_make_themselves_superuser(self):
+        # The page itself is refused (403): the audit's probe expected it to open and the save to
+        # fail. Logins are kept on the office's screen; the admin's are superusers' (reviewed).
         from django.test import override_settings
 
         self.client.force_login(self.hr)

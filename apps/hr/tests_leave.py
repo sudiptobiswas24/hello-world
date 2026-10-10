@@ -688,6 +688,8 @@ class WhoCancelsLeaveTests(LeaveTestCase):
         self.assertEqual(self.cancel(self.as_(self.person, "Employee Self Service")), (200, LeaveStatus.CANCELLED))
 
     def test_the_manager_who_decides_it_cancels_it(self):
+        # The audit's probe looked for 403 here; the rule is the person or whoever decides their
+        # leave, and this manager decides it (reviewed, on purpose).
         self.assertEqual(self.cancel(self.as_(self.boss, "Line Manager", "Employee Self Service")),
                          (200, LeaveStatus.CANCELLED))
 
