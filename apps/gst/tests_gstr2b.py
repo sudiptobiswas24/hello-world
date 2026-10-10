@@ -347,11 +347,47 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         second = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
         first.record_supplier_note("CN-9", datetime.date(2026, 9, 20))
         with self.assertRaisesMessage(ValidationError, "one credit note is answered by one debit note"):
-            second.record_supplier_note("cn 9", datetime.date(2026, 9, 25))
+            second.record_supplier_note(" cn-9 ", datetime.date(2026, 9, 25))
         self.assertNotEqual(supplier_note_key("CN/1", datetime.date(2026, 9, 20)),
                             supplier_note_key("CN/1", datetime.date(2027, 4, 2)))
         self.assertEqual(supplier_note_key("CN/1", datetime.date(2026, 4, 1)),
-                         supplier_note_key("cn-01", datetime.date(2027, 3, 31)))
+                         supplier_note_key("cn/1", datetime.date(2027, 3, 31)))
+
+    def test_two_notes_whose_digits_run_together_are_two(self):
+        """
+        O178 (review_stat2 #4): the key joined digit runs, so KA's X/1/12 and
+        X/11/2, two notes, were one, and the second was refused. The key is now
+        the number trimmed, in any case, in its year: nothing else is folded.
+        """
+        import datetime
+
+        from apps.purchasing.models import Bill
+
+        first = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        second = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        first.record_supplier_note("X/1/12", datetime.date(2026, 9, 20))
+        second.record_supplier_note("X/11/2", datetime.date(2026, 9, 25))
+        self.assertEqual([note.supplier_note_key for note in Bill.objects.filter(pk__in=[first.pk, second.pk])
+                          .order_by("pk")], ["2026:X/1/12", "2026:X/11/2"])
+
+    def test_a_number_that_is_not_text_or_too_long_is_refused_in_words(self):
+        """O178 (review_stat2 #2, #3): 123 or ["x"] answered 500; 65 characters reached the column."""
+        from apps.purchasing.models import Bill
+
+        call_command("setup_roles", verbosity=0)
+        ap = User.objects.create_user("ap")
+        ap.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(ap)
+        note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        url = f"/api/purchasing/bills/{note.pk}/supplier_note/"
+        for given, said in ((123, "is text"), (["x"], "is text"), ("C" * 65, "at most 64 characters, not 65")):
+            answer = client.post(url, {"supplier_note_number": given, "supplier_note_date": "2026-09-20"},
+                                 format="json")
+            self.assertEqual(answer.status_code, 400, answer.content)
+            self.assertIn(said, str(answer.json()["supplier_note_number"]))
+        self.assertEqual(client.post(url, {"supplier_note_number": "C" * 64}, format="json").status_code, 200)
+        self.assertEqual(Bill.objects.get(pk=note.pk).supplier_note_number, "C" * 64)
 
     def test_made_over_the_api_with_it(self):
         call_command("setup_roles", verbosity=0)

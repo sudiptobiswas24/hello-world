@@ -4,15 +4,43 @@ from django.conf import settings
 from django.db import migrations, models
 
 
-def key_the_notes_recorded(apps, schema_editor):
-    """Each debit note's supplier credit note, keyed as GSTR-2B pairs it within its year (O159)."""
-    from apps.purchasing.models import supplier_note_key
+def supplier_note_key(number, day):
+    """Frozen copy of purchasing.models.supplier_note_key as this migration keyed: trimmed, any case, per April year."""
+    key = (number or "").strip().upper()
+    if not key:
+        return ""
+    if day is None:
+        return f":{key}"
+    return f"{day.year if day.month >= 4 else day.year - 1}:{key}"
 
+
+def key_the_notes_recorded(apps, schema_editor):
+    """
+    Each debit note's supplier credit note, keyed within its year (O159).
+
+    The constraint this replaces was exact, so "CN-9" and "cn-9" of one
+    vendor could both stand, and posted notes cannot be edited (O177). Where
+    the key makes two notes one, the earliest keeps it and the rest are left
+    unkeyed, so the new constraint does not apply to them, and are reported
+    by number: nothing merged, nothing crashed. Recording a note on one of
+    them again keys it and checks it like any other.
+    """
     Bill = apps.get_model("purchasing", "Bill")
-    for bill in Bill.objects.exclude(supplier_note_number="").only("supplier_note_number", "supplier_note_date",
-                                                                   "bill_date"):
-        Bill.objects.filter(pk=bill.pk).update(supplier_note_key=supplier_note_key(
-            bill.supplier_note_number, bill.supplier_note_date or bill.bill_date))
+    kept, left = {}, []
+    for bill in (Bill.objects.exclude(supplier_note_number="")
+                 .only("vendor_id", "number", "debits_id", "supplier_note_number", "supplier_note_date", "bill_date")
+                 .order_by("bill_date", "pk")):
+        key = supplier_note_key(bill.supplier_note_number, bill.supplier_note_date or bill.bill_date)
+        if bill.debits_id and key:
+            first = kept.setdefault((bill.vendor_id, key), bill)
+            if first.pk != bill.pk:
+                left.append((first, bill))
+                continue
+        Bill.objects.filter(pk=bill.pk).update(supplier_note_key=key)
+    for first, bill in left:
+        print(f"purchasing 0063: {bill.number or bill.pk} answers supplier credit note "
+              f"{bill.supplier_note_number!r}, which is {first.supplier_note_number!r} on {first.number or first.pk} "
+              "of the same vendor and year; left unkeyed, not merged. Check which is the supplier's.")
 
 
 class Migration(migrations.Migration):

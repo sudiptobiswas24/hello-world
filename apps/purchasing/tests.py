@@ -454,3 +454,94 @@ class BillPostingAccountTests(PurchasingTestCase):
         entry = bill.journal_entry
         self.assertEqual(entry.lines.get(account=self.expense).debit, Decimal("80"))
         self.assertFalse(entry.lines.filter(account=self.grni).exists())
+
+
+import datetime  # noqa: E402
+
+from django.test import TransactionTestCase as _MigrationTestCase  # noqa: E402
+from django.test import tag as _tag  # noqa: E402
+
+
+@_tag("migration")
+class SupplierNoteKeyMigrationTests(_MigrationTestCase):
+    """
+    purchasing 0063 keys the supplier credit notes the old exact constraint
+    allowed (O177, review_stat2 #1). "CN-9" and "cn-9" of one vendor stood
+    side by side; adding the new constraint over them crashed the migration.
+    """
+
+    P62 = [("purchasing", "0062_debit_note_keeps_the_suppliers_credit_note")]
+    P63 = [("purchasing", "0063_a_supplier_credit_note_is_one_in_its_year")]
+
+    def migrate(self, target):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(target)
+        return executor
+
+    def setUp(self):
+        self.addCleanup(lambda: self.migrate(self.migrate([]).loader.graph.leaf_nodes()))
+        executor = self.migrate(self.P62)
+        self.old = executor.loader.project_state(self.P62).apps
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        self.v1 = now.get_model("core", "Party").objects.create(code="V1", name="V1")
+        self.v2 = now.get_model("core", "Party").objects.create(code="V2", name="V2")
+        self.pay = now.get_model("accounting", "Account").objects.create(code="2000", name="AP",
+                                                                         account_type="liability")
+        self.made = 0
+
+    def bill(self, vendor, day, number="", note_date=None, debits=None):
+        self.made += 1
+        return self.old.get_model("purchasing", "Bill").objects.create(
+            vendor_id=vendor.pk, bill_date=day, payable_account_id=self.pay.pk, number=f"B{self.made}",
+            debits_id=debits.pk if debits else None, supplier_note_number=number, supplier_note_date=note_date)
+
+    def forward(self):
+        import contextlib
+        import io
+
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            executor = self.migrate(self.P63)
+        Bill = executor.loader.project_state(self.P63).apps.get_model("purchasing", "Bill")
+        return Bill, printed.getvalue()
+
+    def test_keys_each_note_in_its_year(self):
+        D = datetime.date
+        orig1, orig2 = self.bill(self.v1, D(2026, 5, 1)), self.bill(self.v2, D(2026, 5, 1))
+        rows = {
+            "dated_fy26": self.bill(self.v1, D(2026, 6, 20), "CN-9", D(2026, 6, 10), orig1),
+            "same_no_fy27": self.bill(self.v1, D(2027, 5, 2), "cn-9", D(2027, 5, 1), orig1),
+            "undated_feb": self.bill(self.v1, D(2027, 2, 10), "CN/007", None, orig1),
+            "nonum": self.bill(self.v1, D(2026, 6, 21), "", None, orig1),
+            "other_vendor": self.bill(self.v2, D(2026, 6, 20), "CN-9", D(2026, 6, 10), orig2),
+            "31mar": self.bill(self.v1, D(2027, 4, 1), "X 5", D(2027, 3, 31), orig1),
+            "1apr": self.bill(self.v1, D(2027, 4, 1), "X 6", D(2027, 4, 1), orig1),
+        }
+        Bill, printed = self.forward()
+        got = {name: Bill.objects.get(pk=row.pk).supplier_note_key for name, row in rows.items()}
+        self.assertEqual(got, {"dated_fy26": "2026:CN-9", "same_no_fy27": "2027:CN-9", "undated_feb": "2026:CN/007",
+                               "nonum": "", "other_vendor": "2026:CN-9", "31mar": "2026:X 5", "1apr": "2027:X 6"})
+        self.assertEqual((Bill.objects.get(pk=orig1.pk).supplier_note_key, printed), ("", ""))
+
+    def test_old_rows_one_under_the_key_are_reported_not_merged(self):
+        from django.db import IntegrityError, transaction
+
+        D = datetime.date
+        orig = self.bill(self.v1, D(2026, 5, 1))
+        first = self.bill(self.v1, D(2026, 6, 20), "CN-9", D(2026, 6, 10), orig)
+        second = self.bill(self.v1, D(2026, 6, 21), "cn-9", D(2026, 6, 11), orig)
+        third = self.bill(self.v1, D(2026, 6, 22), " CN-9 ", D(2026, 6, 12), orig)
+        other = self.bill(self.v1, D(2026, 6, 23), "CN/009", D(2026, 6, 12), orig)
+        spare = self.bill(self.v1, D(2026, 6, 24), "", None, orig)
+        Bill, printed = self.forward()
+        got = [(row.supplier_note_number, row.supplier_note_key)
+               for row in Bill.objects.filter(pk__in=[first.pk, second.pk, third.pk, other.pk]).order_by("pk")]
+        self.assertEqual(got, [("CN-9", "2026:CN-9"), ("cn-9", ""), (" CN-9 ", ""), ("CN/009", "2026:CN/009")])
+        self.assertIn("B3 answers supplier credit note 'cn-9', which is 'CN-9' on B2", printed)
+        self.assertIn("B4 answers supplier credit note ' CN-9 ', which is 'CN-9' on B2", printed)
+        # The note that kept the key is still one: a further CN-9 of that vendor and year is refused.
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Bill.objects.filter(pk=spare.pk).update(supplier_note_key="2026:CN-9")

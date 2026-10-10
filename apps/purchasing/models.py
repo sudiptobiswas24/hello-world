@@ -2945,14 +2945,15 @@ def register_supplier_note_guard(guard):
 
 def supplier_note_key(number, day):
     """
-    One supplier credit note: its number as GSTR-2B pairs it ("CN-9" and
-    "cn 9" are one), within the supplier's financial year, since a supplier
-    may begin its numbering again each April (O159).
+    One supplier credit note: its number as written, trimmed, in any case
+    ("CN-9" and "cn-9" are one), within the supplier's financial year, since
+    a supplier may begin its numbering again each April (O159). Nothing more
+    is folded (O178): joining digit runs made "X/1/12" and "X/11/2", two
+    notes, one, and refused the second. Migration 0063 keeps a frozen copy.
     """
-    from apps.accounting.gst import document_number_key
     from apps.accounting.tds import financial_year
 
-    key = document_number_key(number)
+    key = (number or "").strip().upper()
     if not key:
         return ""
     start = financial_year(to_date(day))[0] if day else None
@@ -3163,9 +3164,15 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not self.debits_id:
             raise ValidationError({"supplier_note_number": [
                 "Only a debit note records a supplier's credit note; a bill's own number is its reference."]})
-        number = (number or "").strip()
+        if not isinstance(number, str):
+            raise ValidationError({"supplier_note_number": ["The supplier's credit note number is text."]})
+        number = number.strip()
         if not number:
             raise ValidationError({"supplier_note_number": ["Give the number on the supplier's credit note."]})
+        longest = Bill._meta.get_field("supplier_note_number").max_length
+        if len(number) > longest:
+            raise ValidationError({"supplier_note_number": [
+                f"The supplier's credit note number is at most {longest} characters, not {len(number)}."]})
         if self.supplier_note_number:
             for guard in SUPPLIER_NOTE_GUARDS:
                 guard(self, self.supplier_note_number)
