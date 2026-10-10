@@ -321,7 +321,20 @@ def _group(kind):
 def _bill_row(document, figures):
     source = document.source
     return {"id": source.pk, "number": source.number, "vendor": str(source.vendor), "reference": source.reference,
-            "date": document.date, "is_note": document.is_note, **figures}
+            "supplier_note_number": source.supplier_note_number, "date": document.date,
+            "is_note": document.is_note, **figures}
+
+
+def _as_filed(document):
+    """
+    (number, date) the supplier filed the document under: a bill's reference
+    and date; a debit note's, the supplier's credit note it records
+    (Bill.supplier_note_number), not the reference it copied from its bill.
+    """
+    source = document.source
+    if document.is_note:
+        return source.supplier_note_number, source.supplier_note_date or document.date
+    return source.reference, document.date
 
 
 def _line_row(line):
@@ -370,7 +383,8 @@ def reconcile(period):
         if start <= document.date <= end:
             totals["booked"] += sign * _money(figures)
         group = _group("credit_note" if document.is_note else "invoice")
-        typed = normalise(document.source.reference)
+        number, filed_on = _as_filed(document)
+        typed = normalise(number)
         line = by_number.get((document.gstin, group, typed)) if typed else None
         if line is not None and line.pk not in waiting:
             line = None
@@ -379,7 +393,7 @@ def reconcile(period):
             # that day for that value is the one.
             line = next((row for row in waiting.values()
                          if row.supplier_gstin == document.gstin and _group(row.kind) == group
-                         and row.date == document.date and row.value == figures["value"]), None)
+                         and row.date == filed_on and row.value == figures["value"]), None)
         if line is None:
             result["not_in_2b"].append({"bill": _bill_row(document, figures), "line": None})
             totals["waiting"] += sign * _money(figures)

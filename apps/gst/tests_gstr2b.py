@@ -224,3 +224,106 @@ class ApiTests(Gstr2bTestCase):
         self.assertEqual(books.get("/api/gst/gstr2b/").status_code, 403)
         self.assertEqual(books.get("/api/gst/gstr2b/match/", {"period": "2026-09"}).status_code, 403)
         self.assertEqual(books.post("/api/gst/gstr2b/upload/", {"text": SEPTEMBER_2B}, format="json").status_code, 403)
+
+
+class SuppliersCreditNoteTests(GstReturnTestCase):
+    """
+    KA's bill INV/27/0012 (10,000 + IGST 1,800). A tenth of it goes back: the
+    company's debit note is 1,000 + 180. KA files its credit note CN-9 for
+    exactly that on 20 September; the debit note records it, and the
+    reconciliation pairs the two.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.purchasing.models import Bill
+
+        self.ka = self.party("KA", role=PartyRole.VENDOR, gstin=KA, gst_state="29")
+        self.bill = Bill.objects.get(pk=self.buy(self.ka, "10000", taxes=[self.igst], reference="INV/27/0012").pk)
+        self.cn9 = {"ntnum": "CN-9", "nttyp": "C", "dt": "20-09-2026", "val": "1180", "rev": "N", "itcavl": "Y",
+                    "rsn": "", "items": [{"num": 1, "rt": 18, "txval": 1000, "igst": 180, "cgst": 0, "sgst": 0,
+                                          "cess": 0}]}
+
+    def report(self, note):
+        period = f"{note.bill_date:%Y-%m}"
+        keep("", portal_json(
+            period=f"{note.bill_date:%m%Y}",
+            b2b=[{"ctin": KA, "trdnm": "KA", "inv": [inv("INV-27-12", "10-09-2026", "10000", igst="1800")]}],
+            cdnr=[{"ctin": KA, "trdnm": "KA", "nt": [self.cn9]}]))
+        report = reconcile(period)
+        return ([row["line"]["number"] for row in report["matched"]],
+                [row["bill"]["number"] for row in report["not_in_2b"]],
+                [row["line"]["number"] for row in report["not_booked"]])
+
+    def test_a_debit_note_meets_the_suppliers_credit_note(self):
+        import datetime
+
+        note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")},
+                                           supplier_note_number="CN-9", supplier_note_date=datetime.date(2026, 9, 20))
+        self.assertEqual((note.total(), note.reference, note.supplier_note_number),
+                         (D("1180.00"), "INV/27/0012", "CN-9"))
+        self.assertEqual(self.report(note), (["INV-27-12", "CN-9"], [], []))
+
+    def test_typed_differently_it_pairs_on_the_suppliers_date_and_value(self):
+        import datetime
+
+        note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")},
+                                           supplier_note_date=datetime.date(2026, 9, 20))
+        self.assertEqual(self.report(note), (["INV-27-12", "CN-9"], [], []))
+
+    def test_a_draft_note_is_given_it_before_it_posts_and_not_after(self):
+        from apps.purchasing.models import Bill, BillLine
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        line = self.bill.lines.get()
+        draft = Bill.objects.create(vendor=self.ka, bill_date=self.bill.bill_date, payable_account=self.ap,
+                                    debits=self.bill, reference=self.bill.reference)
+        given = BillLine.objects.create(bill=draft, debits_line=line, item=self.sack, quantity=D("0.1"),
+                                        unit_price=D("10000"), expense_account=self.expense)
+        given.taxes.set([self.igst])
+        url = f"/api/purchasing/bills/{draft.pk}/"
+        edited = client.patch(url, {"supplier_note_number": "CN-9", "supplier_note_date": "2026-09-20"},
+                              format="json")
+        self.assertEqual(edited.status_code, 200, edited.content)
+        posted = client.post(f"{url}post_bill/", {}, format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        self.assertEqual(client.patch(url, {"supplier_note_number": "CN-10"}, format="json").status_code, 400)
+        self.assertEqual(self.report(Bill.objects.get(pk=draft.pk)), (["INV-27-12", "CN-9"], [], []))
+
+    def test_made_over_the_api_with_it(self):
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post(f"/api/purchasing/bills/{self.bill.pk}/debit_note/", {
+            "quantities": {str(self.bill.lines.get().pk): "0.1"}, "supplier_note_number": "CN-9",
+            "supplier_note_date": "2026-09-20"}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((response.json()["supplier_note_number"], response.json()["supplier_note_date"]),
+                         ("CN-9", "2026-09-20"))
+
+    def test_the_refusals(self):
+        import datetime
+
+        from django.utils import timezone
+
+        from apps.purchasing.models import Bill
+
+        line = self.bill.lines.get()
+        for given, said in (({"supplier_note_date": datetime.date(2026, 9, 1)}, "is not dated 2026-09-01"),
+                            ({"supplier_note_date": timezone.localdate() + datetime.timedelta(days=1)},
+                             "that day has not come")):
+            with self.subTest(given=given), self.assertRaisesMessage(ValidationError, said):
+                self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9", **given)
+        with self.assertRaisesMessage(ValidationError, "Only a debit note records"):
+            Bill.objects.create(vendor=self.ka, bill_date=DAY, payable_account=self.ap, supplier_note_number="CN-1")
+        from django.db import IntegrityError
+
+        self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9")
+        with self.assertRaises(IntegrityError):  # one debit note answers one credit note of a supplier
+            self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9")

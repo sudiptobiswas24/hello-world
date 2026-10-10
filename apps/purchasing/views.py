@@ -289,7 +289,9 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         bill = self.get_object()
         lines, memo, on_date, old_value = from_request(request.data, "expense_account", Item)
         try:
-            note = bill.debit_old_supply(lines, memo=memo, on_date=on_date, old_value=old_value)
+            note = bill.debit_old_supply(lines, memo=memo, on_date=on_date, old_value=old_value,
+                                         supplier_note_number=request.data.get("supplier_note_number") or "",
+                                         supplier_note_date=request.data.get("supplier_note_date") or None)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(note).data, status=201)
@@ -315,14 +317,17 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def debit_note(self, request, pk=None):
         """
         Debit the whole bill, or pass {"quantities": {"<bill_line_id>": "3"}}
-        to give back part of it.
+        to give back part of it; {"supplier_note_number", "supplier_note_date"}
+        record the supplier's credit note for it.
         """
         bill = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), bill.lines.all(), "bill")
         amount = money_amount(request.data, "amount")  # a prepayment's, part of what is left
         try:
             debit_note = bill.create_debit_note(memo=request.data.get("memo", ""),
-                                                quantities=quantities, amount=amount)
+                                                quantities=quantities, amount=amount,
+                                                supplier_note_number=request.data.get("supplier_note_number") or "",
+                                                supplier_note_date=request.data.get("supplier_note_date") or None)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(debit_note).data)
