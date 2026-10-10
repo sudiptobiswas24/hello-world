@@ -350,6 +350,10 @@ missing), **minor**.
 | O130 | core | `scoped()` filters `path__in`, so rows whose party path is NULL drop out of a rep's view | rule | minor |
 | O131 | core, hr | A deleted leave request's history is readable by anyone holding view_leaverequest | security | minor |
 | O132 | docs, frontend | docs/IMPORT.md still documents the employees import's roles column, which the import no longer reads; the leave screen does not offer Cancel to a manager the server allows | minor | open |
+| O133 | inventory, manufacturing | `allocate()` does not subtract tape loaded on a backflushed run's creels and not yet drawn: a pick naming no lot can choose a doff whose 100 kg is all on a creel | rule | open |
+| O134 | inventory | tracking.py's shortfall message ("Only ...") is not normalised, so PostgreSQL shows 300.0000 | minor | open |
+| O135 | purchasing, quality | A lot quality holds after it was sent to a subcontractor makes the subcontract receipt refuse ("held by quality"), with no way out short of moving the lot. The owner decides whether a receipt of goods already sent is allowed | rule | decide |
+| O136 | sales (CRM) | `Opportunity.sales_order` has no unique constraint in the database; only the lock in `win()` keeps one order to one opportunity | minor | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
