@@ -373,3 +373,32 @@ class TheAuditAsksEveryPartyReadToKeepTheRepScopeTests(TestCase):
         from apps.core.management.commands.audit_invariants import Command
 
         self.assertEqual(Command().unscoped_party_reads(["accounting"], [self.planted(False)], readers=set()), [])
+
+
+class ATaxPreviewIsAReadTests(TestCase):
+    """
+    Tax preview is a POST that works an amount out and keeps nothing, so it
+    takes view_tax, as bag-specifications/solve/ takes its view right. The
+    audit's "a login that may read everything writes nothing" probe lists it
+    for that reason (reviewed, on purpose).
+    """
+
+    def post(self, *permissions):
+        user = User.objects.create_user(f"u-{User.objects.count()}")
+        grant(user, *permissions)
+        client = APIClient()
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        return client.post("/api/accounting/taxes/preview/", {"amount": "100.00", "tax_ids": []}, format="json")
+
+    def test_reading_taxes_is_enough(self):
+        self.assertEqual(self.post("accounting.view_tax").status_code, 200)
+
+    def test_nothing_is_kept(self):
+        from apps.accounting.models import Tax
+
+        before = Tax.objects.count()
+        self.post("accounting.view_tax")
+        self.assertEqual(Tax.objects.count(), before)
+
+    def test_not_reading_them_is_not(self):
+        self.assertEqual(self.post("accounting.add_tax").status_code, 403)

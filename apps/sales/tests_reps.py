@@ -299,6 +299,8 @@ class RepSideDoorTests(RepTestCase):
         self.posted_for(self.acme).write_off(reason="Gone under")
 
     def test_the_bad_debt_report_asks_its_own_view_right(self):
+        # 403, where the audit's probe looked for 200 with Beta left out: a rep holds no right to
+        # read write-offs, and the report now asks it (reviewed, on purpose).
         self.bad_debts()
         self.assertEqual(self.as_user(self.rep_a).get("/api/sales/sales-reports/bad-debt/").status_code, 403)
 
