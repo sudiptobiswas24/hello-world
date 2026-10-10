@@ -634,7 +634,7 @@ class Inspection(AuditModel):
 
     def raised_by(self):
         """The logins that made or changed it or its readings, and the one it says measured it."""
-        found = authors(self, self.readings.all())
+        found = authors(self, "readings")
         measured = getattr(self.inspected_by, "employee_profile", None) if self.inspected_by_id else None
         if measured is not None and measured.user_id:
             found.add(measured.user_id)

@@ -372,3 +372,72 @@ class NobodyApprovesTheirOwnOrderTests(ApprovalTestCase):
         quotation.save(update_fields=["created_by"])
         order = quotation.accept(approve_as=self.manager)
         self.assertEqual((order.status, order.approved_by), (OrderStatus.CONFIRMED, self.manager))
+
+
+class SelfApprovalThroughARevisionTests(ApprovalTestCase):
+    """
+    O143: a revision copied the quote's lines in code, unstamped, and
+    authors() did not follow revision_of: the manager who wrote a 40%
+    quote was refused its order, revised it, and approved the revision's.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        ApprovalPolicy.objects.create(code="STD", name="Standard", max_discount_percent=Decimal("15"))
+        self.manager = get_user_model().objects.create_user("ar")
+        self.manager.groups.add(Group.objects.get(name="AR Manager"))
+        self.rep = get_user_model().objects.create_user("rep")
+        self.rep.groups.add(Group.objects.get(name="Sales Rep"))
+        from .tests_base import carries_every_customer
+
+        carries_every_customer(self.rep)
+
+    def client_for(self, user):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def sent_quote(self, writer):
+        from .models import Quotation, QuotationLine, QuotationStatus
+
+        quotation = Quotation.objects.create(customer=self.customer, quotation_date=datetime.date(2026, 3, 1),
+                                             valid_until=datetime.date(2027, 4, 1), currency=self.usd,
+                                             created_by=writer, updated_by=writer)
+        QuotationLine.objects.create(quotation=quotation, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                     unit_price=Decimal("100"), discount_percent=Decimal("40"),
+                                     revenue_account=self.revenue, created_by=writer, updated_by=writer)
+        Quotation.objects.filter(pk=quotation.pk).update(status=QuotationStatus.SENT)
+        return quotation
+
+    def revised(self, quotation, by):
+        from .models import Quotation, QuotationStatus
+
+        revised = self.client_for(by).post(f"/api/sales/quotations/{quotation.pk}/revise/", {}, format="json")
+        self.assertEqual(revised.status_code, 200, revised.content)
+        Quotation.objects.filter(pk=revised.json()["id"]).update(status=QuotationStatus.SENT)
+        return revised.json()["id"]
+
+    def accept(self, pk, by):
+        return self.client_for(by).post(f"/api/sales/quotations/{pk}/accept/", {"approve": True}, format="json")
+
+    def test_the_manager_who_wrote_the_quote_does_not_approve_it_through_its_revision(self):
+        quotation = self.sent_quote(self.manager)
+        self.assertEqual(self.accept(quotation.pk, self.manager).status_code, 400)
+        accepted = self.accept(self.revised(quotation, self.manager), self.manager)
+        self.assertEqual(accepted.status_code, 400, accepted.content)
+
+    def test_nor_the_manager_who_revised_a_reps_quote(self):
+        quotation = self.sent_quote(self.rep)
+        accepted = self.accept(self.revised(quotation, self.manager), self.manager)
+        self.assertEqual(accepted.status_code, 400, accepted.content)
+
+    def test_a_reps_revised_quote_is_the_managers_to_approve(self):
+        quotation = self.sent_quote(self.rep)
+        accepted = self.accept(self.revised(quotation, self.rep), self.manager)
+        self.assertEqual((accepted.status_code, accepted.json()["status"]), (200, "confirmed"), accepted.content)

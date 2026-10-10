@@ -813,6 +813,7 @@ class QuotationViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Mode
             revision = quotation.create_revision(
                 quotation_date=request.data.get("quotation_date"),
                 valid_until=request.data.get("valid_until"),
+                by=request.user,
             )
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
