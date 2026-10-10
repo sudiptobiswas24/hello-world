@@ -780,6 +780,42 @@ class ABillLineBillsOnlyItsOwnOrderLineTests(TradeRuleCase):
             Bill.objects.get(pk=bill.pk).post()
 
 
+class ADebitLineDebitsOnlyItsNotesBillTests(TradeRuleCase):
+    """O140, the mirror: the bill line a debit note's line names as the one it gives back."""
+
+    def billed(self):
+        order = self.order()
+        self.receive(order, "10")
+        bill = order.create_bill(self.payable, bill_date=JAN(10))
+        bill.post()
+        return bill
+
+    def test_a_bill_line_debits_only_its_own_bills_lines(self):
+        bill = self.billed()
+        other = Bill.objects.create(vendor=self.other_vendor(), bill_date=JAN(12), payable_account=self.payable,
+                                    currency=self.usd)
+        with self.assertRaisesMessage(ValidationError, "corrects no document"):
+            BillLine.objects.create(bill=other, debits_line=bill.lines.get(), item=self.item,
+                                    quantity=Decimal("10"), unit_price=Decimal("5"), expense_account=self.expense)
+        self.assertEqual(bill.lines.get().quantity_debitable(), Decimal("10"))
+
+    def test_a_note_gives_back_no_more_than_the_line_holds(self):
+        bill = self.billed()
+        line = bill.lines.get()
+
+        def typed_note():
+            note = Bill.objects.create(vendor=self.vendor, bill_date=JAN(12), payable_account=self.payable,
+                                       currency=self.usd, debits=bill)
+            BillLine.objects.create(bill=note, debits_line=line, order_line=line.order_line, item=self.item,
+                                    quantity=Decimal("10"), unit_price=Decimal("5"), expense_account=self.expense)
+            return note
+
+        typed_note().post()
+        with self.assertRaisesMessage(ValidationError, "Only 0 of"):
+            typed_note().post()
+        self.assertEqual((line.quantity_debitable(), self.balance(self.payable)), (Decimal("0"), Decimal("0.00")))
+
+
 class ATypedBillDoesNotPayForGoodsOnOrderTests(TradeRuleCase):
     """O92: a typed bill naming no order line and the order's own bill both paid one receipt: payable -100."""
 

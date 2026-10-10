@@ -68,6 +68,8 @@ from apps.accounting.mixins import (
     RecordedLineTax,
     TaxedDocumentMixin,
     TaxedLineMixin,
+    refuse_correcting_another_line,
+    refuse_correcting_past_what_it_holds,
     refuse_naming_another_order_line,
 )
 
@@ -2512,11 +2514,13 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
 
     def locked_before_it(self):
         """
-        Its order and every order its lines bill: held before the invoice, by the lock order
-        (apps.core.models). A return holds the order before it credits the invoice.
+        Its order and every order its lines bill, then the invoice a credit note credits: held
+        before the invoice, in that order (apps.core.models, the lock order). A return holds the
+        order before it credits the invoice.
         """
         billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
-        return list(SalesOrder.objects.filter(Q(pk=self.sales_order_id) | Q(pk__in=billed)))
+        orders = list(SalesOrder.objects.filter(Q(pk=self.sales_order_id) | Q(pk__in=billed)).order_by("pk"))
+        return orders + ([Invoice(pk=self.credits_id)] if self.credits_id else [])
 
     def save(self, *args, **kwargs):
         if self._was_posted_in_db():
@@ -2665,6 +2669,14 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             raise ValidationError(
                 "This invoice has no value to post. Give its lines a quantity and price."
             )
+        if self.is_credit_note():
+            # Rule B's correcting half, asked again under the credited invoice's lock (held first): a
+            # note gives back only lines of the invoice it credits, and no more of each than is left.
+            given_back = list(self.lines.select_related("credits_line__invoice"))
+            for line in given_back:
+                refuse_correcting_another_line(line, self, "credits_line", "credits")
+            if not self.claim_reason and not self.credits.is_down_payment:
+                refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited)
         going = defaultdict(Decimal)
         for line in self.lines.select_related("order_line__order"):
             if not line.order_line_id:
@@ -3181,6 +3193,7 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         answer_to_its_document(
             self, "invoice", "Cannot modify a line on a posted invoice. Issue a credit note instead.")
         refuse_naming_another_order_line(self, self.invoice, "customer", "sales_order")
+        refuse_correcting_another_line(self, self.invoice, "credits_line", "credits")
         # An order line may leave it blank; a sale cannot post without one,
         # and invoicing such a line was a database error rather than a
         # sentence. Here, where every invoice line is made.

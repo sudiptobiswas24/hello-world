@@ -847,3 +847,37 @@ class ReopeningALineAsksTheCreditLimitTests(TradeRuleCase):
             SalesOrderLine.objects.get(pk=line.pk).reopen()
         self.assertTrue(SalesOrderLine.objects.get(pk=line.pk).is_closed_short())
         self.assertEqual(committed_balance(self.customer), Decimal("1000.00"))
+
+
+class ACreditLineCreditsOnlyItsNotesInvoiceTests(TradeRuleCase):
+    """O140: rule B asked the order line a line names, not the invoice line it credits."""
+
+    def test_an_invoice_line_credits_only_its_own_invoices_lines(self):
+        other = self.other_customer()
+        acme = self.bill(self.make_order("10", "100"))  # Acme's invoice, 10 creditable
+        client = self.as_("AR Manager")
+        made = client.post("/api/sales/invoices/", {"customer": other.pk, "invoice_date": "2026-03-01",
+                                                    "currency": self.usd.pk, "receivable_account": self.ar.pk},
+                           format="json")
+        line = client.post("/api/sales/invoice-lines/", {
+            "invoice": made.data["id"], "credits_line": acme.lines.get().pk, "item": self.item.pk,
+            "quantity": "10", "unit_price": "1.00", "revenue_account": self.revenue.pk}, format="json")
+        self.assertEqual(line.status_code, 400, line.content)
+        self.assertIn("credits_line", line.json())
+        self.assertEqual(acme.lines.get().quantity_creditable(), Decimal("10"))
+
+    def test_a_note_gives_back_no_more_than_the_line_holds(self):
+        acme = self.bill(self.make_order("10", "100"))
+        line = acme.lines.get()
+
+        def typed_note():
+            note = Invoice.objects.create(customer=self.customer, invoice_date=datetime.date(2026, 3, 5),
+                                          receivable_account=self.ar, currency=self.usd, credits=acme)
+            InvoiceLine.objects.create(invoice=note, credits_line=line, order_line=line.order_line, item=self.item,
+                                       quantity=Decimal("10"), unit_price=Decimal("100"), revenue_account=self.revenue)
+            return note
+
+        typed_note().post()
+        with self.assertRaisesMessage(ValidationError, "Only 0 of"):
+            typed_note().post()
+        self.assertEqual((line.quantity_creditable(), self.balance(self.ar)), (Decimal("0"), Decimal("0.00")))

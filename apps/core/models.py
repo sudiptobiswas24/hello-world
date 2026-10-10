@@ -109,12 +109,14 @@ def row_lock_query(model, pk, no_key=False):
 #      corrects it;
 #   5. those documents' lines.
 #
-# A document names its order(s) in locked_before_it() and its posting and
-# correcting methods are @serialised(..., held_first=True), which takes
-# them before the document; an edit through the API takes them the same
-# way (lock_for_change). An order line names its order(s) the same way.
-# lock_rows() orders only what one call takes, by model and key: the order
-# between calls is this list's.
+# A document names its order(s) in locked_before_it(), and a note the
+# document it corrects after them; its posting and correcting methods are
+# @serialised(..., held_first=True), which takes them before the document,
+# and an edit through the API takes them the same way (lock_for_change).
+# An order line names its order(s) the same way. locked_before_it() lists
+# its rows in this order and they are taken in turn (lock_in_turn):
+# lock_rows() sorts what one call takes by model and key, and would take
+# an invoice ("sales.invoice") before its order ("sales.salesorder").
 
 
 def lock_rows(*instances, refresh=True):
@@ -141,6 +143,12 @@ def lock_rows(*instances, refresh=True):
             instance.refresh_from_db()
 
 
+def lock_in_turn(rows):
+    """Hold `rows` in the order given, each before the next: the lock order above, not the models' names."""
+    for row in rows:
+        lock_rows(row, refresh=False)
+
+
 def lock_for_change(instance):
     """
     Hold `instance`'s row for a change made from outside its own methods,
@@ -163,7 +171,7 @@ def lock_for_change(instance):
         raise RuntimeError("lock_for_change() outside a transaction locks nothing.")
     before = getattr(instance, "locked_before_it", None)
     if before is not None:
-        lock_rows(*before(), refresh=False)
+        lock_in_turn(before())
     list(row_lock_query(type(instance), instance.pk, no_key=True))
 
 
@@ -199,7 +207,7 @@ def serialised(*state, held_first=False):
             with transaction.atomic():
                 if self.pk is not None:
                     if held_first:
-                        lock_rows(*self.locked_before_it(), refresh=False)
+                        lock_in_turn(self.locked_before_it())
                     lock_rows(self, refresh=False)
                     if state:
                         self.refresh_from_db(fields=list(state))
