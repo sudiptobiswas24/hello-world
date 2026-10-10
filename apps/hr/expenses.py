@@ -54,6 +54,9 @@ class ExpenseClaim(AuditModel):
                                       related_name="+", editable=False)
     voided_entry = models.ForeignKey("accounting.JournalEntry", null=True, blank=True, on_delete=models.PROTECT,
                                      related_name="+", editable=False)
+    bank_entries = models.ManyToManyField(
+        "accounting.JournalEntry", blank=True, editable=False, related_name="+",
+        help_text="Every entry a payment of this claim, or a reversal of one, posted: the bank's record of it.")
 
     class Meta:
         ordering = ["-claim_date", "-id"]
@@ -168,6 +171,7 @@ class ExpenseClaim(AuditModel):
             entry.post()
             self.status, self.paid_on, self.paid_from, self.journal_entry = ClaimStatus.PAID, on_date, paid_from, entry
             self._move(["status", "paid_on", "paid_from", "journal_entry"])
+            self.bank_entries.add(entry)
 
     @serialised("status")
     def unpay(self, reason, on_date=None):
@@ -186,22 +190,21 @@ class ExpenseClaim(AuditModel):
             self.status, self.paid_on, self.paid_from = ClaimStatus.APPROVED, None, None
             self.decision_note = f"Payment reversed: {reason}"[:255]
             self._move(["status", "paid_on", "paid_from", "voided_entry", "decision_note"])
+            self.bank_entries.add(self.voided_entry)
 
 
 def claims_paid():
     """
     The entries claims were paid by, and those that reversed them: money out
     of a cash or bank account that no Payment carries
-    (accounting.register_bank_movements). A claim paid again keeps its new
-    entry and its last reversal, which names the entry it reversed.
+    (accounting.register_bank_movements). Every one a claim posted is kept
+    on it as it is posted (bank_entries): read back from the claim's current
+    entry and last reversal, a claim paid and unpaid twice lost its first
+    pair, and a bank line for it could not be matched (O164).
     """
     from apps.accounting.models import JournalEntry
 
-    claims = ExpenseClaim.objects
-    return JournalEntry.objects.filter(
-        Q(pk__in=claims.filter(journal_entry__isnull=False).values("journal_entry"))
-        | Q(pk__in=claims.filter(voided_entry__isnull=False).values("voided_entry"))
-        | Q(pk__in=claims.filter(voided_entry__isnull=False).values("voided_entry__reverses")))
+    return JournalEntry.objects.filter(pk__in=ExpenseClaim.bank_entries.through.objects.values("journalentry_id"))
 
 
 class ExpenseLine(AuditModel):
