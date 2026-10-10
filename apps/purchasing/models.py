@@ -1802,7 +1802,10 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
     # Shared rule A (apps.core.models.refuse_changing_what_moved), the mirror
     # of the sales order's: confirmed with one vendor in one currency, with
     # its standing and budgets asked, it is not moved to another unasked.
-    FROZEN_ONCE_MOVED = {"vendor": CONFIRMED, "currency": CONFIRMED}
+    # And the customer's order it delivers to (O173): re-pointed after the
+    # receipt, the return looked for its delivery on the other order, found
+    # none, and left the customer's line shipped.
+    FROZEN_ONCE_MOVED = {"vendor": CONFIRMED, "currency": CONFIRMED, "drop_ship_for": CONFIRMED}
 
     def what_moved_against_it(self, kind):
         if kind == CONFIRMED:

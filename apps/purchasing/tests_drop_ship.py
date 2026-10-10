@@ -426,3 +426,33 @@ class ADropShipKeepsWhatItDeliversTests(PurchasingLifecycleTestCase):
         GoodsReceipt.objects.get(pk=receipt.pk).create_return(debit_bills=False)
         self.assertEqual((SalesOrderLine.objects.get(pk=first.pk).quantity_shipped(),
                           SalesOrderLine.objects.get(pk=second.pk).quantity_shipped()), (Decimal("0"), Decimal("0")))
+
+
+class ADropShipOrderKeepsTheSalesOrderItDeliversToTests(PurchasingLifecycleTestCase):  # O173
+    drop_ship_fixture = ADropShipKeepsWhatItDeliversTests.drop_ship_fixture
+
+    def test_a_received_drop_ship_order_is_not_re_pointed(self):
+        import datetime
+
+        from django.core.exceptions import ValidationError
+
+        from apps.sales.models import InvoicePolicy, SalesOrder, SalesOrderLine
+
+        from .models import GoodsReceipt, GoodsReceiptLine, PurchaseOrder
+
+        sale, order = self.drop_ship_fixture()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 10))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.get(), warehouse=self.warehouse,
+                                        quantity_received=Decimal("10"))
+        receipt.post()
+        other = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 1, 1),
+                                          currency=self.usd, invoice_policy=InvoicePolicy.DELIVERED)
+        SalesOrderLine.objects.create(order=other, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                      unit_price=Decimal("10"), revenue_account=self.revenue)
+        other.confirm()
+        order = PurchaseOrder.objects.get(pk=order.pk)
+        order.drop_ship_for = other
+        with self.assertRaisesMessage(ValidationError, "drop_ship_for"):
+            order.save()
+        GoodsReceipt.objects.get(pk=receipt.pk).create_return(debit_bills=False)
+        self.assertEqual(sale.lines.get().quantity_shipped(), Decimal("0"))
