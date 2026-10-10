@@ -294,6 +294,65 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         self.assertEqual(client.patch(url, {"supplier_note_number": "CN-10"}, format="json").status_code, 400)
         self.assertEqual(self.report(Bill.objects.get(pk=draft.pk)), (["INV-27-12", "CN-9"], [], []))
 
+    def test_recorded_on_the_posted_note_when_it_arrives(self):
+        """
+        O159 (review_stat #2): the debit note posts the day the goods go back,
+        with no number; KA's CN-9 arrives later. The AP Manager records it on
+        the posted note and the reconciliation pairs the two. A reader of bills
+        may not. A typo (CN-8) is put right until a GSTR-2B line carries the
+        number standing; after that it stands. No money moves: 1,180 still.
+        """
+        import datetime
+
+        from django.contrib.auth.models import Permission
+
+        from apps.purchasing.models import Bill
+
+        call_command("setup_roles", verbosity=0)
+        ap = User.objects.create_user("ap")
+        ap.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(ap)
+        reader = User.objects.create_user("reader")
+        reader.user_permissions.add(Permission.objects.get(content_type__app_label="purchasing", codename="view_bill"))
+        reading = APIClient()
+        reading.force_authenticate(reader)
+        note = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        url = f"/api/purchasing/bills/{note.pk}/supplier_note/"
+        given = {"supplier_note_number": "CN-8", "supplier_note_date": "2026-09-20"}
+        self.assertEqual(reading.post(url, given, format="json").status_code, 403)
+        typo = client.post(url, given, format="json")
+        self.assertEqual(typo.status_code, 200, typo.content)
+        fixed = client.post(url, {**given, "supplier_note_number": "CN-9"}, format="json")
+        self.assertEqual(fixed.status_code, 200, fixed.content)
+        self.assertEqual(self.report(Bill.objects.get(pk=note.pk)), (["INV-27-12", "CN-9"], [], []))
+        late = client.post(url, {**given, "supplier_note_number": "CN-10"}, format="json")
+        self.assertEqual(late.status_code, 400, late.content)
+        self.assertIn("carries CN-9", str(late.json()))
+        note = Bill.objects.get(pk=note.pk)
+        self.assertEqual((note.supplier_note_number, note.supplier_note_date, note.posted, note.total()),
+                         ("CN-9", datetime.date(2026, 9, 20), True, D("1180.00")))
+
+    def test_one_credit_note_is_answered_once_in_its_financial_year(self):
+        """
+        O159 (review_stat #12): "CN-9" then "cn 9" were two notes to the
+        constraint and one to GSTR-2B; a supplier numbering afresh each April
+        was refused CN/1 in its second year.
+        """
+        import datetime
+
+        from apps.purchasing.models import supplier_note_key
+
+        first = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        second = self.bill.create_debit_note(quantities={self.bill.lines.get(): D("0.1")})
+        first.record_supplier_note("CN-9", datetime.date(2026, 9, 20))
+        with self.assertRaisesMessage(ValidationError, "one credit note is answered by one debit note"):
+            second.record_supplier_note("cn 9", datetime.date(2026, 9, 25))
+        self.assertNotEqual(supplier_note_key("CN/1", datetime.date(2026, 9, 20)),
+                            supplier_note_key("CN/1", datetime.date(2027, 4, 2)))
+        self.assertEqual(supplier_note_key("CN/1", datetime.date(2026, 4, 1)),
+                         supplier_note_key("cn-01", datetime.date(2027, 3, 31)))
+
     def test_made_over_the_api_with_it(self):
         call_command("setup_roles", verbosity=0)
         user = User.objects.create_user("ap")

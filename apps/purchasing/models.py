@@ -2960,6 +2960,32 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         return max(self.quantity_billed() - self.quantity_received(), Decimal("0"))
 
 
+# Asked before a debit note's recorded supplier credit-note number is changed,
+# by modules that pair against it (GSTR-2B). Each raises to refuse.
+SUPPLIER_NOTE_GUARDS = []
+
+
+def register_supplier_note_guard(guard):
+    if guard not in SUPPLIER_NOTE_GUARDS:
+        SUPPLIER_NOTE_GUARDS.append(guard)
+
+
+def supplier_note_key(number, day):
+    """
+    One supplier credit note: its number as GSTR-2B pairs it ("CN-9" and
+    "cn 9" are one), within the supplier's financial year, since a supplier
+    may begin its numbering again each April (O159).
+    """
+    from apps.accounting.gst import document_number_key
+    from apps.accounting.tds import financial_year
+
+    key = document_number_key(number)
+    if not key:
+        return ""
+    start = financial_year(to_date(day))[0] if day else None
+    return f"{start.year if start else ''}:{key}"
+
+
 class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
@@ -2983,11 +3009,16 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         max_length=64, blank=True,
         help_text="On a debit note: the number of the credit note the supplier issued for it, which "
                   "its GSTR-1 and so the company's GSTR-2B carry. Given when the note is made, or "
-                  "while it is a draft.",
+                  "recorded on it when it arrives (record_supplier_note).",
     )
     supplier_note_date = models.DateField(
         null=True, blank=True,
         help_text="On a debit note: the date of the supplier's credit note.",
+    )
+    supplier_note_key = models.CharField(
+        max_length=80, blank=True, editable=False,
+        help_text="The supplier's credit-note number as GSTR-2B pairs it, within the supplier's "
+                  "financial year: what makes it one note.",
     )
     currency = models.ForeignKey(
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
@@ -3099,8 +3130,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             # A supplier's credit note is answered by one debit note: two would
             # each take the credit back.
             models.UniqueConstraint(
-                fields=["vendor", "supplier_note_number"],
-                condition=Q(debits__isnull=False) & ~Q(supplier_note_number=""),
+                fields=["vendor", "supplier_note_key"],
+                condition=Q(debits__isnull=False) & ~Q(supplier_note_key=""),
                 name="one_debit_note_per_supplier_credit_note",
             ),
         ]
@@ -3146,6 +3177,36 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             raise ValidationError("A debit note must be for the same vendor as the bill it corrects.")
         self._check_supplier_note()
 
+    @serialised("supplier_note_number", "supplier_note_date", "supplier_note_key")
+    def record_supplier_note(self, number, day=None):
+        """
+        Record the supplier's credit note on this debit note, posted or not
+        (O159). It usually arrives a week after the goods went back and the
+        note posted; until now it could be given only in the call that made
+        the note. A reference, not money: nothing is re-posted. Given once;
+        a typo is put right by giving it again, until a GSTR-2B line of the
+        supplier carries the number standing (the guards registered here).
+        """
+        if not self.debits_id:
+            raise ValidationError({"supplier_note_number": [
+                "Only a debit note records a supplier's credit note; a bill's own number is its reference."]})
+        number = (number or "").strip()
+        if not number:
+            raise ValidationError({"supplier_note_number": ["Give the number on the supplier's credit note."]})
+        if self.supplier_note_number:
+            for guard in SUPPLIER_NOTE_GUARDS:
+                guard(self, self.supplier_note_number)
+        self.supplier_note_number, self.supplier_note_date = number, to_date(day)
+        self._check_supplier_note()
+        clash = (Bill.objects.filter(vendor_id=self.vendor_id, debits__isnull=False,
+                                     supplier_note_key=self.supplier_note_key).exclude(pk=self.pk).first())
+        if clash is not None:
+            raise ValidationError({"supplier_note_number": [
+                f"{clash} already answers {self.vendor}'s credit note {clash.supplier_note_number}; one "
+                "credit note is answered by one debit note."]})
+        self.save(update_fields=sorted(self.SUPPLIER_NOTE_FIELDS))
+        return self
+
     def _check_supplier_note(self):
         """
         The supplier's credit note a debit note records: only on a debit note,
@@ -3153,6 +3214,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         self.supplier_note_number = (self.supplier_note_number or "").strip()
         self.supplier_note_date = to_date(self.supplier_note_date)
+        self.supplier_note_key = supplier_note_key(
+            self.supplier_note_number, self.supplier_note_date or self.bill_date)
         if not (self.supplier_note_number or self.supplier_note_date):
             return
         if not self.debits_id:
@@ -3559,8 +3622,13 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return False
         return Bill.objects.filter(pk=self.pk, posted=True).exists()
 
+    # What a posted debit note may still take: the supplier's credit note it
+    # answers, which arrives after the note posts. References, not money.
+    SUPPLIER_NOTE_FIELDS = {"supplier_note_number", "supplier_note_date", "supplier_note_key", "updated_at"}
+
     def save(self, *args, **kwargs):
-        if self._was_posted_in_db():
+        updating = set(kwargs.get("update_fields") or ())
+        if self._was_posted_in_db() and not (updating and updating <= self.SUPPLIER_NOTE_FIELDS):
             raise ValidationError("This bill is posted and immutable. Issue a debit note instead.")
         self._check_kind()
         if self._state.adding and self.vendor_id:

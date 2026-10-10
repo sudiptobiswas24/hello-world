@@ -12,6 +12,9 @@ class GstConfig(AppConfig):
 
         from .einvoice import invoice_stamp
         from .ewaybill import refuse_challan_void
+        from .gstr2b import refuse_supplier_note_change
+        from apps.purchasing.models import register_supplier_note_guard
 
         register_invoice_stamp(invoice_stamp)
         register_challan_void_guard(refuse_challan_void)
+        register_supplier_note_guard(refuse_supplier_note_change)

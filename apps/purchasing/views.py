@@ -247,6 +247,7 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post_bill": "purchasing.post_bill",
         "debit_note": "purchasing.post_bill",
+        "supplier_note": "purchasing.post_bill",
         "debit_old_supply": "purchasing.post_bill",
         "deduct_tds": "purchasing.add_tdsdeduction",
         "carried": "purchasing.change_bill",
@@ -312,6 +313,21 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(bill).data)
+
+    @action(detail=True, methods=["post"])
+    def supplier_note(self, request, pk=None):
+        """
+        {supplier_note_number, supplier_note_date?}: the supplier's credit note
+        for this debit note, recorded when it arrives, posted or not (O159).
+        Asked of whoever may issue debit notes.
+        """
+        note = self.get_object()
+        try:
+            note.record_supplier_note(request.data.get("supplier_note_number") or "",
+                                      request.data.get("supplier_note_date") or None)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "error_dict") else exc.messages)
+        return Response(self.get_serializer(Bill.objects.get(pk=note.pk)).data)
 
     @action(detail=True, methods=["post"])
     def debit_note(self, request, pk=None):
