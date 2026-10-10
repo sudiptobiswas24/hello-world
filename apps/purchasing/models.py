@@ -2476,9 +2476,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
     # of the sales line's: a receipt line reads its item and unit from here,
     # and the match reads its price and discount. Received as one widget and
     # changed to another, the shelf held the first and the order the second.
-    # Its order from confirmation, as the sales line's.
+    # Its order from confirmation, as the sales line's; and the customer's line a drop-ship delivers:
+    # re-pointed after its receipt, the return took back nothing from the line it had shipped.
     FROZEN_ONCE_MOVED = {
-        "order": CONFIRMED, "item": MOVED, "charge": MOVED, "uom": MOVED,
+        "order": CONFIRMED, "sales_order_line": CONFIRMED, "item": MOVED, "charge": MOVED, "uom": MOVED,
         "unit_price": BILLED, "discount_percent": BILLED,
     }
 
