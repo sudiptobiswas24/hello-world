@@ -41,9 +41,11 @@ class SettlementTestCase(DropShipTestCase):
         return invoice
 
     def debit_note(self, account=None):
-        order = self.make_order(quantity="10", price="10")
+        # Placed with the customer before it is confirmed: a confirmed order's vendor is frozen (O138).
+        order = self.make_order(quantity="10", price="10", confirm=False)
         order.vendor = self.customer
         order.save()
+        order.confirm()
         self.receive(order, "10")
         account = account or self.payable
         bill = order.create_bill(account)

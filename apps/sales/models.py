@@ -23,6 +23,7 @@ from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 from apps.core.models import (
     BILLED,
+    CONFIRMED,
     MOVED,
     Extensible,
     Address,
@@ -562,12 +563,15 @@ class SalesOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
         if _names_another(self, "customer"):
             _require_customer_role(self.customer)
 
-    # Shared rule A (apps.core.models.refuse_changing_what_moved): shipped to
-    # one customer and billed in one currency, the rest is not billed to
-    # another, in another.
-    FROZEN_ONCE_MOVED = {"customer": MOVED, "currency": MOVED}
+    # Shared rule A (apps.core.models.refuse_changing_what_moved): confirmed
+    # for one customer in one currency, with their credit limit and hold
+    # asked, it is not moved to another customer or currency unasked.
+    FROZEN_ONCE_MOVED = {"customer": CONFIRMED, "currency": CONFIRMED}
 
     def what_moved_against_it(self, kind):
+        if kind == CONFIRMED:
+            stored = SalesOrder.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+            return "" if stored in (None, OrderStatus.DRAFT) else f"been {OrderStatus(stored).label.lower()}"
         shipped = self.deliveries.filter(posted=True).first()
         if shipped is not None:
             return f"shipped on {shipped.number}"
@@ -1441,12 +1445,23 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
     # gadget had five gadgets put back on the shelf when the widgets came
     # back. The price and discount may still be agreed again before the
     # goods are billed, never after.
+    # Its order from confirmation: a line moved onto a confirmed order asked
+    # nothing of that customer's limit, and one moved off left its order
+    # worth less than its deposit. Moved after confirmation, a line is made
+    # afresh on the other order, which asks what adding one asks.
     FROZEN_ONCE_MOVED = {
-        "order": MOVED, "item": MOVED, "charge": MOVED, "uom": MOVED,
+        "order": CONFIRMED, "item": MOVED, "charge": MOVED, "uom": MOVED,
         "unit_price": BILLED, "discount_percent": BILLED,
     }
 
     def what_moved_against_it(self, kind):
+        if kind == CONFIRMED:
+            stored = SalesOrderLine.objects.filter(pk=self.pk).values_list("order", flat=True).first()
+            leaving = SalesOrder.objects.filter(pk=stored).exclude(status=OrderStatus.DRAFT).first()
+            if leaving is not None:
+                return f"been confirmed on {leaving}"
+            joining = SalesOrder.objects.filter(pk=self.order_id).exclude(status=OrderStatus.DRAFT).first()
+            return f"to be made afresh on {joining}, which is confirmed" if joining is not None else ""
         if kind == BILLED:
             billed = self.quantity_invoiced()
             return f"been invoiced for {format(billed.normalize(), 'f')}" if billed > 0 else ""

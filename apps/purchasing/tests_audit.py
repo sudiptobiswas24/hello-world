@@ -690,7 +690,8 @@ class AReceivedOrderStaysAsItMovedTests(TradeRuleCase):
         order = self.order()
         self.receive(order, "10")
         order.vendor = self.other_vendor()
-        with self.assertRaisesMessage(ValidationError, "received goods on GRN-"):
+        # Frozen from confirmation (O138), which comes before anything is received.
+        with self.assertRaisesMessage(ValidationError, "has been confirmed; its vendor can no longer change"):
             order.save()
 
     def test_a_received_orders_currency_cannot_change(self):
@@ -699,6 +700,30 @@ class AReceivedOrderStaysAsItMovedTests(TradeRuleCase):
         order.currency = self.eur
         with self.assertRaisesMessage(ValidationError, "currency can no longer change"):
             order.save()
+
+
+class AConfirmedPurchaseOrderKeepsItsVendorAndLinesTests(TradeRuleCase):
+    """O138, the mirror: a confirmed order's vendor and currency, and the order a line is on."""
+
+    def test_a_confirmed_orders_vendor_cannot_change(self):
+        order = self.order()
+        order.vendor = self.other_vendor()
+        with self.assertRaisesMessage(ValidationError, "has been confirmed; its vendor can no longer change"):
+            order.save()
+
+    def test_a_confirmed_orders_currency_cannot_change(self):
+        order = self.order()
+        order.currency = self.eur
+        with self.assertRaisesMessage(ValidationError, "its currency can no longer change"):
+            order.save()
+
+    def test_a_line_is_not_moved_between_confirmed_orders(self):
+        first, second = self.order(), self.order()
+        response = self.as_("Purchasing Clerk").patch(
+            f"/api/purchasing/purchase-order-lines/{first.lines.get().pk}/", {"order": second.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("been confirmed on", response.json()["order"][0])
+        self.assertEqual((first.lines.count(), second.lines.count()), (1, 1))
 
 
 class ABillLineBillsOnlyItsOwnOrderLineTests(TradeRuleCase):

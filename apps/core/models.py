@@ -281,10 +281,12 @@ def correction_date(on_date, original, refused, since):
 
 # -- Shared rule A: frozen once it moved -------------------------------------
 
-# What freezes a field: anything shipped, received, invoiced or billed
-# against the record, or only an invoice or bill (a price may still be
-# agreed again after the goods came, never after they were billed).
-MOVED, BILLED = "moved", "billed"
+# What freezes a field: confirming the order (its party, its currency, the
+# order a line is on: what confirm() asked, which an edit would undo
+# unasked), anything shipped, received, invoiced or billed against the
+# record, or only an invoice or bill (a price may still be agreed again
+# after the goods came, never after they were billed).
+CONFIRMED, MOVED, BILLED = "confirmed", "moved", "billed"
 
 
 def refuse_changing_what_moved(instance, hold):
@@ -299,9 +301,14 @@ def refuse_changing_what_moved(instance, hold):
     had asked about the customer, the currency and the item; an edit asked
     nothing.
 
-    The model declares FROZEN_ONCE_MOVED, {field: MOVED or BILLED}, and
-    answers what_moved_against_it(kind): what has moved, as words that
-    follow "has" ("shipped on DO-0001"), or nothing. `hold` takes the locks
+    So did a confirmed order moved to another customer, with none of what
+    confirming asks asked: their exposure stood at 1,100 against a limit of
+    500. Anything moved after confirmation is made afresh.
+
+    The model declares FROZEN_ONCE_MOVED, {field: CONFIRMED, MOVED or
+    BILLED}, and answers what_moved_against_it(kind): what has happened,
+    as words that follow "has" ("shipped on DO-0001", "been confirmed"),
+    or nothing. `hold` takes the locks
     the documents that move it post under, so nothing posts between the
     question and the write; it is called only when a frozen field changed.
     Asked in save(), where every edit passes, the API's and the code's.
