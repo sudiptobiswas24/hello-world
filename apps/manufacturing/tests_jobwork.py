@@ -475,6 +475,23 @@ class JobWorkApiTests(JobWorkTestCase):
         }, format="json")
         self.assertEqual(too_much.status_code, 400)
 
+    def test_what_the_api_makes_names_who_made_it(self):
+        # The three viewsets replaced the history mixin's save to word a
+        # refusal: nothing was stamped, and the loss locked its period
+        # outside any transaction (a 500 on PostgreSQL).
+        from django.contrib.auth.models import User
+
+        challan = self.draft()
+        issued = self.client.post(f"{self.base}job-work-challans/{challan['id']}/post/").json()
+        loss = self.client.post(self.base + "job-work-losses/", {
+            "line": issued["lines"][0]["id"], "loss_date": "2026-06-05", "quantity": "4",
+        }, format="json")
+        self.assertEqual(loss.status_code, 201, loss.content)
+        planner = User.objects.get(username="planner")
+        self.assertEqual(JobWorkChallan.objects.get(pk=challan["id"]).created_by, planner)
+        self.assertEqual(JobWorkLine.objects.get(pk=issued["lines"][0]["id"]).created_by, planner)
+        self.assertEqual(JobWorkLoss.objects.get(pk=loss.json()["id"]).created_by, planner)
+
 
 class ChallanPdfTests(JobWorkTestCase):
     """The rule 55 delivery challan that goes with the goods, printed from the record."""

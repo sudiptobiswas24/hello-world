@@ -101,6 +101,7 @@ class Command(BaseCommand):
         findings += self.greenwich_dates(labels, sources)
         findings += self.unsettable_fields(labels)
         findings += self.undeclared_actions(labels)
+        findings += self.writes_around_the_mixin(labels)
         findings += self.unscoped_party_reads(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
@@ -574,6 +575,65 @@ class Command(BaseCommand):
                         f"{view.__module__}.{view.__name__}.{extra.__name__} writes ({', '.join(sorted(writes))}) "
                         "and action_permission_map names no permission for it: say which.",
                     ))
+        return findings
+
+    # A write that replaces the mixin's own on purpose, with the reason. An
+    # entry the check no longer needs is reported as stale.
+    WRITES_AROUND_THE_MIXIN_ON_PURPOSE = {
+        "core.NewPartyViewSet.create": "a party and its sections in one transaction of its own, each stamped",
+        "core.PartyViewSet.perform_create": "make_party() is its own transaction and stamps the party and its role",
+        "manufacturing.BomChangeOrderViewSet.create": "raise_change() is its own transaction and stamps created_by",
+        "sales.PriceVariationBillViewSet.create": "bill_variation() is its own transaction; created_by blank (O202)",
+        "manufacturing.CostSheetViewSet.create": "quoting.cost() is its own transaction; created_by blank (O202)",
+        "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction; created_by blank (O202)",
+    }
+    MIXIN_WRITES = ("create", "update", "destroy", "perform_create", "perform_update", "perform_destroy")
+
+    def writes_around_the_mixin(self, labels, viewsets=None):
+        """
+        A write on a viewset that keeps history that replaces the mixin's own
+        (AuditableViewSetMixin) without calling it.
+
+        The mixin holds a write in one transaction and stamps who made or
+        changed the record. Ten viewsets replaced perform_create() to word
+        a refusal the exception handler words already, and so wrote outside
+        any transaction (a job-work loss locked its period there: a 500 on
+        PostgreSQL, nothing on SQLite) and left created_by blank.
+        """
+        import inspect
+
+        from apps.core.audit import AuditableViewSetMixin
+
+        findings, seen = [], set()
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            queryset = getattr(view, "queryset", None)
+            if queryset is None or queryset.model._meta.app_label not in labels:
+                continue
+            if not issubclass(view, AuditableViewSetMixin):
+                continue
+            mro = view.__mro__
+            below = mro[:mro.index(AuditableViewSetMixin)]
+            for name in self.MIXIN_WRITES:
+                owner = next((cls for cls in below if name in vars(cls)), None)
+                if owner is None:
+                    continue
+                key = f"{owner.__module__.split('.')[1]}.{owner.__name__}.{name}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                if "super()." in inspect.getsource(vars(owner)[name]):
+                    continue
+                if key in self.WRITES_AROUND_THE_MIXIN_ON_PURPOSE:
+                    continue
+                findings.append((
+                    "write around the history mixin",
+                    f"{key} replaces AuditableViewSetMixin.{name} without calling it: no transaction and "
+                    "no created_by/updated_by. Call super(); a model refusal is worded by the exception handler.",
+                ))
+        if viewsets is None:
+            for key in sorted(set(self.WRITES_AROUND_THE_MIXIN_ON_PURPOSE) - seen):
+                findings.append(("stale exemption",
+                                 f"WRITES_AROUND_THE_MIXIN_ON_PURPOSE names {key}, which no longer replaces the mixin's write"))
         return findings
 
     # Read unscoped on purpose or reported to the module that owns it, with

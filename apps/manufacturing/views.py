@@ -497,15 +497,6 @@ class MaterialRateViewSet(_DatedRateViewSet):
 class _InwardViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """Drafted freely, posted, voided with a reason; never edited once posted."""
 
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
-    def perform_destroy(self, instance):
-        _run(instance.delete)
-
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
         document = self.get_object()
@@ -554,15 +545,6 @@ class CustomerMaterialReceiptLineViewSet(AuditableViewSetMixin, viewsets.ModelVi
     serializer_class = CustomerMaterialReceiptLineSerializer
     filter_fields = ["receipt", "item", "receipt__customer", "receipt__posted"]
     search_fields = ["item__sku", "item__name", "lot__code"]
-
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
-    def perform_destroy(self, instance):
-        _run(instance.delete)
 
 
 class CustomerMaterialReturnViewSet(_InwardViewSet):
@@ -1963,16 +1945,10 @@ class JobWorkChallanViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "void": "manufacturing.change_jobworkchallan",
     }
 
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
     def perform_destroy(self, instance):
         if instance.posted:
             raise DRFValidationError([f"{instance} is issued. Void it instead."])
-        instance.delete()
+        super().perform_destroy(instance)
 
     @action(detail=True, methods=["get"])
     def pdf(self, request, pk=None):
@@ -2034,16 +2010,10 @@ class JobWorkLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     serializer_class = JobWorkLineSerializer
     filter_fields = ["challan"]
 
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
     def perform_destroy(self, instance):
         if instance.challan.posted:
             raise DRFValidationError([f"{instance.challan} is issued; its lines are fixed."])
-        instance.delete()
+        super().perform_destroy(instance)
 
 
 class JobWorkLossViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
@@ -2055,9 +2025,6 @@ class JobWorkLossViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "loss_date"
     http_method_names = ["get", "post", "head", "options"]
     action_permission_map = {"void": "manufacturing.change_jobworkloss"}
-
-    def perform_create(self, serializer):
-        _run(serializer.save)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
@@ -2259,15 +2226,6 @@ class ProductionScrapViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = ProductionScrap.objects.select_related("entry", "reason", "operation")
     serializer_class = ProductionScrapSerializer
     filter_fields = ["entry", "reason"]
-
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
-    def perform_destroy(self, instance):
-        _run(instance.delete)
 
 
 class OperationReportViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):

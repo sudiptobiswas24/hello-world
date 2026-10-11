@@ -192,6 +192,12 @@ Go through it before running anything.
   `audit_invariants` checks every model field is settable or listed as
   set by the system.
 - `bool("false")` is True. Read a yes-or-no with `apps.core.api.flag`.
+- Never replace `AuditableViewSetMixin`'s `perform_create`/`perform_update`;
+  pass your own field through `super().perform_create(serializer, owner=...)`.
+  Ten viewsets replaced it to word a refusal the exception handler words
+  already, and lost the transaction and `created_by` with it: a job-work
+  loss locked its period outside any transaction, a 500 on PostgreSQL
+  only. `audit_invariants` (`writes_around_the_mixin`) reports it now.
 
 **Migrations**
 - Redirect `makemigrations` to a file and read it; never pipe it into
@@ -257,6 +263,10 @@ Go through it before running anything.
   It re-reads them too: an object read before the lock is stale.
 - Prove it on PostgreSQL with `apps/e2e/tests_races.py`'s `race()`;
   SQLite serialises writers by accident and proves nothing.
+- A method that locks opens its own `transaction.atomic`; it does not
+  trust its caller to. SQLite ignores `select_for_update`, so under tests
+  the sentinel refuses a lock outside a transaction the code opened, on
+  every database (`LockedOutsideATransaction`).
 
 **The office application (`frontend/`)**
 - Every call goes through `src/api/client.ts`: it sends the CSRF token,

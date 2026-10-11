@@ -4,7 +4,7 @@ from django.conf import settings
 from django.db import connection, transaction
 from django.test import TestCase
 
-from .lock_order import LOCK_ORDER, LockOrderViolation, taken
+from .lock_order import LOCK_ORDER, LockedOutsideATransaction, LockOrderViolation, taken
 from .models import Party, lock_rows
 
 
@@ -32,6 +32,12 @@ class TheSentinelHoldsTestsToTheLockOrderTests(TestCase):
             with transaction.atomic():
                 list(Party.objects.select_for_update().filter(code="P2"))
                 lock_rows(self.first)
+
+    def test_a_lock_outside_any_transaction_the_code_opened_is_refused(self):
+        # On SQLite the lock is ignored and on PostgreSQL it is a 500; a
+        # TestCase's own block is not one the code opened.
+        with self.assertRaisesMessage(LockedOutsideATransaction, "core.party locked outside any transaction"):
+            list(Party.objects.select_for_update().filter(code="P1"))
 
     def test_the_written_order_and_a_row_already_held_pass(self):
         with transaction.atomic():

@@ -72,6 +72,18 @@ class LockOrderViolation(AssertionError):
     """A transaction took a row the written lock order puts before one it already held."""
 
 
+class LockedOutsideATransaction(AssertionError):
+    """
+    A row locked where no transaction the code opened holds it.
+
+    On PostgreSQL that is a 500 ("select_for_update cannot be used outside
+    of a transaction"); on SQLite, which ignores select_for_update, nothing
+    at all, so the suite on SQLite passed a job-work loss that PostgreSQL
+    refused on its first call. Inside a TestCase only the test's own block
+    is open, which no request in production has; that counts as outside.
+    """
+
+
 def _state(connection):
     state = getattr(connection, "_lock_order_state", None)
     if state is None:
@@ -108,7 +120,12 @@ def _survey(kind, *key):
 def taken(connection, label, pks):
     """Rank the rows `label` `pks` (None: not known) just locked on `connection`."""
     if not connection.in_atomic_block or not _in_a_transaction_of_its_own(connection):
-        return
+        if _SURVEY:
+            _survey("outside", label)
+            return
+        raise LockedOutsideATransaction(
+            f"{label} locked outside any transaction the code opened, at {_where()}: "
+            f"the lock is gone when the statement ends. Open one where the decision is made.")
     state = _state(connection)
     for pk in (pks if pks is not None else [None]):
         if (label, pk) in state["held"]:

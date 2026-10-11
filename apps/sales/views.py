@@ -305,18 +305,6 @@ class SuppliedItemViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.M
     search_fields = ["order__number", "item__sku", "item__name"]
     http_method_names = ["get", "post", "delete", "head", "options"]
 
-    def perform_create(self, serializer):
-        try:
-            serializer.save()
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages)
-
-    def perform_destroy(self, instance):
-        try:
-            instance.delete()
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages)
-
 
 class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelViewSet):
     extra_params = ("open", "without_irn")

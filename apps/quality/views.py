@@ -154,12 +154,6 @@ class CalibrationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     # has always shown it).
     action_permission_map = {"post": "quality.change_calibration", "void": "quality.change_calibration"}
 
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
-    def perform_destroy(self, instance):
-        _run(instance.delete)
-
     @action(detail=True, methods=["post"])
     def post(self, request, pk=None):
         calibration = self.get_object()

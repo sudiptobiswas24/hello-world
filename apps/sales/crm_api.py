@@ -34,10 +34,10 @@ class OwnedMixin:
         return owner_for(self.request.user, given)
 
     def perform_create(self, serializer):
-        serializer.save(owner=self._owner(serializer))
+        super().perform_create(serializer, owner=self._owner(serializer))
 
     def perform_update(self, serializer):
-        serializer.save(owner=self._owner(serializer, serializer.instance.owner))
+        super().perform_update(serializer, owner=self._owner(serializer, serializer.instance.owner))
 
 
 class CampaignSerializer(serializers.ModelSerializer):

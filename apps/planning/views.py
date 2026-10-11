@@ -437,15 +437,6 @@ class MasterScheduleViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {"commit": "planning.change_masterscheduleentry",
                              "withdraw": "planning.change_masterscheduleentry"}
 
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
-    def perform_destroy(self, instance):
-        _run(instance.delete)
-
     @action(detail=True, methods=["get"], url_path="rough-cut")
     def rough_cut(self, request, pk=None):
         entry = self.get_object()

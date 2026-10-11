@@ -342,6 +342,7 @@ missing), **minor**.
 | O199 | accounting | The per-unit note cap (`priced_to_give_back`): for a fractional quantity, a share the paisa does not divide leaves under one paisa per line on the receivable, and the last unit's rounding can post up to half a paisa over the unrounded cap (docs/handoff/reports/fix_trade.md, seen #2) | books | minor |
 | O200 | sales | Migration sales 0064: an approval whose note names no figures leaves a line cut after it seeded at what it holds; charge lines are never matched by label; total and margin are seeded empty unless the note names them (docs/handoff/reports/fix_trade.md, seen #3) | books | minor |
 | O201 | accounting | A typed note line may credit any revenue account, not the one its original line used (docs/handoff/reports/fix_trade.md, seen #4) | books | open |
+| O202 | manufacturing, sales | A cost sheet, a test certificate and a price-variation bill made over the API carry no created_by: quoting.cost(), certificates.issue() and bill_variation() take no maker. Their history line names who; the stamp on the record is blank (seen 2026-10-11, exempted in audit_invariants WRITES_AROUND_THE_MIXIN_ON_PURPOSE) | audit trail | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.

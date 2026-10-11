@@ -114,7 +114,7 @@ class ExpenseClaimViewSet(OwnOrReportsMixin, AuditableViewSetMixin, viewsets.Mod
             employee = me
         elif employee is None:
             employee = _me(self.request)
-        serializer.save(employee=employee)
+        super().perform_create(serializer, employee=employee)
 
     def _answer(self, claim):
         return Response(self.get_serializer(self.get_queryset().get(pk=claim.pk)).data)
@@ -248,7 +248,7 @@ class AppraisalViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         reviewer = serializer.validated_data.get("reviewer")
         if reviewer is None or not self._as_hr():
             reviewer = _me(self.request)
-        serializer.save(reviewer=reviewer)
+        super().perform_create(serializer, reviewer=reviewer)
 
     def perform_update(self, serializer):
         self._check_appraiser(serializer)

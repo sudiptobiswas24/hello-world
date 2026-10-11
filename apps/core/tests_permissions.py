@@ -402,3 +402,48 @@ class ATaxPreviewIsAReadTests(TestCase):
 
     def test_not_reading_them_is_not(self):
         self.assertEqual(self.post("accounting.add_tax").status_code, 403)
+
+
+class EveryWriteGoesThroughTheHistoryMixinTests(TestCase):
+    """audit_invariants writes_around_the_mixin, and the mixin's answer on a read-only viewset."""
+
+    @staticmethod
+    def planted():
+        from rest_framework import viewsets
+
+        from apps.core.audit import AuditableViewSetMixin
+
+        class Replaced(AuditableViewSetMixin, viewsets.ModelViewSet):
+            queryset = Account.objects.all()
+
+            def perform_create(self, serializer):
+                serializer.save()
+
+        class Extended(AuditableViewSetMixin, viewsets.ModelViewSet):
+            queryset = Account.objects.all()
+
+            def perform_create(self, serializer):
+                super().perform_create(serializer, name="set here")
+
+        return [Replaced, Extended]
+
+    def test_a_planted_write_that_skips_the_mixin_is_reported_and_one_calling_it_is_not(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        found = Command().writes_around_the_mixin(["accounting"], self.planted())
+        self.assertEqual([detail.split(" replaces ")[0] for _shape, detail in found],
+                         ["core.Replaced.perform_create"])
+
+    def test_every_routed_viewset_writes_through_the_mixin(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command
+
+        self.assertEqual(Command().writes_around_the_mixin(list(OUR_APPS)), [])
+
+    def test_a_read_only_viewset_answers_put_and_delete_with_405(self):
+        # The mixin's update() and destroy() give it the routes; they called
+        # a base with nothing to call, a 500.
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("keeper"))
+        for method in ("put", "delete"):
+            response = getattr(client, method)("/api/manufacturing/work-order-operations/1/")
+            self.assertEqual(response.status_code, 405, method)

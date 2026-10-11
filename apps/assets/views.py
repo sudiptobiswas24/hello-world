@@ -84,15 +84,6 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "uncapitalise": "accounting.post_journalentry",
     }
 
-    def perform_update(self, serializer):
-        _run(serializer.save)
-
-    def perform_create(self, serializer):
-        _run(serializer.save)
-
-    def perform_destroy(self, instance):
-        _run(instance.delete)
-
     @action(detail=True, methods=["post"], url_path="place-in-service")
     def place_in_service(self, request, pk=None):
         asset = self.get_object()

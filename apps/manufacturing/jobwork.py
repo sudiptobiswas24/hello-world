@@ -298,6 +298,7 @@ class JobWorkLoss(AuditModel):
             models.CheckConstraint(check=Q(quantity__gt=0), name="job_work_loss_positive"),
         ]
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if not self._state.adding and not getattr(self, "_voiding", False):
             raise ValidationError("A recorded loss is a fact; void it and record the right one.")
