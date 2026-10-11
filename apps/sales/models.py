@@ -1,0 +1,5968 @@
+import logging
+from collections import defaultdict
+from decimal import Decimal
+
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.db import models, transaction
+from django.db.models import Q
+from django.utils import timezone
+
+from apps.accounting.models import (
+    ChargeType,
+    Account,
+    JournalEntry,
+    JournalLine,
+    Payment,
+    PaymentDirection,
+    Tax,
+        round_money,
+)
+from apps.accounting.trade_terms import FreightTerms, Incoterm
+from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors
+from apps.core.history import EventKind, record
+from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
+from apps.core.models import (
+    BILLED,
+    CONFIRMED,
+    MOVED,
+    Extensible,
+    Address,
+    AuditModel,
+    Company,
+    Currency,
+    DocumentSequence,
+    Party,
+    PartyRole,
+    PartyRoleAssignment,
+    PaymentTerms,
+    UnitOfMeasure,
+    correction_date,
+    answer_to_its_document,
+    documents_it_answers_to,
+    lock_rows,
+    only_one,
+    prefetched,
+    refuse_changing_what_moved,
+    serialised,
+    to_date,
+)
+from apps.inventory.models import (
+    Item,
+    MovementType,
+    StockMovement,
+    StockReservation,
+    Warehouse,
+        lock_positions,
+    pick_list,
+    plan_issue,
+    release_for,
+)
+from apps.inventory.valuation import post_inventory_entry
+from apps.quality.release import check_released
+
+from apps.accounting.defaults import default_account
+from apps.accounting.money import refuse_money_kept_as
+from apps.accounting.mixins import (
+    PostedLineMixin,
+    PostedTaxDocumentMixin,
+    RecordedLineTax,
+    TaxedDocumentMixin,
+    TaxedLineMixin,
+    refuse_correcting_a_note,
+    refuse_correcting_another_line,
+    priced_to_give_back,
+    refuse_correcting_past_what_it_holds,
+    refuse_naming_another_order_line,
+    value_left,
+)
+
+from apps.accounting.settlement import (
+    allocated_on,
+    amount_overdue,
+    installment_schedule,
+    oldest_overdue,
+    owed_beyond,
+    post_drawdown,
+    RealisedOnItsOwnDay,
+    refuse_other_control_account,
+    booked_beside,
+    settlement_discount_to_take,
+    standing_on_account,
+    withdraw_discount,
+    undone_by_note,
+    unapplied,
+)
+
+from .pricing import resolve_price
+
+logger = logging.getLogger(__name__)
+
+
+def _require_customer_role(party):
+    if party and not party.role_assignments.filter(role=PartyRole.CUSTOMER).exists():
+        raise ValidationError(f"{party} does not have the Customer role.")
+
+
+def _names_another(row, field):
+    """New, or `field` now names another party than the one stored: when a role is first known to matter."""
+    if row._state.adding or row.pk is None:
+        return True
+    return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
+
+
+class SettlementStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    UNPAID = "unpaid", "Unpaid"
+    PARTIAL = "partial", "Partially paid"
+    PAID = "paid", "Paid"
+    WRITTEN_OFF = "written_off", "Written off"
+
+
+class PriceList(AuditModel):
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="price_lists"
+    )
+    is_default = models.BooleanField(
+        default=False, help_text="Used for any customer without a list of their own."
+    )
+    valid_from = models.DateField(null=True, blank=True)
+    valid_to = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self):
+        return self.name
+
+    def clean(self):
+        self._check_span()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_span()
+        super().save(*args, **kwargs)
+
+    def _check_span(self):
+        if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
+            raise ValidationError("valid_to cannot be before valid_from.")
+
+    def covers(self, on_date):
+        on_date = to_date(on_date)
+        if self.valid_from and on_date < self.valid_from:
+            return False
+        if self.valid_to and on_date > self.valid_to:
+            return False
+        return True
+
+
+class PriceListItem(AuditModel):
+    price_list = models.ForeignKey(PriceList, on_delete=models.CASCADE, related_name="entries")
+    item = models.ForeignKey(Item, on_delete=models.CASCADE, related_name="price_entries")
+    min_quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, default=Decimal("1"),
+        help_text="Volume break: this price applies from this quantity upwards.",
+    )
+    unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ["price_list", "item", "-min_quantity"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["price_list", "item", "min_quantity"], name="unique_price_break"
+            ),
+            models.CheckConstraint(check=Q(min_quantity__gt=0), name="price_break_quantity_positive"),
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="price_not_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.item} @ {self.unit_price} (from {self.min_quantity})"
+
+
+class ApprovalPolicy(AuditModel):
+    """
+    The thresholds beyond which a sales order needs a second pair of eyes.
+
+    RBAC answers "who may confirm an order"; it says nothing about how
+    much they may give away while doing it. A rep with permission to
+    confirm can discount 90% and sell below cost, and no role check
+    anywhere notices.
+
+    Each threshold is optional — a blank one is not enforced, rather than
+    silently defaulting to something that would block every order the
+    day this is switched on.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    max_discount_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Any line discounted above this needs approval.",
+    )
+    min_margin_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Gross margin over the order, against weighted average cost. "
+                  "Catches the discount that a percentage limit misses: a cheap "
+                  "item sold at a small discount can still be sold at a loss.",
+    )
+    max_order_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Orders above this value need approval regardless of margin.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        verbose_name_plural = "approval policies"
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        # One policy is in force: active() reads the first.
+        with transaction.atomic():
+            only_one(self, "is_active")
+            super().save(*args, **kwargs)
+
+    @classmethod
+    def active(cls):
+        return cls.objects.filter(is_active=True).first()
+
+
+class Industry(models.TextChoices):
+    CEMENT = "cement", "Cement"
+    FERTILISER = "fertiliser", "Fertiliser"
+    FOOD_GRAIN = "food_grain", "Food grain and pulses"
+    SUGAR = "sugar", "Sugar"
+    SALT = "salt", "Salt"
+    FEED = "feed", "Animal feed"
+    CHEMICALS = "chemicals", "Chemicals and polymers"
+    OTHER = "other", "Other"
+
+
+class CustomerProfile(AuditModel):
+    """
+    Sales-side settings for a Party. Held here rather than on core.Party for
+    the same reason PartyTaxProfile lives in Accounting: the kernel must not
+    depend on the modules built on top of it.
+    """
+
+    party = models.OneToOneField(Party, on_delete=models.CASCADE, related_name="customer_profile")
+    price_list = models.ForeignKey(
+        PriceList, null=True, blank=True, on_delete=models.SET_NULL, related_name="customers",
+        help_text="Overrides the default price list for this customer.",
+    )
+    credit_limit = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True,
+        help_text="Maximum this customer may owe. Blank means no limit.",
+    )
+    # What the customer's goods may be made of: a food or pharma packer
+    # buying virgin-only sacks, a buyer capping filler for strength, an
+    # export customer requiring UV-stabilised tape.
+    virgin_only = models.BooleanField(
+        default=False,
+        help_text="Nothing recovered from waste — regrind of any kind — anywhere "
+                  "in what they are sold, checked on the recipe and on the lots shipped.",
+    )
+    max_filler_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="The most filler (calcium carbonate) the tape may carry.",
+    )
+    min_uv_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="The least UV stabiliser the tape must carry.",
+    )
+    third_party_inspection = models.BooleanField(
+        default=False,
+        help_text="Their own inspector passes each batch before it may be loaded. "
+                  "What a new order takes; an order may say otherwise.",
+    )
+    release_covers_returns = models.BooleanField(
+        default=False,
+        help_text="Goods they send back go back under their inspector's release. Off, "
+                  "returned sacks must be inspected again before they go out again.",
+    )
+    over_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="How far over the ordered quantity they accept, and are billed for. "
+                  "What a new order line takes; the line may say otherwise.",
+    )
+    under_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal("0"),
+        help_text="How far short of the ordered quantity still counts as the order "
+                  "met: nothing more is planned or promised against it.",
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="customers_carried",
+        help_text="The rep whose customer this is. A rep sees their own customers "
+                  "and nobody else's; a new order takes them as its rep.",
+    )
+    industry = models.CharField(max_length=16, choices=Industry.choices, blank=True,
+                                help_text="What they fill the sacks with; the sales report groups by it.")
+    # How the goods travel. A new order records them as they are that day, and its papers print them.
+    freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
+    incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True,
+                                help_text="For an export customer.")
+    port_of_discharge = models.CharField(max_length=64, blank=True, help_text="For an export customer: Jebel Ali.")
+    transporter = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Who usually carries their goods; a new delivery takes them.",
+    )
+    credit_hold = models.BooleanField(
+        default=False, help_text="No order is confirmed and nothing is dispatched to them until it is lifted.")
+    credit_hold_reason = models.CharField(max_length=255, blank=True)
+    # How they want the sacks packed and marked. A new order records them; its runs' cards print them.
+    sacks_per_bale = models.PositiveIntegerField(null=True, blank=True, help_text="Bales of 500, say.")
+    marking = models.TextField(blank=True, help_text="Marking and printing instructions: batch, date, brand.")
+
+    class Meta:
+        permissions = [
+            ("view_every_customer", "Can see every customer, not only one's own as a rep"),
+        ]
+        constraints = [
+            models.CheckConstraint(check=Q(sacks_per_bale__isnull=True) | Q(sacks_per_bale__gt=0),
+                                   name="customer_bales_hold_some_sacks"),
+            models.CheckConstraint(
+                check=(Q(max_filler_percent__isnull=True)
+                       | (Q(max_filler_percent__gte=0) & Q(max_filler_percent__lte=100)))
+                & (Q(min_uv_percent__isnull=True)
+                   | (Q(min_uv_percent__gte=0) & Q(min_uv_percent__lte=100))),
+                name="customer_material_rules_are_percentages",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Sales profile for {self.party}"
+
+    def save(self, *args, **kwargs):
+        # A customer carried by someone who is not a rep would be seen by
+        # nobody limited to their own, and paid commission to nobody.
+        # Asked when the rep is set or changed: a rep who has since left
+        # must not stop accounts changing the customer's credit limit.
+        before, transporter_before = (None, None) if self._state.adding else (
+            CustomerProfile.objects.filter(pk=self.pk).values_list("sales_rep_id", "transporter_id").first())
+        if self.sales_rep_id and self.sales_rep_id != before and not SalesRep.objects.filter(
+                party_id=self.sales_rep_id, is_active=True).exists():
+            raise ValidationError({"sales_rep": [f"{self.sales_rep} is not an active sales rep."]})
+        self.credit_hold_reason = self.credit_hold_reason.strip()
+        if self.credit_hold and not self.credit_hold_reason:
+            # Whoever meets the refusal at the gate has to know why, and whom to ask.
+            raise ValidationError({"credit_hold_reason": ["Say why they are on hold."]})
+        if self.transporter_id and self.transporter_id != transporter_before and not PartyRoleAssignment.objects.filter(
+                party_id=self.transporter_id, role=PartyRole.VENDOR).exists():
+            raise ValidationError({"transporter": [f"{self.transporter} is not a vendor; a transporter is one we deal with."]})
+        super().save(*args, **kwargs)
+
+    def has_material_rules(self):
+        return (self.virgin_only or self.max_filler_percent is not None
+                or self.min_uv_percent is not None)
+
+
+# Checks an app can make of what an item or a batch is made of, registered
+# when it loads: `fn(profile, item, lots, on_date) -> [problem, ...]`. Here
+# so sales asks without importing whoever knows the recipe.
+MATERIAL_CHECKERS = []
+
+# What a printed invoice carries that sales does not decide: a tax
+# registration's number and code, and whether it may be sent without
+# them. Registered by the module that knows (gst), so sales imports
+# nothing of it. Each returns None or {"rows": [(label, value)], "qr":
+# text or None, "refuse_sending": reason or None}.
+INVOICE_STAMPS = []
+
+
+def register_invoice_stamp(provider):
+    if provider not in INVOICE_STAMPS:
+        INVOICE_STAMPS.append(provider)
+
+
+def invoice_stamps(invoice):
+    return [stamp for stamp in (provider(invoice) for provider in INVOICE_STAMPS) if stamp]
+
+
+def refuse_credit_hold(customer, refused):
+    """A customer on credit hold has nothing confirmed or dispatched to them until accounts lift it."""
+    reason = CustomerProfile.objects.filter(party=customer, credit_hold=True).values_list(
+        "credit_hold_reason", flat=True).first()
+    if reason is not None:
+        raise ValidationError(f"{customer} is on credit hold ({reason}): {refused} until accounts lift it.")
+
+
+def register_material_checker(checker):
+    if checker not in MATERIAL_CHECKERS:
+        MATERIAL_CHECKERS.append(checker)
+
+
+def material_problems(customer, item, lots=(), on_date=None):
+    """What stands between this customer's rules and these goods, if anything."""
+    profile = CustomerProfile.objects.filter(party=customer).first()
+    if profile is None or not profile.has_material_rules() or item is None:
+        return []
+    if not MATERIAL_CHECKERS:
+        return [f"{customer} buys under material rules, and nothing here can check "
+                f"{item.sku} against them."]
+    problems = []
+    for checker in MATERIAL_CHECKERS:
+        problems.extend(checker(profile, item, list(lots), to_date(on_date) or timezone.localdate()))
+    return list(dict.fromkeys(problems))
+
+
+# Asked of every shipment, rules or none: whether any batch in it was made
+# from material that belongs to somebody else (a customer's, sent to be
+# worked on). Registered by manufacturing, which knows what made what.
+OWNERSHIP_CHECKERS = []
+
+
+def register_ownership_checker(checker):
+    if checker not in OWNERSHIP_CHECKERS:
+        OWNERSHIP_CHECKERS.append(checker)
+
+
+def refuse_ownership_problems(customer, lots):
+    problems = []
+    for checker in OWNERSHIP_CHECKERS:
+        problems.extend(checker(customer, list(lots)))
+    if problems:
+        raise ValidationError(" ".join(dict.fromkeys(problems)))
+
+
+# What will reach a customer from somewhere other than this plant's
+# shelves: a vendor shipping a drop-ship straight to them. Registered by
+# purchasing, which holds the pointer, so sales imports nothing of it.
+# Each takes order-line pks and returns {pk: quantity in the line's unit}.
+AWAITED_PROVIDERS = []
+
+
+def register_awaited_provider(provider):
+    if provider not in AWAITED_PROVIDERS:
+        AWAITED_PROVIDERS.append(provider)
+
+
+def quantities_awaited(lines):
+    """{order-line pk: what others will still deliver for it}, in one ask a provider."""
+    ids = [line.pk for line in lines if line.pk is not None]
+    awaited = defaultdict(Decimal)
+    if ids:
+        for provider in AWAITED_PROVIDERS:
+            for pk, quantity in provider(ids).items():
+                awaited[pk] += quantity
+    return awaited
+
+
+def refuse_awaited_from_a_vendor(lines, doing):
+    """
+    Refuse `doing` while a vendor is still to send any of `lines` straight to the customer.
+    The goods would come all the same, and their receipt, delivering to an order that no
+    longer wants them, could never post: the drop-ship stood open with nobody to receive it.
+    """
+    from apps.core.api import plain
+
+    awaited = quantities_awaited(lines)
+    coming = [f"{line.label()} ({plain(awaited[line.pk])})" for line in lines if awaited[line.pk] > 0]
+    if coming:
+        raise ValidationError(
+            f"A vendor is still to send {', '.join(coming)} to the customer on a drop-ship. "
+            f"Cancel it, or close it short, before {doing}.")
+
+
+def refuse_material_problems(customer, rows):
+    """rows: [(item, lots, on_date)]. Refuse naming every problem at once."""
+    problems = []
+    for item, lots, on_date in rows:
+        problems.extend(material_problems(customer, item, lots, on_date))
+    if problems:
+        raise ValidationError(
+            f"{customer}'s material rules are not met: " + " ".join(dict.fromkeys(problems))
+        )
+
+
+class InvoicePolicy(models.TextChoices):
+    ORDERED = "ordered", "Bill what was ordered"
+    DELIVERED = "delivered", "Bill what was delivered"
+
+
+class FulfilmentStatus(models.TextChoices):
+    NONE = "none", "Nothing yet"
+    PARTIAL = "partial", "Partially"
+    FULL = "full", "Fully"
+
+
+class OrderStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    CONFIRMED = "confirmed", "Confirmed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class PlacedWhereTheGoodsGo:
+    """
+    A sale's place of supply, from where its goods go and whose address that
+    is (apps.accounting.gst.place_of_supply). The quotation, the order and the
+    invoice share it, and the e-way bill reads the invoice's delivered_to(),
+    so the tax charged, GSTR-1 and the e-way bill say one place.
+    """
+
+    def delivered_to(self):
+        """Where the goods go: the ship-to, else the bill-to, else the customer's own shipping address."""
+        return self.shipping_address or self.billing_address or self.customer.shipping_address()
+
+    def billed_to(self):
+        return self.billing_address or self.customer.billing_address()
+
+    def moves_goods(self):
+        """
+        Whether goods move on it: an advance moves none, and job work bills
+        the conversion of the customer's own goods, a service (its SAC).
+        """
+        if getattr(self, "is_down_payment", False) or getattr(self, "is_job_work", False):
+            return False
+        order = getattr(self, "sales_order", None)
+        if order is not None and order.is_job_work:
+            return False
+        return self.lines.filter(item__isnull=False).exclude(item__hsn_code__startswith="99").exists()
+
+    def _delivery(self):
+        return (self.delivered_to(), self.billed_to(), self.customer_id) if self.moves_goods() else None
+
+    def place_for(self, profile):
+        from apps.accounting.gst import place_of_supply
+
+        return place_of_supply(profile, self._delivery)
+
+    def check_place(self):
+        """
+        Refuse an address the supply cannot be placed by (gst.place_refusal),
+        asked as the document or a line of it is saved and as it posts. Never
+        as it is read: one draft with a bad ship-to made the whole invoice
+        list answer 400, and the draft could not be opened to mend it (O162).
+        A credit note keeps its invoice's place and is not asked again.
+        """
+        from apps.accounting.gst import place_refusal
+
+        if self.pk is None or not self.customer_id:
+            return
+        original = self.corrected_document() if hasattr(self, "corrected_document") else None
+        if original is not None and original.taxes_recorded:
+            return
+        profile = getattr(self.customer, "tax_profile", None)
+        if profile is None:
+            return
+        problem = place_refusal(profile, self._delivery)
+        if problem:
+            raise ValidationError(problem)
+
+
+class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
+    order_date = models.DateField()
+    reference = models.CharField(
+        max_length=64, blank=True, help_text="The customer's own PO number, if any."
+    )
+    status = models.CharField(max_length=16, choices=OrderStatus.choices, default=OrderStatus.DRAFT)
+    currency = models.ForeignKey(Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+")
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    billing_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    shipping_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
+        help_text="The employee credited with this sale.",
+    )
+    invoice_policy = models.CharField(
+        max_length=16, choices=InvoicePolicy.choices, default=InvoicePolicy.ORDERED,
+        help_text="Bill the whole order up front, or only what has shipped.",
+    )
+    is_job_work = models.BooleanField(
+        default=False,
+        help_text="The customer sends some of the material and pays for the "
+                  "conversion. What they send is listed as supplied items; the "
+                  "price on each line is the conversion charge, billed as a "
+                  "service.",
+    )
+    third_party_inspection = models.BooleanField(
+        null=True, blank=True,
+        help_text="Whether the customer's inspector must release the goods first. "
+                  "Blank takes the customer's setting when the order is written; "
+                  "fixed once anything has shipped on it.",
+    )
+    # How the goods travel and are packed, as the customer's terms stood when the order was written: a fact
+    # of the order, printed on its papers and its runs' cards, never re-read from the customer afterwards.
+    freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
+    incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True)
+    port_of_discharge = models.CharField(max_length=64, blank=True)
+    sacks_per_bale = models.PositiveIntegerField(null=True, blank=True)
+    marking = models.TextField(blank=True)
+    approved_figures = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="What the approval covered, as the order stood when it was given: each line's "
+                  "discount, the total and the margin. A confirmed order changes within it; past it, "
+                  "it is refused (SalesOrder.refuse_going_past_the_policy).",
+    )
+
+    class Meta:
+        ordering = ["-order_date", "-id"]
+        indexes = [models.Index(fields=["order_date", "id"], name="sales_order_by_date")]
+        permissions = [
+            ("approve_order", "Can approve orders that breach the discount policy"),
+        ]
+        constraints = [
+            # Drafts all carry an empty number until confirmed, so uniqueness
+            # can only apply once one has been assigned.
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_sales_order_number"
+            ),
+            models.CheckConstraint(check=Q(sacks_per_bale__isnull=True) | Q(sacks_per_bale__gt=0),
+                                   name="sales_order_bales_hold_some_sacks"),
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'SO-draft-{self.pk}'} {self.customer}"
+
+    def clean(self):
+        self._check_customer()
+
+    def _check_customer(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
+
+    # Shared rule A (apps.core.models.refuse_changing_what_moved): confirmed
+    # for one customer in one currency, with their credit limit and hold
+    # asked, it is not moved to another customer or currency unasked.
+    FROZEN_ONCE_MOVED = {"customer": CONFIRMED, "currency": CONFIRMED}
+
+    def what_moved_against_it(self, kind):
+        if kind == CONFIRMED:
+            stored = SalesOrder.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+            return "" if stored in (None, OrderStatus.DRAFT) else f"been {OrderStatus(stored).label.lower()}"
+        shipped = self.deliveries.filter(posted=True).first()
+        if shipped is not None:
+            return f"shipped on {shipped.number}"
+        invoiced = (Invoice.objects.filter(posted=True).filter(
+            Q(sales_order=self) | Q(lines__order_line__order=self)).first())
+        if invoiced is not None:
+            return f"been invoiced on {invoiced.number}"
+        return ""
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        self._check_customer()
+        if self._state.adding:
+            self._apply_customer_defaults()
+        else:
+            # Under its own lock: deliveries and invoices post under it.
+            refuse_changing_what_moved(self, lambda: lock_rows(self, refresh=False))
+            before = SalesOrder.objects.filter(pk=self.pk).values(
+                "status", "is_job_work", "third_party_inspection", "freight_terms", "incoterm").first()
+            if before and before["status"] == OrderStatus.DRAFT:
+                self.check_place()
+            if (before and before["status"] != OrderStatus.DRAFT
+                    and before["is_job_work"] != self.is_job_work):
+                # Whether the customer supplies the material decides who
+                # plans it, who owns what the runs make, and what the
+                # invoice bills. Changed after confirming, all three move.
+                raise ValidationError(
+                    f"{self} is confirmed; whether it is job work cannot change."
+                )
+            if (before and before["third_party_inspection"] != self.third_party_inspection
+                    and Delivery.objects.filter(sales_order=self, posted=True).exists()):
+                # What has shipped went out under one answer; changing it
+                # would re-judge those deliveries and what they drew on.
+                raise ValidationError(
+                    f"{self} has shipped; whether its goods wait for the customer's "
+                    "inspector cannot change now."
+                )
+            if (before and (before["freight_terms"], before["incoterm"]) != (self.freight_terms, self.incoterm)
+                    and Delivery.objects.filter(sales_order=self, posted=True).exists()):
+                # Goods have travelled, and been billed, on the terms the papers printed.
+                raise ValidationError(f"{self} has shipped; its freight terms and Incoterm cannot change now.")
+        super().save(*args, **kwargs)
+
+    def supplies(self, item):
+        """Whether the customer sends this item for this order."""
+        return self.is_job_work and self.supplied_items.filter(item=item).exists()
+
+    def _apply_customer_defaults(self):
+        if not self.customer_id:
+            return
+        customer = self.customer
+        self.currency = self.currency or customer.default_currency
+        self.payment_terms = self.payment_terms or customer.payment_terms
+        self.billing_address = self.billing_address or customer.billing_address()
+        self.shipping_address = self.shipping_address or customer.shipping_address()
+        profile = CustomerProfile.objects.filter(party=customer).first()
+        if self.third_party_inspection is None:
+            self.third_party_inspection = bool(profile and profile.third_party_inspection)
+        if not self.sales_rep_id and profile and profile.sales_rep_id:
+            self.sales_rep_id = profile.sales_rep_id
+        if profile:
+            self.freight_terms = self.freight_terms or profile.freight_terms
+            self.incoterm = self.incoterm or profile.incoterm
+            self.port_of_discharge = self.port_of_discharge or profile.port_of_discharge
+            self.sacks_per_bale = self.sacks_per_bale or profile.sacks_per_bale
+            self.marking = self.marking or profile.marking
+
+    def credit_limit_breach(self):
+        """
+        How far this order would put the customer over their limit, or None.
+
+        Returned rather than raised: over the limit is now one approval
+        reason among several, not a separate special case with its own
+        ungated bypass flag.
+        """
+        profile = CustomerProfile.objects.filter(party=self.customer).first()
+        limit = profile.credit_limit if profile else None
+        if limit is None:
+            return None
+        # committed_balance already counts this order once it is confirmed;
+        # at confirmation time it isn't yet, so add it explicitly.
+        exposure = committed_balance(self.customer)
+        if self.status != OrderStatus.CONFIRMED:
+            exposure += self.total()
+        return (exposure, limit) if exposure > limit else None
+
+    def refuse_going_over_the_credit_limit(self):
+        """
+        What confirming asks, asked again of a confirmed order that grows.
+        A line raised or added after confirmation is a commitment the limit
+        never saw: confirmed at 600 against 1,000 and raised to 6,000, the
+        customer was six times over and nothing had looked.
+        """
+        breach = self.credit_limit_breach()
+        if breach:
+            exposure, limit = breach
+            raise ValidationError(
+                f"{self.customer} would be at {exposure} against a credit limit of {limit}. A "
+                "confirmed order is not raised past it; take the rest as a new order, which "
+                "asks for approval.")
+
+    def policy_figures(self):
+        """What the policy weighs, as the order stands: each line's discount, the total, the margin."""
+        return {"discounts": {line.pk: line.discount_percent for line in self.lines.all()},
+                "total": self.total(), "margin": self.margin_percent()}
+
+    @serialised("approved_at")
+    def approve(self, by=None, note=""):
+        """Approve, and write down what the approval covered: a confirmed order changes within it."""
+        super().approve(by=by, note=note)
+        self.approved_figures = self.figures_as_kept()
+        SalesOrder.objects.filter(pk=self.pk).update(approved_figures=self.approved_figures)
+
+    def figures_as_kept(self):
+        """policy_figures() as approved_figures keeps them."""
+        figures = self.policy_figures()
+        return {
+            "discounts": {str(pk): str(value) for pk, value in figures["discounts"].items()},
+            "total": str(figures["total"]),
+            "margin": None if figures["margin"] is None else str(figures["margin"]),
+        }
+
+    def _covered(self):
+        """What the approval covered, or nothing when there is none standing."""
+        kept = self.approved_figures if self.approved_at else None
+        if not kept:
+            return {"discounts": {}, "total": None, "margin": None}
+        return {"discounts": {int(pk): Decimal(value) for pk, value in kept["discounts"].items()},
+                # None: sales 0064 found no total the approval was for (O186); held to the order before the change.
+                "total": None if kept["total"] is None else Decimal(kept["total"]),
+                "margin": None if kept["margin"] is None else Decimal(kept["margin"])}
+
+    def refuse_going_past_the_policy(self, before):
+        """
+        What confirming asks of the policy, asked again of a confirmed order on
+        every change to its lines, cuts and deletes included, and refused only
+        where the change goes past what was already standing: the order as it
+        was before the change (`before`, policy_figures()) or what an approval
+        covered, whichever reaches further.
+
+        Asked of nothing, a line raised to 60% against a 15% policy shipped
+        and invoiced (O72). Asked of everything, an order approved for one 20%
+        line could not take one more of an undiscounted line; and a cut that
+        took an order under the margin floor was never asked at all (O141).
+        """
+        policy = ApprovalPolicy.active()
+        if policy is None:
+            return
+        after, covered = self.policy_figures(), self._covered()
+
+        def furthest(values, low=False):
+            values = [value for value in values if value is not None]
+            return (min if low else max)(values) if values else None
+
+        reasons = []
+        if policy.max_discount_percent is not None:
+            for line in self.lines.all():
+                discount = line.discount_percent
+                allowed = furthest([before["discounts"].get(line.pk), covered["discounts"].get(line.pk)])
+                if discount > policy.max_discount_percent and (allowed is None or discount > allowed):
+                    reasons.append(f"'{line.label()}' is discounted {discount}%, above the "
+                                   f"{policy.max_discount_percent}% limit.")
+        if policy.max_order_value is not None and after["total"] > policy.max_order_value:
+            allowed = furthest([before["total"], covered["total"]])
+            if allowed is None or after["total"] > allowed:
+                reasons.append(f"The order is {after['total']}, above the {policy.max_order_value} limit.")
+        margin = after["margin"]
+        if policy.min_margin_percent is not None and margin is not None and margin < policy.min_margin_percent:
+            allowed = furthest([before["margin"], covered["margin"]], low=True)
+            if allowed is None or margin < allowed:
+                reasons.append(f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor.")
+        if reasons:
+            raise ValidationError(
+                f"{self} is confirmed, and this change needs approval beyond what it has: {' '.join(reasons)} A "
+                "confirmed order is not changed past the policy; take it as a new order, which "
+                "asks for approval.")
+
+    def cost_total(self):
+        """
+        What this order's goods cost, at weighted average across warehouses.
+
+        Lines with no cost to speak of — charges, and items never received
+        — are left out of both sides, so an order of pure services doesn't
+        read as 100% margin and trip nothing, or as 0% margin and trip
+        everything.
+        """
+        total = Decimal("0")
+        for line in self.lines.all():
+            if line.is_charge() or not line.item_id:
+                continue
+            cost = line.item.average_cost()
+            if not cost:
+                continue
+            total += round_money(cost * line.quantity)
+        return total
+
+    def costed_revenue(self):
+        """Net revenue of the lines that cost_total() could price."""
+        total = Decimal("0")
+        for line in self.lines.all():
+            if line.is_charge() or not line.item_id:
+                continue
+            if not line.item.average_cost():
+                continue
+            total += line.net_amount()
+        return total
+
+    def margin_percent(self):
+        """Gross margin over the costed lines, or None if nothing is costed."""
+        revenue = self.costed_revenue()
+        if revenue <= 0:
+            return None
+        return round_money((revenue - self.cost_total()) / revenue * Decimal("100"))
+
+    def approval_reasons(self):
+        """
+        Every policy threshold this order breaches, in plain words.
+
+        A list rather than a boolean because an approver needs to know
+        what they are approving, and because an order that trips three
+        limits should say so rather than reveal them one at a time as
+        each is fixed.
+        """
+        reasons = []
+        breach = self.credit_limit_breach()
+        if breach:
+            exposure, limit = breach
+            reasons.append(
+                f"{self.customer} would be {exposure} against a credit limit of {limit}."
+            )
+        return reasons + self.policy_reasons()
+
+    def policy_reasons(self):
+        """
+        What the approval policy finds in the order itself: discounts, value,
+        margin. The credit limit is the customer's, and asked on its own
+        (refuse_going_over_the_credit_limit) when a confirmed order grows.
+        """
+        reasons = []
+        policy = ApprovalPolicy.active()
+        if policy is None:
+            return reasons
+
+        if policy.max_discount_percent is not None:
+            for line in self.lines.all():
+                if line.discount_percent > policy.max_discount_percent:
+                    reasons.append(
+                        f"'{line.label()}' is discounted {line.discount_percent}%, above the "
+                        f"{policy.max_discount_percent}% limit."
+                    )
+        if policy.max_order_value is not None and self.total() > policy.max_order_value:
+            reasons.append(
+                f"The order is {self.total()}, above the {policy.max_order_value} limit."
+            )
+        if policy.min_margin_percent is not None:
+            margin = self.margin_percent()
+            if margin is not None and margin < policy.min_margin_percent:
+                reasons.append(
+                    f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor."
+                )
+        return reasons
+
+    def can_be_approved(self):
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("A cancelled order cannot be approved.")
+        return True
+
+    def raised_by(self):
+        """
+        Its own authors and, for an order accepted from a quote, the quote's:
+        the price being approved was written there, by whoever wrote it.
+        """
+        found = super().raised_by()
+        # By its lines: accepting approves before the quote is marked with its order.
+        for quotation in Quotation.objects.filter(Q(sales_order=self) | Q(lines__order_lines__order=self)).distinct():
+            found |= authors(quotation, "lines")
+        return found
+
+    @serialised("status")
+    def render_pdf(self, proforma=False):
+        """The order as an acknowledgement, or as a proforma invoice."""
+        from .documents import render_order_pdf
+
+        return render_order_pdf(self, proforma=proforma)
+
+    def email_to_customer(self, to=None, subject=None, body=None, user=None, proforma=False):
+        """
+        The acknowledgement (once confirmed) or the proforma (any time
+        before cancelling) to the customer as a PDF. Returns the address.
+        """
+        from apps.core.mail import send_document
+
+        if not self.lines.exists():
+            raise ValidationError("The order has no lines yet; there is nothing to send.")
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("This order is cancelled; nothing of it is sent.")
+        if not proforma and self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("An order is acknowledged once it is confirmed. Send a proforma before that.")
+        what = "Proforma invoice" if proforma else "Order acknowledgement"
+        return send_document(self, self.customer, what, to=to, subject=subject, body=body, user=user,
+                             pdf=self.render_pdf(proforma=proforma),
+                             filename=f"{what} {self.number or 'draft'}.pdf")
+
+    @serialised("status")
+    def cancel(self):
+        """Cancel an order that hasn't been acted on yet."""
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("This order is already cancelled.")
+        for line in self.lines.all():
+            if line.quantity_shipped() or line.quantity_invoiced():
+                raise ValidationError(
+                    "This order has been shipped or invoiced and cannot be cancelled. "
+                    "Return the goods or issue a credit note instead."
+                )
+        refuse_awaited_from_a_vendor(list(self.lines.all()), "cancelling the order")
+        # Billed up front is billed: cancelled, nothing would draw the deposit down,
+        # and one still unpaid would be chased for an order that is not coming.
+        held = [deposit for deposit in self.deposits() if deposit.deposit_unapplied() > 0]
+        if held:
+            raise ValidationError(
+                f"Down payment {', '.join(deposit.number for deposit in held)} still holds "
+                f"{sum(deposit.deposit_unapplied() for deposit in held)} on this order. "
+                "Credit it back before cancelling.")
+        self.status = OrderStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+        # The stock this order was holding is free the moment it is not
+        # going to ship. Leaving the claim standing is how a warehouse
+        # ends up unable to sell goods nobody is waiting for.
+        for line in self.lines.all():
+            release_for(line, f"Order {self.number or self.pk} cancelled")
+
+    def invoice_status(self):
+        lines = list(self.lines.all())
+        if not lines or all(line.quantity_invoiced() <= 0 for line in lines):
+            return FulfilmentStatus.NONE
+        if all(line.is_fully_invoiced() for line in lines):
+            return FulfilmentStatus.FULL
+        return FulfilmentStatus.PARTIAL
+
+    def delivery_status(self):
+        # Charge lines are never shipped, so counting them would pin an
+        # otherwise complete order at PARTIAL forever.
+        lines = [line for line in self.lines.all() if not line.is_charge()]
+        if not lines:
+            return FulfilmentStatus.FULL
+        if all(line.quantity_shipped() <= 0 for line in lines):
+            return FulfilmentStatus.NONE
+        if all(line.is_fully_shipped() for line in lines):
+            return FulfilmentStatus.FULL
+        return FulfilmentStatus.PARTIAL
+
+    @serialised("status")
+    def confirm(self):
+        if self.status == OrderStatus.CONFIRMED:
+            raise ValidationError("This order is already confirmed.")
+        if self.status == OrderStatus.CANCELLED:
+            raise ValidationError("A cancelled order cannot be confirmed.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot confirm an order with no lines.")
+        if self.is_job_work and not self.supplied_items.exists():
+            raise ValidationError(
+                f"{self} is job work and names nothing the customer supplies. List "
+                "what they send, or make it an ordinary sale."
+            )
+        refuse_credit_hold(self.customer, "no order of theirs is confirmed")
+        # The limit weighs every confirmed order of theirs: two confirmed at
+        # once each found the other not there yet, and together went over.
+        lock_rows(self.customer, refresh=False)
+        # No bypass flag. The old ignore_credit_limit= was reachable by
+        # anyone who could confirm an order at all — which is the rep whose
+        # discount the limit exists to check — and left no record that
+        # anyone had decided anything.
+        if self.approval_status() == ApprovalStatus.PENDING:
+            raise ValidationError(
+                "This order needs approval before it can be confirmed: "
+                + " ".join(self.approval_reasons())
+            )
+        # The recipe in force when the goods are promised. Checked again
+        # when they ship, on the batches that actually go.
+        refuse_material_problems(self.customer, [
+            (line.item, (), self.order_date) for line in self.lines.select_related("item")
+            if line.item_id is not None
+        ])
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "sales.order", self.order_date, name="Sales Orders", prefix="SO-"
+            )
+        self.status = OrderStatus.CONFIRMED
+        self.save(update_fields=["number", "status", "updated_at"])
+        self.reserve_stock()
+
+    @transaction.atomic
+    def reserve_stock(self):
+        """
+        Hold the stock this order has promised, and say what it could not
+        hold.
+
+        A shortfall does not stop the order. Orders are taken precisely
+        so the stock can be bought, and refusing one because the shelf is
+        empty would make the system useless at the moment it matters.
+        What it must not do is let two orders promise the same units in
+        silence, so the shortfall is returned and readable.
+        """
+        shortfalls = {}
+        for line in self.lines.select_related("item", "warehouse"):
+            if line.is_charge() or line.warehouse_id is None:
+                continue
+            if not line.item.track_inventory:
+                continue
+            outstanding = line.quantity_to_ship_in_stock_units()
+            if outstanding <= 0:
+                StockReservation.objects.for_source(line).open().update(
+                    released_at=timezone.now(), released_reason=(
+                        "Coming from the vendor" if line.quantity_open() > 0 else "Fully shipped")
+                )
+                continue
+            _held, short = StockReservation.objects.claim(
+                line, line.item, line.warehouse, outstanding
+            )
+            if short:
+                shortfalls[line] = short
+        return shortfalls
+
+    def reservation_shortfalls(self):
+        """What this order has promised and cannot currently cover."""
+        shortfalls = {}
+        for line in self.lines.select_related("item", "warehouse"):
+            if line.is_charge() or line.warehouse_id is None:
+                continue
+            if not line.item.track_inventory:
+                continue
+            outstanding = line.quantity_to_ship_in_stock_units()
+            held = line.quantity_reserved()
+            if outstanding - held > 0:
+                shortfalls[line] = outstanding - held
+        return shortfalls
+
+    @transaction.atomic
+    def create_delivery(self, delivery_date=None, warehouse=None):
+        """
+        What is still owed on this order, as a draft delivery to cut down to
+        what is on the lorry and post. One waiting at a time: a second
+        draft for the same goods would ship them twice on paper.
+
+        Each line ships from the warehouse it names, else `warehouse`;
+        a line with neither is refused by name rather than guessed at.
+        """
+        lock_rows(self)
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can be shipped.")
+        waiting = self.deliveries.filter(posted=False, reverses__isnull=True).first()
+        if waiting is not None:
+            raise ValidationError(
+                f"Delivery {waiting.number or 'draft'} for this order is already waiting to "
+                "ship. Post it, or delete it, first.")
+        lines = list(self.lines.select_related("item"))
+        awaited = quantities_awaited(lines)
+        owed = [(line, line.quantity_to_ship(awaited[line.pk])) for line in lines]
+        owed = [(line, quantity) for line, quantity in owed if quantity > 0]
+        if not owed:
+            if any(awaited[line.pk] > 0 and line.quantity_open() > 0 for line in lines):
+                raise ValidationError(
+                    "What is left on this order is coming from the vendor on a drop-ship; "
+                    "nothing is left to ship from here.")
+            raise ValidationError("Nothing is left to ship on this order.")
+        for line, _ in owed:
+            if not line.warehouse_id and warehouse is None:
+                raise ValidationError({"warehouse": [
+                    f"Say which warehouse {line.label()} ships from: the line names none."]})
+        delivery = Delivery.objects.create(
+            sales_order=self, delivery_date=to_date(delivery_date) or timezone.localdate())
+        for line, quantity in owed:
+            DeliveryLine.objects.create(delivery=delivery, order_line=line,
+                                        warehouse=line.warehouse or warehouse,
+                                        quantity_shipped=quantity)
+        return delivery
+
+    @transaction.atomic
+    def create_invoice(self, receivable_account, invoice_date=None):
+        """
+        Draft an invoice for whatever is still uninvoiced on this order,
+        carrying taxes and discounts across. Calling it twice bills the
+        remainder, not the whole order again.
+        """
+        lock_rows(self)  # twice at once, the second waits for the first and bills what is left after it
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can be invoiced.")
+
+        outstanding = [
+            (line, line.quantity_invoiceable())
+            for line in self.lines.all()
+            if line.quantity_invoiceable() > 0
+        ]
+        if not outstanding:
+            if self.invoice_policy == InvoicePolicy.DELIVERED and any(
+                line.quantity_uninvoiced() > 0 for line in self.lines.all()
+            ):
+                raise ValidationError(
+                    "Nothing has shipped that isn't already invoiced. This order bills on "
+                    "delivery, so ship the goods first."
+                )
+            raise ValidationError("This order is already fully invoiced.")
+
+        invoice = Invoice.objects.create(
+            customer=self.customer,
+            invoice_date=invoice_date or timezone.localdate(),
+            reference=self.reference,
+            sales_order=self,
+            receivable_account=receivable_account,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+        )
+        for line, remaining in outstanding:
+            invoice_line = InvoiceLine.objects.create(
+                invoice=invoice,
+                order_line=line,
+                item=line.item,
+                charge=line.charge,
+                description=line.description or line.label(),
+                quantity=remaining,
+                unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
+                revenue_account=line.revenue_account,
+            )
+            invoice_line.taxes.set(line.taxes.all())
+        return invoice
+
+    def add_charge(self, charge, amount, description="", quantity=Decimal("1")):
+        """
+        Put freight, handling or a surcharge on this order.
+
+        The charge's default taxes come across, because the commonest way
+        to get freight wrong is to bill it untaxed when the jurisdiction
+        taxes it at the same rate as the goods.
+        """
+        line = SalesOrderLine.objects.create(
+            order=self, charge=charge, description=description or charge.name,
+            quantity=Decimal(quantity), unit_price=round_money(Decimal(amount)),
+            revenue_account=charge.account_for(is_sale=True),
+        )
+        line.taxes.set(charge.taxes.all())
+        return line
+
+    def deposits(self):
+        """Posted down-payment invoices raised against this order."""
+        return self.invoices.filter(is_down_payment=True, posted=True)
+
+    def deposit_total(self):
+        """Taken up front and not since credited back."""
+        return sum(
+            (deposit.total() - deposit.amount_credited() for deposit in self.deposits()),
+            Decimal("0"),
+        )
+
+    def worth_at_most(self):
+        """What this order can still come to: a line closed short counts at what it shipped."""
+        return self.worth_within(lambda line: line.quantity if line.is_charge() else line.invoice_limit())
+
+    def total_words(self, worth):
+        """The order total a refusal states: what the order can still come to, and why if less."""
+        return f"{worth}" + ("" if worth == self.total() else ", once what was closed short is taken off")
+
+    def refuse_coming_to_less_than_its_deposits(self):
+        """
+        Down payments on an order cannot exceed what it can still come to. Asked when one is
+        taken, and here after anything that leaves the order worth less (a line cut, repriced,
+        removed or closed short), inside that change's transaction, which the refusal undoes.
+        The caller holds the order, so a deposit posting at the same moment is counted. A
+        1,000 order holding 800 was cut to 500, and 300 of the deposit was left for no invoice
+        to draw down.
+        """
+        taken = self.deposit_total()
+        if not taken:
+            return
+        worth = self.worth_at_most()
+        if taken > worth:
+            raise ValidationError(
+                f"{self} would come to {self.total_words(worth)}: less than the {taken} taken on it "
+                f"up front. Credit {taken - worth} of its down payments back first.")
+
+    @transaction.atomic
+    def create_down_payment_invoice(
+        self, receivable_account, amount=None, percent=None, invoice_date=None, description=""
+    ):
+        """
+        Bill the customer up front, before anything ships.
+
+        The line credits the customer-deposit *liability*, not revenue:
+        taking the money does not earn it, and recognising revenue against
+        goods still sitting in the warehouse overstates income and
+        understates what the company owes. The revenue lands later, on the
+        real invoice, and the deposit is drawn down against it.
+
+        This is also the only honest way to bill ahead on an order that
+        invoices on delivery.
+        """
+        lock_rows(self)  # what is already billed ahead is read below, and another down payment could be adding to it
+        if self.status != OrderStatus.CONFIRMED:
+            raise ValidationError("Only a confirmed order can take a down payment.")
+        if (amount is None) == (percent is None):
+            raise ValidationError("Give a down payment either an amount or a percent, not both.")
+
+        order_total = self.total()
+        if percent is not None:
+            percent = Decimal(percent)
+            if percent <= 0 or percent > 100:
+                raise ValidationError("A down payment percent must be between 0 and 100.")
+            amount = round_money(order_total * percent / Decimal("100"))
+        amount = round_money(Decimal(amount))
+        if amount <= 0:
+            raise ValidationError("A down payment must be for a positive amount.")
+
+        already, worth = self.deposit_total(), self.worth_at_most()
+        if already + amount > worth:
+            raise ValidationError(
+                f"Down payments of {already} are already on this order; taking {amount} more "
+                f"would exceed the order total of {self.total_words(worth)}."
+            )
+
+        account = Company.get().customer_deposit_account
+        if account is None:
+            raise ValidationError("The company has no customer deposit account configured.")
+
+        taxes = self._advance_taxes()
+        invoice = Invoice.objects.create(
+            customer=self.customer,
+            invoice_date=invoice_date or timezone.localdate(),
+            reference=self.reference,
+            sales_order=self,
+            receivable_account=receivable_account,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+            is_down_payment=True,
+        )
+        line = InvoiceLine.objects.create(
+            invoice=invoice,
+            description=description or f"Down payment on order {self.number or self.pk}",
+            quantity=Decimal("1"),
+            unit_price=amount,
+            revenue_account=account,
+        )
+        if taxes:
+            # An advance for a service bears its tax when it is received;
+            # `amount` is what the customer pays, so the line is what is
+            # left of it once the tax is taken out.
+            line.taxes.set(taxes)
+            line.unit_price = _net_within(line, amount)
+            line.save()
+        return invoice
+
+    def _advance_taxes(self):
+        """
+        The taxes an advance on this order bears: none on goods (GST is not
+        due on an advance for goods), the order's own on job work, which is
+        a service. One set for the whole order, or refused: an advance is
+        one line and cannot say which rate a part of it was for.
+        """
+        if not self.is_job_work:
+            return []
+        sets = {frozenset(line.taxes.values_list("pk", flat=True))
+                for line in self.lines.filter(charge__isnull=True)}
+        if len(sets) > 1:
+            raise ValidationError(
+                f"{self}'s lines bear different taxes, and an advance is taxed at one "
+                "rate. Bill the work in parts, each on an order of its own rate.")
+        return list(Tax.objects.filter(pk__in=next(iter(sets), frozenset())))
+
+
+def _net_within(line, gross):
+    """
+    The line's unit price that, with its taxes, comes to `gross`: or as
+    near as the paisa allows (a tax rounded at each rate cannot reach
+    every total). Tried a paisa either side of the plain division.
+    """
+    line.unit_price = gross
+    rate = line.tax_total() / gross if gross else Decimal("0")
+    guess = round_money(gross / (1 + rate))
+    best = None
+    for step in range(-3, 4):
+        line.unit_price = guess + Decimal(step) / 100
+        miss = abs(line.total() - gross)
+        if best is None or miss < best[0]:
+            best = (miss, line.unit_price)
+    return best[1]
+
+
+class SuppliedItem(AuditModel):
+    """
+    On a job-work order, something the customer sends rather than buys:
+    planning does not buy it, and it comes out of their held stock.
+    """
+
+    order = models.ForeignKey(SalesOrder, on_delete=models.CASCADE,
+                              related_name="supplied_items")
+    item = models.ForeignKey(Item, on_delete=models.PROTECT, related_name="+")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["order", "item"], name="one_supplied_item_per_order"),
+        ]
+
+    def __str__(self):
+        return f"{self.item} supplied by {self.order.customer} for {self.order}"
+
+    def _check_open(self):
+        if self.order.status != OrderStatus.DRAFT:
+            raise ValidationError(
+                f"{self.order} is confirmed; what the customer supplies is settled."
+            )
+
+    def save(self, *args, **kwargs):
+        self._check_open()
+        if not self.order.is_job_work:
+            raise ValidationError(f"{self.order} is not job work; the customer supplies nothing.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        self._check_open()
+        return super().delete(*args, **kwargs)
+
+
+class SalesOrderLine(TaxedLineMixin, AuditModel):
+    order = models.ForeignKey(SalesOrder, related_name="lines", on_delete=models.CASCADE)
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="sales_order_lines"
+    )
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line bills freight, handling or similar.",
+    )
+    description = models.CharField(max_length=255, blank=True)
+    uom = models.ForeignKey(
+        UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    warehouse = models.ForeignKey(
+        Warehouse, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where this line is expected to ship from. Naming it lets "
+                  "confirming the order hold the stock; without it the order is a "
+                  "promise against no particular shelf.",
+    )
+    delivery_date = models.DateField(
+        null=True, blank=True,
+        help_text="When this line was promised. Left empty it falls back to the "
+                  "order date, which reads as 'wanted now'.",
+    )
+    revenue_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="sales_order_lines")
+    over_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="How far over the quantity may ship and be billed. Blank takes the "
+                  "customer's, and is written down then: a term of this order.",
+    )
+    under_delivery_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="How far short the line still counts as met. Blank takes the "
+                  "customer's, written down then.",
+    )
+    closed_short_at = models.DateTimeField(null=True, blank=True, editable=False)
+    closed_short_reason = models.CharField(max_length=255, blank=True, editable=False)
+    quotation_line = models.ForeignKey(
+        "sales.QuotationLine", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="order_lines", editable=False,
+        help_text="The quotation line this was accepted from: where its quoted cost is.",
+    )
+
+    def party_for_tax(self):
+        return self.order.customer
+
+    def place_for(self, profile):
+        return self.order.place_for(profile)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="order_line_quantity_positive"),
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="order_line_price_not_negative"),
+            models.CheckConstraint(
+                check=Q(item__isnull=False, charge__isnull=True)
+                | Q(item__isnull=True, charge__isnull=False),
+                name="order_line_is_item_or_charge",
+            ),
+            models.CheckConstraint(
+                check=(Q(over_delivery_percent__isnull=True)
+                       | (Q(over_delivery_percent__gte=0) & Q(over_delivery_percent__lte=100)))
+                & (Q(under_delivery_percent__isnull=True)
+                   | (Q(under_delivery_percent__gte=0) & Q(under_delivery_percent__lt=100))),
+                name="order_line_tolerances_sensible",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.label()} x{self.quantity}"
+
+    # -- how much is still owed ----------------------------------------
+
+    def _tolerances(self):
+        """(over, under) as terms of this line: its own, or the customer's."""
+        profile = None
+        if self.over_delivery_percent is None or self.under_delivery_percent is None:
+            profile = CustomerProfile.objects.filter(party_id=self.order.customer_id).first()
+        return (
+            self.over_delivery_percent if self.over_delivery_percent is not None
+            else (profile.over_delivery_percent if profile else Decimal("0")),
+            self.under_delivery_percent if self.under_delivery_percent is not None
+            else (profile.under_delivery_percent if profile else Decimal("0")),
+        )
+
+    def most_shippable(self):
+        """The ordered quantity and the overrun the customer takes."""
+        over, _under = self._tolerances()
+        return self.quantity * (1 + over / Decimal("100"))
+
+    def least_accepted(self):
+        """Shipped this far, the line is met."""
+        _over, under = self._tolerances()
+        return self.quantity * (1 - under / Decimal("100"))
+
+    def is_closed_short(self):
+        return self.closed_short_at is not None
+
+    def quantity_open(self):
+        """
+        What is still owed, in the line's unit: nothing once it is met
+        within its tolerance or closed short. The one answer every
+        planner, reservation and backorder asks, so none of them keeps
+        planning the last three per cent of an order the customer has
+        already accepted.
+        """
+        if self.is_charge() or self.is_closed_short():
+            return Decimal("0")
+        shipped = self.quantity_shipped()
+        if shipped >= self.least_accepted():
+            return Decimal("0")
+        return max(self.quantity - shipped, Decimal("0"))
+
+    def quantity_open_in_stock_units(self):
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(self.quantity_open(), self.uom or self.item.uom)
+
+    def quantity_to_ship(self, awaited=None):
+        """
+        What this plant still has to send itself: quantity_open() less
+        what a vendor is to deliver straight to the customer on an open
+        drop-ship. What ships, plans and holds stock asks this; what the
+        customer is owed is still quantity_open(). `awaited` is this
+        line's share of quantities_awaited(), when a caller asked for many.
+        """
+        owed = self.quantity_open()
+        if owed <= 0:
+            return Decimal("0")
+        if awaited is None:
+            awaited = quantities_awaited([self])[self.pk]
+        return max(owed - awaited, Decimal("0"))
+
+    def quantity_to_ship_in_stock_units(self):
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(self.quantity_to_ship(), self.uom or self.item.uom)
+
+    def invoice_limit(self):
+        """
+        The most this line may bill: what shipped where it closed short,
+        and otherwise the order or the overrun that shipped, whichever is
+        more.
+        """
+        shipped = self.quantity_shipped()
+        if self.is_closed_short():
+            return shipped
+        return max(self.quantity, shipped)
+
+    @serialised("closed_short_at", held_first=True)
+    def close_short(self, reason):
+        """The customer wants no more: nothing further is owed, planned or held."""
+        if self.is_charge():
+            raise ValidationError("A charge is not shipped; there is nothing to close.")
+        if self.is_closed_short():
+            raise ValidationError(f"{self} is already closed short.")
+        if self.quantity_open() <= 0:
+            raise ValidationError(f"{self} is already met; there is nothing to close.")
+        shipped, billed = self.quantity_shipped(), self.quantity_invoiced()
+        if billed > shipped:
+            raise ValidationError(
+                f"{self} is billed for {billed} and {shipped} shipped. Credit the "
+                "difference first: closed short, it may bill only what shipped.")
+        reason = " ".join((reason or "").split())
+        if not reason:
+            raise ValidationError("Say why the rest will not be shipped.")
+        # What the drop-ships bring is read next; create_for_drop_ship() takes the order to add to it.
+        lock_rows(self.order, refresh=False)
+        refuse_awaited_from_a_vendor([self], "closing the line short")
+        self.closed_short_at, self.closed_short_reason = timezone.now(), reason[:255]
+        super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        self.order.refuse_coming_to_less_than_its_deposits()
+        release_for(self, f"Closed short: {reason}"[:255])
+
+    @serialised("closed_short_at", held_first=True)
+    def reopen(self):
+        """Owed again after all, and held again where the stock allows."""
+        if not self.is_closed_short():
+            raise ValidationError(f"{self} is not closed short.")
+        if self.order.status != OrderStatus.CONFIRMED:
+            raise ValidationError(f"{self.order} is {self.order.status}; it cannot owe anything.")
+        # Owed again is promised again: what raising a confirmed line asks, under the customer's lock as
+        # confirming takes it. Reopened unasked, a customer at their limit of 1,000 stood at 1,800.
+        lock_rows(self.order.customer, refresh=False)
+        self.closed_short_at, self.closed_short_reason = None, ""
+        super().save(update_fields=["closed_short_at", "closed_short_reason", "updated_at"])
+        SalesOrder.objects.get(pk=self.order_id).refuse_going_over_the_credit_limit()
+        self.reclaim_stock()
+
+    def _worth_less_than_stored(self):
+        """An edit of a line on a confirmed order that leaves it worth less: cut, repriced, discounted."""
+        if not self.pk:
+            return False
+        # The order as stored, not as this line last saw it: a line read through a draft that
+        # has since been confirmed would pass by.
+        stored = SalesOrderLine.objects.select_related("order").filter(pk=self.pk).first()
+        return (stored is not None and stored.order.status == OrderStatus.CONFIRMED
+                and self.unit_price is not None and self.net_amount() < stored.net_amount())
+
+    def _worth_more_than_stored(self):
+        """A line added to a confirmed order, or one raised on it: more promised than the limit saw."""
+        stored = SalesOrderLine.objects.select_related("order").filter(pk=self.pk).first() if self.pk else None
+        if stored is None:
+            return bool(self.order_id) and SalesOrder.objects.filter(
+                pk=self.order_id, status=OrderStatus.CONFIRMED).exists()
+        return (stored.order.status == OrderStatus.CONFIRMED and self.unit_price is not None
+                and self.net_amount() > stored.net_amount())
+
+    def locked_before_it(self):
+        """The order it is on and any it would move to: held before the line, by the lock order (apps.core.models)."""
+        return documents_it_answers_to(self, "order")
+
+    def _hold_for_deposits(self):
+        """Its order, then the line, as close_short() takes them: what the order holds up front is weighed next."""
+        self._hold_with_its_orders()
+
+    # Shared rule A (apps.core.models.refuse_changing_what_moved). A delivery
+    # line reads its item and unit from here, so a shipped line changed to a
+    # gadget had five gadgets put back on the shelf when the widgets came
+    # back. The price and discount may still be agreed again before the
+    # goods are billed, never after.
+    # Its order from confirmation: a line moved onto a confirmed order asked
+    # nothing of that customer's limit, and one moved off left its order
+    # worth less than its deposit. Moved after confirmation, a line is made
+    # afresh on the other order, which asks what adding one asks.
+    FROZEN_ONCE_MOVED = {
+        "order": CONFIRMED, "item": MOVED, "charge": MOVED, "uom": MOVED,
+        "unit_price": BILLED, "discount_percent": BILLED,
+    }
+
+    def what_moved_against_it(self, kind):
+        if kind == CONFIRMED:
+            stored = SalesOrderLine.objects.filter(pk=self.pk).values_list("order", flat=True).first()
+            leaving = SalesOrder.objects.filter(pk=stored).exclude(status=OrderStatus.DRAFT).first()
+            if leaving is not None:
+                return f"been confirmed on {leaving}"
+            joining = SalesOrder.objects.filter(pk=self.order_id).exclude(status=OrderStatus.DRAFT).first()
+            return f"to be made afresh on {joining}, which is confirmed" if joining is not None else ""
+        if kind == BILLED:
+            billed = self.quantity_invoiced()
+            return f"been invoiced for {format(billed.normalize(), 'f')}" if billed > 0 else ""
+        shipped = self.delivery_lines.filter(delivery__posted=True).select_related("delivery").first()
+        if shipped is not None:
+            return f"shipped on {shipped.delivery.number}"
+        invoiced = self.invoice_lines.filter(invoice__posted=True).select_related("invoice").first()
+        if invoiced is not None:
+            return f"been invoiced on {invoiced.invoice.number}"
+        # A drop-ship on its way: its receipt ships this line as it then stands, so a widget awaited
+        # from the vendor was delivered to the customer's books as a gadget.
+        awaited = quantities_awaited([self])[self.pk]
+        if awaited > 0:
+            return f"a drop-ship on its way ({format(awaited.normalize(), 'f')})"
+        return ""
+
+    def _hold_with_its_orders(self):
+        """The order it is on and any it would move to, then the line: deliveries and invoices post under those."""
+        lock_rows(*self.locked_before_it(), refresh=False)
+        if self.pk is not None:
+            lock_rows(self, refresh=False)
+
+    def _policy_before(self):
+        """
+        A confirmed order's figures before this line changes, held as its
+        lines are (the order, then the line), or None for an order not
+        confirmed: what refuse_going_past_the_policy() weighs the change by.
+        """
+        if not self.order_id or not SalesOrder.objects.filter(
+                pk=self.order_id, status=OrderStatus.CONFIRMED).exists():
+            return None
+        self._hold_with_its_orders()
+        return SalesOrder.objects.get(pk=self.order_id).policy_figures()
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        refuse_changing_what_moved(self, self._hold_with_its_orders)
+        before = self._policy_before()
+        shrinking = self._worth_less_than_stored()
+        if shrinking:
+            self._hold_for_deposits()
+        growing = not shrinking and self._worth_more_than_stored()
+        if growing:
+            # Under the customer's lock, as confirming one of their orders takes it: after the
+            # order and the line, by the lock order (apps.core.models), as reopen() takes them.
+            self._hold_with_its_orders()
+            lock_rows(self.order.customer, refresh=False)
+        if self.pk:
+            from .call_offs import called_off, plain
+
+            called = called_off(self)
+            if called > self.quantity:
+                raise ValidationError(
+                    f"{self} has {plain(called)} called off; it cannot be cut to "
+                    f"{plain(self.quantity)}. "
+                    "Take the call-offs down first.")
+        if self.item_id and self.uom_id:
+            # Refuse a unit the item cannot be counted in while the line is
+            # still a quote, not when the picker is at the shelf. Purchasing
+            # asks the same question in the same place: one shape, two
+            # sides, so a fix to either is a fix to both.
+            self.item.check_uom(self.uom)
+        if self.is_charge():
+            if not self.revenue_account_id:
+                self.revenue_account = self.charge.account_for(is_sale=True)
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"Give the {self.charge} charge an explicit amount; a charge has no "
+                    "price list to fall back on."
+                )
+        elif self.unit_price is None:
+            self.unit_price = resolve_price(
+                self.item,
+                customer=self.order.customer,
+                quantity=self.quantity,
+                currency=self.order.currency,
+                on_date=self.order.order_date,
+            )
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"No price found for {self.item}: set one on the item, add it to a "
+                    "price list, or give the line an explicit unit price."
+                )
+        # The tolerance is a term of this order, written down the day it
+        # was taken: the customer's default changing next year does not
+        # re-open or re-close lines already agreed.
+        if not self.is_charge() and self.order_id:
+            self.over_delivery_percent, self.under_delivery_percent = self._tolerances()
+        # Defect: a confirmed line could be edited below what had already
+        # shipped or been invoiced, silently breaking the drawdown guards.
+        # Measured against what the line allows shipped, not its bare
+        # quantity: an overrun inside the tolerance is not an edit below it.
+        if self.pk:
+            previous = SalesOrderLine.objects.filter(pk=self.pk).first()
+            if previous is not None:
+                committed = max(self.quantity_shipped(), self.quantity_invoiced())
+                if not self.is_charge() and self.most_shippable() < committed:
+                    raise ValidationError(
+                        f"{committed} of this line has already been shipped or invoiced; "
+                        f"the quantity, with its tolerance, cannot drop below that."
+                    )
+                if self.is_charge() and self.quantity < committed:
+                    raise ValidationError(
+                        f"{committed} of this line has already been shipped or invoiced; "
+                        f"the quantity cannot drop below that."
+                    )
+                # Its price and discount once invoiced: rule A, asked first thing above.
+                # An approval covers the order someone looked at. Re-price a
+                # draft afterwards and the approval is for something else. A
+                # confirmed order keeps it: a change within what it covered
+                # stands, and one past it is refused below.
+                repriced = (
+                    self.unit_price != previous.unit_price
+                    or self.quantity != previous.quantity
+                    or self.discount_percent != previous.discount_percent
+                )
+                if repriced and self.order.approved_at and before is None:
+                    self.order.withdraw_approval()
+        # A line added to an approved draft changes the thing that was
+        # approved just as surely as re-pricing one. Nothing caught this
+        # because a new line has no previous version to compare against.
+        if self._state.adding and self.order_id and self.order.approved_at and before is None:
+            self.order.withdraw_approval()
+        super().save(*args, **kwargs)
+        if self.order.status == OrderStatus.DRAFT:
+            self.order.check_place()
+        if shrinking:
+            self.order.refuse_coming_to_less_than_its_deposits()
+        if growing:
+            SalesOrder.objects.get(pk=self.order_id).refuse_going_over_the_credit_limit()
+        if before is not None:
+            SalesOrder.objects.get(pk=self.order_id).refuse_going_past_the_policy(before)
+        # Re-sizing or re-warehousing a line on a confirmed order changes
+        # what it has promised, so the claim has to follow. Leaving the old
+        # one standing holds stock for a quantity nobody is waiting for.
+        if self.order_id and self.order.status == OrderStatus.CONFIRMED:
+            self.reclaim_stock()
+
+    def reclaim_stock(self):
+        """Hold what this line still has to ship from its warehouse, and no more."""
+        if self.is_charge() or self.item_id is None or not self.item.track_inventory:
+            return
+        if self.warehouse_id is None:
+            release_for(self, "No warehouse on the line")
+            return
+        outstanding = self.quantity_to_ship_in_stock_units()
+        if outstanding <= 0:
+            release_for(self, "Closed short" if self.is_closed_short() else
+                        "Coming from the vendor" if self.quantity_open() > 0 else "Fully shipped")
+            return
+        StockReservation.objects.claim(self, self.item, self.warehouse, outstanding)
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        if self.quantity_shipped() or self.quantity_invoiced():
+            raise ValidationError(
+                "This line has been shipped or invoiced and can no longer be removed."
+            )
+        before = self._policy_before()
+        # Refused first: a refusal after it left the approval withdrawn for a line still there.
+        # A confirmed order keeps its approval; what the removal leaves is weighed below.
+        if self.order_id and self.order.approved_at and before is None:
+            self.order.withdraw_approval()
+        order = SalesOrder.objects.filter(pk=self.order_id, status=OrderStatus.CONFIRMED).first()
+        if order is not None:
+            self._hold_for_deposits()
+        # A line that no longer exists cannot be holding anything. The
+        # reservation points at it generically, so nothing cascades — the
+        # claim would simply survive its own document.
+        release_for(self, "Line removed")
+        super().delete(*args, **kwargs)
+        if order is not None:
+            order.refuse_coming_to_less_than_its_deposits()
+            # A cut is a change too: the dearest line taken off left an order under the margin floor.
+            SalesOrder.objects.get(pk=order.pk).refuse_going_past_the_policy(before)
+
+    def promised_date(self):
+        """
+        When this line is wanted.
+
+        A line date rather than an order one, because a fifty-thousand
+        sack contract is called off in weekly lots against a single
+        order and a planner asked to make all of it on the first
+        Monday will say no to work it could have taken. The order date
+        is the fallback and it means "now", which is the honest
+        reading of a promise nobody dated.
+        """
+        return self.delivery_date or self.order.order_date
+
+    def revenue_in_base(self):
+        """
+        What this line has billed, less what has been credited, in the
+        base currency at each document's own posted rate: the rate is a
+        fact of the posting, never today's.
+        """
+        total = Decimal("0")
+        for row in self.invoice_lines.filter(invoice__posted=True).select_related("invoice"):
+            amount = row.net_amount() * (row.invoice.exchange_rate or Decimal("1"))
+            total += -amount if row.invoice.is_credit_note() else amount
+        return total.quantize(Decimal("0.01"))
+
+    def quantity_shipped(self):
+        """Net quantity shipped: posted deliveries minus posted customer returns."""
+        if prefetched(self, "delivery_lines"):
+            # A list of orders asks this of every line; with the lines and
+            # their deliveries already read it is arithmetic, not two
+            # queries a line.
+            return sum(
+                (row.quantity_shipped if row.delivery.reverses_id is None else -row.quantity_shipped
+                 for row in self.delivery_lines.all() if row.delivery.posted),
+                Decimal("0"),
+            )
+        shipped = self.delivery_lines.filter(
+            delivery__posted=True, delivery__reverses__isnull=True
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        returned = self.delivery_lines.filter(
+            delivery__posted=True, delivery__reverses__isnull=False
+        ).aggregate(total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+        return shipped - returned
+
+    def is_fully_shipped(self):
+        """Met: shipped within its tolerance, or closed short."""
+        return self.quantity_open() <= 0
+
+    def quantity_in_stock_units(self):
+        """This line's quantity in the unit the stock ledger counts in."""
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(self.quantity, self.uom or self.item.uom)
+
+    def quantity_shipped_in_stock_units(self):
+        if self.item_id is None:
+            return Decimal("0")
+        return self.item.to_stock_quantity(
+            self.quantity_shipped(), self.uom or self.item.uom
+        )
+
+    def quantity_reserved(self, warehouse=None):
+        """How much of this line's promise is currently held on a shelf, or on that one."""
+        held = StockReservation.objects.for_source(self).open()
+        if warehouse is not None:
+            held = held.filter(warehouse=warehouse)
+        return sum((r.remaining() for r in held), Decimal("0"))
+
+    def quantity_invoiced(self):
+        """Net quantity invoiced: posted invoices minus posted credit notes."""
+        if prefetched(self, "invoice_lines"):
+            return sum(
+                (row.quantity if row.invoice.credits_id is None else -row.quantity
+                 for row in self.invoice_lines.all() if row.invoice.posted),
+                Decimal("0"),
+            )
+        invoiced = self.invoice_lines.filter(
+            invoice__posted=True, invoice__credits__isnull=True
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        credited = self.invoice_lines.filter(
+            invoice__posted=True, invoice__credits__isnull=False
+        ).aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+        return invoiced - credited
+
+    def quantity_uninvoiced(self):
+        if self.is_charge():
+            return self.quantity - self.quantity_invoiced()
+        return self.invoice_limit() - self.quantity_invoiced()
+
+    def quantity_invoiceable(self):
+        """
+        What may be billed right now. Under a 'delivered' policy that is
+        capped by what has actually shipped — billing goods still sitting
+        in the warehouse is how customers end up paying for nothing.
+        """
+        uninvoiced = self.quantity_uninvoiced()
+        # A charge has nothing to ship, so waiting for a delivery that will
+        # never come would strand the freight on the order forever.
+        if self.order.invoice_policy != InvoicePolicy.DELIVERED or self.is_charge():
+            return uninvoiced
+        return min(uninvoiced, self.quantity_shipped() - self.quantity_invoiced())
+
+    def is_fully_invoiced(self):
+        if self.is_charge():
+            return self.quantity_invoiced() >= self.quantity
+        return self.quantity_invoiced() >= self.invoice_limit()
+
+
+class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
+    """
+    Sales invoice. Posting creates a balanced JournalEntry (Dr Accounts
+    Receivable / Cr Revenue / Cr tax accounts) via Accounting — Sales
+    never writes ledger rows itself. Once posted, an invoice is immutable
+    exactly like a JournalEntry: the only way to correct one is a credit
+    note, which reuses JournalEntry.create_reversal() rather than
+    inventing its own correction logic.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="invoices")
+    invoice_date = models.DateField()
+    due_date = models.DateField(null=True, blank=True, editable=False)
+    reference = models.CharField(max_length=64, blank=True)
+    sales_order = models.ForeignKey(
+        SalesOrder, null=True, blank=True, on_delete=models.PROTECT, related_name="invoices"
+    )
+    receivable_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    exchange_rate = models.DecimalField(
+        max_digits=18, decimal_places=8, null=True, blank=True, editable=False,
+        help_text="Rate to the base currency captured at posting time.",
+    )
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    billing_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    shipping_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
+        help_text="The employee credited with this sale.",
+    )
+    credits = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_notes",
+        help_text="Set when this invoice is a credit note correcting another invoice.",
+    )
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    posted = models.BooleanField(default=False)
+    posted_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text="When this was last emailed to the customer.",
+    )
+    settlement_discount_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Early-settlement discount written off against this invoice.",
+    )
+    settlement_discount_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    settlement_discount_withdrawn = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="Of the discount for paying early, what was taken back when the payment that earned it "
+                  "was returned.",
+    )
+    settlement_discount_withdrawal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+    )
+    posted_total = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The total when it posted, in its own currency. A fact of the "
+                  "posting, which cannot change; reports use it to pass over what "
+                  "is already settled without working every total out again.",
+    )
+    is_down_payment = models.BooleanField(
+        default=False, editable=False,
+        help_text="Money taken up front against an order, held as a liability "
+                  "until the goods are delivered.",
+    )
+    claim_reason = models.CharField(
+        max_length=16, blank=True, editable=False,
+        choices=[("torn", "Torn or damaged bags"), ("short_weight", "Short weight or count"),
+                 ("rate", "Rate disputed"), ("quality", "Quality below specification"), ("other", "Other")],
+        help_text="On a credit note given for a customer's claim: what the money was given back for.",
+    )
+    corrects_old_supply = models.BooleanField(
+        default=False, editable=False,
+        help_text="A credit note with its own GST on an invoice the old system issued: "
+                  "reported in this system's returns against the old number.",
+    )
+    old_invoice_value = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="On such a note, what the old invoice was for in all: no more is "
+                  "credited against it, and for an unregistered buyer it decides "
+                  "whether the note is reported as a large one (CDNUR).",
+    )
+    is_opening_balance = models.BooleanField(
+        default=False, editable=False,
+        help_text="Brought in at go-live (import_csv open_invoices): what the old "
+                  "system's invoice still had owing. A supply that system already "
+                  "reported, so no GST return or e-invoice here counts it.",
+    )
+    written_off_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="Receivable judged uncollectable and charged to bad debt.",
+    )
+    # On a credit note: what it undid of its invoice's settlements that moved no money, rather than
+    # owe it back as cash. Facts of the note's posting: a later recovery or note reads them.
+    reversed_write_off = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"), editable=False)
+    reversed_discount = models.DecimalField(max_digits=18, decimal_places=2, default=Decimal("0"), editable=False)
+    settlement_reversal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+    )
+
+    class Meta:
+        ordering = ["-invoice_date", "-id"]
+        indexes = [models.Index(fields=["invoice_date", "id"], name="invoice_by_date")]
+        permissions = [
+            ("post_invoice", "Can post invoices and issue credit notes"),
+            ("write_off_invoice", "Can write a receivable off to bad debt"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_invoice_number"
+            )
+        ]
+
+    def __str__(self):
+        if self.number:
+            return f"{self.number} {self.customer}"
+        kind = "CN" if self.credits_id else "INV"
+        return f"{kind}-draft-{self.pk} {self.customer}"
+
+    def is_credit_note(self):
+        return bool(self.credits_id)
+
+    def tax_party(self):
+        return self.customer
+
+    def corrected_document(self):
+        return self.credits
+
+    def render_pdf(self):
+        from .documents import render_invoice_pdf
+
+        return render_invoice_pdf(self)
+
+    def recipient_email(self):
+        contact = self.customer.primary_contact()
+        if contact and contact.email:
+            return contact.email
+        return self.customer.email or ""
+
+    def email_to_customer(self, to=None, subject=None, body=None):
+        """Send the invoice as a PDF attachment. Returns the address used."""
+        from django.core.mail import EmailMessage
+
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be sent.")
+        for stamp in invoice_stamps(self):
+            if stamp.get("refuse_sending"):
+                raise ValidationError(stamp["refuse_sending"])
+        recipient = to or self.recipient_email()
+        if not recipient:
+            raise ValidationError(
+                f"{self.customer} has no email address on the party or its primary contact."
+            )
+
+        company = Company.get()
+        kind = "Credit note" if self.is_credit_note() else "Invoice"
+        message = EmailMessage(
+            subject=subject or f"{kind} {self.number} from {company.name}",
+            body=body or (
+                f"Dear {self.customer.name},\n\n"
+                f"Please find {kind.lower()} {self.number} attached"
+                + (f", due {self.due_date:%d %b %Y}" if self.due_date and not self.is_credit_note() else "")
+                + f".\n\nRegards,\n{company.name}\n"
+            ),
+            to=[recipient],
+        )
+        message.attach(f"{self.number}.pdf", self.render_pdf(), "application/pdf")
+        message.send()
+        record(self, None, EventKind.MAIL, action="send", summary=f"{kind} to {recipient}")
+
+        self.sent_at = timezone.now()
+        super(Invoice, self).save(update_fields=["sent_at", "updated_at"])
+        return recipient
+
+    def discount_due_date(self):
+        """The last day an early-settlement discount can be taken."""
+        if not self.payment_terms_id or not self.invoice_date:
+            return None
+        return self.payment_terms.discount_due_date(to_date(self.invoice_date))
+
+    def settlement_discount(self):
+        """What the customer saves by paying early, if the terms offer it."""
+        if not self.payment_terms_id:
+            return Decimal("0")
+        return self.payment_terms.discount_amount(self.total())
+
+    def discount_is_available(self, as_of=None):
+        deadline = self.discount_due_date()
+        if not self.posted or self.is_credit_note() or not deadline:
+            return False
+        if self.settlement_discount_amount:
+            return False
+        return (to_date(as_of) or timezone.localdate()) <= deadline
+
+    def settlement_discount_standing(self):
+        """The discount for paying early, less what notes undid of it and what was withdrawn."""
+        undone = sum((note.reversed_discount for note in self.credit_notes.filter(posted=True)), Decimal("0"))
+        return (self.settlement_discount_amount or Decimal("0")) - undone - self.settlement_discount_withdrawn
+
+    @serialised("settlement_discount_withdrawn", "settlement_discount_withdrawal_entry")
+    def withdraw_unearned_discount(self, on_date=None):
+        """
+        Take back the discount for paying early once the payment that earned it is returned and the
+        invoice owes again; None where nothing stands or other payments still settle it. Asked under the
+        lock: two returns at once take it back once.
+        """
+        standing = self.settlement_discount_standing()
+        if standing <= 0 or self.amount_due() <= 0:
+            return None
+        entry = withdraw_discount(self, self.receivable_account, self.customer, standing, to_date(on_date) or timezone.localdate(),
+                                  f"Settlement discount on {self.number} withdrawn: its payment was returned")
+        self.settlement_discount_withdrawn += standing
+        self.settlement_discount_withdrawal_entry = entry
+        super(Invoice, self).save(update_fields=[
+            "settlement_discount_withdrawn", "settlement_discount_withdrawal_entry", "updated_at"])
+        return entry
+
+    @serialised("settlement_discount_amount", "settlement_discount_entry")
+    def apply_settlement_discount(self, on_date=None, force=False):
+        """
+        Write off the early-settlement discount.
+
+        Without this the terms are decorative: a customer on 2/10 net 30
+        who pays the discounted amount leaves a small balance outstanding
+        forever, and dunning chases them for it.
+        """
+        on_date = correction_date(on_date, self.invoice_date, f"{self.number} takes no settlement discount on",
+                                  "it was invoiced")
+        amount = settlement_discount_to_take(self, on_date, force)
+
+        account = Company.get().settlement_discount_account
+        if account is None:
+            raise ValidationError(
+                "The company has no settlement discount account configured."
+            )
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        entry = JournalEntry.objects.create(
+            date=on_date, reference=self.number,
+            memo=f"Settlement discount on {self.number}",
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.customer,
+            debit=base_amount, description=f"Settlement discount {self.number}",
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.receivable_account, party=self.customer,
+            credit=base_amount, description=f"Settlement discount {self.number}",
+        )
+        entry.post()
+
+        self.settlement_discount_amount = amount
+        self.settlement_discount_entry = entry
+        super(Invoice, self).save(
+            update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"]
+        )
+        return entry
+
+    @serialised("posted", "written_off_amount")
+    def write_off(self, amount=None, on_date=None, reason=""):
+        """
+        Charge an uncollectable receivable to bad debt expense.
+
+        Not a credit note. A credit note reverses revenue, which says the
+        sale did not happen; a write-off says it did happen and the money
+        never arrived. Those are different facts and they land in
+        different places on the P&L. Without this, dunning escalates to
+        nothing and a dead invoice ages in AR forever, overstating assets.
+
+        Dr Bad debt expense / Cr Accounts receivable.
+
+        Never before the invoice, nor on a day to come: a write-off of
+        20 August of an invoice of 10 September left receivables at -1,000
+        on 31 August.
+        """
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be written off.")
+        on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not written off on", "it was issued")
+        # Nor before the last money it settles against (O181): 600 received
+        # on 25 September and 400 written off on 15 September read 1,000 owed
+        # as 600 between the two.
+        received = [to_date(row.payment.payment_date) for row in self.payment_allocations.all()
+                    if not row.payment.is_voided()]
+        if received and on_date < max(received):
+            raise ValidationError(f"{self.number} is not written off on {on_date}: "
+                                  f"money against it was received on {max(received)}.")
+        if self.is_credit_note():
+            raise ValidationError("A credit note cannot be written off.")
+
+        due = self.amount_due()
+        if due <= 0:
+            raise ValidationError("This invoice has nothing left to write off.")
+        amount = round_money(Decimal(amount)) if amount is not None else due
+        if amount <= 0:
+            raise ValidationError("A write-off must be for a positive amount.")
+        if amount > due:
+            raise ValidationError(
+                f"Cannot write off {amount} against an invoice with {due} outstanding."
+            )
+
+        account = Company.get().bad_debt_account
+        if account is None:
+            raise ValidationError("The company has no bad debt account configured.")
+
+        rate = self.exchange_rate or Decimal("1")
+        base_amount = round_money(amount * rate)
+        memo = f"Bad debt write-off {self.number}"
+        entry = JournalEntry.objects.create(
+            date=on_date, reference=self.number,
+            memo=f"{memo}: {reason}" if reason else memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=account, party=self.customer,
+            debit=base_amount, description=memo,
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.receivable_account, party=self.customer,
+            credit=base_amount, description=memo,
+        )
+        entry.post()
+
+        InvoiceWriteOff.objects.create(
+            invoice=self, amount=amount, date=on_date, reason=reason, journal_entry=entry
+        )
+        self.written_off_amount = self.written_off_amount + amount
+        super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
+        return entry
+
+    @serialised("written_off_amount")
+    def recover_write_off(self, write_off, on_date=None):
+        """
+        Undo a write-off because the customer paid after all.
+
+        Reversing the original entry rather than posting a fresh one keeps
+        the correction path identical to every other posted document: the
+        write-off stays on record, visibly reversed, instead of being
+        quietly netted to nothing by an unrelated entry.
+        """
+        if write_off.invoice_id != self.pk:
+            raise ValidationError("That write-off belongs to a different invoice.")
+        # Read again under its lock: two recoveries of one write-off both
+        # saw it standing and reversed it twice.
+        lock_rows(write_off)
+        if write_off.recovered_entry_id:
+            raise ValidationError("That write-off has already been recovered.")
+        # A credit note that undid the write-off already took it back off bad debt: recovered as well,
+        # it would come off twice.
+        undone = sum((note.reversed_write_off for note in self.credit_notes.filter(posted=True)), Decimal("0"))
+        if write_off.amount > self.amount_written_off() - undone:
+            raise ValidationError(f"Credit notes have undone {undone} of what was written off on {self.number}; "
+                                  "that is not recovered again.")
+
+        # Not before the write-off it undoes, nor ahead (O163).
+        entry = write_off.journal_entry.create_reversal(
+            entry_date=correction_date(on_date, write_off.journal_entry.date,
+                                       f"The write-off of {self.number} is not recovered on", "it was written off"),
+            memo=f"Bad debt recovered {self.number}",
+        )
+        write_off.recovered_entry = entry
+        write_off.save(update_fields=["recovered_entry", "updated_at"])
+        self.written_off_amount = self.written_off_amount - write_off.amount
+        super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
+        return entry
+
+    def _undo_settlements_without_money(self):
+        """
+        Past what it clears of its invoice, a credit note undoes the write-off
+        and the settlement discount still standing on it before it owes the
+        customer anything: neither was paid, so neither comes back as cash.
+        Dr receivables / Cr where each was booked, at the invoice's rate.
+        """
+        invoice = self.credits
+        lock_rows(invoice)
+        earlier = list(invoice.credit_notes.filter(posted=True).exclude(pk=self.pk))
+        taken = invoice.settlement_discount_amount or Decimal("0")
+        write_off, discount = undone_by_note(
+            self.total(), self.amount_absorbed(),
+            write_off=invoice.amount_written_off() - sum((note.reversed_write_off for note in earlier), Decimal("0")),
+            discount=taken - invoice.settlement_discount_withdrawn
+            - sum((note.reversed_discount for note in earlier), Decimal("0")),
+            discount_taken=taken, document_total=invoice.total(),
+            whole=sum((note.total() for note in earlier), self.total()) >= invoice.total())
+        undone = {kind: amount for kind, amount in (("write_off", write_off), ("discount", discount)) if amount}
+        if not undone:
+            return
+        booked = {
+            "discount": invoice.settlement_discount_entry,
+            "write_off": next((row.journal_entry for row in invoice.write_offs.filter(recovered_entry__isnull=True)
+                               .order_by("-pk")), None),
+        }
+        rate = invoice.exchange_rate or Decimal("1")
+        memo = f"{self.number} undoes what settled {invoice.number} without money"
+        entry = JournalEntry.objects.create(date=self.invoice_date, reference=self.number, memo=memo)
+        for kind, amount in undone.items():
+            base = round_money(amount * rate)
+            JournalLine.objects.create(entry=entry, account=invoice.receivable_account, party=self.customer,
+                                       debit=base, description=memo[:255])
+            JournalLine.objects.create(entry=entry, account=booked_beside(booked[kind], invoice.receivable_account),
+                                       party=self.customer, credit=base, description=memo[:255])
+        entry.post()
+        self.reversed_write_off = undone.get("write_off", Decimal("0"))
+        self.reversed_discount = undone.get("discount", Decimal("0"))
+        self.settlement_reversal_entry = entry
+        super(Invoice, self).save(update_fields=[
+            "reversed_write_off", "reversed_discount", "settlement_reversal_entry", "updated_at",
+        ])
+
+    def amount_written_off(self):
+        return self.written_off_amount or Decimal("0")
+
+    def amount_deposited(self):
+        """Down payments drawn down against this invoice."""
+        return sum(
+            (application.amount for application in self.deposit_applications.all()), Decimal("0")
+        )
+
+    def deposit_applied(self):
+        """On a down-payment invoice, how much of it has been drawn down."""
+        return sum(
+            (application.amount for application in self.applications.all()), Decimal("0")
+        )
+
+    def deposit_unapplied(self):
+        """
+        What is still held. Less what was credited back, or a deposit
+        returned to the customer was drawn down again on the final
+        invoice: the money back and a discount of the same amount.
+        """
+        if not self.is_down_payment:
+            return Decimal("0")
+        return self.total() - self.deposit_applied() - self.amount_credited()
+
+    @transaction.atomic
+    def apply_deposit(self, deposit, amount=None, on_date=None):
+        """
+        Draw a down payment down against this invoice.
+
+        Dr customer deposits / Cr accounts receivable: the liability is
+        discharged because the goods have now been delivered, and the
+        customer only owes the difference.
+
+        Deliberately independent of whether the deposit invoice was
+        actually *paid*. Unpaid, the two receivables simply stay open side
+        by side and still add up to what the customer owes; requiring
+        payment first would block the final invoice on a slow payer for
+        no accounting reason.
+        """
+        on_date = correction_date(on_date, max(to_date(self.invoice_date), to_date(deposit.invoice_date)),
+                                  f"{deposit.number} is not applied to {self.number} on",
+                                  "the later of the two is dated")
+        # Both: what is left on the deposit and what is due on the invoice
+        # are each read here, and another drawdown could spend either.
+        lock_rows(self, deposit)
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can draw down a deposit.")
+        if self.is_down_payment or self.is_credit_note():
+            raise ValidationError("A down payment or credit note cannot draw down a deposit.")
+        if not deposit.is_down_payment or not deposit.posted:
+            raise ValidationError("Only a posted down-payment invoice can be drawn down.")
+        if deposit.customer_id != self.customer_id:
+            raise ValidationError("That deposit belongs to a different customer.")
+        if deposit.currency_id != self.currency_id:
+            raise ValidationError(
+                "The deposit and the invoice are in different currencies; drawing one down "
+                "against the other would silently write off the difference."
+            )
+
+        left = deposit.deposit_unapplied()
+        available = min(left, self.amount_due())
+        amount = round_money(Decimal(amount)) if amount is not None else available
+        if amount <= 0:
+            raise ValidationError("There is nothing left to draw down.")
+        if amount > available:
+            raise ValidationError(
+                f"Only {available} can be drawn down here "
+                f"({left} left on the deposit, "
+                f"{self.amount_due()} due on the invoice)."
+            )
+
+        account = Company.get().customer_deposit_account
+        if account is None:
+            raise ValidationError("The company has no customer deposit account configured.")
+
+        # A taxed advance (job work): this share of its tax is reversed
+        # here, because the invoice it is drawn against charges tax on the
+        # whole. The last drawdown takes exactly what is left.
+        charged = deposit.advance_taxes()
+        if not charged:
+            reversals = []
+        elif amount == left:
+            reversals = deposit.advance_tax_for(deposit.lines.get().net_amount())
+        else:
+            reversals = [(tax, round_money(tax_amount * amount / deposit.total()))
+                         for tax, tax_amount in charged]
+        for tax, _amount in reversals:
+            if tax.collected_account_id is None:
+                raise ValidationError(f"{tax} has no account it is collected to.")
+        entry, fx_entry = post_drawdown(
+            party=self.customer, held_account=account,
+            control_account=self.receivable_account, amount=amount,
+            held_rate=deposit.exchange_rate, document_rate=self.exchange_rate,
+            date=on_date, reference=self.number,
+            memo=f"Down payment {deposit.number} applied to {self.number}",
+            is_receivable=True,
+            taxes=[(tax.collected_account, tax_amount) for tax, tax_amount in reversals if tax_amount],
+        )
+        application = DepositApplication.objects.create(
+            invoice=self, deposit=deposit, amount=amount, date=on_date,
+            journal_entry=entry, fx_entry=fx_entry,
+        )
+        for tax, tax_amount in reversals:
+            if tax_amount:
+                DepositTaxReversal.objects.create(application=application, tax=tax, amount=tax_amount)
+        return application
+
+    def apply_available_deposits(self, on_date=None):
+        """Draw down every deposit still outstanding on this invoice's order."""
+        if not self.sales_order_id or self.is_down_payment or self.is_credit_note():
+            return []
+        applied = []
+        deposits = list(self.sales_order.deposits().order_by("invoice_date", "pk"))
+        lock_rows(*deposits, refresh=False)  # in key order, the ones made after it too, before any is drawn
+        for deposit in deposits:
+            if self.amount_due() <= 0:
+                break
+            if deposit.deposit_unapplied() <= 0:
+                continue
+            # Drawn down on the later of this invoice's day and the deposit's: never before
+            # the deposit was booked (correction_date, O163).
+            day = max(to_date(on_date), to_date(deposit.invoice_date)) if on_date else None
+            applied.append(self.apply_deposit(deposit, on_date=day))
+        return applied
+
+    def amount_paid(self):
+        # A voided payment is money that never arrived — a bounced cheque,
+        # a recalled transfer. Its allocation stays on record as history,
+        # but nothing counts it any more.
+        return sum(
+            (allocation.amount
+             for allocation in self.payment_allocations.all()
+             if not allocation.payment.is_voided()),
+            Decimal("0"),
+        )
+
+    def amount_credited(self):
+        """Value of posted credit notes issued against this invoice."""
+        # Filtered here rather than in the query, so a caller's prefetch of
+        # credit_notes is used instead of bypassed.
+        return sum(
+            (note.total() for note in self.credit_notes.all() if note.posted), Decimal("0")
+        )
+
+    def _settled_otherwise(self):
+        """Paid, discounted, written off, met from a deposit or deducted as tax: not credited."""
+        return (
+            self.amount_paid()
+            + (self.settlement_discount_amount or Decimal("0")) - self.settlement_discount_withdrawn
+            + self.amount_written_off()
+            + self.amount_deposited()
+            + self.amount_tds()
+        )
+
+    def amount_tds(self):
+        """Tax the customer deducted from paying this, and that still stands."""
+        return sum((row.amount for row in self.tds_withheld.all() if row.reversed_entry_id is None),
+                   Decimal("0"))
+
+    def record_tds(self, section, amount, on_date=None, certificate=""):
+        from .tds import record
+
+        return record(self, section, amount, on_date=on_date, certificate=certificate)
+
+    def amount_absorbed(self):
+        """
+        On a credit note: how much of it went to clearing what was still
+        unpaid on its invoice, rather than becoming cash owed back.
+
+        Oldest note first, as purchasing absorbs debit notes: a later note
+        cannot take an earlier one's place against the invoice.
+        """
+        if not self.is_credit_note():
+            return Decimal("0")
+        invoice = self.credits
+        capacity = max(invoice.total() - invoice._settled_otherwise(), Decimal("0"))
+        used = Decimal("0")
+        for note in invoice.credit_notes.filter(posted=True).order_by("invoice_date", "pk"):
+            share = min(note.total(), max(capacity - used, Decimal("0")))
+            if note.pk == self.pk:
+                return share
+            used += share
+        return Decimal("0")
+
+    def refund_due(self):
+        """
+        On a credit note: cash owed back to the customer, over and above
+        clearing the invoice - only ever what they had paid. Without it a
+        note on an unpaid invoice could be refunded in full, paying the
+        customer money they never paid; purchasing always had its mirror.
+        """
+        if not self.is_credit_note():
+            return Decimal("0")
+        return (self.total() - self.amount_absorbed() - self.reversed_write_off - self.reversed_discount
+                - self.amount_paid())
+
+    def amount_due(self):
+        if self.is_credit_note():
+            return self.refund_due()
+        # A credit note can take the invoice to nothing but not below it:
+        # past that the customer has paid, so what is left is cash owed back,
+        # and it lives on the note. An invoice reading minus forty says the
+        # customer owes a negative amount, which is not a thing.
+        settled = self._settled_otherwise()
+        offset = min(self.amount_credited(), max(self.total() - settled, Decimal("0")))
+        return self.total() - settled - offset
+
+    def settlement_status(self):
+        if not self.posted:
+            return SettlementStatus.DRAFT
+        if self.amount_due() <= 0:
+            # Cleared by giving up on the money is not the same as cleared
+            # by being paid, and a collections report needs to tell them
+            # apart even though the balance reads zero either way.
+            if self.amount_written_off() > 0:
+                return SettlementStatus.WRITTEN_OFF
+            return SettlementStatus.PAID
+        if self.amount_paid() or self.amount_credited() or self.amount_written_off() or self.amount_tds():
+            return SettlementStatus.PARTIAL
+        return SettlementStatus.UNPAID
+
+    def installments(self):
+        """
+        What falls due when, with money already received applied to the
+        earliest installment first.
+
+        A term with no installment lines gives a single row, so a plain
+        net-30 document behaves exactly as it always did.
+        """
+        return installment_schedule(
+            terms=self.payment_terms if self.payment_terms_id else None,
+            document_date=self.invoice_date,
+            total=self.total(),
+            settled=self.total() - self.amount_due(),
+        )
+
+    def amount_overdue(self, as_of=None):
+        """
+        How much is actually late — not the whole balance.
+
+        On a 50/50 term the deposit can be weeks overdue while the balance
+        is not due for another month. Chasing the full amount would be
+        wrong, and chasing nothing would be worse.
+        """
+        if not self.posted or self.amount_due() <= 0:
+            return Decimal("0")
+        return amount_overdue(self.installments(), to_date(as_of) or timezone.localdate())
+
+    def is_overdue(self, as_of=None):
+        if not self.posted or self.amount_due() <= 0:
+            return False
+        return self.amount_overdue(as_of) > 0
+
+    def days_overdue(self, as_of=None):
+        """Days since the *earliest* installment that is still unpaid."""
+        as_of = to_date(as_of) or timezone.localdate()
+        if not self.is_overdue(as_of):
+            return 0
+        oldest = oldest_overdue(self.installments(), as_of)
+        return (as_of - oldest["due_date"]).days if oldest else 0
+
+    def clean(self):
+        self._check_kind()
+
+    def _check_kind(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
+        if self.is_down_payment and not self.sales_order_id:
+            raise ValidationError("A down payment must be against a sales order.")
+        if self.is_down_payment and self.credits_id:
+            raise ValidationError("A credit note cannot also be a down payment.")
+        if self.credits_id and self.credits.customer_id != self.customer_id:
+            raise ValidationError("A credit note must be for the same customer as the invoice it credits.")
+        refuse_correcting_a_note(self, "credits")
+
+    def _was_posted_in_db(self):
+        if not self.pk:
+            return False
+        return Invoice.objects.filter(pk=self.pk, posted=True).exists()
+
+    def locked_before_it(self):
+        """
+        Its order and every order its lines bill, then the invoice a credit note credits: held
+        before the invoice, in that order (apps.core.models, the lock order). A return holds the
+        order before it credits the invoice.
+        """
+        billed = self.lines.exclude(order_line=None).values("order_line__order") if self.pk else []
+        orders = list(SalesOrder.objects.filter(Q(pk=self.sales_order_id) | Q(pk__in=billed)).order_by("pk"))
+        # The deposits it draws down as it posts, made before it: rows of one model are taken in key
+        # order, and apply_deposit() takes the pair that way. Holding the invoice first, posting
+        # reached back for an older deposit a drawdown on it already held (O175).
+        drawn = list(SalesOrder(pk=self.sales_order_id).deposits().filter(pk__lt=self.pk).order_by("pk")) if (
+            self.pk and self.sales_order_id and not self.is_down_payment and not self.credits_id) else []
+        return orders + ([Invoice(pk=self.credits_id)] if self.credits_id else []) + drawn
+
+    def save(self, *args, **kwargs):
+        if self._was_posted_in_db():
+            raise ValidationError(
+                "This invoice is posted and immutable. Issue a credit note instead."
+            )
+        self._check_kind()
+        if not self._state.adding and not self.posted:
+            self.check_place()
+        if self._state.adding:
+            self._apply_customer_defaults()
+            if not self.receivable_account_id:
+                self.receivable_account = default_account("receivable", "receivable_account")
+        refuse_money_kept_as(self, "receivable_account")
+        super().save(*args, **kwargs)
+
+    def _apply_customer_defaults(self):
+        if not self.customer_id:
+            return
+        customer = self.customer
+        self.currency = self.currency or customer.default_currency
+        self.payment_terms = self.payment_terms or customer.payment_terms
+        self.billing_address = self.billing_address or customer.billing_address()
+        self.shipping_address = self.shipping_address or customer.shipping_address()
+        # An invoice from an order, or a credit note, carries the rep of
+        # what it came from; only one typed in afresh takes the customer's.
+        if not self.sales_rep_id and not self.sales_order_id and not self.credits_id:
+            self.sales_rep_id = (CustomerProfile.objects.filter(party=customer)
+                                 .values_list("sales_rep_id", flat=True).first())
+
+    def delete(self, *args, **kwargs):
+        if self.posted:
+            raise ValidationError("Posted invoices cannot be deleted. Issue a credit note instead.")
+        super().delete(*args, **kwargs)
+
+    def _rate_for_posting(self):
+        if self.currency is None:
+            return Decimal("1")
+        return self.currency.rate_on(self.invoice_date)
+
+    def _build_journal_entry(self, rate, reverse=False):
+        """
+        Build the ledger entry in base currency. `reverse` swaps the sides,
+        which is what a credit note posts.
+
+        The counterpart lines are computed first and the receivable is set to
+        their exact sum: rounding each converted line independently can leave
+        the two sides a cent apart, which would make a legitimate document
+        unpostable.
+        """
+        lines = list(self.lines.all())
+        if not lines:
+            raise ValidationError("Cannot post an invoice with no lines.")
+
+        entry = JournalEntry.objects.create(
+            date=self.invoice_date,
+            reference=self.number or self.reference,
+            memo=f"Invoice {self.number} for {self.customer}",
+        )
+
+        credits = []
+        for line in lines:
+            if line.revenue_account_id is None:
+                raise ValidationError(f"Line '{line}' has no revenue account.")
+            credits.append((line.revenue_account, round_money(line.net_amount() * rate),
+                            line.description or str(line.item)))
+
+        tax_totals = defaultdict(Decimal)
+        line_taxes = self.line_tax_amounts()
+        for line in lines:
+            for tax, amount in line_taxes.get(line, ()):
+                if not amount:
+                    continue
+                if not tax.applies_to_sales():
+                    raise ValidationError(f"Tax {tax.code} is not configured for sales.")
+                account = tax.account_for(is_sale=True)
+                if account is None:
+                    raise ValidationError(f"Tax {tax.code} has no collected account.")
+                tax_totals[account] += amount
+        for account, amount in tax_totals.items():
+            credits.append((account, round_money(amount * rate), "Tax"))
+
+        receivable_total = sum(amount for _, amount, _ in credits)
+        JournalLine.objects.create(
+            entry=entry,
+            account=self.receivable_account,
+            party=self.customer,
+            credit=receivable_total if reverse else Decimal("0"),
+            debit=Decimal("0") if reverse else receivable_total,
+            description=f"{'Credit note' if reverse else 'Invoice'} {self.number}",
+        )
+        for account, amount, description in credits:
+            if amount:
+                JournalLine.objects.create(
+                    entry=entry, account=account, party=self.customer,
+                    debit=amount if reverse else Decimal("0"),
+                    credit=Decimal("0") if reverse else amount,
+                    description=description,
+                )
+        return entry
+
+    def _is_full_credit_of(self, original):
+        """True when this credit note gives back every line of `original` in full."""
+        credited = defaultdict(Decimal)
+        for line in self.lines.all():
+            if not line.credits_line_id:
+                return False
+            credited[line.credits_line_id] += line.quantity
+        if original.is_down_payment:
+            # Credited by amount, one line of one at what is left: in full
+            # only when nothing had been drawn down.
+            return self.total() == original.total()
+        original_lines = list(original.lines.all())
+        if len(credited) != len(original_lines):
+            return False
+        return all(credited.get(line.pk) == line.quantity for line in original_lines)
+
+    @serialised("posted", held_first=True)
+    def post(self, memo=None, apply_deposits=True):
+        if self.posted:
+            raise ValidationError("This invoice is already posted.")
+        # Asked again as it posts: the account may have been made a bank's since the draft named it.
+        refuse_money_kept_as(self, "receivable_account", changed_only=False)
+        # The address may have been edited since the draft was saved.
+        self.check_place()
+        # What the order has already been billed, and taken up front, is
+        # read below and decided on; two invoices for one order posting
+        # at once must not both see the same room. Every order a line
+        # bills, too, whether or not the invoice names it: deliveries and
+        # returns post under the same locks, so what shipped is read as
+        # it stands.
+        lock_rows(self.sales_order, *SalesOrder.objects.filter(
+            pk__in=self.lines.exclude(order_line=None).values("order_line__order")))
+        order = self.sales_order
+        if order is not None and not self.is_credit_note() and order.status != OrderStatus.CONFIRMED:
+            # Asked as a delivery asks, under the same lock: a draft made before the
+            # order was cancelled billed the customer for it, or took a deposit on it.
+            what = "take a down payment" if self.is_down_payment else "be invoiced"
+            raise ValidationError(f"Only a confirmed order can {what}; {order} is {order.get_status_display().lower()}.")
+        if self.is_down_payment:
+            self._check_deposit_shape()
+            self._check_deposit_room()
+
+        self.invoice_date = to_date(self.invoice_date)
+        if not self.is_credit_note() and self.total() <= 0:
+            raise ValidationError(
+                "This invoice has no value to post. Give its lines a quantity and price."
+            )
+        if self.is_credit_note():
+            # Rule B's correcting half, asked again under the credited invoice's lock (held first): a
+            # note gives back only lines of the invoice it credits, and no more of each than is left.
+            given_back = list(self.lines.select_related("credits_line__invoice"))
+            for line in given_back:
+                refuse_correcting_another_line(line, self, "credits_line", "credits")
+            if not self.credits.is_down_payment:
+                # A claim too, by value: spread onto a line already given back whole, it over-credited it (O185).
+                refuse_correcting_past_what_it_holds(given_back, "credits_line", InvoiceLine.quantity_credited,
+                                                     on="invoice", by_value_only=bool(self.claim_reason))
+        going = defaultdict(Decimal)
+        for line in self.lines.select_related("order_line__order"):
+            if not line.order_line_id:
+                continue
+            # Rule B, asked again under the orders' locks: the invoice's customer, currency or order
+            # may have changed since the line was saved.
+            refuse_naming_another_order_line(line, self, "customer", "sales_order")
+            if self.is_credit_note():
+                continue
+            from apps.core.api import plain
+
+            order_line = line.order_line
+            if order_line.order.status != OrderStatus.CONFIRMED:
+                raise ValidationError(
+                    f"{order_line.label()} is on {order_line.order}, which is "
+                    f"{order_line.order.get_status_display().lower()}; only a confirmed order is invoiced.")
+            # The room create_invoice() drafts to, asked again as it posts: a draft made before
+            # another posted bills only what is left, and on a bill-on-delivery order only what
+            # shipped. Two drafts for one shipment of 5 each posted, and 10 were billed.
+            already = order_line.quantity_invoiced()
+            going[order_line.pk] += line.quantity
+            limit = order_line.quantity if order_line.is_charge() else order_line.invoice_limit()
+            if already + going[order_line.pk] > limit:
+                what = ("shipped quantity of a line closed short"
+                        if order_line.is_closed_short() else "ordered quantity")
+                raise ValidationError(
+                    f"Invoicing {plain(going[order_line.pk])} of {order_line.item} would exceed the "
+                    f"{what} ({plain(limit)}; {plain(already)} already invoiced)."
+                )
+            if going[order_line.pk] > order_line.quantity_invoiceable():
+                shipped = order_line.quantity_shipped()
+                raise ValidationError(
+                    f"{order_line.order} bills on delivery: {plain(shipped)} of {order_line.item} has "
+                    f"shipped and {plain(already)} is already invoiced, so {plain(going[order_line.pk])} "
+                    "cannot be invoiced."
+                )
+        if not self.number:
+            if self.is_credit_note():
+                self.number = DocumentSequence.next_for(
+                    "sales.credit_note", self.invoice_date, name="Credit Notes", prefix="CN-"
+                )
+            else:
+                self.number = DocumentSequence.next_for(
+                    "sales.invoice", self.invoice_date, name="Customer Invoices", prefix="INV-"
+                )
+
+        self.exchange_rate = self._rate_for_posting()
+        self.due_date = (
+            self.payment_terms.due_date(self.invoice_date)
+            if self.payment_terms_id else self.invoice_date
+        )
+
+        if self.is_credit_note():
+            original = self.credits
+            if not original.posted or not original.journal_entry_id:
+                raise ValidationError("Cannot post a credit note against an unposted invoice.")
+            # Credit at the rate the invoice was billed at, not today's, so a
+            # credit note can't book a spurious FX gain against itself.
+            self.exchange_rate = original.exchange_rate or Decimal("1")
+            entry = self._build_journal_entry(self.exchange_rate, reverse=True)
+            if self._is_full_credit_of(original):
+                entry.reverses = original.journal_entry
+                entry.save(update_fields=["reverses"])
+            entry.post()
+        else:
+            entry = self._build_journal_entry(self.exchange_rate)
+            entry.post()
+
+        self.record_taxes()
+        self.journal_entry = entry
+        self.posted = True
+        self.posted_at = timezone.now()
+        self.posted_total = self.total()
+        super(Invoice, self).save(
+            update_fields=[
+                "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
+                "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
+                "place_of_supply", "posted_total", "updated_at",
+            ]
+        )
+
+        if self.is_credit_note():
+            self._undo_settlements_without_money()
+
+        # Draw down the order's deposits automatically. Leaving this to the
+        # caller means the day someone forgets, the customer is billed the
+        # full amount on top of money they have already handed over — and
+        # the deposit sits as a liability nobody ever clears.
+        if apply_deposits:
+            self.apply_available_deposits(on_date=self.invoice_date)
+
+
+    def _credit_note(self, on_date=None, **extra):
+        """A credit note against this invoice, carrying its terms, addresses and rep; the lines are the caller's."""
+        return Invoice.objects.create(
+            customer=self.customer, invoice_date=to_date(on_date) or timezone.localdate(), reference=self.reference,
+            receivable_account=self.receivable_account, currency=self.currency, payment_terms=self.payment_terms,
+            billing_address=self.billing_address, shipping_address=self.shipping_address, sales_rep=self.sales_rep,
+            credits=self, **extra)
+
+    @serialised("posted", held_first=True)
+    def create_credit_note(self, memo="", quantities=None, amount=None):
+        """
+        Credit this invoice. By default the whole thing; pass
+        `quantities` as {invoice_line: quantity} to credit part of it, which
+        is what a partial goods return needs. A down payment is credited by
+        `amount` instead: part of what is left of it, or by default all.
+        """
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be credited.")
+        if self.is_credit_note():
+            raise ValidationError("Cannot issue a credit note against a credit note.")
+        if self.is_down_payment:
+            return self._credit_deposit(memo, quantities, amount)
+        if amount is not None:
+            raise ValidationError("An invoice is credited by the quantities of its lines, not by an amount.")
+
+        if quantities is None:
+            # What is still creditable, not the whole line: crediting an
+            # invoice in full twice took it back twice, and receivables to
+            # minus the invoice. Purchasing's debit note always asked.
+            selected = [(line, line.quantity_creditable()) for line in self.lines.all()]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
+        else:
+            selected = [(line, quantity) for line, quantity in quantities.items() if quantity > 0]
+            for line, quantity in selected:
+                if line.invoice_id != self.pk:
+                    raise ValidationError("That line belongs to a different invoice.")
+                if quantity > line.quantity_creditable():
+                    raise ValidationError(
+                        f"Only {line.quantity_creditable()} of '{line}' is left to credit; "
+                        f"cannot credit {quantity}."
+                    )
+        if not selected:
+            raise ValidationError("Nothing to credit.")
+
+        credit_note = self._credit_note()
+        for line, wanted in selected:
+            # At what is left of the line's value: after a claim, not its whole price (O185).
+            for quantity, price, discount in priced_to_give_back(
+                    line, wanted, "credits_line", InvoiceLine.quantity_credited, on="invoice"):
+                credit_line = InvoiceLine.objects.create(
+                    invoice=credit_note,
+                    order_line=line.order_line,
+                    credits_line=line,
+                    item=line.item,
+                    charge=line.charge,
+                    description=line.description,
+                    quantity=quantity,
+                    unit_price=price,
+                    discount_percent=discount,
+                    revenue_account=line.revenue_account,
+                )
+                credit_line.taxes.set(line.taxes.all())
+        credit_note.post(memo=memo)
+        return credit_note
+
+    def credit_claim(self, net, reason, memo="", on_date=None):
+        """
+        Money given back on a customer's claim (torn bags, short weight, a
+        rate in dispute): a price adjustment, not a return. `net` is before
+        tax; it is spread over the lines by value, the last taking what
+        rounding leaves, and each line's tax follows from what it bore.
+        No goods move and no quantity stops being returnable. Credited
+        neither before the invoice nor on a day to come (correction_date).
+        """
+        reasons = dict(type(self)._meta.get_field("claim_reason").choices)
+        if reason not in reasons:
+            raise ValidationError({"reason": "Say what the claim was for."})
+        with transaction.atomic():
+            lock_rows(self)
+            if not self.posted:
+                raise ValidationError("Only a posted invoice can be credited.")
+            on_date = correction_date(on_date, self.invoice_date, f"A claim on {self.number} is not credited on",
+                                      "it was issued")
+            if self.is_credit_note():
+                raise ValidationError("A claim is credited against the invoice, not a credit note.")
+            if self.is_down_payment:
+                raise ValidationError("A down payment is given back by amount; credit it that way.")
+            net = round_money(Decimal(net))
+            if net <= 0:
+                raise ValidationError({"net": "A claim gives back more than nothing."})
+            credited = sum((note.subtotal() for note in self.credit_notes.filter(posted=True)), Decimal("0"))
+            left = self.subtotal() - credited
+            if net > left:
+                raise ValidationError({"net": f"Only {left} of {self.number} before tax is left to credit."})
+            # Spread by what is left of each line, not its whole value: a line already given back whole
+            # takes none of it (O185).
+            lefts = [(line, value_left(line, "credits_line", InvoiceLine.quantity_credited, on="invoice")[0])
+                     for line in self.lines.all()]
+            lefts = [(line, left) for line, left in lefts if left > 0]
+            whole = sum((left for _, left in lefts), Decimal("0"))
+            if net > whole:
+                raise ValidationError({"net": f"Only {round_money(whole)} of {self.number} before tax is left to credit."})
+            lines = [line for line, _ in lefts]
+            note = self._credit_note(on_date, claim_reason=reason)
+            used = Decimal("0")
+            for index, (line, left) in enumerate(lefts):
+                share = net - used if index == len(lines) - 1 else round_money(net * left / whole)
+                used += share
+                if share <= 0:
+                    continue
+                claim_line = InvoiceLine.objects.create(
+                    invoice=note, credits_line=line, description=f"{reasons[reason]}: {line.label()}",
+                    quantity=Decimal("1"), unit_price=share, revenue_account=line.revenue_account,
+                )
+                claim_line.taxes.set(line.taxes.all())
+            note.post(memo=memo or f"Claim on {self.number}: {reasons[reason]}")
+            return note
+
+    def credit_old_supply(self, lines, memo="", on_date=None, old_value=None):
+        """
+        A credit note with GST on an invoice the old system issued (see
+        apps/accounting/old_supply.py). `lines` are dicts of item,
+        description, quantity, unit_price, taxes and revenue_account.
+        """
+        from apps.accounting.old_supply import check_room, checked_lines
+
+        if not self.is_opening_balance or self.is_credit_note():
+            raise ValidationError(
+                f"{self} is not an invoice from the old system; credit it the ordinary way.")
+        if not self.posted:
+            raise ValidationError("Only a posted invoice can be credited.")
+        checked = checked_lines(lines, "revenue_account", "credit")
+        with transaction.atomic():
+            lock_rows(self)
+            earlier = list(self.credit_notes.filter(posted=True, corrects_old_supply=True))
+            if old_value is None:
+                old_value = next((note.old_invoice_value for note in earlier
+                                  if note.old_invoice_value is not None), None)
+            if (old_value is None and not self.party_gstin
+                    and self.party_registration != "overseas"):
+                raise ValidationError(
+                    f"{self.customer} is unregistered: say what the old invoice was for in "
+                    "all, which decides whether the note is reported as a large one.")
+            on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not credited on",
+                                      "it was invoiced")
+            note = self._credit_note(on_date, corrects_old_supply=True, old_invoice_value=old_value)
+            for fields, taxes in checked:
+                line = InvoiceLine.objects.create(invoice=note, **fields)
+                line.taxes.set(taxes)
+            check_room(old_value, sum((n.total() for n in earlier), Decimal("0")),
+                       note.total(), "invoice", "credited")
+            note.post(memo=memo or None)
+        return note
+
+    def _check_deposit_shape(self):
+        """
+        A down payment is one line of money held on the deposit account,
+        and nothing else.
+
+        Asked at posting, the first point every line and its taxes are
+        known. A draft could be given more through the API: a second
+        line booked revenue on a document every report leaves out as not
+        a sale, and crediting it back assumed one line and failed. Tax on
+        an advance is owed on a service, and a job-work order's advance
+        bears it; on goods none is due, and any is refused.
+        """
+        lines = list(self.lines.all())
+        if len(lines) != 1:
+            raise ValidationError(
+                f"A down payment is a single line of money held; this one has {len(lines)}. "
+                "Bill anything else on its own invoice."
+            )
+        (line,) = lines
+        if line.item_id or line.charge_id or line.order_line_id:
+            raise ValidationError(
+                "A down payment line is money held, not goods or a charge."
+            )
+        if line.quantity != 1 or line.discount_percent:
+            raise ValidationError(
+                "A down payment line is one of its amount, with no discount."
+            )
+        if line.taxes.exists() and not (self.sales_order_id and self.sales_order.is_job_work):
+            raise ValidationError(
+                "No tax is due on an advance for goods; post it without tax. (An advance "
+                "for job work bears its tax, from the order.)"
+            )
+        account = Company.get().customer_deposit_account
+        if account is None or line.revenue_account_id != account.pk:
+            raise ValidationError(
+                "A down payment is credited to the customer deposit account, which is what "
+                "the final invoice draws it down from."
+            )
+
+    def _check_deposit_room(self):
+        """
+        Down payments on an order cannot exceed it, asked at posting.
+
+        Asked only when a draft was made, two drafts — 700 and then 400
+        on a 1,000 order — each passed, because neither was posted when
+        the other was checked, and both then posted.
+        """
+        order = self.sales_order
+        if order is None:
+            return
+        taken, worth = order.deposit_total(), order.worth_at_most()
+        if taken + self.total() > worth:
+            raise ValidationError(
+                f"Down payments of {taken} are already on {order}; taking {self.total()} "
+                f"more would exceed the order total of {order.total_words(worth)}."
+            )
+
+    def _credit_deposit(self, memo, quantities, amount=None):
+        """
+        Give back what is left of a down payment, or `amount` of it: the
+        customer cut the order, and keeps the deposit for what remains.
+
+        By amount, not quantity: the deposit is one line of one, and part
+        of it may already have been drawn down against a final invoice.
+        Crediting the whole of it then took back money the final invoice
+        had already counted, and the deposit account went into debit.
+        """
+        if quantities is not None:
+            raise ValidationError(
+                "A down payment is credited by amount: whatever is left of it once "
+                "the final invoices have drawn it down."
+            )
+        left = self.deposit_unapplied()
+        if left <= 0:
+            drawn = ", ".join(a.invoice.number for a in self.applications.all())
+            if not drawn:
+                raise ValidationError(f"{self.number} has already been credited back in full.")
+            raise ValidationError(
+                f"{self.number} has already been drawn down in full against {drawn}; "
+                "credit those invoices instead."
+            )
+        if amount is not None:
+            if amount <= 0 or amount != round_money(amount):
+                raise ValidationError("Give back an amount above nothing, to the paisa.")
+            if amount > left:
+                raise ValidationError(
+                    f"Only {left} of {self.number} is left to give back; cannot give back {amount}.")
+        else:
+            amount = left
+        net = self.advance_net_for(amount)
+        line = self.lines.get()  # One, by _check_deposit_shape().
+        credit_note = self._credit_note()
+        returned = InvoiceLine.objects.create(
+            invoice=credit_note,
+            credits_line=line,
+            description=f"Down payment {self.number} returned",
+            quantity=Decimal("1"),
+            unit_price=net,
+            revenue_account=line.revenue_account,
+        )
+        # Its tax goes back with it: the same taxes, bound by the line it
+        # credits (InvoiceLine.fixed_tax_amounts).
+        returned.taxes.set(line.taxes.all())
+        credit_note.post(memo=memo)
+        return credit_note
+
+    # -- tax on an advance (job work) ----------------------------------------
+
+    def advance_taxes(self):
+        """On a posted down payment: [(tax, amount)] it charged, as it recorded them."""
+        if not self.is_down_payment or not self.taxes_recorded:
+            return []
+        return [(row.tax, row.amount) for row in self.lines.get().recorded_taxes.all()]
+
+    def _advance_given_back(self):
+        """(net, {tax pk: tax}) of this down payment already drawn down or credited back."""
+        net, taxes = Decimal("0"), defaultdict(Decimal)
+        for application in self.applications.all():
+            reversed_here = list(application.tax_reversals.all())
+            net += application.amount - sum((row.amount for row in reversed_here), Decimal("0"))
+            for row in reversed_here:
+                taxes[row.tax_id] += row.amount
+        for note in self.credit_notes.all():
+            if not note.posted:
+                continue
+            for note_line in note.lines.all():
+                net += note_line.net_amount()
+                for tax, amount in note_line.tax_amounts():
+                    taxes[tax.pk] += amount
+        return net, taxes
+
+    def advance_tax_for(self, net):
+        """
+        [(tax, amount)] the part of this down payment worth `net` before tax
+        carries: in proportion, and the last of it exactly what is left, so
+        the tax account it was charged to clears to nothing.
+        """
+        charged = self.advance_taxes()
+        if not charged:
+            return []
+        whole = self.lines.get().net_amount()
+        given_net, given_tax = self._advance_given_back()
+        if net >= whole - given_net:
+            return [(tax, amount - given_tax[tax.pk]) for tax, amount in charged]
+        return [(tax, round_money(amount * net / whole)) for tax, amount in charged]
+
+    def advance_net_for(self, gross):
+        """
+        The net that, with its tax, is `gross` of this down payment: all
+        that is left, or a part. A part the tax rounding cannot reach is
+        refused, naming the amounts either side that it can.
+        """
+        charged = self.advance_taxes()
+        if not charged:
+            return gross
+        whole = self.lines.get().net_amount()
+        given_net, _ = self._advance_given_back()
+        if gross == self.deposit_unapplied():
+            return whole - given_net
+        rate = sum((amount for _, amount in charged), Decimal("0")) / whole
+        guess = round_money(gross / (1 + rate))
+        reached = {}
+        for step in range(-3, 4):
+            net = guess + Decimal(step) / 100
+            reached[net + sum((amount for _, amount in self.advance_tax_for(net)), Decimal("0"))] = net
+        if gross in reached:
+            return reached[gross]
+        below = max((total for total in reached if total < gross), default=None)
+        above = min((total for total in reached if total > gross), default=None)
+        raise ValidationError(
+            f"{gross} does not split into an amount and its tax to the paisa; give back "
+            + " or ".join(str(total) for total in (below, above) if total is not None) + ".")
+
+
+# Everything an invoice's own figures read — totals, tax, paid, credited,
+# deposited, voided payments, due dates — for lists and reports that walk
+# many. The invoice list asked 1,686 queries a page without it.
+INVOICE_FIGURES = (
+    "lines__taxes",
+    "lines__recorded_taxes__tax",
+    "payment_allocations__payment__journal_entry__reversed_by",
+    "credit_notes__lines__taxes",
+    "credit_notes__lines__recorded_taxes__tax",
+    "deposit_applications",
+    "applications",
+    "tds_withheld",
+    "payment_terms__lines",
+)
+
+
+class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
+    invoice = models.ForeignKey(Invoice, related_name="lines", on_delete=models.CASCADE)
+    order_line = models.ForeignKey(
+        SalesOrderLine, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="invoice_lines",
+        help_text="Set when this line bills a sales order line, so the order can't be billed twice.",
+    )
+    credits_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_lines",
+        help_text="On a credit note line, the invoice line being credited.",
+    )
+    item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="invoice_lines")
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line bills freight, handling or similar.",
+    )
+    description = models.CharField(max_length=255, blank=True)
+    revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="invoice_lines")
+
+    def party_for_tax(self):
+        return self.invoice.customer
+
+    def place_for(self, profile):
+        return self.invoice.place_for(profile)
+
+    def document(self):
+        return self.invoice
+
+    def corrected_line(self):
+        return self.credits_line
+
+    def fixed_tax_amounts(self):
+        # Crediting back a taxed advance: the tax goes back in proportion,
+        # and with the last of it exactly what the advance still carries
+        # after its drawdowns, which reverse tax of their own. Measured
+        # against the credit notes alone, a deposit drawn down in part and
+        # then returned left a paisa on the GST account for good.
+        original = self.credits_line
+        if (original is not None and not self.invoice.taxes_recorded
+                and original.invoice.is_down_payment and original.invoice.taxes_recorded):
+            return original.invoice.advance_tax_for(self.net_amount())
+        return super().fixed_tax_amounts()
+
+    def current_hsn(self):
+        # A credit note keeps what its invoice line froze; only a fresh
+        # line asks whether it is conversion.
+        if self.corrected_line() is None:
+            code = _job_work_sac(self)
+            if code is not None:
+                return code
+        return super().current_hsn()
+
+    def corrections(self):
+        return self.credit_lines.filter(invoice__posted=True)
+
+    def __str__(self):
+        return f"{self.label()} x{self.quantity}"
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="invoice_line_quantity_positive"
+            ),
+            models.CheckConstraint(
+                check=Q(unit_price__gte=0), name="invoice_line_price_not_negative"
+            ),
+        ]
+
+    def quantity_credited(self):
+        """How much of this line has already been credited by posted credit notes."""
+        # A claim gives money back on the line, not goods: what can still be
+        # returned is untouched by it.
+        return self.credit_lines.filter(invoice__posted=True, invoice__claim_reason="").aggregate(
+            total=models.Sum("quantity")
+        )["total"] or Decimal("0")
+
+    def quantity_creditable(self):
+        return self.quantity - self.quantity_credited()
+
+    def locked_before_it(self):
+        """The invoices it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "invoice")
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        # Shared rule B: the invoice it leaves and the one it joins, both held.
+        answer_to_its_document(
+            self, "invoice", "Cannot modify a line on a posted invoice. Issue a credit note instead.")
+        refuse_naming_another_order_line(self, self.invoice, "customer", "sales_order")
+        refuse_correcting_another_line(self, self.invoice, "credits_line", "credits", fill=True)
+        # An order line may leave it blank; a sale cannot post without one,
+        # and invoicing such a line was a database error rather than a
+        # sentence. Here, where every invoice line is made.
+        if not self.revenue_account_id:
+            self.revenue_account = (self.charge.account_for(is_sale=True) if self.charge_id
+                                    else default_account("revenue", "revenue_account"))
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            self.invoice.check_place()
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        answer_to_its_document(
+            self, "invoice", "Cannot delete a line on a posted invoice. Issue a credit note instead.")
+        super().delete(*args, **kwargs)
+
+
+def _job_work_sac(line):
+    """The service code a job-work order's conversion is billed under, or None
+    where the line is not conversion, or GST is not set up."""
+    from apps.accounting.gst import GstSettings
+
+    order_line = line.order_line
+    if order_line is None or not order_line.order.is_job_work:
+        return None
+    settings = GstSettings.active()
+    if settings is None:
+        return None
+    if not settings.job_work_sac:
+        raise ValidationError(
+            f"{order_line.order} is job work: the customer's goods are converted, not "
+            "sold, and the invoice bills a service. Set the SAC for conversion in the "
+            "GST settings first."
+        )
+    return settings.job_work_sac
+
+
+class InvoiceLineTax(RecordedLineTax):
+    line = models.ForeignKey(InvoiceLine, on_delete=models.CASCADE, related_name="recorded_taxes")
+
+
+class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
+    """
+    Applies part (or all) of a Payment to an Invoice. The ledger entry was
+    already made when the payment posted — this records *which* invoices
+    that money settles, which is what makes an aging report possible.
+
+    Allocations stay editable after the fact: re-applying a payment to a
+    different invoice is a bookkeeping correction, not a ledger change.
+    """
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payment_allocations")
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name="invoice_allocations")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField(
+        blank=True,
+        help_text="The day the payment was applied: the exchange difference is realised that day. "
+                  "Left out, today; never before the payment or the document, nor a day to come.",
+    )
+    fx_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Realised exchange difference posted when this allocation was made.",
+    )
+    fx_released_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="Its payment returned: the exchange difference it realised, reversed on that day.",
+    )
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "payment"], name="one_allocation_per_invoice_and_payment"
+            ),
+            models.CheckConstraint(check=Q(amount__gt=0), name="allocation_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.payment} -> {self.invoice} ({self.amount})"
+
+    @staticmethod
+    def allocated_for(payment, excluding=None):
+        allocations = InvoicePayment.objects.filter(payment=payment)
+        if excluding is not None and excluding.pk:
+            allocations = allocations.exclude(pk=excluding.pk)
+        return allocations.aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
+
+    @staticmethod
+    def unallocated_for(payment):
+        return payment.amount - allocated_on(payment)
+
+    def clean(self):
+        if not self.payment_id or not self.invoice_id:
+            return
+        if not self.payment.posted:
+            raise ValidationError("Only a posted payment can be allocated.")
+        if self.payment.is_voided():
+            raise ValidationError("This payment has been voided and cannot be allocated.")
+        if not self.invoice.posted:
+            raise ValidationError("Only a posted invoice can be settled.")
+        # A credit note is money owed *to* the customer, so it is settled by
+        # paying them (a disbursement), never by receiving more money.
+        if self.invoice.is_credit_note():
+            if self.payment.direction != PaymentDirection.DISBURSEMENT:
+                raise ValidationError(
+                    "A credit note is refunded with a disbursement, not a receipt."
+                )
+        elif self.payment.direction != PaymentDirection.RECEIPT:
+            raise ValidationError("Only a receipt can settle a customer invoice.")
+        if self.payment.party_id != self.invoice.customer_id:
+            raise ValidationError("The payment and the invoice belong to different parties.")
+        # Settling across currencies would need FX gain/loss postings that
+        # don't exist yet; treating 100 USD as 100 EUR silently writes off
+        # the difference, so refuse rather than guess.
+        if self.payment.currency_id != self.invoice.currency_id:
+            raise ValidationError(
+                f"The payment is in {self.payment.currency or 'no currency'} but the invoice "
+                f"is in {self.invoice.currency or 'no currency'}; cross-currency settlement "
+                "is not supported."
+            )
+
+        refuse_other_control_account(self.payment, self.invoice.receivable_account, self.invoice)
+        # Applied anywhere, not only to invoices: see allocated_on().
+        available = self.payment.amount - allocated_on(self.payment, excluding=self)
+        if self.amount > available:
+            raise ValidationError(
+                f"Only {available} of this payment is unallocated; cannot apply {self.amount}."
+            )
+
+        outstanding = self.invoice.amount_due() + (
+            InvoicePayment.objects.filter(pk=self.pk).first().amount if self.pk else Decimal("0")
+        )
+        if self.amount > outstanding:
+            raise ValidationError(
+                f"The invoice only has {outstanding} outstanding; cannot apply {self.amount}."
+            )
+
+    def locked_before_it(self):
+        """
+        The payment and the invoice, as save() takes them and as voiding the
+        payment does, which then releases this allocation's exchange
+        difference (apps.core.models.lock_for_change).
+        """
+        return [self.payment if self.payment_id else None, self.invoice if self.invoice_id else None]
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        # What is left on the payment and due on the invoice are read in
+        # clean(); two allocations at once must not both spend them.
+        lock_rows(*self.locked_before_it())
+        self.full_clean()
+        # Re-posting rather than adjusting: an allocation can be re-pointed
+        # or re-sized after the fact, and the exchange difference it caused
+        # has to move with it or the control account keeps the old one. Both
+        # on the allocation's own day (RealisedOnItsOwnDay).
+        previous = self.fx_entry if self.fx_entry_id else None
+        self.date = self.day_applied()
+        self.fx_entry = None
+        super().save(*args, **kwargs)
+        self.realise_exchange_difference(previous)
+
+    def settles(self):
+        document = self.invoice
+        return document, document.invoice_date, document.customer, document.receivable_account, True
+
+
+class DepositApplication(AuditModel):
+    """
+    One drawdown of a down-payment invoice against a real invoice.
+
+    Modelled like InvoicePayment rather than as a negative line on the
+    invoice: the invoice total should say what was sold, not what is left
+    to collect after netting, or every revenue report has to unpick the
+    difference.
+    """
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="deposit_applications"
+    )
+    deposit = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="applications")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField()
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    fx_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Realised exchange difference posted when the deposit, taken at one "
+                  "rate, was drawn down against an invoice billed at another.",
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="deposit_application_positive"),
+            models.UniqueConstraint(
+                fields=["invoice", "deposit"], name="one_application_per_invoice_and_deposit"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.deposit} -> {self.invoice} ({self.amount})"
+
+
+class DepositTaxReversal(models.Model):
+    """
+    The tax on a job-work advance that one drawdown reversed: a fact of
+    the drawdown, recorded rather than worked out again, so the last
+    drawdown or credit note can take exactly what is left and GSTR-1's
+    table 11B reports what was adjusted.
+    """
+
+    application = models.ForeignKey(DepositApplication, on_delete=models.CASCADE,
+                                    related_name="tax_reversals")
+    tax = models.ForeignKey(Tax, on_delete=models.PROTECT, related_name="+")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="deposit_tax_reversal_positive"),
+        ]
+
+    def __str__(self):
+        return f"{self.tax} {self.amount} on {self.application}"
+
+
+class InvoiceWriteOff(AuditModel):
+    """
+    One occasion on which part of a receivable was judged uncollectable.
+
+    A row per event rather than a single amount on the invoice: partial
+    write-offs are normal (settle at 40c in the dollar, write off the
+    rest), each one needs its own date, reason and ledger entry, and a
+    recovery has to name which one it undoes.
+    """
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="write_offs")
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    date = models.DateField()
+    reason = models.CharField(max_length=255, blank=True)
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    recovered_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="Set when the debt was recovered and this write-off reversed.",
+    )
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="write_off_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"Write-off {self.amount} on {self.invoice}"
+
+    def is_recovered(self):
+        return bool(self.recovered_entry_id)
+
+
+def bad_debt_report(start=None, end=None):
+    """Write-offs in a period, netting recoveries off the total."""
+    write_offs = InvoiceWriteOff.objects.select_related("invoice__customer")
+    if start:
+        write_offs = write_offs.filter(date__gte=to_date(start))
+    if end:
+        write_offs = write_offs.filter(date__lte=to_date(end))
+
+    rows = {}
+    for write_off in write_offs:
+        customer = write_off.invoice.customer
+        row = rows.setdefault(
+            customer.pk,
+            {"customer": customer, "written_off": Decimal("0"),
+             "recovered": Decimal("0"), "net": Decimal("0")},
+        )
+        row["written_off"] += write_off.amount
+        if write_off.is_recovered():
+            row["recovered"] += write_off.amount
+        row["net"] = row["written_off"] - row["recovered"]
+    return sorted(rows.values(), key=lambda row: -row["net"])
+
+
+def outstanding_balance(customer):
+    """
+    What this customer currently owes across all posted invoices, less
+    cash owed back to them on credit notes. Signed, as vendor_balance is:
+    a customer who has been over-credited reads negative.
+    """
+    invoices = not_paid_in_full(Invoice.objects.filter(
+        customer=customer, posted=True, credits__isnull=True
+    )).prefetch_related(*INVOICE_FIGURES)
+    owed = sum((invoice.amount_due() for invoice in invoices), Decimal("0"))
+    notes = Invoice.objects.filter(
+        customer=customer, posted=True, credits__isnull=False
+    ).prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES))
+    # Money they sent that no invoice has taken yet is theirs against what they owe: left out, a
+    # customer who paid on account read as owing it, and their orders were held for credit.
+    received, paid_out = standing_on_account(
+        Payment.objects.filter(party=customer, counterpart_account__in=receivable_accounts()))
+    return owed - sum((note.refund_due() for note in notes), Decimal("0")) - received + paid_out
+
+
+def undo_what_it_settled(payment, on_date):
+    """
+    A receipt returned (Payment.void asks; accounting imports nothing here), on the void's day: the
+    exchange difference each allocation realised is released, and an invoice it settled with a
+    discount for paying early, owing again, loses the discount.
+    """
+    for allocation in payment.invoice_allocations.select_related("invoice", "fx_entry"):
+        allocation.release_exchange_difference(on_date)
+        if allocation.invoice.settlement_discount_entry_id:
+            allocation.invoice.withdraw_unearned_discount(on_date=on_date)
+
+
+def receivable_accounts():
+    """Where customers' money is: every account a posted invoice is receivable on, and the company's default."""
+    accounts = Account.objects.filter(models.Exists(
+        Invoice.objects.filter(posted=True, receivable_account=models.OuterRef("pk"))))
+    default = Company.get().default_receivable_account_id
+    return accounts | Account.objects.filter(pk=default) if default else accounts
+
+
+def not_paid_in_full(invoices):
+    """
+    `invoices` less those payments that still stand have already covered.
+
+    The mirror of purchasing's: what is due is the total less payments
+    and every other reduction, all non-negative, so an invoice whose
+    standing payments reach its posted total cannot be due. Asked in the
+    database so a report passes over the settled majority unbuilt; AR
+    aging did not answer inside a minute over a year without it.
+    """
+    from django.db.models import DecimalField, Exists, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    standing = InvoicePayment.objects.filter(
+        invoice=OuterRef("pk"), payment__voided_entry__isnull=True
+    ).exclude(Exists(JournalEntry.objects.filter(reverses=OuterRef("payment__journal_entry"))))
+    paid = standing.values("invoice").annotate(total=models.Sum("amount")).values("total")
+    return invoices.annotate(
+        standing_paid=Coalesce(Subquery(paid), Value(Decimal("0")),
+                               output_field=DecimalField(max_digits=18, decimal_places=2))
+    ).exclude(posted_total__isnull=False, standing_paid__gte=models.F("posted_total"))
+
+
+def still_owed(invoices):
+    """
+    The `invoices` that still owe money: posted invoices, not credit
+    notes, whose amount_due() is above nothing.
+
+    Decided in the database. amount_due() is the total less what was
+    settled otherwise (paid by payments that stand, discounted, written
+    off, met from a deposit, withheld as tax) less what was credited,
+    the credit taken only down to nothing; so it is above nothing exactly
+    when the total is more than all of those together. Tax withheld was
+    left out here once, and an invoice paid net of it stayed on every
+    open list at nothing due. The total is posted_total, the
+    figure the invoice was posted at and cannot move from. An invoice
+    with none recorded is asked amount_due() itself.
+
+    Asked one invoice at a time this took 1.3 ms each: a second on a
+    thousand open invoices, and every thousand more another second.
+    tests_screens_api holds the two answers to each other.
+    """
+    owed = owed_beyond(
+        not_paid_in_full(invoices.filter(posted=True, credits__isnull=True)),
+        notes=(Invoice.objects.filter(posted=True), "credits"),
+        drawdowns=[(DepositApplication.objects.all(), "invoice"),
+                   (CustomerTds.objects.filter(reversed_entry__isnull=True), "invoice")],
+        reductions=("written_off_amount", "settlement_discount_amount", "-settlement_discount_withdrawn"),
+    )
+    unrecorded = invoices.filter(posted=True, credits__isnull=True, posted_total__isnull=True)
+    asked = [invoice.pk for invoice in unrecorded.prefetch_related(*INVOICE_FIGURES)
+             if invoice.amount_due() > 0]
+    # A subquery, not a list of pks: a list is one bound value an invoice,
+    # and SQLite refuses a statement past 32,766 of them.
+    return invoices.filter(models.Q(pk__in=owed.values("pk")) | models.Q(pk__in=asked))
+
+
+def not_shipped_in_full(lines):
+    """
+    Order lines that may still owe goods: not charges, not closed short,
+    and less shipped (posted deliveries, less posted returns) than ordered.
+    A line met inside its tolerance still passes; quantity_open() decides
+    it. Narrows what the database hands back to the few that matter.
+    """
+    from django.db.models import DecimalField, OuterRef, Subquery, Value
+    from django.db.models.functions import Coalesce
+
+    def shipped(returns):
+        moved = DeliveryLine.objects.filter(
+            order_line=OuterRef("pk"), delivery__posted=True,
+            delivery__reverses__isnull=not returns,
+        ).values("order_line").annotate(total=models.Sum("quantity_shipped")).values("total")
+        return Coalesce(Subquery(moved), Value(Decimal("0")),
+                        output_field=DecimalField(max_digits=18, decimal_places=4))
+
+    return lines.filter(closed_short_at__isnull=True, charge__isnull=True).annotate(
+        net_shipped=shipped(False) - shipped(True)
+    ).exclude(net_shipped__gte=models.F("quantity"))
+
+
+def orders_to_ship(orders):
+    """
+    The pks of confirmed `orders` with goods still to ship from here
+    (quantity_to_ship): not what a vendor is to drop-ship.
+    """
+    lines = list(not_shipped_in_full(SalesOrderLine.objects.filter(
+        order__in=orders.filter(status=OrderStatus.CONFIRMED))).prefetch_related(
+        models.Prefetch("delivery_lines", queryset=DeliveryLine.objects.select_related("delivery"))))
+    awaited = quantities_awaited(lines)
+    return sorted({line.order_id for line in lines if line.quantity_to_ship(awaited[line.pk]) > 0})
+
+
+def committed_balance(customer):
+    """
+    Total exposure: what is owed, plus what has been promised but not yet
+    billed. A limit that counted only posted invoices would wave through
+    any number of confirmed orders.
+    """
+    uninvoiced = Decimal("0")
+    orders = SalesOrder.objects.filter(
+        customer=customer, status=OrderStatus.CONFIRMED
+    ).prefetch_related(models.Prefetch("lines", queryset=SalesOrderLine.objects.prefetch_related(
+        "taxes", models.Prefetch("invoice_lines",
+                                 queryset=InvoiceLine.objects.select_related("invoice")))))
+    for order in orders:
+        for line in order.lines.all():
+            remaining = line.quantity_uninvoiced()
+            if remaining <= 0:
+                continue
+            share = remaining / line.quantity if line.quantity else Decimal("0")
+            uninvoiced += round_money(line.total() * share)
+
+    # A down payment is billed against an order whose lines are still
+    # uninvoiced, so the same money appears in both halves of the sum.
+    # Counting it twice would use up a customer's credit limit for taking
+    # money from them up front, which is backwards.
+    deposits = Invoice.objects.filter(
+        customer=customer, posted=True, is_down_payment=True
+    ).prefetch_related(*INVOICE_FIGURES)
+    outstanding_deposits = sum(
+        (deposit.deposit_unapplied() for deposit in deposits), Decimal("0")
+    )
+    return outstanding_balance(customer) + uninvoiced - outstanding_deposits
+
+
+class StatementEntry:
+    """One movement on a customer statement."""
+
+    __slots__ = ("date", "kind", "reference", "description", "debit", "credit", "balance")
+
+    def __init__(self, date, kind, reference, description, debit=None, credit=None):
+        self.date = date
+        self.kind = kind
+        self.reference = reference
+        self.description = description
+        self.debit = debit or Decimal("0")
+        self.credit = credit or Decimal("0")
+        self.balance = Decimal("0")
+
+    def __repr__(self):
+        return f"<{self.kind} {self.reference} {self.debit or -self.credit}>"
+
+
+def _payment_entries(payment, amount, description, as_of):
+    """
+    `amount` of `payment` as the statement shows it: in on its day, and
+    back out on the day it was voided. A bounced cheque left on as paid
+    read as nothing owed, and the statement run passed the customer by.
+    """
+    paid_on = to_date(payment.payment_date)
+    if paid_on > as_of:
+        return []
+    received = payment.is_receipt()
+    kind, side, back = ("Payment", "credit", "debit") if received else ("Refund", "debit", "credit")
+    rows = [StatementEntry(paid_on, kind, payment.number or "", description, **{side: amount})]
+    if payment.voided_entry_id and to_date(payment.voided_entry.date) <= as_of:
+        rows.append(StatementEntry(to_date(payment.voided_entry.date), f"{kind} returned",
+                                   payment.number or "", description, **{back: amount}))
+    return rows
+
+
+def _statement_currency(customer, currency):
+    """
+    A statement adds up movements, so they all have to be in one currency.
+
+    Same stance as cross-currency settlement: refuse rather than quietly
+    sum 100 USD and 100 EUR into 200 of nothing.
+    """
+    if currency is not None:
+        return currency
+    used = set(
+        Invoice.objects.filter(customer=customer, posted=True)
+        .values_list("currency_id", flat=True)
+        .distinct()
+    ) | set(
+        Payment.objects.filter(party=customer, posted=True, counterpart_account__in=receivable_accounts())
+        .values_list("currency_id", flat=True)
+        .distinct()
+    )
+    if len(used) > 1:
+        raise ValidationError(
+            f"{customer} has posted invoices in more than one currency; ask for a "
+            "statement in a specific currency."
+        )
+    return Currency.objects.filter(pk=used.pop()).first() if used else None
+
+
+def customer_statement(customer, as_of=None, since=None, currency=None):
+    """
+    An open-item statement: every movement on the customer's account, with
+    a running balance that foots to what they owe.
+
+    Open-item rather than balance-forward. B2B customers reconcile by
+    matching invoices to remittances, and a balance-forward statement
+    (opening balance, period movements, closing balance) throws away the
+    invoice-level detail that makes that possible. `since` still gives an
+    opening balance, so the period view is available without losing it.
+
+    Deliberately derived rather than a stored document: a statement is a
+    view of the ledger at a date, and storing one would create a second
+    copy of the truth that goes stale the moment anything settles.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    since = to_date(since)
+    currency = _statement_currency(customer, currency)
+
+    entries = []
+    invoices = (
+        Invoice.objects.filter(customer=customer, posted=True, currency=currency)
+        .select_related("credits", "settlement_reversal_entry", "settlement_discount_entry",
+                        "settlement_discount_withdrawal_entry")
+        .prefetch_related(
+            "lines__taxes", "payment_allocations__payment__voided_entry", "write_offs",
+            "deposit_applications__deposit", "tds_withheld__section", "tds_withheld__reversed_entry",
+        )
+    )
+    for invoice in invoices:
+        date = to_date(invoice.invoice_date)
+        if date > as_of:
+            continue
+        if invoice.is_credit_note():
+            entries.append(StatementEntry(
+                date, "Credit note", invoice.number,
+                f"Credit against {invoice.credits.number}", credit=invoice.total(),
+            ))
+            # What the note undid of a write-off or a settlement discount is owed again before
+            # anything comes back as cash: the ledger puts it back in receivables on the note's day.
+            undone_on = (to_date(invoice.settlement_reversal_entry.date)
+                         if invoice.settlement_reversal_entry_id else None)
+            for kind, amount in (("Write-off undone", invoice.reversed_write_off),
+                                 ("Discount undone", invoice.reversed_discount)):
+                if amount and undone_on <= as_of:
+                    entries.append(StatementEntry(undone_on, kind, invoice.number,
+                                                  f"On {invoice.credits.number}", debit=amount))
+            for allocation in invoice.payment_allocations.all():
+                entries.extend(_payment_entries(allocation.payment, allocation.amount,
+                                                f"Of {invoice.number}", as_of))
+            continue
+
+        kind = "Down payment" if invoice.is_down_payment else "Invoice"
+        entries.append(StatementEntry(
+            date, kind, invoice.number, invoice.reference or "", debit=invoice.total()
+        ))
+
+        for allocation in invoice.payment_allocations.all():
+            entries.extend(_payment_entries(allocation.payment, allocation.amount,
+                                            f"Against {invoice.number}", as_of))
+        for application in invoice.deposit_applications.all():
+            if to_date(application.date) > as_of:
+                continue
+            entries.append(StatementEntry(
+                to_date(application.date), "Deposit applied", application.deposit.number,
+                f"Against {invoice.number}", credit=application.amount,
+            ))
+        for write_off in invoice.write_offs.all():
+            if to_date(write_off.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(write_off.date), "Written off", invoice.number,
+                    write_off.reason or "", credit=write_off.amount,
+                ))
+            # A recovery puts the debt back, so it has to appear or the
+            # statement stops footing to what the customer actually owes.
+            if write_off.is_recovered() and to_date(write_off.recovered_entry.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(write_off.recovered_entry.date), "Write-off reversed",
+                    invoice.number, "", debit=write_off.amount,
+                ))
+        for tds in invoice.tds_withheld.all():
+            if to_date(tds.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(tds.date), "TDS deducted", invoice.number, tds.section.code, credit=tds.amount,
+                ))
+            # Reversed when the customer never filed it: owed again.
+            if tds.reversed_entry_id and to_date(tds.reversed_entry.date) <= as_of:
+                entries.append(StatementEntry(
+                    to_date(tds.reversed_entry.date), "TDS reversed", invoice.number, tds.section.code,
+                    debit=tds.amount,
+                ))
+        if invoice.settlement_discount_amount and invoice.settlement_discount_entry_id:
+            discounted_on = to_date(invoice.settlement_discount_entry.date)
+            if discounted_on <= as_of:
+                entries.append(StatementEntry(
+                    discounted_on, "Settlement discount", invoice.number, "",
+                    credit=invoice.settlement_discount_amount,
+                ))
+        # Its payment returned, the discount for paying early is owed again from that day.
+        if invoice.settlement_discount_withdrawal_entry_id:
+            withdrawn_on = to_date(invoice.settlement_discount_withdrawal_entry.date)
+            if withdrawn_on <= as_of:
+                entries.append(StatementEntry(
+                    withdrawn_on, "Discount withdrawn", invoice.number, "Its payment was returned",
+                    debit=invoice.settlement_discount_withdrawn,
+                ))
+
+    # Money in or out that no document has taken yet is in receivables all the same: left off, the
+    # statement told a customer who paid on account that they owed it.
+    on_account = unapplied(Payment.objects.filter(
+        party=customer, posted=True, currency=currency, counterpart_account__in=receivable_accounts(),
+    )).select_related("voided_entry")
+    for payment in on_account:
+        entries.extend(_payment_entries(payment, payment.unallocated, "On account", as_of))
+
+    entries.sort(key=lambda entry: (entry.date, entry.kind, entry.reference))
+
+    opening = Decimal("0")
+    shown = []
+    running = Decimal("0")
+    for entry in entries:
+        if since and entry.date < since:
+            opening += entry.debit - entry.credit
+            continue
+        shown.append(entry)
+    running = opening
+    for entry in shown:
+        running += entry.debit - entry.credit
+        entry.balance = running
+
+    return {
+        "customer": customer,
+        "currency": currency,
+        "as_of": as_of,
+        "since": since,
+        "opening_balance": opening,
+        "entries": shown,
+        "closing_balance": running,
+        "overdue": sum(
+            (invoice.amount_due() for invoice in invoices if invoice.is_overdue(as_of)),
+            Decimal("0"),
+        ),
+    }
+
+
+def render_statement_pdf(statement):
+    from .documents import render_statement_pdf as _render
+
+    return _render(statement)
+
+
+def email_statement(customer, as_of=None, since=None, currency=None, to=None):
+    """Send a customer their statement as a PDF. Returns the address used."""
+    from django.core.mail import EmailMessage
+
+    statement = customer_statement(customer, as_of=as_of, since=since, currency=currency)
+    recipient = to or _statement_recipient(customer)
+    if not recipient:
+        raise ValidationError(
+            f"{customer} has no email address on the party or its primary contact."
+        )
+
+    company = Company.get()
+    message = EmailMessage(
+        subject=f"Statement of account from {company.name}",
+        body=(
+            f"Dear {customer.name},\n\n"
+            f"Please find your statement as at {statement['as_of']:%d %b %Y} attached. "
+            f"The balance outstanding is {statement['closing_balance']}.\n\n"
+            f"Regards,\n{company.name}\n"
+        ),
+        to=[recipient],
+    )
+    message.attach(
+        f"statement-{customer.code}-{statement['as_of']:%Y%m%d}.pdf",
+        render_statement_pdf(statement),
+        "application/pdf",
+    )
+    message.send()
+    return recipient
+
+
+def _statement_recipient(customer):
+    contact = customer.primary_contact()
+    if contact and contact.email:
+        return contact.email
+    return customer.email or ""
+
+
+def send_statements(as_of=None, since=None, customers=None, send=True):
+    """
+    Statement run: every customer with a balance gets one.
+
+    Returns (sent, skipped). Skipped means no email address — reported
+    rather than swallowed, the same as dunning, because a customer who is
+    silently never sent a statement is a customer who never pays.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    if customers is None:
+        customers = Party.objects.filter(
+            role_assignments__role=PartyRole.CUSTOMER
+        ).distinct()
+
+    sent, skipped = [], []
+    for customer in customers:
+        try:
+            statement = customer_statement(customer, as_of=as_of, since=since)
+        except ValidationError:
+            skipped.append(customer)
+            continue
+        if statement["closing_balance"] <= 0:
+            continue
+        if send and not _statement_recipient(customer):
+            skipped.append(customer)
+            continue
+        if send:
+            email_statement(customer, as_of=as_of, since=since,
+                            currency=statement["currency"])
+        sent.append(statement)
+    return sent, skipped
+
+
+AGING_BUCKETS = ((1, 30), (31, 60), (61, 90))
+
+
+def ar_aging(as_of=None, invoices=None):
+    """
+    Outstanding customer invoices bucketed by how overdue they are.
+
+    Note: amount_due is computed per invoice in Python rather than
+    annotated in SQL, so this is fine for reporting over thousands of
+    invoices but would need an annotated query at much larger volumes.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    buckets = {"current": [], "1-30": [], "31-60": [], "61-90": [], "90+": []}
+
+    invoices = (
+        not_paid_in_full((Invoice.objects.all() if invoices is None else invoices)
+                         .filter(posted=True, credits__isnull=True))
+        .select_related("customer", "currency", "payment_terms")
+        .prefetch_related(*INVOICE_FIGURES)
+    )
+    for invoice in invoices:
+        if invoice.amount_due() <= 0:
+            continue
+        # A row per outstanding installment, not per invoice: on a 50/50
+        # term the deposit can be badly overdue while the balance is not
+        # due for another month, and showing one line for the whole
+        # invoice would put all of it in the wrong bucket either way.
+        for row in invoice.installments():
+            if row["outstanding"] <= 0:
+                continue
+            days = (as_of - row["due_date"]).days
+            if days <= 0:
+                key = "current"
+            elif days > 90:
+                key = "90+"
+            else:
+                key = next(f"{lo}-{hi}" for lo, hi in AGING_BUCKETS if lo <= days <= hi)
+            buckets[key].append({
+                "invoice": invoice,
+                "due_date": row["due_date"],
+                "days_overdue": max(days, 0),
+                "amount_due": row["outstanding"],
+            })
+
+    return {
+        key: {
+            "count": len(entries),
+            "total": sum((entry["amount_due"] for entry in entries), Decimal("0")),
+            "invoices": entries,
+        }
+        for key, entries in buckets.items()
+    }
+
+
+class Delivery(AuditModel):
+    """
+    Outbound shipment — the mirror of Purchasing's GoodsReceipt. Posting
+    creates negative StockMovement rows so selling stock actually
+    decrements it. Same posted/immutable/reverse pattern as everything
+    else: a wrong shipment is corrected with create_return(), which puts
+    the goods back rather than editing history.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    sales_order = models.ForeignKey(SalesOrder, on_delete=models.PROTECT, related_name="deliveries")
+    delivery_date = models.DateField()
+    reference = models.CharField(max_length=64, blank=True)
+    shipping_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    reverses = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="reversed_by",
+        help_text="Set when this is a customer return of an earlier delivery.",
+    )
+    backorder_of = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="backorders",
+        help_text="Set when this delivery carries what an earlier shipment left behind.",
+    )
+    posted = models.BooleanField(default=False)
+    posted_at = models.DateTimeField(null=True, blank=True)
+
+    is_drop_ship = models.BooleanField(
+        default=False, editable=False,
+        help_text="Shipped by the vendor straight to the customer. Records what the "
+                  "customer received without moving stock the company never held.",
+    )
+    returned_under_release = models.BooleanField(
+        default=False, editable=False,
+        help_text="On a customer return: whether the goods came back under the "
+                  "customer's inspector's release, as their profile said when it was "
+                  "posted. Recorded, so changing the profile later does not rewrite it.",
+    )
+    journal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="What shipping it posted: cost of sales out of stock, or back in on a return.",
+    )
+    # How it went: often known only after the truck left, so kept apart
+    # from what the delivery moved and recorded after posting too.
+    transporter = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="carried_deliveries",
+        editable=False)
+    lr_number = models.CharField(max_length=32, blank=True, editable=False,
+                                 help_text="The transporter's lorry receipt.")
+    lr_date = models.DateField(null=True, blank=True, editable=False)
+    vehicle_number = models.CharField(max_length=15, blank=True, editable=False)
+    # What the customer signed for: cement plants pay from their own
+    # receipt, and a disputed delivery is argued from this.
+    received_on = models.DateField(null=True, blank=True, editable=False)
+    received_by = models.CharField(max_length=100, blank=True, editable=False)
+    receipt_reference = models.CharField(max_length=64, blank=True, editable=False,
+                                         help_text="The customer's goods-received note or the signed copy's number.")
+
+    class Meta:
+        verbose_name_plural = "deliveries"
+        ordering = ["-delivery_date", "-id"]
+        indexes = [models.Index(fields=["delivery_date", "id"], name="delivery_by_date")]
+        permissions = [("post_delivery", "Can post deliveries and customer returns")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_delivery_number"
+            )
+        ]
+
+    def render_pdf(self):
+        from .documents import render_delivery_pdf
+
+        return render_delivery_pdf(self)
+
+    def email_to_customer(self, to=None, subject=None, body=None, user=None):
+        """The challan to the customer, once it has shipped. Returns the address used."""
+        from apps.core.mail import send_document
+
+        if not self.posted:
+            raise ValidationError("Only a shipped delivery is sent.")
+        return send_document(self, self.sales_order.customer, "Return" if self.reverses_id else "Delivery challan",
+                             to=to, subject=subject, body=body, user=user)
+
+    def __str__(self):
+        kind = "RET" if self.reverses_id else "DO"
+        return f"{self.number or f'{kind}-draft-{self.pk}'} for {self.sales_order}"
+
+    def is_return(self):
+        return bool(self.reverses_id)
+
+    def record_receipt(self, received_on, received_by="", reference=""):
+        """The customer's acknowledgement of what arrived, after it shipped."""
+        received_on = to_date(received_on)
+        if not self.posted or self.reverses_id:
+            raise ValidationError("Only a delivery that went out is received.")
+        if received_on is None:
+            raise ValidationError({"received_on": "Say when the customer received it."})
+        if received_on < to_date(self.delivery_date):
+            raise ValidationError({"received_on": "It arrived after it left."})
+        self.received_on, self.received_by, self.receipt_reference = received_on, received_by.strip(), reference.strip()
+        super().save(update_fields=["received_on", "received_by", "receipt_reference", "updated_at"])
+
+    def record_transport(self, transporter=None, lr_number="", lr_date=None, vehicle_number=""):
+        """
+        Who carried it and on what lorry receipt: what the e-way bill and the
+        transporter's freight bill are matched by. Written past the posted
+        guard, because it changes nothing the delivery moved.
+        """
+        from apps.gst.ewaybill import normalise_vehicle
+
+        if self.reverses_id:
+            raise ValidationError("A return comes back on its own transport; record it on the delivery out.")
+        self.transporter = transporter
+        self.lr_number = (lr_number or "").strip()
+        self.lr_date = to_date(lr_date)
+        self.vehicle_number = normalise_vehicle(vehicle_number) if vehicle_number else ""
+        super().save(update_fields=["transporter", "lr_number", "lr_date", "vehicle_number", "updated_at"])
+
+    def _was_posted_in_db(self):
+        if not self.pk:
+            return False
+        return Delivery.objects.filter(pk=self.pk, posted=True).exists()
+
+    def locked_before_it(self):
+        """Its order, held before the delivery by the lock order (apps.core.models)."""
+        return [SalesOrder(pk=self.sales_order_id) if self.sales_order_id else None]
+
+    def save(self, *args, **kwargs):
+        if self._was_posted_in_db():
+            raise ValidationError(
+                "This delivery is posted and immutable. Create a customer return instead."
+            )
+        if self._state.adding and not self.shipping_address_id and self.sales_order_id:
+            self.shipping_address = self.sales_order.shipping_address
+        if self._state.adding and not self.transporter_id and self.sales_order_id:
+            # Who usually carries their goods; the gate changes it when another lorry comes.
+            self.transporter_id = CustomerProfile.objects.filter(
+                party_id=self.sales_order.customer_id).values_list("transporter_id", flat=True).first()
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.posted:
+            raise ValidationError(
+                "Posted deliveries cannot be deleted. Create a customer return instead."
+            )
+        super().delete(*args, **kwargs)
+
+    def pick_list(self):
+        """The route through the shelves for this draft shipment, before anything moves."""
+        return pick_list_for([self])
+
+    @serialised("posted", held_first=True)
+    def post(self):
+        if self.posted:
+            raise ValidationError("This delivery is already posted.")
+        # What each line has already shipped is read and decided on; two
+        # deliveries against one order must not both see the same room.
+        lock_rows(self.sales_order)
+        lines = list(self.lines.all())
+        if not lines:
+            raise ValidationError("Cannot post a delivery with no lines.")
+        for line in lines:
+            # Rule B, asked again as it posts: the delivery's order may have changed since the line was saved.
+            line._check_line()
+
+        is_return = self.is_return()
+        if is_return and not self.reverses.posted:
+            raise ValidationError("Cannot return an unposted delivery.")
+        if not is_return and self.sales_order.status != OrderStatus.CONFIRMED:
+            raise ValidationError(
+                f"Only a confirmed order can be shipped; this one is {self.sales_order.status}."
+            )
+        if not is_return:
+            # Goods coming back are taken whatever the hold; goods going out wait for it to lift.
+            refuse_credit_hold(self.sales_order.customer, "nothing is dispatched to them")
+
+        # Held before anything reads the shelf, because the race is
+        # between the read and the write and a lock taken after the
+        # decision protects nothing. Every position this delivery touches,
+        # in a fixed order, so two deliveries over the same pair of items
+        # cannot take them in opposite orders and wait for each other.
+        # It was taken after the on-hand and free-stock checks: two orders
+        # each read the last ten, each passed, and the second wrote minus
+        # ten on a shelf that may not go below nothing; the order's own
+        # lock holds only deliveries of one order.
+        lock_positions(
+            (line.order_line.item, line.warehouse)
+            for line in lines
+            if line.order_line.item_id and line.order_line.item.track_inventory
+        )
+
+        if not is_return:
+            for line in lines:
+                already_shipped = line.order_line.quantity_shipped()
+                if line.order_line.is_closed_short():
+                    raise ValidationError(
+                        f"{line.order_line} was closed short: "
+                        f"{line.order_line.closed_short_reason}. Reopen it to ship more."
+                    )
+                if already_shipped + line.quantity_shipped > line.order_line.most_shippable():
+                    over, _under = line.order_line._tolerances()
+                    raise ValidationError(
+                        f"Shipping {line.quantity_shipped} of {line.order_line.item} would "
+                        f"exceed the ordered quantity ({line.order_line.quantity}, "
+                        f"{over}% over accepted; {already_shipped} already shipped)."
+                    )
+                item = line.order_line.item
+                # Nothing was ever on hand to check: the vendor shipped it.
+                if self.is_drop_ship:
+                    continue
+                # Quarantined stock is owned and valued but not cleared, and
+                # a batch quality holds is not cleared either: the release
+                # gate answers both, as it does for every way into a run.
+                # A batch picked for the line rather than named on it is
+                # chosen among those the gate lets go (`allocate`).
+                check_released(item, line.lot, action="be shipped", warehouse=line.warehouse)
+                if line.warehouse.consignment_vendor_id:
+                    raise ValidationError(
+                        f"{line.warehouse} holds {line.warehouse.consignment_vendor}'s "
+                        "stock; draw it into your own before shipping it."
+                    )
+                if line.warehouse.held_for_id:
+                    raise ValidationError(
+                        f"{line.warehouse} holds {line.warehouse.held_for}'s material, "
+                        "which goes back on a material return, not a delivery."
+                    )
+                if item.track_inventory and not line.warehouse.allow_negative_stock:
+                    on_hand = item.on_hand_at(line.warehouse)
+                    # On hand is counted in the item's stocking unit; the line
+                    # may be written in another. Comparing the two as written
+                    # lets a case of twelve pass a check that only twelve
+                    # eaches should have passed.
+                    wanted = item.to_stock_quantity(
+                        line.quantity_shipped, line.order_line.uom
+                    )
+                    if wanted > on_hand:
+                        raise ValidationError(
+                            f"Only {on_hand} {item.uom} of {item} on hand at "
+                            f"{line.warehouse}; cannot ship {line.quantity_shipped} "
+                            f"{line.order_line.uom}. Allow negative stock on the "
+                            f"warehouse if backorders are expected."
+                        )
+                    # Stock held for somebody else is on the shelf and not
+                    # ours to take. This line's own claim is: the whole point
+                    # of reserving was to be able to ship it, so it is added
+                    # back before the comparison rather than counted against
+                    # the shipment it was made for.
+                    # Its claim on this shelf: one held at another let an
+                    # order ship ten promised to somebody else here.
+                    free = (
+                        Decimal(item.available_at(line.warehouse))
+                        + line.order_line.quantity_reserved(line.warehouse)
+                    )
+                    if not is_return and wanted > free:
+                        raise ValidationError(
+                            f"Only {free} {item.uom} of {item} at {line.warehouse} is "
+                            f"unreserved; {item.reserved_at(line.warehouse)} is promised "
+                            "to other orders. Free a reservation or allow negative stock."
+                        )
+
+                # Expired goods are the one thing a tracked item exists to
+                # keep off a lorry. An adjustment may still write them off —
+                # that is what a write-off is for — but a customer must not
+                # receive them.
+                #
+                # Outside the negative-stock branch, where it used to sit: a
+                # warehouse that allows backorders shipped expired goods, and
+                # the only thing between a customer and them was a setting
+                # about something else entirely.
+                if not is_return and line.lot_id and line.lot.has_expired(
+                    self.delivery_date
+                ):
+                    raise ValidationError(
+                        f"Batch {line.lot.code} expired on {line.lot.expires_on} "
+                        "and cannot be shipped. Write it off instead."
+                    )
+
+        self.delivery_date = to_date(self.delivery_date)
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "sales.delivery" if not is_return else "sales.customer_return",
+                self.delivery_date,
+                name="Deliveries" if not is_return else "Customer Returns",
+                prefix="DO-" if not is_return else "RET-",
+            )
+
+        valued = []
+        for line in lines:
+            # A drop-ship never entered the warehouse, so there is no stock
+            # to relieve and no cost to recognise here — the vendor's
+            # receipt already charged it to cost of sales. Moving stock
+            # would invent quantity the company never held.
+            if self.is_drop_ship:
+                continue
+            # Services and non-stocked items must never touch stock levels.
+            item = line.order_line.item
+            if not item.track_inventory:
+                continue
+            movement_type = MovementType.RECEIPT if is_return else MovementType.ISSUE
+            # The line may be written in cases and the ledger counts eaches.
+            # Convert here rather than letting the movement do it, because
+            # the cost below is the weighted average, which this ledger
+            # already holds per stocking unit — quantity and cost have to
+            # end up in the same unit, and that unit is the stocking one.
+            shipped = item.to_stock_quantity(line.quantity_shipped, line.order_line.uom)
+            # A return reverses at the cost the original shipment used, so the
+            # two entries cancel exactly instead of drifting with the average.
+            occurred_at = timezone.now()
+            notes = (
+                f"{'Customer return for' if is_return else 'Delivery for'} "
+                f"{self.sales_order} ({self.number})"
+            )
+            # Which batches and shelves this actually comes off. A return
+            # goes back where it came from, which the original line
+            # recorded, so only a shipment has anything to choose.
+            if is_return:
+                plan = line.return_plan(shipped)
+            else:
+                plan = [
+                    (chosen_lot, chosen_bin, chosen_quantity, None)
+                    for chosen_lot, chosen_bin, chosen_quantity in plan_issue(
+                        item, line.warehouse, shipped,
+                        lot=line.lot, storage_bin=line.bin,
+                        on_date=self.delivery_date,
+                    )
+                ]
+
+            frozen = line.unit_cost
+            cost = Decimal("0")
+            for chosen_lot, chosen_bin, chosen_quantity, took in plan:
+                residue = None
+                if took is not None:
+                    # Back at what this batch's own share of the shipment
+                    # took off the shelf, a total. The line's one rate
+                    # blends every batch it came off: three of a batch
+                    # costing 100 went home at 420, and a four-place rate
+                    # multiplied back up left 0.10 of a whole return in
+                    # cost of sales. The rate carries eight places and the
+                    # remainder rides along as value, as a transfer's does.
+                    entry_cost = took
+                    rate = (entry_cost / chosen_quantity).quantize(Decimal("0.00000001"))
+                    residue = (entry_cost - chosen_quantity * rate).quantize(
+                        Decimal("0.0001")) or None
+                elif frozen is not None:
+                    # A return with nothing behind it to say what each
+                    # batch took: the rate the line was given.
+                    entry_cost = chosen_quantity * frozen
+                    rate = frozen
+                else:
+                    # Priced against the ledger as it stands and then
+                    # written, so the next entry sees what this one took.
+                    # Pricing the whole plan up front would charge every
+                    # FIFO layer as though it were first, and under
+                    # specific identification there is no single answer to
+                    # compute up front at all — each batch has its own.
+                    entry_cost = item.cost_of_removing(
+                        line.warehouse, chosen_quantity, lot=chosen_lot
+                    )
+                    rate = (
+                        (entry_cost / chosen_quantity).quantize(Decimal("0.0001"))
+                        if chosen_quantity else Decimal("0")
+                    )
+                movement = StockMovement.objects.create(
+                    item=item,
+                    warehouse=line.warehouse,
+                    movement_type=movement_type,
+                    lot=chosen_lot,
+                    bin=chosen_bin,
+                    uom=item.uom,
+                    quantity=chosen_quantity if is_return else -chosen_quantity,
+                    unit_cost=rate,
+                    value_adjustment=residue,
+                    reference=self.number,
+                    occurred_at=occurred_at,
+                    notes=notes,
+                )
+                cost += entry_cost
+                # Both ways: a return holds the movement that put stock
+                # back, as a shipment holds the one that took it, so a
+                # trace reads which customer has which batch from links
+                # rather than from a reference anybody can type. And what
+                # it was worth, so a return can put back exactly that.
+                DeliveryAllocation.objects.create(
+                    line=line, lot=chosen_lot, bin=chosen_bin,
+                    quantity=chosen_quantity, movement=movement, cost=entry_cost,
+                )
+
+            # One rate on the line for a shipment that may have come off
+            # several batches at several prices: the total is the fact,
+            # and the rate is derived from it. A return's says what came
+            # back, not what the shipment averaged.
+            line.unit_cost = (
+                (cost / shipped).quantize(Decimal("0.0001"))
+                if shipped else Decimal("0")
+            )
+            super(DeliveryLine, line).save(
+                update_fields=["unit_cost", "updated_at"]
+            )
+            # The goods have gone, so the claim on them is spent. Drawing
+            # it down here rather than when the order closes keeps
+            # availability honest between a partial shipment and the next.
+            if not is_return:
+                for reservation in StockReservation.objects.for_source(
+                    line.order_line
+                ).open():
+                    reservation.consume(shipped)
+            valued.append((item, cost))
+
+        if not is_return:
+            # The batches this shipment took are known only now. A rule
+            # added since the order, or a lot made with regrind, stops it.
+            refuse_material_problems(self.sales_order.customer, [
+                (line.order_line.item,
+                 [row.lot for row in line.allocations.select_related("lot") if row.lot_id],
+                 self.delivery_date)
+                for line in lines if line.order_line.item_id is not None
+            ])
+            refuse_ownership_problems(self.sales_order.customer, [
+                row.lot for line in lines
+                for row in line.allocations.select_related("lot") if row.lot_id
+            ])
+            from .third_party import refuse_uncovered
+
+            refuse_uncovered(self, lines)
+        else:
+            profile = CustomerProfile.objects.filter(party=self.sales_order.customer).first()
+            self.returned_under_release = bool(profile and profile.release_covers_returns)
+
+        # Kept, as every document keeps what it posted: it is corrected by a return, never by
+        # reversing its entry from the journal (JournalEntry.recorded_by).
+        self.journal_entry = post_inventory_entry(
+            valued,
+            date=self.delivery_date,
+            reference=self.number,
+            memo=(
+                f"{'Customer return for' if is_return else 'Cost of goods sold for'} "
+                f"{self.sales_order} ({self.number})"
+            ),
+            direction="out",
+            reverse=is_return,
+        )
+
+        self.posted = True
+        self.posted_at = timezone.now()
+        super(Delivery, self).save(
+            update_fields=["number", "delivery_date", "posted", "posted_at",
+                           "returned_under_release", "journal_entry", "updated_at"]
+        )
+        # Met inside its tolerance: what is still held for a line is held
+        # for nobody. Asked once this shipment counts as shipped.
+        if not is_return:
+            for line in lines:
+                if line.order_line.quantity_open() <= 0:
+                    release_for(line.order_line, "Met within tolerance")
+
+    def _credit_returned_goods(self):
+        """
+        Credit the invoices that billed the returned goods. A delivery's
+        quantities may have been spread over several invoices, so the
+        returned quantity is allocated oldest-invoice-first, and one credit
+        note is raised per affected invoice.
+        """
+        allocations = defaultdict(dict)
+        for line in self.lines.all():
+            remaining = line.quantity_shipped
+            invoice_lines = InvoiceLine.objects.filter(
+                order_line=line.order_line,
+                invoice__posted=True,
+                invoice__credits__isnull=True,
+            ).order_by("invoice__invoice_date", "invoice_id")
+            for invoice_line in invoice_lines:
+                if remaining <= 0:
+                    break
+                available = invoice_line.quantity_creditable()
+                if available <= 0:
+                    continue
+                taken = min(available, remaining)
+                per_invoice = allocations[invoice_line.invoice]
+                per_invoice[invoice_line] = per_invoice.get(invoice_line, Decimal("0")) + taken
+                remaining -= taken
+
+        # Every invoice before the first note, in key order: a note is made after them all, and an
+        # invoice taken after a note already made would be taken against the key order (O169).
+        lock_rows(*allocations, refresh=False)
+        return [
+            invoice.create_credit_note(
+                memo=f"Goods returned on {self.number}", quantities=quantities
+            )
+            for invoice, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
+        ]
+
+    def shortfall(self):
+        """
+        What this delivery's order lines still owe the customer, as
+        {order_line: quantity}. A partial shipment leaves a remainder that
+        should be a document someone can see and plan against, not an
+        implicit gap between two numbers.
+        """
+        outstanding = {}
+        for line in self.lines.all():
+            # From the shelf: what a vendor is to drop-ship is not left behind.
+            remaining = line.order_line.quantity_to_ship()
+            if remaining > 0:
+                outstanding[line.order_line] = remaining
+        return outstanding
+
+    @serialised("posted", held_first=True)
+    def create_backorder(self, delivery_date=None):
+        """Raise a draft delivery for whatever this shipment left behind."""
+        if not self.posted:
+            raise ValidationError("Only a posted delivery can leave a backorder.")
+        if self.is_return():
+            raise ValidationError("A return does not leave a backorder.")
+        if self.backorders.exists():
+            raise ValidationError("This delivery already has a backorder.")
+
+        outstanding = self.shortfall()
+        if not outstanding:
+            raise ValidationError("This delivery was complete; there is nothing on backorder.")
+
+        backorder = Delivery.objects.create(
+            sales_order=self.sales_order,
+            delivery_date=delivery_date or timezone.localdate(),
+            reference=self.reference,
+            shipping_address=self.shipping_address,
+            backorder_of=self,
+        )
+        for order_line, remaining in outstanding.items():
+            source = self.lines.filter(order_line=order_line).first()
+            DeliveryLine.objects.create(
+                delivery=backorder, order_line=order_line,
+                warehouse=source.warehouse,
+                # A backorder is the rest of the same shipment, but not
+                # necessarily the same batch: what is left on the shelf when
+                # the lorry comes back may be a different one entirely, so
+                # it is chosen then rather than assumed now.
+                quantity_shipped=remaining,
+            )
+        return backorder
+
+    def locked_before_returning(self):
+        """
+        Its order and every order of each invoice that billed its lines, in key order: a return
+        credits those invoices, and each credit note holds all of its invoice's orders before the
+        invoice. Holding only its own order, two returns on two orders of one invoice each held one
+        order and the stock, and wanted the other's: deadlock (O169).
+        """
+        billed = Invoice.objects.filter(posted=True, credits__isnull=True,
+                                        lines__order_line__in=self.lines.values("order_line"))
+        return list(SalesOrder.objects.filter(
+            Q(pk=self.sales_order_id) | Q(pk__in=billed.values("sales_order"))
+            | Q(pk__in=InvoiceLine.objects.filter(invoice__in=billed).values("order_line__order"))
+        ).order_by("pk"))
+
+    @serialised("posted", held_first="locked_before_returning")
+    def create_return(self, credit_invoices=True, quantities=None):
+        """
+        Take goods back: reverse the stock movement and, unless this is a
+        replacement rather than a refund, credit whatever was invoiced for
+        them. The credit notes raised are attached to the returned delivery
+        as `credit_notes_created`.
+
+        All of what is left by default; `quantities` as {delivery_line:
+        quantity} takes back part, and a delivery can be returned in as
+        many parts as it went out in. Whole-and-once was the rule until
+        review: twenty torn bags out of fifty could not be recorded, while
+        purchasing had always returned part of a receipt.
+        """
+        if not self.posted:
+            raise ValidationError("Only a posted delivery can be returned.")
+        if self.is_return():
+            raise ValidationError("Cannot return a return.")
+        if quantities is None:
+            selected = [(line, line.quantity_returnable()) for line in self.lines.all()]
+            selected = [(line, quantity) for line, quantity in selected if quantity > 0]
+        else:
+            selected = [(line, Decimal(str(quantity))) for line, quantity in quantities.items()
+                        if Decimal(str(quantity)) > 0]
+            for line, quantity in selected:
+                if line.delivery_id != self.pk:
+                    raise ValidationError("That line belongs to a different delivery.")
+                if quantity > line.quantity_returnable():
+                    raise ValidationError(
+                        f"Only {format(line.quantity_returnable().normalize(), 'f')} of "
+                        f"{line.order_line.label()} is left to take back; cannot take "
+                        f"back {format(quantity.normalize(), 'f')}.")
+        if not selected:
+            raise ValidationError("There is nothing left on this delivery to take back.")
+
+        customer_return = Delivery.objects.create(
+            sales_order=self.sales_order,
+            delivery_date=timezone.localdate(),
+            reference=self.reference,
+            shipping_address=self.shipping_address,
+            # Carried across, or the reversal moves stock the original
+            # never moved — inventing quantity on the way back in.
+            is_drop_ship=self.is_drop_ship,
+            reverses=self,
+        )
+        for line, quantity in selected:
+            DeliveryLine.objects.create(
+                delivery=customer_return,
+                order_line=line.order_line,
+                # The line being sent back, so the goods can return to the
+                # batches and shelves they actually left from. Purchasing
+                # has carried this since it was written; sales never did,
+                # and got away with it only while every shipment named its
+                # own batch by hand.
+                reverses_line=line,
+                warehouse=line.warehouse,
+                lot=line.lot,
+                bin=line.bin,
+                quantity_shipped=quantity,
+                unit_cost=line.unit_cost,
+            )
+        customer_return.post()
+        # Credited for what came back on this return, not for everything
+        # the delivery carried.
+        customer_return.credit_notes_created = (
+            customer_return._credit_returned_goods() if credit_invoices else []
+        )
+        return customer_return
+
+
+def pick_list_for(deliveries, warehouse=None):
+    """
+    One route for the draft shipments given (lines at `warehouse`, or
+    anywhere), merged by shelf, in walking order. A delivery shipped or
+    a return has nothing to pick and is refused in words.
+    """
+    needs, days = [], set()
+    for delivery in deliveries:
+        if delivery.reverses_id or delivery.posted:
+            raise ValidationError(
+                f"{delivery} is {'a return' if delivery.reverses_id else 'shipped already'}; "
+                "a pick list is for a draft shipment.")
+        days.add(delivery.delivery_date)
+        for line in delivery.lines.select_related("order_line__item", "warehouse", "lot", "bin"):
+            if warehouse is not None and line.warehouse_id != warehouse.pk:
+                continue
+            needs.append((line.order_line.item, line.warehouse, line.quantity_shipped, line.lot, line.bin,
+                          delivery.number or f"Draft {delivery.pk}"))
+    return pick_list(needs, on_date=days.pop() if len(days) == 1 else None)
+
+
+def deliveries_to_pick(day, warehouse=None):
+    """The draft shipments dated `day`, at `warehouse` or anywhere, oldest first."""
+    deliveries = Delivery.objects.filter(posted=False, reverses__isnull=True, delivery_date=to_date(day)).order_by("id")
+    if warehouse is not None:
+        deliveries = deliveries.filter(lines__warehouse=warehouse).distinct()
+    return deliveries
+
+
+class DeliveryLine(AuditModel):
+    delivery = models.ForeignKey(Delivery, related_name="lines", on_delete=models.CASCADE)
+    order_line = models.ForeignKey(
+        SalesOrderLine, on_delete=models.PROTECT, related_name="delivery_lines"
+    )
+    reverses_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="return_lines",
+        help_text="On a return line, the delivery line being sent back. The goods "
+                  "go home to the batches and shelves they left from, which only "
+                  "that line knows.",
+    )
+    warehouse = models.ForeignKey(Warehouse, on_delete=models.PROTECT, related_name="+")
+    bin = models.ForeignKey(
+        "inventory.StorageBin", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+        help_text="Which shelf it was picked from. Required when the warehouse "
+                  "is binned.",
+    )
+    lot = models.ForeignKey(
+        "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Which batch to ship, when somebody is choosing it. Left blank the "
+                  "delivery picks first-expired-first-out and records what it took — "
+                  "a recall has to be able to say which customer got which batch "
+                  "either way.",
+    )
+    quantity_shipped = models.DecimalField(max_digits=18, decimal_places=4)
+    unit_cost = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="What a unit cost on average across the batches it came off, frozen. A "
+                  "return puts back what each batch took (its allocations), not this rate.",
+    )
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity_shipped__gt=0), name="shipped_quantity_positive")
+        ]
+
+    def __str__(self):
+        return f"{self.order_line.label()} x{self.quantity_shipped} from {self.warehouse}"
+
+    def clean(self):
+        self._check_line()
+
+    def _check_line(self):
+        if self.order_line_id and self.order_line.is_charge():
+            raise ValidationError(
+                f"'{self.order_line.charge}' is a charge, not goods; there is nothing to ship."
+            )
+        if self.order_line_id and self.delivery_id and (
+            self.order_line.order_id != self.delivery.sales_order_id
+        ):
+            raise ValidationError("This line's order_line must belong to the delivery's sales_order.")
+
+    def lots_shipped(self):
+        """What actually left, batch by batch, in walking order."""
+        return [
+            (row.lot, row.bin, row.quantity)
+            for row in self.allocations.select_related("lot", "bin")
+        ]
+
+    def quantity_returned(self):
+        """Taken back so far on posted returns of this line."""
+        return self.return_lines.filter(delivery__posted=True).aggregate(
+            total=models.Sum("quantity_shipped"))["total"] or Decimal("0")
+
+    def quantity_returnable(self):
+        return self.quantity_shipped - self.quantity_returned()
+
+    def return_plan(self, quantity):
+        """
+        Where returned goods go back to.
+
+        Home to the batches and shelves they left from, which the
+        original line recorded. Choosing afresh would put them in
+        whichever batch happens to expire soonest now, and a return that
+        lands in a different batch than it left has broken the trail the
+        tracking exists for.
+
+        A line with nothing behind it — a return typed in by hand — falls
+        back to whatever it names, and is refused downstream if that is
+        nothing and the item is tracked.
+
+        [(lot, bin, quantity, cost)]: each share carries its part of what
+        that batch's allocation took off the shelf when it left, or None
+        when nothing behind the line says.
+        """
+        original = self.reverses_line
+        if original is None:
+            return [(self.lot, self.bin, quantity, None)]
+        # What earlier returns of this line already took home, batch by
+        # batch: a second return began again at the first batch and could
+        # send more into it than ever left it.
+        home = defaultdict(Decimal)
+        for earlier in original.return_lines.filter(delivery__posted=True).exclude(pk=self.pk):
+            for allocation in earlier.allocations.all():
+                home[(allocation.lot_id, allocation.bin_id)] += allocation.quantity
+        plan, remaining = [], quantity
+        for allocation in original.allocations.select_related("lot", "bin", "movement"):
+            if remaining <= 0:
+                break
+            key = (allocation.lot_id, allocation.bin_id)
+            already = min(home[key], allocation.quantity)
+            left = allocation.quantity - already
+            home[key] -= already
+            if left <= 0:
+                continue
+            taken = min(left, remaining)
+            # The allocation's own total, in proportion: total first,
+            # divide last, and the last return takes whatever is left.
+            plan.append((allocation.lot, allocation.bin, taken,
+                         allocation.value_through(already + taken) - allocation.value_through(already)))
+            remaining -= taken
+        if remaining > 0:
+            if not plan:
+                return [(self.lot, self.bin, quantity, None)]
+            raise ValidationError(
+                f"{quantity} of {original.order_line.label()} is being returned and "
+                f"only {quantity - remaining} went out on that line."
+            )
+        return plan
+
+    def locked_before_it(self):
+        """The deliveries it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "delivery")
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        # Shared rule B: the delivery it leaves and the one it joins, both held.
+        answer_to_its_document(
+            self, "delivery", "Cannot modify a line on a posted delivery. Create a customer return instead.")
+        # In save() rather than only clean(): deliveries are built in code,
+        # where nothing calls full_clean() for us.
+        self._check_line()
+        super().save(*args, **kwargs)
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        # A posted delivery's line deleted over the API left the order line reading nothing shipped
+        # while cost of sales and the shelf kept the shipment.
+        answer_to_its_document(
+            self, "delivery", "Cannot delete a line on a posted delivery. Create a customer return instead.")
+        return super().delete(*args, **kwargs)
+
+
+class DeliveryAllocation(AuditModel):
+    """
+    One batch, off one shelf, on one delivery line — or, on a customer
+    return, back onto one.
+
+    A line says what the customer ordered; a shipment of forty may come
+    off two batches and three shelves, and which is the answer a recall
+    needs. It holds the movement it produced rather than describing it,
+    the same way a transfer's steps do — a second record that merely
+    describes the first is a record that can disagree with it.
+    """
+
+    line = models.ForeignKey(
+        DeliveryLine, on_delete=models.CASCADE, related_name="allocations"
+    )
+    lot = models.ForeignKey(
+        "inventory.Lot", null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    bin = models.ForeignKey(
+        "inventory.StorageBin", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+",
+    )
+    quantity = models.DecimalField(
+        max_digits=18, decimal_places=4, help_text="In the item's stocking unit."
+    )
+    movement = models.ForeignKey(
+        "inventory.StockMovement", on_delete=models.PROTECT, related_name="+",
+        editable=False,
+    )
+    cost = models.DecimalField(
+        max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
+        help_text="What its movement took off the shelf, or put back on a return: "
+                  "the total, frozen. A return puts back its share of this rather "
+                  "than a rate times a quantity. Blank on allocations made before "
+                  "it was kept, which read their movement's own rate.",
+    )
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(quantity__gt=0), name="delivery_allocation_quantity_positive"
+            ),
+        ]
+
+    def __str__(self):
+        where = self.lot.code if self.lot_id else "untracked"
+        return f"{self.quantity} of {where}"
+
+    def value(self):
+        """What this batch's share moved, as it was booked."""
+        if self.cost is not None:
+            return self.cost
+        # Written before the total was kept: its movement's rate, which
+        # is this batch's own and not the line's blend.
+        return self.quantity * (self.movement.unit_cost or Decimal("0"))
+
+    def value_through(self, quantity):
+        """
+        What the first `quantity` of this share are worth, to the paisa, and
+        all of it exactly. A return puts back the difference between what
+        it and the returns before it have reached: each worked out from the
+        total, so the last return takes whatever is left. Three returns of
+        1,000 of 3,000 worth 10,000.00 each put back 3,333.33 on its own
+        reckoning, and 0.01 stayed in cost of sales for good.
+        """
+        if quantity >= self.quantity:
+            return self.value()
+        return round_money(self.value() * quantity / self.quantity)
+
+    def delete(self, *args, **kwargs):
+        # An allocation belongs to a line, not a delivery: it read
+        # self.delivery, which it does not have, and failed for everyone.
+        if self.line.delivery.posted:
+            raise ValidationError(
+                "Cannot delete a batch shipped on a posted delivery. Create a customer return instead."
+            )
+        super().delete(*args, **kwargs)
+
+
+class DunningLevel(AuditModel):
+    """
+    One step in the chase sequence: how overdue an invoice must be before
+    this reminder applies, and what it says. Levels are ordered by
+    days_overdue, and an invoice only ever advances — the same reminder is
+    never sent twice for the same invoice.
+    """
+
+    name = models.CharField(max_length=64, unique=True)
+    days_overdue = models.PositiveIntegerField(
+        help_text="Send once the invoice is at least this many days past due."
+    )
+    subject = models.CharField(
+        max_length=200, default="Reminder: invoice {number} is overdue",
+        help_text="Supports {number}, {customer}, {days}, {amount}.",
+    )
+    body = models.TextField(
+        default=(
+            "Dear {customer},\n\n"
+            "Invoice {number} for {amount} was due on {due_date} and is now {days} days "
+            "overdue.\n\nPlease arrange payment.\n"
+        ),
+        help_text="Supports {number}, {customer}, {days}, {amount}, {due_date}.",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["days_overdue"]
+        constraints = [
+            models.UniqueConstraint(fields=["days_overdue"], name="unique_dunning_threshold")
+        ]
+
+    def __str__(self):
+        return f"{self.name} (day {self.days_overdue})"
+
+    def render(self, invoice, days_overdue):
+        context = {
+            "number": invoice.number,
+            "customer": invoice.customer.name,
+            "days": days_overdue,
+            "amount": f"{invoice.amount_due():,.2f}",
+            "due_date": invoice.due_date.strftime("%d %b %Y") if invoice.due_date else "",
+        }
+        return self.subject.format(**context), self.body.format(**context)
+
+
+class DunningNotice(AuditModel):
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="dunning_notices")
+    level = models.ForeignKey(DunningLevel, on_delete=models.PROTECT, related_name="notices")
+    days_overdue = models.PositiveIntegerField()
+    amount_due = models.DecimalField(max_digits=18, decimal_places=2)
+    sent_to = models.EmailField(blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["invoice", "level"], name="one_notice_per_invoice_and_level"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.level.name} for {self.invoice}"
+
+
+def run_dunning(as_of=None, send=True):
+    """
+    Walk overdue invoices and raise the reminders that are now due.
+
+    An invoice gets each level at most once, and only the highest level it
+    has reached — jumping from nothing to the 60-day notice shouldn't also
+    send the 7-day one.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    levels = list(DunningLevel.objects.filter(is_active=True).order_by("-days_overdue"))
+    if not levels:
+        return []
+
+    notices = []
+    undeliverable = []
+    invoices = (
+        not_paid_in_full(Invoice.objects.filter(posted=True, credits__isnull=True))
+        .select_related("customer", "currency", "payment_terms")
+        .prefetch_related(*INVOICE_FIGURES, "dunning_notices")
+    )
+    for invoice in invoices:
+        days = invoice.days_overdue(as_of)
+        if days <= 0 or invoice.amount_due() <= 0:
+            continue
+        already_sent = {notice.level_id for notice in invoice.dunning_notices.all()}
+        due_level = next(
+            (level for level in levels if days >= level.days_overdue and level.pk not in already_sent),
+            None,
+        )
+        if due_level is None:
+            continue
+
+        recipient = invoice.recipient_email()
+        if send and not recipient:
+            # Recording a notice we never delivered would mark this level
+            # done and the customer would never be chased at it again.
+            undeliverable.append(invoice)
+            continue
+
+        # The notice and its email stand or fall together: a notice for a
+        # reminder the mail server refused would count the level as done,
+        # and the customer would never be chased at it.
+        with transaction.atomic():
+            notice = DunningNotice.objects.create(
+                invoice=invoice, level=due_level, days_overdue=days,
+                # What is actually late, not the whole balance. On a 50/50
+                # term, chasing a customer for a balance that is not due for
+                # another month is how you lose the argument about the half
+                # that is.
+                amount_due=invoice.amount_overdue(as_of),
+            )
+            if send:
+                from django.core.mail import EmailMessage
+
+                subject, body = due_level.render(invoice, days)
+                EmailMessage(subject=subject, body=body, to=[recipient]).send()
+                notice.sent_to = recipient
+                notice.sent_at = timezone.now()
+                notice.save(update_fields=["sent_to", "sent_at", "updated_at"])
+        notices.append(notice)
+
+    if undeliverable:
+        logger.warning(
+            "Dunning skipped %d overdue invoice(s) with no email address: %s",
+            len(undeliverable), ", ".join(invoice.number for invoice in undeliverable),
+        )
+    return notices
+
+
+def sales_between(date_from=None, date_to=None, invoices=None):
+    """
+    The posted invoices and credit notes that are sales, between two
+    dates. A down payment credits a liability, not revenue: counting it
+    would book the sale twice, once on the deposit and once on the
+    invoice that draws it down. A deposit returned is no more a sale
+    than the deposit was.
+    """
+    invoices = (Invoice.objects.all() if invoices is None else invoices).filter(
+        posted=True, is_down_payment=False).exclude(credits__is_down_payment=True)
+    if date_from:
+        invoices = invoices.filter(invoice_date__gte=to_date(date_from))
+    if date_to:
+        invoices = invoices.filter(invoice_date__lte=to_date(date_to))
+    return invoices
+
+
+def industry_label(industry):
+    return Industry(industry).label if industry else "Not set"
+
+
+def revenue_report(date_from=None, date_to=None, group_by="customer", invoices=None):
+    """
+    Net revenue over a period, from posted invoices less credit notes.
+
+    Reads the documents rather than the ledger so it can group by customer
+    or item, which the ledger doesn't record per line.
+    """
+    invoices = sales_between(date_from, date_to, invoices)
+
+    if group_by not in ("customer", "item", "month", "rep", "industry"):
+        raise ValueError(f"Unsupported grouping: {group_by}")
+
+    totals = defaultdict(lambda: {"net": Decimal("0"), "tax": Decimal("0"), "quantity": Decimal("0")})
+
+    # A line that recorded its net and its taxes when it posted is summed
+    # in the database: over a year of invoices, building every line to
+    # ask it took 3 seconds. Only lines posted before it recorded them
+    # are worked out as before, until record_posted_totals fills them.
+    recorded = InvoiceLine.objects.filter(
+        invoice__in=invoices, invoice__taxes_recorded=True, posted_net__isnull=False)
+    by = {"customer": ["invoice__customer"],
+          "item": ["item", "charge", "description"],
+          "month": ["invoice__invoice_date"],
+          "rep": ["invoice__sales_rep"],
+          # The customer's trade as it stands: a classification of who they are, not a fact of the sale.
+          "industry": ["invoice__customer__customer_profile__industry"]}[group_by]
+    customers = items = charges = reps = {}
+    if group_by == "customer":
+        customers = Party.objects.in_bulk(set(recorded.values_list("invoice__customer", flat=True)))
+    elif group_by == "rep":
+        reps = Party.objects.in_bulk(set(recorded.exclude(invoice__sales_rep=None).values_list("invoice__sales_rep", flat=True)))
+    elif group_by == "item":
+        items = Item.objects.in_bulk(set(recorded.exclude(item=None).values_list("item", flat=True)))
+        charges = ChargeType.objects.in_bulk(
+            set(recorded.exclude(charge=None).values_list("charge", flat=True)))
+
+    def key_for(row):
+        if group_by == "customer":
+            return str(customers[row["invoice__customer"]])
+        if group_by == "rep":
+            return rep_label(row["invoice__sales_rep"], reps)
+        if group_by == "industry":
+            return industry_label(row["invoice__customer__customer_profile__industry"])
+        if group_by == "item":
+            if row["item"]:
+                return str(items[row["item"]])
+            if row["charge"]:
+                return str(charges[row["charge"]])
+            return row["description"] or "—"
+        return row["invoice__invoice_date"].strftime("%Y-%m")
+
+    for sign, lines in ((Decimal("1"), recorded.filter(invoice__credits__isnull=True)),
+                        (Decimal("-1"), recorded.filter(invoice__credits__isnull=False))):
+        for row in lines.order_by().values(*by).annotate(
+                net=models.Sum("posted_net"), quantity=models.Sum("quantity")):
+            bucket = totals[key_for(row)]
+            bucket["net"] += sign * row["net"]
+            bucket["quantity"] += sign * row["quantity"]
+        taxes = InvoiceLineTax.objects.filter(line__in=lines).order_by().values(
+            *[f"line__{field}" for field in by]).annotate(tax=models.Sum("amount"))
+        for row in taxes:
+            totals[key_for({field: row[f"line__{field}"] for field in by})]["tax"] += sign * row["tax"]
+
+    unrecorded = invoices.filter(
+        models.Q(taxes_recorded=False) | models.Q(lines__posted_net__isnull=True)).distinct()
+    for invoice in unrecorded.prefetch_related(
+            "lines__taxes", "lines__item", "lines__charge", "lines__recorded_taxes__tax"
+    ).select_related("customer"):
+        # A credit note reduces revenue, so its lines count negative.
+        sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
+        # Document-level tax rounding puts a line's tax somewhere other
+        # than compute_taxes() would put it, so read the document's own
+        # allocation or this report drifts from the invoice by pennies.
+        line_taxes = invoice.line_tax_amounts()
+        for line in invoice.lines.all():
+            if invoice.taxes_recorded and line.posted_net is not None:
+                continue  # summed above
+            if group_by == "customer":
+                key = str(invoice.customer)
+            elif group_by == "rep":
+                key = rep_label(invoice.sales_rep_id)
+            elif group_by == "industry":
+                key = industry_label(CustomerProfile.objects.filter(
+                    party_id=invoice.customer_id).values_list("industry", flat=True).first())
+            elif group_by == "item":
+                # A charge groups under the charge, not its free-text
+                # description, so "Shipping" and "Shipping (expedited)"
+                # don't land in separate rows.
+                if line.item_id:
+                    key = str(line.item)
+                elif line.is_charge():
+                    key = str(line.charge)
+                else:
+                    key = line.description or "—"
+            else:
+                key = invoice.invoice_date.strftime("%Y-%m")
+            bucket = totals[key]
+            bucket["net"] += sign * line.net_amount()
+            bucket["tax"] += sign * sum(
+                (amount for _, amount in line_taxes.get(line, ())), Decimal("0")
+            )
+            bucket["quantity"] += sign * line.quantity
+
+    return [
+        {
+            "key": key,
+            "net": amounts["net"],
+            "tax": amounts["tax"],
+            "gross": amounts["net"] + amounts["tax"],
+            "quantity": amounts["quantity"],
+        }
+        # By key among equals: the rows are gathered in no fixed order.
+        for key, amounts in sorted(totals.items(), key=lambda pair: (-pair[1]["net"], pair[0]))
+    ]
+
+
+class QuotationStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    SENT = "sent", "Sent"
+    ACCEPTED = "accepted", "Accepted"
+    DECLINED = "declined", "Declined"
+    EXPIRED = "expired", "Expired"
+    SUPERSEDED = "superseded", "Superseded by a revision"
+
+
+class Quotation(PlacedWhereTheGoodsGo, TaxedDocumentMixin, AuditModel):
+    """
+    A priced offer that hasn't been committed to. Kept separate from
+    SalesOrder rather than folded in as another status: a quotation can
+    expire and be declined, neither of which an order does, and an order
+    carries fulfilment state a quote has no business having.
+    """
+
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="quotations")
+    quotation_date = models.DateField()
+    valid_until = models.DateField(
+        null=True, blank=True, help_text="After this date the quote can no longer be accepted."
+    )
+    reference = models.CharField(max_length=64, blank=True)
+    status = models.CharField(
+        max_length=16, choices=QuotationStatus.choices, default=QuotationStatus.DRAFT
+    )
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    billing_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    shipping_address = models.ForeignKey(
+        Address, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_order = models.ForeignKey(
+        SalesOrder, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="quotations", editable=False,
+        help_text="The order this quote became, once accepted.",
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)s_sales",
+        help_text="The employee credited with this sale.",
+    )
+    revision = models.PositiveSmallIntegerField(default=1, editable=False)
+    revision_of = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="revisions", editable=False,
+        help_text="The quotation this one revises.",
+    )
+    sent_at = models.DateTimeField(null=True, blank=True, editable=False)
+
+    class Meta:
+        ordering = ["-quotation_date", "-id"]
+        indexes = [models.Index(fields=["quotation_date", "id"], name="quotation_by_date")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_quotation_number"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'QT-draft-{self.pk}'} {self.customer}"
+
+    def clean(self):
+        self._check_terms()
+
+    def _check_terms(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
+        if self.valid_until and self.valid_until < to_date(self.quotation_date):
+            raise ValidationError("valid_until cannot be before the quotation date.")
+
+    # Once a quote has left the building it is a record of what the customer
+    # was told; changing it means issuing a revision, not editing history.
+    SETTLED_STATUSES = (
+        QuotationStatus.SENT,
+        QuotationStatus.ACCEPTED,
+        QuotationStatus.SUPERSEDED,
+    )
+
+    def _is_settled_in_db(self):
+        if not self.pk:
+            return False
+        return Quotation.objects.filter(
+            pk=self.pk, status__in=self.SETTLED_STATUSES
+        ).exists()
+
+    # The only fields the accept()/send paths themselves write afterwards.
+    INTERNAL_FIELDS = {"number", "status", "sales_order", "sent_at", "updated_at"}
+
+    def save(self, *args, **kwargs):
+        updating = set(kwargs.get("update_fields") or [])
+        internal_only = bool(updating) and updating <= self.INTERNAL_FIELDS
+        if self._is_settled_in_db() and not internal_only:
+            raise ValidationError(
+                "This quotation has already gone to the customer and records what they "
+                "were told. Use create_revision() to change it."
+            )
+        if not internal_only:
+            self._check_terms()
+            self.check_place()
+        if self._state.adding and self.customer_id:
+            customer = self.customer
+            self.currency = self.currency or customer.default_currency
+            self.payment_terms = self.payment_terms or customer.payment_terms
+            self.billing_address = self.billing_address or customer.billing_address()
+            self.shipping_address = self.shipping_address or customer.shipping_address()
+            if not self.sales_rep_id:
+                self.sales_rep_id = (CustomerProfile.objects.filter(party=customer)
+                                     .values_list("sales_rep_id", flat=True).first())
+        super().save(*args, **kwargs)
+
+    def render_pdf(self):
+        from .documents import render_quotation_pdf
+
+        return render_quotation_pdf(self)
+
+    def recipient_email(self):
+        contact = self.customer.primary_contact()
+        if contact and contact.email:
+            return contact.email
+        return self.customer.email or ""
+
+    @serialised("status", "number")
+    def email_to_customer(self, to=None, subject=None, body=None):
+        """Send the quote as a PDF and mark it sent."""
+        from django.core.mail import EmailMessage
+
+        self._refuse_unsendable()
+        recipient = to or self.recipient_email()
+        if not recipient:
+            raise ValidationError(
+                f"{self.customer} has no email address on the party or its primary contact."
+            )
+        self._assign_number()
+        company = Company.get()
+        message = EmailMessage(
+            subject=subject or f"Quotation {self.number} from {company.name}",
+            body=body or (
+                f"Dear {self.customer.name},\n\n"
+                f"Please find quotation {self.number} attached"
+                + (f", valid until {self.valid_until:%d %b %Y}" if self.valid_until else "")
+                + f".\n\nRegards,\n{company.name}\n"
+            ),
+            to=[recipient],
+        )
+        message.attach(f"{self.number}.pdf", self.render_pdf(), "application/pdf")
+        message.send()
+        record(self, None, EventKind.MAIL, action="send", summary=f"Quotation to {recipient}")
+
+        self.status = QuotationStatus.SENT
+        self.sent_at = timezone.now()
+        self.save(update_fields=["number", "status", "sent_at", "updated_at"])
+        return recipient
+
+    def has_expired(self, as_of=None):
+        if not self.valid_until:
+            return False
+        return (to_date(as_of) or timezone.localdate()) > self.valid_until
+
+    def base_number(self):
+        """The number without its revision suffix."""
+        return self.number.split("-R")[0] if self.number else ""
+
+    def _assign_number(self):
+        if self.number:
+            return
+        if self.revision_of_id:
+            # A revision keeps the original's number and adds its revision.
+            self.number = f"{self.revision_of.base_number()}-R{self.revision}"
+        else:
+            self.number = DocumentSequence.next_for(
+                "sales.quotation", self.quotation_date, name="Quotations", prefix="QT-"
+            )
+
+    @serialised("status", "number")
+    def create_revision(self, quotation_date=None, valid_until=None, by=None):
+        """
+        Supersede this quote with a fresh, editable copy. Resending with
+        different terms has to leave a trail: the customer was told one
+        thing and is now being told another, and both need to be on record.
+        `by` is who revised it, stamped on the copy and its lines: copied in
+        code they named nobody, so its writer could approve it.
+        """
+        if self.status == QuotationStatus.DRAFT:
+            raise ValidationError(
+                "This quotation hasn't gone to the customer yet — edit it directly rather "
+                "than revising it."
+            )
+        if self.status == QuotationStatus.ACCEPTED:
+            raise ValidationError("An accepted quotation cannot be revised; it became an order.")
+        if self.status == QuotationStatus.SUPERSEDED:
+            raise ValidationError(
+                f"This quotation was already superseded by {self.revisions.first()}."
+            )
+        self._assign_number()
+
+        revision = Quotation.objects.create(
+            customer=self.customer,
+            quotation_date=quotation_date or timezone.localdate(),
+            valid_until=valid_until if valid_until is not None else self.valid_until,
+            reference=self.reference,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+            revision=self.revision + 1,
+            revision_of=self,
+            created_by=by, updated_by=by,
+        )
+        for line in self.lines.all():
+            revision_line = QuotationLine.objects.create(
+                quotation=revision, item=line.item, charge=line.charge,
+                description=line.description, uom=line.uom,
+                quantity=line.quantity, unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
+                revenue_account=line.revenue_account,
+                created_by=by, updated_by=by,
+            )
+            revision_line.taxes.set(line.taxes.all())
+
+        self.status = QuotationStatus.SUPERSEDED
+        super(Quotation, self).save(update_fields=["number", "status", "updated_at"])
+        return revision
+
+    def _refuse_unsendable(self):
+        # One rule, mailed or marked. The mail asked only for lines, so mailing an accepted quote
+        # set it back to sent, and it could then be accepted into a second order.
+        if self.status not in (QuotationStatus.DRAFT, QuotationStatus.SENT):
+            raise ValidationError(f"A {self.get_status_display().lower()} quote cannot be sent.")
+        if not self.lines.exists():
+            raise ValidationError("Cannot send a quotation with no lines.")
+
+    @serialised("status", "number")
+    def mark_sent(self):
+        """Record that the quote went out by some other route (post, in person)."""
+        self._refuse_unsendable()
+        self._assign_number()
+        self.status = QuotationStatus.SENT
+        self.sent_at = timezone.now()
+        self.save(update_fields=["number", "status", "sent_at", "updated_at"])
+
+    @serialised("status")
+    def decline(self):
+        if self.status in (QuotationStatus.ACCEPTED, QuotationStatus.DECLINED):
+            raise ValidationError(
+                f"This quote is already {self.get_status_display().lower()}."
+            )
+        self.status = QuotationStatus.DECLINED
+        self.save(update_fields=["status", "updated_at"])
+
+    def accept(self, order_date=None, approve_as=None):
+        """Turn an accepted quote into a confirmed sales order."""
+        if self.status == QuotationStatus.ACCEPTED:
+            raise ValidationError("This quotation has already been accepted.")
+        if self.status == QuotationStatus.DECLINED:
+            raise ValidationError("A declined quotation cannot be accepted.")
+        if self.status == QuotationStatus.SUPERSEDED:
+            raise ValidationError(
+                "This quotation was superseded by a revision; accept that one instead."
+            )
+        if not self.lines.exists():
+            raise ValidationError("Cannot accept a quotation with no lines.")
+        # Recording the expiry has to happen outside the transaction below:
+        # raising inside it would roll the status change straight back.
+        if self.has_expired(order_date):
+            self.status = QuotationStatus.EXPIRED
+            self.save(update_fields=["status", "updated_at"])
+            raise ValidationError(
+                f"This quotation expired on {self.valid_until:%d %b %Y}. Re-quote instead."
+            )
+        return self._convert_to_order(order_date, approve_as)
+
+    @serialised("status", "number")
+    def _convert_to_order(self, order_date, approve_as=None):
+        # Asked again under the lock: two accepts at once both passed accept()'s checks and made two orders.
+        if self.status in (QuotationStatus.ACCEPTED, QuotationStatus.DECLINED, QuotationStatus.SUPERSEDED):
+            raise ValidationError(f"This quotation is already {self.get_status_display().lower()}.")
+        self._assign_number()
+        order = SalesOrder.objects.create(
+            customer=self.customer,
+            order_date=order_date or timezone.localdate(),
+            reference=self.reference,
+            currency=self.currency,
+            payment_terms=self.payment_terms,
+            billing_address=self.billing_address,
+            shipping_address=self.shipping_address,
+            sales_rep=self.sales_rep,
+        )
+        for line in self.lines.all():
+            order_line = SalesOrderLine.objects.create(
+                order=order, item=line.item, charge=line.charge,
+                description=line.description, uom=line.uom,
+                quantity=line.quantity, unit_price=line.unit_price,
+                discount_percent=line.discount_percent,
+                revenue_account=line.revenue_account, quotation_line=line,
+            )
+            order_line.taxes.set(line.taxes.all())
+        # Accepting creates and confirms in one step, so an order that
+        # breaches policy has to be approved as part of it. approve_as is
+        # the approving user, gated by sales.approve_order at the edge —
+        # the same decision the old bypass flag made invisibly.
+        if approve_as is not None and order.requires_approval():
+            order.approve(by=approve_as, note="Approved on quotation acceptance")
+        order.confirm()
+
+        self.sales_order = order
+        self.status = QuotationStatus.ACCEPTED
+        self.save(update_fields=["number", "sales_order", "status", "updated_at"])
+        return order
+
+
+class QuotationLine(TaxedLineMixin, AuditModel):
+    quotation = models.ForeignKey(Quotation, related_name="lines", on_delete=models.CASCADE)
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="quotation_lines"
+    )
+    charge = models.ForeignKey(
+        ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
+        help_text="Set instead of an item when this line bills freight, handling or similar.",
+    )
+    description = models.CharField(max_length=255, blank=True)
+    uom = models.ForeignKey(
+        UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    revenue_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="quotation_lines")
+
+    def party_for_tax(self):
+        return self.quotation.customer
+
+    def place_for(self, profile):
+        return self.quotation.place_for(profile)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="quote_line_quantity_positive"),
+            models.CheckConstraint(check=Q(unit_price__gte=0), name="quote_line_price_not_negative"),
+            models.CheckConstraint(
+                check=Q(item__isnull=False, charge__isnull=True)
+                | Q(item__isnull=True, charge__isnull=False),
+                name="quote_line_is_item_or_charge",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.label()} x{self.quantity}"
+
+    def _quotation_is_settled(self):
+        return self.quotation_id and Quotation.objects.filter(
+            pk=self.quotation_id, status__in=Quotation.SETTLED_STATUSES
+        ).exists()
+
+    def delete(self, *args, **kwargs):
+        if self._quotation_is_settled():
+            raise ValidationError(
+                "This quotation has gone to the customer; revise it instead of editing it."
+            )
+        super().delete(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        if self._quotation_is_settled():
+            raise ValidationError(
+                "This quotation has gone to the customer; revise it instead of editing it."
+            )
+        if self.is_charge():
+            if not self.revenue_account_id:
+                self.revenue_account = self.charge.account_for(is_sale=True)
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"Give the {self.charge} charge an explicit amount; a charge has no "
+                    "price list to fall back on."
+                )
+        elif self.unit_price is None:
+            self.unit_price = resolve_price(
+                self.item,
+                customer=self.quotation.customer,
+                quantity=self.quantity,
+                currency=self.quotation.currency,
+                on_date=self.quotation.quotation_date,
+            )
+            if self.unit_price is None:
+                raise ValidationError(
+                    f"No price found for {self.item}: set one on the item, add it to a "
+                    "price list, or give the line an explicit unit price."
+                )
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            self.quotation.check_place()
+
+
+def _require_employee_role(party):
+    if party and not party.role_assignments.filter(role=PartyRole.EMPLOYEE).exists():
+        raise ValidationError(f"{party} does not have the Employee role.")
+
+
+class CommissionBasis(models.TextChoices):
+    INVOICED = "invoiced", "What was invoiced"
+    PAID = "paid", "What was collected"
+
+
+class CommissionPlan(AuditModel):
+    """
+    How a rep is paid. Basis matters: paying on invoiced revenue rewards
+    booking a sale, paying on collected cash rewards it actually being
+    paid for — a real difference when customers are slow.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    percent = models.DecimalField(
+        max_digits=5, decimal_places=2, help_text="Commission rate, e.g. 2.50 for 2.5%."
+    )
+    basis = models.CharField(
+        max_length=16, choices=CommissionBasis.choices, default=CommissionBasis.INVOICED
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        constraints = [
+            models.CheckConstraint(check=Q(percent__gte=0), name="commission_percent_not_negative")
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.percent}% of {self.get_basis_display().lower()})"
+
+    def commission_on(self, amount):
+        return round_money(amount * self.percent / Decimal("100"))
+
+
+class SalesRep(AuditModel):
+    """A Party with the EMPLOYEE role who carries a commission plan."""
+
+    party = models.OneToOneField(Party, on_delete=models.CASCADE, related_name="sales_rep_profile")
+    plan = models.ForeignKey(
+        CommissionPlan, null=True, blank=True, on_delete=models.PROTECT, related_name="reps"
+    )
+    # A team with reps in it is not deleted from under them: move them or
+    # deactivate it.
+    team = models.ForeignKey("sales.SalesTeam", null=True, blank=True, on_delete=models.PROTECT,
+                             related_name="members", help_text="The team whose target this rep's sales count to.")
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f"Sales rep {self.party}"
+
+    def clean(self):
+        self._check_party()
+
+    def save(self, *args, **kwargs):
+        # In save() as well: ModelSerializer never calls clean(), and the
+        # office writes through the API. Only the admin ever asked this.
+        self._check_party()
+        super().save(*args, **kwargs)
+
+    def _check_party(self):
+        if _names_another(self, "party"):
+            _require_employee_role(self.party)
+
+
+def commission_report(date_from=None, date_to=None):
+    """
+    Commission earned per rep over a period.
+
+    Each rep is measured on their own plan's basis: invoiced reps on the
+    net value of what they billed, collected reps on money actually
+    received against those invoices. Credit notes reduce both.
+    """
+    date_from = to_date(date_from)
+    date_to = to_date(date_to)
+
+    rows = []
+    for rep in SalesRep.objects.filter(is_active=True).select_related("party", "plan"):
+        if rep.plan is None or not rep.plan.is_active:
+            continue
+
+        # A down payment is not a sale, so it earns no commission on either
+        # basis; the commission falls due on the invoice that draws it down.
+        invoices = Invoice.objects.filter(
+            posted=True, sales_rep=rep.party, is_down_payment=False
+        ).exclude(credits__is_down_payment=True).prefetch_related(
+            "lines__taxes", "payment_allocations__payment"
+        )
+
+        basis_amount = Decimal("0")
+        if rep.plan.basis == CommissionBasis.INVOICED:
+            scoped = invoices
+            if date_from:
+                scoped = scoped.filter(invoice_date__gte=date_from)
+            if date_to:
+                scoped = scoped.filter(invoice_date__lte=date_to)
+            for invoice in scoped:
+                sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
+                basis_amount += sign * invoice.subtotal()
+        else:
+            # Money in against this rep's invoices, less money handed back
+            # on their credit notes: a refunded sale earns no commission.
+            for invoice in invoices:
+                sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
+                for allocation in invoice.payment_allocations.all():
+                    paid_on = allocation.payment.payment_date
+                    if date_from and paid_on < date_from:
+                        continue
+                    if date_to and paid_on > date_to:
+                        continue
+                    basis_amount += sign * allocation.amount
+
+        if not basis_amount:
+            continue
+        rows.append({
+            "rep": str(rep.party),
+            "plan": rep.plan.code,
+            "basis": rep.plan.basis,
+            "basis_amount": round_money(basis_amount),
+            "percent": rep.plan.percent,
+            "commission": rep.plan.commission_on(basis_amount),
+        })
+    return sorted(rows, key=lambda row: -row["commission"])
+
+
+class RecurringInvoice(AuditModel):
+    """
+    A template that issues the same invoice on a schedule — a retainer, a
+    subscription, a maintenance contract. Generation is driven by
+    next_run_date rather than by recomputing from the start each time, so
+    a run that is late catches up one invoice at a time instead of
+    silently skipping periods.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="recurring_invoices")
+    receivable_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    currency = models.ForeignKey(
+        Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    payment_terms = models.ForeignKey(
+        PaymentTerms, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
+    )
+    sales_rep = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="recurring_sales"
+    )
+    interval = models.CharField(
+        max_length=16, choices=RecurrenceInterval.choices, default=RecurrenceInterval.MONTHLY
+    )
+    interval_count = models.PositiveSmallIntegerField(
+        default=1, help_text="Every N intervals, e.g. 2 monthly = every other month."
+    )
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True, help_text="Blank runs indefinitely.")
+    next_run_date = models.DateField(null=True, blank=True)
+    auto_post = models.BooleanField(
+        default=False, help_text="Post generated invoices immediately instead of leaving drafts."
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        constraints = [
+            models.CheckConstraint(check=Q(interval_count__gt=0), name="interval_count_positive")
+        ]
+
+    def __str__(self):
+        return f"{self.code} ({self.customer})"
+
+    def clean(self):
+        self._check_terms()
+
+    def _check_terms(self):
+        if _names_another(self, "customer"):
+            _require_customer_role(self.customer)
+        if self.end_date and self.end_date < to_date(self.start_date):
+            raise ValidationError("end_date cannot be before start_date.")
+
+    def save(self, *args, **kwargs):
+        self._check_terms()
+        refuse_money_kept_as(self, "receivable_account")
+        if self.next_run_date is None:
+            self.next_run_date = to_date(self.start_date)
+        if self._state.adding and self.customer_id:
+            self.currency = self.currency or self.customer.default_currency
+            self.payment_terms = self.payment_terms or self.customer.payment_terms
+        super().save(*args, **kwargs)
+
+    def has_finished(self):
+        return bool(self.end_date and self.next_run_date and self.next_run_date > self.end_date)
+
+    def is_due(self, on_date=None):
+        day = to_date(on_date) or timezone.localdate()
+        return bool(self.is_active and self.next_run_date and self.next_run_date <= day and not self.has_finished())
+
+    @serialised("next_run_date", "is_active")
+    def generate_one(self, on_date=None, due_by=None, expected=None):
+        """
+        Issue the next invoice in the series and advance the schedule. A run says what it is due by
+        and is answered None when another issued it; a person may say which one they meant.
+        """
+        if not self.is_active:
+            raise ValidationError("This schedule is not active.")
+        if not still_to_take(self, due_by, expected):
+            return None
+        if not self.lines.exists():
+            raise ValidationError("This schedule has no lines to invoice.")
+        if self.has_finished():
+            raise ValidationError("This schedule has reached its end date.")
+
+        invoice_date = to_date(on_date) or self.next_run_date
+        invoice = Invoice.objects.create(
+            customer=self.customer, invoice_date=invoice_date,
+            receivable_account=self.receivable_account, currency=self.currency,
+            payment_terms=self.payment_terms, sales_rep=self.sales_rep,
+            reference=self.code,
+        )
+        for line in self.lines.all():
+            invoice_line = InvoiceLine.objects.create(
+                invoice=invoice, item=line.item, description=line.description,
+                quantity=line.quantity, unit_price=line.unit_price,
+                discount_percent=line.discount_percent, revenue_account=line.revenue_account,
+            )
+            invoice_line.taxes.set(line.taxes.all())
+
+        if self.auto_post:
+            invoice.post()
+
+        self.next_run_date = add_interval(
+            self.next_run_date, self.interval, self.interval_count,
+            anchor_day=to_date(self.start_date).day,
+        )
+        self.save(update_fields=["next_run_date", "updated_at"])
+        return invoice
+
+
+class RecurringInvoiceLine(TaxedLineMixin, AuditModel):
+    schedule = models.ForeignKey(
+        RecurringInvoice, related_name="lines", on_delete=models.CASCADE
+    )
+    item = models.ForeignKey(
+        Item, null=True, blank=True, on_delete=models.PROTECT, related_name="recurring_lines"
+    )
+    description = models.CharField(max_length=255, blank=True)
+    revenue_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name="+")
+    taxes = models.ManyToManyField(Tax, blank=True, related_name="recurring_lines")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=Q(quantity__gt=0), name="recurring_quantity_positive"),
+        ]
+
+    def party_for_tax(self):
+        return self.schedule.customer
+
+    def __str__(self):
+        return f"{self.item or self.description} x{self.quantity}"
+
+
+def generate_due_invoices(as_of=None):
+    """
+    Issue every invoice now due across all active schedules.
+
+    A schedule that is several periods behind catches up one invoice per
+    period rather than issuing a single lump: each period genuinely
+    happened and should be billed separately.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    issued = []
+    for schedule in RecurringInvoice.objects.filter(is_active=True).prefetch_related("lines"):
+        if not schedule.lines.exists():
+            continue
+        while schedule.is_due(as_of):
+            invoice = schedule.generate_one(due_by=as_of)
+            if invoice is None:
+                break  # another run issued it
+            issued.append(invoice)
+    return issued
+
+
+from .third_party import ThirdPartyRelease, ThirdPartyReleaseLine  # noqa: E402,F401
+from .call_offs import CallOff  # noqa: E402,F401
+from .price_variation import (  # noqa: E402,F401
+    PriceIndex,
+    PriceIndexValue,
+    PriceVariationBill,
+    PriceVariationClause,
+    PriceVariationLine,
+)
+
+
+from .tds import CustomerTds  # noqa: E402,F401
+
+
+def _settled_complaint(note):
+    # Read through the reverse relation, so sales imports nothing of
+    # manufacturing, which holds the link.
+    try:
+        return note.complaint_settlement.complaint.number
+    except ObjectDoesNotExist:
+        return ""
+
+
+def claims(start, end):
+    """
+    Money given back on customers' claims in a period, each note with what
+    it was for and the complaint it settled: what quality cost the plant.
+    """
+    notes = Invoice.objects.filter(
+        posted=True, invoice_date__gte=to_date(start), invoice_date__lte=to_date(end),
+    ).exclude(claim_reason="").select_related(
+        "customer", "credits", "complaint_settlement__complaint").prefetch_related(
+        "lines__taxes", "lines__recorded_taxes__tax")
+    rows = []
+    for note in notes.order_by("invoice_date", "pk"):
+        net, tax = note.subtotal(), note.tax_total()
+        rows.append({
+            "note": note.pk, "number": note.number, "date": to_date(note.invoice_date),
+            "customer": note.customer.name, "invoice": note.credits.number, "reason": note.claim_reason,
+            "net": net, "tax": tax, "total": net + tax,
+            "complaint": _settled_complaint(note),
+        })
+    return rows
+
+
+from .crm import Activity, Campaign, Lead, Opportunity  # noqa: E402,F401
+from .teams import SalesTarget, SalesTeam, rep_label  # noqa: E402,F401

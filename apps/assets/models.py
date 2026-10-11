@@ -1,0 +1,741 @@
+"""
+Fixed assets.
+
+Buying a machine is not buying stock and not incurring an expense. It is
+exchanging cash for something that will be useful for years, and the
+cost belongs on the balance sheet until those years consume it.
+
+Without this a capital purchase had two bad homes: inventory, where it
+would be valued as though it were for resale and relieved on a sale that
+never comes, or an expense, which puts a decade of value into one
+month's profit.
+
+Depends on accounting and core only. Purchasing reaches in to capitalise
+a bill line, the same direction as drop-ship: the dependent side holds
+the pointer.
+"""
+
+import calendar
+import datetime
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
+from django.db.models import F, Q
+from django.utils import timezone
+
+from apps.accounting.models import (
+    Account,
+    AccountingPeriod,
+    JournalEntry,
+    JournalLine,
+    round_money,
+)
+from apps.core.models import (
+    Extensible, AuditModel, DocumentSequence, Party, correction_date, day_that_has_come, serialised, to_date,
+)
+
+
+class DepreciationMethod(models.TextChoices):
+    STRAIGHT_LINE = "straight_line", "Straight line"
+    NONE = "none", "Not depreciated"
+
+
+class AssetStatus(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    IN_SERVICE = "in_service", "In service"
+    DISPOSED = "disposed", "Disposed"
+    CANCELLED = "cancelled", "Cancelled"
+
+
+class AssetCategory(AuditModel):
+    """
+    The accounts and default life a class of asset shares.
+
+    Three accounts, not one: what the asset cost, what has been consumed
+    of it, and this period's share of that consumption. Netting the
+    second into the first would lose the original cost, which is the
+    number every asset register is asked for.
+    """
+
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=128)
+    asset_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="What the asset cost (an asset).",
+    )
+    accumulated_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="Depreciation charged to date (a contra-asset).",
+    )
+    expense_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="This period's depreciation (an expense).",
+    )
+    disposal_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Gain or loss on disposal. Without one, disposal is refused rather "
+                  "than quietly written to depreciation.",
+    )
+    default_life_months = models.PositiveSmallIntegerField(default=60)
+    method = models.CharField(
+        max_length=16, choices=DepreciationMethod.choices,
+        default=DepreciationMethod.STRAIGHT_LINE,
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        verbose_name_plural = "asset categories"
+
+    def __str__(self):
+        return self.name
+
+
+class FixedAsset(Extensible, AuditModel):
+    number = models.CharField(max_length=32, blank=True, editable=False)
+    name = models.CharField(max_length=255)
+    category = models.ForeignKey(
+        AssetCategory, on_delete=models.PROTECT, related_name="assets"
+    )
+    vendor = models.ForeignKey(
+        Party, null=True, blank=True, on_delete=models.PROTECT, related_name="assets_sold"
+    )
+    bill_line = models.ForeignKey(
+        "purchasing.BillLine", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="assets",
+        help_text="The purchase this asset was capitalised from, when there was one.",
+    )
+    acquisition_date = models.DateField()
+    in_service_date = models.DateField(
+        null=True, blank=True,
+        help_text="Depreciation starts here, not at acquisition — a machine in a crate "
+                  "is not being consumed.",
+    )
+    cost = models.DecimalField(max_digits=18, decimal_places=2)
+    salvage_value = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"),
+        help_text="What it will still be worth at the end of its life.",
+    )
+    life_months = models.PositiveSmallIntegerField()
+    status = models.CharField(
+        max_length=16, choices=AssetStatus.choices, default=AssetStatus.DRAFT
+    )
+    disposed_on = models.DateField(null=True, blank=True, editable=False)
+    disposal_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+    )
+    reinstatement_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The entry that took back a disposal recorded in error, when one was.",
+    )
+    capitalisation_entry = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The entry that moved this asset's cost onto the asset "
+                  "account, when it came from a bill — kept so that it can be "
+                  "reversed rather than left behind.",
+    )
+    depreciated_before = models.DateField(
+        null=True, blank=True,
+        help_text="Depreciation to this date was taken in the old system and is carried "
+                  "in the opening balances; the months after it are this system's. Set "
+                  "when the register is brought in at go-live, and never after.",
+    )
+    opening_depreciation = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"),
+        help_text="What the old system had depreciated by that date, counted in what is "
+                  "accumulated here; its journal side is in the opening balances.",
+    )
+    # What it stands on, kept as it goes on the books, as a bill line keeps the account it
+    # posted to. Its category says what the next asset gets: read live, a category moved to
+    # new accounts took a lathe's cost off an account that never held it and left the old
+    # one holding it for good, and a category switched to not depreciated stopped a lathe
+    # in service with three-quarters of its life to run.
+    asset_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="The account its cost stands on: the one its capitalisation debited, or "
+                  "its category's when it went into service. Its disposal takes the cost off "
+                  "this one, whatever the category says by then.",
+    )
+    accumulated_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Where its depreciation is held: its category's when it went into service. "
+                  "Every charge is credited here and its disposal clears it.",
+    )
+    method = models.CharField(
+        max_length=16, choices=DepreciationMethod.choices, blank=True, editable=False,
+        help_text="How it is depreciated: its category's when it went into service. Its "
+                  "charges are worked out from this; a change to the category is for assets "
+                  "to come.",
+    )
+
+    class Meta:
+        ordering = ["-acquisition_date", "-id"]
+        permissions = [("dispose_fixedasset", "Can dispose of fixed assets")]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["number"], condition=~Q(number=""), name="unique_asset_number"
+            ),
+            models.CheckConstraint(check=Q(cost__gt=0), name="asset_cost_positive"),
+            models.CheckConstraint(
+                check=Q(salvage_value__gte=0), name="asset_salvage_not_negative"
+            ),
+            # In the table as well as on save: at or above cost there is
+            # nothing to depreciate, and the monthly charge comes out at
+            # nothing or less.
+            models.CheckConstraint(
+                check=Q(salvage_value__lt=F("cost")),
+                name="asset_salvage_below_cost",
+            ),
+            models.CheckConstraint(
+                check=Q(in_service_date__isnull=True)
+                | Q(in_service_date__gte=F("acquisition_date")),
+                name="asset_in_service_after_acquisition",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.number or f'FA-draft-{self.pk}'} {self.name}"
+
+    # What every depreciation charge was worked out from, and the accounts
+    # its entries stand on. Once the asset has left draft, changing any of
+    # them would leave the charges already posted computed from figures,
+    # and held on accounts, the asset no longer has.
+    FIXED_IN_SERVICE = (
+        "category_id", "acquisition_date", "in_service_date", "cost",
+        "salvage_value", "life_months", "depreciated_before", "opening_depreciation",
+        "asset_account_id", "accumulated_account_id", "method",
+    )
+
+    # What a capitalisation settles while the asset is still a draft: its
+    # cost, onto its category's asset account, on the bill's date, and all
+    # of it this system's, so nothing depreciated by an old one. Repriced
+    # to 15,000 against 12,000 posted, its disposal took 15,000 off the
+    # plant account and left it at -3,000; moved to another category, it
+    # came off that category's account and left 12,000 on the first.
+    FIXED_ONCE_CAPITALISED = (
+        "category_id", "acquisition_date", "cost", "asset_account_id",
+        "depreciated_before", "opening_depreciation",
+    )
+
+    # Copied from the category as the asset goes into service, unless
+    # already kept: a capitalisation keeps the asset account it debited.
+    STANDS_ON = ("asset_account", "accumulated_account", "method")
+    # Read through the category, these are what the next asset gets, not
+    # what this one stands on; `manage.py audit_invariants` refuses that read.
+    KEPT_FROM = {"category": STANDS_ON}
+
+    def save(self, *args, **kwargs):
+        # `clean()` is not called for an asset made in code — which is
+        # every asset capitalised from a bill — or through the API, so
+        # the question is asked here, where every one of them passes.
+        self.clean()
+        # Here rather than in place_in_service(), so that every way into service keeps it.
+        if self.status == AssetStatus.IN_SERVICE:
+            kept = [name for name in self.STANDS_ON if not self.serializable_value(name)]
+            if kept:
+                # As the category stands, not as this object last read it.
+                category = AssetCategory.objects.get(pk=self.category_id)
+                for name in kept:
+                    setattr(self, name, getattr(category, name))
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = [*kwargs["update_fields"], *kept]
+        if self.pk:
+            previous = FixedAsset.objects.filter(pk=self.pk).first()
+            # Fixed by what it has posted, not by its status alone: a draft from a bill has
+            # posted its capitalisation.
+            if previous is None:
+                fixed = ()
+            elif previous.status != AssetStatus.DRAFT:
+                fixed = self.FIXED_IN_SERVICE
+            elif previous.capitalisation_entry_id:
+                fixed = self.FIXED_ONCE_CAPITALISED
+            else:
+                fixed = ()
+            changed = [name for name in fixed if getattr(previous, name) != getattr(self, name)]
+            names = ", ".join(n.replace("_id", "") for n in changed)
+            if changed and previous.status != AssetStatus.DRAFT:
+                raise ValidationError(
+                    f"{self} is {previous.get_status_display().lower()}; "
+                    f"its {names} can no longer change. Its depreciation was worked out "
+                    "from them — dispose of it and register it again."
+                )
+            if changed:
+                raise ValidationError(
+                    f"{self} was capitalised from its bill at {previous.cost}; its {names} "
+                    "were settled by that entry and can no longer change. Un-capitalise it, "
+                    "then capitalise the bill line again as it should be."
+                )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.status != AssetStatus.DRAFT or self.capitalisation_entry_id:
+            raise ValidationError(
+                f"{self} is on the books — in service, disposed of, or "
+                "capitalised from a bill. Only a draft typed in by hand can "
+                "be deleted; un-capitalise or dispose of the rest."
+            )
+        return super().delete(*args, **kwargs)
+
+    def clean(self):
+        self.acquisition_date = to_date(self.acquisition_date)
+        self.in_service_date = to_date(self.in_service_date)
+        if self.salvage_value is not None and self.cost is not None:
+            if self.salvage_value >= self.cost:
+                raise ValidationError(
+                    "Salvage value must be below cost, or there is nothing to depreciate."
+                )
+        if self.in_service_date and self.acquisition_date:
+            if self.in_service_date < self.acquisition_date:
+                raise ValidationError("An asset cannot be in service before it was acquired.")
+        self.depreciated_before = to_date(self.depreciated_before)
+        if self.depreciated_before and self.in_service_date and self.depreciated_before < self.in_service_date:
+            raise ValidationError("Nothing was depreciated before the asset was in service.")
+        if self.opening_depreciation:
+            if self.opening_depreciation < 0:
+                raise ValidationError("Opening depreciation cannot be below nothing.")
+            if not self.depreciated_before:
+                raise ValidationError("Opening depreciation needs the date it was taken to.")
+            if self.cost is not None and self.salvage_value is not None and \
+                    self.opening_depreciation > self.cost - self.salvage_value:
+                raise ValidationError(
+                    f"Opening depreciation of {self.opening_depreciation} is more than the "
+                    f"{self.cost - self.salvage_value} there is to depreciate.")
+
+    def depreciable_base(self):
+        return self.cost - self.salvage_value
+
+    def stands_on(self, name):
+        """What it stands on: kept as it went into service, its category's while a draft."""
+        return getattr(self, name) or getattr(self.category, name)
+
+    def monthly_charge(self):
+        if self.stands_on("method") == DepreciationMethod.NONE or not self.life_months:
+            return Decimal("0")
+        return round_money(self.depreciable_base() / self.life_months)
+
+    def accumulated(self, as_of=None):
+        """
+        Depreciation charged, through `as_of` when given.
+
+        A reversed charge is left out at every date: it is reversed on
+        its own month end, so there is no date at which it stood.
+        """
+        entries = self.depreciation_entries.filter(reversal__isnull=True)
+        if as_of is not None:
+            entries = entries.filter(period_end__lte=to_date(as_of))
+        charged = sum((entry.amount for entry in entries), Decimal("0"))
+        # What the old system took, from the day it was taken to.
+        if self.opening_depreciation and (as_of is None or to_date(self.depreciated_before) <= to_date(as_of)):
+            charged += self.opening_depreciation
+        return charged
+
+    def net_book_value(self, as_of=None):
+        return self.cost - self.accumulated(as_of)
+
+    def remaining_to_depreciate(self):
+        return max(self.depreciable_base() - self.accumulated(), Decimal("0"))
+
+    @serialised("status")
+    def place_in_service(self, on_date=None):
+        if self.status != AssetStatus.DRAFT:
+            raise ValidationError(f"This asset is already {self.get_status_display().lower()}.")
+        # Checked by `save()`, which every path through here reaches —
+        # a date before the asset arrived is refused there.
+        in_service = to_date(on_date) or self.in_service_date or self.acquisition_date
+        # Not before its cost is on the books: capitalised again after an undo, that is the day
+        # it was capitalised, and months charged before it stood against a cost not yet there.
+        if self.capitalisation_entry_id and in_service < to_date(self.capitalisation_entry.date):
+            raise ValidationError(
+                f"{self} cannot go into service from {in_service}: it was capitalised on "
+                f"{self.capitalisation_entry.date}, and is not on the books before then."
+            )
+        # Asked here, where the date is first known. Put into service from 15 January with the
+        # first quarter closed, a machine's January could never be charged: every month-end run
+        # stopped on it, for every asset, and the machine could not be disposed of either.
+        closed = self._closed_month(self._charges(self._month_ends(timezone.localdate(), since=in_service),
+                                                  since=in_service))
+        if closed is not None:
+            month_end, period = closed
+            raise ValidationError(
+                f"{self} cannot go into service from {in_service}: its depreciation for "
+                f"{month_end:%B %Y} would fall in {period}, which is closed, and hold up every "
+                f"asset's month-end run. Put it into service in a month still open, or reopen {period}."
+            )
+        self.in_service_date = in_service
+        if not self.number:
+            self.number = DocumentSequence.next_for(
+                "assets.fixed_asset", self.acquisition_date,
+                name="Fixed Assets", prefix="FA-",
+            )
+        self.status = AssetStatus.IN_SERVICE
+        self.save(update_fields=["number", "in_service_date", "status", "updated_at"])
+
+    def periods_due(self, through):
+        """
+        Month ends between going into service and `through` that have not
+        been charged yet.
+
+        Month by month rather than a single catch-up figure, because each
+        month is a period somebody closed, and a lump posted to the
+        current one misstates every month it covers.
+        """
+        through = to_date(through)
+        if self.status != AssetStatus.IN_SERVICE or not self.in_service_date:
+            return []
+        # A month whose charge a disposal took back is charged again once the asset is
+        # reinstated: only a charge that stands counts.
+        charged = {
+            to_date(entry.period_end)
+            for entry in self.depreciation_entries.filter(reversal__isnull=True)
+        }
+        return [last for last in self._month_ends(through) if last not in charged]
+
+    def _month_ends(self, through, since=None):
+        """Month ends from going into service (`since`, or its date) to `through` that are this system's to charge."""
+        ends, cursor = [], to_date(since or self.in_service_date)
+        # The old system's months are not this one's to charge again.
+        taken_until = to_date(self.depreciated_before)
+        if taken_until and taken_until >= cursor:
+            cursor = taken_until.replace(day=1)
+        while True:
+            last = datetime.date(
+                cursor.year, cursor.month, calendar.monthrange(cursor.year, cursor.month)[1]
+            )
+            if last > through:
+                break
+            if not (taken_until and last <= taken_until):
+                ends.append(last)
+            cursor = last + datetime.timedelta(days=1)
+        return ends
+
+    def _charges(self, months, since=None):
+        """
+        What depreciation charges for each of `months`, in order: (month end, amount), until
+        nothing is left. `since`: the in-service date, for an asset not yet in service.
+        """
+        charge = self.monthly_charge()
+        if charge <= 0:
+            return []
+        start = to_date(since or self.in_service_date)
+        index = start.year * 12 + start.month - 1 + self.life_months - 1
+        last = datetime.date(index // 12, index % 12 + 1, calendar.monthrange(index // 12, index % 12 + 1)[1])
+        remaining, charges = self.remaining_to_depreciate(), []
+        for period_end in months:
+            if remaining <= 0:
+                break
+            # A month short of its life takes the charge, or what is left if less, so it never
+            # depreciates past its salvage value. The last month of its life takes what is left:
+            # each charge is rounded to the paisa, and 10,000 over twelve months at 833.33 left
+            # 0.04 to a thirteenth month, after the lathe's life had ended.
+            amount = remaining if period_end >= last else min(charge, remaining)
+            charges.append((period_end, amount))
+            remaining -= amount
+        return charges
+
+    @staticmethod
+    def _closed_month(charges):
+        """The first (month end, closed period) among `charges`, or None."""
+        for period_end, _ in charges:
+            period = AccountingPeriod.blocking(period_end)
+            if period is not None:
+                return period_end, period
+        return None
+
+    @serialised("status")
+    def depreciate(self, through=None):
+        """Charge every month due up to `through`. Returns the entries made."""
+        # A month is charged once it has ended: run to next June, the charges stood in the
+        # books for months nobody had used the machine in yet.
+        through = day_that_has_come(to_date(through) or timezone.localdate(), f"{self} is not depreciated through")
+        if self.status != AssetStatus.IN_SERVICE:
+            raise ValidationError("Only an asset in service is depreciated.")
+
+        charges = self._charges(self.periods_due(through))
+        # Named, so that a month-end run held up by a month closed since says which machine.
+        closed = self._closed_month(charges)
+        if closed is not None:
+            month_end, period = closed
+            raise ValidationError(
+                f"{self}'s depreciation for {month_end:%B %Y} falls in {period}, which is closed. "
+                f"Reopen {period} to charge it; until then it is neither depreciated nor disposed of."
+            )
+        return [self._charge(period_end, amount) for period_end, amount in charges]
+
+    def _charge(self, period_end, amount, posted_on=None):
+        """One month's charge, posted on its month end or `posted_on`, and recorded so it is taken once."""
+        memo = f"Depreciation {self.number} to {period_end:%b %Y}"
+        entry = JournalEntry.objects.create(
+            date=posted_on or period_end, reference=self.number, memo=memo
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.category.expense_account,
+            debit=amount, description=memo[:255],
+        )
+        JournalLine.objects.create(
+            entry=entry, account=self.accumulated_account,
+            credit=amount, description=memo[:255],
+        )
+        entry.post()
+        return DepreciationEntry.objects.create(
+            asset=self, period_end=period_end, amount=amount, journal_entry=entry
+        )
+
+    @serialised("status")
+    def uncapitalise(self, on_date=None, memo=""):
+        """
+        Undo capitalising a bill line into this asset, before it has
+        ever been used.
+
+        The reverse of `BillLine.capitalise_as_asset`, written because a
+        debit note on a capitalised line used to credit the account the
+        capitalisation had already emptied — driving it below nothing
+        while the asset stayed on the books at full cost. Only a draft:
+        an asset that has been in service has been depreciated or could
+        have been, and taking it off is a disposal.
+        """
+        if self.status == AssetStatus.CANCELLED:
+            raise ValidationError(f"{self} has already been un-capitalised.")
+        if self.status != AssetStatus.DRAFT:
+            raise ValidationError(
+                f"{self} has been in service. Taking it off the books is a "
+                "disposal, not an undo."
+            )
+        if self.capitalisation_entry_id is None:
+            raise ValidationError(
+                f"{self} was not capitalised from a bill, so there is nothing "
+                "to undo — delete the draft instead."
+            )
+        on_date = correction_date(on_date, self.capitalisation_entry.date, f"{self} is not un-capitalised on",
+                                  "it was capitalised")
+        self.capitalisation_entry.create_reversal(
+            entry_date=on_date, memo=memo or f"Un-capitalised {self}"
+        )
+        # Cancelled, not disposed: nothing was sold or scrapped, the
+        # capitalisation simply never stood — and the register, which
+        # shows it only until the day it was undone, must not show it as a disposal.
+        self.status = AssetStatus.CANCELLED
+        self.save(update_fields=["status", "updated_at"])
+
+    @serialised("status")
+    def dispose(self, on_date=None, proceeds=Decimal("0"), memo=""):
+        """
+        Take the asset off the books at its remaining value.
+
+        Every month due before the disposal is charged first. Without
+        that, an asset sold in June with depreciation run to March took
+        April's and May's charge into the loss on disposal: the total
+        came out right and both lines of the profit and loss account came
+        out wrong.
+
+        **The proceeds are not banked here.** This entry takes the asset's
+        cost and accumulated depreciation off and leaves its book value
+        in the disposal account; the sale itself is invoiced to the
+        buyer with the disposal account as its revenue account, and the
+        two together leave the gain or loss there. `proceeds` shows the
+        gain or loss on this entry's lines — it does not debit a bank or
+        a receivable, and a disposal nobody invoices leaves the whole
+        book value as a loss.
+        """
+        if self.status == AssetStatus.DISPOSED:
+            raise ValidationError("This asset has already been disposed of.")
+        if self.status != AssetStatus.IN_SERVICE:
+            raise ValidationError("Only an asset in service can be disposed of.")
+        on_date = correction_date(on_date, self.acquisition_date, f"{self} is not disposed of on", "it was acquired")
+        month_before = on_date.replace(day=1) - datetime.timedelta(days=1)
+        self.depreciate(through=month_before)
+        # Charges run past the disposal — the month-end job ran before the
+        # sale was recorded. Left alone they were taken off as accumulated
+        # depreciation, so the loss read nothing and the profit and loss
+        # carried months of a machine that was gone. Each is reversed on
+        # its own month end, so every month reads as it should have —
+        # unless that month has since been closed, when it is reversed on
+        # the disposal date instead, which is open or this entry would not
+        # post either. Refusing would leave the asset on the books with no
+        # way off them short of reopening a signed-off month.
+        for charge in self.depreciation_entries.filter(
+            period_end__gt=month_before, reversal__isnull=True
+        ):
+            reversed_on = charge.period_end
+            if AccountingPeriod.blocking(reversed_on) is not None:
+                reversed_on = on_date
+            charge.reversal = charge.journal_entry.create_reversal(
+                entry_date=reversed_on,
+                memo=f"Depreciation {self.number} to {charge.period_end:%b %Y} reversed: "
+                     f"disposed of on {on_date}",
+            )
+            charge.save(update_fields=["reversal", "updated_at"])
+
+        account = self.category.disposal_account
+        if account is None:
+            raise ValidationError(
+                f"{self.category} has no disposal account; a gain or loss has nowhere "
+                "to go and would otherwise be hidden in depreciation."
+            )
+
+        proceeds = round_money(Decimal(proceeds))
+        accumulated = self.accumulated()
+        book_value = self.cost - accumulated
+        result = proceeds - book_value  # positive is a gain
+
+        memo = memo or f"Disposal of {self.number}"
+        entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
+        # Off the accounts it stands on, which its category may since have moved away from.
+        if accumulated:
+            JournalLine.objects.create(
+                entry=entry, account=self.accumulated_account,
+                debit=accumulated, description=memo[:255],
+            )
+        JournalLine.objects.create(
+            entry=entry, account=self.asset_account,
+            credit=self.cost, description=memo[:255],
+        )
+        if proceeds:
+            JournalLine.objects.create(
+                entry=entry, account=account, debit=proceeds,
+                description=f"{memo} — proceeds",
+            )
+        if result:
+            JournalLine.objects.create(
+                entry=entry, account=account,
+                debit=-result if result < 0 else Decimal("0"),
+                credit=result if result > 0 else Decimal("0"),
+                description=f"{memo} — {'gain' if result > 0 else 'loss'}",
+            )
+        entry.post()
+
+        self.status = AssetStatus.DISPOSED
+        self.disposed_on = on_date
+        self.disposal_entry = entry
+        self.save(update_fields=["status", "disposed_on", "disposal_entry", "updated_at"])
+        return entry
+
+    @serialised("status")
+    def reinstate(self, on_date=None, memo=""):
+        """
+        Take back a disposal recorded in error, by reversing it rather than by editing it.
+
+        Written because there was none: the disposal's entry is the asset's, so the journal
+        refuses to reverse it by hand, and a lathe written off by mistake had no way back onto
+        the books. The disposal is reversed on its own date, and the months it took back are
+        charged again on theirs, so the asset reads as though it had never gone; a date in a
+        month since closed moves to `on_date`, as dispose() moves a reversal.
+        """
+        if self.status != AssetStatus.DISPOSED:
+            raise ValidationError(f"{self} is not disposed of; there is nothing to reinstate.")
+        if self.disposal_entry_id is None:
+            raise ValidationError(
+                f"{self} was disposed of before its entry was kept; reverse that entry from the journal.")
+        # Used where the disposal's month has closed: never a day before the disposal it takes back.
+        on_date = correction_date(on_date, self.disposed_on, f"{self} is not reinstated on", "it was disposed of")
+
+        def open_or_today(day):
+            return day if AccountingPeriod.blocking(day) is None else on_date
+
+        self.reinstatement_entry = self.disposal_entry.create_reversal(
+            entry_date=open_or_today(to_date(self.disposed_on)),
+            memo=memo or f"{self.number} reinstated: disposed of in error",
+        )
+        standing = {to_date(day) for day in self.depreciation_entries.filter(
+            reversal__isnull=True).values_list("period_end", flat=True)}
+        for taken_back in self.depreciation_entries.filter(reversal__isnull=False).order_by("period_end"):
+            month_end = to_date(taken_back.period_end)
+            if month_end not in standing:
+                self._charge(month_end, taken_back.amount, posted_on=open_or_today(month_end))
+                standing.add(month_end)
+        self.status, self.disposed_on = AssetStatus.IN_SERVICE, None
+        self.save(update_fields=["status", "disposed_on", "reinstatement_entry", "updated_at"])
+        return self.reinstatement_entry
+
+
+class DepreciationEntry(AuditModel):
+    """One month's charge. A record, so a period is never charged twice."""
+
+    asset = models.ForeignKey(
+        FixedAsset, on_delete=models.PROTECT, related_name="depreciation_entries"
+    )
+    period_end = models.DateField()
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    journal_entry = models.ForeignKey(
+        JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False
+    )
+    reversal = models.ForeignKey(
+        JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Set when the asset was disposed of before this month: the entry "
+                  "that took the charge back.",
+    )
+
+    class Meta:
+        ordering = ["period_end", "id"]
+        constraints = [
+            models.CheckConstraint(check=Q(amount__gt=0), name="depreciation_amount_positive"),
+            # One that stands: a charge a disposal took back is charged again if the asset
+            # is reinstated, beside the row that records it was taken back.
+            models.UniqueConstraint(
+                fields=["asset", "period_end"], condition=Q(reversal__isnull=True),
+                name="one_standing_charge_per_asset_and_period",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.asset} {self.period_end:%b %Y} {self.amount}"
+
+
+def asset_register(as_of=None, category=None):
+    """
+    Cost, depreciation and net book value per asset, as they stood on
+    `as_of`.
+
+    As they stood, which is the whole of the question: depreciation is
+    counted through that date, and an asset bought after it is left out.
+    This used to report today's depreciation under any date asked and
+    list assets that did not exist yet, so a register "as at last March"
+    was today's register with March written on it.
+
+    On the books means what the ledger says: an asset in service or since
+    disposed of, and one capitalised from a bill from the day it was
+    capitalised (the bill's date, or the day it was capitalised again
+    after an undo) until its capitalisation is undone, in service or not. A capitalised
+    draft was left out while its 12,000 stood on the plant account, so
+    the register and the ledger disagreed by every machine still in its
+    crate. `state` says which it was that day: capitalised, or in service.
+    A draft typed in by hand has posted nothing and is not on it.
+    """
+    as_of = to_date(as_of) or timezone.localdate()
+    assets = FixedAsset.objects.select_related("category", "capitalisation_entry").filter(
+        Q(status__in=(AssetStatus.IN_SERVICE, AssetStatus.DISPOSED)) | Q(capitalisation_entry__isnull=False),
+        acquisition_date__lte=as_of,
+    ).exclude(
+        # Capitalised again after an undo, it is on the books from that day, not from its bill's.
+        capitalisation_entry__date__gt=as_of,
+    )
+    if category is not None:
+        assets = assets.filter(category=category)
+
+    rows = []
+    for asset in assets:
+        if asset.disposed_on and asset.disposed_on <= as_of:
+            continue
+        if asset.status == AssetStatus.CANCELLED:
+            undone = asset.capitalisation_entry.reversed_by.values_list("date", flat=True).first()
+            if undone is None or undone <= as_of:
+                continue
+        in_service = asset.status in (AssetStatus.IN_SERVICE, AssetStatus.DISPOSED) \
+            and to_date(asset.in_service_date) <= as_of
+        rows.append({
+            "asset": asset,
+            "category": asset.category,
+            "state": AssetStatus.IN_SERVICE if in_service else "capitalised",
+            "cost": asset.cost,
+            "accumulated": asset.accumulated(as_of),
+            "net_book_value": asset.net_book_value(as_of),
+            # A machine in its crate is not being consumed.
+            "monthly_charge": asset.monthly_charge() if in_service else Decimal("0"),
+        })
+    return sorted(rows, key=lambda row: -row["net_book_value"])

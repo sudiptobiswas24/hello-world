@@ -1,0 +1,193 @@
+from django.contrib import admin
+from django.contrib.auth.admin import GroupAdmin, UserAdmin
+from django.contrib.auth.models import Group, User
+
+from .admin_mixins import delete_selected
+from .audit import AuditableAdminMixin
+from .models import (
+    Address,
+    Company,
+    Contact,
+    Country,
+    Currency,
+    ExchangeRate,
+    Party,
+    PartyBankAccount,
+    PartyRoleAssignment,
+    PartyTag,
+    PaymentTerms,
+    PaymentTermsLine,
+    DocumentSequence,
+    DocumentSequenceYear,
+    UnitOfMeasure,
+)
+
+
+class PartyRoleAssignmentInline(admin.TabularInline):
+    model = PartyRoleAssignment
+    extra = 1
+
+
+class AddressInline(admin.TabularInline):
+    model = Address
+    extra = 0
+    fields = ("address_type", "line1", "line2", "city", "state", "postal_code", "country",
+              "is_primary", "is_active")
+
+
+class ContactInline(admin.TabularInline):
+    model = Contact
+    extra = 0
+    fields = ("first_name", "last_name", "job_title", "email", "phone", "is_primary", "is_active")
+
+
+class PartyBankAccountInline(admin.TabularInline):
+    model = PartyBankAccount
+    extra = 0
+    fields = ("account_name", "bank_name", "account_number", "iban", "currency", "is_primary")
+
+
+@admin.register(Party)
+class PartyAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "default_currency", "payment_terms", "is_active")
+    list_filter = ("is_active", "tags")
+    search_fields = ("code", "name", "tax_id", "email")
+    filter_horizontal = ("tags",)
+    inlines = [PartyRoleAssignmentInline, AddressInline, ContactInline, PartyBankAccountInline]
+
+
+@admin.register(Currency)
+class CurrencyAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "symbol", "decimal_places", "is_base")
+
+
+@admin.register(ExchangeRate)
+class ExchangeRateAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("currency", "rate", "valid_from")
+    list_filter = ("currency",)
+    date_hierarchy = "valid_from"
+
+
+@admin.register(UnitOfMeasure)
+class UnitOfMeasureAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "category", "base_unit", "conversion_factor")
+    list_filter = ("category",)
+
+
+@admin.register(Country)
+class CountryAdmin(admin.ModelAdmin):
+    list_display = ("code", "name")
+    search_fields = ("code", "name")
+
+
+@admin.register(Address)
+class AddressAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("one_line", "party", "address_type", "is_primary", "is_active")
+    list_filter = ("address_type", "is_active", "country")
+    search_fields = ("line1", "city", "postal_code", "party__name")
+
+
+@admin.register(Contact)
+class ContactAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("full_name", "party", "job_title", "email", "phone", "is_primary")
+    list_filter = ("is_active",)
+    search_fields = ("first_name", "last_name", "email", "party__name")
+
+
+@admin.register(PartyBankAccount)
+class PartyBankAccountAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("account_name", "party", "bank_name", "currency", "is_primary")
+    search_fields = ("account_name", "account_number", "iban", "party__name")
+
+
+@admin.register(PartyTag)
+class PartyTagAdmin(admin.ModelAdmin):
+    list_display = ("name", "description")
+
+
+class PaymentTermsLineInline(admin.TabularInline):
+    model = PaymentTermsLine
+    extra = 0
+
+
+@admin.register(PaymentTerms)
+class PaymentTermsAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "net_days", "discount_percent", "discount_days", "is_active")
+    list_filter = ("is_active",)
+    inlines = [PaymentTermsLineInline]
+
+
+class DocumentSequenceYearInline(admin.TabularInline):
+    # Each year's next number is set here once a yearly sequence has
+    # counters: the sequence's own next_number only seeds its first one.
+    # A number set back onto one already used is refused when it is
+    # issued (the documents' numbers are unique).
+    model = DocumentSequenceYear
+    extra = 0
+    readonly_fields = ("year",)
+    can_delete = False
+
+
+@admin.register(DocumentSequence)
+class DocumentSequenceAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("code", "name", "prefix", "padding", "next_number", "include_year",
+                    "reset_yearly", "peek")
+    inlines = [DocumentSequenceYearInline]
+
+
+@admin.register(Company)
+class CompanyAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ("name", "legal_name", "base_currency", "fiscal_year_start_month",
+                    "default_inventory_account", "default_cogs_account", "grni_account")
+
+    def has_add_permission(self, request):
+        # Singleton: the profile is created on first access, never added twice.
+        return not Company.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class SuperusersOnly:
+    """
+    Logins and roles in the admin, for superusers alone.
+
+    Django's own user admin asks only auth.change_user, which the HR Admin
+    holds to keep logins on the office's Logins screen. There it cannot
+    give a role it does not hold or touch a login above it (users_api); in
+    the admin a staff HR Admin ticked is_superuser on themselves. A role's
+    permissions are the same question one step removed.
+    """
+
+    def has_module_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_add_permission(self, request):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
+
+
+class SuperuserUserAdmin(SuperusersOnly, UserAdmin):
+    pass
+
+
+class SuperuserGroupAdmin(SuperusersOnly, GroupAdmin):
+    pass
+
+
+admin.site.unregister(User)
+admin.site.register(User, SuperuserUserAdmin)
+admin.site.unregister(Group)
+admin.site.register(Group, SuperuserGroupAdmin)
+
+
+# Every changelist's "delete selected" asks each row's own delete() (admin_mixins).
+admin.site.add_action(delete_selected, "delete_selected")

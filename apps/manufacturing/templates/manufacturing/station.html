@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ station.code }} · Loom exit</title>
+<style>
+  :root {
+    --paper: #EFECE4; --ink: #16181A; --muted: #4A4F55; --line: #D5D0C4; --soft: #E6E2D8;
+    --accent: #B8430F; --accent-dark: #8F330B; --ok: #14532D; --ok-bg: #DCFCE7; --ok-dot: #4ADE80;
+    --warn: #7A4100; --warn-bg: #FDF0D5; --warn-line: #C98A1B; --bad: #991B1B; --bad-bg: #FEE2E2;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink);
+    font-family: "IBM Plex Sans", "Noto Sans Bengali", "Noto Sans Devanagari", system-ui, sans-serif; }
+  button, input, select { font: inherit; color: inherit; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .screen { display: none; min-height: 100vh; }
+  .screen.on { display: flex; }
+  .second { color: var(--muted); font-size: .85em; font-weight: 500; }
+  /* sign in */
+  #signin .side { width: 40%; max-width: 520px; background: var(--ink); color: #fff; padding: 48px;
+    display: flex; flex-direction: column; justify-content: space-between; }
+  #signin .brand { font-size: 17px; font-weight: 700; letter-spacing: .08em; color: #C9CDD2; }
+  #signin h1 { margin: 12px 0 8px; font-size: 44px; line-height: 1.1; }
+  .status { display: flex; flex-direction: column; gap: 12px; font-size: 18px; }
+  .dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; margin-right: 10px;
+    background: #9CA3AF; vertical-align: -1px; }
+  .dot.ok { background: var(--ok-dot); } .dot.bad { background: #F87171; }
+  .langs { display: flex; gap: 8px; }
+  .langs button { background: transparent; border: 1px solid #4A4F55; color: #fff; border-radius: 999px;
+    padding: 8px 16px; font-size: 16px; cursor: pointer; }
+  .langs button.on { background: #fff; color: var(--ink); }
+  #signin .pad { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 20px; padding: 32px; }
+  #signin h2 { margin: 0; font-size: 30px; text-align: center; }
+  .pin { display: flex; gap: 14px; height: 28px; }
+  .pin span { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--ink); }
+  .pin span.full { background: var(--ink); }
+  .keys { display: grid; grid-template-columns: repeat(3, 96px); gap: 14px; }
+  .keys button { height: 80px; border-radius: 16px; border: 1px solid var(--line); background: #fff;
+    font-size: 30px; font-weight: 600; cursor: pointer; }
+  .keys button.enter { background: var(--ink); color: #fff; font-size: 20px; }
+  .keys button.clear { font-size: 18px; }
+  .note { max-width: 420px; text-align: center; color: var(--muted); font-size: 16px; }
+  .error { color: var(--bad); font-weight: 600; min-height: 24px; text-align: center; }
+  /* station */
+  #weigh { flex-direction: column; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 16px 28px;
+    background: var(--ink); color: #fff; gap: 16px; }
+  header .who { display: flex; align-items: center; gap: 14px; }
+  header button { background: transparent; border: 1px solid #6B7280; color: #fff; border-radius: 10px;
+    padding: 8px 14px; cursor: pointer; }
+  main { flex: 1; display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 20px; padding: 20px 28px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 22px;
+    display: flex; flex-direction: column; gap: 14px; }
+  .card h3 { margin: 0; font-size: 18px; color: var(--muted); font-weight: 600; }
+  .weight { font-size: 76px; font-weight: 600; line-height: 1; }
+  .weight small { font-size: 28px; color: var(--muted); }
+  .pill { align-self: flex-start; padding: 6px 12px; border-radius: 999px; font-size: 15px; font-weight: 600;
+    background: var(--soft); }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); } .pill.warn { background: var(--warn-bg);
+    color: var(--warn); border: 1px solid var(--warn-line); }
+  .row { display: flex; justify-content: space-between; gap: 12px; font-size: 18px; padding: 6px 0;
+    border-bottom: 1px solid var(--soft); }
+  .row:last-child { border-bottom: 0; }
+  input.big, select.big { width: 100%; font-size: 26px; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: 12px; background: #fff; }
+  .value { font-size: 22px; font-weight: 600; }
+  .variance { font-size: 44px; font-weight: 700; }
+  .variance.ok { color: var(--ok); } .variance.warn { color: var(--warn); }
+  .explain { font-size: 16px; color: var(--muted); }
+  footer { display: flex; gap: 16px; padding: 0 28px 24px; align-items: center; }
+  .primary { flex: 1; height: 72px; border: 0; border-radius: 16px; background: var(--accent); color: #fff;
+    font-size: 24px; font-weight: 700; cursor: pointer; }
+  .primary.warn { background: var(--warn); }
+  .primary:disabled { background: #A8A29E; cursor: not-allowed; }
+  .secondary { height: 72px; padding: 0 22px; border-radius: 16px; border: 1px solid var(--ink);
+    background: #fff; font-size: 18px; font-weight: 600; cursor: pointer; }
+  .flash { padding: 12px 28px; font-size: 18px; font-weight: 600; }
+  .flash.ok { background: var(--ok-bg); color: var(--ok); } .flash.bad { background: var(--bad-bg); color: var(--bad); }
+  /* dialogs */
+  dialog { border: 0; border-radius: 18px; padding: 28px; width: 560px; max-width: 94vw; }
+  dialog::backdrop { background: rgba(22, 24, 26, .55); }
+  dialog h2 { margin: 0 0 6px; font-size: 24px; }
+  dialog label { display: block; margin-top: 14px; font-weight: 600; }
+  dialog .actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 22px; }
+  /* printing: only the label */
+  #print-area { display: none; }
+  @media print {
+    @page { size: 100mm 75mm; margin: 0; }
+    body > *:not(#print-area) { display: none !important; }
+    #print-area { display: block; }
+    .label { width: 100mm; height: 75mm; padding: 6mm 5mm 5mm; display: flex; flex-direction: column;
+      justify-content: space-between; align-items: center; }
+    .label .bars { width: 88mm; height: 42mm; } .label .bars svg { width: 100%; height: 100%; }
+    .label .code { font: 600 7mm/1 "IBM Plex Mono", ui-monospace, monospace; }
+  }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } #signin .side { display: none; } }
+</style>
+</head>
+<body>
+
+<section id="signin" class="screen on">
+  <div class="side">
+    <div>
+      <div class="brand">LOOM EXIT</div>
+      <h1>{{ station.name }}</h1>
+      <div id="shift-line" style="font-size:20px;color:#C9CDD2"></div>
+    </div>
+    <div class="status">
+      <div><span id="dot-scale" class="dot"></span><span id="txt-scale"></span></div>
+      <div><span id="dot-server" class="dot"></span><span id="txt-server"></span></div>
+    </div>
+    <div class="langs" id="langs"></div>
+  </div>
+  <div class="pad">
+    <h2 data-t="sign_in_title"></h2>
+    <div class="pin" id="pin-dots"></div>
+    <div class="error" id="pin-error" role="alert"></div>
+    <div class="keys" id="keys"></div>
+    <div class="note" data-t="pin_note"></div>
+  </div>
+</section>
+
+<section id="weigh" class="screen">
+  <header>
+    <div><strong>{{ station.code }}</strong> · <span id="hdr-shift"></span></div>
+    <div class="who"><span id="hdr-operator" class="mono"></span>
+      <button type="button" id="btn-signout" data-t="sign_out"></button></div>
+  </header>
+  <div id="flash" class="flash" role="status" hidden></div>
+  <main>
+    <div class="card">
+      <h3 data-t="net_weight"></h3>
+      <div class="weight mono"><span id="net">--.--</span> <small>kg</small></div>
+      <span id="stable" class="pill"></span>
+      <div class="row"><span data-t="gross"></span><span id="gross" class="mono">--</span></div>
+      <div class="row"><span data-t="tare"></span>
+        <select id="core" class="big" style="width:auto;font-size:18px;padding:6px 10px"></select></div>
+      <div class="row"><span data-t="source"></span><span id="source-text"></span></div>
+      <button type="button" class="secondary" id="btn-scale" data-t="connect_scale"></button>
+    </div>
+    <div class="card">
+      <h3 data-t="loom"></h3>
+      <input id="loom" class="big mono" autocomplete="off" inputmode="text">
+      <div class="explain" data-t="scan_loom"></div>
+      <div class="row"><span data-t="contractor"></span><span id="contractor" class="value"></span></div>
+      <div class="row"><span data-t="spec"></span><span id="spec" class="mono"></span></div>
+      <div class="row"><span data-t="tape_batch"></span><span id="tape" class="mono"></span></div>
+      <div class="explain" id="previous"></div>
+    </div>
+    <div class="card">
+      <h3 data-t="metres_check"></h3>
+      <div class="row"><span data-t="from_weight"></span><span id="derived" class="value mono">-- m</span></div>
+      <label for="declared" data-t="declared"></label>
+      <input id="declared" class="big mono" inputmode="decimal" autocomplete="off">
+      <div class="row"><span data-t="variance"></span><span id="variance" class="variance mono">--</span></div>
+      <div id="variance-text" class="explain"></div>
+    </div>
+  </main>
+  <footer>
+    <button type="button" class="primary" id="btn-confirm" disabled></button>
+    <button type="button" class="secondary" id="btn-manual" data-t="manual"></button>
+    <button type="button" class="secondary" id="btn-waste" data-t="waste"></button>
+    <button type="button" class="secondary" id="btn-count" data-t="tape_count"></button>
+    <button type="button" class="secondary" id="btn-meter" data-t="meter_read"></button>
+  </footer>
+</section>
+
+<dialog id="dlg-manual">
+  <h2 data-t="manual_title"></h2>
+  <div class="explain" data-t="manual_note"></div>
+  <label for="m-weight" data-t="backup_weight"></label>
+  <input id="m-weight" class="big mono" inputmode="decimal">
+  <label for="m-pin" data-t="supervisor_pin"></label>
+  <input id="m-pin" class="big mono" type="password" inputmode="numeric" autocomplete="off">
+  <label for="m-reason" data-t="reason"></label>
+  <select id="m-reason" class="big"></select>
+  <label for="m-note" data-t="note"></label>
+  <input id="m-note" class="big">
+  <div class="error" id="m-error" role="alert"></div>
+  <div class="actions">
+    <button type="button" class="secondary" data-close data-t="cancel"></button>
+    <button type="button" class="primary" id="m-approve" data-t="approve" style="flex:0 0 auto;padding:0 22px"></button>
+  </div>
+</dialog>
+
+<dialog id="dlg-waste">
+  <h2 data-t="waste"></h2>
+  <label for="w-contractor" data-t="contractor"></label><select id="w-contractor" class="big"></select>
+  <label for="w-kg">kg</label><input id="w-kg" class="big mono" inputmode="decimal">
+  <div class="error" id="w-error" role="alert"></div>
+  <div class="actions"><button type="button" class="secondary" data-close data-t="cancel"></button>
+    <button type="button" class="primary" id="w-save" data-t="save" style="flex:0 0 auto;padding:0 22px"></button></div>
+</dialog>
+
+<dialog id="dlg-count">
+  <h2 data-t="tape_count"></h2>
+  <label for="c-contractor" data-t="contractor"></label><select id="c-contractor" class="big"></select>
+  <label for="c-date" data-t="closes_day"></label><input id="c-date" class="big" type="date">
+  <label for="c-kg">kg</label><input id="c-kg" class="big mono" inputmode="decimal">
+  <div class="error" id="c-error" role="alert"></div>
+  <div class="actions"><button type="button" class="secondary" data-close data-t="cancel"></button>
+    <button type="button" class="primary" id="c-save" data-t="save" style="flex:0 0 auto;padding:0 22px"></button></div>
+</dialog>
+
+<dialog id="dlg-meter">
+  <h2 data-t="meter_read"></h2>
+  <label for="e-meter" data-t="meter"></label><select id="e-meter" class="big"></select>
+  <label for="e-kwh" data-t="kwh_reading"></label><input id="e-kwh" class="big mono" inputmode="decimal">
+  <label for="e-kva" data-t="kva"></label><input id="e-kva" class="big mono" inputmode="decimal">
+  <label for="e-pf" data-t="pf"></label><input id="e-pf" class="big mono" inputmode="decimal">
+  <div class="error" id="e-error" role="alert"></div>
+  <div class="actions"><button type="button" class="secondary" data-close data-t="cancel"></button>
+    <button type="button" class="primary" id="e-save" data-t="save" style="flex:0 0 auto;padding:0 22px"></button></div>
+</dialog>
+
+<div id="print-area"></div>
+
+<script>
+"use strict";
+const API = "/api/manufacturing/stations/{{ station.code|escapejs }}/";
+
+// Bengali and Hindi were written for the pilot and want a native
+// speaker's review before the floor relies on them.
+const T = {
+  en: {
+    sign_in_title: "Sign in with your PIN",
+    pin_note: "Use your own PIN. Every roll records who weighed it, so shared logins are not allowed.",
+    clear: "Clear", enter: "Enter", sign_out: "Sign out", net_weight: "Net weight",
+    stable: "Scale reading stable", unstable: "Scale reading settling", waiting: "No reading from the scale",
+    manual_source: "Manual, supervisor-approved", scale_source: "Scale, automatic",
+    gross: "Gross", tare: "Tare · core", source: "Source", loom: "Loom", scan_loom: "Scan the loom tag",
+    contractor: "Contractor", spec: "Spec", tape_batch: "Tape batch", metres_check: "Metres check",
+    from_weight: "From weight", declared: "Declared by contractor (m)", variance: "Variance",
+    within: "Within ±{t}%. Nothing to do.",
+    over: "Over ±{t}%. Recorded against the contractor and listed in the 8 AM report. The label still prints.",
+    confirm: "Confirm and print label", confirm_exception: "Confirm with exception and print",
+    waiting_weight: "Waiting for weight", manual: "Manual weight",
+    manual_title: "Manual weight needs supervisor approval",
+    manual_note: "Every override appears in the 8 AM report.",
+    backup_weight: "Weight from backup scale (kg, gross)", supervisor_pin: "Supervisor PIN",
+    reason: "Reason", note: "Note", cancel: "Cancel", approve: "Approve manual weight",
+    previous: "Previous roll on {loom}: {code} at {time}", labelled: "Labelled {code}",
+    connect_scale: "Connect scale", scale_on: "Scale connected", scale_off: "Scale not connected",
+    server_on: "Plant server reachable", server_off: "Plant server not reachable",
+    waste: "Weigh waste", tape_count: "Count tape on looms", save: "Save",
+    meter_read: "Read the meter", meter: "Meter", kwh_reading: "Meter reading (kWh)", kva: "Maximum demand (kVA)", pf: "Power factor",
+    closes_day: "Shift-day this count closes", saved: "Saved",
+    scale_offline: "Scale not connected", calibration: "Scale under calibration",
+    does_not_fit: "Roll does not fit platform", other: "Other, with a note",
+  },
+  bn: {
+    sign_in_title: "আপনার পিন দিন",
+    pin_note: "নিজের পিন ব্যবহার করুন। প্রতিটি রোলে কে ওজন করেছে তা লেখা থাকে, তাই অন্যের লগইন চলবে না।",
+    clear: "মুছুন", enter: "ঠিক আছে", sign_out: "সাইন আউট", net_weight: "নিট ওজন",
+    stable: "ওজন স্থির", unstable: "ওজন স্থির হচ্ছে", waiting: "স্কেল থেকে কোনো ওজন নেই",
+    manual_source: "হাতে লেখা, সুপারভাইজার অনুমোদিত", scale_source: "স্কেল, স্বয়ংক্রিয়",
+    gross: "মোট", tare: "কোর", source: "উৎস", loom: "তাঁত", scan_loom: "তাঁতের ট্যাগ স্ক্যান করুন",
+    contractor: "ঠিকাদার", spec: "স্পেসিফিকেশন", tape_batch: "টেপ ব্যাচ", metres_check: "মিটার যাচাই",
+    from_weight: "ওজন থেকে", declared: "ঠিকাদারের ঘোষিত মিটার", variance: "পার্থক্য",
+    within: "±{t}% এর মধ্যে। কিছু করার নেই।",
+    over: "±{t}% এর বেশি। ঠিকাদারের নামে লেখা হবে এবং সকাল ৮টার রিপোর্টে থাকবে। লেবেল তবুও প্রিন্ট হবে।",
+    confirm: "নিশ্চিত করে লেবেল প্রিন্ট করুন", confirm_exception: "ব্যতিক্রমসহ নিশ্চিত করে প্রিন্ট করুন",
+    waiting_weight: "ওজনের অপেক্ষায়", manual: "হাতে লেখা ওজন",
+    manual_title: "হাতে লেখা ওজনে সুপারভাইজারের অনুমোদন লাগবে",
+    manual_note: "প্রতিটি পরিবর্তন সকাল ৮টার রিপোর্টে থাকবে।",
+    backup_weight: "ব্যাকআপ স্কেলের ওজন (কেজি, মোট)", supervisor_pin: "সুপারভাইজারের পিন",
+    reason: "কারণ", note: "নোট", cancel: "বাতিল", approve: "হাতে লেখা ওজন অনুমোদন করুন",
+    previous: "{loom}-এ আগের রোল: {code}, {time}", labelled: "লেবেল হয়েছে {code}",
+    connect_scale: "স্কেল যুক্ত করুন", scale_on: "স্কেল যুক্ত", scale_off: "স্কেল যুক্ত নয়",
+    server_on: "প্ল্যান্ট সার্ভার সংযুক্ত", server_off: "প্ল্যান্ট সার্ভারে সংযোগ নেই",
+    waste: "বর্জ্য ওজন করুন", tape_count: "তাঁতে টেপ গুনুন", save: "সংরক্ষণ",
+    meter_read: "মিটার পড়ুন", meter: "মিটার", kwh_reading: "মিটার রিডিং (kWh)", kva: "সর্বোচ্চ চাহিদা (kVA)", pf: "পাওয়ার ফ্যাক্টর",
+    closes_day: "এই গণনা কোন দিনের", saved: "সংরক্ষিত",
+    scale_offline: "স্কেল যুক্ত নয়", calibration: "স্কেল ক্যালিব্রেশনে",
+    does_not_fit: "রোল প্ল্যাটফর্মে আঁটে না", other: "অন্য কারণ, নোটসহ",
+  },
+  hi: {
+    sign_in_title: "अपना पिन डालें",
+    pin_note: "अपना ही पिन इस्तेमाल करें। हर रोल पर लिखा जाता है कि उसे किसने तौला, इसलिए साझा लॉगिन की अनुमति नहीं है।",
+    clear: "मिटाएँ", enter: "ठीक है", sign_out: "साइन आउट", net_weight: "शुद्ध वज़न",
+    stable: "वज़न स्थिर", unstable: "वज़न स्थिर हो रहा है", waiting: "तराज़ू से कोई वज़न नहीं",
+    manual_source: "हाथ से दर्ज, सुपरवाइज़र द्वारा मंज़ूर", scale_source: "तराज़ू, स्वचालित",
+    gross: "कुल", tare: "कोर", source: "स्रोत", loom: "करघा", scan_loom: "करघे का टैग स्कैन करें",
+    contractor: "ठेकेदार", spec: "विनिर्देश", tape_batch: "टेप बैच", metres_check: "मीटर जाँच",
+    from_weight: "वज़न से", declared: "ठेकेदार द्वारा घोषित मीटर", variance: "अंतर",
+    within: "±{t}% के भीतर। कुछ करने की ज़रूरत नहीं।",
+    over: "±{t}% से ज़्यादा। ठेकेदार के नाम दर्ज होगा और सुबह 8 बजे की रिपोर्ट में आएगा। लेबल फिर भी छपेगा।",
+    confirm: "पुष्टि करें और लेबल छापें", confirm_exception: "अपवाद के साथ पुष्टि करें और छापें",
+    waiting_weight: "वज़न की प्रतीक्षा", manual: "हाथ से वज़न",
+    manual_title: "हाथ से दर्ज वज़न के लिए सुपरवाइज़र की मंज़ूरी चाहिए",
+    manual_note: "हर बदलाव सुबह 8 बजे की रिपोर्ट में दिखेगा।",
+    backup_weight: "बैकअप तराज़ू का वज़न (किलो, कुल)", supervisor_pin: "सुपरवाइज़र का पिन",
+    reason: "कारण", note: "टिप्पणी", cancel: "रद्द करें", approve: "हाथ से दर्ज वज़न मंज़ूर करें",
+    previous: "{loom} पर पिछला रोल: {code}, {time}", labelled: "लेबल लगा {code}",
+    connect_scale: "तराज़ू जोड़ें", scale_on: "तराज़ू जुड़ा है", scale_off: "तराज़ू जुड़ा नहीं",
+    server_on: "प्लांट सर्वर से जुड़ा", server_off: "प्लांट सर्वर से संपर्क नहीं",
+    waste: "कचरा तौलें", tape_count: "करघों पर टेप गिनें", save: "सहेजें",
+    meter_read: "मीटर पढ़ें", meter: "मीटर", kwh_reading: "मीटर रीडिंग (kWh)", kva: "अधिकतम माँग (kVA)", pf: "पावर फैक्टर",
+    closes_day: "यह गिनती किस दिन की है", saved: "सहेजा गया",
+    scale_offline: "तराज़ू जुड़ा नहीं", calibration: "तराज़ू कैलिब्रेशन में",
+    does_not_fit: "रोल प्लेटफ़ॉर्म पर नहीं आता", other: "अन्य, टिप्पणी के साथ",
+  },
+};
+const LANG_NAMES = { en: "EN", bn: "বাংলা", hi: "हिंदी" };
+let lang = "en";
+try { lang = localStorage.getItem("station-lang") || "en"; } catch (e) { /* private window */ }
+
+function fill(text, values) {
+  for (const [name, value] of Object.entries(values || {})) text = text.replace(`{${name}}`, value);
+  return text;
+}
+function t(key, values) {
+  return fill((T[lang] && T[lang][key]) || T.en[key] || key, values);
+}
+function tt(key, values) {
+  // Primary language first, English beside it, so a supervisor can read
+  // any screen whatever language the operator chose.
+  return lang === "en" ? t(key, values) : `${t(key, values)} · ${fill(T.en[key], values)}`;
+}
+function translate() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-t]").forEach((el) => { el.textContent = t(el.dataset.t); });
+  document.querySelectorAll("#langs button").forEach((b) => b.classList.toggle("on", b.dataset.lang === lang));
+  renderScale(); renderCheck(); renderReasons();
+}
+
+// -- talking to the plant server -----------------------------------------
+function cookie(name) {
+  const match = document.cookie.match(new RegExp("(^|; )" + name + "=([^;]*)"));
+  return match ? decodeURIComponent(match[2]) : "";
+}
+async function api(path, options = {}) {
+  const init = { credentials: "same-origin", headers: { Accept: "application/json" }, ...options };
+  if (options.body !== undefined) {
+    init.method = options.method || "POST";
+    init.headers["Content-Type"] = "application/json";
+    init.headers["X-CSRFToken"] = cookie("csrftoken");
+    init.body = JSON.stringify(options.body);
+  }
+  let response;
+  try { response = await fetch(API + path, init); setServer(true); }
+  catch (e) { setServer(false); throw new Error(t("server_off")); }
+  const type = response.headers.get("Content-Type") || "";
+  const data = type.includes("json") ? await response.json() : await response.text();
+  if (!response.ok) {
+    const message = Array.isArray(data) ? data.join(" ") : (data.detail || JSON.stringify(data));
+    throw new Error(message);
+  }
+  return data;
+}
+function setServer(ok) {
+  document.getElementById("dot-server").className = "dot " + (ok ? "ok" : "bad");
+  document.getElementById("txt-server").textContent = t(ok ? "server_on" : "server_off");
+}
+
+// -- the scale ---------------------------------------------------------------
+// Most platform scales stream lines such as "ST,GS,+  106.80 kg": ST is a
+// settled reading, US one still moving. A scale that sends no flag is
+// treated as settled once three readings in a row agree. Connected over
+// Web Serial in a Chromium browser; `window.stationScale.feed(line)` lets
+// a bridge or a test supply readings instead.
+//
+// At a bridged station the scale is not on this machine: its bridge posts
+// to the server, and the screen asks the server what the scale reads and
+// whether that reading would be taken (settled, fresh, not already used).
+const scale = {
+  connected: false, kg: null, stable: false, _same: 0, _last: null,
+  bridged: false, raw: null, refusal: null, _timer: null,
+  async poll() {
+    try {
+      const body = await api("scale/");
+      this.connected = true;
+      this.raw = body.gross_kg;
+      this.kg = body.gross_kg == null ? null : parseFloat(body.gross_kg);
+      this.stable = !!body.usable;
+      this.refusal = body.refusal;
+    } catch (e) { this.connected = false; this.stable = false; }
+    renderScale(); renderCheck();
+  },
+  follow() {
+    if (!this.bridged || this._timer) return;
+    this.poll();
+    this._timer = setInterval(() => this.poll(), 1000);
+  },
+  feed(line) {
+    const match = /(ST|US)?[^0-9+\-]*([+\-]?\s*\d+(?:\.\d+)?)\s*kg/i.exec(line);
+    if (!match) return;
+    const kg = parseFloat(match[2].replace(/\s/g, ""));
+    if (match[1]) this.stable = match[1].toUpperCase() === "ST";
+    else { this._same = kg === this._last ? this._same + 1 : 1; this.stable = this._same >= 3; }
+    this._last = kg; this.kg = kg; this.connected = true;
+    renderScale(); renderCheck();
+  },
+  async connect() {
+    if (!("serial" in navigator)) { flash(t("scale_off"), false); return; }
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 9600 });
+    this.connected = true; renderScale();
+    const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      const lines = buffer.split(/\r?\n/); buffer = lines.pop();
+      lines.forEach((line) => this.feed(line));
+    }
+    this.connected = false; renderScale();
+  },
+};
+window.stationScale = scale;
+
+// -- state ------------------------------------------------------------------
+let station = null, loom = null, busy = false, pin = "";
+
+function tare() {
+  const core = station && station.cores.find((c) => c.code === document.getElementById("core").value);
+  return core ? parseFloat(core.tare_kg) : 0;
+}
+function net(gross) { return gross == null ? null : gross - tare(); }
+function derivedMetres(netKg) {
+  if (!loom || !loom.specification || netKg == null || netKg <= 0) return null;
+  const spec = loom.specification;
+  const layers = spec.weave === "tubular" ? 2 : 1;
+  return netKg * 1000 / (parseFloat(spec.gsm) * layers * parseFloat(spec.lay_flat_width_cm) / 100);
+}
+
+function renderScale() {
+  const dot = document.getElementById("dot-scale");
+  dot.className = "dot " + (scale.connected ? "ok" : "bad");
+  document.getElementById("txt-scale").textContent = t(scale.connected ? "scale_on" : "scale_off");
+  const netKg = net(scale.kg);
+  document.getElementById("net").textContent = netKg == null ? "--.--" : netKg.toFixed(2);
+  document.getElementById("gross").textContent = scale.kg == null ? "--" : scale.kg.toFixed(2) + " kg";
+  const pill = document.getElementById("stable");
+  pill.textContent = scale.kg == null ? t("waiting") : t(scale.stable ? "stable" : "unstable");
+  pill.className = "pill " + (scale.kg == null ? "" : scale.stable ? "ok" : "warn");
+  // The server's own words for why a bridged reading would not be taken.
+  if (scale.bridged && !scale.stable && scale.refusal) pill.textContent = scale.refusal;
+  document.getElementById("source-text").textContent = t("scale_source");
+}
+
+function renderCheck() {
+  const tolerance = station ? parseFloat(station.tolerance_percent) : 2;
+  const derived = derivedMetres(net(scale.kg));
+  const declared = parseFloat(document.getElementById("declared").value);
+  document.getElementById("derived").textContent = derived == null ? "-- m" : Math.round(derived) + " m";
+  const varianceEl = document.getElementById("variance");
+  const text = document.getElementById("variance-text");
+  const button = document.getElementById("btn-confirm");
+  let over = false;
+  if (derived != null && declared > 0) {
+    const v = (declared - derived) / derived * 100;
+    over = Math.abs(v) > tolerance;
+    varianceEl.textContent = (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+    varianceEl.className = "variance mono " + (over ? "warn" : "ok");
+    text.textContent = tt(over ? "over" : "within", { t: tolerance.toFixed(1) });
+  } else {
+    varianceEl.textContent = "--"; varianceEl.className = "variance mono"; text.textContent = "";
+  }
+  const ready = loom && scale.stable && net(scale.kg) > 0 && declared > 0 && !busy;
+  button.disabled = !ready;
+  button.className = "primary" + (ready && over ? " warn" : "");
+  button.textContent = !scale.stable || scale.kg == null ? t("waiting_weight")
+    : tt(over ? "confirm_exception" : "confirm");
+}
+
+function renderReasons() {
+  const select = document.getElementById("m-reason");
+  const current = select.value;
+  select.innerHTML = "";
+  ["scale_offline", "calibration", "does_not_fit", "other"].forEach((code) => {
+    const option = document.createElement("option");
+    option.value = code; option.textContent = t(code); select.appendChild(option);
+  });
+  if (current) select.value = current;
+}
+
+function flash(message, ok) {
+  const el = document.getElementById("flash");
+  el.textContent = message; el.className = "flash " + (ok ? "ok" : "bad"); el.hidden = false;
+  clearTimeout(flash._timer); flash._timer = setTimeout(() => { el.hidden = true; }, 6000);
+}
+
+// -- sign in ------------------------------------------------------------------
+function renderPin() {
+  const dots = document.getElementById("pin-dots");
+  dots.innerHTML = "";
+  for (let i = 0; i < 6; i++) {
+    const s = document.createElement("span"); if (i < pin.length) s.className = "full"; dots.appendChild(s);
+  }
+}
+function buildKeys() {
+  const keys = document.getElementById("keys");
+  ["1", "2", "3", "4", "5", "6", "7", "8", "9", "clear", "0", "enter"].forEach((key) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    if (key === "clear" || key === "enter") { b.dataset.t = key; b.className = key; }
+    else b.textContent = key;
+    b.addEventListener("click", () => press(key));
+    keys.appendChild(b);
+  });
+}
+async function press(key) {
+  document.getElementById("pin-error").textContent = "";
+  if (key === "clear") pin = "";
+  else if (key === "enter") return signIn();
+  else if (pin.length < 6) pin += key;
+  renderPin();
+  if (pin.length === 6) signIn();
+}
+async function signIn() {
+  const tried = pin; pin = ""; renderPin();
+  try {
+    const data = await api("sign-in/", { body: { pin: tried } });
+    station.operator = data.operator; showWeigh();
+  } catch (e) { document.getElementById("pin-error").textContent = e.message; }
+}
+async function signOut() {
+  await api("sign-out/", { body: {} }).catch(() => {});
+  station.operator = null; resetRoll(); show("signin");
+}
+
+function show(id) {
+  document.querySelectorAll(".screen").forEach((s) => s.classList.toggle("on", s.id === id));
+}
+function showWeigh() {
+  document.getElementById("hdr-operator").textContent =
+    `${station.operator.number} · ${station.operator.name}`;
+  show("weigh"); document.getElementById("loom").focus();
+  scale.follow();
+}
+
+// -- the roll -------------------------------------------------------------------
+async function loadLoom(code) {
+  loom = null;
+  ["contractor", "spec", "tape", "previous"].forEach((id) => { document.getElementById(id).textContent = ""; });
+  renderCheck();
+  if (!code) return;
+  try {
+    loom = await api(`looms/${encodeURIComponent(code)}/`);
+    document.getElementById("contractor").textContent = loom.contractor || "—";
+    const spec = loom.specification;
+    document.getElementById("spec").textContent = spec
+      ? `${spec.code} · ${parseFloat(spec.lay_flat_width_cm)} cm · ${parseFloat(spec.gsm)} GSM` : "—";
+    document.getElementById("tape").textContent = loom.tape_batch || "—";
+    if (loom.previous_roll) {
+      const time = new Date(loom.previous_roll.weighed_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      document.getElementById("previous").textContent =
+        t("previous", { loom: loom.loom, code: loom.previous_roll.code, time });
+    }
+    document.getElementById("declared").focus();
+  } catch (e) { flash(e.message, false); }
+  renderCheck();
+}
+
+function resetRoll() {
+  loom = null;
+  ["loom", "declared"].forEach((id) => { document.getElementById(id).value = ""; });
+  ["contractor", "spec", "tape", "previous"].forEach((id) => { document.getElementById(id).textContent = ""; });
+  renderCheck();
+}
+
+async function submitRoll(extra) {
+  busy = true; renderCheck();
+  try {
+    const roll = await api("rolls/", { body: {
+      loom: loom.loom, core: document.getElementById("core").value,
+      // A bridged reading goes back exactly as the server gave it, so the
+      // server refuses it if the scale has read something else since.
+      gross_kg: extra && extra.gross_kg ? extra.gross_kg
+        : scale.bridged ? scale.raw : scale.kg.toFixed(2),
+      declared_m: document.getElementById("declared").value, ...(extra || {}),
+    } });
+    await printLabel(roll);
+    flash(t("labelled", { code: roll.code }), true);
+    resetRoll(); document.getElementById("loom").focus();
+    return roll;
+  } finally { busy = false; renderCheck(); }
+}
+
+async function printLabel(roll) {
+  const html = await api(roll.label);
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const area = document.getElementById("print-area");
+  area.replaceChildren(document.importNode(doc.querySelector(".label"), true));
+  window.print();
+}
+
+// -- dialogs ------------------------------------------------------------------------
+function openDialog(id) { const d = document.getElementById(id); d.querySelectorAll(".error").forEach((e) => { e.textContent = ""; }); d.showModal(); }
+function fillContractors(selectId) {
+  const select = document.getElementById(selectId);
+  select.innerHTML = "";
+  const seen = new Set();
+  station.looms.filter((l) => l.contractor_code && !seen.has(l.contractor_code)).forEach((l) => {
+    seen.add(l.contractor_code);
+    const o = document.createElement("option"); o.value = l.contractor_code; o.textContent = l.contractor;
+    select.appendChild(o);
+  });
+}
+
+async function approveManual() {
+  const error = document.getElementById("m-error");
+  if (!loom) { error.textContent = t("scan_loom"); return; }
+  try {
+    await submitRoll({
+      source: "manual", gross_kg: document.getElementById("m-weight").value,
+      supervisor_pin: document.getElementById("m-pin").value,
+      reason: document.getElementById("m-reason").value,
+      note: document.getElementById("m-note").value,
+    });
+    document.getElementById("dlg-manual").close();
+    ["m-weight", "m-pin", "m-note"].forEach((id) => { document.getElementById(id).value = ""; });
+  } catch (e) { error.textContent = e.message; document.getElementById("m-pin").value = ""; }
+}
+async function saveWaste() {
+  try {
+    await api("waste/", { body: { contractor: document.getElementById("w-contractor").value,
+                                   kg: document.getElementById("w-kg").value } });
+    document.getElementById("dlg-waste").close(); document.getElementById("w-kg").value = "";
+    flash(t("saved"), true);
+  } catch (e) { document.getElementById("w-error").textContent = e.message; }
+}
+function fillMeters() {
+  const select = document.getElementById("e-meter");
+  select.innerHTML = "";
+  (station.meters || []).forEach((m) => {
+    const o = document.createElement("option"); o.value = m.code; o.textContent = m.code + " · " + m.serves; select.appendChild(o);
+  });
+}
+async function saveMeter() {
+  try {
+    await api("meter/", { body: { meter: document.getElementById("e-meter").value,
+                                   reading: document.getElementById("e-kwh").value,
+                                   max_demand_kva: document.getElementById("e-kva").value,
+                                   power_factor: document.getElementById("e-pf").value } });
+    document.getElementById("dlg-meter").close();
+    ["e-kwh", "e-kva", "e-pf"].forEach((id) => { document.getElementById(id).value = ""; });
+    flash(t("saved"), true);
+  } catch (e) { document.getElementById("e-error").textContent = e.message; }
+}
+async function saveCount() {
+  try {
+    await api("tape-count/", { body: { contractor: document.getElementById("c-contractor").value,
+                                        shift_date: document.getElementById("c-date").value,
+                                        kg: document.getElementById("c-kg").value } });
+    document.getElementById("dlg-count").close(); document.getElementById("c-kg").value = "";
+    flash(t("saved"), true);
+  } catch (e) { document.getElementById("c-error").textContent = e.message; }
+}
+
+// -- start ---------------------------------------------------------------------------
+async function start() {
+  const langs = document.getElementById("langs");
+  Object.entries(LANG_NAMES).forEach(([code, name]) => {
+    const b = document.createElement("button"); b.type = "button"; b.dataset.lang = code; b.textContent = name;
+    b.addEventListener("click", () => { lang = code; try { localStorage.setItem("station-lang", code); } catch (e) {} translate(); });
+    langs.appendChild(b);
+  });
+  buildKeys(); renderPin();
+  try { station = await api(""); } catch (e) { setServer(false); translate(); return; }
+  const shift = station.shift ? `${station.shift_name} · ${station.shift_date}` : "";
+  document.getElementById("shift-line").textContent = shift;
+  document.getElementById("hdr-shift").textContent = shift;
+  scale.bridged = !!station.scale_bridged;
+  document.getElementById("btn-scale").hidden = scale.bridged;
+  const core = document.getElementById("core");
+  station.cores.forEach((c) => {
+    const o = document.createElement("option"); o.value = c.code; o.textContent = `${c.code} · ${c.tare_kg} kg`; core.appendChild(o);
+  });
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  document.getElementById("c-date").value = yesterday;
+  translate();
+  if (station.operator) showWeigh();
+
+  document.getElementById("btn-signout").addEventListener("click", signOut);
+  document.getElementById("btn-scale").addEventListener("click", () => scale.connect().catch((e) => flash(e.message, false)));
+  document.getElementById("loom").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); loadLoom(e.target.value.trim().toUpperCase()); }
+  });
+  document.getElementById("loom").addEventListener("change", (e) => loadLoom(e.target.value.trim().toUpperCase()));
+  document.getElementById("declared").addEventListener("input", renderCheck);
+  core.addEventListener("change", () => { renderScale(); renderCheck(); });
+  document.getElementById("btn-confirm").addEventListener("click", () => submitRoll().catch((e) => flash(e.message, false)));
+  document.getElementById("btn-manual").addEventListener("click", () => openDialog("dlg-manual"));
+  document.getElementById("btn-waste").addEventListener("click", () => { fillContractors("w-contractor"); openDialog("dlg-waste"); });
+  document.getElementById("btn-meter").addEventListener("click", () => { fillMeters(); openDialog("dlg-meter"); });
+  document.getElementById("e-save").addEventListener("click", saveMeter);
+  document.getElementById("btn-count").addEventListener("click", () => { fillContractors("c-contractor"); openDialog("dlg-count"); });
+  document.getElementById("m-approve").addEventListener("click", approveManual);
+  document.getElementById("w-save").addEventListener("click", saveWaste);
+  document.getElementById("c-save").addEventListener("click", saveCount);
+  document.querySelectorAll("dialog [data-close]").forEach((b) => b.addEventListener("click", () => b.closest("dialog").close()));
+}
+start();
+</script>
+</body>
+</html>

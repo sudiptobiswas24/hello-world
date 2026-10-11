@@ -1,0 +1,98 @@
+# One server at the plant: the database, the application, a reverse
+# proxy that holds the certificate, and a nightly backup. Settings come
+# from .env next to this file; copy .env.example and fill it in.
+# RUNBOOK.md walks through it.
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    # A restore replaces every table in one transaction, so that a failed
+    # one changes nothing; that takes more locks than the default allows.
+    command: ["postgres", "-c", "max_locks_per_transaction=1024"]
+    environment:
+      POSTGRES_DB: erp
+      POSTGRES_USER: erp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      TZ: ${DJANGO_TIME_ZONE:-Asia/Kolkata}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "erp", "-d", "erp"]
+      interval: 5s
+      retries: 20
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DJANGO_ENV: production
+      DATABASE_URL: postgres://erp:${POSTGRES_PASSWORD}@db:5432/erp
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?set DJANGO_ALLOWED_HOSTS in .env}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
+      DJANGO_TIME_ZONE: ${DJANGO_TIME_ZONE:-Asia/Kolkata}
+      DJANGO_HTTPS: ${DJANGO_HTTPS:-true}
+      # The Caddy below: the login lock reads the caller's address from it.
+      DJANGO_TRUSTED_PROXIES: "1"
+      TZ: ${DJANGO_TIME_ZONE:-Asia/Kolkata}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-}
+      # Mailed when a request fails on the server; needs EMAIL_HOST.
+      DJANGO_ADMINS: ${DJANGO_ADMINS:-}
+      # Where the backup container writes, read here for their age.
+      BACKUP_DIR: /backups
+    volumes:
+      - ./imports:/app/imports
+      - media:/app/media
+      - ./backups:/backups:ro
+    # The application asks itself whether the database answers, the schema
+    # is current, the disk has room and last night's backup exists;
+    # `docker compose ps` shows the answer as (healthy) or (unhealthy).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz/', timeout=10)"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 90s
+
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [web]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ERP_SITE: ${ERP_SITE:?set ERP_SITE in .env}
+      ERP_TLS: ${ERP_TLS:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+
+  backup:
+    image: postgres:16
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/deploy/backup.sh"]
+    environment:
+      DATABASE_URL: postgres://erp:${POSTGRES_PASSWORD}@db:5432/erp
+      BACKUP_AT: ${BACKUP_AT:-02:00}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-30}
+      TZ: ${DJANGO_TIME_ZONE:-Asia/Kolkata}
+    volumes:
+      - ./deploy:/deploy:ro
+      - ./backups:/backups
+
+volumes:
+  pgdata:
+  caddy_data:
+  media:

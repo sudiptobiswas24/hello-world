@@ -1,0 +1,367 @@
+"""
+Subcontracting.
+
+What this covers is the part that touches purchasing and the ledger:
+components leaving, a finished item arriving, and its cost being what
+the components cost plus what the vendor charged to assemble them. The
+routing stays with the job worker and is theirs to run.
+
+The components themselves are the other half, and they live in
+`tests_job_work.py`: a bill of materials already says what goes into
+the thing, and a hand-typed copy of it on a purchase order goes stale
+the first time the specification moves.
+"""
+
+import datetime
+from decimal import Decimal
+
+from django.core.exceptions import ValidationError
+from django.db.models import Sum
+
+from apps.accounting.models import JournalLine
+from apps.core.models import Company
+from django.utils import timezone
+
+from apps.inventory.models import Item, MovementType, StockMovement, Warehouse
+
+from .models import (
+    GoodsReceipt,
+    GoodsReceiptLine,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    SubcontractComponent,
+)
+from .tests_lifecycle import PurchasingLifecycleTestCase
+
+
+class SubcontractTestCase(PurchasingLifecycleTestCase):
+    def setUp(self):
+        super().setUp()
+        self.subcontractor = Warehouse.objects.create(code="SUB", name="Acme Assembly")
+        self.frame = Item.objects.create(sku="FRM", name="Frame", uom=self.uom)
+        self.motor = Item.objects.create(sku="MTR", name="Motor", uom=self.uom)
+        self.assembly = Item.objects.create(sku="ASM", name="Assembly", uom=self.uom)
+        company = Company.get()
+        company.default_purchase_expense_account = self.expense
+        company.save()
+        self.stock(self.frame, "100", "8")
+        self.stock(self.motor, "100", "12")
+
+    def stock(self, item, quantity, cost, warehouse=None):
+        StockMovement.objects.create(
+            item=item, warehouse=warehouse or self.warehouse,
+            movement_type=MovementType.RECEIPT, uom=item.uom, quantity=Decimal(quantity),
+            unit_cost=Decimal(cost), occurred_at=timezone.now(),
+        )
+
+    def subcontract_order(self, quantity="10", service="5", warehouse=True, confirm=True):
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1),
+            subcontract_warehouse=self.subcontractor if warehouse else None,
+        )
+        self.line = PurchaseOrderLine.objects.create(
+            order=order, item=self.assembly, uom=self.uom,
+            quantity=Decimal(quantity), unit_price=Decimal(service),
+        )
+        SubcontractComponent.objects.create(
+            order_line=self.line, item=self.frame, quantity_per=Decimal("1")
+        )
+        SubcontractComponent.objects.create(
+            order_line=self.line, item=self.motor, quantity_per=Decimal("2")
+        )
+        if confirm:
+            order.confirm()
+        return order
+
+    def receive(self, order, quantity):
+        receipt = GoodsReceipt.objects.create(
+            purchase_order=order, receipt_date=datetime.date(2026, 2, 1)
+        )
+        GoodsReceiptLine.objects.create(
+            receipt=receipt, order_line=order.lines.first(),
+            warehouse=self.warehouse, quantity_received=Decimal(quantity),
+        )
+        receipt.post()
+        return receipt
+
+    def balance(self, account):
+        rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(
+            debit=Sum("debit"), credit=Sum("credit")
+        )
+        return (rows["debit"] or Decimal("0")) - (rows["credit"] or Decimal("0"))
+
+
+class ComponentIssueTests(SubcontractTestCase):
+    def test_components_move_rather_than_leaving_the_company(self):
+        """Stock at a subcontractor is still stock you own and still
+        stock you can lose."""
+        order = self.subcontract_order("10")
+        before = self.balance(self.inventory)
+
+        order.issue_components(self.warehouse)
+
+        self.assertEqual(self.frame.on_hand_at(self.warehouse), Decimal("90"))
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("10"))
+        self.assertEqual(self.motor.on_hand_at(self.subcontractor), Decimal("20"))
+        self.assertEqual(self.balance(self.inventory), before)
+
+    def test_the_value_goes_with_them(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("80.00"))
+        self.assertEqual(self.motor.stock_value_at(self.subcontractor), Decimal("240.00"))
+
+    def test_a_draft_order_cannot_issue(self):
+        order = self.subcontract_order(confirm=False)
+        with self.assertRaisesMessage(ValidationError, "Only a confirmed order"):
+            order.issue_components(self.warehouse)
+
+    def test_it_needs_somewhere_to_send_them(self):
+        order = self.subcontract_order(warehouse=False)
+        with self.assertRaisesMessage(ValidationError, "subcontract warehouse"):
+            order.issue_components(self.warehouse)
+
+    def test_an_order_with_no_components_has_nothing_to_issue(self):
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1),
+            subcontract_warehouse=self.subcontractor,
+        )
+        PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal("1"), unit_price=Decimal("5"),
+        )
+        order.confirm()
+        with self.assertRaisesMessage(ValidationError, "no components to issue"):
+            order.issue_components(self.warehouse)
+
+
+class SubcontractReceiptTests(SubcontractTestCase):
+    def test_the_finished_item_carries_the_component_cost(self):
+        """Valuing it at the vendor's charge alone would report a part
+        built from 32 of components as worth the 5 of labour."""
+        order = self.subcontract_order("10", service="5")
+        order.issue_components(self.warehouse)
+
+        self.receive(order, "10")
+
+        # frame 8 + two motors at 12 = 32, plus 5 of assembly = 37
+        self.assertEqual(self.assembly.average_cost_at(self.warehouse), Decimal("37.0000"))
+        self.assertEqual(self.assembly.stock_value_at(self.warehouse), Decimal("370.00"))
+
+    def test_the_components_are_consumed(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+
+        self.receive(order, "10")
+
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("0"))
+        self.assertEqual(self.motor.on_hand_at(self.subcontractor), Decimal("0"))
+
+    def test_only_the_vendor_s_charge_reaches_the_ledger(self):
+        """The component value has merely moved between items inside the
+        same inventory account; posting it again would double it."""
+        order = self.subcontract_order("10", service="5")
+        order.issue_components(self.warehouse)
+        before = self.balance(self.inventory)
+
+        self.receive(order, "10")
+
+        self.assertEqual(self.balance(self.inventory) - before, Decimal("50"))
+        self.assertEqual(self.balance(self.grni), Decimal("-50"))
+
+    def stock_value(self):
+        return sum(
+            item.stock_value_at(warehouse)
+            for item in (self.frame, self.motor, self.assembly)
+            for warehouse in (self.warehouse, self.subcontractor)
+        )
+
+    def test_the_books_and_the_warehouse_move_together(self):
+        """Subcontracting shuffles value between items and warehouses; the
+        only thing that may change the total is the vendor's charge."""
+        order = self.subcontract_order("10", service="5")
+        stock_before, ledger_before = self.stock_value(), self.balance(self.inventory)
+
+        order.issue_components(self.warehouse)
+        self.assertEqual(self.stock_value(), stock_before)
+        self.assertEqual(self.balance(self.inventory), ledger_before)
+
+        self.receive(order, "10")
+
+        self.assertEqual(self.stock_value() - stock_before, Decimal("50.00"))
+        self.assertEqual(self.balance(self.inventory) - ledger_before, Decimal("50.00"))
+
+    def test_a_partial_receipt_consumes_its_share(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+
+        self.receive(order, "4")
+
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("6"))
+        self.assertEqual(self.motor.on_hand_at(self.subcontractor), Decimal("12"))
+        self.assertEqual(self.assembly.on_hand_at(self.warehouse), Decimal("4"))
+
+    def test_receiving_without_issuing_is_refused(self):
+        """The subcontractor cannot have used what they were never sent."""
+        order = self.subcontract_order("10")
+        with self.assertRaisesMessage(ValidationError, "is short"):
+            self.receive(order, "10")
+
+    def test_a_missing_subcontract_warehouse_is_refused(self):
+        order = self.subcontract_order("10", warehouse=False)
+        with self.assertRaisesMessage(ValidationError, "nowhere to be consumed from"):
+            self.receive(order, "10")
+
+    def test_an_ordinary_line_is_untouched(self):
+        order = PurchaseOrder.objects.create(
+            vendor=self.vendor, order_date=datetime.date(2026, 1, 1)
+        )
+        PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom,
+            quantity=Decimal("10"), unit_price=Decimal("5"),
+        )
+        order.confirm()
+        self.receive(order, "10")
+
+        self.assertEqual(self.item.average_cost_at(self.warehouse), Decimal("5.0000"))
+
+
+class ComponentsGoOutOnceTests(SubcontractTestCase):
+    """Nothing asked whether they had gone: a second call sent them all again."""
+
+    def test_a_second_issue_is_refused(self):
+        order = self.subcontract_order()
+        order.issue_components(self.warehouse)
+        with self.assertRaisesMessage(ValidationError, "already been issued"):
+            order.issue_components(self.warehouse)
+
+
+class ComponentTopUpTests(SubcontractTestCase):
+    """A second issue was refused outright, so components the subcontractor
+    scrapped could never be replaced and the order never received."""
+
+    def test_a_second_issue_sends_nothing_and_says_so(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        with self.assertRaisesMessage(ValidationError, "already been issued"):
+            order.issue_components(self.warehouse)
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("10"))
+        self.assertEqual(self.motor.on_hand_at(self.subcontractor), Decimal("20"))
+
+    def test_what_was_scrapped_is_topped_up_and_the_order_received(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        # Two frames ruined at the subcontractor's.
+        StockMovement.objects.create(
+            item=self.frame, warehouse=self.subcontractor, movement_type=MovementType.ADJUSTMENT,
+            uom=self.uom, quantity=Decimal("-2"), unit_cost=Decimal("8"), occurred_at=timezone.now())
+        with self.assertRaisesMessage(ValidationError, "short 2"):
+            self.receive(order, "10")
+        order.issue_components(self.warehouse, quantities={self.frame: Decimal("2")})
+        self.assertEqual(self.frame.on_hand_at(self.warehouse), Decimal("88"))
+        self.receive(order, "10")
+        self.assertEqual(self.assembly.on_hand_at(self.warehouse), Decimal("10"))
+        self.assertEqual(self.frame.on_hand_at(self.subcontractor), Decimal("0"))
+
+    def test_a_top_up_names_a_component_of_this_order(self):
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        with self.assertRaisesMessage(ValidationError, "not a component"):
+            order.issue_components(self.warehouse, quantities={self.assembly: Decimal("1")})
+        with self.assertRaisesMessage(ValidationError, "above nothing"):
+            order.issue_components(self.warehouse, quantities={self.frame: Decimal("0")})
+
+
+class ComponentsComeBackAtWhatTheyCostTests(SubcontractTestCase):
+    """
+    Thirty frames at the subcontractor worth 100 (ten at 4, twenty at 3),
+    consumed by thirty assemblies at a four-place 3.3333 a frame. Sent
+    back, the assemblies returned their frames at that rate: 99.999 of the
+    100 that went into them.
+    """
+
+    def test_returned_assemblies_put_their_frames_back_at_what_they_took(self):
+        self.stock(self.frame, "10", "4", warehouse=self.subcontractor)
+        self.stock(self.frame, "20", "3", warehouse=self.subcontractor)
+        self.stock(self.motor, "60", "12", warehouse=self.subcontractor)
+        receipt = self.receive(self.subcontract_order("30"), "30")
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(self.frame.valuation_at(self.subcontractor)[1].quantize(Decimal("0.0001")),
+                         Decimal("100.0000"))
+
+
+class BatchKeptComponentsTests(SubcontractTestCase):
+    """
+    Audit, 9 October: a frame kept by batch could not go to the
+    subcontractor at all; the move named no batch and was refused. And
+    everything a mandatory inspection plan covers is kept by batch. The
+    batches go, are consumed and come back as a delivery picks them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.inventory.models import Lot
+
+        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
+        self.frame.refresh_from_db()
+        StockMovement.objects.filter(item=self.frame).delete()
+        self.lot_model = Lot
+
+    def batch(self, code, quantity, expires=None):
+        batch = self.lot_model.objects.create(item=self.frame, code=code, expires_on=expires)
+        StockMovement.objects.create(item=self.frame, warehouse=self.warehouse,
+                                     movement_type=MovementType.RECEIPT, uom=self.frame.uom,
+                                     quantity=Decimal(quantity), unit_cost=Decimal("8"), lot=batch,
+                                     occurred_at=timezone.now())
+        return batch
+
+    def test_a_batch_kept_component_is_sent_by_its_batch(self):
+        batch = self.batch("F-1", "100")
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.assertEqual((batch.on_hand_at(self.subcontractor), batch.on_hand_at(self.warehouse)),
+                         (Decimal("10"), Decimal("90")))
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("80.00"))
+
+    def test_the_soonest_to_expire_goes_and_is_consumed(self):
+        sooner = self.batch("F-1", "40", datetime.date(2026, 12, 31))
+        later = self.batch("F-2", "60", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.assertEqual((sooner.on_hand_at(self.subcontractor), later.on_hand_at(self.subcontractor)),
+                         (Decimal("10"), Decimal("0")))
+        self.receive(order, "10")
+        self.assertEqual(sooner.on_hand_at(self.subcontractor), Decimal("0"))
+        # frame 8 + two motors at 12 + 5 of assembly
+        self.assertEqual(self.assembly.average_cost_at(self.warehouse), Decimal("37.0000"))
+
+    def test_a_batch_quality_holds_is_not_sent(self):
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        held = self.batch("F-1", "40", datetime.date(2026, 12, 31))
+        good = self.batch("F-2", "60", datetime.date(2027, 6, 30))
+        check = Characteristic.objects.create(code="FLAT", name="Flatness", uom=self.uom)
+        plan = InspectionPlan.objects.create(item=self.frame, is_mandatory=False)
+        line = PlanLine.objects.create(plan=plan, characteristic=check, lower_limit=Decimal("0"),
+                                       upper_limit=Decimal("1"))
+        inspection = Inspection.objects.create(lot=held, plan=plan, inspected_on=datetime.date(2026, 1, 2))
+        Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("3"))
+        inspection.post()
+        self.subcontract_order("10").issue_components(self.warehouse)
+        self.assertEqual((held.on_hand_at(self.subcontractor), good.on_hand_at(self.subcontractor)),
+                         (Decimal("0"), Decimal("10")))
+
+    def test_assemblies_sent_back_put_each_batch_back(self):
+        """Ten frames from two batches, 4 and 6; five assemblies back put 2 and 3 back."""
+        first = self.batch("F-1", "4", datetime.date(2026, 12, 31))
+        second = self.batch("F-2", "96", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "10")
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("0"), Decimal("0")))
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("5")}, debit_bills=False)
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("2"), Decimal("3")))
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("40.00"))

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{{ t.number }} job card</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  html, body { margin: 0; background: #fff; color: #000; font: 10pt/1.35 system-ui, sans-serif; }
+  h1 { font-size: 16pt; margin: 0; } h2 { font-size: 11pt; margin: 5mm 0 1.5mm; border-bottom: 0.4mm solid #000; }
+  .head { display: flex; justify-content: space-between; gap: 6mm; align-items: flex-start; }
+  .bars { width: 70mm; height: 16mm; } .bars svg { width: 100%; height: 100%; display: block; }
+  .code { font: 600 11pt ui-monospace, monospace; text-align: center; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.5mm 4mm; margin: 2mm 0 0; }
+  dt { font-weight: 600; } dd { margin: 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border: 0.25mm solid #000; padding: 1mm 1.5mm; text-align: left; vertical-align: top; }
+  th { background: #eee; font-size: 9pt; } td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.blank { width: 20mm; height: 8mm; }
+  .status { font-weight: 700; border: 0.5mm solid #000; padding: 0.5mm 2mm; }
+  .foot { margin-top: 5mm; font-size: 8pt; }
+</style></head>
+<body>
+<div class="head">
+  <div>
+    <h1>Job card {{ t.number }}</h1>
+    <dl>
+      <dt>Make</dt><dd>{{ t.item.sku }} &middot; {{ t.item.name }}</dd>
+      <dt>Quantity</dt><dd>{{ t.quantity_ordered }} {{ t.uom }}{% if t.quantity_to_start and t.quantity_to_start != t.quantity_ordered %} (start {{ t.quantity_to_start }} {{ t.uom }}){% endif %}</dd>
+      <dt>Into</dt><dd>{{ t.warehouse }}</dd>
+      {% if t.scheduled_start or t.scheduled_end %}<dt>Scheduled</dt><dd>{{ t.scheduled_start|default:"" }} to {{ t.scheduled_end|default:"" }}</dd>{% endif %}
+      {% if t.customer_order %}<dt>For</dt><dd>{{ t.customer_order.customer }}, order {{ t.customer_order.number }}</dd>{% endif %}
+      {% if t.customer_order.sacks_per_bale %}<dt>Packing</dt><dd>{{ t.customer_order.sacks_per_bale }} sacks a bale</dd>{% endif %}
+      {% if t.customer_order.marking %}<dt>Marking</dt><dd>{{ t.customer_order.marking|linebreaksbr }}</dd>{% endif %}
+      {% if t.rework_of %}<dt>Rework of</dt><dd>{{ t.rework_of }}</dd>{% endif %}
+      {% if t.tools %}<dt>Tools</dt><dd>{{ t.tools|join:", " }}</dd>{% endif %}
+      {% if t.specification %}<dt>Specification</dt><dd>{{ t.specification }}{% if t.construction %} &middot; {{ t.construction }}{% endif %}</dd>{% endif %}
+    </dl>
+  </div>
+  <div>
+    <div class="bars">{{ t.barcode|safe }}</div>
+    <div class="code">{{ t.number }}</div>
+    <p style="text-align:center"><span class="status">{{ t.status }}</span></p>
+  </div>
+</div>
+
+<h2>Steps</h2>
+<table>
+  <tr><th>#</th><th>Step</th><th>Where</th><th>Machine</th><th>Setup min</th><th>Planned min</th><th>Good</th><th>Scrap</th><th>By</th><th>Date</th></tr>
+  {% for s in t.steps %}
+  <tr><td class="num">{{ s.sequence }}</td><td>{{ s.name }}</td><td>{{ s.where }}</td><td>{{ s.machine }}</td>
+      <td class="num">{{ s.setup_minutes }}</td><td class="num">{{ s.planned_minutes }}</td>
+      <td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td></tr>
+  {% empty %}<tr><td colspan="10">No steps: a single-machine run.</td></tr>{% endfor %}
+</table>
+
+<h2>Materials</h2>
+<table>
+  <tr><th>Item</th><th>Description</th><th>Allowed</th><th>Unit</th><th>Waste %</th><th>Batch issued</th><th>Qty issued</th></tr>
+  {% for m in t.materials %}
+  <tr><td>{{ m.sku }}</td><td>{{ m.name }}</td><td class="num">{{ m.quantity }}</td><td>{{ m.uom }}</td>
+      <td class="num">{{ m.waste_percent }}</td><td class="blank"></td><td class="blank"></td></tr>
+  {% endfor %}
+</table>
+
+{% if t.limits or t.coating %}
+<h2>Checks</h2>
+<table>
+  <tr><th>Check</th><th>Target</th><th>Lower</th><th>Upper</th><th>Unit</th><th>Samples</th></tr>
+  {% for l in t.limits %}
+  <tr><td>{{ l.characteristic }}</td><td class="num">{{ l.target|default:"" }}</td><td class="num">{{ l.lower|default:"" }}</td>
+      <td class="num">{{ l.upper|default:"" }}</td><td>{{ l.unit }}</td><td class="num">{{ l.sample_size }}</td></tr>
+  {% endfor %}
+  {% if t.coating %}
+  <tr><td>Coating weight (at the coater)</td><td class="num">{{ t.coating.target }}</td><td class="num">{{ t.coating.lower }}</td>
+      <td class="num">{{ t.coating.upper }}</td><td>GSM</td><td class="num">{{ t.coating.samples }} pairs</td></tr>
+  {% endif %}
+</table>
+{% endif %}
+
+<p class="foot">Printed {{ t.printed_at|date:"d M Y H:i" }}. Steps and materials are as released; the run on screen is the record.</p>
+</body></html>
