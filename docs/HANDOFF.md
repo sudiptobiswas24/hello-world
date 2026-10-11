@@ -3,7 +3,7 @@
 This is an ERP for a woven polypropylene sack plant in India: Django 5.2,
 DRF, React, Odoo-like. The owner wants every module as deep as Odoo's,
 and correct before wide. This file says where things stand and what comes
-next. It was written at the end of a long session on 8 October 2026, so
+next. It was last brought up to date on 11 October 2026, after g18, so
 that a new session can start small.
 
 ## 0. Read, then verify, before doing anything
@@ -50,54 +50,47 @@ pg_isready -q || service postgresql start                              # role er
 
 ## 2. Next steps, in order
 
-g17 is pushed (b1d03ed). It holds:
-- the six fix branches, with the duplicated rules merged;
-- the review of those fixes, and fixes for what the review found (two release blockers among them);
-- the open-defects register.
+g18 is pushed (7b9473a, 11 October), all six lanes green on one tip. It holds:
+- fix wave 1: security and roles, trading-document rules, statutory, and
+  quality and production, each reviewed before it joined (reports in
+  docs/handoff/reports/);
+- the integration fixes (a merge that spliced two test classes, sales
+  migrations renumbered), with scripts/gate/structcheck.py to catch the first;
+- what the PostgreSQL browser lane found on the integrated tip: ten
+  viewsets had replaced the history mixin's save, so a job-work loss locked
+  its period outside any transaction (a 500 on PostgreSQL only) and nothing
+  they made had created_by. Fixed with its guards: `audit_invariants`
+  `writes_around_the_mixin`, and the lock-order sentinel now refuses a lock
+  outside a transaction on every database. Those two are wider than item 6
+  below allows a gate; they went in because they are the guard for the
+  defect that held the gate, which the owner's standing instruction asks.
 
-findings.md says what each fix branch held. docs/RISKS.md, "Open
-defects", is the one list of what is still open.
+docs/RISKS.md, "Open defects", is the one list of what is still open
+(118 rows after g18, O202 the newest).
 
-1. **Audit round 2 is done (9 October):** accounting with GST, sales,
-   purchasing, permissions, quality and CRM. It found 91 defects, each
-   proven by a failing probe, now registered as O49-O123. The probes are
-   in the scratch worktrees `audit_{acc,sales,pur,perm,qc}`. If those are
-   gone, each row names its probe class, which can be rewritten from the
-   row.
-2. **Fix wave 1, to be gated as g18, was started on 9 October.** Four
-   agents worked on worktrees `fix_{sec,trade,stat,qual}` at ef7c0c3,
-   under the rules in docs/handoff/fix_common.md:
-   - security and roles: O83-O88, O119, O120;
-   - trading-document rules: O65-O68, O71-O73, O82, O90, O92, O96,
-     O106, O107;
-   - statutory: O50, O55, O57-O62, O102-O104;
-   - quality and production: O110-O113, O115-O118, O121, O122.
-
-   Every ten minutes the worktrees, uncommitted edits included, are
-   snapshotted to `claude/erp-wip-<worktree>` (CLAUDE.md, "Snapshots"):
-   the fix_* worktrees, and the audit_* worktrees with their probes. If
-   the container was lost, restore from there before anything else.
-
-   Each agent's work is reviewed by the auditor who found the defects
-   before it joins the gate. If the session stopped part-way, look for
-   these worktrees and their commits first (CLAUDE.md, "Interrupted
-   work").
-
-   Fix wave 2 (g19) takes the rest: exchange and settlement, pricing,
-   GRNI residues, commission, the remaining races, the inert features,
-   and the older rows (O2, O42, O48, O28 and others).
-
-   Owed by the owner: O114, a held lot's transfer. Owed by the tax
-   adviser: O60 for registered bill-to-ship-to buyers.
-3. **Open defects** in docs/RISKS.md, by kind: books first, then race,
+1. **Fix wave 2 (g19)** takes the rest, in this order: O187 (an ITC-04
+   void) first; then O182 and O184 (the sentinel's ranks and blind spots);
+   O167; O195-O202; exchange and settlement, pricing, GRNI residues,
+   commission, the remaining races, the inert features; and the older rows
+   (O2, O42, O48, O28 and others). Same rules: docs/handoff/fix_common.md,
+   Sonnet for audits and reviews, Opus for fixes, two agents at most.
+2. **Waiting on the owner:** O135/O148, receive a subcontract's
+   assemblies and hold them, or refuse; and whether an advisory inspection
+   plan blocks on a failed reading or only warns. The quality follow-up
+   (O145-O150) waits on both. **Waiting on the tax adviser:** O60 for
+   registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
+3. The scratch worktrees `fix_{sec,trade,stat,qual}` and
+   `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
+   their snapshots stay on `claude/erp-wip-*`.
+4. **Open defects** in docs/RISKS.md, by kind: books first, then race,
    then rule. O42 (a landed-cost release does not follow goods moved
    since) is next. Each fix needs a test that fails without it, and its
    commit names the id.
-4. **Review every fix before its gate**, by someone other than its
+5. **Review every fix before its gate**, by someone other than its
    author, with probes that try to break it. In the g17 round, fixes
    that each had a test failing without them still held two release
    blockers.
-5. **A gate takes fixes for what is broken, nothing else.** Refactors,
+6. **A gate takes fixes for what is broken, nothing else.** Refactors,
    migrations for data that does not exist, and widened checks go to
    the register.
 
