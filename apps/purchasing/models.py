@@ -77,6 +77,7 @@ from apps.accounting.settlement import (
     held_base_left,
     last_of_held,
     slice_of,
+    spent_undoing,
     booked_on,
     post_drawdown,
     standing_allocations,
@@ -3578,7 +3579,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         capacity = max(bill.total() - bill._settled_otherwise(), Decimal("0"))
         used = Decimal("0")
         for note in bill.debit_notes.filter(posted=True).order_by("bill_date", "pk"):
-            share = min(note.total(), max(capacity - used, Decimal("0")))
+            # Less what it recorded undoing: that part cleared nothing owed (settlement.spent_undoing).
+            share = min(note.total() - spent_undoing(note), max(capacity - used, Decimal("0")))
             if note.pk == self.pk:
                 return share
             used += share
@@ -3607,7 +3609,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # back, which lives on the note — a bill reading minus fifty says
         # the company owes a negative amount, which is not a thing.
         paid = self._settled_otherwise()
-        offset = min(self.amount_debited(), max(self.total() - paid, Decimal("0")))
+        # What its debit notes spent undoing a discount is not also debit against it (review F3).
+        spent = sum((spent_undoing(note) for note in self.debit_notes.all() if note.posted), Decimal("0"))
+        offset = min(self.amount_debited() - spent, max(self.total() - paid, Decimal("0")))
         return self.total() - paid - offset
 
     def _undo_settlements_without_money(self):
@@ -5532,7 +5536,7 @@ def bills_still_owed(bills):
     """
     owed = owed_beyond(
         not_paid_in_full(bills.filter(posted=True, debits__isnull=True)),
-        notes=(Bill.objects.filter(posted=True), "debits"),
+        notes=(Bill.objects.filter(posted=True), "debits", "reversed_discount"),
         drawdowns=[(PrepaymentApplication.objects.all(), "bill"),
                    (TdsDeduction.objects.filter(reversed_entry__isnull=True), "bill")],
         reductions=("settlement_discount_amount", "-settlement_discount_withdrawn"),
