@@ -35,6 +35,13 @@ for sha in git("log", "--format=%H", f"{base}..{tip}").split():
         continue
     subject = git("log", "-1", "--format=%s", sha).strip()
     stale += [(row, sha[:7], subject) for row in sorted(ids(subject) & open_rows)]
+# A row whose own status says it is fixed is not open (O1 read "fixed in
+# g17" for two gates).
+section = register.split("## Open defects", 1)[1].split("\n## ", 1)[0]
+for line in section.splitlines():
+    cells = [cell.strip() for cell in line.split("|")]
+    if len(cells) > 5 and re.match(r"O\d+$", cells[1]) and re.match(r"(fixed|closed|done)\b", cells[5], re.I):
+        stale.append((cells[1], "-", f"its status reads '{cells[5]}'"))
 for row, sha, subject in stale:
     print(f"{row} is still open, though {sha} names it: {subject}")
 print(f"register: {len(stale)} row(s) named fixed and still open")
