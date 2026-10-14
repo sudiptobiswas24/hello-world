@@ -54,10 +54,21 @@ def applicable_price_lists(customer=None, currency=None, on_date=None):
     ]
 
 
-def resolve_price(item, customer=None, quantity=Decimal("1"), currency=None, on_date=None):
-    """The unit price for this item, or None if nothing sets one."""
+def resolve_price(item, customer=None, quantity=Decimal("1"), currency=None, on_date=None, uom=None):
+    """
+    The unit price for this item, per `uom` (blank: its stocking unit) in
+    `currency`, or None if nothing sets one.
+
+    A list's entries and the item's list price are per its stocking unit,
+    and a break is reached by the quantity in that unit: 2 boxes of 12 reach
+    a break at 24 (O79). The item's list price is in the base currency and
+    is converted (O78); a list chosen for the document's currency is in it.
+    """
+    from apps.accounting.pricing import per_line_unit, quantity_in_price_unit
+
+    in_stock = quantity_in_price_unit(quantity, item=item, uom=uom, on_date=on_date)
     for price_list in applicable_price_lists(customer, currency, on_date):
-        entry = _entry_for(price_list, item, quantity)
+        entry = _entry_for(price_list, item, in_stock)
         if entry is not None:
-            return entry.unit_price
-    return item.sale_price
+            return per_line_unit(entry.unit_price, item=item, uom=uom, on_date=on_date)
+    return per_line_unit(item.sale_price, item=item, uom=uom, currency=currency, on_date=on_date)

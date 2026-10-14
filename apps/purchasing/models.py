@@ -216,6 +216,10 @@ class VendorPrice(AuditModel):
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
     unit_price = models.DecimalField(max_digits=18, decimal_places=2)
+    uom = models.ForeignKey(
+        UnitOfMeasure, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="What the price and its break are per; blank for the item's own unit (O98).",
+    )
     min_quantity = models.DecimalField(
         max_digits=18, decimal_places=4, default=Decimal("0"),
         help_text="Smallest order this price applies to — the quantity break.",
@@ -268,6 +272,9 @@ class VendorPrice(AuditModel):
             _require_vendor_role(self.vendor)
         if self.valid_from and self.valid_to and self.valid_to < self.valid_from:
             raise ValidationError("valid_to cannot be before valid_from.")
+        if self.uom_id and self.item_id:
+            # Asked when the price is typed, not when an order is priced from it.
+            self.item.check_uom(self.uom)
 
     def covers(self, on_date=None):
         on_date = to_date(on_date) or timezone.localdate()
@@ -838,7 +845,7 @@ class PurchaseRequisition(AuditModel):
                 quantity=remaining,
                 unit_price=resolve_purchase_price(
                     line.item, vendor, quantity=remaining,
-                    currency=order.currency, on_date=order.order_date,
+                    currency=order.currency, on_date=order.order_date, uom=line.uom,
                 ) or line.estimated_price,
                 expected_date=self.needed_by,
             )
@@ -921,7 +928,7 @@ class PurchaseRequisitionLine(AuditModel):
         price = self.estimated_price
         if price is None and self.suggested_vendor_id:
             price = resolve_purchase_price(
-                self.item, self.suggested_vendor, quantity=self.quantity
+                self.item, self.suggested_vendor, quantity=self.quantity, uom=self.uom,
             )
         return round_money(self.quantity * (price or Decimal("0")))
 
@@ -1243,7 +1250,9 @@ class BlanketOrder(AuditModel):
         for line, quantity in selected:
             order_line = PurchaseOrderLine.objects.create(
                 order=order, blanket_line=line, item=line.item, uom=line.uom,
-                quantity=quantity, unit_price=line.unit_price,
+                # At the discount agreed with the price (O97): dropped, 10 @ 100
+                # less 5% was released at 1,000.00, not 950.00.
+                quantity=quantity, unit_price=line.unit_price, discount_percent=line.discount_percent,
                 expected_date=expected_date,
             )
             order_line.taxes.set(line.taxes.all())
@@ -2153,7 +2162,7 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                 quantity=remaining,
                 unit_price=resolve_purchase_price(
                     line.item, vendor, quantity=remaining,
-                    currency=order.currency, on_date=order_date,
+                    currency=order.currency, on_date=order_date, uom=line.uom,
                 ) or line.item.average_cost() or Decimal("0"),
             )
         return order
@@ -2577,7 +2586,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         if self.unit_price is None and not self.is_charge() and self.item_id:
             self.unit_price = resolve_purchase_price(
                 self.item, self.order.vendor, quantity=self.quantity,
-                currency=self.order.currency, on_date=self.order.order_date,
+                currency=self.order.currency, on_date=self.order.order_date, uom=self.uom,
             )
         if self.unit_price is None:
             raise ValidationError(
@@ -2841,7 +2850,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             return None
         return resolve_purchase_price(
             self.item, self.order.vendor, quantity=self.quantity,
-            currency=self.order.currency, on_date=self.order.order_date,
+            currency=self.order.currency, on_date=self.order.order_date, uom=self.uom,
         )
 
     def has_agreed_price(self):
