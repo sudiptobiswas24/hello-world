@@ -33,6 +33,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from apps.core.models import lock_rows
+from apps.inventory.locking import lock_positions
 
 M = apps.get_model
 # The day the story was written for; loaded later, it moves with the calendar.
@@ -705,6 +706,11 @@ class Command(BaseCommand):
                     work_order=w, entry_date=when, warehouse=plant, quantity_produced=D(qty), quantity_scrapped=D("0"),
                     uom=w.uom, work_centre=w.work_centre).post()
 
+            # One transaction for the section (step), where each document posts in a request of its own
+            # in the plant: the shelves its runs move, held first in key order, so each posting after
+            # the first takes rows already held instead of reaching back for an earlier one (O182).
+            lock_positions([(it, plant) for it in (tape, fabric, rice)] + [
+                (row.item, plant) for b in (tape_bom, fabric_bom, rice_bom) for row in b.components.all()])
             closed = start_run(tape, tape_bom, "6000", ext, on(2026, 9, 21), 16)
             issue_all(closed, on(2026, 9, 21))
             produce(closed, on(2026, 9, 22), "5890")
