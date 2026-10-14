@@ -17,6 +17,8 @@ from rest_framework.response import Response
 from .api import record_or_404
 from .attachments import Attachment, attach, attachments_of, detach
 from .endpoints import may_read
+from django.db import transaction
+from .chatter_api import _held
 
 
 def _record(request, data):
@@ -76,8 +78,9 @@ class AttachmentViewSet(viewsets.ViewSet):
             raise NotFound(f"{attachment.name} is no longer on the server's disk.")
         return FileResponse(handle, as_attachment=True, filename=attachment.name, content_type=attachment.media_type)
 
+    @transaction.atomic
     def destroy(self, request, pk=None):
-        attachment = self._attachment(request, pk)
+        attachment = _held(self._attachment(request, pk))
         if attachment.created_by_id != request.user.pk and not request.user.has_perm("core.delete_attachment"):
             raise PermissionDenied("Only whoever attached it, or someone who may remove attachments, removes it.")
         detach(attachment, request.user)

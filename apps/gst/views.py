@@ -20,6 +20,7 @@ from .gstr2b import Gstr2bStatement, keep, reconcile
 from .serializers import EInvoiceSerializer, EwayBillSerializer, Gstr2bStatementSerializer
 
 from .returns import gstr1, gstr1_json, gstr3b, month
+from apps.core.audit import RowHeldViewSetMixin
 
 
 class CanCompileReturns(BasePermission):
@@ -82,7 +83,7 @@ class Itc04View(APIView):
             raise DRFValidationError(exc.messages)
 
 
-class Gstr2bStatementViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin,
+class Gstr2bStatementViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.DestroyModelMixin,
                              viewsets.GenericViewSet):
     """
     The months' GSTR-2B files as kept. `upload` keeps one (POST text,
@@ -133,7 +134,7 @@ def _moment(value, what):
     return timezone.make_aware(parsed) if timezone.is_naive(parsed) else parsed
 
 
-class EInvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
     """
     POST {invoice} builds the payload to register (again, until the portal
@@ -164,7 +165,7 @@ class EInvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
         return Response(EInvoiceSerializer(record).data)
 
 
-class EwayBillViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin,
+class EwayBillViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin,
                       mixins.DestroyModelMixin, viewsets.GenericViewSet):
     """
     POST {invoice | challan | delivery (with declared_value), mode, distance_km, transporter_id,

@@ -20,6 +20,8 @@ a note or a follow-up on a record the login cannot open is not there.
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+
+from .models import lock_for_change
 from django.utils import timezone
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
@@ -83,6 +85,17 @@ def _follow_up(row, user, today, with_record=False):
     return out
 
 
+
+def _held(row):
+    """
+    `row` held until the request's transaction ends, and read again: these
+    ViewSets write without AuditableViewSetMixin, whose get_object() holds
+    the row from the read to the write, so they hold it themselves (O17).
+    """
+    lock_for_change(row)
+    row.refresh_from_db()
+    return row
+
 class NoteViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
@@ -101,8 +114,9 @@ class NoteViewSet(viewsets.ViewSet):
                                   updated_by=request.user)
         return Response(_note(row, request.user), status=201)
 
+    @transaction.atomic
     def destroy(self, request, pk=None):
-        row = _readable(request, record_or_404(Note, pk, "id"))
+        row = _held(_readable(request, record_or_404(Note, pk, "id")))
         if row.created_by_id != request.user.pk:
             raise PermissionDenied("A note is removed only by whoever wrote it.")
         row.delete()
@@ -154,12 +168,13 @@ class FollowUpViewSet(viewsets.ViewSet):
         return Response(_follow_up(row, request.user, timezone.localdate()), status=201)
 
     def _changeable(self, request, pk):
-        row = _readable(request, record_or_404(FollowUp, pk, "id"))
+        row = _held(_readable(request, record_or_404(FollowUp, pk, "id")))
         if request.user.pk not in (row.created_by_id, row.assigned_to_id) \
                 and not request.user.has_perm("core.change_followup"):
             raise PermissionDenied("Only whoever planned it, whoever it is for, or a manager changes it.")
         return row
 
+    @transaction.atomic
     def partial_update(self, request, pk=None):
         row = self._changeable(request, pk)
         given = FollowUpInput(data=request.data, partial=True)
@@ -172,14 +187,16 @@ class FollowUpViewSet(viewsets.ViewSet):
         return Response(_follow_up(row, request.user, timezone.localdate()))
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def done(self, request, pk=None):
         row = self._changeable(request, pk)
         row.mark_done(request.user, outcome=str(request.data.get("outcome", "")))
         row.refresh_from_db()
         return Response(_follow_up(row, request.user, timezone.localdate()))
 
+    @transaction.atomic
     def destroy(self, request, pk=None):
-        row = _readable(request, record_or_404(FollowUp, pk, "id"))
+        row = _held(_readable(request, record_or_404(FollowUp, pk, "id")))
         if row.created_by_id != request.user.pk and not request.user.has_perm("core.delete_followup"):
             raise PermissionDenied("Only whoever planned it, or a manager, removes it.")
         row.delete()
