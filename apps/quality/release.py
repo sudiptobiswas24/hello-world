@@ -208,6 +208,11 @@ def check_released(item, lot, action="issue", warehouse=None, reworking=None):
         raise ValidationError(said)
 
 
-def may_be_drawn(item, lot):
-    """Whether the gate lets this batch go, for whatever counts or chooses usable stock."""
-    return not why_held(item, lot)
+def may_be_drawn(item, lot, warehouse=None):
+    """
+    Whether the gate lets this batch go from `warehouse`, for whatever
+    counts or chooses usable stock. Asked without the warehouse it cannot
+    see a quarantine bay, which planning then counted as cover wherever
+    its caller forgot to leave the bay out (audit_invariants reports it).
+    """
+    return not why_held(item, lot, warehouse=warehouse)

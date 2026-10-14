@@ -143,7 +143,7 @@ def unusable_on_hand(item, warehouse, on_date):
             continue
         # The release gate's answer, not one worked out here from today's
         # plan: a rejected drum counted as cover once its plan was retired.
-        if lot.has_expired(on_date) or not may_be_drawn(item, lot):
+        if lot.has_expired(on_date) or not may_be_drawn(item, lot, warehouse):
             total += quantity
     return total
 
@@ -164,7 +164,7 @@ def expiring_unused(item, warehouse, on_date, demands):
     batches = sorted(
         ((lot, quantity) for lot, quantity in lots_at(item, warehouse)
          if quantity > 0 and lot.expires_on is not None and not lot.has_expired(on_date)
-         and may_be_drawn(item, lot)),
+         and may_be_drawn(item, lot, warehouse)),
         key=lambda row: (row[0].expires_on, row[0].pk),
     )
     if not batches:

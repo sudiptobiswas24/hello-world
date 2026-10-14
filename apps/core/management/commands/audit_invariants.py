@@ -764,7 +764,7 @@ class Command(BaseCommand):
     VERDICT_RANKED = re.compile(r"""order_by\(\s*['"]-inspected_on['"]""")
     ISSUES_ONLY_UNLESS_BACKFLUSHED = re.compile(r"\bnot\s+[\w.]+\.backflush\b")
     # The gate's questions, and the place each takes the warehouse positionally (None: by name only).
-    GATE_ASKS = {"check_released": None, "why_held": 2, "lot_held": 2}
+    GATE_ASKS = {"check_released": None, "why_held": 2, "lot_held": 2, "may_be_drawn": 2}
 
     def _asked_without_the_warehouse(self, call):
         name = getattr(call.func, "attr", getattr(call.func, "id", ""))

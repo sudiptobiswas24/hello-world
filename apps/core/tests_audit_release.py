@@ -100,6 +100,14 @@ class AskedWithoutTheWarehouseTests(SimpleTestCase):
         self.assertEqual(len(asked(planted, label="manufacturing")), 1)
         self.assertEqual(len(asked("def held(item, lot):\n    return lot_held(item, lot, None)\n")), 1)
 
+    def test_counting_usable_stock_without_the_warehouse_is_reported(self):
+        # Planning counted a quarantine bay as cover wherever its caller forgot the bay.
+        counted = "def usable(item, lot):\n    return may_be_drawn(item, lot)\n"
+        (finding,) = asked(counted)
+        self.assertEqual(finding[0], "release asked without the warehouse")
+        self.assertEqual(asked(counted.replace("(item, lot)\n", "(item, lot, warehouse)\n")
+                               .replace("def usable(item, lot)", "def usable(item, lot, warehouse)")), [])
+
     def test_one_that_names_it_is_not(self):
         named = BALED_UNASKED.replace('action="be baled"', 'action="be baled", warehouse=warehouse')
         self.assertEqual(asked(named, label="manufacturing"), [])
