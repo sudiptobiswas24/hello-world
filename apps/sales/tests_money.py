@@ -329,13 +329,42 @@ class TheAuditAsksItTests(__import__("django.test", fromlist=["SimpleTestCase"])
         found = self.findings("allocations_counted_past_a_void", lambda text: text.replace(
             "        return standing_paid(self)\n",
             "        return sum(a.amount for a in self.payment_allocations.all())\n", 1))
-        self.assertTrue(any("sales.amount_paid" in detail for detail in found), found)
+        self.assertTrue(any("sales.amount_paid (Invoice)" in detail for detail in found), found)
 
     def test_a_drawdown_off_todays_setting_is_reported(self):
         found = self.findings("drawdowns_from_todays_setting", lambda text: text.replace(
             "        account = deposit.lines.get().revenue_account\n",
             "        account = Company.get().customer_deposit_account\n", 1))
         self.assertTrue(any("sales.apply_deposit" in detail for detail in found), found)
+
+    def test_allocations_filtered_or_summed_in_the_database_are_reported(self):
+        """Review F11: any reading of them as rows, not only .all()."""
+        for planted in ("sum(a.amount for a in self.payment_allocations.filter(amount__gt=0))",
+                        "self.payment_allocations.aggregate(t=models.Sum('amount'))['t']",
+                        "sum(self.payment_allocations.values_list('amount', flat=True))"):
+            found = self.findings("allocations_counted_past_a_void", lambda text: text.replace(
+                "        return standing_paid(self)\n", f"        return {planted}\n", 1))
+            self.assertTrue(any("sales.amount_paid (Invoice)" in detail for detail in found), (planted, found))
+
+    def test_a_method_is_known_by_its_class(self):
+        """Exempting customer_statement exempts the module function, not a method of that name."""
+        found = self.findings("allocations_counted_past_a_void", lambda text: text.replace(
+            "    def amount_credited(self):",
+            "    def customer_statement(self):\n        return self.payment_allocations.all()\n\n"
+            "    def amount_credited(self):", 1))
+        self.assertTrue(any("sales.customer_statement (Invoice)" in detail for detail in found), found)
+
+    def test_a_drawdown_off_a_company_held_in_a_variable_or_a_helper_is_reported(self):
+        """Review F11: `company = Company.get()` read, or a helper of the module that reads the setting."""
+        found = self.findings("drawdowns_from_todays_setting", lambda text: text.replace(
+            "        account = deposit.lines.get().revenue_account\n",
+            "        company = Company.get()\n        account = company.customer_deposit_account\n", 1))
+        self.assertTrue(any("sales.apply_deposit (Invoice)" in detail for detail in found), found)
+        found = self.findings("drawdowns_from_todays_setting", lambda text: text.replace(
+            "        account = deposit.lines.get().revenue_account\n",
+            "        account = _held_account_now()\n", 1) + (
+            "\n\ndef _held_account_now():\n    return Company.objects.get().customer_deposit_account\n"))
+        self.assertTrue(any("through _held_account_now" in detail for detail in found), found)
 
     def test_the_code_as_it_stands_is_not(self):
         self.assertEqual(self.findings("allocations_counted_past_a_void")

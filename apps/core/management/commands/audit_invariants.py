@@ -1498,39 +1498,55 @@ class Command(BaseCommand):
 
     @staticmethod
     def _functions(sources, label):
-        """(qualified name, source text) of every function in a module's code, tests and migrations left out."""
+        """
+        (key, name, source text) of every function and method in a module's code, tests and
+        migrations left out. The key names a method by its class (label.Class.method), so two of
+        one name in a module are two; the name is how a finding shows it (label.method (Class)).
+        """
         for path, text in sources[label].items():
             if "test" in path.name or "migrations" in path.parts:
                 continue
-            for node in ast.walk(ast.parse(text)):
+            for node in ast.parse(text).body:
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    yield f"{label}.{node.name}", ast.get_source_segment(text, node) or ""
+                    yield f"{label}.{node.name}", f"{label}.{node.name}", ast.get_source_segment(text, node) or ""
+                elif isinstance(node, ast.ClassDef):
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            yield (f"{label}.{node.name}.{item.name}", f"{label}.{item.name} ({node.name})",
+                                   ast.get_source_segment(text, item) or "")
+
+    # Any use of a document's allocations as rows: walked, filtered, summed in the database.
+    ALLOCATIONS_READ = re.compile(
+        r"\bpayment_allocations\.(all|filter|exclude|aggregate|annotate|values|values_list|iterator|order_by)\(")
 
     def allocations_counted_past_a_void(self, labels, sources):
         """
-        A document's payment allocations summed whole, a voided payment counted with the rest.
+        A document's payment allocations read as rows, a voided payment counted with the rest.
 
         A debit note's refund counted every allocation: the vendor's 300 refund bounced and
         the note still read settled while the payable held 300 (O53). Commission on
         collection paid on a bounced cheque (O74). What stands is
         accounting.settlement.standing_allocations(); a function that must see every row
-        says why in READS_EVERY_ALLOCATION.
+        says why in READS_EVERY_ALLOCATION. Any reading counts, not only .all(): a filter or
+        an aggregate over them counts the bounce the same (review F11).
         """
         findings = []
         for label in labels:
-            seen = set()
-            for name, text in self._functions(sources, label):
-                if name in self.READS_EVERY_ALLOCATION or name in seen:
+            for key, name, text in self._functions(sources, label):
+                if key in self.READS_EVERY_ALLOCATION:
                     continue
-                if re.search(r"\.payment_allocations\.all\(\)", text):
-                    seen.add(name)
+                if self.ALLOCATIONS_READ.search(text):
                     findings.append((
                         "allocations counted past a void",
-                        f"{name} walks payment_allocations whole; a bounced payment counts with the "
+                        f"{name} reads payment_allocations as rows; a bounced payment counts with the "
                         "rest. Ask settlement.standing_allocations(), or say why in "
                         "READS_EVERY_ALLOCATION.",
                     ))
         return findings
+
+    # The company's account settings money held is taken from, read however.
+    HELD_SETTING = re.compile(r"\b(customer_deposit_account|vendor_prepayment_account)\b|Company\.get\(\)")
+    HELD_SETTING_NAMED = re.compile(r"\b(customer_deposit_account|vendor_prepayment_account)\b")
 
     def drawdowns_from_todays_setting(self, labels, sources):
         """
@@ -1539,16 +1555,24 @@ class Command(BaseCommand):
         A prepayment paid into 1400 was drawn off 1401 once the setting moved: 1400 kept
         +15 and 1401 went to -15 (O105). The held account is the one the money went to,
         as its document's line booked it; a function that calls post_drawdown() reads no
-        Company setting.
+        Company setting, held in a variable or not, and calls no function of its module
+        that does (review F11).
         """
         findings = []
         for label in labels:
-            for name, text in self._functions(sources, label):
-                if "post_drawdown(" in text and re.search(r"Company\.get\(\)\.\w+_account\b", text):
+            functions = list(self._functions(sources, label))
+            reading = {key.rsplit(".", 1)[-1] for key, _, text in functions
+                       if self.HELD_SETTING_NAMED.search(text) and "post_drawdown(" not in text}
+            for key, name, text in functions:
+                if "post_drawdown(" not in text:
+                    continue
+                called = set(re.findall(r"\b(\w+)\(", text))
+                if self.HELD_SETTING.search(text) or called & reading:
                     findings.append((
                         "drawdown from today's setting",
-                        f"{name} draws money held down off a Company setting read now; take the "
-                        "account the deposit or prepayment was booked to.",
+                        f"{name} draws money held down off a Company setting read now"
+                        + (f" (through {', '.join(sorted(called & reading))})" if called & reading else "")
+                        + "; take the account the deposit or prepayment was booked to.",
                     ))
         return findings
 
