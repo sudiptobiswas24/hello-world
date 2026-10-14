@@ -427,3 +427,40 @@ class AListInNoCurrencyIsInBaseTests(PricedInTheLinesTermsTests):
         self.assertEqual(self.line(None, self.uom, "1").unit_price, D("6.00"))
 
 
+class TheLastOfALineIsGivenBackAsItWasBookedTests(MoneyCase):
+    """
+    O199, review F10 (calc_fix_money/review/o199.py). 2.5 at 3.33 books 8.33. A note for 1.25 gives
+    back its share, 4.16; the note for the other 1.25 is the last of the line and gives back the 4.17
+    left of what it booked, as 0.25 at 3.33 (0.83) and 1 at 3.34: the receivable reads nothing.
+    """
+
+    def test_a_line_credited_in_two_halves_leaves_nothing_on_the_receivable(self):
+        from .models import InvoiceLine
+
+        invoice = Invoice.objects.create(customer=self.customer, invoice_date=DAY, receivable_account=self.ar)
+        InvoiceLine.objects.create(invoice=invoice, item=self.item, quantity=D("2.5"), unit_price=D("3.33"),
+                                   revenue_account=self.revenue)
+        invoice.post()
+        line = invoice.lines.get()
+        first = Invoice.objects.get(pk=invoice.pk).create_credit_note(quantities={line: D("1.25")})
+        last = Invoice.objects.get(pk=invoice.pk).create_credit_note(quantities={line: D("1.25")})
+        self.assertEqual((first.total(), last.total()), (D("4.16"), D("4.17")))
+        self.assertEqual(sorted((row.quantity, row.unit_price) for row in last.lines.all()),
+                         [(D("0.25"), D("3.33")), (D("1"), D("3.34"))])
+        self.assertEqual((self.balance(self.ar), Invoice.objects.get(pk=invoice.pk).amount_due()), (D("0"), D("0")))
+
+    def test_the_last_of_a_line_is_held_to_what_is_left_as_booked(self):
+        """A typed note for the last 1.25 at 3.34 (4.18) gives back a paisa more than the 4.17 left: refused."""
+        from .models import InvoiceLine
+
+        invoice = Invoice.objects.create(customer=self.customer, invoice_date=DAY, receivable_account=self.ar)
+        line = InvoiceLine.objects.create(invoice=invoice, item=self.item, quantity=D("2.5"), unit_price=D("3.33"),
+                                          revenue_account=self.revenue)
+        invoice.post()
+        Invoice.objects.get(pk=invoice.pk).create_credit_note(quantities={line: D("1.25")})
+        note = Invoice.objects.create(customer=self.customer, invoice_date=DAY, receivable_account=self.ar,
+                                      credits=invoice)
+        with self.assertRaisesMessage(ValidationError, "has 4.17 left to give back; this note gives back 4.18"):
+            InvoiceLine.objects.create(invoice=note, credits_line=line, item=self.item, quantity=D("1.25"),
+                                       unit_price=D("3.34"))
+            note.post()
