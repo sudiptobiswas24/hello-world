@@ -522,3 +522,90 @@ class AProposalLapsesTests(KeeperAndHolder):
                                        format="json").status_code, 200)
         self.assertEqual(self.hrc.patch(f"/api/hr/employees/{boss.pk}/", {"user": asha.pk}, format="json")
                          .status_code, 200)
+
+
+class AKeepersCredentialLapsesWithAnyRightTests(KeeperAndHolder):
+    """
+    O198: what the keeper set lapsed only when a role was given. A
+    permission of its own or the admin site, given in the admin, left the
+    keeper's password working; what was kept of it was a copy of its
+    hash; and one set before the record began carried no word of who set
+    it. Asked as the people in their roles; the admin's doors are the
+    model's own (user_permissions.add, save), which its forms call.
+    """
+
+    def test_a_permission_of_its_own_given_in_the_admin_lapses_the_keepers_password(self):
+        asha = self.make("asha", ["HR Admin"])
+        self.assertTrue(self.signs_in("asha", PW))
+        asha.user_permissions.add(Permission.objects.get(content_type__app_label="accounting",
+                                                         codename="add_journalentry"))
+        self.assertFalse(self.signs_in("asha", PW), "HR signs in with a permission it does not hold")
+
+    def test_the_admin_site_given_lapses_it(self):
+        asha = self.make("asha", ["HR Admin"])
+        asha.is_staff = True
+        asha.save()
+        self.assertFalse(self.signs_in("asha", PW), "HR signs in to the admin site it cannot open")
+        # One the keeper could give lapses nothing.
+        ravi = self.make("ravi", [])
+        ravi.groups.add(Group.objects.get(name="HR Admin"))
+        self.assertTrue(self.signs_in("ravi", PW))
+
+    def test_what_is_kept_of_a_password_is_no_copy_of_its_hash(self):
+        from .roles import KeptCredential
+
+        asha = self.make("asha", [])
+        kept = KeptCredential.objects.get(user=asha, kind="password")
+        self.assertNotEqual(kept.value, asha.password)
+        self.assertNotIn(asha.password.split("$")[-1], kept.value)
+        self.assertTrue(kept.in_force(asha))
+
+    def test_a_password_set_before_the_record_is_said_to_the_confirmer_and_not_lapsed(self):
+        from .roles import KeptCredential, fingerprint
+
+        old = User.objects.create_user("old", password=PW)
+        # As migration 0033 records a login it found with a password and no record of who set it.
+        KeptCredential.objects.create(user=old, kind="password", value=fingerprint(old.password), set_by=None)
+        self.assertEqual(self.hrc.post(f"{USERS}{old.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+                         .status_code, 200)
+        [row] = self.api(self.bk).get(self.PROPOSALS, {"waiting": "true"}).json()
+        self.assertTrue(row["credentials"].startswith("Who set old's password is not on record"), row)
+        self.assertEqual(self.confirm(self.bk, self.pending(old, "Bookkeeper")).status_code, 200)
+        self.assertTrue(self.signs_in("old", PW))
+
+
+from django.test import TransactionTestCase, tag  # noqa: E402
+
+
+@tag("migration")
+class KeptPasswordsAreDigestedTests(TransactionTestCase):
+    """O198: migration 0033 digests the hashes 0032 kept and records, with no setter, what nobody recorded."""
+
+    before = [("core", "0032_kept_credentials")]
+    after = [("core", "0033_kept_credentials_digested")]
+
+    def test_a_kept_hash_becomes_its_digest_and_an_unrecorded_password_is_recorded(self):
+        from django.contrib.auth.hashers import make_password
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        from .roles import fingerprint
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        user, kept = apps.get_model("auth", "User"), apps.get_model("core", "KeptCredential")
+        keeper = user.objects.create(username="hr", password=make_password(PW))
+        asha = user.objects.create(username="asha", password=make_password(PW))
+        kept.objects.create(user=asha, kind="password", value=asha.password, set_by=keeper)
+        user.objects.create(username="locked", password=make_password(None))
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        kept = executor.loader.project_state(self.after).apps.get_model("core", "KeptCredential")
+        rows = {(row.user.username, row.kind): (row.value, row.set_by_id) for row in kept.objects.all()}
+        self.assertEqual(rows, {("asha", "password"): (fingerprint(asha.password), keeper.pk),
+                                ("hr", "password"): (fingerprint(keeper.password), None)})
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+

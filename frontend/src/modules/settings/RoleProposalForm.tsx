@@ -25,6 +25,8 @@ export default function RoleProposalForm() {
         { key: "role", label: "Role", readOnly: true },
         { key: "proposed_by_name", label: "Proposed by", readOnly: true },
         { key: "proposed_at", label: "On", kind: "date", readOnly: true },
+        // Who may know the login's password and email, in words (O198): one set before the record began is only said.
+        { key: "credentials", label: "Their password and email", kind: "textarea", readOnly: true, existingOnly: true },
         { key: "decided_by_name", label: "Decided by", readOnly: true, existingOnly: true },
         { key: "decided_at", label: "Decided on", kind: "date", readOnly: true, existingOnly: true },
       ]}
