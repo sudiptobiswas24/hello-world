@@ -101,6 +101,17 @@ class ItemsTests(ImportTestCase):
 
 
 class OpeningStockTests(ImportTestCase):
+    def test_a_cost_with_more_places_than_the_line_keeps_is_refused(self):
+        # O4: read at eight places into a four-place field. Refused already by the
+        # line's own field (clean()); kept so a reader that stops asking it is seen.
+        AdjustmentReason.objects.create(code="OPENING", name="Opening stock", account=self.opening)
+        on_hand = self.item.on_hand_at(self.warehouse)
+        report = run("opening_stock", "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,1000,3.33333333\n",
+                     commit=True, date=GO_LIVE, reason="OPENING")
+        self.assertEqual(self.errors(report), [(2, "unit_cost")])
+        self.assertIn("more than 4 decimal places", str(report.errors))
+        self.assertEqual(self.item.on_hand_at(self.warehouse), on_hand)
+
     def test_without_its_reason_nothing_moves(self):
         report = run("opening_stock", "sku,warehouse,quantity,unit_cost\nWDG-1,WH1,10,4\n",
                      commit=True, date=GO_LIVE, reason="OPENING")
