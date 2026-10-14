@@ -86,6 +86,25 @@ def may_read(user, model, pk):
     return False
 
 
+def may_read_gone(user, model):
+    """
+    Whether `user` may read what is left of a deleted record of `model`
+    (its history). Whose it was cannot be asked of a row that is gone, so
+    a login that reads only some of the kind reads none of the gone ones:
+    one the party scope limits (a rep read the deleted order of another
+    rep's customer), or one a screen serving the kind reads only some
+    rows to, by its own `reads_only_some(user)`, the rule its queryset
+    asks (O131: anyone holding view_leaverequest read the history of a
+    colleague's deleted leave request).
+    """
+    from .scoping import visible_parties
+
+    if not may_read_kind(user, model) or visible_parties(user) is not None:
+        return False
+    return not any(getattr(cls, "reads_only_some", None) is not None and cls.reads_only_some(user)
+                   for cls in served()[1].get(model._meta.label_lower, []))
+
+
 class EndpointsView(APIView):
     """
     {"/api/sales/sales-orders/": "sales.salesorder", ...}: what a record
