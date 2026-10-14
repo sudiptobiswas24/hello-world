@@ -219,6 +219,12 @@ def _employees(rows, report, options):
                         user = User.objects.create_user(username, email=row.get("email", ""),
                                                         password=password,
                                                         first_name=party.name[:150])
+                        # Whoever ran the import made it and knows its first password (roles.KeptCredential).
+                        from apps.core.roles import KeptCredential, record_credential
+
+                        for kind in (KeptCredential.LOGIN, KeptCredential.PASSWORD, KeptCredential.EMAIL):
+                            if kind != KeptCredential.EMAIL or user.email:
+                                record_credential(user, kind, options.get("by"))
                     elif Employee.objects.filter(user=user).exists():
                         raise RowError("username", f"{username!r} is already another employee's login.")
                     else:
