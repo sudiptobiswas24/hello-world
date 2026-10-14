@@ -868,7 +868,8 @@ class AssembliesFromAHeldBatchPassedWaitTests(_SentBatches):
         inspection = self.passed()
         self.assertEqual(inspection.disposition, Disposition.AWAITING)
         self.assertIn("passed", inspection.told)
-        self.assertNotEqual(why_held(self.assembly, self.made, warehouse=self.warehouse), "")
+        self.assertIn("A-1 is held: it passed", why_held(self.assembly, self.made, warehouse=self.warehouse))
+        self.assertIn("made from FRM / F-1, which quality holds", why_held(self.assembly, self.made))
 
     def test_the_quality_manager_posting_it_releases_it(self):
         from django.contrib.auth.models import Group, User
@@ -961,3 +962,50 @@ class HeldAssembliesSayWhatIsStillHeldTests(_SentBatches):
         with CaptureQueriesContext(connection) as queries:
             self.assertEqual(receipt.held_assemblies(), [])
         self.assertEqual(len(queries), 1)
+
+
+class TheQualityManagersToDoClosesWhenNothingIsHeldTests(_SentBatches):
+    """Review F4: ten assemblies of A-1 from rejected F-1, the Quality Manager told; each way out closes the to-do."""
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        self.manager = User.objects.create(username="qm")
+        self.manager.groups.add(Group.objects.get(name="Quality Manager"))
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        self.sent, order = self.sent_then_rejected()
+        self.made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        self.receipt = self.receive_into(order, "10", self.warehouse, lot=self.made)
+        self.assertEqual(self.open(), 1)
+
+    def open(self):
+        from apps.core.chatter import FollowUp
+
+        return FollowUp.objects.filter(object_id=self.receipt.pk, done_on__isnull=True,
+                                       content_type__model="goodsreceipt").count()
+
+    def test_sent_back_in_full_it_closes_and_in_part_it_does_not(self):
+        self.receipt.create_return(quantities={self.receipt.lines.get(): Decimal("4")}, debit_bills=False)
+        self.assertEqual(self.open(), 1)
+        self.receipt.create_return(debit_bills=False)
+        self.assertEqual(self.open(), 0)
+
+    def test_the_source_batch_passed_again_closes_it(self):
+        self.inspect(self.sent, "0.5", datetime.date(2026, 2, 3))
+        self.assertEqual((self.receipt.held_assemblies(), self.open()), ([], 0))
+
+    def test_the_assembly_lot_released_by_the_quality_manager_closes_it(self):
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        torque = Characteristic.objects.create(code="TRQ", name="Torque", uom=self.uom)
+        own = InspectionPlan.objects.create(item=self.assembly, is_mandatory=True)
+        line = PlanLine.objects.create(plan=own, characteristic=torque, lower_limit=Decimal("0"),
+                                       upper_limit=Decimal("1"))
+        inspection = Inspection.objects.create(lot=self.made, plan=own, inspected_on=datetime.date(2026, 2, 5))
+        Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("0.5"))
+        inspection.post(by=self.manager)
+        self.assertEqual((self.receipt.held_assemblies(), self.open()), ([], 0))
