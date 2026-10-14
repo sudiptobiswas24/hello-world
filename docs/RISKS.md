@@ -55,6 +55,12 @@ can prove.
 
 ## Known limits in the code
 
+- **Approvals seeded before sales 0064 whose notes name no figures**
+  (the rest of O200, closed in g20): a line cut after the seed keeps what
+  it held, and total and margin stay empty. The history cannot tell what
+  was approved; g20 matches what it can (a charge line by its charge's
+  name).
+
 6. **Permissions are by model, not by record, except for leave and a
    rep's customers.** Anyone who may post invoices may post *any*
    invoice. Two things are scoped to the person: leave (people read their
@@ -266,34 +272,18 @@ missing), **minor**.
 | O46 | core | `unlocked_open_runs` sees only `.is_open()`; a run's status compared to RELEASED by a function that does not hold the run goes unreported (station clock and job work were found by reading) | rule | open |
 | O47 | manufacturing | `TapeLoad.kg` keeps 3 places but `load_tape` accepts 4: 48.9796 kg is stored as 48.980, 0.0004 kg more than the shelf held | books | minor |
 | O48 | purchasing, manufacturing | Landed cost on goods no longer on a shelf goes to cost of sales. The owner decided on 9 October that the share on goods issued to production goes to production cost instead (the run they went into), and only the share on goods sold or written off goes to cost of sales. Not built. O42 touches the same code | books | to build |
-| O49 | accounting | `settlement_difference` (settlement.py:30) books round(amount × rate difference), not each side's booked base subtracted, which CLAUDE.md already requires: 100.09 EUR at 1.12345 paid at 1.09876 books 2.47, not 2.48, leaving 0.01 on receivables (and on payables, the mirror) | books | open; FxResidueProbe |
-| O51 | accounting | `post_drawdown` rounds each drawdown at the held rate and the last does not take what is left: 100 EUR held at 112.35, drawn 50 + 50, leaves -0.01 on deposits | books | open; FxResidueProbe |
-| O52 | accounting | Bank reconciliation for a past statement reads today's facts: `unpresented()` drops a payment matched on any later statement or voided on any later date. September's cheque of 400 presented on 2 October shows September unpresented 0, difference -400 | books | open; StatementProbe |
-| O53 | purchasing | `refund_due` on a debit note counts a vendor refund whose payment was voided (bounced); the sales mirror skips voided payments. A bounced 300 refund reads 0 due while payables hold 300 | books | open; DebitNoteRefundProbe |
-| O54 | sales, purchasing | Re-pointing an allocation to another document checks it against the old document's ceiling: 1,000 moved from X (1,000) to Y (500) leaves Y at -500 due; the API answers 200 | books | open; RepointProbe |
 | O56 | purchasing | A debit note's lines drop the bill line's cost centre (and the prepayment version too): loom shed 1,000 less 300 reads LOOM 1,000 and unallocated -300 | books | minor; CostCentreProbe |
 | O63 | accounting | Race: a statement closes while one of its lines is unmatched (`close()` locks the statement; the line's save() reads `closed` unlocked): closed with a line unexplained. Shown on PostgreSQL | race | open; AccountingRaceProbe |
 | O64 | purchasing | Race: a TDS deduction reversed while a challan pays it (`TdsChallan.pay` reads what is owed unlocked, then updates): reversed and paid, TDS payable +700 paid for nothing. Shown on PostgreSQL | race | open; AccountingRaceProbe |
-| O70 | sales | A credit note refunded at another rate books its exchange difference the wrong way (every allocation passed as a receivable): receivables end at 40.00, not 0. Purchasing's mirror always passes the other side; a refunded debit note may share it (not probed) | books | open; ForeignDepositCycleProbe |
-| O74 | sales | Commission on collection counts a voided (bounced) receipt | books | open; CommissionProbe |
-| O75 | sales | Commission on collection leaves out money taken as a deposit: 300 deposit plus 700 paid counts 700 | books | open; CommissionProbe |
-| O76 | sales | Commission is worked in the invoice's currency, not the base: 1,000 EUR at 1.1 counts 1,000, not 1,100 | books | open; CommissionProbe |
 | O77 | sales | The credit limit adds currencies at face value: 600 USD plus 380 EUR reads 980 against 1,000; the true figure is 1,018.00 | rule | open; CreditLimitProbe |
-| O78 | sales | An order in another currency takes the item's base price at face value: a EUR line priced 10 from 10 USD | books | open; PricingProbe |
-| O79 | sales | The price ignores the line's unit, and volume breaks compare quantities in it: 2 boxes of 12 at 10 each priced 10 a box (20.00, not 240.00). Purchasing's price resolution has no unit either (not probed) | books | open; PricingProbe |
-| O80 | sales | A write-off partly undone by a credit note cannot be recovered: recovery takes the whole write-off or nothing, and no receipt can be applied | books | open; WriteOffRecoveryProbe |
 | O81 | sales | The dunning mail asks for the whole balance and the last due date, not what the notice records as overdue (mistake 1) | minor | open; DunningProbe |
 | O89 | purchasing | A bill posted before any of its goods arrive leaves goods-received-not-invoiced uncleared for good: billed 10 @ 5, then received, GRNI -50 and purchases 50 (expected 0 and 0). A drop-ship billed before receipt has the same posting (code only) | books | open; audit_pur probes |
 | O91 | purchasing | The match's price check ignores the agreed discount: 10 @ 100 less 10% agreed, billed at 100 with tolerance 0, posts with 100 of price variance | rule | open; audit_pur probes |
 | O93 | purchasing | Billing one receipt in parts leaves a paisa on GRNI: each bill's accrual is rounded on its own | books | minor; audit_pur probes |
 | O94 | purchasing | A return is debited to the oldest bill, not the one that paid for the goods returned: 15.00 debited and 4.00 variance kept, expected 16.20 and 2.80 | books | minor; audit_pur probes |
 | O95 | purchasing | The same vendor invoice number in another case is accepted: INV-77 and inv-77 both post | rule | minor; audit_pur probes |
-| O97 | purchasing | A blanket release drops the agreed discount: 10 @ 100 less 5% released at 1,000.00, expected 950.00 | books | open; audit_pur probes |
-| O98 | purchasing | A vendor price has no unit: 100 a kg agreed, 2 t ordered with no price typed came out at 100.00 a tonne. The mirror of O79 in sales | books | open; audit_pur probes |
 | O99 | purchasing | A hand-typed price passes the approval rule whenever an agreed price exists, used or not: agreed 5.00, typed 50.00, confirmed with no approval reasons. `price_against_agreement` exists and nothing calls it | rule | open; audit_pur probes |
-| O100 | purchasing | `preferred_vendor` compares prices across currencies at face value | rule | minor; audit_pur probes |
 | O101 | purchasing, assets | Capitalising a received stock line takes its cost out of GRNI and leaves it in stock too: GRNI -12,000, inventory 12,000, plant 12,000 | books | open; audit_pur probes |
-| O105 | purchasing, sales | A prepayment or deposit drawdown credits whatever account is set today, not the one it was held in: after the setting moved, 1400 keeps +15 and 1401 goes to -15 | books | minor; audit_pur probes |
 | O108 | purchasing | Race: an RFQ award and a direct order on one requisition both go through (each holds a different lock): 20 ordered against a request for 10. Shown on PostgreSQL | race | open; audit_pur races |
 | O109 | purchasing, sales | Built and never called (shape 2): settlement discounts on both sides (`Bill.take_settlement_discount`, `Invoice.apply_settlement_discount`), `Bill.match_report`, `PurchaseRequisition.suggested_vendors`, `BlanketOrderLine.is_fully_released`. Each should be reached from its screen or action, or removed | rule | open |
 | O123 | purchasing, quality | `GoodsReceipt.accept` never asks the lot's release status, so a lot quality rejected can be cleared onto a pickable shelf (downstream gates still hold it). Seen in code, not probed | rule | verify |
@@ -307,7 +297,6 @@ missing), **minor**.
 | O133 | inventory, manufacturing | `allocate()` does not subtract tape loaded on a backflushed run's creels and not yet drawn: a pick naming no lot can choose a doff whose 100 kg is all on a creel | rule | open |
 | O134 | inventory | tracking.py's shortfall message ("Only ...") is not normalised, so PostgreSQL shows 300.0000 | minor | open |
 | O136 | sales (CRM) | `Opportunity.sales_order` has no unique constraint in the database; only the lock in `win()` keeps one order to one opportunity | minor | open |
-| O151 | hr | An expense claim paid, unpaid and paid again overwrites `journal_entry` and `voided_entry`: after a second unpay, the first payment and its reversal belong to no claim and `claims_paid` cannot find them (hr/expenses.py:144-185) | books | open |
 | O152 | gst | The e-invoice `ShipDtls` carries the buyer's GSTIN and name even when the goods go to a third party (gst/einvoice.py:289) | statutory | open |
 | O153 | gst | The e-way bill's `transactionType` is 2 (bill-to-ship-to) for delivery to the buyer's own other address, where NIC's meaning is a third party (gst/ewaybill.py:366). The tax adviser to decide | statutory | decide |
 | O154 | purchasing, gst | Debit notes raised by a receipt return (`create_return(debit_bills=True)`) post at once, so the supplier's credit-note number can never be recorded on them; GSTR-2B pairs them only on date and value. O57's fix covers hand-made debit notes only | statutory | open |
@@ -327,15 +316,14 @@ missing), **minor**.
 | O196 | core, hr | O194 in reverse: HR links an empty login to an employee, then proposes Controller for it, and a Controller confirms: a Controller login linked to an employee, which the link rule would refuse (docs/handoff/reports/fix_sec.md, seen #1) | security | open |
 | O197 | core | `UserViewSet.perform_create` and `perform_update` run without a transaction: a create refused while giving roles answers 400 but leaves the login made, with no roles (docs/handoff/reports/fix_sec.md, seen #3) | rule | open |
 | O198 | core | A keeper-set password lapses only when a role is given: a permission of its own or is_staff given in the admin does not lapse it. `KeptCredential.value` keeps a copy of the keeper-set password hash (exposed nowhere). Credentials set before the lapse rule carry no record of who set them | security | minor |
-| O199 | accounting | The per-unit note cap (`priced_to_give_back`): for a fractional quantity, a share the paisa does not divide leaves under one paisa per line on the receivable, and the last unit's rounding can post up to half a paisa over the unrounded cap (docs/handoff/reports/fix_trade.md, seen #2) | books | minor |
-| O200 | sales | Migration sales 0064: an approval whose note names no figures leaves a line cut after it seeded at what it holds; charge lines are never matched by label; total and margin are seeded empty unless the note names them (docs/handoff/reports/fix_trade.md, seen #3) | books | minor |
-| O201 | accounting | A typed note line may credit any revenue account, not the one its original line used (docs/handoff/reports/fix_trade.md, seen #4) | books | open |
 | O202 | manufacturing, sales | A cost sheet, a test certificate and a price-variation bill made over the API carry no created_by: quoting.cost(), certificates.issue() and bill_variation() take no maker. Their history line names who; the stamp on the record is blank (seen 2026-10-11, exempted in audit_invariants WRITES_AROUND_THE_MIXIN_ON_PURPOSE) | audit trail | open |
 | O203 | quality | The Quality Manager's escalation counts Monday to Friday and never sees a plant holiday: quality may not import hr, whose calendar knows them. A failure posted the day before Diwali goes to the administrator on Diwali. A calendar hook in core, as lot holds have, would let hr answer (seen 2026-10-14) | minor | open |
 | O204 | quality, manufacturing | Decide (owner): at the machines a failed doff, film roll or bag bundle under a MANDATORY plan is still released on the spot by the supervisor's concession (station_gauge.gauged_batch), while the same failure under an advisory plan now waits for the Quality Manager (decision 22). The stricter plan is the easier one round. Recommended: mandatory failures wait for the Quality Manager too (seen 2026-10-14) | rule | decide |
 | O205 | inventory | The rest of O10, whose inspection part g19 closed: a posted stock adjustment or stock count can still be deleted (audit_invariants `DELETABLE_REPORTED`), leaving its movements and entry behind (seen 2026-10-14) | rule | open, g20 |
 | O206 | purchasing | Fractional subcontract returns leave a paisa between the inventory account and the shelf: 0.333 frame per assembly, F-1 1.11 and F-2 98.89 at 8, receive 10, return 1, 1, 3, 2, 1, 2: the shelf ends at 0.00, inventory +0.01, PPV -0.01. Each return books its own price difference, rounded on its own. Present before g19 (docs/handoff/reports/fix_sub2.md "F10") (seen 2026-10-14) | books | open, g20 |
 | O207 | quality | Decide (owner), a recall: a lot that passed its own inspection stays released when a batch it was made from is rejected afterwards (A-1 passed 15 January; F-1, inside it, rejected 2 February). Recommended: a later rejection of a source holds what is still in stock of the lots made from it, and the Quality Manager is told (seen 2026-10-14) | rule | decide |
+| O208 | sales | Decide (owner), low: a unit price keeps 2 places, so a price converted from another currency is rounded to the paisa per unit and the line follows the rate: 1,000 units at 10 USD / 1.1 come to 9,090.00, not 9,090.91. Exact would need the unit-price columns of order, quotation and invoice lines widened (6 places), which changes every price the API shows. Kept at 2: the rate printed on the invoice is the one charged (seen 2026-10-14) | books | decide, low |
+| O209 | accounting | After g20's settlement slices: deleting or re-pointing a middle allocation re-states only its own slice, so a paisa may reappear on the control account; credit notes on an invoice still book their own lines' bases, not a slice of the invoice's. Not probed (docs/handoff/reports/fix_money.md, "Review fixes") (seen 2026-10-14) | books | open, unproven |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
