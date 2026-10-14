@@ -3628,18 +3628,24 @@ def bad_debt_report(start=None, end=None):
     if end:
         write_offs = write_offs.filter(date__lte=to_date(end))
 
-    rows = {}
+    # What a recovery put back, as it recorded it, and what credit notes undid of the
+    # write-offs, as each recorded it (review F7): the whole write-off read as recovered
+    # once 300 of 600 was, and the 300 a note undid was in neither column.
+    rows, undone_on = {}, set()
     for write_off in write_offs:
         customer = write_off.invoice.customer
         row = rows.setdefault(
             customer.pk,
-            {"customer": customer, "written_off": Decimal("0"),
-             "recovered": Decimal("0"), "net": Decimal("0")},
+            {"customer": customer, "written_off": Decimal("0"), "recovered": Decimal("0"),
+             "undone_by_notes": Decimal("0"), "net": Decimal("0")},
         )
         row["written_off"] += write_off.amount
-        if write_off.is_recovered():
-            row["recovered"] += write_off.amount
-        row["net"] = row["written_off"] - row["recovered"]
+        row["recovered"] += write_off.amount_recovered()
+        if write_off.invoice_id not in undone_on:
+            undone_on.add(write_off.invoice_id)
+            row["undone_by_notes"] += sum((note.reversed_write_off for note in
+                                           write_off.invoice.credit_notes.filter(posted=True)), Decimal("0"))
+        row["net"] = row["written_off"] - row["recovered"] - row["undone_by_notes"]
     return sorted(rows.values(), key=lambda row: -row["net"])
 
 

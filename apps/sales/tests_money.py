@@ -371,6 +371,21 @@ class WriteOffRecoveredInPartTests(MoneyCase):
         with self.assertRaisesMessage(ValidationError, "already been recovered"):
             invoice.recover_write_off(invoice.write_offs.get())
 
+    def test_the_bad_debt_report_reads_what_was_recovered_and_what_a_note_undid(self):
+        """Review F7: written off 600, a note undid 300, 300 recovered: net 0, as bad debt in the ledger."""
+        from .models import bad_debt_report
+
+        invoice = self.bill(self.make_order("10", "100"))
+        self.allocate(self.receipt("400"), invoice, "400")
+        invoice.write_off(reason="Customer in liquidation", on_date=datetime.date(2026, 4, 1))
+        Invoice.objects.get(pk=invoice.pk).create_credit_note(quantities={invoice.lines.get(): D("3")})
+        invoice = Invoice.objects.get(pk=invoice.pk)
+        invoice.recover_write_off(invoice.write_offs.get(), on_date=datetime.date(2026, 5, 1))
+        row = bad_debt_report()[0]
+        self.assertEqual((row["written_off"], row["recovered"], row["undone_by_notes"], row["net"],
+                          self.balance(self.bad_debt)),
+                         (D("600.00"), D("300.00"), D("300.00"), D("0.00"), D("0.00")))
+
 
 class PricedInTheLinesTermsTests(MoneyCase):
     """
