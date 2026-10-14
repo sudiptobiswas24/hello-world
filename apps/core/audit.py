@@ -12,7 +12,26 @@ from .history import EventKind, record_by_id
 from .models import lock_for_change
 
 
-class AuditableAdminMixin:
+class RowHeldAdminMixin:
+    """
+    An admin change or delete holds its row from the read to the write, as
+    the viewsets do (AuditableViewSetMixin.get_object). The admin reads the
+    row, shows or checks the form against it, and saves every field it
+    read, all inside one transaction (changeform_view, delete_view), but
+    read the row without a lock: two people saving one record at once each
+    wrote the other's field back as they had found it (O22). Held through
+    lock_for_change, so what its save() holds first is held before it.
+    """
+
+    def get_object(self, request, object_id, from_field=None):
+        found = super().get_object(request, object_id, from_field)
+        if found is not None and request.method == "POST" and transaction.get_connection().in_atomic_block:
+            lock_for_change(found, request.POST)
+            found = super().get_object(request, object_id, from_field)
+        return found
+
+
+class AuditableAdminMixin(RowHeldAdminMixin):
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user

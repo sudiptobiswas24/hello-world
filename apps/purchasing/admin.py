@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
-from apps.core.audit import AuditableAdminMixin
+from apps.core.audit import AuditableAdminMixin, RowHeldAdminMixin
 
 from .models import (
     Bill,
@@ -100,7 +100,7 @@ class RequestForQuotationAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(ReceiptInspection)
-class ReceiptInspectionAdmin(admin.ModelAdmin):
+class ReceiptInspectionAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("receipt_line", "quantity", "accepted", "inspected_on", "warehouse")
     list_filter = ("accepted",)
     readonly_fields = ("receipt_line", "quantity", "accepted", "inspected_on", "warehouse")
@@ -112,7 +112,7 @@ class ReceiptInspectionAdmin(admin.ModelAdmin):
 
 
 @admin.register(LandedCostApplication)
-class LandedCostApplicationAdmin(admin.ModelAdmin):
+class LandedCostApplicationAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("charge_line", "receipt_line", "amount", "date", "is_released")
     readonly_fields = (
         "charge_line", "receipt_line", "amount", "date",
@@ -244,7 +244,7 @@ class GoodsReceiptLineInline(PostedImmutableInlineMixin, admin.TabularInline):
 
 
 @admin.register(PrepaymentApplication)
-class PrepaymentApplicationAdmin(admin.ModelAdmin):
+class PrepaymentApplicationAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("prepayment", "bill", "amount", "date")
     readonly_fields = ("prepayment", "bill", "amount", "date", "journal_entry")
 
