@@ -2017,3 +2017,31 @@ class OneRecallALotRaceTests(RaceCase):
         recalls = Inspection.objects.filter(lot=joined, recalled_by__isnull=False)
         self.assertEqual(recalls.count(), 1)
         self.assertEqual(FollowUp.objects.filter(object_id=recalls.get().pk).count(), 1)
+
+
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class NoBatchClearedPastItsRejectionRaceTests(RaceCase):
+    """
+    O123: DR-7's rejection posting while the bay's drums are accepted. Either
+    the rejection comes first and the accept is refused, or the accept comes
+    first and is recorded before the rejection posts. Accepted after the
+    rejection was decided, on a read taken before it, is the race.
+    """
+
+    def test_a_rejection_and_an_accept_at_once(self):
+        from apps.inventory.models import StockMovement
+        from apps.purchasing import tests_inspection
+        from apps.purchasing.models import GoodsReceipt, ReceiptInspection
+        from apps.quality.models import Inspection
+
+        made = fixture(self, tests_inspection.ARejectedBatchIsNotClearedTests)
+        draft = made.rejection(number="QC-RACE-7")  # numbered: no lock on the numbering row
+        outcomes = race((Inspection, StockMovement),
+                        lambda: Inspection.objects.get(pk=draft.pk).post(),
+                        lambda: GoodsReceipt.objects.get(pk=made.receipt.pk).accept(made.warehouse))
+        rejection = Inspection.objects.get(pk=draft.pk)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        accepted = ReceiptInspection.objects.filter(accepted=True).first()
+        if accepted is not None:
+            self.assertLess(accepted.created_at, rejection.posted_at,
+                            "the drums were cleared after their rejection was posted")
