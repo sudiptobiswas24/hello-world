@@ -178,6 +178,11 @@ def tax_invoice(invoice, copy="original"):
         "taxable": sum((line["taxable"] for line in lines), Decimal("0")),
         "taxes": [(name, rate, amount) for (_, name, rate), amount in sorted(by_rate.items())],
         "export": export_words(invoice),
+        "tcs": [{"section": row.section.code, "rate": row.rate_percent, "base": row.base, "amount": row.amount,
+                 "declaration": (f"Form {row.declaration.form} {row.declaration.reference}".strip()
+                                 + f" received {row.declaration.received_on:%d %b %Y}") if row.declaration_id else None,
+                 "gives_back": row.gives_back.invoice.number if row.gives_back_id else None}
+                for row in invoice.tcs_collected.select_related("section", "declaration", "gives_back__invoice")],
         "signatory": supplier["name"],
     }
 
@@ -249,6 +254,11 @@ def render_invoice_pdf(invoice, copy="original"):
 
     totals = [["Taxable value", printed["taxable"]]]
     totals += [[f"{name} @ {_rate(rate)}", amount] for name, rate, amount in printed["taxes"]]
+    for row in printed["tcs"]:
+        if not row["declaration"]:
+            what = "TCS given back" if row["gives_back"] else "TCS collected"
+            totals.append([f"{what} u/s {row['section']} @ {_rate(row['rate'])} on {money(row['base'], currency)}",
+                           row["amount"]])
     totals.append(["Total", invoice.total()])
     if invoice.amount_paid():
         totals.append(["Paid", f"-{money(invoice.amount_paid(), currency)}"])
@@ -275,6 +285,10 @@ def render_invoice_pdf(invoice, copy="original"):
         blocks.append(("DELIVERED TO", text))
     if printed["export"]:
         blocks.append(("", f"<b>{printed['export']}</b>"))
+    for row in printed["tcs"]:
+        if row["declaration"]:
+            blocks.append(("", f"TCS u/s {row['section']} not collected: the buyer's declaration, "
+                               f"{row['declaration']}."))
 
     return render_document(
         heading=printed["heading"], subheading=printed["copy"],
