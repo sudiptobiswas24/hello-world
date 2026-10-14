@@ -16,6 +16,7 @@ from apps.core.models import Company, Currency, ExchangeRate, Party, PartyRole, 
 from .models import (
     Bill,
     BillLine,
+    BillPolicy,
     GoodsReceipt,
     GoodsReceiptLine,
     LandedCostApplication,
@@ -246,7 +247,7 @@ class ReturnDebitsTheBillTests(ReturnTestCase):
 
         self.assertEqual(returned.debit_notes_created, [])
 
-    def test_it_spreads_across_several_bills_oldest_first(self):
+    def test_it_debits_the_bill_that_paid_for_the_receipt_returned(self):
         order = self.make_order("10", "5")
         self.receive(order, "4")
         first = order.create_bill(self.payable, bill_date=datetime.date(2026, 1, 10))
@@ -257,13 +258,14 @@ class ReturnDebitsTheBillTests(ReturnTestCase):
 
         returned = receipt.create_return()
 
-        # Six back, allocated oldest-first: four off the 4-unit first bill,
-        # two off the 6-unit second. Receipts and bills are linked only
-        # through the order line, so oldest-first is the convention, the
-        # same one a customer return uses to pick invoices.
-        self.assertEqual(len(returned.debit_notes_created), 2)
-        self.assertEqual(first.amount_due(), Decimal("0"))
-        self.assertEqual(second.amount_due(), Decimal("20"))
+        # The six of the second receipt go back, and the second bill (6 @ 5,
+        # 30.00) is the one that paid for them: it is debited in full, and
+        # the first (4 @ 5, 20.00) is still owed. Oldest-first took four off
+        # the first bill for goods it never paid for (O94; this test encoded
+        # that, 0 and 20, until then).
+        self.assertEqual(len(returned.debit_notes_created), 1)
+        self.assertEqual(first.amount_due(), Decimal("20"))
+        self.assertEqual(second.amount_due(), Decimal("0"))
 
     def test_the_payable_ends_up_right(self):
         order, receipt, bill = self.billed("10", "5")
@@ -688,6 +690,97 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
 
 
+    # O2, O42, O48: landed cost follows the goods it landed on, still on the
+    # shelf, moved since, sold, or issued to production (the owner's decision
+    # of 9 October: freight on goods issued to a run is production cost).
+
+    def with_its_freight(self):
+        bill = self.order_for_receipt.create_bill(self.payable, bill_date=datetime.date(2026, 1, 25))
+        BillLine.objects.create(bill=bill, charge=self.freight, description="Freight on this lot",
+                                quantity=Decimal("1"), unit_price=Decimal("80"),
+                                expense_account=self.freight_expense)
+        bill.post()
+        return bill
+
+    def received(self):
+        self.order_for_receipt, self.receipt = self.goods_received("10", "5")
+
+    def issued_to_a_run(self, quantity):
+        from apps.manufacturing.bom import BillOfMaterials, BomComponent
+        from apps.inventory.models import Item
+        from apps.manufacturing.orders import (
+            ManufacturingSettings, MaterialIssue, MaterialIssueLine, WorkCentre, WorkOrder,
+        )
+
+        self.wip = Account.objects.create(code="1250", name="Work in progress", account_type=AccountType.ASSET)
+        ManufacturingSettings.objects.create(wip_account=self.wip, variance_account=self.cogs)
+        sack = Item.objects.create(sku="SACK", name="Sack", uom=self.uom)
+        bom = BillOfMaterials.objects.create(item=sack, name="Sack", quantity_produced=Decimal("10"), uom=self.uom)
+        BomComponent.objects.create(bom=bom, item=self.item, quantity=Decimal("10"), uom=self.uom, line_number=1)
+        run = WorkOrder.objects.create(item=sack, bom=bom, quantity_ordered=Decimal("10"), uom=self.uom,
+                                       warehouse=self.warehouse,
+                                       work_centre=WorkCentre.objects.create(code="LOOM", name="Loom"))
+        run.release(datetime.date(2026, 1, 15))
+        issue = MaterialIssue.objects.create(work_order=run, issue_date=datetime.date(2026, 1, 15),
+                                             warehouse=self.warehouse)
+        MaterialIssueLine.objects.create(issue=issue, item=self.item, quantity=Decimal(quantity),
+                                         uom=self.uom, line_number=1)
+        issue.post()
+        return run
+
+    def test_released_after_the_put_away_it_comes_off_the_stock_room(self):
+        # O42: landed on the bay, put away, released: the bay gave up 0, cost
+        # of sales was credited 80, and the stock room kept the 80.
+        self.via_the_bay()
+        self.received()
+        application = self.landed()
+        self.assertEqual(self.item.stock_value_at(self.bay), Decimal("130.00"))
+        self.put_away()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+        application.release()
+        self.assertEqual((self.item.stock_value_at(self.warehouse), self.item.stock_value_at(self.bay)),
+                         (Decimal("50.00"), Decimal("0.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.freight_expense)),
+                         (Decimal("50"), Decimal("0"), Decimal("80")))
+
+    def test_its_own_bills_freight_on_goods_gone_is_cost_of_sales(self):
+        # O2: the bill's own freight debited inventory whatever had happened to the goods.
+        self.received()
+        self.written_off()
+        self.with_its_freight()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)), (Decimal("0"), Decimal("80")))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("0.00"))
+
+    def test_its_own_bills_freight_lands_on_the_bay_the_goods_wait_in(self):
+        # O2: it landed on the stock room they were bound for, empty.
+        self.via_the_bay()
+        self.received()
+        self.with_its_freight()
+        self.assertEqual((self.item.stock_value_at(self.bay), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("130.00"), Decimal("0.00")))
+
+    def test_freight_on_goods_issued_to_a_run_is_production_cost(self):
+        # O48: 6 of 10 issued to a run (30 into WIP), then 80 of freight: 32 on
+        # the 4 on the shelf, 48 to the run, none to cost of sales.
+        self.received()
+        run = self.issued_to_a_run("6")
+        application = self.landed()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.wip), self.balance(self.cogs)),
+                         (Decimal("52.00"), Decimal("78.00"), Decimal("0")))
+        self.assertEqual(run.material_cost(), Decimal("78.00"))
+        application.release()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.wip), self.balance(self.cogs)),
+                         (Decimal("20.00"), Decimal("30.00"), Decimal("0")))
+        self.assertEqual(run.material_cost(), Decimal("30.00"))
+
+    def test_its_own_bills_freight_on_goods_issued_to_a_run_is_production_cost(self):
+        self.received()
+        self.issued_to_a_run("6")
+        self.with_its_freight()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.wip), self.balance(self.cogs)),
+                         (Decimal("52.00"), Decimal("78.00"), Decimal("0")))
+
+
 class OneChargeLandsOnceTests(ThirdPartyLandedCostTests):
     """A freight bill could land on the goods and be capitalised onto a machine as well: 80.00
     of freight became 80.00 of stock and 80.00 of asset, and the freight account went to -80.00."""
@@ -891,3 +984,181 @@ class WhereTheFreightIsTests(OneChargeLandsOnceTests):
         with self.assertRaisesMessage(ValidationError, "given back in full"):
             charge.capitalise_as_asset(self.category)
         self.assertEqual(self.balance(self.category.asset_account), Decimal("0"))
+
+
+# The purchasing audit probes (docs/handoff/reports/probes/audit_pur_purchasing_tests_probe_audit.py).
+JAN = lambda day: datetime.date(2026, 1, day)  # noqa: E731
+
+
+def probe_accounts(self):
+    """What every probe adds to the lifecycle fixture: variance and exchange accounts, tolerance 0."""
+    acc = lambda code, name, kind: Account.objects.create(code=code, name=name, account_type=kind)  # noqa: E731
+    self.ppv = acc("5900", "Purchase price variance", AccountType.EXPENSE)
+    self.fx_loss = acc("7100", "FX loss", AccountType.EXPENSE)
+    self.fx_gain = acc("7000", "FX gain", AccountType.INCOME)
+    company = Company.get()
+    company.purchase_price_variance_account = self.ppv
+    company.default_purchase_expense_account = self.expense
+    company.fx_loss_account = self.fx_loss
+    company.fx_gain_account = self.fx_gain
+    company.purchase_price_tolerance_percent = Decimal("0")
+    company.save()
+
+
+class ProbeCase(PurchasingLifecycleTestCase):
+    def setUp(self):
+        super().setUp()
+        probe_accounts(self)
+
+    def balance(self, account):
+        rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(
+            d=Sum("debit"), c=Sum("credit"))
+        return (rows["d"] or Decimal("0")) - (rows["c"] or Decimal("0"))
+
+    def order(self, quantity="10", price="5", discount="0", policy=BillPolicy.RECEIVED, vendor=None,
+              item=None, uom=None, confirm=True):
+        order = PurchaseOrder.objects.create(vendor=vendor or self.vendor, order_date=JAN(1),
+                                             bill_policy=policy)
+        PurchaseOrderLine.objects.create(order=order, item=item or self.item, uom=uom or self.uom,
+                                         quantity=Decimal(quantity), unit_price=Decimal(price),
+                                         discount_percent=Decimal(discount))
+        if confirm:
+            order.confirm()
+        return order
+
+    def hand_bill(self, line, quantity, price, discount="0", vendor=None, order=None, currency=None,
+                  reference="", item=None, link=True, day=None):
+        bill = Bill.objects.create(vendor=vendor or self.vendor, bill_date=day or JAN(10), purchase_order=order,
+                                   payable_account=self.payable, currency=currency or self.usd,
+                                   reference=reference)
+        BillLine.objects.create(bill=bill, order_line=line if link else None, item=item or self.item,
+                                quantity=Decimal(quantity), unit_price=Decimal(price),
+                                discount_percent=Decimal(discount), expense_account=self.expense)
+        return bill
+
+    def receive_on(self, order, quantity, day):
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=day)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.get(), warehouse=self.warehouse,
+                                        quantity_received=Decimal(quantity))
+        receipt.post()
+        return receipt
+
+    def other_vendor(self):
+        other = Party.objects.create(code="V-2", name="Another supplier", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.VENDOR)
+        return other
+
+
+class GrniClearsTests(ProbeCase):
+    """O89, O93, O94: the purchasing audit probes of 9 October, kept as regression tests."""
+
+    def test_billed_ahead_of_its_goods_grni_clears_when_they_come(self):
+        """Billed as ordered, 10 @ 5, then the 10 arrive: GRNI 0, purchases 0, inventory 50."""
+        order = self.order(policy=BillPolicy.ORDERED)
+        order.create_bill(self.payable, bill_date=JAN(3)).post()
+        self.receive(order, "10")
+        observed = (self.balance(self.grni), self.balance(self.expense), self.balance(self.inventory))
+        self.assertEqual(observed, (Decimal("0"), Decimal("0"), Decimal("50.00")),
+                         "(GRNI, purchases, inventory)")
+
+    def test_billed_one_at_a_time_grni_clears_to_the_paisa(self):
+        """3 @ 10.10 less 2.5% received (accrued 29.54), billed 1+1+1 at 9.85: GRNI 0.00."""
+        order = self.order("3", "10.10", discount="2.5")
+        self.receive(order, "3")
+        line = order.lines.get()
+        for _ in range(3):
+            self.hand_bill(line, "1", "10.10", discount="2.5", order=order).post()
+        self.assertEqual(self.balance(self.grni), Decimal("0.00"))
+
+    def test_every_variation_at_once_grni_clears(self):
+        """
+        EUR 10 @ 5 less 10%: 6 in at 90, 4 in at 92 (2,430 + 1,656); billed 10 @ 5.20 less 10% at 95;
+        3 of the first receipt sent back, debiting the bill. GRNI 0; the shelf gives up 3 at its
+        average 408.60 (1,225.80, 10.80 of it price variance), leaving inventory 2,860.20.
+        """
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        for day, rate in ((1, "90"), (6, "92"), (10, "95")):
+            ExchangeRate.objects.create(currency=eur, rate=Decimal(rate), valid_from=JAN(day))
+        company = Company.get()
+        company.purchase_price_tolerance_percent = Decimal("10")
+        company.save()
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=JAN(1), currency=eur)
+        line = PurchaseOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                                unit_price=Decimal("5"), discount_percent=Decimal("10"))
+        order.confirm()
+        receipts = []
+        for quantity, day in (("6", 5), ("4", 7)):
+            receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=JAN(day))
+            GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                            quantity_received=Decimal(quantity))
+            receipt.post()
+            receipts.append(receipt)
+        self.hand_bill(line, "10", "5.20", discount="10", order=order, currency=eur).post()
+        receipts[0].create_return({receipts[0].lines.get(): Decimal("3")})
+        self.assertEqual((self.balance(self.grni), self.balance(self.inventory)),
+                         (Decimal("0"), Decimal("2860.20")), "(GRNI, inventory)")
+    def test_goods_sent_back_are_debited_on_the_bill_that_paid_for_them(self):
+        """
+        20 ordered @ 5 (tolerance 10%). 10 in on 5 Jan, billed 10 Jan at 5.00; 10 in on 11 Jan, billed
+        12 Jan at 5.40 (4.00 variance). 3 of the second receipt sent back: the bill for them gave 16.20,
+        so the vendor is debited 16.20 and the variance kept is 2.80.
+        """
+        company = Company.get()
+        company.purchase_price_tolerance_percent = Decimal("10")
+        company.save()
+        order = self.order("20", "5")
+        line = order.lines.get()
+        self.receive_on(order, "10", JAN(5))
+        self.hand_bill(line, "10", "5.00", order=order, day=JAN(10)).post()
+        second = self.receive_on(order, "10", JAN(11))
+        self.hand_bill(line, "10", "5.40", order=order, day=JAN(12)).post()
+        returned = second.create_return({second.lines.get(): Decimal("3")})
+        debited = sum((note.total() for note in returned.debit_notes_created), Decimal("0"))
+        self.assertEqual((debited, self.balance(self.ppv), self.balance(self.grni)),
+                         (Decimal("16.20"), Decimal("2.80"), Decimal("0")), "(debited, PPV, GRNI)")
+
+
+class CapitaliseFromStockTests(ProbeCase):
+    """O101: capitalising a received stock line takes it off the shelf as well as GRNI."""
+
+    def test_capitalising_a_received_machine_leaves_grni_and_stock_clear(self):
+        """A stocked machine 1 @ 12,000 received and billed, then capitalised: GRNI 0, inventory 0, plant 12,000."""
+        from apps.assets.models import AssetCategory
+
+        acc = lambda code, name, kind: Account.objects.create(code=code, name=name, account_type=kind)  # noqa: E731
+        plant = acc("1500", "Plant", AccountType.ASSET)
+        category = AssetCategory.objects.create(
+            code="PLANT", name="Plant", asset_account=plant,
+            accumulated_account=acc("1590", "Accumulated", AccountType.ASSET),
+            expense_account=acc("6100", "Depreciation", AccountType.EXPENSE),
+            disposal_account=acc("6200", "Disposal", AccountType.EXPENSE), default_life_months=60)
+        order = self.order("1", "12000")
+        self.receive(order, "1")
+        bill = order.create_bill(self.payable, bill_date=JAN(10))
+        bill.post()
+        (asset,) = bill.lines.get().capitalise_as_asset(category)
+        observed = (self.balance(self.grni), self.balance(self.inventory), self.balance(plant))
+        self.assertEqual(observed, (Decimal("0"), Decimal("0"), Decimal("12000.00")), "(GRNI, inventory, plant)")
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+        # Undone, it is back on the shelf at what it left at, and off plant.
+        asset.uncapitalise()
+        self.assertEqual((self.balance(self.inventory), self.balance(plant), self.item.on_hand_at(self.warehouse)),
+                         (Decimal("12000.00"), Decimal("0"), Decimal("1")))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("12000.00"))
+
+
+class ADebitNoteKeepsTheCostCentreTests(ProbeCase):
+    """O56 (audit_acc CostCentreProbe): 10 x 100 to the loom shed, 3 debited back: LOOM 700, nothing unallocated."""
+
+    def test_a_debit_note_takes_the_cost_off_the_centre_that_bore_it(self):
+        from apps.accounting.analytic import CostCentre, costs_by_centre
+
+        loom = CostCentre.objects.create(code="LOOM", name="Loom shed")
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=JAN(10), payable_account=self.payable,
+                                   currency=self.usd)
+        BillLine.objects.create(bill=bill, description="Spares", quantity=Decimal("10"), unit_price=Decimal("100"),
+                                expense_account=self.expense, cost_centre=loom)
+        bill.post()
+        bill.create_debit_note(quantities={bill.lines.get(): Decimal("3")})
+        rows = {row["code"] or "unallocated": row["amount"] for row in costs_by_centre()["rows"]}
+        self.assertEqual(rows, {"LOOM": Decimal("700.00")})

@@ -831,6 +831,8 @@ class WorkOrder(AuditModel):
         total = Decimal("0")
         for issue in self.posted_issues():
             total += issue.posted_value or Decimal("0")
+        # What reached the material after it went in: freight landed on it.
+        total += self.added_costs.aggregate(total=models.Sum("amount"))["total"] or Decimal("0")
         return total
 
     def posted_time(self):
@@ -1266,6 +1268,25 @@ class WorkOrder(AuditModel):
         if self.wip_account_id is not None:
             return self.wip_account
         return ManufacturingSettings.account("wip", why)
+
+    def add_cost(self, amount, on_date, journal_entry, memo=""):
+        """
+        Cost that reaches this run after the material it belongs to went in:
+        freight landed on goods already issued to it is production cost, the
+        owner's decision of 9 October (O48). Signed; a release takes it back.
+
+        Open, it is work in progress the close will clear, since the run's
+        material cost counts it. Closed, the close cleared the run, and what
+        reaches it after is variance, where its material over- and under-use
+        went. Returns the account the caller's entry debits; kept on the row.
+        """
+        if self.status == WorkOrderStatus.CLOSED:
+            account = ManufacturingSettings.account("variance", f"cost is reaching {self}, which is closed")
+        else:
+            account = self.wip(f"cost is reaching {self}")
+        AddedCost.objects.create(work_order=self, amount=amount, date=on_date, account=account,
+                                 journal_entry=journal_entry, memo=memo[:255])
+        return account
 
     def _check_rework(self):
         """
@@ -2209,6 +2230,39 @@ class VoidedNotDeleted:
         if self.posted:
             raise ValidationError(f"Cannot delete {self} once it is posted. Void it instead.")
         return super().delete(*args, **kwargs)
+
+
+class AddedCost(AuditModel):
+    """
+    Cost that reached a run after its material went in (WorkOrder.add_cost):
+    the share of a freight bill on goods already issued to it. Booked by the
+    entry that landed the freight, and counted in the run's material cost.
+    """
+
+    work_order = models.ForeignKey(WorkOrder, on_delete=models.PROTECT, related_name="added_costs")
+    amount = models.DecimalField(max_digits=18, decimal_places=2, help_text="Signed: a release is negative.")
+    date = models.DateField()
+    account = models.ForeignKey(
+        "accounting.Account", on_delete=models.PROTECT, related_name="+",
+        help_text="What the entry debited: the run's work in progress, or the variance once it was closed.",
+    )
+    journal_entry = models.ForeignKey("accounting.JournalEntry", on_delete=models.PROTECT, related_name="+")
+    memo = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        ordering = ["date", "id"]
+        constraints = [
+            # Signed by design (a release is negative), never nothing.
+            models.CheckConstraint(check=~Q(amount=0), name="added_cost_moves_something"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk and not self._state.adding:
+            raise ValidationError("A cost added to a run is posted; a release adds the opposite.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A cost added to a run is posted; a release adds the opposite.")
 
 
 class IssueDirection(models.TextChoices):
