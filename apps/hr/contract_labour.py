@@ -66,6 +66,10 @@ class ContractWorker(AuditModel):
     def __str__(self):
         return f"{self.name} through {self.contractor.party.name}"
 
+    def locked_before_it(self):
+        """The contractor, as save() takes it before the worker: an edit through the API holds it first (O37)."""
+        return [self.contractor] if self.contractor_id else []
+
     def save(self, *args, **kwargs):
         self.joined_on, self.left_on = to_date(self.joined_on), to_date(self.left_on)
         if self.left_on and self.left_on < self.joined_on:
