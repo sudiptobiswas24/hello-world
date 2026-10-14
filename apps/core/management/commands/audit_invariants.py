@@ -1714,7 +1714,7 @@ class Command(BaseCommand):
         **dict.fromkeys((
             "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
             "sales.CustomerTds.reverse",
-            "purchasing.TdsDeduction.reverse", "purchasing.TdsChallan.void",
+            "purchasing.TdsDeduction.reverse",
             "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
             "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void"), NOT_YET_ON_THE_RULE),
     }

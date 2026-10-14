@@ -419,14 +419,16 @@ def build(invoice):
     def head(name):
         return _money(sum((getattr(line, name) for line in document.lines), ZERO))
 
+    # TCS collected with the sale is an other charge in the invoice's value, not GST (sales.tcs).
+    other = round_money(invoice.tcs_amount * rate)
     payload["ValDtls"] = {
         "AssVal": _money(sum((line.taxable for line in document.lines), ZERO)),
         "CgstVal": head("cgst"), "SgstVal": head("sgst"), "IgstVal": head("igst"),
-        "CesVal": head("cess"), "StCesVal": 0.0, "Discount": 0.0, "OthChrg": 0.0,
+        "CesVal": head("cess"), "StCesVal": 0.0, "Discount": 0.0, "OthChrg": _money(other),
         # Lines turned into rupees one by one can sum a paisa away from
         # the document's own total turned into rupees; the total is what
         # the ledger holds.
-        "RndOffAmt": _money(document.value - running),
+        "RndOffAmt": _money(document.value - running - other),
         "TotInvVal": _money(document.value),
     }
     if document.is_note and invoice.credits_id:

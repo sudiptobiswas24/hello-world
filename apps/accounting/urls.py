@@ -1,6 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
-from .tds_api import TdsSectionViewSet
+from .tds_api import TcsDeclarationViewSet, TcsRateViewSet, TcsSectionViewSet, TdsSectionViewSet
 
 from .banking_api import BankStatementLineViewSet, BankStatementViewSet
 from .charges_api import ChargeTypeViewSet
@@ -46,6 +46,9 @@ router.register(
 
 router.register("charge-types", ChargeTypeViewSet)
 router.register("tds-sections", TdsSectionViewSet)
+router.register("tcs-sections", TcsSectionViewSet)
+router.register("tcs-rates", TcsRateViewSet)
+router.register("tcs-declarations", TcsDeclarationViewSet)
 router.register("bank-statements", BankStatementViewSet)
 router.register("bank-statement-lines", BankStatementLineViewSet)
 

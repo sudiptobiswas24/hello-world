@@ -1,5 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
+from .tcs_api import TcsChallanViewSet, TcsCollectionViewSet
 from .tds_api import CustomerTdsViewSet
 
 from .writeoffs_api import InvoiceWriteOffViewSet
@@ -48,6 +49,8 @@ router.register("invoice-lines", InvoiceLineViewSet)
 router.register("invoice-payments", InvoicePaymentViewSet)
 router.register("invoice-write-offs", InvoiceWriteOffViewSet)
 router.register("customer-tds", CustomerTdsViewSet)
+router.register("tcs-collections", TcsCollectionViewSet)
+router.register("tcs-challans", TcsChallanViewSet)
 router.register("deliveries", DeliveryViewSet)
 router.register("delivery-lines", DeliveryLineViewSet)
 router.register("price-lists", PriceListViewSet)

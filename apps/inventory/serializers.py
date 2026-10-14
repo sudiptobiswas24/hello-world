@@ -59,7 +59,7 @@ class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
             "id", "sku", "name", "description", "item_type", "stock_class", "uom",
             "track_inventory", "tracking", "costing_method", "standard_cost",
             "sale_price", "inventory_account", "cogs_account", "is_active",
-            "hsn_code", "extra",
+            "hsn_code", "tcs_section", "extra",
         ]
         # A standard cost cannot be assigned: changing it revalues the
         # stock on hand, which is a posting. set_standard_cost() does it.

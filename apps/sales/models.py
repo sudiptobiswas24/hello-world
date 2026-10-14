@@ -1974,6 +1974,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
     settlement_discount_withdrawal_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
     )
+    tcs_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"), editable=False,
+        help_text="TCS it collected as it posted (sales.tcs), or on a credit note gave back: part of what the "
+                  "buyer owes with it, so part of its total.")
     issued_as = models.JSONField(
         null=True, blank=True, editable=False,
         help_text="Who issued it to whom, where and under which registrations, as they stood when it "
@@ -2052,6 +2056,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
 
     def corrected_document(self):
         return self.credits
+
+    def total(self):
+        """With the TCS it collected, which the buyer owes with it (sales.tcs)."""
+        return super().total() + self.tcs_amount
 
     def render_pdf(self, copy="original"):
         """The tax invoice or credit note as PDF bytes; `copy` is which of the three (documents.COPIES)."""
@@ -2896,6 +2904,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         from .documents import issued_particulars
 
         self.issued_as = issued_particulars(self)
+        from .tcs import collect
+
+        self.tcs_amount = collect(self)
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
@@ -2904,7 +2915,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             update_fields=[
                 "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
                 "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
-                "place_of_supply", "issued_as", "posted_total", "updated_at",
+                "place_of_supply", "issued_as", "tcs_amount", "posted_total", "updated_at",
             ]
         )
 
@@ -6078,6 +6089,7 @@ from .price_variation import (  # noqa: E402,F401
 
 
 from .tds import CustomerTds  # noqa: E402,F401
+from .tcs import TcsChallan, TcsCollection  # noqa: E402,F401
 
 
 def _settled_complaint(note):

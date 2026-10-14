@@ -118,6 +118,11 @@ ROLES = {
         *crud("accounting", "taxgroup"),
         *crud("accounting", "chargetype"),
         *crud("accounting", "tdssection"),
+        *crud("accounting", "tcssection"),
+        *crud("accounting", "tcsrate"),
+        "accounting.confirm_tcsrate",
+        *crud("accounting", "tcsdeclaration", actions=("add", "change", "view")),
+        *view("sales", "tcscollection", "tcschallan"),
         # TDS: what customers deducted, confirmed against Form 26AS; what
         # the company deducted and paid over, read for the return.
         *crud("sales", "customertds", actions=("add", "change", "view")),
@@ -195,6 +200,10 @@ ROLES = {
         # Form 26AS is the Controller's.
         *crud("sales", "customertds", actions=("add", "view")),
         *view("accounting", "tdssection"),
+        *view("accounting", "tcssection", "tcsrate"),
+        *crud("accounting", "tcsdeclaration", actions=("add", "change", "view")),
+        *view("sales", "tcscollection"),
+        *crud("sales", "tcschallan", actions=("add", "view")),
         # Complaints are settled in money here, so read.
         *view("manufacturing", "complaint", "correctiveaction"),
         *crud("sales", "pricelist"),
