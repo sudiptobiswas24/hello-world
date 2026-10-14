@@ -34,12 +34,19 @@ def settlement_difference(amount, document_rate, payment_rate):
     Positive means the document was booked at a higher rate than it
     settled at; which way that reads as a gain or a loss depends on
     whether the control account is a receivable or a payable.
+
+    It is the base each side booked for `amount`, each rounded as it was
+    booked, subtracted (O49). The rate difference times the amount,
+    rounded, is a third figure neither side holds: 100.09 EUR booked at
+    1.12345 (112.45) and paid at 1.09876 (109.97) cleared 2.47 of the
+    2.48 between them and left a paisa on the receivable for good.
     """
     document_rate = document_rate or Decimal("1")
     payment_rate = payment_rate or Decimal("1")
     if document_rate == payment_rate:
         return Decimal("0")
-    return round_money(Decimal(amount) * (document_rate - payment_rate))
+    amount = Decimal(amount)
+    return round_money(amount * document_rate) - round_money(amount * payment_rate)
 
 
 @transaction.atomic
@@ -129,6 +136,19 @@ class RealisedOnItsOwnDay:
     def settles(self):
         raise NotImplementedError
 
+    def outstanding_for_it(self):
+        """
+        What the document this allocation now names leaves room for: its
+        amount due, plus what this allocation as stored already takes off
+        that same document. Re-pointed to another one, it took nothing off
+        it yet (O54): 1,000 moved from X (1,000) to Y (500) was measured
+        against X's 1,000 added back to Y's 500, and Y read -500 due.
+        """
+        document, *_ = self.settles()
+        stored = type(self).objects.filter(pk=self.pk).first() if self.pk else None
+        here = stored.amount if stored is not None and stored.settles()[0].pk == document.pk else Decimal("0")
+        return document.amount_due() + here
+
     def day_applied(self):
         """
         The day this allocation is made or re-stated: its `date` when one is
@@ -199,10 +219,27 @@ class RealisedOnItsOwnDay:
             super(RealisedOnItsOwnDay, self).save(update_fields=["fx_released_entry", "updated_at"])
 
 
+def held_base_left(held_account, entries, *, is_receivable):
+    """
+    The base still held on `held_account` by `entries`: what a deposit or
+    a prepayment put there less what its drawdowns and its notes took off,
+    as each was booked. A deposit sits as a credit, a prepayment as a
+    debit; either way the figure is positive while something is held.
+    """
+    from django.db.models import Sum
+
+    rows = JournalLine.objects.filter(
+        entry__in=[entry for entry in entries if entry is not None], entry__posted=True,
+        account=held_account,
+    ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    debit, credit = rows["debit"] or Decimal("0"), rows["credit"] or Decimal("0")
+    return credit - debit if is_receivable else debit - credit
+
+
 @transaction.atomic
 def post_drawdown(
     *, party, held_account, control_account, amount, held_rate, document_rate,
-    date, reference, memo, is_receivable, taxes=(),
+    date, reference, memo, is_receivable, taxes=(), held_left=None,
 ):
     """
     Draw money held up front — a customer's deposit, a prepayment to a
@@ -227,10 +264,19 @@ def post_drawdown(
     advance for a service bears it when received): that much is taken
     off the tax accounts rather than the held one, since the document it
     is drawn against charges tax on the whole.
+
+    `held_left`, (amount, base), is what is still held, in the document's
+    currency and in base as booked (`held_base_left`). The drawdown that
+    takes the last of the amount takes the last of the base: each rounded
+    on its own, 100 EUR held at 1.12345 (112.35) and drawn 50 + 50 cleared
+    56.17 twice and left a paisa held with nothing left to draw (O51).
     """
     held_base = round_money(Decimal(amount) * (held_rate or Decimal("1")))
     tax_base = [(account, round_money(Decimal(tax) * (held_rate or Decimal("1"))))
                 for account, tax in taxes]
+    taxed = sum((tax for _, tax in tax_base), Decimal("0"))
+    if held_left is not None and Decimal(amount) == held_left[0]:
+        held_base = held_left[1] + taxed
     booked_base = round_money(Decimal(amount) * (document_rate or Decimal("1")))
 
     entry = JournalEntry.objects.create(date=date, reference=reference, memo=memo)
@@ -243,7 +289,7 @@ def post_drawdown(
         raise ValueError("Tax on money held is drawn down only from a customer's advance.")
     JournalLine.objects.create(
         entry=entry, account=debit, party=party,
-        debit=held_base - sum((tax for _, tax in tax_base), Decimal("0")), description=memo,
+        debit=held_base - taxed, description=memo,
     )
     for account, tax in tax_base:
         JournalLine.objects.create(entry=entry, account=account, party=party, debit=tax,
@@ -347,7 +393,12 @@ def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
             total=models.Sum(field)).values("total")
         return Coalesce(Subquery(summed), zero, output_field=money)
 
-    note_rows, note_pointer = notes
+    # A note's fields named after its pointer are what it spent undoing a
+    # settlement that moved no money: that much of it corrected nothing owed.
+    note_rows, note_pointer, *undoing = notes
+    note_value = models.F("posted_total")
+    for name in undoing:
+        note_value = note_value - models.F(name)
     settled = (models.F("standing_paid") + models.F("corrected_total")
                + models.F("drawn_total"))
     for name in reductions:  # "-name" puts one back: a discount withdrawn
@@ -357,9 +408,33 @@ def owed_beyond(candidates, *, notes, drawdowns, reductions=()):
     for rows, pointer in drawdowns:
         drawn = drawn + total_of(rows, pointer, "amount")
     return candidates.annotate(
-        corrected_total=total_of(note_rows, note_pointer, "posted_total"),
+        corrected_total=total_of(note_rows, note_pointer,
+                                 models.ExpressionWrapper(note_value, output_field=money)),
         drawn_total=models.ExpressionWrapper(drawn, output_field=money),
     ).filter(posted_total__isnull=False, posted_total__gt=settled)
+
+
+def standing_allocations(document):
+    """
+    The payments applied to `document` (an invoice, a bill, either's note)
+    that still stand. A voided payment is money that never arrived, or
+    never left: a bounced cheque, a recalled transfer. Its allocation stays
+    on record as history, but nothing counts it.
+
+    The one rule both sides ask (O53): a debit note's refund counted every
+    allocation, so a vendor's bounced 300 refund read the note settled
+    while the payable held 300; the sales mirror had always skipped voided
+    payments. Commission on collection counted the bounced cheque too
+    (O74). Read through `document.payment_allocations`, so a caller's
+    prefetch is used.
+    """
+    return [allocation for allocation in document.payment_allocations.all()
+            if not allocation.payment.is_voided()]
+
+
+def standing_paid(document):
+    """What of the payments applied to `document` still stands."""
+    return sum((allocation.amount for allocation in standing_allocations(document)), Decimal("0"))
 
 
 # What records a payment being applied to a document: sales registers

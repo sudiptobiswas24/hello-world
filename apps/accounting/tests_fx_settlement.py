@@ -529,3 +529,107 @@ class AllocationsDatedAsTheyWereMigrationTests(TransactionTestCase):
             ([datetime.date(2026, 2, 15)], [datetime.date(2026, 2, 16)]))
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class EachSidesBookedBaseTests(FxSettlementTestCase):
+    """
+    O49, O51 (FxResidueProbe). 100.09 EUR booked at 1.12345 (112.45) and
+    settled at 1.09876 (109.97): 2.48 to clear, worked by
+    calc_fix_money/fx.py. round(100.09 * (1.12345 - 1.09876)) is 2.47,
+    a figure neither side booked, and it left a paisa on the control
+    account.
+    """
+
+    def setUp(self):
+        super().setUp()
+        ExchangeRate.objects.create(currency=self.eur, rate=Decimal("1.12345"), valid_from=datetime.date(2026, 1, 5))
+        ExchangeRate.objects.create(currency=self.eur, rate=Decimal("1.09876"), valid_from=datetime.date(2026, 2, 1))
+
+    def invoice(self, amount):
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 1, 5),
+                                          currency=self.eur)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                      unit_price=Decimal(amount), revenue_account=self.revenue)
+        order.confirm()
+        invoice = order.create_invoice(self.ar, invoice_date=datetime.date(2026, 1, 5))
+        invoice.post()
+        return invoice
+
+    def bill(self, amount):
+        from apps.purchasing.models import Bill, BillLine
+
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=datetime.date(2026, 1, 5),
+                                   payable_account=self.ap, currency=self.eur)
+        BillLine.objects.create(bill=bill, description="Parts", quantity=Decimal("1"), unit_price=Decimal(amount),
+                                expense_account=self.expense)
+        bill.post()
+        return bill
+
+    def test_the_difference_is_each_sides_base_subtracted(self):
+        self.assertEqual(settlement_difference(Decimal("100.09"), Decimal("1.12345"), Decimal("1.09876")),
+                         Decimal("2.48"))
+
+    def test_a_settled_foreign_invoice_leaves_nothing_on_the_receivable(self):
+        from apps.sales.models import InvoicePayment
+
+        invoice = self.invoice("100.09")
+        receipt = self.euro_payment(PaymentDirection.RECEIPT, "100.09")
+        InvoicePayment.objects.create(invoice=invoice, payment=receipt, amount=Decimal("100.09"))
+        self.assertEqual((invoice.amount_due(), self.balance(self.ar), self.balance(self.loss)),
+                         (Decimal("0"), Decimal("0"), Decimal("2.48")), "(due, AR, FX loss)")
+
+    def test_a_settled_foreign_bill_leaves_nothing_on_the_payable(self):
+        from apps.purchasing.models import BillPayment
+
+        bill = self.bill("100.09")
+        paying = self.euro_payment(PaymentDirection.DISBURSEMENT, "100.09")
+        BillPayment.objects.create(bill=bill, payment=paying, amount=Decimal("100.09"))
+        self.assertEqual((bill.amount_due(), self.balance(self.ap), self.balance(self.gain)),
+                         (Decimal("0"), Decimal("0"), Decimal("-2.48")), "(due, AP, FX gain)")
+
+    def test_a_deposit_drawn_in_two_halves_leaves_nothing_held(self):
+        """100 EUR held at 1.12345 is 112.35; drawn 50 + 50 the first clears 56.17, the last the 56.18 left."""
+        from apps.sales.models import Invoice, InvoiceLine, SalesOrder, SalesOrderLine
+
+        deposits = Account.objects.create(code="2300", name="Deposits", account_type=AccountType.LIABILITY)
+        Company.objects.update(customer_deposit_account=deposits)
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 1, 5),
+                                          currency=self.eur)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("2"),
+                                      unit_price=Decimal("100"), revenue_account=self.revenue)
+        order.confirm()
+        deposit = order.create_down_payment_invoice(self.ar, amount=Decimal("100"),
+                                                    invoice_date=datetime.date(2026, 1, 5))
+        deposit.post()
+        for _ in range(2):
+            invoice = Invoice.objects.create(customer=self.customer, invoice_date=datetime.date(2026, 1, 5),
+                                             receivable_account=self.ar, currency=self.eur)
+            InvoiceLine.objects.create(invoice=invoice, description="Sacks", quantity=Decimal("1"),
+                                       unit_price=Decimal("100"), revenue_account=self.revenue)
+            invoice.post()
+            invoice.apply_deposit(Invoice.objects.get(pk=deposit.pk), amount=Decimal("50"))
+        self.assertEqual(Invoice.objects.get(pk=deposit.pk).deposit_unapplied(), Decimal("0"))
+        self.assertEqual((self.balance(deposits), self.balance(self.gain)), (Decimal("0"), Decimal("-0.01")),
+                         "(deposits, FX gain): the last half takes the 56.18 left; the paisa is exchange")
+
+    def test_a_refunded_foreign_debit_note_clears_the_payable(self):
+        """
+        O70's purchasing mirror. 100 EUR billed and paid at 1.12345 (112.35), debited back
+        in full, refunded at 1.09876 (109.88): the refund clears 109.88 of the note's 112.35,
+        and the 2.47 left is an exchange loss, taken off the payable the right way.
+        """
+        from apps.purchasing.models import BillPayment
+
+        bill = self.bill("100")
+        paying = self.euro_payment(PaymentDirection.DISBURSEMENT, "100", on=datetime.date(2026, 1, 6))
+        BillPayment.objects.create(bill=bill, payment=paying, amount=Decimal("100"))
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("1")})
+        refund = Payment.objects.create(
+            party=self.vendor, direction=PaymentDirection.RECEIPT, payment_date=datetime.date(2026, 2, 15),
+            amount=Decimal("100"), currency=self.eur, bank_account=self.bank, counterpart_account=self.ap)
+        refund.post()
+        BillPayment.objects.create(bill=note, payment=refund, amount=Decimal("100"))
+        self.assertEqual((self.balance(self.ap), self.balance(self.loss)), (Decimal("0"), Decimal("2.47")),
+                         "(AP, FX loss)")
