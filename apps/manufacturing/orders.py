@@ -749,14 +749,18 @@ class WorkOrder(AuditModel):
         kilogramme, and the run then took a further 1,000 kg against a
         ceiling of 1,100.
         """
+        # Each at the factor that stood on its own day (O41): restated at
+        # today's, a conversion that moved (a sack's weight respecified) made
+        # the run count other than what went on the shelf.
         total = Decimal("0")
-        for row in self.posted_entries().order_by().values("uom").annotate(
+        for row in self.posted_entries().order_by().values("uom", "entry_date").annotate(
                 booked=models.Sum(field)):
             booked = row["booked"] or Decimal("0")
             if row["uom"] != self.uom_id:
+                day = row["entry_date"]
                 booked = self.item.to_stock_quantity(
-                    booked, UnitOfMeasure.objects.get(pk=row["uom"])
-                ) / self.item.unit_factor(self.uom)
+                    booked, UnitOfMeasure.objects.get(pk=row["uom"]), on_date=day,
+                ) / self.item.unit_factor(self.uom, on_date=day)
             total += booked
         return total
 
@@ -2932,14 +2936,17 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
     def is_voided(self):
         return self.voided_at is not None
 
+    # At the factor that stood on the entry's own day, as the run's count
+    # reads it (WorkOrder._booked, O41), so the shelf and the count agree
+    # whenever either is asked.
     def stock_quantity(self):
         return self.work_order.item.to_stock_quantity(
-            self.quantity_produced, self.uom
+            self.quantity_produced, self.uom, on_date=self.entry_date
         )
 
     def scrapped_stock_quantity(self):
         return self.work_order.item.to_stock_quantity(
-            self.quantity_scrapped, self.uom
+            self.quantity_scrapped, self.uom, on_date=self.entry_date
         )
 
     def consumed_output(self):
