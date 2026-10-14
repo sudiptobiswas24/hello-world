@@ -50,7 +50,7 @@ class PayComponentSerializer(serializers.ModelSerializer):
     class Meta:
         model = PayComponent
         fields = ["id", "code", "name", "kind", "basis", "expense_account",
-                  "liability_account", "measure", "is_taxable", "reduces_for_unpaid_leave",
+                  "liability_account", "recoverable_account", "measure", "is_taxable", "reduces_for_unpaid_leave",
                   "sequence", "is_active", "base_components", "base_ceiling",
                   "coverage_components", "coverage_ceiling", "coverage_period_months",
                   "rounding", "remit_by_day", "statutory"]
