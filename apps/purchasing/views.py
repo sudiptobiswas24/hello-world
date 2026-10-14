@@ -405,9 +405,11 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                         for line, quantity in receipt.awaiting_inspection().items()],
             "decided": [{"id": row.pk, "line": row.receipt_line_id, "quantity": row.quantity,
                          "accepted": row.accepted, "on": row.inspected_on, "note": row.note,
+                         # Who decided: a concession names its decider (review F9).
+                         "decided_by": row.decided_by.get_username() if row.decided_by_id else None,
                          "item": row.receipt_line.order_line.item.sku}
                         for row in ReceiptInspection.objects.filter(receipt_line__receipt=receipt)
-                        .select_related("receipt_line__order_line__item").order_by("id")],
+                        .select_related("receipt_line__order_line__item", "decided_by").order_by("id")],
         })
 
     @action(detail=True, methods=["post", "delete"])
