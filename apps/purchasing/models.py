@@ -7034,6 +7034,12 @@ class GoodsReceipt(AuditModel):
         # batch goes back to the vendor (reject), or quality decides it first.
         from apps.quality.release import why_held
 
+        # The batches held first, in key order, then asked: an inspection
+        # rejecting one takes the same row before it posts (Inspection.post),
+        # so the two are one after the other and never both on what each
+        # read before the other wrote.
+        lock_rows(*{line.lot_id: line.lot for line, _quantity in selected if line.lot_id}.values(),
+                  refresh=False)
         for line, _quantity in selected:
             if line.lot_id is not None and held_by_quality(line.order_line.item, line.lot):
                 said = why_held(line.order_line.item, line.lot, warehouse=warehouse,

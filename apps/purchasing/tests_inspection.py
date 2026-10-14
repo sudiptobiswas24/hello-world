@@ -241,36 +241,49 @@ class ARejectedBatchIsNotClearedTests(InspectionTestCase):
     The gate says why it may not; sending them back still works.
     """
 
-    def test_accepting_a_rejected_batch_is_refused_and_it_goes_back_instead(self):
-        from django.contrib.auth.models import Group, User
+    def setUp(self):
+        super().setUp()
         from django.core.management import call_command
-        from rest_framework.test import APIClient
 
         from apps.inventory.models import Lot, TrackingMode
-        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+        from apps.quality.models import Characteristic, InspectionPlan, PlanLine
 
         call_command("setup_roles", verbosity=0)
         self.item.tracking = TrackingMode.LOT
         self.item.save()
-        drums = Lot.objects.create(item=self.item, code="DR-7")
+        self.drums = Lot.objects.create(item=self.item, code="DR-7")
         order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
         order_line = PurchaseOrderLine.objects.create(
             order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
             unit_price=Decimal("5"), inspect_on_receipt=True)
         order.confirm()
-        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
-        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order_line, warehouse=self.quarantine,
-                                        quantity_received=Decimal("10"), lot=drums)
-        receipt.post()
+        self.receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
+        GoodsReceiptLine.objects.create(receipt=self.receipt, order_line=order_line,
+                                        warehouse=self.quarantine, quantity_received=Decimal("10"),
+                                        lot=self.drums)
+        self.receipt.post()
         plan = InspectionPlan.objects.create(item=self.item, is_mandatory=True)
         check = Characteristic.objects.create(code="MFI", name="Melt flow", uom=self.uom)
-        plan_line = PlanLine.objects.create(plan=plan, characteristic=check, target=Decimal("3"),
-                                            lower_limit=Decimal("2.5"), upper_limit=Decimal("3.5"),
-                                            sample_size=1, line_number=1)
-        inspection = Inspection.objects.create(lot=drums, plan=plan, inspected_on=datetime.date(2026, 1, 6))
-        Reading.objects.create(inspection=inspection, plan_line=plan_line, value=Decimal("4.2"),
+        self.plan_line = PlanLine.objects.create(plan=plan, characteristic=check, target=Decimal("3"),
+                                                 lower_limit=Decimal("2.5"), upper_limit=Decimal("3.5"),
+                                                 sample_size=1, line_number=1)
+
+    def rejection(self, number=""):
+        """A drafted inspection of DR-7 reading a melt flow of 4.2 against 2.5 to 3.5."""
+        from apps.quality.models import Inspection, Reading
+
+        inspection = Inspection.objects.create(lot=self.drums, plan=self.plan_line.plan,
+                                               inspected_on=datetime.date(2026, 1, 6), number=number)
+        Reading.objects.create(inspection=inspection, plan_line=self.plan_line, value=Decimal("4.2"),
                                sample_reference="S1")
-        inspection.post()
+        return inspection
+
+    def test_accepting_a_rejected_batch_is_refused_and_it_goes_back_instead(self):
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        inspection = self.rejection().post()
+        receipt = self.receipt
         user = User.objects.create_user("meera")
         user.groups.add(Group.objects.get(name="Quality Inspector"))
         client = APIClient()
