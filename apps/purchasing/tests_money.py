@@ -232,3 +232,48 @@ class PricedInTheLinesTermsTests(MoneyCase):
         self.assertEqual(response.status_code, 400, response.content)
 
 
+from apps.accounting.models import Payment, PaymentDirection  # noqa: E402
+from .models import BillPayment  # noqa: E402
+from .tests_audit import VendorSettlementDiscountTests  # noqa: E402
+
+D = Decimal
+
+class DebitNoteUndoingADiscountCountsOnceTests(VendorSettlementDiscountTests):
+    """
+    Review F3, O80's purchasing twin (settlement.spent_undoing). Bill 50 (10 @ 5), paid 49 with a
+    1.00 discount; a note for 1 unit (5) undoes 0.10 of it; the 49 is recalled. 45.00 payable in the
+    ledger and on the bill, nothing on the note (review_money's probe, its numbers).
+    """
+
+    def agree(self, label):
+        bills = Bill.objects.filter(vendor=self.vendor, posted=True)
+        derived = D("0")
+        for b in bills:
+            derived += (b.amount_due() if b.is_debit_note() else -b.amount_due())
+        ledger = self.balance(self.payable)
+        self.assertEqual((ledger,), (derived,), f"{label}: (AP in the ledger) vs minus the sum of dues {derived}")
+
+    def pay(self, amount, day):
+        bank = Account.objects.get_or_create(code="1011", defaults=dict(name="Bank", account_type=AccountType.ASSET,
+                                                                       holds_money=True))[0]
+        paying = Payment.objects.create(party=self.vendor, direction=PaymentDirection.DISBURSEMENT,
+                                        amount=D(amount), payment_date=day, bank_account=bank,
+                                        counterpart_account=self.payable, currency=self.usd)
+        paying.post()
+        return paying
+
+    def test_note_then_bounce_then_pay_again(self):
+        bill = self.discounted_bill()
+        first = self.pay("49", JAN(15))
+        BillPayment.objects.create(bill=bill, payment=first, amount=D("49"))
+        bill.take_settlement_discount(on_date=JAN(15))
+        note = Bill.objects.get(pk=bill.pk).create_debit_note(memo="One back",
+                                                              quantities={bill.lines.get(): D("1")})
+        self.agree("after the note")
+        first.void(memo="Recalled", on_date=JAN(25))
+        self.agree("after the payment came back")
+        bill = Bill.objects.get(pk=bill.pk)
+        note = Bill.objects.get(pk=note.pk)
+        # 50 billed, 5 debited back, nothing paid any more: 45.00 is payable, as the ledger says.
+        self.assertEqual((self.balance(self.payable), bill.amount_due(), note.amount_due()),
+                         (D("-45.00"), D("45.00"), D("0.00")), "(AP, bill due, note due)")

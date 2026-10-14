@@ -608,6 +608,18 @@ def undone_by_note(note_total, absorbed, write_off, discount, discount_taken, do
     return undo_write_off, undo_discount
 
 
+def spent_undoing(note):
+    """
+    What a credit or debit note spent undoing a settlement that moved no money,
+    as it recorded it (undone_by_note): a write-off, a discount. That part of
+    it cleared nothing owed, so it is not also credit against its document,
+    and not absorbed by it either. One rule for both sides (O80, review F3):
+    sales subtracted it and purchasing did not, and a debit note that undid
+    0.10 of a discount read -0.10 refund due once its bill's payment bounced.
+    """
+    return (getattr(note, "reversed_write_off", None) or Decimal("0")) + (note.reversed_discount or Decimal("0"))
+
+
 def withdraw_discount(document, control_account, party, amount, on_date, memo):
     """
     Put `amount` of `document`'s settlement discount back on it: the
