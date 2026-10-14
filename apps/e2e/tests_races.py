@@ -1929,3 +1929,53 @@ class PunchFileRaceTests(RaceCase):
             "employee_number,date,shift,in,out\nW1,2026-10-07,,06:00,14:00\n", commit=True), atomic=False)
         day = AttendanceDay.objects.get(employee=made.worker, on=datetime.date(2026, 10, 7))
         self.assertEqual((day.source, day.status), (AttendanceSource.MANUAL, AttendanceStatus.ABSENT), outcomes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class RunPostedAsTheRegisterChangesRaceTests(RaceCase):
+    """
+    O20: October's run is calculated for a worker with a full month, then
+    posted while 7 October is marked absent, or unpaid leave for it is
+    approved. The run holds its people before working each slip out again;
+    the register and leave hold the person before asking whether a posted
+    run paid on the day. Either the run posts first and the change is
+    refused, or the change lands first and the run, worked out again, no
+    longer matches and is refused: never a run posted at a figure the
+    register no longer gives.
+    """
+
+    def run_against(self, prepare):
+        from apps.hr import tests_attendance
+        from apps.hr.attendance import AttendanceDay
+
+        made = fixture(self, tests_attendance.AttendanceTestCase)
+        run = made.october()
+        run.calculate()
+        slip = run.payslips.get()
+        change = prepare(made)
+        outcomes = race((AttendanceDay, LeaveRequest, JournalEntry),
+                        lambda: PayRun.objects.get(pk=run.pk).post(), change)
+        run.refresh_from_db()
+        self.once(outcomes)
+        if run.status == "posted":
+            Payslip.objects.get(pk=slip.pk).check_current()  # raises if posted at a stale figure
+        return outcomes
+
+    def test_a_run_does_not_post_over_an_absence_marked_as_it_posts(self):
+        from apps.hr.attendance import AttendanceStatus
+
+        self.run_against(lambda made: lambda: made.mark(7, AttendanceStatus.ABSENT))
+
+    def test_a_run_does_not_post_over_unpaid_leave_approved_as_it_posts(self):
+        from apps.hr.models import LeavePolicy
+
+        def prepare(made):
+            policy = LeavePolicy.objects.create(code="LWP-R", name="Without pay", leave_type=LeaveType.UNPAID,
+                                                annual_days=Decimal("30"), is_paid=False)
+            request = LeaveRequest.objects.create(
+                employee=made.worker, policy=policy, leave_type=LeaveType.UNPAID,
+                start_date=datetime.date(2026, 10, 7), end_date=datetime.date(2026, 10, 7))
+            return lambda: LeaveRequest.objects.get(pk=request.pk).approve(by=made.boss)
+
+        self.run_against(prepare)
