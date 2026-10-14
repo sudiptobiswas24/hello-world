@@ -25,25 +25,14 @@ class AuditableAdminMixin:
 WRITES_ITS_OWN_HISTORY = {"send"}
 
 
-class AuditableViewSetMixin:
-    # Each write in a savepoint of its own: when the database refuses it
-    # (a check constraint no serializer runs), only that write is undone
-    # and the connection is still good for the answer that says why. A
-    # viewset that sets a field of its own (the owner, the employee) passes
-    # it as `extra` and calls these: replaced, they took the transaction
-    # and the stamps with them (audit_invariants: writes_around_the_mixin).
-    def perform_create(self, serializer, **extra):
-        with transaction.atomic():
-            serializer.save(created_by=self.request.user, updated_by=self.request.user, **extra)
-
-    def perform_update(self, serializer, **extra):
-        with transaction.atomic():
-            serializer.save(updated_by=self.request.user, **extra)
-
-    def perform_destroy(self, instance):
-        with transaction.atomic():
-            self._deleting = str(instance)
-            instance.delete()
+class RowHeldViewSetMixin:
+    """
+    A PUT, PATCH or DELETE holds its row from the read to the write. The
+    part of AuditableViewSetMixin a viewset of a model with no stamps takes
+    (a country, a party tag, one's saved filter), and one that only deletes
+    (an e-invoice, an e-way bill, a month's GSTR-2B): without it, their
+    edits took no lock (O17).
+    """
 
     # A PUT, PATCH or DELETE in one transaction, from the read to the
     # write: get_object() reads its row under the lock. Defined here, they
@@ -81,6 +70,28 @@ class AuditableViewSetMixin:
             lock_for_change(found, getattr(self.request, "data", None))
             found = super().get_object()
         return found
+
+
+
+class AuditableViewSetMixin(RowHeldViewSetMixin):
+    # Each write in a savepoint of its own: when the database refuses it
+    # (a check constraint no serializer runs), only that write is undone
+    # and the connection is still good for the answer that says why. A
+    # viewset that sets a field of its own (the owner, the employee) passes
+    # it as `extra` and calls these: replaced, they took the transaction
+    # and the stamps with them (audit_invariants: writes_around_the_mixin).
+    def perform_create(self, serializer, **extra):
+        with transaction.atomic():
+            serializer.save(created_by=self.request.user, updated_by=self.request.user, **extra)
+
+    def perform_update(self, serializer, **extra):
+        with transaction.atomic():
+            serializer.save(updated_by=self.request.user, **extra)
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            self._deleting = str(instance)
+            instance.delete()
 
     def finalize_response(self, request, response, *args, **kwargs):
         """

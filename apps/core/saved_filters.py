@@ -12,6 +12,8 @@ someone else's change could quietly redefine under the people using it.
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+
+from .audit import RowHeldViewSetMixin
 from rest_framework import serializers, viewsets
 from rest_framework.permissions import IsAuthenticated
 
@@ -57,7 +59,7 @@ class SavedFilterSerializer(serializers.ModelSerializer):
         validators = []
 
 
-class SavedFilterViewSet(viewsets.ModelViewSet):
+class SavedFilterViewSet(RowHeldViewSetMixin, viewsets.ModelViewSet):
     """One's own kept views: ?screen=/sales/invoices for one list's."""
 
     permission_classes = [IsAuthenticated]
