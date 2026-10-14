@@ -247,6 +247,10 @@ def import_punches(text, commit=False):
     employees = {row.employee_number: row for row in Employee.objects.filter(
         employee_number__in={row.get("employee_number", "") for row in rows})}
     with transaction.atomic():
+        # Every employee of the file held first, in key order, as a day's save() holds its employee:
+        # each day is then read under that lock. Read before it, a day entered by hand at that moment
+        # read as imported and was written over (O18).
+        lock_rows(*employees.values(), refresh=False)
         for number, row in enumerate(rows, start=2):
             try:
                 _punch(row, number, employees, report)

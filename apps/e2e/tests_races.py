@@ -1895,3 +1895,32 @@ class AdminEditRaceTests(RaceCase):
             if receipt.journal_entry_id else JournalLine.objects.filter(account=self.bank, entry__posted=True).exists()
         self.assertFalse(entry_posted and not receipt.posted,
                          f"{outcomes}: the entry is posted and the receipt reads draft")
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class PunchFileRaceTests(RaceCase):
+    def test_a_day_entered_by_hand_is_not_written_over_by_the_punch_file(self):
+        """
+        O18: 7 October imported present. It is entered by hand as absent while
+        the punch file imports it again. The import read the day, imported,
+        before the employee's lock, then wrote it back present over the hand
+        entry. The file's employees are now held before any day is read: the
+        hand entry stands, absent.
+        """
+        from apps.hr import tests_attendance
+        from apps.hr.attendance import AttendanceDay, AttendanceSource, AttendanceStatus, import_punches
+
+        made = fixture(self, tests_attendance.AttendanceTestCase)
+        made.mark(7, source=AttendanceSource.IMPORT)
+
+        def by_hand():
+            day = AttendanceDay.objects.get(employee=made.worker, on=datetime.date(2026, 10, 7))
+            day.status, day.source = AttendanceStatus.ABSENT, AttendanceSource.MANUAL
+            day.time_in = day.time_out = None
+            day.save()
+
+        outcomes = race(AttendanceDay, by_hand, lambda: import_punches(
+            "employee_number,date,shift,in,out\nW1,2026-10-07,,06:00,14:00\n", commit=True), atomic=False)
+        day = AttendanceDay.objects.get(employee=made.worker, on=datetime.date(2026, 10, 7))
+        self.assertEqual((day.source, day.status), (AttendanceSource.MANUAL, AttendanceStatus.ABSENT), outcomes)
