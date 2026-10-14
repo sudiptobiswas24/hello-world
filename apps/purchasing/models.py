@@ -5936,6 +5936,11 @@ def consumed_batches(line):
     return list(Lot.objects.filter(pk__in=ids).select_related("item").order_by("id"))
 
 
+def held_sources(line):
+    """The batches a subcontract receipt line consumed that quality holds now."""
+    return [lot for lot in consumed_batches(line) if held_by_quality(lot.item, lot)]
+
+
 def assembled_from(lot):
     """
     The lineage quality asks (`apps.quality.release.register_lot_sources`):
@@ -5953,8 +5958,7 @@ def assembled_from(lot):
         lot=lot, receipt__posted=True, receipt__reverses__isnull=True,
         order_line__components__isnull=False,
     ).distinct().select_related("receipt")
-    return [source for line in lines for source in consumed_batches(line)
-            if held_by_quality(source.item, source)]
+    return [source for line in lines for source in held_sources(line)]
 
 
 def _returned_note(receipt, line):
@@ -6600,7 +6604,7 @@ class GoodsReceipt(AuditModel):
         rows = []
         for line in self.lines.select_related("order_line__item", "lot", "receipt").order_by("pk"):
             item = line.order_line.item
-            sources = [lot for lot in consumed_batches(line) if held_by_quality(lot.item, lot)]
+            sources = held_sources(line)
             waiting = (held_by_quality(item, line.lot) if line.lot_id is not None
                        else line.quarantined_quantity() > 0)
             if not sources or not waiting:
@@ -6632,7 +6636,7 @@ class GoodsReceipt(AuditModel):
         }
 
     @serialised("posted", held_first=True)
-    def accept(self, warehouse, quantities=None, occurred_at=None):
+    def accept(self, warehouse, quantities=None, occurred_at=None, by=None, reason=""):
         """
         Clear inspected goods into a warehouse they can be shipped from.
 
@@ -6640,6 +6644,13 @@ class GoodsReceipt(AuditModel):
         and valued when they arrived. Receiving them again would book the
         purchase twice, which is what happens if quarantine is modelled
         as "not yet received" rather than "not yet cleared".
+
+        Assemblies held in the bay because the batch they were made from is
+        held (O135) are a concession when accepted: quality rejected what
+        went into them. As a concession on an inspection, it names who
+        decides (`by`) and why (`reason`), and whoever received the goods
+        does not decide it. Goods held for nothing but inspection clear as
+        they always have.
         """
         if not self.posted:
             raise ValidationError("Only a posted receipt has goods to accept.")
@@ -6648,6 +6659,17 @@ class GoodsReceipt(AuditModel):
         occurred_at = occurred_at or timezone.now()
 
         selected = self._inspection_selection(quantities)
+        reason = str(reason or "").strip()
+        conceded = sorted({lot.code for line, _quantity in selected if line.lot_id is None
+                           for lot in held_sources(line)})
+        if conceded:
+            if by is None or not reason:
+                raise ValidationError(
+                    f"These assemblies are held because {', '.join(conceded)}, which they were made "
+                    "from, is held by quality. Accepting them is a concession: it needs the name of "
+                    "whoever decides it and a reason."
+                )
+            check_not_raised_by(by, authors(self, "lines"), self)
         lock_positions(
             pair
             for line, _quantity in selected
@@ -6682,6 +6704,7 @@ class GoodsReceipt(AuditModel):
             ReceiptInspection.objects.create(
                 receipt_line=line, quantity=quantity, accepted=True,
                 inspected_on=to_date(occurred_at), warehouse=warehouse, movement=into,
+                decided_by=by, note=reason[:255],
             )
             moved.append((item, quantity))
         return moved
@@ -7671,6 +7694,12 @@ class ReceiptInspection(AuditModel):
                   "it was kept.",
     )
     note = models.CharField(max_length=255, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Who decided it: named on a concession, assemblies cleared though the batch they "
+                  "were made from is held. Blank on decisions made before it was kept.",
+    )
 
     class Meta:
         ordering = ["-inspected_on", "-id"]
