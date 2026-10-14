@@ -402,3 +402,16 @@ class PricedInTheLinesTermsTests(MoneyCase):
         self.assertEqual(self.line(None, self.box, "1").unit_price, D("120.00"), "12 eaches at 10")
 
 
+class AListInNoCurrencyIsInBaseTests(PricedInTheLinesTermsTests):
+    """Review item 5, a decision: a list with no currency is in the base, so 6 on it is 5.45 on a EUR line at 1.1."""
+
+    def test_a_list_in_no_currency_is_converted_for_a_euro_line(self):
+        from .models import CustomerProfile, PriceList, PriceListItem
+
+        prices = PriceList.objects.create(code="ANY", name="No currency", currency=None)
+        PriceListItem.objects.create(price_list=prices, item=self.item, unit_price=D("6"))
+        CustomerProfile.objects.create(party=self.customer, price_list=prices)
+        self.assertEqual(self.line(self.eur, self.uom, "1").unit_price, D("5.45"))
+        self.assertEqual(self.line(None, self.uom, "1").unit_price, D("6.00"))
+
+
