@@ -438,7 +438,9 @@ class LeavePolicy(AuditModel):
                   "earned, and for companies that let holiday go overdrawn.",
     )
     is_paid = models.BooleanField(default=True)
-    requires_approval = models.BooleanField(default=True)
+    # No requires_approval (O223): it was stored and never read, so a policy said
+    # "no approval needed" while every request under it still waited for a manager.
+    # Leave here is a manager's decision about a colleague, always (check_approver).
     is_active = models.BooleanField(default=True)
 
     class Meta:
