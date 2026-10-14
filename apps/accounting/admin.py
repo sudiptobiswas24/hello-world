@@ -4,6 +4,7 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    LetterOfUndertaking,
     SeededDefault,
     Account,
     BankStatement,
@@ -116,3 +117,11 @@ class SeededDefaultAdmin(admin.ModelAdmin):
     list_filter = ["reviewed_on", "model"]
     fields = ["label", "model", "object_id", "reviewed_by", "reviewed_on"]
     readonly_fields = ["label", "model", "object_id"]
+
+
+@admin.register(LetterOfUndertaking)
+class LetterOfUndertakingAdmin(admin.ModelAdmin):
+    """The registration's LUT for each financial year: exports without IGST are posted under the one in force."""
+
+    list_display = ["arn", "financial_year", "filed_on", "valid_from", "valid_to"]
+    list_filter = ["financial_year"]
