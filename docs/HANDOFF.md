@@ -103,23 +103,71 @@ built.
      before the December run), the bonus ceiling (the higher of 7,000 and
      the minimum wage), the Income-tax Act 2025 section and form names,
      the Indian chart and GST taxes seeded.
-2. **After g21: the reach plan** (docs/RISKS.md "Later items", L6 to L15,
-   decided by the owner on 14 October). g22: documents that leave the
-   building (L6) and security (L12); g23: analysis (L8) and CRM basics
-   (L13); g24: scanning in stores (L9) and the shop floor (L11); g25:
-   rules the owner configures (L10) and WhatsApp (L7); L14 runs through
-   all of them. Remaining rule, minor and statutory rows ride along with
-   whichever round touches their module. Plant logic already ahead of
-   Odoo is not deepened before the pilot: defects only.
-   The plant's own practices, L16 to L36 (second pass, 14 October), join
-   by module: L30 to L35 with the go-live statutory work (the annual
-   accounts and payroll compliance before the first year-end and the
-   first leaver), L16 to L19 and L22 to L23 with g22, L25 to L28 with
-   g24, L31 with L7. The plant exports, imports and holds a BIS licence
-   (owner, 14 October): L20, L21 and L29 are firm. L24 is not needed (no
-   godowns in other states). L37 (RoDTEP, drawback, Advance Authorisation,
-   EPCG) is not used yet but soon: build it after go-live, before the
-   first claim.
+2. **After g21: depth and robustness first (owner, 14 October: "emphasise
+   the existing modules' depth and a robust ERP for a woven sacks plant").**
+   This replaces the reach plan's order. Breadth waits; what a sack plant
+   does every day, done right in the modules it already has, comes first.
+   - **g22, robust: the register to zero, then proof on a month.**
+     - Every open row left after g21 (about 60: books first, then rule,
+       statutory, minor), by module, one fix agent per module group. Each
+       fix ships with its test, and its commit names the row.
+     - L12 security (two-factor sign-in, session time-outs) belongs here.
+       The books hold bank details and pay.
+     - Then the proof. A plant month in apps/e2e, the size of
+       FromPolymerToCashTests times thirty:
+       - polymer bought, received short and returned;
+       - tape, looms, lamination, printing and conversion through the
+         stations, with a failure held for the Quality Manager;
+       - re-batches and job work;
+       - dispatches with e-way bills, invoices, a credit note and a
+         bounced cheque;
+       - scrap sold;
+       - a pay run with piece rates, overtime, an advance and a leaver;
+       - depreciation and the month closed.
+       At the end every control account clears, the shelf foots to the
+       ledger, every derived balance foots to its account, and the
+       statutory files read what was posted. Run it on PostgreSQL and in
+       Asia/Kolkata. Each failure is a register row.
+     - A second read-only audit per module (Sonnet, probes, the audit
+       skill) runs against the fixed tree. The first round found 40
+       defects with a green suite.
+   - **g23, stores and purchasing for a polymer buyer:**
+     - L16 polymer against price circulars;
+     - L17 weighbridge, gross, tare and net on receipts and dispatches;
+     - L18 gate register and returnable gate passes;
+     - L23 landed cost by weight;
+     - L28 the supplier's certificate of analysis checked against the
+       incoming plan;
+     - L21 import purchases;
+     - L9 scanning in stores.
+   - **g24, the floor and quality:**
+     - L25 machine counters read automatically, and O225 the scale
+       program;
+     - L27 a BOM from what a run used, and runs split and merged;
+     - L11 step instructions and photo checks;
+     - L29 BIS test plans and ISI marking records.
+   - **g25, sales and the books:**
+     - L19 post-dated cheques;
+     - L20 export papers;
+     - L22 billing policy per item;
+     - L6 documents that leave the building;
+     - L30 to L35, the annual accounts and payroll compliance, before
+       the first year-end and the first leaver;
+     - L31 the GST service provider.
+   - **After the pilot, breadth:**
+     - L8 analysis;
+     - L13 CRM basics;
+     - L10 rules the owner configures;
+     - L7 WhatsApp;
+     - L26 the recycling line, once the plant commits to it;
+     - L37 export incentives, before the first claim;
+     - L15 EPR, if the adviser says so.
+   - L14 (law as data) runs through all of it. L24 is not needed (no
+     godowns in other states). L20, L21 and L29 are firm: the plant
+     exports, imports and holds a BIS licence.
+   - The old line "plant logic already ahead of Odoo is not deepened
+     before the pilot" is withdrawn. Depth in the plant's own logic is
+     now the point, ordered by what go-live needs.
 3. **Waiting on the tax adviser:** O60 for
    registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
    **Waiting on the tax adviser, also:** whether the plant must register as
@@ -146,6 +194,8 @@ built.
 ## 3. The owner's standing instructions
 
 - Go deeper, not wider. Look for matured bugs, not only decimal places.
+  Depth in the existing modules and a robust ERP for a woven sacks plant
+  come before any new module (owner, 14 October).
   Fix issues so they do not recur: patterns, shared rules, audit checks,
   and CLAUDE.md lessons.
 - Decide; do not ask, unless a choice is truly theirs and blocking. Say
