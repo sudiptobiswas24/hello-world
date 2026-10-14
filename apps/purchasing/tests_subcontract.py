@@ -881,3 +881,36 @@ class AssembliesFromAHeldBatchPassedWaitTests(_SentBatches):
         manager.groups.add(Group.objects.get(name="Quality Manager"))
         self.passed(by=manager)
         self.assertEqual(why_held(self.assembly, self.made, warehouse=self.warehouse), "")
+
+
+class WhoeverPostedTheReceiptReceivedItTests(HeldAssembliesAcceptedAreAConcessionTests):
+    """
+    Review F2: a clerk keyed the receipt; the Warehouse Staff and Quality
+    Manager who posted it was told to decide it and could concede it.
+    """
+
+    def posted_by_the_receiver(self):
+        from django.contrib.auth.models import User
+        from rest_framework.test import APIClient
+
+        clerk = User.objects.create(username="clerk")
+        _sent, order = self.sent_then_rejected()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1),
+                                              created_by=clerk)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.first(), warehouse=self.bay,
+                                        quantity_received=Decimal("10"), created_by=clerk)
+        client = APIClient()
+        client.force_authenticate(self.receiver)
+        response = client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/post_receipt/")
+        self.assertEqual(response.status_code, 200, response.content)
+        return receipt, response.json()["quality_told"]
+
+    def test_the_poster_is_not_told_to_decide_it(self):
+        _receipt, told = self.posted_by_the_receiver()
+        self.assertEqual(told["told"], ["qm"])
+
+    def test_the_poster_does_not_concede_it(self):
+        receipt, _told = self.posted_by_the_receiver()
+        response = self.accept(self.receiver, receipt, reason="I received them and they are fine")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("somebody else approves it", response.content.decode())
