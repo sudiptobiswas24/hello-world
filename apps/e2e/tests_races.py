@@ -543,6 +543,42 @@ class PurchasingRaceTests(RaceCase):
         self.assertEqual((order.lines.get().quantity_received(), moved),
                          (Decimal("10") * receipt.lines.count(), Decimal("10") * receipt.lines.count()), outcomes)
 
+    def test_an_award_and_an_order_do_not_both_order_one_request(self):
+        """
+        O108: 10 asked for on one approved request, out for quotes and quoted
+        at 4. The RFQ is awarded while the request is ordered direct from a
+        second vendor. Each held its own document, the RFQ and the request,
+        and read what was on order unlocked: both went through, 20 ordered
+        for 10. Both now hold the request line: one order, 10.
+        """
+        from django.contrib.auth import get_user_model
+
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.purchasing.models import PurchaseRequisition, PurchaseRequisitionLine, RequestForQuotation
+
+        employee = Party.objects.create(code="E-1", name="Dana")
+        PartyRoleAssignment.objects.create(party=employee, role=PartyRole.EMPLOYEE)
+        manager = get_user_model().objects.create_user(username="budget", password="x")
+        requisition = PurchaseRequisition.objects.create(
+            requested_by=employee, request_date=datetime.date(2026, 1, 1), needed_by=datetime.date(2026, 2, 1))
+        line = PurchaseRequisitionLine.objects.create(requisition=requisition, item=self.item, uom=self.uom,
+                                                      quantity=Decimal("10"), estimated_price=Decimal("5"),
+                                                      suggested_vendor=self.vendor)
+        requisition.submit()
+        requisition.approve(by=manager)
+        rfq = requisition.create_rfq()
+        rfq.issue()
+        invitation = rfq.invited.get()
+        invitation.quote(rfq.lines.get(), Decimal("4"))
+        second = Party.objects.create(code="V-2", name="Another supplier", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=second, role=PartyRole.VENDOR)
+        outcomes = race(PurchaseOrder,
+                        lambda: PurchaseRequisition.objects.get(pk=requisition.pk).create_order(
+                            second, lines=[PurchaseRequisitionLine.objects.get(pk=line.pk)]),
+                        lambda: RequestForQuotation.objects.get(pk=rfq.pk).award(invitation))
+        self.once(outcomes)
+        self.assertEqual(line.quantity_ordered(), Decimal("10"), outcomes)
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
