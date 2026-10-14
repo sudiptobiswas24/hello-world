@@ -1369,3 +1369,20 @@ class APostedDocumentsLinesAreFrozenTooTests(RunTestCase):
         with self.assertRaises(ValidationError) as caught:
             component.save()
         self.assertIn("frozen when it was released", str(caught.exception))
+
+
+class TheWipTileReadsEachRunsAccountTests(RunTestCase):
+    """O8: a run released on one WIP account, the setting moved to another: the tile still counts the run."""
+
+    def test_a_run_released_before_the_account_changed_is_still_counted(self):
+        from apps.web.bank import work_in_progress
+
+        # A run that recorded 1260 at its release (the setting then; it is
+        # 1250 now), and 10 kg of polymer at 100 issued to it: onto 1260.
+        order = self.order()
+        order.release(TODAY)
+        WorkOrder.objects.filter(pk=order.pk).update(
+            wip_account=Account.objects.create(code="1260", name="WIP, before", account_type=AccountType.ASSET))
+        order.refresh_from_db()
+        self.issue(order, [(self.virgin, "10")]).post()
+        self.assertEqual(work_in_progress(TODAY), Decimal("1000.00"))
