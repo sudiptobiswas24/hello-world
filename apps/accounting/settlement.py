@@ -27,7 +27,7 @@ from apps.core.models import Company
 from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
 
-def settlement_difference(amount, document_rate, payment_rate):
+def settlement_difference(amount, document_rate, payment_rate, *, document_base=None, payment_base=None):
     """
     The base-currency difference left on the control account.
 
@@ -39,37 +39,47 @@ def settlement_difference(amount, document_rate, payment_rate):
     booked, subtracted (O49). The rate difference times the amount,
     rounded, is a third figure neither side holds: 100.09 EUR booked at
     1.12345 (112.45) and paid at 1.09876 (109.97) cleared 2.47 of the
-    2.48 between them and left a paisa on the receivable for good.
+    2.48 between them and left a paisa on the receivable for good. Each
+    side's base is its slice of what it booked when that is known
+    (`document_base`, `payment_base`: slice_of), so the part that settles
+    the last of either takes what is left of it (review F1).
     """
     document_rate = document_rate or Decimal("1")
     payment_rate = payment_rate or Decimal("1")
     if document_rate == payment_rate:
         return Decimal("0")
     amount = Decimal(amount)
-    return round_money(amount * document_rate) - round_money(amount * payment_rate)
+    document_base = round_money(amount * document_rate) if document_base is None else document_base
+    payment_base = round_money(amount * payment_rate) if payment_base is None else payment_base
+    return document_base - payment_base
 
 
-@transaction.atomic
-def post_settlement_fx(
-    *, party, control_account, amount, document_rate, payment_rate,
-    date, reference, memo, is_receivable,
-):
+def booked_on(entry, control_account):
+    """The base an entry put on its control account, whichever side: what the document or payment booked."""
+    if entry is None:
+        return None
+    lines = [line for line in entry.lines.all() if line.account_id == control_account.pk]
+    if not lines:
+        return None
+    return abs(sum((line.debit - line.credit for line in lines), Decimal("0")))
+
+
+def slice_of(booked, total, before, amount):
     """
-    Clear the base-currency residue a settlement leaves behind, and book
-    the other side to realised FX gain or loss. Returns the entry, or
-    None when the rates agree and there is nothing to post.
-
-    A receivable and a payable are mirrors. On a receivable, booking at a
-    higher rate than you collect at leaves an unwanted debit — you
-    expected more base currency than arrived, which is a loss. On a
-    payable the same rate move leaves an unwanted credit — you owed more
-    base currency than you had to pay, which is a gain.
+    The base of `amount` of a document (or a payment) worth `total` and
+    booked at `booked`, `before` of it settled already: the base booked to
+    what is settled after it, less the base booked to what was settled
+    before, each rounded on its own. The slices telescope, so the part that
+    settles the last of it takes exactly what is left of what it booked
+    (O49, review F1): 100.09 EUR booked at 112.45 and settled 50 + 50.09
+    cleared 56.17 + 56.27 and left a paisa that nothing explained.
     """
-    difference = settlement_difference(amount, document_rate, payment_rate)
-    return _post_exchange_difference(
-        party=party, control_account=control_account, difference=difference,
-        date=date, reference=reference, memo=memo, is_receivable=is_receivable,
-    )
+    total, before, amount = Decimal(total), Decimal(before), Decimal(amount)
+    if not total:
+        return Decimal("0")
+    after = min(before + amount, total)
+    before = max(min(before, total), Decimal("0"))
+    return round_money(booked * after / total) - round_money(booked * before / total)
 
 
 def _post_exchange_difference(
@@ -182,15 +192,40 @@ class RealisedOnItsOwnDay:
         document, _, party, control_account, is_receivable = self.settles()
         if previous is not None:
             previous.create_reversal(entry_date=self.date, memo=f"Re-stating exchange difference on {self}")
-        entry = post_settlement_fx(
-            party=party, control_account=control_account, amount=self.amount,
-            document_rate=document.exchange_rate, payment_rate=self.payment.exchange_rate,
+        difference = settlement_difference(
+            self.amount, document.exchange_rate, self.payment.exchange_rate,
+            document_base=self.document_slice(document, control_account),
+            payment_base=self.payment_slice(control_account))
+        entry = _post_exchange_difference(
+            party=party, control_account=control_account, difference=difference,
             date=self.date, reference=document.number,
             memo=f"Exchange difference settling {document.number}", is_receivable=is_receivable,
         )
         if entry is not None:
             self.fx_entry = entry
             super(RealisedOnItsOwnDay, self).save(update_fields=["fx_entry", "updated_at"])
+
+    def document_slice(self, document, control_account):
+        """
+        The base this allocation clears off its document: its slice of what the
+        document booked, after what settled it before (slice_of). Asked once
+        this allocation is saved, so amount_due() already counts it.
+        """
+        booked = booked_on(document.journal_entry, control_account)
+        if booked is None:
+            return round_money(self.amount * (document.exchange_rate or Decimal("1")))
+        total = document.total()
+        after = total - document.amount_due()
+        return slice_of(booked, total, after - self.amount, self.amount)
+
+    def payment_slice(self, control_account):
+        """The base this allocation takes of its payment: its slice of what the payment booked."""
+        payment = self.payment
+        booked = booked_on(payment.journal_entry, control_account) if payment.journal_entry_id else None
+        if booked is None:
+            return round_money(self.amount * (payment.exchange_rate or Decimal("1")))
+        after = allocated_on(payment)
+        return slice_of(booked, payment.amount, after - self.amount, self.amount)
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
@@ -219,6 +254,23 @@ class RealisedOnItsOwnDay:
             super(RealisedOnItsOwnDay, self).save(update_fields=["fx_released_entry", "updated_at"])
 
 
+def last_of_held(amount, held_left):
+    """
+    The base the last of money held leaves at, or None when `amount` is not
+    the last of it. `held_left` is (amount left, base left: held_base_left).
+
+    Every taker asks it: a drawdown (post_drawdown) and the note that gives
+    back what is left (a deposit credited back, a prepayment debited back),
+    which books its line at it (InvoiceLine / BillLine.held_base). A
+    drawdown alone asked, and 100 EUR held at 1.12345 (112.35), drawn 50
+    and the other 50 credited back, booked 56.17 twice and left 0.01 held
+    with nothing left to take (O51, review F2).
+    """
+    if held_left is not None and Decimal(amount) == held_left[0]:
+        return held_left[1]
+    return None
+
+
 def held_base_left(held_account, entries, *, is_receivable):
     """
     The base still held on `held_account` by `entries`: what a deposit or
@@ -239,7 +291,7 @@ def held_base_left(held_account, entries, *, is_receivable):
 @transaction.atomic
 def post_drawdown(
     *, party, held_account, control_account, amount, held_rate, document_rate,
-    date, reference, memo, is_receivable, taxes=(), held_left=None,
+    date, reference, memo, is_receivable, taxes=(), held_left=None, document_slice=None,
 ):
     """
     Draw money held up front — a customer's deposit, a prepayment to a
@@ -275,9 +327,14 @@ def post_drawdown(
     tax_base = [(account, round_money(Decimal(tax) * (held_rate or Decimal("1"))))
                 for account, tax in taxes]
     taxed = sum((tax for _, tax in tax_base), Decimal("0"))
-    if held_left is not None and Decimal(amount) == held_left[0]:
-        held_base = held_left[1] + taxed
-    booked_base = round_money(Decimal(amount) * (document_rate or Decimal("1")))
+    last = last_of_held(amount, held_left)
+    if last is not None:
+        held_base = last + taxed
+    # `document_slice`, (booked, total, settled before): the document's side is
+    # its slice of what it booked (slice_of), as a payment applied to it takes.
+    booked_base = (slice_of(document_slice[0], document_slice[1], document_slice[2], amount)
+                   if document_slice and document_slice[0] is not None
+                   else round_money(Decimal(amount) * (document_rate or Decimal("1"))))
 
     entry = JournalEntry.objects.create(date=date, reference=reference, memo=memo)
     # A receivable: Dr the deposit held / Cr what the customer owes.

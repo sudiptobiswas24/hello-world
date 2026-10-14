@@ -83,6 +83,9 @@ from apps.accounting.settlement import (
     oldest_overdue,
     owed_beyond,
     held_base_left,
+    last_of_held,
+    slice_of,
+    booked_on,
     post_drawdown,
     standing_allocations,
     standing_paid,
@@ -2444,6 +2447,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             is_receivable=True,
             taxes=[(tax.collected_account, tax_amount) for tax, tax_amount in reversals if tax_amount],
             held_left=(left, deposit.deposit_base_left(account)),
+            document_slice=(booked_on(self.journal_entry, self.receivable_account), self.total(),
+                            self.total() - self.amount_due()),
         )
         application = DepositApplication.objects.create(
             invoice=self, deposit=deposit, amount=amount, date=on_date,
@@ -2711,8 +2716,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         for line in lines:
             if line.revenue_account_id is None:
                 raise ValidationError(f"Line '{line}' has no revenue account.")
-            credits.append((line.revenue_account, round_money(line.net_amount() * rate),
-                            line.description or str(line.item)))
+            # The last of a deposit credited back books the base left on it (last_of_held).
+            base = line.held_base if line.held_base is not None else round_money(line.net_amount() * rate)
+            credits.append((line.revenue_account, base, line.description or str(line.item)))
 
         tax_totals = defaultdict(Decimal)
         line_taxes = self.line_tax_amounts()
@@ -3150,6 +3156,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             quantity=Decimal("1"),
             unit_price=net,
             revenue_account=line.revenue_account,
+            # Giving back the last of it, at the base left, as a drawdown takes it (O51).
+            held_base=last_of_held(amount, (left, self.deposit_base_left(line.revenue_account))),
         )
         # Its tax goes back with it: the same taxes, bound by the line it
         # credits (InvoiceLine.fixed_tax_amounts).
@@ -3243,6 +3251,11 @@ INVOICE_FIGURES = (
 
 class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     invoice = models.ForeignKey(Invoice, related_name="lines", on_delete=models.CASCADE)
+    held_base = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="On the line that gives back the last of a deposit or prepayment: the base left on the "
+                  "account that held it, which it books instead of its amount at the rate (O51).",
+    )
     order_line = models.ForeignKey(
         SalesOrderLine, null=True, blank=True, on_delete=models.PROTECT,
         related_name="invoice_lines",
