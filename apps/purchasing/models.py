@@ -6175,6 +6175,27 @@ def _returned_note(receipt, line):
     return f"Components returned with {receipt.number} for line {line.reverses_line_id}, {line.pk}"
 
 
+def _remainder_owed(movement, put_back, quantity):
+    """
+    On the return that puts back the last of a consumed batch (O38): what
+    the consumption took off the shelf, as the replay valued it, less what
+    the returns put back at its eight-place rate, carried as a value-only
+    remainder at the places a movement keeps. Otherwise None.
+    """
+    from apps.inventory.costing import replay
+
+    same = put_back.filter(lot=movement.lot, bin=movement.bin)
+    had = same.aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
+    if had + quantity != -movement.quantity:
+        return None
+    _held, before = replay(movement.item, movement.warehouse, before_id=movement.pk)
+    _held, after = replay(movement.item, movement.warehouse, before_id=movement.pk + 1)
+    back = sum((row.quantity * (row.unit_cost or Decimal("0")) + (row.value_adjustment or Decimal("0"))
+                for row in same), Decimal("0"))
+    residue = ((before - after) - back - quantity * (movement.unit_cost or Decimal("0"))).quantize(Decimal("0.0001"))
+    return residue or None
+
+
 def _apportion(remaining, total):
     """
     `total` shared out in proportion to `remaining`, none above its own,
@@ -6578,8 +6599,15 @@ class GoodsReceipt(AuditModel):
                 removing = item.cost_of_removing(
                     landed, item.to_stock_quantity(line.quantity_received, line.order_line.uom),
                     lot=line.lot)
-                price_differences[item] = (price_differences.get(item, Decimal("0"))
-                                           + line.quantity_received * unit_cost - removing)
+                # Total first (O206): the inventory account moves by what the
+                # shelf has moved over this receipt line's returns so far,
+                # rounded once, less what the returns before this one booked.
+                # Each rounded on its own, six fractional returns of
+                # assemblies left the account 0.01 off a shelf back at 0.00.
+                line.shelf_change = component_cost * line.quantity_received - removing
+                line.shelf_booked = self._booked_so_far(line)
+                price_differences[item] = (price_differences.get(item, Decimal("0")) + line.shelf_booked
+                                           + line.quantity_received * (unit_cost - component_cost))
             movement = StockMovement.objects.create(
                 item=line.order_line.item,
                 warehouse=landed,
@@ -6603,7 +6631,7 @@ class GoodsReceipt(AuditModel):
             super(GoodsReceiptLine, line).save(
                 update_fields=[
                     "stock_movement", "bin", "landed_warehouse",
-                    "accrued_unit_price", "accrued_unit_cost", "updated_at",
+                    "accrued_unit_price", "accrued_unit_cost", "shelf_change", "shelf_booked", "updated_at",
                 ]
             )
             # Only the vendor's charge hits the ledger: the component
@@ -7102,26 +7130,28 @@ class GoodsReceipt(AuditModel):
                 owed = sum(remaining, Decimal("0"))
                 total = owed if line.quantity_received >= left else round_money(
                     owed * line.quantity_received / left)
-                rows = [(movement.lot, movement.bin, quantity, movement.unit_cost or Decimal("0"))
+                rows = [(movement.lot, movement.bin, quantity, movement.unit_cost or Decimal("0"),
+                         _remainder_owed(movement, put_back, quantity))
                         for movement, quantity in zip(taken, _apportion(remaining, total))]
             else:
                 # A receipt from before consumption was recorded this way.
                 rows = [(None, None, round_money(component.quantity_per * line.quantity_received),
                          component.item.average_cost_at(warehouse) or (
                              component.item.average_cost()
-                         ) or (component.item.standard_cost or Decimal("0")))]
-            for lot, storage_bin, quantity, cost in rows:
+                         ) or (component.item.standard_cost or Decimal("0")), None)]
+            for lot, storage_bin, quantity, cost, residue in rows:
                 if quantity <= 0:
                     continue
                 StockMovement.objects.create(
                     item=component.item, warehouse=warehouse,
                     movement_type=MovementType.RECEIPT, uom=component.item.uom,
                     lot=lot, bin=storage_bin, quantity=quantity, unit_cost=cost,
+                    value_adjustment=residue,
                     reference=self.number,
                     occurred_at=timezone.now(),
                     notes=_returned_note(self, line),
                 )
-                restored += quantity * cost
+                restored += quantity * cost + (residue or Decimal("0"))
         return restored / line.quantity_received
 
     def _sent_on_the_order(self, item, warehouse):
@@ -7231,6 +7261,22 @@ class GoodsReceipt(AuditModel):
         # 2.90 short of what went into them, and the shelf never agreed
         # with the ledger again.
         return consumed / line.quantity_received
+
+    def _booked_so_far(self, line):
+        """
+        What a return line books to the inventory account: what the shelf
+        has moved over the returns of its receipt line, this one included,
+        rounded once, less what the earlier ones booked. `line.shelf_change`
+        is this line's, exact.
+        """
+        earlier = GoodsReceiptLine.objects.none()
+        if line.reverses_line_id:
+            earlier = GoodsReceiptLine.objects.filter(
+                reverses_line_id=line.reverses_line_id, shelf_change__isnull=False, shelf_booked__isnull=False,
+            ).filter(Q(receipt__posted=True) | Q(receipt=self, pk__lt=line.pk)).exclude(pk=line.pk)
+        moved = sum((row.shelf_change for row in earlier), Decimal("0")) + line.shelf_change
+        booked = sum((row.shelf_booked for row in earlier), Decimal("0"))
+        return round_money(moved) - booked
 
     def _bill_lines_that_paid_for(self, line):
         """
@@ -7476,6 +7522,15 @@ class GoodsReceiptLine(AuditModel):
         max_digits=18, decimal_places=6, null=True, blank=True, editable=False,
         help_text="The same in base currency, at the receipt's rate — what "
                   "went into goods received not invoiced per unit.",
+    )
+    shelf_change = models.DecimalField(
+        max_digits=24, decimal_places=10, null=True, blank=True, editable=False,
+        help_text="On a return: what it moved the shelf by, exactly, components put back included.",
+    )
+    shelf_booked = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="On a return: what it moved the inventory account by, total first over the "
+                  "returns of its receipt line (O206).",
     )
     outside_movement = models.ForeignKey(
         "manufacturing.OutsideMovement", null=True, blank=True,
