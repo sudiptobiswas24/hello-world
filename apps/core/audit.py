@@ -44,6 +44,28 @@ class AuditableAdminMixin(RowHeldAdminMixin):
 WRITES_ITS_OWN_HISTORY = {"send"}
 
 
+class _WhereTheViewSetHasIt:
+    """
+    The mixin's update() or destroy(), present only on a viewset whose own
+    bases have one to wrap. Defined outright, they gave a read-only viewset
+    a PUT and a DELETE route, advertised in its Allow header and OPTIONS,
+    that answered 405 (review F6): the router maps whatever the class has.
+    """
+
+    def __init__(self, method):
+        self.method = method
+
+    def __set_name__(self, owner, name):
+        self.owner, self.name = owner, name
+
+    def __get__(self, instance, cls=None):
+        cls = cls if cls is not None else type(instance)
+        below = cls.__mro__[cls.__mro__.index(self.owner) + 1:]
+        if not any(self.name in base.__dict__ for base in below):
+            raise AttributeError(self.name)
+        return self.method if instance is None else self.method.__get__(instance, cls)
+
+
 class RowHeldViewSetMixin:
     """
     A PUT, PATCH or DELETE holds its row from the read to the write. The
@@ -54,20 +76,17 @@ class RowHeldViewSetMixin:
     """
 
     # A PUT, PATCH or DELETE in one transaction, from the read to the
-    # write: get_object() reads its row under the lock. Defined here, they
-    # give a read-only viewset a PUT and DELETE route as well (the router
-    # routes whatever the class has): those answer 405, not a 500 from a
-    # base with nothing to call.
+    # write: get_object() reads its row under the lock. Only where the
+    # viewset's bases update or destroy (_WhereTheViewSetHasIt): a read-only
+    # viewset has no PUT or DELETE route at all.
+    @_WhereTheViewSetHasIt
     def update(self, request, *args, **kwargs):
-        if not hasattr(super(), "update"):
-            return self.http_method_not_allowed(request, *args, **kwargs)
         with transaction.atomic():
             self._changing = True
             return super().update(request, *args, **kwargs)
 
+    @_WhereTheViewSetHasIt
     def destroy(self, request, *args, **kwargs):
-        if not hasattr(super(), "destroy"):
-            return self.http_method_not_allowed(request, *args, **kwargs)
         with transaction.atomic():
             self._changing = True
             return super().destroy(request, *args, **kwargs)
