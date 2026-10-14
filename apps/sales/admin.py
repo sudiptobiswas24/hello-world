@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
-from apps.core.audit import AuditableAdminMixin
+from apps.core.audit import AuditableAdminMixin, RowHeldAdminMixin
 
 from .models import (
     ApprovalPolicy,
@@ -130,7 +130,7 @@ class DunningLevelAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(DunningNotice)
-class DunningNoticeAdmin(admin.ModelAdmin):
+class DunningNoticeAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at")
     list_filter = ("level",)
     readonly_fields = ("invoice", "level", "days_overdue", "amount_due", "sent_to", "sent_at")
@@ -149,7 +149,7 @@ class ApprovalPolicyAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(DepositApplication)
-class DepositApplicationAdmin(admin.ModelAdmin):
+class DepositApplicationAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("deposit", "invoice", "amount", "date")
     readonly_fields = ("deposit", "invoice", "amount", "date", "journal_entry")
 
@@ -160,7 +160,7 @@ class DepositApplicationAdmin(admin.ModelAdmin):
 
 
 @admin.register(InvoiceWriteOff)
-class InvoiceWriteOffAdmin(admin.ModelAdmin):
+class InvoiceWriteOffAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("invoice", "amount", "date", "reason", "is_recovered")
     list_filter = ("date",)
     readonly_fields = ("invoice", "amount", "date", "reason", "journal_entry", "recovered_entry")

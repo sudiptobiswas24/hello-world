@@ -3,7 +3,7 @@ from django.contrib.auth.admin import GroupAdmin, UserAdmin
 from django.contrib.auth.models import Group, User
 
 from .admin_mixins import delete_selected
-from .audit import AuditableAdminMixin
+from .audit import AuditableAdminMixin, RowHeldAdminMixin
 from .models import (
     Address,
     Company,
@@ -75,7 +75,7 @@ class UnitOfMeasureAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(Country)
-class CountryAdmin(admin.ModelAdmin):
+class CountryAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("code", "name")
     search_fields = ("code", "name")
 
@@ -101,7 +101,7 @@ class PartyBankAccountAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(PartyTag)
-class PartyTagAdmin(admin.ModelAdmin):
+class PartyTagAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     list_display = ("name", "description")
 
 

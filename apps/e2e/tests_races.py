@@ -1846,3 +1846,52 @@ class WhatAChangeHoldsFirstRaceTests(RaceCase):
         self.assertIn("while this was being done", " ".join(outcomes), outcomes)
         allocation.refresh_from_db()
         self.assertEqual((allocation.payment_id, allocation.amount), (b.pk, Decimal("300.00")), outcomes)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AdminEditRaceTests(RaceCase):
+    """
+    O22: the admin read its row without a lock and saved every field it had
+    read. A draft receipt of 1,000 has its reference changed in the admin as
+    it is posted: the admin wrote "not posted" back over the posting, and
+    the receipt read draft while its entry stood on the ledger. The admin
+    now holds the row from its read (RowHeldAdminMixin).
+    """
+
+    books = LedgerRaceTests.books
+
+    def admin_post(self, obj, **changes):
+        from django.contrib import admin as site_admin
+        from django.contrib.auth.models import User
+        from django.test import Client, RequestFactory
+
+        model_admin = site_admin.site._registry[type(obj)]
+        user = User.objects.filter(username="boss").first() or User.objects.create_superuser("boss", "b@x.in", "pw")
+        request = RequestFactory().get("/")
+        request.user = user
+        form = model_admin.get_form(request, obj)(instance=obj)
+        data = {name: ("" if form[name].value() is None else form[name].value()) for name in form.fields}
+        data.update(changes, _save="Save")
+        client = Client()
+        client.force_login(user)
+        url = f"/admin/{obj._meta.app_label}/{obj._meta.model_name}/{obj.pk}/change/"
+
+        def call():
+            response = client.post(url, data)
+            if response.status_code != 302:
+                raise AssertionError(f"admin answered {response.status_code}")
+        return call
+
+    def test_an_admin_edit_does_not_write_a_payment_back_to_draft_as_it_posts(self):
+        self.books()
+        receipt = Payment.objects.create(
+            party=self.party, direction=PaymentDirection.RECEIPT, payment_date=datetime.date(2026, 9, 2),
+            amount=Decimal("1000"), currency=self.inr, bank_account=self.bank, counterpart_account=self.ar)
+        edit = self.admin_post(Payment.objects.get(pk=receipt.pk), reference="CHQ 0042")
+        outcomes = race(Payment, edit, lambda: Payment.objects.get(pk=receipt.pk).post(), atomic=False)
+        receipt.refresh_from_db()
+        entry_posted = JournalEntry.objects.filter(pk=receipt.journal_entry_id, posted=True).exists() \
+            if receipt.journal_entry_id else JournalLine.objects.filter(account=self.bank, entry__posted=True).exists()
+        self.assertFalse(entry_posted and not receipt.posted,
+                         f"{outcomes}: the entry is posted and the receipt reads draft")
