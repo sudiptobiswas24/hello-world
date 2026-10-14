@@ -95,7 +95,7 @@ def load_tape(station, operator, machine, code, kg, side, at=None):
     # from it could never be booked.
     check_released(lot.item, lot, action="go into a run", warehouse=station.warehouse,
                    reworking=run.reworks(lot.item))
-    kg = _number(kg, "The kilos loaded")
+    kg = _number(kg, "The kilos loaded", places=TapeLoad._meta.get_field("kg").decimal_places)
     # Held before what is free is read, the run and then the doff's place
     # on the shelf, in the order every posting takes them: two looms
     # loading the same doff at once each found all of it free.
