@@ -158,6 +158,22 @@ class OnlyTheQualityManagerDecidesTests(AwaitingTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("Say why", str(response.content))
 
+    def test_a_note_that_is_not_words_is_refused_in_words(self):
+        """Review Q07: {"note": 123} was a 500."""
+        inspection = self.awaiting()
+        for bad in (123, ["a"], {"a": 1}):
+            response = self.decide(inspection, "asha", Disposition.REJECT, note=bad)
+            self.assertEqual(response.status_code, 400, (bad, response.content))
+        self.assertEqual(inspection.disposition, Disposition.AWAITING)
+
+    def test_a_long_reason_is_refused_not_cut(self):
+        """Review Q08: 300 characters were kept as 255, and the answer was 200."""
+        inspection = self.awaiting()
+        response = self.decide(inspection, "asha", Disposition.REJECT, note="x" * 300)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("at most 255 characters; this is 300", str(response.content))
+        self.assertEqual((inspection.disposition, inspection.decision_note), (Disposition.AWAITING, ""))
+
     def test_only_the_three_decisions(self):
         inspection = self.awaiting()
         self.assertEqual(self.decide(inspection, "asha", Disposition.ACCEPT).status_code, 400)
@@ -252,6 +268,38 @@ class ItWaitsHeldTests(AwaitingTestCase):
         self.assertEqual(said, [f"The mail of the to-do to {name} did not go: connection refused"
                                 for name in ("asha", "ravi")])
 
+    def test_a_quality_manager_who_raised_it_is_not_told_to_decide(self):
+        """Review Q12: asha, the only Quality Manager, raised it; the answer said she decides."""
+        response = self.clients["asha"].post("/api/quality/inspections/", {
+            "lot": self.roll.pk, "plan": self.advisory.pk, "inspected_on": str(TODAY)}, format="json")
+        inspection = Inspection.objects.get(pk=response.json()["id"])
+        line = self.advisory.lines.get()
+        for _ in range(3):
+            Reading.objects.create(inspection=inspection, plan_line=line, value=92)
+        body = self.post(inspection, who="meera").json()
+        self.assertNotIn("Told to decide", body["warning"])
+        self.assertIn("Nobody who may decide it has been told: asha raised or changed it", body["warning"])
+        self.assertEqual(body["told"], {"to_decide": [], "for_information": ["asha", "ravi", "sunil"]})
+        self.assertTrue(self.to_dos(inspection).get(assigned_to=self.users["asha"]).summary.startswith(
+            "For information"))
+
+    def test_an_unexpected_mail_error_after_the_commit_neither_fails_the_post_nor_stops_the_rest(self):
+        """Review T04, X06: a RuntimeError in asha's mail answered 500 and ravi's never went."""
+        from unittest import mock
+
+        from apps.core.chatter import Note
+
+        inspection = self.failed()
+        self.clients["meera"].raise_request_exception = False
+        with mock.patch("django.core.mail.EmailMessage.send", side_effect=RuntimeError("boom")):
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.post(inspection)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertTrue(inspection.posted)
+        said = sorted(Note.objects.filter(object_id=inspection.pk, body__startswith="The mail")
+                      .values_list("body", flat=True))
+        self.assertEqual(said, [f"The mail of the to-do to {name} did not go: boom" for name in ("asha", "ravi")])
+
     def test_nobody_in_the_role_is_said(self):
         self.users["asha"].groups.clear()
         body = self.post(self.failed()).json()
@@ -310,6 +358,11 @@ class TheQualityManagerDecidesTests(AwaitingTestCase):
         self.assertEqual(self.clients["meera"].get("/api/quality/inspections/awaiting/").status_code, 403)
         listed = self.clients["ravi"].get("/api/quality/inspections/", {"disposition": "awaiting"})
         self.assertEqual(listed.json()["count"] if isinstance(listed.json(), dict) else len(listed.json()), 2)
+        # Review V01: the list's "awaiting" leaves out a voided one, which waits for nobody.
+        Inspection.objects.get(pk=older.pk).void("Wrong roll", by=self.users["asha"])
+        listed = self.clients["asha"].get("/api/quality/inspections/", {"disposition": "awaiting"}).json()
+        listed = listed["results"] if isinstance(listed, dict) else listed
+        self.assertEqual([row["id"] for row in listed], [newer.pk])
 
 
 class TheReversePathsTests(AwaitingTestCase):
@@ -319,13 +372,56 @@ class TheReversePathsTests(AwaitingTestCase):
         Inspection.objects.filter(pk=passed.pk).update(inspected_on=TODAY - datetime.timedelta(days=3))
         inspection = self.awaiting()
         self.assertEqual(release_status(self.roll), "held")
-        response = self.clients["meera"].post(f"/api/quality/inspections/{inspection.pk}/void/",
-                                              {"reason": "Wrong roll tested"}, format="json")
+        response = self.clients["asha"].post(f"/api/quality/inspections/{inspection.pk}/void/",
+                                             {"reason": "Wrong roll tested"}, format="json")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(release_status(self.roll), "released")  # the pass before it speaks again
         done = set(self.to_dos(inspection).values_list("done_by__username", flat=True))
-        self.assertEqual(done, {"meera"})
+        self.assertEqual(done, {"asha"})
         self.assertIn("was voided", self.to_dos(inspection).first().outcome)
+
+    def test_the_inspector_does_not_void_one_that_waits(self):
+        """
+        Review Q01, Q01b: R-001 read 92, 92, 92; Meera voided it ("typo") and posted 88, 88, 88
+        the same day, and R-001 went released with nobody deciding. Voiding it is the Quality
+        Manager's, and the pass is refused while it waits.
+        """
+        inspection = self.awaiting()
+        response = self.clients["meera"].post(f"/api/quality/inspections/{inspection.pk}/void/",
+                                              {"reason": "typo"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("the Quality Manager voids it", str(response.content))
+        inspection.refresh_from_db()
+        self.assertIsNone(inspection.voided_at)
+        self.assertEqual(self.to_dos(inspection, done_on__isnull=True).count(), 3)
+        passing = self.inspect(self.advisory, [88, 88, 88])
+        self.assertEqual(self.post(passing).status_code, 400)
+        self.assertEqual(release_status(self.roll), "held")
+
+    def test_nor_one_the_quality_manager_decided(self):
+        inspection = self.awaiting()
+        self.decide(inspection, "asha", Disposition.REJECT, "Too heavy.")
+        response = self.clients["meera"].post(f"/api/quality/inspections/{inspection.pk}/void/",
+                                              {"reason": "retake"}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("their decision would be undone", str(response.content))
+        self.assertEqual(release_status(self.roll), "held")
+
+    def test_a_posted_inspection_is_not_deleted(self):
+        """O10, review D01-D03: deleted, the batch read never inspected and its hold was gone."""
+        inspection = self.awaiting()
+        for who in ("asha", "meera"):
+            response = self.clients[who].delete(f"/api/quality/inspections/{inspection.pk}/")
+            self.assertIn(response.status_code, (400, 403), (who, response.content))
+        with self.assertRaisesMessage(ValidationError, "Void it, with a reason, rather than delete it"):
+            Inspection.objects.get(pk=inspection.pk).delete()
+        self.decide(inspection, "asha", Disposition.REJECT, "scrap")
+        self.assertIn(self.clients["asha"].delete(f"/api/quality/inspections/{inspection.pk}/").status_code,
+                      (400, 403))
+        self.assertTrue(Inspection.objects.filter(pk=inspection.pk).exists())
+        self.assertEqual(release_status(self.roll), "held")
+        draft = self.failed(lot=self.roll.__class__.objects.create(item=self.fabric, code="R-009"))
+        self.assertEqual(self.clients["asha"].delete(f"/api/quality/inspections/{draft.pk}/").status_code, 204)
 
     def test_voiding_from_code_closes_them_as_each_persons_own(self):
         inspection = self.awaiting()
@@ -372,6 +468,19 @@ class LeftUndecidedTests(AwaitingTestCase):
         self.assertEqual(self.inspection.escalated_on, datetime.date(2026, 6, 3))
         self.assertTrue(self.admins().get().summary.startswith(
             f"Overdue: {self.inspection.number} has waited for the Quality Manager's decision since 01 Jun 2026"))
+
+    def test_told_nobody_it_is_tried_again(self):
+        """Review E03: no active superuser on 3 June; reactivated, the run on 4 June tells them."""
+        User.objects.filter(pk=self.admin.pk).update(is_active=False)
+        ((_, told),) = escalate_overdue(datetime.date(2026, 6, 3))
+        self.assertEqual((told.told, told.failures()), ([], ["No active administrator login to tell."]))
+        self.inspection.refresh_from_db()
+        self.assertIsNone(self.inspection.escalated_on)
+        User.objects.filter(pk=self.admin.pk).update(is_active=True)
+        ((_, told),) = escalate_overdue(datetime.date(2026, 6, 4))
+        self.assertEqual(told.told, ["root"])
+        self.assertEqual(self.admins().count(), 1)
+        self.assertEqual(escalate_overdue(datetime.date(2026, 6, 5)), [])
 
     def test_the_command_twice_writes_one(self):
         from io import StringIO
