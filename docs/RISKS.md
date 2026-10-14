@@ -665,11 +665,20 @@ on the owner's answer.
   passes for material out for repair, non-returnable passes.
 - **L19 Post-dated cheques:** a register of cheques held, deposit
   reminders, bounce handling.
-- **L20 (?) Export papers** (if the plant exports): shipping bill, port
-  code, LUT on the invoice, packing list, certificate of origin.
-- **L21 (?) Import purchases** (if the plant imports polymer or
-  masterbatch): bill of entry, customs duty, IGST on imports, into
-  landed cost.
+- **L20 Export papers** (the plant exports; owner, 14 October). There
+  already: export supply types on the e-invoice (EXPWP/EXPWOP), the LUT
+  as a fiscal position, exports zero-rated in the returns. Missing: the
+  shipping bill number and date and the port code on the invoice and in
+  GSTR-1 table 6A, a packing list, the certificate of origin, export
+  proceeds tracked to realisation (the eBRC, within the FEMA period), and
+  an IGST refund claim where exports go with payment.
+- **L21 Import purchases** (the plant imports; owner, 14 October). There
+  already: duty and the customs broker's bills landed on the goods
+  (LandedCostApplication). Missing: the bill of entry as a document (its
+  number, date, port, assessable value at the customs rate, basic customs
+  duty, social welfare surcharge, IGST paid), the import IGST credit
+  matched with GSTR-2B's IMPG table (read today but not matched), and
+  the payable to the overseas supplier at its rate.
 - **L22 Billing and shipping policy per item:** ordered or delivered
   quantity billed, ship complete or in parts.
 - **L23 Landed cost by weight,** for freight on polymer.
@@ -683,8 +692,9 @@ on the owner's answer.
 - **L27 A BOM from what a run used;** runs split and merged.
 - **L28 Incoming certificates of analysis** for polymer, compared with the
   specification before release.
-- **L29 (?) BIS test plans and ISI marking records** (if the plant holds a
-  BIS licence).
+- **L29 BIS test plans and ISI marking records** (the plant holds a BIS
+  licence; owner, 14 October): the tests and frequencies its standard
+  asks, the marking register, and the records a BIS inspection reads.
 - **L30 The annual accounts:** Schedule III balance sheet and P&L, cash
   flow statement, day book, GSTR-9 and 9C, past-year credit notes
   flagged after 30 November.
@@ -699,3 +709,7 @@ on the owner's answer.
   payroll; India's sandwich leave, comp-off for overtime, biometric
   device import.
 - **L36 Attachments in offsite storage,** with the backup (O221).
+- **L37 (?) Export incentives and duty-free imports,** if the plant uses
+  them: RoDTEP or duty drawback receivable on each shipping bill, and
+  Advance Authorisation or EPCG licences with their export obligation
+  tracked against the imports made under them.

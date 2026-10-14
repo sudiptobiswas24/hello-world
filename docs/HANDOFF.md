@@ -115,8 +115,9 @@ built.
    by module: L30 to L35 with the go-live statutory work (the annual
    accounts and payroll compliance before the first year-end and the
    first leaver), L16 to L19 and L22 to L23 with g22, L25 to L28 with
-   g24, L31 with L7. (?) items wait on the owner: does the plant export,
-   import polymer, hold a BIS licence, have godowns in other states?
+   g24, L31 with L7. The plant exports, imports and holds a BIS licence
+   (owner, 14 October): L20, L21 and L29 are firm. Still (?): godowns in
+   other states (L24); RoDTEP, drawback, Advance Authorisation or EPCG (L37).
 3. **Waiting on the tax adviser:** O60 for
    registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
    **Waiting on the tax adviser, also:** whether the plant must register as
