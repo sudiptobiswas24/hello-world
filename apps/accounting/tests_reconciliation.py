@@ -433,3 +433,68 @@ class ReturnedPaymentTests(ReconciliationTestCase):
             cheque.void(memo="Returned unpaid", on_date=timezone.localdate() + datetime.timedelta(days=1))
         cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 8))
         self.assertEqual(cheque.voided_entry.date, datetime.date(2026, 1, 8))
+
+
+class PastStatementAsItStoodTests(TestCase):
+    """
+    O52 (StatementProbe). September: +1,000 received on the 2nd (on the
+    statement, matched); a cheque of 400 written on the 25th and presented
+    on 2 October. September reads 0 -> 1,000; the books at 30 September,
+    600. The cheque was unpresented at 30 September whatever happened to
+    it after; with it named, the difference is 0.
+    """
+
+    def setUp(self):
+        from apps.core.models import Company, Currency, Party, PartyRole, PartyRoleAssignment
+
+        inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
+        Company.objects.create(name="Co", base_currency=inr)
+        acc = lambda c, t, **more: Account.objects.create(code=c, name=c, account_type=t, **more)  # noqa: E731
+        self.bank = acc("1010", AccountType.ASSET, holds_money=True)
+        self.ar = acc("1100", AccountType.ASSET)
+        self.ap = acc("2000", AccountType.LIABILITY)
+        self.party = Party.objects.create(code="P", name="P", default_currency=inr)
+        PartyRoleAssignment.objects.create(party=self.party, role=PartyRole.CUSTOMER)
+        PartyRoleAssignment.objects.create(party=self.party, role=PartyRole.VENDOR)
+        self.inr = inr
+        self.receipt = self.pay("receipt", "1000", datetime.date(2026, 9, 2))
+        self.cheque = self.pay("disbursement", "400", datetime.date(2026, 9, 25))
+
+    def pay(self, direction, amount, on):
+        payment = Payment.objects.create(
+            party=self.party, direction=direction, payment_date=on, amount=Decimal(amount), currency=self.inr,
+            bank_account=self.bank, counterpart_account=self.ar if direction == "receipt" else self.ap)
+        payment.post()
+        return payment
+
+    def september(self):
+        statement = BankStatement.objects.create(
+            bank_account=self.bank, start_date=datetime.date(2026, 9, 1), end_date=datetime.date(2026, 9, 30),
+            opening_balance=Decimal("0"), closing_balance=Decimal("1000"))
+        BankStatementLine.objects.create(statement=statement, date=datetime.date(2026, 9, 2),
+                                         amount=Decimal("1000")).match(self.receipt)
+        return statement
+
+    def test_a_cheque_presented_next_month_is_unpresented_at_this_months_end(self):
+        september = self.september()
+        october = BankStatement.objects.create(
+            bank_account=self.bank, start_date=datetime.date(2026, 10, 1), end_date=datetime.date(2026, 10, 31),
+            opening_balance=Decimal("1000"), closing_balance=Decimal("600"))
+        BankStatementLine.objects.create(statement=october, date=datetime.date(2026, 10, 2),
+                                         amount=Decimal("-400")).match(self.cheque)
+        report = september.reconciliation()
+        self.assertEqual((report["unpresented_total"], report["difference"]), (Decimal("-400"), Decimal("0")),
+                         "(unpresented, difference) of September after October presented the cheque")
+        self.assertEqual(october.reconciliation()["difference"], Decimal("0"))
+
+    def test_a_cheque_cancelled_next_month_is_unpresented_at_this_months_end(self):
+        self.cheque.void(memo="Cancelled, never presented", on_date=datetime.date(2026, 10, 3))
+        report = self.september().reconciliation()
+        self.assertEqual((report["unpresented_total"], report["difference"]), (Decimal("-400"), Decimal("0")),
+                         "(unpresented, difference) of September after the cheque was cancelled on 3 October")
+
+    def test_a_cheque_cancelled_within_the_month_is_not(self):
+        self.cheque.void(memo="Cancelled, never presented", on_date=datetime.date(2026, 9, 28))
+        statement = self.september()
+        report = statement.reconciliation()
+        self.assertEqual((report["unpresented_total"], report["difference"]), (Decimal("0"), Decimal("0")))
