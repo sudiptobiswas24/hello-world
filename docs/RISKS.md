@@ -650,3 +650,52 @@ people. After g21's go-live items, in this order:
 
 Until the pilot, plant logic already ahead of Odoo (scheduling, quality
 statistics, maintenance, costing) is not deepened further: defects only.
+
+The plant's own practices (second pass, 14 October): what a woven-sack
+plant in India runs on that neither Odoo nor this ERP has yet. (?) waits
+on the owner's answer.
+
+- **L16 Polymer bought against price circulars:** purchase contracts
+  linked to the polymer makers' circulars, rate-difference notes from
+  suppliers, the mirror of the sales price indices.
+- **L17 Weighbridge:** receipts and dispatches by truck weight (gross,
+  tare, net), shortage against the invoice weight, claims on the supplier
+  or transporter.
+- **L18 Gate register and gate passes:** vehicles in and out; returnable
+  passes for material out for repair, non-returnable passes.
+- **L19 Post-dated cheques:** a register of cheques held, deposit
+  reminders, bounce handling.
+- **L20 (?) Export papers** (if the plant exports): shipping bill, port
+  code, LUT on the invoice, packing list, certificate of origin.
+- **L21 (?) Import purchases** (if the plant imports polymer or
+  masterbatch): bill of entry, customs duty, IGST on imports, into
+  landed cost.
+- **L22 Billing and shipping policy per item:** ordered or delivered
+  quantity billed, ship complete or in parts.
+- **L23 Landed cost by weight,** for freight on polymer.
+- **L24 (?) Branch transfers** (if godowns are in other states): e-way
+  bill and branch-transfer invoice.
+- **L25 Machine counters** read automatically (loom picks, extruder kg),
+  and the scale-bridge client (O225).
+- **L26 The recycling line:** granule lots with melt-flow and
+  contamination tests, recycled content carried into tape recipes, the
+  virgin-only customer rules extended to recycled input.
+- **L27 A BOM from what a run used;** runs split and merged.
+- **L28 Incoming certificates of analysis** for polymer, compared with the
+  specification before release.
+- **L29 (?) BIS test plans and ISI marking records** (if the plant holds a
+  BIS licence).
+- **L30 The annual accounts:** Schedule III balance sheet and P&L, cash
+  flow statement, day book, GSTR-9 and 9C, past-year credit notes
+  flagged after 30 November.
+- **L31 E-invoice and e-way bill sent through a GST service provider,**
+  not uploaded by hand.
+- **L32 Year-end closing checklist and the tax-return lock.**
+- **L33 Minimum wages** by schedule, zone and skill, with the
+  twice-yearly dearness revision, checked against every wage.
+- **L34 Full-and-final settlement and leave encashment** (due within two
+  working days of leaving under the Labour Codes).
+- **L35 The statutory registers** (muster roll, wages, overtime) from
+  payroll; India's sandwich leave, comp-off for overtime, biometric
+  device import.
+- **L36 Attachments in offsite storage,** with the backup (O221).

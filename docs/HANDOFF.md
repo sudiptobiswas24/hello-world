@@ -111,6 +111,12 @@ built.
    all of them. Remaining rule, minor and statutory rows ride along with
    whichever round touches their module. Plant logic already ahead of
    Odoo is not deepened before the pilot: defects only.
+   The plant's own practices, L16 to L36 (second pass, 14 October), join
+   by module: L30 to L35 with the go-live statutory work (the annual
+   accounts and payroll compliance before the first year-end and the
+   first leaver), L16 to L19 and L22 to L23 with g22, L25 to L28 with
+   g24, L31 with L7. (?) items wait on the owner: does the plant export,
+   import polymer, hold a BIS licence, have godowns in other states?
 3. **Waiting on the tax adviser:** O60 for
    registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
    **Waiting on the tax adviser, also:** whether the plant must register as
