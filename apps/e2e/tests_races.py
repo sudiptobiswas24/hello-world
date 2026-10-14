@@ -1979,3 +1979,41 @@ class RunPostedAsTheRegisterChangesRaceTests(RaceCase):
             return lambda: LeaveRequest.objects.get(pk=request.pk).approve(by=made.boss)
 
         self.run_against(prepare)
+
+
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class OneRecallALotRaceTests(RaceCase):
+    """
+    O207: B2 and B3 joined into RB-J, which passed its own inspection; both
+    are rejected at once. RB-J is recalled once, with one to-do, not two:
+    each rejection holds RB-J's row before asking whether it is recalled.
+    """
+
+    def test_two_rejections_at_once_on_two_sources_tell_once(self):
+        from apps.core.chatter import FollowUp
+        from apps.manufacturing import tests_recall
+        from apps.manufacturing.rebatch import rebatch
+        from apps.quality.models import Inspection, Reading
+
+        made = fixture(self, tests_recall.RecallTestCase)
+        joined = made.new("RB-J")
+        rebatch(made.bag, made.plant, [(made.b2, "100"), (made.b3, "100")], [(joined, "200")],
+                "Short ends", on_date=tests_recall.TODAY)
+        made.inspect(joined, tests_recall.IN)
+        plan = made.bag_spec.inspection_plan
+        line = plan.lines.get()
+        drafts = []
+        # Numbered as drafts, so that posting takes no lock on the numbering: that lock would
+        # serialise the two posts by accident and prove nothing about the lot's own.
+        for number, lot in enumerate((made.b2, made.b3), start=1):
+            draft = Inspection.objects.create(lot=lot, plan=plan, inspected_on=tests_recall.TODAY,
+                                              number=f"QC-RACE-{number}")
+            for number, value in enumerate(tests_recall.OUT[:line.sample_size], start=1):
+                Reading.objects.create(inspection=draft, plan_line=line, value=Decimal(value),
+                                       sample_reference=f"S{number}")
+            drafts.append(draft.pk)
+        outcomes = race(Inspection, *[lambda pk=pk: Inspection.objects.get(pk=pk).post() for pk in drafts])
+        self.assertEqual(outcomes, ["done", "done"], outcomes)
+        recalls = Inspection.objects.filter(lot=joined, recalled_by__isnull=False)
+        self.assertEqual(recalls.count(), 1)
+        self.assertEqual(FollowUp.objects.filter(object_id=recalls.get().pk).count(), 1)

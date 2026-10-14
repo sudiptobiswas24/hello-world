@@ -100,6 +100,13 @@ class LotSerializer(serializers.ModelSerializer):
     on_hand = serializers.SerializerMethodField()
     has_expired = serializers.SerializerMethodField()
     item_label = serializers.SerializerMethodField()
+    # Why it may not go, in the release gate's words; "" when it may (O207). Computed, not stored.
+    held_because = serializers.SerializerMethodField()
+
+    def get_held_because(self, lot):
+        from .tracking import held_because
+
+        return held_because(lot)
 
     def get_item_label(self, lot):
         return f"{lot.item.sku} · {lot.item.name}"
@@ -109,6 +116,7 @@ class LotSerializer(serializers.ModelSerializer):
         fields = [
             "id", "item", "code", "expires_on", "manufactured_on",
             "supplier_reference", "notes", "is_active", "on_hand", "has_expired", "item_label",
+            "held_because",
         ]
 
     def get_on_hand(self, lot):

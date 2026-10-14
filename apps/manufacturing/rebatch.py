@@ -304,6 +304,13 @@ def sources(lot):
         rebatch__in=rebatches, side=RebatchSide.IN).select_related("lot").order_by("id")]
 
 
+def made_into(lot):
+    """The batches re-made from this one, directly: `sources` the other way, for a recall (O207)."""
+    rebatches = _standing_lines(lot=lot, side=RebatchSide.IN).values("rebatch")
+    return [line.lot for line in _standing_lines(
+        rebatch__in=rebatches, side=RebatchSide.OUT).select_related("lot").order_by("id")]
+
+
 def remade_into(lot):
     """[(re-batch, quantity taken from this batch, batches it made)], oldest first."""
     rows = []

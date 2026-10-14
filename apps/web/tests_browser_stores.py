@@ -56,3 +56,23 @@ class StoresInTheBrowserTests(BrowserMixin, AdjustmentTestCase, StaticLiveServer
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("96"))
         self.assertEqual(self.balance(self.shrinkage), Decimal("20.00"))
         self.assertEqual(self.problems, [])
+
+
+from apps.manufacturing.tests_recall import RecallTestCase  # noqa: E402
+
+
+class HeldBecauseInTheBrowserTests(BrowserMixin, RecallTestCase, StaticLiveServerTestCase):
+    """
+    O207: the Stores Manager's list of batches keeps showing what quality
+    holds, each saying why in the gate's words, and nothing beside a batch
+    that may go. B1 rejected after RB-A (its own pass before) was made from it.
+    """
+
+    def test_the_stores_manager_sees_why_each_batch_is_held(self):
+        rejection = self.reject_b1()
+        page = self.sign_in(self.person("Stores Manager"), "/app/stores/batches")
+        expect(page.get_by_role("columnheader", name="Held because")).to_be_visible()
+        expect(page.get_by_role("row", name=re.compile("RB-A"))).to_contain_text(
+            f"made from {self.b1}, rejected on 1 June 2026 ({rejection.number})")
+        expect(page.get_by_role("row", name=re.compile(self.b2.code))).not_to_contain_text("held")
+        self.assertEqual(self.problems, [])

@@ -19,6 +19,8 @@ which is no. A stored flag would have had to remember to do that.
 """
 
 
+import datetime
+
 from django.core.exceptions import ValidationError
 from django.db.models import F, Q
 from django.utils import timezone
@@ -50,11 +52,24 @@ def plan_for(item, on_date=None):
 # module that knows says which: `fn(lot) -> [lot, ...]`. Registered so
 # quality asks without importing the manufacturing that does it.
 LOT_SOURCES = []
+# The same lineage the other way: `fn(lot) -> [lot, ...]`, the batches re-made from `lot`.
+LOTS_MADE_FROM = []
 
 
-def register_lot_sources(provider):
+def register_lot_sources(provider, made_into):
+    """
+    One lineage, both ways, in one call: `provider(lot)`, the batches `lot`
+    was re-made from, and `made_into(lot)`, the batches re-made from it.
+
+    Both are asked: the gate holds a batch whatever is inside it (upward),
+    and a recall holds whatever was made from a batch rejected later
+    (downward, O207). Registered one way only, a lineage would be a door
+    the recall cannot find, so the second is not optional.
+    """
     if provider not in LOT_SOURCES:
         LOT_SOURCES.append(provider)
+    if made_into not in LOTS_MADE_FROM:
+        LOTS_MADE_FROM.append(made_into)
 
 
 # Who wants to hear that a batch has a new verdict (posted or decided): the
@@ -81,17 +96,108 @@ def lot_sources(lot):
     return found
 
 
-def latest_inspection(lot):
+def lots_made_from(lot):
+    """Every batch re-made from `lot`, directly or at a remove, each once, nearest first; not `lot`."""
+    found, waiting, seen = [], [lot], {lot.pk}
+    while waiting:
+        each = waiting.pop(0)
+        for provider in LOTS_MADE_FROM:
+            for child in provider(each):
+                if child is not None and child.pk not in seen:
+                    seen.add(child.pk)
+                    found.append(child)
+                    waiting.append(child)
+    return found
+
+
+def latest_inspection(lot, measured=False):
     """
     The inspection that currently speaks for this batch: the latest dated,
     and of two on one day the one posted last (O145). Ranked by id, a
     rejection drafted first and posted after the day's pass stood beside it
     unheard, and the lot read released. Posting is the decision; drafting
     is not. An old row with no posting time ranks after those with one.
+
+    A recall the Quality Manager has not decided yet does not speak (O207):
+    the batch is held by what is inside it for as long as that is held, a
+    hold read from the source's verdict and not stored here, so the source
+    voided or passed again hands the batch back to its own pass. Decided,
+    the recall is the batch's verdict like any other. `measured`: the
+    latest that measured something, recalls left out (a certificate's).
     """
+    standing = Inspection.objects.filter(lot=lot, posted=True, voided_at__isnull=True).exclude(
+        recalled_by__isnull=False, disposition=Disposition.AWAITING)
+    if measured:
+        standing = standing.filter(recalled_by__isnull=True)
+    return standing.order_by("-inspected_on", F("posted_at").desc(nulls_last=True), "-id").first()
+
+
+def recall_plan(lot):
+    """The plan a recall of `lot` is filed under: its own standing inspection's, else the one in force."""
+    own = latest_inspection(lot)
+    return own.plan if own is not None else plan_for(lot.item)
+
+
+def open_recall(lot):
+    """The recall of `lot` waiting for the Quality Manager's decision, or None."""
     return Inspection.objects.filter(
-        lot=lot, posted=True, voided_at__isnull=True
-    ).order_by("-inspected_on", F("posted_at").desc(nulls_last=True), "-id").first()
+        lot=lot, posted=True, voided_at__isnull=True, recalled_by__isnull=False,
+        disposition=Disposition.AWAITING).order_by("pk").first()
+
+
+# The verdicts that hold a batch.
+HOLDING = (Disposition.REJECT, Disposition.REWORK, Disposition.AWAITING)
+RELEASING = (Disposition.ACCEPT, Disposition.CONCESSION)
+
+
+def _took_effect(inspection, decided=False):
+    """When a verdict took effect: when it was posted, or `decided`, when the Quality Manager decided it."""
+    if decided and inspection.decided_at is not None:
+        return inspection.decided_at
+    if inspection.posted_at is not None:
+        return inspection.posted_at
+    return timezone.make_aware(datetime.datetime.combine(inspection.inspected_on, datetime.time.min))
+
+
+def recalled_from(lot):
+    """
+    [(batch, verdict)]: the batches `lot` was re-made from (at any remove)
+    whose standing verdict holds them and came after `lot`'s own release
+    (O207). A-1 passed on 15 January; F-1, inside it, was rejected on 2
+    February: A-1's pass predates what is now known about what is inside
+    it, so A-1 is held. Empty when `lot` is not released by its own verdict
+    (it then stands as its sources do, or is held already), or when every
+    hold inside it came first: a release taken knowing them (the Quality
+    Manager's decision, or a pass they posted) is not recalled by them.
+
+    Derived, never stored: the source's rejection voided, or the source
+    passed again, and the batch reads released again by its own pass.
+    """
+    own = latest_inspection(lot)
+    if own is None or own.disposition not in RELEASING:
+        return []
+    released = _took_effect(own, decided=True)
+    found = []
+    for source in lot_and_sources(lot)[1:]:
+        verdict = latest_inspection(source)
+        if verdict is not None and verdict.disposition in HOLDING and _took_effect(verdict) > released:
+            found.append((source, verdict))
+    return found
+
+
+def verdict_words(verdict):
+    """'rejected on 2 February 2026 (QC-12)': what a verdict that holds said, and when."""
+    day = f"{verdict.inspected_on.day} {verdict.inspected_on:%B %Y}"
+    if verdict.disposition == Disposition.AWAITING:
+        return f"held on {day} ({verdict.number}) for the Quality Manager's decision"
+    if verdict.disposition == Disposition.REWORK:
+        return f"held for rework on {day} ({verdict.number})"
+    return f"rejected on {day} ({verdict.number})"
+
+
+def recall_words(lot, recalled):
+    """Why a recalled batch is held, in words: 'made from F-1, rejected on 2 February 2026 (QC-12)'."""
+    return "; ".join(f"made from {source}, {verdict_words(verdict)}" for source, verdict in recalled)
 
 
 def lot_and_sources(lot):
@@ -145,8 +251,9 @@ def release_status(lot):
             if status in statuses:
                 return status
         return ReleaseStatus.RELEASED
-    if inspection.disposition in (Disposition.ACCEPT, Disposition.CONCESSION):
-        return ReleaseStatus.RELEASED
+    if inspection.disposition in RELEASING:
+        # Released by its own verdict, unless something inside it was held after (O207).
+        return ReleaseStatus.HELD if recalled_from(lot) else ReleaseStatus.RELEASED
     return ReleaseStatus.HELD
 
 
@@ -217,6 +324,13 @@ def why_held(item, lot, warehouse=None, action="issue", reworking=None):
         if held is None:
             return (f"{lot} is held: it was re-made from a batch that is held or not "
                     f"yet inspected. Inspect it before it can {action}.")
+        if held.disposition in RELEASING:
+            # Recalled (O207): its own release came before the hold on what is inside it.
+            waiting = open_recall(lot)
+            decides = (f"The Quality Manager decides it ({waiting.number})." if waiting is not None
+                       else "The Quality Manager decides it.")
+            return (f"{lot} is held: {recall_words(lot, recalled_from(lot))}, after its own release "
+                    f"({held.number}). {decides} It cannot {action} until then.")
         return (f"{lot} is held: {held.get_disposition_display().lower()} on "
                 f"{held.inspected_on} ({held.number}). It cannot {action}.")
     plan = plan_for(item)

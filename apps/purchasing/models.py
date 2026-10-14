@@ -6208,6 +6208,26 @@ def assembled_from(lot):
     return [source for line in lines for source in held_sources(line)]
 
 
+def assemblies_made_from(lot):
+    """
+    `assembled_from` the other way (O207): the assemblies a subcontractor
+    made of this batch and sent back on a standing receipt, every one
+    whatever quality says of them, so a recall of the batch finds them.
+    """
+    from apps.inventory.models import Lot
+
+    found = set()
+    for movement in StockMovement.objects.filter(
+            lot=lot, movement_type=MovementType.ISSUE, notes__startswith="Consumed by subcontractor"):
+        for line in GoodsReceiptLine.objects.filter(
+                receipt__number=movement.reference, receipt__posted=True,
+                receipt__reverses__isnull=True, order_line__components__isnull=False,
+                lot__isnull=False).distinct().select_related("receipt"):
+            if movement.notes == _consumed_note(line.receipt, line):
+                found.add(line.lot_id)
+    return list(Lot.objects.filter(pk__in=found).order_by("pk"))
+
+
 def receipts_quality_released(lot, by=None):
     """
     Registered with quality (`register_lot_decided`): `lot` was inspected or

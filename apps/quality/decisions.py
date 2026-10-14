@@ -239,6 +239,14 @@ def tell_on_posting(inspection, by=None):
     return Posting(deciders, informed, " ".join(said))
 
 
+def _what_waits(inspection):
+    """What an inspection waiting for the Quality Manager is about: a failure, or a recall (O207)."""
+    if inspection.recalled_by_id is not None:
+        return (f"was recalled by {inspection.number}: it is made from {inspection.recalled_by.lot}, "
+                f"held by {inspection.recalled_by.number}")
+    return f"failed {inspection.number} ({_failed(inspection)})"
+
+
 def tell_the_administrator(inspection, today):
     """Every active superuser: a to-do due today that the decision is overdue, and a mail."""
     people = list(get_user_model().objects.filter(is_active=True, is_superuser=True).order_by("username"))
@@ -246,7 +254,7 @@ def tell_the_administrator(inspection, today):
     summary = (f"Overdue: {inspection.number} has waited for the Quality Manager's decision since "
                f"{posted:%d %b %Y}; {inspection.lot} is held")
     told = tell(people, inspection, summary, today, link=f"/quality/inspections/{inspection.pk}",
-                body=(f"{inspection.lot} failed {inspection.number} ({_failed(inspection)}) and was due a "
+                body=(f"{inspection.lot} {_what_waits(inspection)} and was due a "
                       f"decision on {inspection.decision_due_on():%d %b %Y}. Nobody has decided it."))
     if not people:
         told.nobody = "No active administrator login to tell."

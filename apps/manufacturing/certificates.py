@@ -99,6 +99,15 @@ def _measured(lot):
     from .rebatch import sources
 
     inspection = latest_inspection(lot)
+    # Recalled and decided (O207): the recall measured nothing, so what is
+    # certified is what was measured before it, and the recall's decision.
+    recall = None
+    if inspection is not None and inspection.recalled_by_id is not None:
+        if inspection.disposition != Disposition.CONCESSION:
+            raise ValidationError(
+                f"Batch {lot.code} was recalled ({inspection}) and not taken as is; nothing made "
+                "from it is certified.")
+        recall, inspection = inspection, latest_inspection(lot, measured=True)
     row = {"lot": lot.code, "item": lot.item.sku, "item_name": lot.item.name}
     remade_from = sources(lot) if inspection is None else []
     if remade_from:
@@ -107,6 +116,8 @@ def _measured(lot):
         row.update(inspection=None, status="as the batches it was re-made from",
                    characteristics=[], remade_from=[_measured(source)
                                                     for source in remade_from])
+        if recall is not None:
+            row.update(inspection=recall.number, status=f"accepted by concession on recall ({recall.number})")
         return row
     if inspection is None:
         plan = plan_for(lot.item)
@@ -141,6 +152,8 @@ def _measured(lot):
                 else "passed" if inspection.result == "pass" else "accepted"),
         characteristics=characteristics,
     )
+    if recall is not None:
+        row["status"] = f"{row['status']}, then accepted by concession on recall ({recall.number})"
     return row
 
 
