@@ -5961,6 +5961,30 @@ def assembled_from(lot):
     return [source for line in lines for source in held_sources(line)]
 
 
+def receipts_quality_released(lot, by=None):
+    """
+    Registered with quality (`register_lot_decided`): `lot` was inspected or
+    decided, so every receipt with a to-do still open whose assemblies are
+    this lot, or were made from it, closes its to-dos if nothing on it is
+    held any more (review F4). Quality asks without importing purchasing.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from apps.core.chatter import FollowUp
+
+    open_on = FollowUp.objects.filter(content_type=ContentType.objects.get_for_model(GoodsReceipt),
+                                      done_on__isnull=True).values("object_id")
+    made_from = StockMovement.objects.filter(
+        lot=lot, movement_type=MovementType.ISSUE, notes__startswith="Consumed by subcontractor",
+    ).values("reference")
+    receipts = GoodsReceipt.objects.filter(
+        Q(lines__lot=lot) | Q(number__in=made_from), pk__in=open_on, posted=True, reverses__isnull=True,
+    ).distinct().order_by("pk")
+    for receipt in receipts:
+        receipt.close_when_nothing_is_held(by, f"Nothing on {receipt.number} is held any more: "
+                                               f"quality decided {lot}.")
+
+
 def _returned_note(receipt, line):
     """What a return writes on the components it puts back for one of its lines."""
     return f"Components returned with {receipt.number} for line {line.reverses_line_id}, {line.pk}"
@@ -6760,11 +6784,21 @@ class GoodsReceipt(AuditModel):
                 decided_by=by, note=reason,
             )
             moved.append((item, quantity))
-        if conceded and not self.held_assemblies():
-            from apps.quality.decisions import close_to_dos
-
-            close_to_dos(self, by, f"Accepted on concession by {by.get_username()}: {reason}")
+        if conceded:
+            self.close_when_nothing_is_held(by, f"Accepted on concession by {by.get_username()}: {reason}")
         return moved
+
+    def close_when_nothing_is_held(self, by, outcome):
+        """
+        Close the Quality Manager's to-dos on this receipt once nothing on it
+        is held any more (review F4): accepted, sent back, or released by
+        quality, whichever happened last. Returns how many closed.
+        """
+        if self.held_assemblies():
+            return 0
+        from apps.quality.decisions import close_to_dos
+
+        return close_to_dos(self, by, outcome)
 
     @serialised("posted", held_first=True)
     def reject(self, quantities=None, note="", debit_bills=True):
@@ -7195,6 +7229,9 @@ class GoodsReceipt(AuditModel):
         return_receipt.debit_notes_created = (
             return_receipt._debit_returned_goods() if debit_bills else []
         )
+        self.close_when_nothing_is_held(
+            None, f"Sent back to {self.purchase_order.vendor} with {return_receipt.number}: nothing on "
+                  f"{self.number} is held any more.")
         return return_receipt
 
 
