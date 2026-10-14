@@ -318,11 +318,31 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
             early.post()
         self.assertFalse(Inspection.objects.get(pk=early.pk).posted)
         self.assertEqual(release_status(part), "held")
-        # Dated the day it is measured, after the parent's verdict, it speaks.
+        # Dated the day it is measured, after the parent's verdict, it speaks:
+        # posted by the Quality Manager, since a split of a rejected batch
+        # passed is that batch tested back into use (review F3).
+        from django.contrib.auth.models import User
+
         early.inspected_on = TODAY
         early.save()
-        early.post()
+        early.post(by=User.objects.create(username="qm-f3", is_superuser=True))
         self.assertEqual(release_status(part), "released")
+
+    def test_a_split_of_a_held_batch_passed_by_anyone_else_waits_for_the_quality_manager(self):
+        """Review F3: PP-A rejected and split; PP-A2 passes 1,000 the same day, posted by nobody who decides."""
+        from apps.quality.models import Disposition
+
+        from .rebatch import rebatch
+
+        self.inspect(1200)
+        part = Lot.objects.create(item=self.virgin, code="PP-A2")
+        rest = Lot.objects.create(item=self.virgin, code="PP-A3")
+        rebatch(self.virgin, self.plant, [(self.drum, "100")], [(part, "60"), (rest, "40")], "split",
+                on_date=TODAY)
+        passed = Inspection.objects.create(lot=part, plan=self.plan, inspected_on=TODAY)
+        Reading.objects.create(inspection=passed, plan_line=self.line, value=Decimal("1000"))
+        passed.post()
+        self.assertEqual((passed.disposition, release_status(part)), (Disposition.AWAITING, "held"))
 
     def test_a_failure_under_an_advisory_plan_waits_for_the_quality_manager(self):
         """

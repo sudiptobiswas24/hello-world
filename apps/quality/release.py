@@ -133,6 +133,16 @@ def release_status(lot):
     return ReleaseStatus.HELD
 
 
+def held_inside(lot):
+    """
+    The batches `lot` was re-made from (split, joined, or assembled by a
+    subcontractor) that quality holds now. A pass of `lot` cannot show a
+    defect inside them, so it is the Quality Manager's to release (decision
+    22, review F3), as a concession on them would be.
+    """
+    return [source for source in lot_sources(lot) if release_status(source) == ReleaseStatus.HELD]
+
+
 def awaiting_decision(lot, action="issue"):
     """
     Why `lot` waits for the Quality Manager's decision, in words, or "":
