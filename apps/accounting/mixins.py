@@ -117,6 +117,7 @@ def refuse_correcting_another_line(line, document, corrects, original, fill=Fals
     original's lock (refuse_correcting_past_what_it_holds asks how much).
     """
     if not getattr(line, f"{corrects}_id"):
+        refuse_an_account_its_original_never_used(line, document, original)
         return
     corrected = getattr(line, corrects)
     held = corrected.document()
@@ -153,6 +154,30 @@ def refuse_correcting_another_line(line, document, corrects, original, fill=Fals
         raise ValidationError({account: [
             f"{corrected.label()} on {held} was booked to {getattr(corrected, account)}; a line giving it "
             f"back is booked there too, not to {getattr(line, account)}."]})
+
+
+def refuse_an_account_its_original_never_used(line, document, original):
+    """
+    A note's line that names no line of its original (a goodwill credit typed
+    in, a price variation) is booked to an account the original booked a line
+    to (O201, review F6): "Goodwill" 100 credited to 4100 on a sale booked to
+    4000 left 4000 at -1,000 and 4100 at +100. A note line naming no account
+    is left to the line's own default, which save() then asks here again.
+    """
+    if not getattr(document, f"{original}_id"):
+        return
+    account = next(name for name in ("revenue_account", "expense_account") if hasattr(type(line), name))
+    chosen = getattr(line, f"{account}_id")
+    if not chosen:
+        return
+    held = getattr(document, original)
+    booked = {getattr(row, f"{account}_id") for row in held.lines.all()} - {None}
+    if booked and chosen not in booked:
+        from apps.accounting.models import Account
+
+        names = ", ".join(str(account_) for account_ in Account.objects.filter(pk__in=booked).order_by("code"))
+        raise ValidationError({account: [
+            f"{held} booked its lines to {names}; a note on it is booked there too, not to {getattr(line, account)}."]})
 
 
 def line_value(line):
