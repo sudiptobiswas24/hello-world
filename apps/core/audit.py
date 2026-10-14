@@ -33,6 +33,13 @@ class AuditableViewSetMixin:
     # a document's own address posted it, asked only the add_ permission,
     # not its action's (review F6). audit_invariants reports a viewset
     # with such an action that does not take this.
+    @classmethod
+    def reads_only_some(cls, user):
+        """Whether this screen reads `user` only some of its kind: so a deleted one's history is not theirs (endpoints.narrows_for)."""
+        from .endpoints import narrows_for
+
+        return narrows_for(cls, user)
+
     def dispatch(self, request, *args, **kwargs):
         mapped = getattr(self, "action_map", None)
         if mapped is not None:

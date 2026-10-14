@@ -141,11 +141,6 @@ class LeaveRequestViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "cancel": ("hr.add_leaverequest", "hr.decide_leaverequest"),
     }
 
-    @staticmethod
-    def reads_only_some(user):
-        """Whether the leave rule limits this login (leave_readable): so a deleted request's history is not theirs (O131)."""
-        return leave_readable(user) is not None
-
     def get_queryset(self):
         # Your own requests and your reports'; everyone's only to those
         # who keep the records (HR, payroll). Self service read every
