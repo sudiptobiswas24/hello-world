@@ -6417,6 +6417,19 @@ class GoodsReceipt(AuditModel):
                 "posted_at", "journal_entry", "price_difference_entry", "updated_at",
             ]
         )
+        # Received and held, the Quality Manager decides (decision 22): a
+        # to-do each now, the mail once this commits. Whoever received the
+        # goods is not told to decide; `quality_told` says who was.
+        held = self.held_assemblies()
+        if held:
+            from apps.core.approvals import authors
+            from apps.quality.decisions import tell_the_quality_manager
+
+            self.quality_told = tell_the_quality_manager(
+                self, f"Decide {self.number}: {len(held)} line(s) of assemblies made from a batch "
+                      f"quality holds, from {self.purchase_order.vendor}",
+                link=f"/purchasing/goods-in/{self.pk}", barred=authors(self, "lines"),
+                body="\n".join(row["why"] for row in held))
 
     def _freeze_accrual(self, line):
         """
@@ -6670,6 +6683,16 @@ class GoodsReceipt(AuditModel):
                     "whoever decides it and a reason."
                 )
             check_not_raised_by(by, authors(self, "lines"), self)
+            # The Quality Manager's, as any decision on a batch quality
+            # rejected is (decision 22), not every holder of the receipt
+            # inspection's right.
+            if not by.has_perm("quality.decide_inspection"):
+                raise ValidationError(
+                    f"Accepting assemblies made from {', '.join(conceded)}, which quality holds, is the "
+                    f"Quality Manager's decision; {by.get_username()} may not take it.")
+        limit = ReceiptInspection._meta.get_field("note").max_length
+        if len(reason) > limit:
+            raise ValidationError(f"Say why in {limit} characters or fewer; this is {len(reason)}.")
         lock_positions(
             pair
             for line, _quantity in selected
@@ -6704,9 +6727,13 @@ class GoodsReceipt(AuditModel):
             ReceiptInspection.objects.create(
                 receipt_line=line, quantity=quantity, accepted=True,
                 inspected_on=to_date(occurred_at), warehouse=warehouse, movement=into,
-                decided_by=by, note=reason[:255],
+                decided_by=by, note=reason,
             )
             moved.append((item, quantity))
+        if conceded and not self.held_assemblies():
+            from apps.quality.decisions import close_to_dos
+
+            close_to_dos(self, by, f"Accepted on concession by {by.get_username()}: {reason}")
         return moved
 
     @serialised("posted", held_first=True)

@@ -735,6 +735,53 @@ class HeldAssembliesAcceptedAreAConcessionTests(_SentBatches):
         decision = ReceiptInspection.objects.get(receipt_line__receipt=receipt)
         self.assertEqual((decision.decided_by, decision.note), (self.manager, "Frames re-checked at the vendor"))
 
+    def test_a_quality_inspector_does_not_take_the_concession(self):
+        # Decision 22: a decision on a batch quality rejected is the Quality
+        # Manager's, not every holder of the receipt inspection's right.
+        from django.contrib.auth.models import Group, User
+
+        inspector = User.objects.create(username="inspector")
+        inspector.groups.add(Group.objects.get(name="Quality Inspector"))
+        receipt = self.received()
+        response = self.accept(inspector, receipt, reason="Frames re-checked at the vendor")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("is the Quality Manager's decision", response.content.decode())
+        self.assertEqual(self.assembly.on_hand_at(self.bay), Decimal("10"))
+
+    def test_the_quality_manager_is_told_and_the_to_do_closes_with_the_concession(self):
+        from apps.core.chatter import FollowUp
+
+        receipt = self.received()
+        self.assertEqual(receipt.quality_told.told, ["qm"])  # the receiver is a Quality Manager too, barred
+        (to_do,) = FollowUp.objects.filter(object_id=receipt.pk, link=f"/purchasing/goods-in/{receipt.pk}")
+        self.assertEqual((to_do.assigned_to, to_do.done_on), (self.manager, None))
+        self.assertEqual(self.accept(self.manager, receipt, reason="Frames re-checked at the vendor").status_code,
+                         200)
+        to_do.refresh_from_db()
+        self.assertEqual(to_do.done_by, self.manager)
+
+    def test_a_reason_longer_than_its_field_is_refused_not_cut(self):
+        receipt = self.received()
+        response = self.accept(self.manager, receipt, reason="x" * 256)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("255 characters or fewer; this is 256", response.content.decode())
+        self.assertEqual(self.assembly.on_hand_at(self.bay), Decimal("10"))
+
+    def test_posting_over_the_api_says_who_was_told(self):
+        from rest_framework.test import APIClient
+
+        _sent, order = self.sent_then_rejected()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1),
+                                              created_by=self.receiver)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.first(), warehouse=self.bay,
+                                        quantity_received=Decimal("10"), created_by=self.receiver)
+        client = APIClient()
+        client.force_authenticate(self.receiver)
+        response = client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/post_receipt/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["quality_told"]["told"], ["qm"])
+        self.assertEqual(len(response.json()["held"]), 1)
+
     def test_goods_held_for_nothing_but_inspection_clear_as_before(self):
         order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
         PurchaseOrderLine.objects.create(order=order, item=self.motor, uom=self.uom,
