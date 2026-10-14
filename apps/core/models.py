@@ -176,6 +176,39 @@ def as_it_would_be(instance, incoming):
     return moved
 
 
+def _named(rows):
+    return {(type(row)._meta.label_lower, row.pk) for row in rows if row is not None and row.pk is not None}
+
+
+def hold_what_it_names_first(instance, method="locked_before_it", incoming=None, no_key=False):
+    """
+    Hold the rows `instance`'s `method` names, in turn, then its own row;
+    then ask the row as held what it names now, and refuse if that is a
+    row not held.
+
+    What it names was read before the lock: an allocation re-pointed to
+    another payment at that moment had the old payment held and the new
+    one taken after the allocation, against the lock order (O35), and a
+    line added to a document as its orders were read had its order taken
+    after the document (O168). Once its row is held nothing it names can
+    change, so asked again then, the answer is final. Taking what was
+    missed then would take it after the row; it is refused, to be done
+    again from what is there now.
+    """
+    named = getattr(as_it_would_be(instance, incoming), method)()
+    lock_in_turn(named)
+    list(row_lock_query(type(instance), instance.pk, no_key=no_key))
+    stored = type(instance)._base_manager.filter(pk=instance.pk).first()
+    if stored is None:
+        return
+    missed = _named(getattr(as_it_would_be(stored, incoming), method)()) - _named(named)
+    if missed:
+        label, pk = sorted(missed)[0]
+        raise ValidationError(
+            f"{instance} was changed to name {label.split('.')[-1]} {pk} while this was being done; "
+            "nothing was changed. Read it again and do it again.")
+
+
 def lock_for_change(instance, incoming=None):
     """
     Hold `instance`'s row for a change made from outside its own methods,
@@ -200,8 +233,9 @@ def lock_for_change(instance, incoming=None):
     if not transaction.get_connection().in_atomic_block:
         raise RuntimeError("lock_for_change() outside a transaction locks nothing.")
     if getattr(instance, "locked_before_it", None) is not None:
-        lock_in_turn(as_it_would_be(instance, incoming).locked_before_it())
-    list(row_lock_query(type(instance), instance.pk, no_key=True))
+        hold_what_it_names_first(instance, incoming=incoming, no_key=True)
+    else:
+        list(row_lock_query(type(instance), instance.pk, no_key=True))
 
 
 def serialised(*state, held_first=False):
@@ -239,8 +273,8 @@ def serialised(*state, held_first=False):
             with transaction.atomic():
                 if self.pk is not None:
                     if held_first:
-                        lock_in_turn(getattr(self, held_first if isinstance(held_first, str)
-                                             else "locked_before_it")())
+                        hold_what_it_names_first(
+                            self, held_first if isinstance(held_first, str) else "locked_before_it")
                     lock_rows(self, refresh=False)
                     if state:
                         self.refresh_from_db(fields=list(state))

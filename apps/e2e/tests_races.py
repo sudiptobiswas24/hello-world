@@ -1768,3 +1768,58 @@ class TwoLandedCostsOnTheSameTwoReceiptLinesTests(RaceCase):
 
         outcomes = race(StockMovement, allocate(charge1.pk, [x, y]), allocate(charge2.pk, [y, x]))
         self.assertEqual(outcomes, ["done", "done"])
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class WhatAChangeHoldsFirstRaceTests(RaceCase):
+    """
+    O35: what a row's save() holds before it (locked_before_it()) was read
+    from the row as it stood before the lock. 300 of receipt A (1,000)
+    applied to an invoice of 1,000 is re-pointed to receipt B at the moment
+    another person edits its amount: the edit held A, the invoice and the
+    allocation, then read it naming B, and took B last of all, against the
+    lock order. Asked again once the row is held, the edit is refused and
+    done again from what is there.
+    """
+    setUp = sales_fixture.SalesTestCase.setUp
+
+    def test_an_edit_does_not_hold_the_payment_an_allocation_named_before_it_was_re_pointed(self):
+        from apps.core.models import lock_for_change
+
+        invoice = Invoice.objects.create(customer=self.customer, invoice_date=datetime.date(2026, 3, 1),
+                                         currency=self.usd, receivable_account=self.ar)
+        InvoiceLine.objects.create(invoice=invoice, item=self.item, quantity=Decimal("1"),
+                                   unit_price=Decimal("1000"), revenue_account=self.revenue)
+        invoice.post()
+        a, b = (Payment.objects.create(party=self.customer, direction=PaymentDirection.RECEIPT,
+                                       payment_date=datetime.date(2026, 3, 2), amount=Decimal("1000"),
+                                       currency=self.usd, bank_account=self.bank, counterpart_account=self.ar)
+                for _ in range(2))
+        a.post()
+        b.post()
+        allocation = InvoicePayment.objects.create(invoice=invoice, payment=a, amount=Decimal("300"))
+
+        held = threading.Event()
+
+        def re_point():
+            row = InvoicePayment.objects.get(pk=allocation.pk)
+            lock_for_change(row, {"payment": b.pk})
+            held.set()  # the edit reads its row before this commits, and asks for the locks after these
+            row = InvoicePayment.objects.get(pk=allocation.pk)
+            row.payment = b
+            row.save()
+
+        def edit_amount():
+            stale = InvoicePayment.objects.get(pk=allocation.pk)
+            held.wait(5)
+            lock_for_change(stale, {"amount": "400"})
+            row = InvoicePayment.objects.get(pk=allocation.pk)  # read again once held, as the viewsets do
+            row.amount = Decimal("400")
+            row.save()
+
+        outcomes = race(InvoicePayment, re_point, edit_amount)
+        self.once(outcomes)
+        self.assertIn("while this was being done", " ".join(outcomes), outcomes)
+        allocation.refresh_from_db()
+        self.assertEqual((allocation.payment_id, allocation.amount), (b.pk, Decimal("300.00")), outcomes)
