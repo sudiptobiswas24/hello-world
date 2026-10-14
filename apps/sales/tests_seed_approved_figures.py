@@ -80,3 +80,55 @@ class AnOrderCutBeforeTheSeedKeepsItsApprovalTests(SalesTestCase):  # O186, the 
         self.assertEqual(SalesOrder.objects.get(pk=order.pk).approved_figures["discounts"], {str(line.pk): "20.00"})
         AnOrderApprovedBefore0063KeepsItsApprovalTests.put(self, line, "20")
         self.assertEqual(SalesOrderLine.objects.get(pk=line.pk).discount_percent, Decimal("20.00"))
+
+
+@tag("migration")
+class AChargeLineCutBeforeTheSeedKeepsItsApprovalTests(TransactionTestCase):
+    """
+    O200. Approved before 0065 at 20% on its 'Shipping' charge line, the
+    note naming it; cut to 10% before the seed. 0065 could not name a charge
+    line (no ChargeType.__str__ on a historical model) and seeded 10.00;
+    0067 matches it by the charge's name and puts back the 20.00 approved.
+    """
+
+    setUp = SalesTestCase.setUp
+
+    def tearDown(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
+        super().tearDown()
+
+    def test_a_charge_line_is_matched_by_its_charges_name(self):
+        from django.utils import timezone
+
+        from apps.accounting.models import ChargeType
+
+        ApprovalPolicy.objects.create(code="STD", name="Standard", max_discount_percent=Decimal("15"))
+        shipping = ChargeType.objects.create(code="FRT", name="Shipping", revenue_account=self.revenue)
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1),
+                                          currency=self.usd)
+        line = SalesOrderLine.objects.create(order=order, charge=shipping, quantity=Decimal("1"),
+                                             unit_price=Decimal("100"), discount_percent=Decimal("20"))
+        order.approve(by=User.objects.get_or_create(username="approver")[0])
+        order.confirm()
+        line = SalesOrderLine.objects.get(pk=line.pk)
+        line.discount_percent = Decimal("10")
+        line.save()
+        # As 0065 left an order approved before it: the approval's own note, the cut line seeded at 10.
+        before = timezone.make_aware(datetime.datetime(2020, 1, 1))
+        SalesOrder.objects.filter(pk=order.pk).update(
+            approved_at=before, approval_note="'Shipping' is discounted 20.00%, above the 15.00% limit.",
+            approved_figures={"discounts": {str(line.pk): "10.00"}, "total": None, "margin": None})
+        SalesOrderLine.objects.filter(pk=line.pk).update(created_at=before)
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([("sales", "0066_write_off_recovered_amount")])
+        executor.loader.build_graph()
+        executor.migrate([("sales", "0067_seed_charge_lines_by_name")])
+
+        self.assertEqual(SalesOrder.objects.get(pk=order.pk).approved_figures["discounts"],
+                         {str(line.pk): "20.00"})
+        line = SalesOrderLine.objects.get(pk=line.pk)
+        line.discount_percent = Decimal("20")
+        line.save()  # put back within what was approved
+        self.assertEqual(SalesOrderLine.objects.get(pk=line.pk).discount_percent, Decimal("20.00"))
