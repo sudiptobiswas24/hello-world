@@ -181,6 +181,50 @@ class OnPaperAndInTheEInvoiceTests(TcsTestCase):
         self.assertEqual((values["OthChrg"], values["RndOffAmt"], values["TotInvVal"]), (1062.0, 0.0, 107262.0))
 
 
+class TcsIsNoPartOfTheValueOfSupplyTests(TcsTestCase):
+    """
+    TCS is income tax collected with the sale, not part of its value for GST (CBIC Circular
+    76/50/2018-GST as corrected on 7 March 2019): every taxable value leaves it out, and only the
+    invoice's whole value counts it, as an other charge.
+
+      T1 again: taxable 90,000.00, GST 16,200.00, TCS 1,062, invoice 107,262.00.
+      T8  1,000 kg at 42.35 = 42,350.00, GST 7,623.00, 49,973.00; TCS 1% of it 499.73 is 500,
+          50,473.00: past the e-way bill limit of 50,000 only if TCS were counted.
+    """
+
+    def test_the_gst_computed_on_the_supply_alone(self):
+        invoice = self.t1()
+        self.assertEqual([(row.gst_head, row.taxable, row.amount) for row in invoice.lines.get().recorded_taxes.all()],
+                         [("cgst", D("90000.00"), D("8100.00")), ("sgst", D("90000.00"), D("8100.00"))])
+
+    def test_gstr1_and_gstr3b_report_the_supply_and_the_invoice_value_carries_tcs(self):
+        from apps.gst.returns import gstr1, gstr3b
+        from apps.gst.tests import SEPTEMBER
+
+        self.t1()
+        (row,) = gstr1(*SEPTEMBER)["b2b"]
+        (item,) = row["items"]
+        self.assertEqual((row["value"], item["taxable"], item["cgst"], item["sgst"]),
+                         (D("107262.00"), D("90000.00"), D("8100.00"), D("8100.00")))
+        summary = gstr3b(*SEPTEMBER)["3.1a"]
+        self.assertEqual((summary["taxable"], summary["cgst"]), (D("90000.00"), D("8100.00")))
+
+    def test_the_e_invoice_counts_it_only_in_the_invoice_value(self):
+        values = build(self.t1())["ValDtls"]
+        self.assertEqual((values["AssVal"], values["CgstVal"], values["OthChrg"], values["TotInvVal"]),
+                         (90000.0, 8100.0, 1062.0, 107262.0))
+
+    def test_the_e_way_bill_leaves_it_out_of_the_value_and_the_limit(self):
+        from apps.gst.ewaybill import _invoice_payload
+
+        invoice = self.invoice(self.mh, [(self.scrap, "1000", "42.35", "0", self.pair)])
+        self.assertEqual((invoice.tcs_amount, invoice.total()), (D("500.00"), D("50473.00")))
+        payload, required, because = _invoice_payload(invoice)
+        self.assertEqual((payload["totalValue"], payload["otherValue"], payload["totInvValue"]),
+                         (42350.0, 500.0, 50473.0))
+        self.assertEqual((required, because), (False, "Worth 49973.00, not above the limit of 50000.00."))
+
+
 class ThroughTheApiTests(TcsTestCase):
     def client_as(self, role, name):
         user = User.objects.create_user(name)
