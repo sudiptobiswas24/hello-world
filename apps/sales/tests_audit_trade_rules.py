@@ -50,7 +50,9 @@ class ALineAnswersToItsDocumentTests(SimpleTestCase):
         self.assertEqual(lines("sales", "DeliveryLine", BOTH), [])
 
     def test_a_reported_line_that_answers_now_is_a_stale_exemption(self):
-        self.assertEqual(lines("inventory", "StockAdjustmentLine", BOTH), ["stale exemption"])
+        # Planted: every line once reported answers now (O124), and the list is empty.
+        with mock.patch.object(Command, "LINES_REPORTED", {"inventory.StockAdjustmentLine": "planted"}):
+            self.assertEqual(lines("inventory", "StockAdjustmentLine", BOTH), ["stale exemption"])
 
     def test_every_line_this_checkout_writes_answers_or_is_reported(self):
         from apps.core.management.commands.audit_invariants import app_sources
