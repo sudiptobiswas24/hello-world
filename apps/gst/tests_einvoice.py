@@ -604,3 +604,93 @@ class PlaceOfSupplyTests(EInvoiceTestCase):
                                              unit_price=D("1000"), revenue_account=self.revenue)
         line.taxes.set(self.pair)
         self.assertEqual([(tax.code, amount) for tax, amount in line.tax_amounts()], [("IGST18", D("180.00"))])
+
+
+class CancellingAnIrnTests(EInvoiceTestCase):
+    """
+    O220. S2 (17,700.00 to a Maharashtra buyer) registered now, cancelled
+    within the portal's 24 hours: the request carries the IRN, a reason code
+    and a remark; the portal's answer reverses the invoice by a full credit
+    note on its own date, and the return and the print follow.
+    """
+
+    def s2(self):
+        return self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)])
+
+    def test_refused_outside_the_window_with_the_way_that_remains(self):
+        record = self.registered(self.s2())
+        with self.assertRaisesMessage(ValidationError, "more than 24 hours ago; the portal no longer cancels "
+                                                       "it. Correct the invoice with a credit note instead."):
+            record.cancellation("2", "Wrong rate", now=record.ack_date + datetime.timedelta(hours=24, minutes=1))
+
+    def test_refused_while_anything_settles_the_invoice(self):
+        invoice = self.s2()
+        record = self.registered(invoice)
+        invoice.create_credit_note(quantities={invoice.lines.get(): D("10")})
+        with self.assertRaisesMessage(ValidationError, "has 1770.00 settled against it"):
+            record.cancellation("2", "Wrong rate")
+
+    def test_refused_without_a_reason_or_a_remark_and_unregistered(self):
+        invoice = self.s2()
+        unregistered = prepare(invoice)
+        with self.assertRaisesMessage(ValidationError, "has no IRN to cancel"):
+            unregistered.cancellation("2", "Wrong rate")
+        record = self.registered(self.s2())
+        with self.assertRaisesMessage(ValidationError, "Give a reason"):
+            record.cancellation("9", "Wrong rate")
+        with self.assertRaisesMessage(ValidationError, "the portal asks for a remark"):
+            record.cancellation("4", "  ")
+        with self.assertRaisesMessage(ValidationError, "No cancellation of"):
+            record.record_cancellation(timezone.now())
+
+    def test_within_the_window_the_request_and_the_books_after_it(self):
+        invoice = self.s2()
+        record = self.registered(invoice)
+        self.assertEqual(record.cancellation("2", " Wrong  rate "),
+                         {"Irn": IRN, "CnlRsn": "2", "CnlRem": "Wrong rate"})
+        with self.assertRaisesMessage(ValidationError, "has not come"):
+            record.record_cancellation(timezone.now() + datetime.timedelta(hours=2))
+        note = record.record_cancellation(timezone.now())
+        invoice.refresh_from_db()
+        self.assertEqual((note.credits, note.invoice_date, note.total(), note.posted),
+                         (invoice, invoice.invoice_date, D("17700.00"), True))
+        self.assertEqual(invoice.amount_due(), D("0"))
+        self.assertEqual(self.ledger(self.ar.code), D("0"))
+        result = gstr1(*SEPTEMBER)
+        self.assertEqual((result["b2b"], result["cdnr"]), ([], []))
+        self.assertEqual([(row["kind"], row["total"], row["cancelled"]) for row in result["documents"]],
+                         [("invoices", 1, 1), ("credit_notes", 1, 1)])
+        stamp = invoice_stamp(invoice)
+        self.assertIn(("IRN", IRN), stamp["rows"])
+        self.assertEqual(stamp["rows"][1][0], "IRN cancelled")
+        self.assertIsNone(stamp["qr"])
+        self.assertIn("no longer a valid tax invoice", stamp["refuse_sending"])
+        with self.assertRaisesMessage(ValidationError, "no longer a valid tax invoice"):
+            invoice.email_to_customer(to="buyer@example.com")
+        self.assertIsNone(invoice_stamp(note))
+        with self.assertRaisesMessage(ValidationError, "no credit note to register"):
+            build(note)
+        with self.assertRaisesMessage(ValidationError, "IRN was cancelled on"):
+            record.record_cancellation(timezone.now())
+
+    def test_the_gst_officer_cancels_through_the_api(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        officer = User.objects.create_user("officer")
+        officer.groups.add(Group.objects.get(name="GST Officer"))
+        client = APIClient()
+        client.force_authenticate(officer)
+        record = self.registered(self.s2())
+        url = f"/api/gst/e-invoices/{record.pk}/"
+        refused = client.post(url + "cancel/", {"reason": "7", "remarks": "x"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        built = client.post(url + "cancel/", {"reason": "1", "remarks": "Raised twice"}, format="json")
+        self.assertEqual((built.status_code, built.json()["cancel_payload"]),
+                         (200, {"Irn": IRN, "CnlRsn": "1", "CnlRem": "Raised twice"}))
+        moment = timezone.now().isoformat()
+        done = client.post(url + "record_cancellation/", {"cancelled_at": moment}, format="json")
+        self.assertEqual(done.status_code, 200, done.content)
+        self.assertIsNotNone(done.json()["cancelled_at"])
+        self.assertIsNotNone(done.json()["cancellation_note"])

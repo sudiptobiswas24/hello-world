@@ -214,7 +214,10 @@ def _invoices(start, end, state):
     ).exclude(credits__is_down_payment=True).exclude(
         # A plain credit of an opening balance is no supply; a note with
         # its own GST on the old invoice is (credit_old_supply).
-        credits__is_opening_balance=True, corrects_old_supply=False)
+        credits__is_opening_balance=True, corrects_old_supply=False).exclude(
+        # An invoice whose IRN the portal cancelled is off GSTR-1 there, and the note the books
+        # reverse it by was never issued (einvoice.record_cancellation): neither is reported here.
+        einvoice__cancelled_at__isnull=False).exclude(cancels_irn_of__isnull=False)
     _refuse_unrecorded(queryset, "invoices and credit notes")
     queryset = queryset.select_related("credits").prefetch_related(
         "lines__recorded_taxes__tax", "lines__item__uom__gst_uqc",
@@ -473,12 +476,12 @@ def _documents_issued(start, end):
     from apps.manufacturing.jobwork import JobWorkChallan
 
     numbered = Invoice.objects.filter(posted=True, invoice_date__gte=start, invoice_date__lte=end).exclude(number="")
-    # (number, when withdrawn): an invoice is never withdrawn (a credit note takes it back).
+    # (number, when withdrawn): an invoice is withdrawn only by its IRN's cancellation, which
+    # withdraws the note the books reverse it by as well; any other correction is a credit note.
     kinds = (
-        ("invoices", ((number, None) for number in
-                      numbered.filter(credits__isnull=True).values_list("number", flat=True))),
-        ("credit_notes", ((number, None) for number in
-                          numbered.filter(credits__isnull=False).values_list("number", flat=True))),
+        ("invoices", numbered.filter(credits__isnull=True).values_list("number", "einvoice__cancelled_at")),
+        ("credit_notes", numbered.filter(credits__isnull=False).values_list(
+            "number", "cancels_irn_of__cancelled_at")),
         ("job_work_challans", JobWorkChallan.objects.filter(
             posted=True, challan_date__gte=start, challan_date__lte=end).exclude(number="").values_list(
             "number", "voided_at")),

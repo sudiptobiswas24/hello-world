@@ -26,11 +26,23 @@ buyer, an SEZ or abroad. Not to an unregistered buyer, which the law
 leaves out; not a down payment, which carries no tax. Credit notes to
 the same buyers, yes.
 
+**Cancelling an IRN** (O220). The portal cancels an IRN within 24 hours
+of its acknowledgement, never after: past that a credit note, which is
+always open, corrects the invoice. `cancellation()` builds the request
+(the IRN, a reason code, a remark) and refuses outside the window, or
+while anything settles the invoice (money, a deposit, TDS, a credit note,
+a write-off or a discount: release it first) or an e-way bill stands on
+it (the portal refuses an IRN whose e-way bill is live).
+`record_cancellation()` keeps the portal's answer, and the books follow
+it: a full credit note of the invoice, on the invoice's own date, so
+the month nets to nothing as the portal's GSTR-1 does. That note is the
+books' reversal, not a credit note issued under section 34: it is never
+registered, never reported, and Table 13 counts both numbers as
+cancelled. The invoice prints its IRN as cancelled and is not sent:
+it is no longer a valid tax invoice. Nothing undoes a cancellation; the
+supply, if there was one, is invoiced again under a new number.
+
 Not built, and said here rather than left looking done:
-- Cancelling an IRN. A cancelled IRN takes the invoice off the portal
-  and out of GSTR-1, so the return compiled here would have to leave it
-  out too, and it does not yet. A credit note, which is always open,
-  corrects an invoice instead.
 - The 30-day window. A company with turnover of 10 crore or more cannot
   register an invoice more than 30 days old. Whether this one has that
   turnover is not known here, so the age is returned as a warning.
@@ -40,6 +52,7 @@ Not built, and said here rather than left looking done:
 
 import base64
 import binascii
+import datetime
 import json
 import re
 from decimal import Decimal
@@ -50,7 +63,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, serialised
+from apps.core.models import AuditModel, lock_rows, serialised
 
 from . import particulars as p
 
@@ -61,6 +74,18 @@ _IRN = re.compile(r"^[0-9a-f]{64}$")
 _ACK = re.compile(r"^[0-9]{1,20}$")
 
 
+CANCEL_WITHIN = datetime.timedelta(hours=24)
+
+
+class IrnCancelReason(models.TextChoices):
+    # The invoice registration portal's codes, which are not the e-way bill
+    # portal's: there 2 is "order cancelled" and 3 "data entry mistake".
+    DUPLICATE = "1", "Duplicate"
+    DATA_ENTRY = "2", "Data entry mistake"
+    ORDER_CANCELLED = "3", "Order cancelled"
+    OTHERS = "4", "Others"
+
+
 class EInvoice(AuditModel):
     invoice = models.OneToOneField("sales.Invoice", on_delete=models.PROTECT,
                                    related_name="einvoice")
@@ -69,6 +94,18 @@ class EInvoice(AuditModel):
     ack_number = models.CharField(max_length=20, blank=True, editable=False)
     ack_date = models.DateTimeField(null=True, blank=True, editable=False)
     signed_qr = models.TextField(blank=True, editable=False)
+    cancel_reason = models.CharField(max_length=1, blank=True, choices=IrnCancelReason.choices,
+                                     editable=False)
+    cancel_remarks = models.CharField(max_length=100, blank=True, editable=False)
+    cancel_payload = models.JSONField(null=True, blank=True, editable=False,
+                                      help_text="The cancellation request, as built for the portal.")
+    cancelled_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text="When the portal cancelled the IRN, as it answered. From then the invoice is no "
+                  "valid tax invoice.")
+    cancellation_note = models.OneToOneField(
+        "sales.Invoice", null=True, blank=True, on_delete=models.PROTECT, related_name="cancels_irn_of",
+        editable=False, help_text="The full credit note the books reverse the invoice by.")
 
     class Meta:
         verbose_name = "e-invoice"
@@ -124,6 +161,79 @@ class EInvoice(AuditModel):
         self.signed_qr = signed_qr.strip()
         super().save(update_fields=["irn", "ack_number", "ack_date", "signed_qr", "updated_at"])
 
+    def _refuse_cancelling(self, moment):
+        """What stands between this IRN and its cancellation at `moment`: asked as it is built and as it is kept."""
+        invoice = self.invoice
+        if not self.irn:
+            raise ValidationError(f"{invoice.number} has no IRN to cancel; delete the unregistered payload instead.")
+        if self.cancelled_at is not None:
+            raise ValidationError(f"{invoice.number}'s IRN was cancelled on "
+                                  f"{timezone.localtime(self.cancelled_at):%d %b %Y %H:%M}.")
+        if moment < self.ack_date:
+            raise ValidationError(f"{invoice.number} was registered at "
+                                  f"{timezone.localtime(self.ack_date):%d %b %Y %H:%M}; it cannot be cancelled "
+                                  "before that.")
+        if moment - self.ack_date > CANCEL_WITHIN:
+            raise ValidationError(
+                f"{invoice.number}'s IRN was acknowledged at {timezone.localtime(self.ack_date):%d %b %Y %H:%M}, "
+                "more than 24 hours ago; the portal no longer cancels it. Correct the invoice with a credit "
+                "note instead.")
+        settled = invoice._settled_otherwise() + invoice.amount_credited()
+        if settled:
+            raise ValidationError(
+                f"{invoice.number} has {settled} settled against it (payments, a deposit, TDS, a credit note, a "
+                "write-off or a discount). Release them first: a cancelled invoice settles nothing.")
+        from .ewaybill import EwayBill
+
+        standing = EwayBill.objects.filter(invoice=invoice, cancelled_at__isnull=True).exclude(number="").first()
+        if standing is not None:
+            raise ValidationError(f"E-way bill {standing.number} stands on {invoice.number}; cancel it first, as "
+                                  "the portal asks.")
+
+    @transaction.atomic
+    @serialised("irn", "cancelled_at", "cancel_payload")
+    def cancellation(self, reason, remarks="", now=None):
+        """The request that cancels the IRN, within 24 hours of it. Kept until the portal has answered."""
+        lock_rows(self.invoice)
+        self._refuse_cancelling(now or timezone.now())
+        if reason not in IrnCancelReason.values:
+            raise ValidationError("Give a reason: 1 duplicate, 2 data entry mistake, 3 order cancelled, "
+                                  "or 4 others.")
+        remarks = " ".join((remarks or "").split())
+        if not remarks:
+            raise ValidationError("Say why it is cancelled: the portal asks for a remark.")
+        if len(remarks) > 100:
+            raise ValidationError(f"The remark is {len(remarks)} characters; the portal takes 100.")
+        self.cancel_reason, self.cancel_remarks = reason, remarks
+        self.cancel_payload = {"Irn": self.irn, "CnlRsn": reason, "CnlRem": remarks}
+        super().save(update_fields=["cancel_reason", "cancel_remarks", "cancel_payload", "updated_at"])
+        return self.cancel_payload
+
+    @transaction.atomic
+    @serialised("irn", "cancelled_at", "cancel_payload")
+    def record_cancellation(self, cancelled_at):
+        """
+        Keep the portal's answer that the IRN is cancelled, and reverse the
+        invoice in the books by a full credit note on its own date.
+        """
+        if not self.cancel_payload:
+            raise ValidationError(f"No cancellation of {self.invoice.number} has been built; build one first.")
+        if cancelled_at is None:
+            raise ValidationError("Say when the portal cancelled it.")
+        if cancelled_at > timezone.now():
+            raise ValidationError(f"{timezone.localtime(cancelled_at):%d %b %Y %H:%M} has not come; the portal "
+                                  "answers with when it cancelled the IRN.")
+        lock_rows(self.invoice)
+        self._refuse_cancelling(cancelled_at)
+        invoice = self.invoice
+        if invoice.is_down_payment:
+            raise ValidationError(f"{invoice.number} is a down payment, which is never registered.")
+        note = invoice.create_credit_note(memo=f"IRN {self.irn} cancelled: {self.get_cancel_reason_display()}",
+                                          on_date=invoice.invoice_date)
+        self.cancelled_at, self.cancellation_note = cancelled_at, note
+        super().save(update_fields=["cancelled_at", "cancellation_note", "updated_at"])
+        return note
+
 
 def _qr_claims(signed_qr):
     parts = (signed_qr or "").strip().split(".")
@@ -173,6 +283,9 @@ def needs_irn(invoice):
     if not invoice.party_gstin and invoice.party_registration != "overseas":
         return False, (f"{invoice.number} is to an unregistered buyer; those are not "
                        "e-invoiced.")
+    if invoice.pk and EInvoice.objects.filter(cancellation_note=invoice).exists():
+        return False, (f"{invoice.number} is the books' reversal of an invoice whose IRN was cancelled; "
+                       "it is no credit note to register.")
     return True, ""
 
 
@@ -360,6 +473,14 @@ def invoice_stamp(invoice):
     if not required:
         return None
     registered = EInvoice.objects.filter(invoice=invoice).exclude(irn="").first()
+    if registered is not None and registered.cancelled_at is not None:
+        when = timezone.localtime(registered.cancelled_at).strftime("%d %b %Y %H:%M")
+        return {
+            "rows": [("IRN", registered.irn), ("IRN cancelled", when)],
+            "qr": None,
+            "refuse_sending": (f"{invoice.number}'s IRN was cancelled on {when}; it is no longer a valid "
+                               "tax invoice."),
+        }
     if registered is None:
         return {
             "rows": [("IRN", "not yet registered")],

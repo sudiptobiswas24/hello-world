@@ -2928,9 +2928,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             credits=self, **extra)
 
     @serialised("posted", held_first=True)
-    def create_credit_note(self, memo="", quantities=None, amount=None):
+    def create_credit_note(self, memo="", quantities=None, amount=None, on_date=None):
         """
-        Credit this invoice. By default the whole thing; pass
+        Credit this invoice, on `on_date` or today. By default the whole thing; pass
         `quantities` as {invoice_line: quantity} to credit part of it, which
         is what a partial goods return needs. A down payment is credited by
         `amount` instead: part of what is left of it, or by default all.
@@ -2963,7 +2963,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         if not selected:
             raise ValidationError("Nothing to credit.")
 
-        credit_note = self._credit_note()
+        # Never before the invoice it takes back, nor on a day still to come (correction_date).
+        on_date = correction_date(on_date, self.invoice_date, f"{self.number} is not credited on",
+                                  "it was invoiced")
+        credit_note = self._credit_note(on_date=on_date)
         for line, wanted in selected:
             # At what is left of the line's value: after a claim, not its whole price (O185).
             for quantity, price, discount in priced_to_give_back(
