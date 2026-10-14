@@ -140,6 +140,19 @@ def refuse_correcting_another_line(line, document, corrects, original, fill=Fals
         raise ValidationError({"order_line": [
             f"{corrected.label()} billed {corrected.order_line or 'no order line'}; this line names "
             f"{line.order_line}."]})
+    # And through the account its line was booked to (O201): a typed credit
+    # line on a sale booked to 4000 credited 4100, and one revenue account
+    # read low by what the other read high, for good. Left blank, it takes
+    # the line's (on save, `fill`).
+    account = next(name for name in ("revenue_account", "expense_account")
+                   if hasattr(type(line), name))
+    booked = getattr(corrected, f"{account}_id")
+    if fill and booked and not getattr(line, f"{account}_id"):
+        setattr(line, f"{account}_id", booked)
+    if booked and getattr(line, f"{account}_id") != booked:
+        raise ValidationError({account: [
+            f"{corrected.label()} on {held} was booked to {getattr(corrected, account)}; a line giving it "
+            f"back is booked there too, not to {getattr(line, account)}."]})
 
 
 def line_value(line):

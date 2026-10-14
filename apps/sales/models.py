@@ -82,7 +82,10 @@ from apps.accounting.settlement import (
     installment_schedule,
     oldest_overdue,
     owed_beyond,
+    held_base_left,
     post_drawdown,
+    standing_allocations,
+    standing_paid,
     RealisedOnItsOwnDay,
     refuse_other_control_account,
     booked_beside,
@@ -2189,8 +2192,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         # Nor before the last money it settles against (O181): 600 received
         # on 25 September and 400 written off on 15 September read 1,000 owed
         # as 600 between the two.
-        received = [to_date(row.payment.payment_date) for row in self.payment_allocations.all()
-                    if not row.payment.is_voided()]
+        received = [to_date(row.payment.payment_date) for row in standing_allocations(self)]
         if received and on_date < max(received):
             raise ValidationError(f"{self.number} is not written off on {on_date}: "
                                   f"money against it was received on {max(received)}.")
@@ -2255,20 +2257,35 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             raise ValidationError("That write-off has already been recovered.")
         # A credit note that undid the write-off already took it back off bad debt: recovered as well,
         # it would come off twice.
+        # What is left of it is recovered (O80): written off 600 and 300 of it
+        # undone by a credit note, the other 300 paid after all could not be
+        # recovered, and no receipt could be applied to it either.
         undone = sum((note.reversed_write_off for note in self.credit_notes.filter(posted=True)), Decimal("0"))
-        if write_off.amount > self.amount_written_off() - undone:
+        recovering = min(write_off.amount, self.amount_written_off() - undone)
+        if recovering <= 0:
             raise ValidationError(f"Credit notes have undone {undone} of what was written off on {self.number}; "
                                   "that is not recovered again.")
 
         # Not before the write-off it undoes, nor ahead (O163).
-        entry = write_off.journal_entry.create_reversal(
-            entry_date=correction_date(on_date, write_off.journal_entry.date,
-                                       f"The write-off of {self.number} is not recovered on", "it was written off"),
-            memo=f"Bad debt recovered {self.number}",
-        )
+        on_date = correction_date(on_date, write_off.journal_entry.date,
+                                  f"The write-off of {self.number} is not recovered on", "it was written off")
+        memo = f"Bad debt recovered {self.number}"
+        if recovering == write_off.amount:
+            entry = write_off.journal_entry.create_reversal(entry_date=on_date, memo=memo)
+        else:
+            # Part of it: its own entry turned round for what is left, at the
+            # invoice's rate, as the write-off booked it.
+            base = round_money(recovering * (self.exchange_rate or Decimal("1")))
+            entry = JournalEntry.objects.create(date=on_date, reference=self.number, memo=memo)
+            JournalLine.objects.create(entry=entry, account=self.receivable_account, party=self.customer,
+                                       debit=base, description=memo)
+            JournalLine.objects.create(entry=entry, party=self.customer, credit=base, description=memo,
+                                       account=booked_beside(write_off.journal_entry, self.receivable_account))
+            entry.post()
         write_off.recovered_entry = entry
-        write_off.save(update_fields=["recovered_entry", "updated_at"])
-        self.written_off_amount = self.written_off_amount - write_off.amount
+        write_off.recovered_amount = recovering
+        write_off.save(update_fields=["recovered_entry", "recovered_amount", "updated_at"])
+        self.written_off_amount = self.written_off_amount - recovering
         super(Invoice, self).save(update_fields=["written_off_amount", "updated_at"])
         return entry
 
@@ -2340,6 +2357,16 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             return Decimal("0")
         return self.total() - self.deposit_applied() - self.amount_credited()
 
+    def deposit_base_left(self, account):
+        """What is still held, in base, as the deposit, its drawdowns and its notes booked it."""
+        return held_base_left(
+            account,
+            [self.journal_entry]
+            + [application.journal_entry for application in self.applications.all()]
+            + [note.journal_entry for note in self.credit_notes.all() if note.posted],
+            is_receivable=True,
+        )
+
     @transaction.atomic
     def apply_deposit(self, deposit, amount=None, on_date=None):
         """
@@ -2387,9 +2414,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 f"{self.amount_due()} due on the invoice)."
             )
 
-        account = Company.get().customer_deposit_account
-        if account is None:
-            raise ValidationError("The company has no customer deposit account configured.")
+        # Taken off the account the deposit was held in, as its line booked it
+        # (_check_deposit_line held it to the setting on the day it posted), not
+        # whatever the setting says today (O105): moved since, the old account
+        # kept the deposit and the new one went into debit by it.
+        account = deposit.lines.get().revenue_account
 
         # A taxed advance (job work): this share of its tax is reversed
         # here, because the invoice it is drawn against charges tax on the
@@ -2413,6 +2442,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             memo=f"Down payment {deposit.number} applied to {self.number}",
             is_receivable=True,
             taxes=[(tax.collected_account, tax_amount) for tax, tax_amount in reversals if tax_amount],
+            held_left=(left, deposit.deposit_base_left(account)),
         )
         application = DepositApplication.objects.create(
             invoice=self, deposit=deposit, amount=amount, date=on_date,
@@ -2442,15 +2472,8 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         return applied
 
     def amount_paid(self):
-        # A voided payment is money that never arrived — a bounced cheque,
-        # a recalled transfer. Its allocation stays on record as history,
-        # but nothing counts it any more.
-        return sum(
-            (allocation.amount
-             for allocation in self.payment_allocations.all()
-             if not allocation.payment.is_voided()),
-            Decimal("0"),
-        )
+        # What still stands of the money applied to it (settlement.standing_paid).
+        return standing_paid(self)
 
     def amount_credited(self):
         """Value of posted credit notes issued against this invoice."""
@@ -2494,7 +2517,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         capacity = max(invoice.total() - invoice._settled_otherwise(), Decimal("0"))
         used = Decimal("0")
         for note in invoice.credit_notes.filter(posted=True).order_by("invoice_date", "pk"):
-            share = min(note.total(), max(capacity - used, Decimal("0")))
+            # Less what it recorded undoing: that part cleared nothing owed (O80).
+            share = min(note.total() - note.reversed_write_off - note.reversed_discount,
+                        max(capacity - used, Decimal("0")))
             if note.pk == self.pk:
                 return share
             used += share
@@ -2520,8 +2545,19 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         # and it lives on the note. An invoice reading minus forty says the
         # customer owes a negative amount, which is not a thing.
         settled = self._settled_otherwise()
-        offset = min(self.amount_credited(), max(self.total() - settled, Decimal("0")))
+        offset = min(self.amount_credited() - self.credit_spent_undoing(), max(self.total() - settled, Decimal("0")))
         return self.total() - settled - offset
+
+    def credit_spent_undoing(self):
+        """
+        What its posted credit notes spent undoing a write-off or a discount, as
+        each recorded it: that much of them took nothing off what is owed. Counted
+        as credit too, the 300 of a note that undid half a 600 write-off cleared
+        the 300 recovered from the rest, and the money paid for it could not be
+        applied (O80).
+        """
+        return sum((note.reversed_write_off + note.reversed_discount
+                    for note in self.credit_notes.all() if note.posted), Decimal("0"))
 
     def settlement_status(self):
         if not self.posted:
@@ -3425,9 +3461,7 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
                 f"Only {available} of this payment is unallocated; cannot apply {self.amount}."
             )
 
-        outstanding = self.invoice.amount_due() + (
-            InvoicePayment.objects.filter(pk=self.pk).first().amount if self.pk else Decimal("0")
-        )
+        outstanding = self.outstanding_for_it()
         if self.amount > outstanding:
             raise ValidationError(
                 f"The invoice only has {outstanding} outstanding; cannot apply {self.amount}."
@@ -3459,7 +3493,10 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
 
     def settles(self):
         document = self.invoice
-        return document, document.invoice_date, document.customer, document.receivable_account, True
+        # A credit note sits on the other side of the receivable, settled by
+        # money paid out: its exchange difference reads the other way (O70).
+        return (document, document.invoice_date, document.customer, document.receivable_account,
+                not document.is_credit_note())
 
 
 class DepositApplication(AuditModel):
@@ -3545,6 +3582,11 @@ class InvoiceWriteOff(AuditModel):
         related_name="+", editable=False,
         help_text="Set when the debt was recovered and this write-off reversed.",
     )
+    recovered_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="What the recovery put back: less than the write-off when a credit note had undone part of it. "
+                  "Blank on a recovery made before it was kept, which put back the whole.",
+    )
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -3557,6 +3599,12 @@ class InvoiceWriteOff(AuditModel):
 
     def is_recovered(self):
         return bool(self.recovered_entry_id)
+
+    def amount_recovered(self):
+        """What its recovery put back, as recorded then: the whole of it on a recovery before that was kept."""
+        if not self.recovered_entry_id:
+            return Decimal("0")
+        return self.amount if self.recovered_amount is None else self.recovered_amount
 
 
 def bad_debt_report(start=None, end=None):
@@ -3666,7 +3714,7 @@ def still_owed(invoices):
     """
     owed = owed_beyond(
         not_paid_in_full(invoices.filter(posted=True, credits__isnull=True)),
-        notes=(Invoice.objects.filter(posted=True), "credits"),
+        notes=(Invoice.objects.filter(posted=True), "credits", "reversed_write_off", "reversed_discount"),
         drawdowns=[(DepositApplication.objects.all(), "invoice"),
                    (CustomerTds.objects.filter(reversed_entry__isnull=True), "invoice")],
         reductions=("written_off_amount", "settlement_discount_amount", "-settlement_discount_withdrawn"),
@@ -3887,7 +3935,7 @@ def customer_statement(customer, as_of=None, since=None, currency=None):
             if write_off.is_recovered() and to_date(write_off.recovered_entry.date) <= as_of:
                 entries.append(StatementEntry(
                     to_date(write_off.recovered_entry.date), "Write-off reversed",
-                    invoice.number, "", debit=write_off.amount,
+                    invoice.number, "", debit=write_off.amount_recovered(),
                 ))
         for tds in invoice.tds_withheld.all():
             if to_date(tds.date) <= as_of:
@@ -5711,9 +5759,39 @@ def commission_report(date_from=None, date_to=None):
     Each rep is measured on their own plan's basis: invoiced reps on the
     net value of what they billed, collected reps on money actually
     received against those invoices. Credit notes reduce both.
+
+    In the base currency, at the rate each invoice was booked at (O76):
+    1,000 EUR billed at 1.1 is 1,100 of sales, as the ledger holds it, and
+    a plan's percentage of the euro figure paid a rep the same for a sale
+    in any currency. Collected money is taken at the invoice's rate too:
+    the exchange difference realised on settlement is the books', not the
+    rep's. Summed whole and rounded once.
+
+    Collected means money that stands (O74: a bounced cheque counted) and
+    includes money taken up front (O75): a deposit drawn down against the
+    invoice is collected on the day it is drawn, as far as the deposit was
+    itself paid, its paid money taken by its drawdowns in order. 300 taken
+    up front and 700 paid counted 700.
     """
     date_from = to_date(date_from)
     date_to = to_date(date_to)
+
+    def in_period(day):
+        day = to_date(day)
+        return not ((date_from and day < date_from) or (date_to and day > date_to))
+
+    def collected_up_front(invoice):
+        """[(day, amount)] of this invoice's drawdowns that the deposit's paid money covers."""
+        rows = []
+        for application in invoice.deposit_applications.all():
+            deposit = application.deposit
+            paid = deposit.amount_paid()
+            earlier = sum((other.amount for other in deposit.applications.all()
+                           if (other.date, other.pk) < (application.date, application.pk)), Decimal("0"))
+            covered = min(application.amount, max(paid - earlier, Decimal("0")))
+            if covered:
+                rows.append((application.date, covered))
+        return rows
 
     rows = []
     for rep in SalesRep.objects.filter(is_active=True).select_related("party", "plan"):
@@ -5725,7 +5803,9 @@ def commission_report(date_from=None, date_to=None):
         invoices = Invoice.objects.filter(
             posted=True, sales_rep=rep.party, is_down_payment=False
         ).exclude(credits__is_down_payment=True).prefetch_related(
-            "lines__taxes", "payment_allocations__payment"
+            "lines__taxes", "payment_allocations__payment__journal_entry__reversed_by",
+            "deposit_applications__deposit__applications",
+            "deposit_applications__deposit__payment_allocations__payment__journal_entry__reversed_by",
         )
 
         basis_amount = Decimal("0")
@@ -5737,27 +5817,26 @@ def commission_report(date_from=None, date_to=None):
                 scoped = scoped.filter(invoice_date__lte=date_to)
             for invoice in scoped:
                 sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
-                basis_amount += sign * invoice.subtotal()
+                basis_amount += sign * invoice.subtotal() * (invoice.exchange_rate or Decimal("1"))
         else:
             # Money in against this rep's invoices, less money handed back
             # on their credit notes: a refunded sale earns no commission.
             for invoice in invoices:
                 sign = Decimal("-1") if invoice.is_credit_note() else Decimal("1")
-                for allocation in invoice.payment_allocations.all():
-                    paid_on = allocation.payment.payment_date
-                    if date_from and paid_on < date_from:
-                        continue
-                    if date_to and paid_on > date_to:
-                        continue
-                    basis_amount += sign * allocation.amount
+                collected = [(allocation.payment.payment_date, allocation.amount)
+                             for allocation in standing_allocations(invoice)]
+                collected += collected_up_front(invoice)
+                in_it = sum((amount for day, amount in collected if in_period(day)), Decimal("0"))
+                basis_amount += sign * in_it * (invoice.exchange_rate or Decimal("1"))
 
+        basis_amount = round_money(basis_amount)
         if not basis_amount:
             continue
         rows.append({
             "rep": str(rep.party),
             "plan": rep.plan.code,
             "basis": rep.plan.basis,
-            "basis_amount": round_money(basis_amount),
+            "basis_amount": basis_amount,
             "percent": rep.plan.percent,
             "commission": rep.plan.commission_on(basis_amount),
         })

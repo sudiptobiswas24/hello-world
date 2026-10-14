@@ -21,7 +21,7 @@ class InvoiceWriteOffSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceWriteOff
         fields = ["id", "invoice", "invoice_number", "customer_name", "amount", "date", "reason",
-                  "journal_entry", "recovered_entry", "is_recovered"]
+                  "journal_entry", "recovered_entry", "recovered_amount", "is_recovered"]
         read_only_fields = fields
 
 
