@@ -728,13 +728,15 @@ class Inspection(AuditModel):
                 else f"{standing.number} decided {lot}, which it was made from,",
             )
 
-    def _check_concession(self, by):
+    def _check_concession(self, by, awaited=False):
         """
         What a concession asks, posted so or decided later: a failure to
         concede, the person taking it (the login's own, never a name typed)
-        and why, and a second person where the plant asks for one.
+        and why, and a second person where the plant asks for one. A pass
+        that waited (`awaited`: made from a batch quality holds) concedes
+        what is inside it.
         """
-        if self.result == Result.PASS:
+        if self.result == Result.PASS and not awaited:
             raise ValidationError(
                 f"{self.lot} passed; there is nothing to concede."
             )
@@ -819,6 +821,17 @@ class Inspection(AuditModel):
                 f"Manager decides what happens to it, not whoever posts the readings. "
                 "Leave the decision blank and post: the batch is held until they decide."
             )
+        # A pass of a batch made from one quality holds releases what is
+        # inside it unmeasured: ten assemblies from rejected frames were
+        # passed by an Inspector's ordinary reading of the assemblies. It
+        # waits for the Quality Manager as a failure does, unless they post
+        # it (review F3). Splits and joins of a held batch are the same.
+        if not waits and self.result == Result.PASS and self.disposition in ("", Disposition.ACCEPT):
+            from .release import held_inside
+
+            if held_inside(self.lot) and not (by is not None and by.has_perm("quality.decide_inspection")):
+                waits = True
+                self.disposition = ""
         if waits:
             self.disposition = Disposition.AWAITING
             self.decided_by = None
@@ -902,7 +915,7 @@ class Inspection(AuditModel):
         self.disposition, self.decision_note = disposition, note
         try:
             if disposition == Disposition.CONCESSION:
-                self._check_concession(by)
+                self._check_concession(by, awaited=True)
             else:
                 employee = getattr(by, "employee", None)
                 self.decided_by = employee.party if employee is not None else None

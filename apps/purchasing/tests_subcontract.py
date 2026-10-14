@@ -831,3 +831,53 @@ class HeldAssembliesKeepALotOfTheirOwnTests(_SentBatches):
         apart = self.lot_model.objects.create(item=self.assembly, code="A-2")
         receipt = self.receive_into(order, "5", self.warehouse, lot=apart)
         self.assertEqual(len(receipt.held_assemblies()), 1)
+
+
+class AssembliesFromAHeldBatchPassedWaitTests(_SentBatches):
+    """
+    Review F3: ten assemblies of A-1 made from F-1, rejected; an ordinary
+    pass of A-1 by anyone but the Quality Manager released them with no
+    reason. It waits for the Quality Manager, as their concession would.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.quality.models import Characteristic, InspectionPlan, PlanLine
+
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        _sent, order = self.sent_then_rejected()
+        self.made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        self.receive_into(order, "10", self.warehouse, lot=self.made)
+        torque = Characteristic.objects.create(code="TRQ", name="Torque", uom=self.uom)
+        self.own = InspectionPlan.objects.create(item=self.assembly, is_mandatory=True)
+        self.own_line = PlanLine.objects.create(plan=self.own, characteristic=torque,
+                                                lower_limit=Decimal("0"), upper_limit=Decimal("1"))
+
+    def passed(self, by=None):
+        from apps.quality.models import Inspection, Reading
+
+        inspection = Inspection.objects.create(lot=self.made, plan=self.own, inspected_on=datetime.date(2026, 2, 5))
+        Reading.objects.create(inspection=inspection, plan_line=self.own_line, value=Decimal("0.5"))
+        return inspection.post(by=by)
+
+    def test_a_pass_by_anyone_else_waits_and_the_lot_stays_held(self):
+        from apps.quality.models import Disposition
+        from apps.quality.release import why_held
+
+        inspection = self.passed()
+        self.assertEqual(inspection.disposition, Disposition.AWAITING)
+        self.assertIn("passed", inspection.told)
+        self.assertNotEqual(why_held(self.assembly, self.made, warehouse=self.warehouse), "")
+
+    def test_the_quality_manager_posting_it_releases_it(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+
+        from apps.quality.release import why_held
+
+        call_command("setup_roles", verbosity=0)
+        manager = User.objects.create(username="qm")
+        manager.groups.add(Group.objects.get(name="Quality Manager"))
+        self.passed(by=manager)
+        self.assertEqual(why_held(self.assembly, self.made, warehouse=self.warehouse), "")
