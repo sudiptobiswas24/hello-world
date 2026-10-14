@@ -58,7 +58,7 @@ class WhoMayDecide(AwaitingTestCase):
         decided_by_nobody = release_status(self.roll) == "released" and not Inspection.objects.filter(
             decision_login__isnull=False).exists()
         self.assertFalse(decided_by_nobody, "released with no decision by anyone; the Quality Manager's to-do closed by Meera")
-        self.assertEqual({f.done_by.username for f in self.to_dos(inspection)}, {"asha"})
+        self.assertEqual({f.done_by.username for f in self.to_dos(inspection)}, {"meera"})
 
     def test_Q02_a_manager_who_only_changed_the_draft_may_not_decide(self):
         inspection = self.failed()
