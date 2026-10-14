@@ -93,7 +93,12 @@ def _held(row):
     the row from the read to the write, so they hold it themselves (O17).
     """
     lock_for_change(row)
-    row.refresh_from_db()
+    try:
+        row.refresh_from_db()
+    except type(row).DoesNotExist:
+        # Gone between the read and the lock: the second of two clicks on Delete. A 404, as it would
+        # be read now, not the 500 an unmapped DoesNotExist was (review F5).
+        raise NotFound() from None
     return row
 
 class NoteViewSet(viewsets.ViewSet):
