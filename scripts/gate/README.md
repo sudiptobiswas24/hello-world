@@ -66,7 +66,7 @@ Commit as `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F
   both ways: a conflict inside a class, kept both ways, still parses.
 - `registercheck.py <pushed base> <tip>` fails when a commit subject in the
   range names a register row that is still open at the tip (the ui lane runs
-  it). Documentation-only commits are skipped: registering names rows too.
+  it). A commit touching only docs/ is skipped: registering names rows too.
 - Integrate by cherry-picking, never by merging: `finalize.py` replays the
   range with `cherry-pick`, which cannot replay a merge commit (g19 was
   merged first and rebuilt).
