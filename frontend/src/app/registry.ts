@@ -976,6 +976,10 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/AdvanceForm"),
       },
       {
+        path: "registers", label: "Statutory registers", permission: "hr.view_payslip",
+        keywords: "professional tax pt labour welfare fund lwf register", load: () => import("../modules/payroll/StatutoryRegisters"),
+      },
+      {
         path: "salary-files", label: "Bank files", permission: "hr.view_salarytransferfile",
         keywords: "bank file salary transfer neft bulk upload", load: () => import("../modules/payroll/SalaryFiles"),
       },

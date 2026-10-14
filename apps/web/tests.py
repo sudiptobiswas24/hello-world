@@ -253,10 +253,6 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
 
     # Every collection no screen keeps, and why it needs none.
     NO_SCREEN = {
-        "/api/hr/statutory-registers/": (
-            "Not a collection: one month's professional tax or welfare fund register, asked by ?kind= and "
-            "?month=, read off the kept lines. Its screen is still to build (g21 report)."
-        ),
         "/api/core/party-roles/": (
             "Read only. A party is made in its role, from the customer or vendor list or by HR, "
             "and a second trading role is given on the party page (parties/<id>/roles/)."
