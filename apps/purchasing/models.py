@@ -6825,6 +6825,26 @@ class GoodsReceipt(AuditModel):
                 restored += quantity * cost
         return restored / line.quantity_received
 
+    def _sent_on_the_order(self, item, warehouse):
+        """
+        {lot pk: quantity} of `item` sent to the subcontractor on this
+        receipt's order and not yet used by it: what went out under the
+        order's number, less what its receipts consumed (this one's earlier
+        lines too), plus what its returns put back. Consumed first, so each
+        order's assemblies are made from its own batches (see `allocate`).
+        """
+        order = self.purchase_order
+        numbers = [*GoodsReceipt.objects.filter(purchase_order=order, posted=True).exclude(
+            pk=self.pk).values_list("number", flat=True), self.number]
+        rows = StockMovement.objects.filter(item=item, warehouse=warehouse, lot__isnull=False).filter(
+            Q(movement_type__in=[MovementType.TRANSFER_IN, MovementType.TRANSFER_OUT], reference=order.number)
+            | Q(movement_type=MovementType.ISSUE, reference__in=numbers,
+                notes__startswith="Consumed by subcontractor")
+            | Q(movement_type=MovementType.RECEIPT, reference__in=numbers,
+                notes__startswith="Components returned with")
+        ).values("lot").annotate(total=models.Sum("quantity"))
+        return {row["lot"]: row["total"] for row in rows if row["total"] > 0}
+
     def _consume_components(self, line):
         """
         Take the components the subcontractor used out of their warehouse,
@@ -6860,7 +6880,8 @@ class GoodsReceipt(AuditModel):
             # with no way out short of moving the batch.
             planned.append((component, plan_issue(
                 component.item, warehouse, used, on_date=self.receipt_date, allow_expired=True,
-                holds_let_through=held_by_quality)))
+                holds_let_through=held_by_quality,
+                preferring=self._sent_on_the_order(component.item, warehouse))))
         held = sorted({lot.code for component, plan in planned for lot, _bin, _part in plan
                        if held_by_quality(component.item, lot)})
         landed = line.warehouse.first_receipt_step()
