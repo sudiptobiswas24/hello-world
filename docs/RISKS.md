@@ -269,7 +269,6 @@ missing), **minor**.
 | O95 | purchasing | The same vendor invoice number in another case is accepted: INV-77 and inv-77 both post | rule | minor; audit_pur probes |
 | O99 | purchasing | A hand-typed price passes the approval rule whenever an agreed price exists, used or not: agreed 5.00, typed 50.00, confirmed with no approval reasons. `price_against_agreement` exists and nothing calls it | rule | open; audit_pur probes |
 | O109 | purchasing, sales | Built and never called (shape 2): settlement discounts on both sides (`Bill.take_settlement_discount`, `Invoice.apply_settlement_discount`), `Bill.match_report`, `PurchaseRequisition.suggested_vendors`, `BlanketOrderLine.is_fully_released`. Each should be reached from its screen or action, or removed | rule | open |
-| O123 | purchasing, quality | `GoodsReceipt.accept` never asks the lot's release status, so a lot quality rejected can be cleared onto a pickable shelf (downstream gates still hold it). Seen in code, not probed | rule | verify |
 | O127 | manufacturing | `FROZEN_AT_RELEASE` on work orders is a separate copy of the frozen-once-moved rule (`refuse_changing_what_moved`); one rule should serve both (mistake 5). The no-order-line branch of `BillLine.accrual()` can no longer be reached | minor | open |
 | O130 | core | `scoped()` filters `path__in`, so rows whose party path is NULL drop out of a rep's view | rule | minor |
 | O132 | docs, frontend | docs/IMPORT.md still documents the employees import's roles column, which the import no longer reads; the leave screen does not offer Cancel to a manager the server allows | minor | open |
@@ -289,8 +288,6 @@ missing), **minor**.
 | O197 | core | `UserViewSet.perform_create` and `perform_update` run without a transaction: a create refused while giving roles answers 400 but leaves the login made, with no roles (docs/handoff/reports/fix_sec.md, seen #3) | rule | open |
 | O202 | manufacturing, sales | A cost sheet, a test certificate and a price-variation bill made over the API carry no created_by: quoting.cost(), certificates.issue() and bill_variation() take no maker. Their history line names who; the stamp on the record is blank (seen 2026-10-11, exempted in audit_invariants WRITES_AROUND_THE_MIXIN_ON_PURPOSE) | audit trail | open |
 | O203 | quality | The Quality Manager's escalation counts Monday to Friday and never sees a plant holiday: quality may not import hr, whose calendar knows them. A failure posted the day before Diwali goes to the administrator on Diwali. A calendar hook in core, as lot holds have, would let hr answer (seen 2026-10-14) | minor | open |
-| O204 | quality, manufacturing | Decide (owner): at the machines a failed doff, film roll or bag bundle under a MANDATORY plan is still released on the spot by the supervisor's concession (station_gauge.gauged_batch), while the same failure under an advisory plan now waits for the Quality Manager (decision 22). The stricter plan is the easier one round. Recommended: mandatory failures wait for the Quality Manager too (seen 2026-10-14) | rule | decided (item 23); to build in g21 |
-| O207 | quality | Decide (owner), a recall: a lot that passed its own inspection stays released when a batch it was made from is rejected afterwards (A-1 passed 15 January; F-1, inside it, rejected 2 February). Recommended: a later rejection of a source holds what is still in stock of the lots made from it, and the Quality Manager is told (seen 2026-10-14) | rule | decided (item 23); to build in g21 |
 | O209 | accounting | After g20's settlement slices: deleting or re-pointing a middle allocation re-states only its own slice, so a paisa may reappear on the control account; credit notes on an invoice still book their own lines' bases, not a slice of the invoice's. Not probed (docs/handoff/reports/fix_money.md, "Review fixes") (seen 2026-10-14) | books | open, unproven |
 | O210 | inventory | `follow_value` (inventory/costing.py) follows transfer steps only: goods cleared out of inspection are not followed, so the share of landed freight on goods since gone is classed as cost of sales whatever they went into (the shelf share is right). docs/handoff/reports/fix_cost.md, seen #4 (seen 2026-10-14) | books | open |
 | O211 | purchasing | O94's ranges compare gross receipt quantities with bills in posting order: a return posted between two bills shifts which bill a later return finds first (`_bill_lines_that_paid_for`). fix_cost.md seen #5 (seen 2026-10-14) | books | minor |
@@ -313,6 +310,8 @@ missing), **minor**.
 | O228 | core | The lock-order sentinel keeps a row held after a savepoint that rolled back (a false positive), and does not see raw SQL `FOR SHARE` (`accounting.money.hold_money_account`; accounting.account is unranked, so nothing is missed today) (seen 2026-10-14, review_trade3 S6) | minor | open |
 | O229 | core | apps/core/models.py's lock-order comment still says "deliveries and receipts, then invoices and bills"; LOCK_ORDER ranks receipt, delivery, bill, invoice, then payment, stock and period (mistake 1) (seen 2026-10-14) | minor | open |
 | O230 | accounting | A payment can be voided while a bank statement line is matched to it: the line then reads as matched to a voided payment and the reconciliation is wrong. Decide the rule (refuse the void until the line is unmatched, or unmatch it in the void and say so) and how a bounced cheque's two statement lines are matched (seen 2026-10-14, review_race F10; serial, not a race) | rule | open |
+| O231 | inventory, quality | The "Held because" column is N+1: `LotSerializer.held_because` asks the gate once per row, about 10 queries a lot (providers, plan, latest verdict, on hand), 248 for a page of 25 batches; `why_held` over three levels of lineage takes 26. It needs a page-wide form of the gate, each provider asked once for the page (seen 2026-10-14, fix_qrecall) | minor | open |
+| O232 | manufacturing | One coating check off its weight holds every bag bundle of its run counted while the check stands, because nothing ties a disc check to the roll it was taken on: 2,100 m coated with one disc pair off and 20 bundles wait for the Quality Manager. Safe, but coarse (conversion.py record_bags, coating `made_from`) (seen 2026-10-14, fix_qrecall) | rule | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
@@ -403,10 +402,15 @@ Upgrade notes, true of data made before the 8 October fixes:
 23. **Decided by the owner on 14 October 2026:**
    - A failure under a mandatory plan at the machines (doff, film roll,
      bag bundle) waits for the Quality Manager too, as decision 22 has an
-     advisory one wait: no supervisor concedes it on the spot (O204).
+     advisory one wait: no supervisor concedes it on the spot (O204;
+     done in g21, lamination, print and coating included; the PIN and
+     reason are kept as the floor's note).
    - A recall: a batch rejected after lots were made from it holds what is
      still in stock of those lots, and the Quality Manager is told. Stock
-     lists keep showing them, with a column saying why each is held (O207).
+     lists keep showing them, with a column saying why each is held (O207;
+     done in g21: the recall follows re-batches, subcontract assemblies
+     and production runs, four levels deep, and names what it did not
+     follow).
    - Unit prices keep two places; a price converted from another currency
      is rounded to the paisa per unit (O208). Not to change.
 ## Later items
