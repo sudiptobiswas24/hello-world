@@ -146,7 +146,8 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
     serializer_class = EInvoiceSerializer
     filter_fields = ["invoice"]
     search_fields = ["invoice__number", "irn", "ack_number"]
-    action_permission_map = {"record": "gst.change_einvoice"}
+    action_permission_map = {"record": "gst.change_einvoice", "cancel": "gst.change_einvoice",
+                             "record_cancellation": "gst.change_einvoice"}
 
     def create(self, request):
         from apps.sales.models import Invoice
@@ -162,6 +163,20 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
             ack_date=_moment(request.data.get("ack_date"), "The acknowledgement date"),
             signed_qr=str(request.data.get("signed_qr", "")),
         )
+        return Response(EInvoiceSerializer(record).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        """{reason (1 duplicate, 2 data entry mistake, 3 order cancelled, 4 others), remarks}: the request to send."""
+        record = self.get_object()
+        record.cancellation(str(request.data.get("reason", "")), str(request.data.get("remarks", "")))
+        return Response(EInvoiceSerializer(record).data)
+
+    @action(detail=True, methods=["post"])
+    def record_cancellation(self, request, pk=None):
+        """{cancelled_at}: the portal cancelled the IRN; the books reverse the invoice by a full credit note."""
+        record = self.get_object()
+        record.record_cancellation(_moment(request.data.get("cancelled_at"), "The cancellation date"))
         return Response(EInvoiceSerializer(record).data)
 
 
