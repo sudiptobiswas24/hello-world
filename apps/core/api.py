@@ -242,7 +242,11 @@ class ObjectJSONParser(JSONParser):
     """
 
     def parse(self, stream, media_type=None, parser_context=None):
-        data = super().parse(stream, media_type, parser_context)
+        try:
+            data = super().parse(stream, media_type, parser_context)
+        except RecursionError:
+            # json.load recurses once per bracket: "[" two hundred thousand times answered 500 (review F5).
+            raise ParseError("The body nests deeper than any record's fields do: send the fields as an object.")
         if not isinstance(data, dict):
             raise ParseError(
                 f"Send the fields as an object, {{\"name\": value}}, not {type(data).__name__ if data is not None else 'null'}.")

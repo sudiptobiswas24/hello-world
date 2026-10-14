@@ -477,6 +477,22 @@ class ABodyIsAnObjectTests(TestCase):
         # An object is read as before: no such proposal.
         self.assertEqual(client.post(confirm, {}, format="json").status_code, 404)
 
+    def test_a_body_nested_past_the_parsers_depth_is_refused_in_words(self):
+        """Review F5: json.load raised RecursionError on "[" x 200000, past the parser's ValueError: a 500."""
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        bookkeeper = User.objects.create_user("bk")
+        bookkeeper.groups.add(Group.objects.get(name="Bookkeeper"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(bookkeeper)
+        got = [(answer := client.post("/api/core/role-proposals/0/confirm/", body, content_type="application/json"))
+               .status_code for body in ("[" * 200000 + "]" * 200000, '{"a":' * 200000 + "1" + "}" * 200000)]
+        self.assertEqual(got, [400, 400])
+        self.assertIn("nests deeper", answer.json()["detail"])
+
     def planted(self, own_parser):
         from rest_framework import viewsets
         from rest_framework.decorators import action
@@ -505,3 +521,4 @@ class ABodyIsAnObjectTests(TestCase):
 
     def test_one_keeping_it_is_not(self):
         self.assertEqual(self.found(self.planted(False)), [])
+
