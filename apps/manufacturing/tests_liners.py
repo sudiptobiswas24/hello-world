@@ -217,8 +217,9 @@ class WoundOffTests(LinerTestCase):
         with self.assertRaisesMessage(ValidationError, "Say why film off its micron"):
             self.wind(readings=OFF)
         roll = self.wind(readings=OFF, reason="Die gap reset")
-        self.assertEqual((roll.mean_micron, roll.conceded_by), (Decimal("56.80"),
-                                                                 self.supervisor))
+        # Held for the Quality Manager, not conceded at the station (decision 23, O204).
+        self.assertEqual((roll.mean_micron, roll.conceded_by, roll.inspection.disposition),
+                         (Decimal("56.80"), None, "awaiting"))
 
     def test_what_a_roll_must_be(self):
         with self.assertRaisesMessage(ValidationError, "is not more than the"):

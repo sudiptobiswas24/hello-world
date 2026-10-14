@@ -113,10 +113,13 @@ class WeighedBeforeBookedTests(ConversionTestCase):
 
     def test_off_weight_taken_by_a_supervisor_says_who_and_why(self):
         count = self.count(sample=OUT, supervisor=self.supervisor, reason="Customer agreed +4%")
+        # Decision 23 (O204): a mandatory plan's off bundle waits for the Quality Manager too; the
+        # supervisor's PIN and reason are the floor's note, not a concession.
         self.assertEqual((count.passed, count.supervisor, count.sample_mean_grams),
-                         (False, self.supervisor, Decimal("114.000")))
+                         (False, None, Decimal("114.000")))
         self.assertEqual((count.inspection.disposition, count.inspection.decided_by),
-                         (Disposition.CONCESSION, self.supervisor.party))
+                         (Disposition.AWAITING, None))
+        self.assertIn(f"with {self.supervisor}'s PIN: Customer agreed +4%", count.inspection.notes)
 
     def test_off_weight_under_an_advisory_plan_names_no_concession(self):
         """RISKS.md, decision 22: the bundle waits, held, for the Quality Manager; nobody concedes it here."""
@@ -252,7 +255,10 @@ class BagStationApiTests(StationApiTestCase):
                                           "supervisor_pin": self.supervisor_pin,
                                           "reason": "Customer agreed"})
         self.assertEqual(response.status_code, 201, response.content)
-        self.assertEqual(response.json()["conceded_by"]["number"], "EMP-0087")
+        # Held for the Quality Manager (decision 23): nobody concedes it at the station, and the
+        # answer says it is held.
+        self.assertIsNone(response.json()["conceded_by"])
+        self.assertIn("The batch is HELD", response.json()["held"])
         response = self.post_cv(f"bags/{body['id']}/void/",
                                 {"supervisor_pin": self.supervisor_pin, "reason": "Miscounted"})
         self.assertEqual(response.status_code, 200, response.content)

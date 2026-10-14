@@ -129,11 +129,10 @@ def record_film(station, operator, machine, gross_kg, core_type, metres, micron_
         core_type=core_type, net_kg=net, metres=metres,
         mean_micron=mean.quantize(Decimal("0.01")),
         weighed_micron=weighed.quantize(Decimal("0.01")), weighed_by=operator, weighed_at=at,
-        # Nobody concedes a batch that waits for the Quality Manager (RISKS.md, decision 22).
         shift=shift, shift_date=shift_date,
-        # Off under an advisory plan, it waits for the Quality Manager however the
-        # lab finishes it: nobody concedes it here (review S02).
-        conceded_by=None if passed or not spec.inspection_plan.is_mandatory else supervisor,
+        # Off its limits, it waits for the Quality Manager whatever the plan and however
+        # the lab finishes it: nobody concedes it here (decisions 22 and 23, review S02).
+        conceded_by=None,
         reason=reason,
     )
 

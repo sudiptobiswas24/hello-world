@@ -511,6 +511,11 @@ class Inspection(AuditModel):
     sampling = models.JSONField(
         default=dict, blank=True, editable=False,
         help_text="The sampling plan each AQL line was judged by, frozen at posting.")
+    failed_at_the_machines = models.BooleanField(
+        default=False, editable=False,
+        help_text="Booked off its line at the machines (a doff, a film roll, a bag bundle) outside "
+                  "its gauge with a supervisor's PIN. A failure then waits for the Quality Manager "
+                  "whatever the plan (decision 23): nobody concedes it on the spot.")
 
     class Meta:
         ordering = ["-inspected_on", "-id"]
@@ -813,12 +818,14 @@ class Inspection(AuditModel):
         self.result = self._judge()
         # A failure under an advisory plan is not rejected by the system: it
         # waits, held, for the Quality Manager (RISKS.md, decision 22), and
-        # nobody decides it as it is posted, whoever posts it.
-        waits = self.result == Result.FAIL and not self.plan.is_mandatory
+        # nobody decides it as it is posted, whoever posts it. Nor one booked
+        # off its line at the machines, whatever the plan (decision 23).
+        waits = self.result == Result.FAIL and (not self.plan.is_mandatory or self.failed_at_the_machines)
         if waits and self.disposition:
             raise ValidationError(
-                f"{self.lot} failed under {self.plan}, which is advisory, so the Quality "
-                f"Manager decides what happens to it, not whoever posts the readings. "
+                f"{self.lot} failed under {self.plan}"
+                + (", which is advisory" if not self.plan.is_mandatory else ", off its line at the machines")
+                + ", so the Quality Manager decides what happens to it, not whoever posts the readings. "
                 "Leave the decision blank and post: the batch is held until they decide."
             )
         # A pass of a batch made from one quality holds releases what is
