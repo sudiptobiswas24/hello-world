@@ -170,6 +170,58 @@ class CommissionTests(MoneyCase):
         self.assertEqual(self.commission(date_to=datetime.date(2026, 2, 28)), (D("0.00"), D("0.00")))
         self.assertEqual(self.commission(date_from=DAY), (D("300.00"), D("30.00")))
 
+    def test_a_deposit_drawn_before_it_was_paid_counts_when_the_money_came_in(self):
+        """Review F8: 300 drawn on 6 March, paid on 10 April; 700 paid on 10 March. March 700, April 300."""
+        self.plan(CommissionBasis.PAID)
+        order = self.make_order("10", "100", rep=self.rep)
+        deposit = order.create_down_payment_invoice(self.ar, amount=D("300"), invoice_date=DAY)
+        deposit.post()
+        invoice = self.bill(order, on=datetime.date(2026, 3, 6))
+        self.allocate(self.receipt("700", on=datetime.date(2026, 3, 10)), invoice, "700")
+        self.assertEqual(self.commission(date_from=DAY, date_to=datetime.date(2026, 3, 31)), (D("700.00"), D("70.00")))
+        self.allocate(self.receipt("300", on=datetime.date(2026, 4, 10)), Invoice.objects.get(pk=deposit.pk), "300")
+        self.assertEqual(self.commission(date_from=DAY, date_to=datetime.date(2026, 3, 31)), (D("700.00"), D("70.00")),
+                         "March, once April's money came in: unchanged")
+        self.assertEqual(self.commission(date_from=datetime.date(2026, 4, 1), date_to=datetime.date(2026, 4, 30)),
+                         (D("300.00"), D("30.00")))
+
+    def test_a_foreign_refund_comes_off_at_the_rate_the_sale_was_booked(self):
+        """
+        Item 4, the reading taken: collected money counts at the invoice's rate (O76), so money handed
+        back on its note does too. 1,000 EUR at 1.1 paid at 1.2, 300 credited and refunded at 1.2: 770.
+        """
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company
+
+        from .models import InvoicePayment
+
+        self.plan(CommissionBasis.PAID)
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.2"), valid_from=datetime.date(2026, 3, 5))
+        Company.objects.update(
+            fx_gain_account=Account.objects.create(code="7000", name="FX gain", account_type=AccountType.INCOME),
+            fx_loss_account=Account.objects.create(code="7100", name="FX loss", account_type=AccountType.EXPENSE))
+        order = SalesOrder.objects.create(customer=self.customer, order_date=DAY, currency=self.eur, sales_rep=self.rep)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("10"),
+                                      unit_price=D("100"), revenue_account=self.revenue)
+        order.confirm()
+        invoice = self.bill(order)
+        self.allocate(self.receipt_in("1000", self.eur), invoice, "1000")
+        note = Invoice.objects.get(pk=invoice.pk).create_credit_note(quantities={invoice.lines.get(): D("3")})
+        refund = Payment.objects.create(
+            party=self.customer, direction=PaymentDirection.DISBURSEMENT, payment_date=datetime.date(2026, 3, 12),
+            amount=D("300"), currency=self.eur, bank_account=self.bank, counterpart_account=self.ar)
+        refund.post()
+        InvoicePayment.objects.create(invoice=note, payment=refund, amount=D("300"))
+        self.assertEqual(self.commission(), (D("770.00"), D("77.00")))
+
+    def test_a_note_that_only_cleared_what_was_unpaid_takes_nothing_collected(self):
+        """Item 4: 1,000 billed, 300 credited while unpaid, 700 paid: 700 collected, 70."""
+        self.plan(CommissionBasis.PAID)
+        invoice = self.bill(self.make_order("10", "100", rep=self.rep))
+        Invoice.objects.get(pk=invoice.pk).create_credit_note(quantities={invoice.lines.get(): D("3")})
+        self.allocate(self.receipt("700"), Invoice.objects.get(pk=invoice.pk), "700")
+        self.assertEqual(self.commission(), (D("700.00"), D("70.00")))
+
     def test_commission_is_in_the_base_currency(self):
         self.plan(CommissionBasis.INVOICED)
         order = SalesOrder.objects.create(customer=self.customer, order_date=DAY, currency=self.eur,
