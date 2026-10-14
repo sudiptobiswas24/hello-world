@@ -199,7 +199,7 @@ def pack(warehouse, packed_by, rows, on_date=None, gross_kg=None):
     for lot, quantity in rows:
         if quantity <= 0 or quantity != quantity.to_integral_value():
             raise ValidationError(f"{lot.code}: bags are counted whole, and at least one.")
-        check_released(item, lot, action="be baled")
+        check_released(item, lot, action="be baled", warehouse=warehouse)
         asked[lot] += quantity
     for lot, quantity in asked.items():
         free = lot.on_hand_at(warehouse) - baled(lot)
