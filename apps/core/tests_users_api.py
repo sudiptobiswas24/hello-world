@@ -556,16 +556,16 @@ class AKeepersCredentialLapsesWithAnyRightTests(KeeperAndHolder):
 
         asha = self.make("asha", [])
         kept = KeptCredential.objects.get(user=asha, kind="password")
-        self.assertNotEqual(kept.value, asha.password)
-        self.assertNotIn(asha.password.split("$")[-1], kept.value)
+        # Nothing of it at all (review F3, F8): who set it, kept when it was set.
+        self.assertEqual((kept.value, kept.set_by_id), ("", self.hr.pk))
         self.assertTrue(kept.in_force(asha))
 
     def test_a_password_set_before_the_record_is_said_to_the_confirmer_and_not_lapsed(self):
-        from .roles import KeptCredential, fingerprint
+        from .roles import KeptCredential
 
         old = User.objects.create_user("old", password=PW)
         # As migration 0033 records a login it found with a password and no record of who set it.
-        KeptCredential.objects.create(user=old, kind="password", value=fingerprint(old.password), set_by=None)
+        KeptCredential.objects.create(user=old, kind="password", value="", set_by=None)
         self.assertEqual(self.hrc.post(f"{USERS}{old.pk}/grant/", {"role": "Bookkeeper"}, format="json")
                          .status_code, 200)
         [row] = self.api(self.bk).get(self.PROPOSALS, {"waiting": "true"}).json()
@@ -589,7 +589,10 @@ class KeptPasswordsAreDigestedTests(TransactionTestCase):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
 
-        from .roles import fingerprint
+        from django.utils.crypto import salted_hmac
+
+        def fingerprint(password_hash):
+            return salted_hmac("apps.core.roles.KeptCredential.password", password_hash, algorithm="sha256").hexdigest()
 
         executor = MigrationExecutor(connection)
         executor.migrate(self.before)
@@ -634,14 +637,106 @@ class NobodyActsThroughALoginTheyKeepTests(KeeperAndHolder):
         self.assertEqual(self.confirm(self.bk, proposal).status_code, 400)
         self.assertFalse(self.holds(self.hr, "Bookkeeper"))
 
-    def test_once_its_person_sets_their_own_password_it_is_theirs(self):
+    # Review F1: this test was test_once_its_person_sets_their_own_password_it_is_theirs, and encoded the
+    # bypass: the "person" setting puppet's own password was HR, signed in as puppet. Who made the login is
+    # a fact no password change ends; the way back is someone other than its maker confirming a role for it.
+    def test_its_own_password_changed_frees_no_login_from_its_maker(self):
         puppet = self.make("puppet", ["HR Admin"])
         own = self.api(puppet).post(f"{USERS}{puppet.pk}/set_password/", {"password": "Their-Own-Pw-2026-zq"},
                                     format="json")
         self.assertEqual(own.status_code, 200, own.content)
         proposed = self.api(puppet).post(f"{USERS}{self.hr.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+        self.assertEqual(proposed.status_code, 400, proposed.content)
+        self.assertFalse(RoleProposal.objects.filter(user=self.hr).exists())
+
+    def test_laundered_through_djangos_password_change_or_a_second_login_it_is_still_the_makers(self):
+        """The reviewer's: the password-change page, and p1 making p2 then changing its own password."""
+        from django.test import Client
+
+        puppet = self.make("puppet", ["HR Admin"])
+        web = Client()
+        self.assertTrue(web.login(username="puppet", password=PW))
+        self.assertEqual(web.post("/accounts/password_change/", {
+            "old_password": PW, "new_password1": "HR-Chosen-Pw-2026-zq", "new_password2": "HR-Chosen-Pw-2026-zq"})
+            .status_code, 302)
+        self.assertEqual(self.api(puppet).post(f"{USERS}{self.hr.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+                         .status_code, 400)
+        p1 = self.make("p1", ["HR Admin"])
+        self.assertEqual(self.api(p1).post(USERS, {"username": "p2", "password": PW, "roles": ["HR Admin"]},
+                                           format="json").status_code, 201)
+        self.api(p1).post(f"{USERS}{p1.pk}/set_password/", {"password": "HR-Chosen-Pw-2026-zq"}, format="json")
+        p2 = User.objects.get(username="p2")
+        self.assertEqual(self.api(p2).post(f"{USERS}{self.hr.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+                         .status_code, 400)
+
+    def test_the_way_back_is_someone_other_than_the_maker_confirming_a_role_for_it(self):
+        puppet = self.make("puppet", ["HR Admin"])
+        self.assertEqual(self.hrc.post(f"{USERS}{puppet.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+                         .status_code, 200)
+        self.assertEqual(self.confirm(self.bk, self.pending(puppet, "Bookkeeper")).status_code, 200)
+        # The password HR chose, and any HR set as puppet, no longer signs in: puppet is its person's now.
+        self.assertFalse(self.signs_in("puppet", PW))
+        proposed = self.api(puppet).post(f"{USERS}{self.hr.pk}/grant/", {"role": "Controller"}, format="json")
         self.assertEqual(proposed.status_code, 200, proposed.content)
-        self.assertEqual(self.confirm(self.bk, self.pending(self.hr, "Bookkeeper")).status_code, 200)
+
+    def test_the_confirmer_is_told_who_can_sign_in_as_the_login_that_proposed(self):
+        puppet = self.make("puppet", ["HR Admin"])
+        third = self.make("third", [])
+        self.api(puppet).post(f"{USERS}{third.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+        row = self.api(self.bk).get(f"{self.PROPOSALS}{self.pending(third, 'Bookkeeper').pk}/").json()
+        self.assertIn("hr set puppet's password, so may sign in as puppet, who proposed this.", row["credentials"])
+
+
+class ACredentialIsKeptAtTheEventTests(KeeperAndHolder):
+    """
+    Review F2, F3, F8: who set a password was read off its hash, so a
+    re-hash at sign-in or a new SECRET_KEY forgot the keeper, and a keeper
+    demoted or switched off still signed in as the login it made. Now it
+    is kept when set, ends at the next change, and lapses with the
+    setter's reach. The reviewer's probes.
+    """
+
+    def root(self):
+        User.objects.create_superuser("root", password="x-root-pw-2026")
+        return self.api(User.objects.get(username="root"))
+
+    def test_a_demoted_keeper_no_longer_signs_in_as_the_login_it_made(self):
+        root = self.root()
+        self.make("puppet", ["HR Admin"])
+        self.assertEqual(root.post(f"{USERS}{self.hr.pk}/revoke/", {"role": "HR Admin"}, format="json").status_code, 200)
+        self.assertFalse(self.signs_in("puppet", PW), "a login holding HR Admin is open to someone who no longer does")
+
+    def test_a_switched_off_keeper_no_longer_signs_in_as_the_login_it_made(self):
+        root = self.root()
+        self.make("puppet", ["HR Admin"])
+        self.assertEqual(root.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json").status_code, 200)
+        self.assertFalse(self.signs_in("puppet", PW), "a leaver who made a login still knows its password")
+
+    def test_a_keeper_losing_the_right_through_its_role_knows_nothing_it_set(self):
+        self.make("puppet", ["HR Admin"])
+        Group.objects.get(name="HR Admin").permissions.remove(
+            Permission.objects.get(codename="change_user", content_type__app_label="auth"))
+        self.assertFalse(self.signs_in("puppet", PW))
+
+    def test_a_re_hash_at_sign_in_or_a_new_secret_key_forgets_no_keeper(self):
+        from django.test import Client, override_settings
+
+        from .roles import KeptCredential, who_knows
+
+        puppet = self.make("puppet", ["HR Admin"])
+        hashers = ["django.contrib.auth.hashers.PBKDF2PasswordHasher", "django.contrib.auth.hashers.MD5PasswordHasher"]
+        with override_settings(PASSWORD_HASHERS=hashers):
+            self.assertTrue(Client().login(username="puppet", password=PW))
+        puppet = User.objects.get(pk=puppet.pk)
+        self.assertTrue(puppet.password.startswith("pbkdf2"), "the hash was upgraded")
+        self.assertEqual(set(KeptCredential.objects.filter(user=puppet).values_list("kind", "set_by")),
+                         {("login", self.hr.pk), ("password", self.hr.pk)})
+        with override_settings(SECRET_KEY="a-rotated-key-" + "x" * 40):
+            self.assertIn(self.hr.pk, who_knows(puppet))
+        # And the lapse still finds it.
+        puppet.user_permissions.add(Permission.objects.get(content_type__app_label="accounting",
+                                                           codename="add_journalentry"))
+        self.assertFalse(self.signs_in("puppet", PW))
 
 
 class APersonsLoginIsGivenWhatItsLinkWouldTakeTests(KeeperAndHolder):
@@ -680,3 +775,51 @@ class APersonsLoginIsGivenWhatItsLinkWouldTakeTests(KeeperAndHolder):
                                                proposed_by=self.hr)
         got = (self.confirm(self.ctl, proposal).status_code, self.holds(self.b1, "Controller"))
         self.assertEqual(got, (400, False), "a Controller login is linked to a person by confirming its role")
+
+
+@tag("migration")
+class KeptCredentialsAtTheEventTests(TransactionTestCase):
+    """Review F1, F3, F8: 0034 keeps a password still as set with no value, drops one changed since, and records makers."""
+
+    before = [("core", "0033_kept_credentials_digested")]
+    after = [("core", "0034_kept_credentials_at_the_event")]
+
+    def test_a_password_still_as_set_stands_one_changed_goes_and_makers_are_recorded(self):
+        from django.contrib.auth.hashers import make_password
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        from django.utils.crypto import salted_hmac
+
+        def fingerprint(password_hash):
+            return salted_hmac("apps.core.roles.KeptCredential.password", password_hash, algorithm="sha256").hexdigest()
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        apps = executor.loader.project_state(self.before).apps
+        user, kept = apps.get_model("auth", "User"), apps.get_model("core", "KeptCredential")
+        event, types = apps.get_model("core", "RecordEvent"), apps.get_model("contenttypes", "ContentType")
+        group = apps.get_model("auth", "Group")
+        hr_admin, bookkeeper = group.objects.create(name="HR Admin"), group.objects.create(name="Bookkeeper")
+        keeper = user.objects.create(username="hr", password=make_password(PW))
+        keeper.groups.add(hr_admin)
+        same = user.objects.create(username="same", password=make_password(PW))
+        moved = user.objects.create(username="moved", password=make_password(PW))
+        above = user.objects.create(username="above", password=make_password(PW))
+        above.groups.add(bookkeeper)
+        kept.objects.create(user=same, kind="password", value=fingerprint(same.password), set_by=keeper)
+        kept.objects.create(user=moved, kind="password", value=fingerprint("an-earlier-hash"), set_by=keeper)
+        logins = types.objects.get_or_create(app_label="auth", model="user")[0]
+        for login in (same, moved, above):
+            event.objects.create(content_type=logins, object_id=login.pk, who=keeper, kind="created")
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        kept = executor.loader.project_state(self.after).apps.get_model("core", "KeptCredential")
+        rows = {(row.user.username, row.kind): (row.value, row.set_by_id, row.lapsed)
+                for row in kept.objects.exclude(set_by__isnull=True)}
+        self.assertEqual(rows, {("same", "password"): ("", keeper.pk, False),
+                                ("same", "login"): ("", keeper.pk, False),
+                                ("moved", "login"): ("", keeper.pk, False),
+                                ("above", "login"): ("", keeper.pk, True)})
+        executor = MigrationExecutor(connection)
+        executor.migrate(executor.loader.graph.leaf_nodes())
