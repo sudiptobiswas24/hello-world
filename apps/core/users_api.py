@@ -51,7 +51,7 @@ from rest_framework.response import Response
 from .api import required
 from .audit import AuditableViewSetMixin
 from .roles import (KeptCredential, ProposalStatus, give_or_propose, held_beyond, lapse_what_died, may_give,
-                    record_credential, trusted_for_reset)
+                    may_propose, record_credential, trusted_for_reset)
 
 
 def roles_beyond(actor, groups):
@@ -126,6 +126,19 @@ class TrustedEmailResetForm(PasswordResetForm):
 EMPLOYEES_OWN = ("Employee Self Service",)
 
 
+def linked_holding(actor, group):
+    """
+    Whether `actor` may make a login holding `group` a person's: a role
+    every employee holds (EMPLOYEES_OWN), or one they give themselves
+    while keeping logins (any, for a superuser). The link rule for each
+    role (refused_link), asked again when a linked login is given one
+    (roles.refused_for_its_person, O196).
+    """
+    if group.name in EMPLOYEES_OWN:
+        return True
+    return actor is not None and (actor.is_superuser or (may_propose(actor) and may_give(actor, group)))
+
+
 def refused_link(actor, login):
     """
     Why `actor` may not make `login` an employee's, or None.
@@ -141,10 +154,9 @@ def refused_link(actor, login):
     if actor is not None and actor.is_superuser:
         return None
     # A role proposed counts as held (O194): linked first, it was confirmed for a person after.
-    proposed = login.role_proposals.filter(status=ProposalStatus.PENDING)
+    proposed = Group.objects.filter(proposals__user=login, proposals__status=ProposalStatus.PENDING)
     if not (login.is_superuser or login.is_staff or login.user_permissions.exists()
-            or login.groups.exclude(name__in=EMPLOYEES_OWN).exists()
-            or proposed.exclude(group__name__in=EMPLOYEES_OWN).exists()):
+            or any(not linked_holding(actor, group) for group in [*login.groups.all(), *proposed])):
         return None
     if actor is not None and actor.has_perm("auth.change_user"):
         try:
