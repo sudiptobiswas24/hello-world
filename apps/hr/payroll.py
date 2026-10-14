@@ -1024,8 +1024,10 @@ class Payslip(AuditModel):
         """
         if self.payment_id is None or self.payment.is_voided():
             return False
-        # Paid by a bank file whose transfer to this person came back (bank_file.py).
-        return not any(row.is_returned() for row in self.transfers.filter(file__payment_id=self.payment_id))
+        # Paid by a bank file whose transfer to this person came back (bank_file.py). Read off the
+        # slip's transfers, which a list prefetches with the slips (SLIP_PAYMENT_READS): filtered in
+        # the database it was a query a slip, 600 for a run of 600.
+        return not any(row.is_returned() for row in self.transfers.all() if row.file.payment_id == self.payment_id)
 
     # -- working out what somebody earned --------------------------------
 
@@ -1694,6 +1696,11 @@ class Payslip(AuditModel):
         self.payment = payment
         super().save(update_fields=["payment", "updated_at"])
         return self
+
+
+# What Payslip.is_paid() reads, for a list that asks it of every slip to prefetch with them.
+SLIP_PAYMENT_READS = ("payment__journal_entry__reversed_by", "transfers__file",
+                      "transfers__returned_by__journal_entry__reversed_by")
 
 
 def posted_slip_over(employee, first, last=None, **narrower):

@@ -34,6 +34,7 @@ from .payroll import (
     PayComponentSlab,
     PayRun,
     Payslip,
+    SLIP_PAYMENT_READS,
     StatutoryRemittance,
     statutory_liabilities,
 )
@@ -154,7 +155,7 @@ class PayRunViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     # Each run's totals add up its slips' lines: read once for the page.
     queryset = PayRun.objects.prefetch_related("payslips__lines__component", "payslips__employee__party",
-                                               "payslips__payment__journal_entry__reversed_by")
+                                               *(f"payslips__{read}" for read in SLIP_PAYMENT_READS))
     serializer_class = PayRunSerializer
     http_method_names = ["get", "post", "patch", "head", "options"]
     action_permission_map = {
@@ -237,7 +238,7 @@ class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     # by hand, ?employee= was ignored and one person's slips listed everyone's.
     filter_fields = ["run", "employee"]
     queryset = Payslip.objects.select_related("employee__party", "run", "payment__journal_entry").prefetch_related(
-        "payment__journal_entry__reversed_by", "lines__component")
+        *SLIP_PAYMENT_READS, "lines__component")
     action_permission_map = {"pay": "hr.post_payrun", "pdf": "hr.view_payslip"}
 
     @action(detail=True, methods=["get"])

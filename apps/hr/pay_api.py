@@ -27,7 +27,7 @@ from apps.core.permissions import RequiredPermission
 from .advances import SalaryAdvance
 from .bank_file import SalaryTransfer, SalaryTransferFile
 from .pay_details import EmployeePayDetails
-from .payroll import PayRunStatus, Payslip
+from .payroll import SLIP_PAYMENT_READS, PayRunStatus, Payslip
 from .payroll_views import _run, _slip
 from .statutory import StatutoryFigure
 
@@ -223,7 +223,8 @@ class MyPayslipsView(viewsets.GenericViewSet):
         if employee is None:
             raise PermissionDenied("This login is nobody's on the payroll.")
         return Payslip.objects.filter(employee=employee, run__status=PayRunStatus.POSTED).select_related(
-            "employee__party", "run", "payment__journal_entry").prefetch_related("lines__component").order_by(
+            "employee__party", "run", "payment__journal_entry").prefetch_related(
+            "lines__component", *SLIP_PAYMENT_READS).order_by(
             "-run__period_end", "-pk")
 
     def list(self, request):
