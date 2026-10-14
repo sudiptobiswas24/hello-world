@@ -192,8 +192,14 @@ class TdsChallan(AuditModel):
         following = (month.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
         with transaction.atomic():
             lock_rows(section)
-            owed = list(_live(TdsDeduction.objects.filter(section=section, date__gte=month, date__lt=following))
-                        .filter(Q(challan__isnull=True) | Q(challan__voided_entry__isnull=False)))
+            waiting = (TdsDeduction.objects.filter(section=section, date__gte=month, date__lt=following)
+                       .filter(Q(challan__isnull=True) | Q(challan__voided_entry__isnull=False)))
+            # The deductions it pays, held before they are read, as reverse() holds the one it takes
+            # back: read unlocked, a deduction was reversed as the challan paid it over, and 700 was
+            # paid to the government for nothing (O64).
+            list(TdsDeduction.objects.select_for_update().filter(pk__in=list(waiting.values_list("pk", flat=True)))
+                 .order_by("pk").values_list("pk", flat=True))
+            owed = list(_live(waiting))
             if not owed:
                 raise ValidationError(f"Nothing deducted under {section.code} in {month:%B %Y} is waiting "
                                       "to be paid over.")

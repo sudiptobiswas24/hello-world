@@ -1637,3 +1637,24 @@ class StatementAndChallanRaceTests(RaceCase):
         self.once(outcomes)
         self.assertFalse(statement.closed and not line.is_resolved(),
                          f"{outcomes}: the statement closed with its only line unexplained")
+
+    def test_a_deduction_is_not_reversed_while_a_challan_pays_it_over(self):
+        """
+        O64: 700 deducted under 194C on a bill of 35,000 in June. It is
+        reversed while June's challan pays it over. The challan read what was
+        owed unlocked: reversed and paid, TDS payable +700, paid for nothing.
+        The challan now holds the deductions it pays before reading them.
+        """
+        from apps.purchasing.tds import TdsChallan, TdsDeduction
+
+        books = fixture(self, tds_fixture.TdsTestCase)
+        deduction = books.bill("35000", vendor=books.contractor(pan="AAACL1234F")).deduct_tds()
+        self.assertEqual(deduction.amount, Decimal("700.00"))
+        outcomes = race(JournalEntry,
+                        lambda: TdsDeduction.objects.get(pk=deduction.pk).reverse(),
+                        lambda: TdsChallan.pay(books.contract, datetime.date(2026, 6, 1), datetime.date(2026, 7, 7),
+                                               books.bank, "00001", "0510002"))
+        deduction.refresh_from_db()
+        self.once(outcomes)
+        self.assertEqual(books.balance(books.tds_payable), Decimal("0"),
+                         f"{outcomes}: reversed {bool(deduction.reversed_entry_id)}, challan {deduction.challan_id}")
