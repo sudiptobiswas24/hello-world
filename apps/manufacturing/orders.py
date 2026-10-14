@@ -2839,26 +2839,33 @@ class MaterialIssueLine(AuditModel):
         )
         return None
 
+    def locked_before_it(self):
+        """The issues it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, "issue")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         # The document refuses to be edited once posted and its lines
         # have to refuse with it. Guarding only the header is the shape
         # this project keeps copying: the quantity moves, the ledger
         # does not, and the two disagree for ever. `post()` writes
         # through `super().save()` and so is not caught by this.
-        if self.issue.posted:
-            raise ValidationError(
-                f"Cannot modify a line on {self.issue}, which is posted. Void "
-                "it and raise another."
-            )
+        # Shared rule B (O124): the issue it leaves and the one it joins, both held.
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "issue", lambda issue: (
+            f"Cannot modify a line on {issue}, which is posted. Void it and raise another."))
         self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.issue.posted:
-            raise ValidationError(
-                f"Cannot delete a line on {self.issue}, which is posted. Void "
-                "it and raise another."
-            )
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "issue", lambda issue: (
+            f"Cannot delete a line on {issue}, which is posted. Void it and raise another."))
         return super().delete(*args, **kwargs)
 
 
@@ -3390,21 +3397,28 @@ class ProductionByproduct(AuditModel):
             self.item, entry.warehouse, self.stock_movement, occurred_at, entry.number, label
         )
 
+    def locked_before_it(self):
+        """The entries it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, "entry")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.entry.posted:
-            raise ValidationError(
-                f"Cannot modify a by-product on {self.entry}, which is posted. "
-                "Void it and raise another."
-            )
+        # Shared rule B (O124): the entry it leaves and the one it joins, both held.
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "entry", lambda entry: (
+            f"Cannot modify a by-product on {entry}, which is posted. Void it and raise another."))
         self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.entry.posted:
-            raise ValidationError(
-                f"Cannot delete a by-product on {self.entry}, which is posted. "
-                "Void it and raise another."
-            )
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "entry", lambda entry: (
+            f"Cannot delete a by-product on {entry}, which is posted. Void it and raise another."))
         return super().delete(*args, **kwargs)
 
 

@@ -1188,15 +1188,7 @@ class Command(BaseCommand):
     # the document they join, unlocked: found when the check was widened to
     # lines (O82) and reported to the module that owns each rather than fixed
     # from outside it. Each comes off when it calls answer_to_its_document.
-    LINES_REPORTED = {
-        "inventory.StockAdjustmentLine": "stores: asks only the adjustment it joins, unlocked",
-        "inventory.StockCountLine": "stores: asks only the count it joins, unlocked",
-        "manufacturing.CustomerMaterialReceiptLine": "production: asks only the receipt it joins, unlocked",
-        "manufacturing.CustomerMaterialReturnLine": "production: asks only the return it joins, unlocked",
-        "manufacturing.MaterialIssueLine": "production: asks only the issue it joins, unlocked",
-        "manufacturing.ProductionByproduct": "production: asks only the entry it joins, unlocked",
-        "manufacturing.ProductionScrap": "production: asks only the entry it joins, unlocked",
-    }
+    LINES_REPORTED = {}
     # Rows hanging off a posted document that are not its lines, with the reason.
     NOT_LINES = {
         "sales.InvoicePayment": "an allocation: deleting it is how it is undone, posted invoice or not",
