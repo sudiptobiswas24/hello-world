@@ -114,10 +114,15 @@ def lock_positions(pairs):
     happen to appear on a document is how two transfers between the same
     two warehouses deadlock against each other.
     """
-    held = []
-    for item, warehouse in sorted(
-        {(i, w) for i, w in pairs if i is not None and w is not None},
-        key=lambda pair: (pair[0].pk, pair[1].pk),
-    ):
-        held.append(lock_position(item, warehouse))
-    return held
+    # By the position's own key, the order every other row is taken in (apps.core.lock_order):
+    # ordered by item and warehouse, the rows came in whatever order they were made, and a
+    # transaction holding a later row reached back for an earlier one (O182). The rows not made yet
+    # come last: this transaction makes them, so no other can be waiting on them.
+    wanted = {(i.pk, w.pk): (i, w) for i, w in pairs if i is not None and w is not None}
+    if not wanted:
+        return []
+    existing = {(item_id, warehouse_id): pk for pk, item_id, warehouse_id in StockPosition.objects.filter(
+        item_id__in={key[0] for key in wanted}, warehouse_id__in={key[1] for key in wanted},
+    ).values_list("pk", "item_id", "warehouse_id")}
+    order = sorted(wanted, key=lambda key: (key not in existing, existing.get(key, 0), key))
+    return [lock_position(*wanted[key]) for key in order]
