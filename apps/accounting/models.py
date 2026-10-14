@@ -458,6 +458,11 @@ class JournalLine(AuditModel):
         return (bool(self.entry_id) and JournalEntry.objects.filter(pk=self.entry_id, posted=True).exists()) or (
             bool(self.pk) and JournalLine.objects.filter(pk=self.pk, entry__posted=True).exists())
 
+    # Where it is going and where it has been, both held and both asked of the database: moved out of
+    # a posted entry into a draft, a line left an invoice's entry unbalanced and its amount off the
+    # ledger. Held, because post() holds the entry while it totals the lines: asked unlocked, a line
+    # could be added as the entry posted (O125).
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self._on_a_posted_entry():
             raise ValidationError(
