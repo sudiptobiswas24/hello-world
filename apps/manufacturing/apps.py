@@ -19,10 +19,13 @@ class ManufacturingConfig(AppConfig):
         from .piecework import kilograms_woven, metres_woven
         from .rebatch import made_into, sources
         from .shifts import shift_starts
+        from .trace import held_inputs, made_into_by_runs
         from .woven import sack_units
 
         register_unit_provider(sack_units)
         register_lot_sources(sources, made_into)
+        # Production is a lineage too: a recall follows the runs, as the trace does (O207).
+        register_lot_sources(held_inputs, made_into_by_runs)
         register_material_checker(material_problems)
         register_ownership_checker(ownership_problems)
         register_piece_measure("metres_woven", "Metres woven", metres_woven)

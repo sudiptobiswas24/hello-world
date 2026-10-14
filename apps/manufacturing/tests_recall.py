@@ -201,3 +201,21 @@ class LiftedTests(RecallTestCase):
         self.assertEqual(release_status(piece), ReleaseStatus.HELD)
         self.assertEqual(self.decide(self.recall_of(self.a), "asha", Disposition.CONCESSION).status_code, 200)
         self.assertEqual(release_status(piece), ReleaseStatus.RELEASED)
+
+
+class NoPlanToFileUnderTests(RecallTestCase):
+    def test_a_lot_with_no_plan_is_held_and_the_quality_manager_is_told_so(self):
+        """Follow-up 5: RB-B has no inspection of its own and its item no plan in force today."""
+        import datetime
+
+        from apps.quality.models import InspectionPlan
+
+        InspectionPlan.objects.filter(pk=self.bag_spec.inspection_plan.pk).update(
+            valid_to=datetime.date(2026, 10, 1))
+        rejection = self.reject_b1()
+        self.assertEqual(release_status(self.b), ReleaseStatus.HELD)
+        self.assertFalse(Inspection.objects.filter(lot=self.b, recalled_by__isnull=False).exists())
+        (to_do,) = self.to_dos(rejection)
+        self.assertEqual(to_do.assigned_to.username, "asha")
+        self.assertIn("no inspection plan to file one under", to_do.note)
+        self.assertIn(f"{self.b} (100 {self.bag.uom.code} in {self.plant})", to_do.note)

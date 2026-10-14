@@ -19,6 +19,8 @@ which is no. A stored flag would have had to remember to do that.
 """
 
 
+import contextlib
+import contextvars
 import datetime
 
 from django.core.exceptions import ValidationError
@@ -89,24 +91,69 @@ def lot_decided(lot, by=None):
         listener(lot, by)
 
 
+# How far a recall follows what was made from a batch: four levels reach a
+# sack from polymer in this plant (polymer, tape, fabric, sack), as the
+# genealogy and the trace walk (manufacturing/trace.py reads this one).
+LINEAGE_DEPTH = 4
+
+# One question to the gate reads each batch's standing and lineage once:
+# the lineage of a sack runs through fabric, tape and polymer, and each
+# step's status asks the steps above it again. Kept for one question only,
+# never across a write.
+_ASKED = contextvars.ContextVar("quality_release_asked", default=None)
+
+
+@contextlib.contextmanager
+def one_question():
+    if _ASKED.get() is not None:
+        yield
+        return
+    token = _ASKED.set({})
+    try:
+        yield
+    finally:
+        _ASKED.reset(token)
+
+
+def _remembered(key, work):
+    asked = _ASKED.get()
+    if asked is None:
+        return work()
+    if key not in asked:
+        asked[key] = work()
+    return asked[key]
+
+
 def lot_sources(lot):
-    found = []
-    for provider in LOT_SOURCES:
-        found.extend(provider(lot))
-    return found
+    def work():
+        found = []
+        for provider in LOT_SOURCES:
+            found.extend(provider(lot))
+        return found
+
+    return list(_remembered(("sources", lot.pk), work))
 
 
-def lots_made_from(lot):
-    """Every batch re-made from `lot`, directly or at a remove, each once, nearest first; not `lot`."""
-    found, waiting, seen = [], [lot], {lot.pk}
+def lots_made_from(lot, depth=None, beyond=None):
+    """
+    Every batch re-made from `lot`, directly or at a remove, each once,
+    nearest first; not `lot`. Followed `depth` levels (all, when None);
+    a batch at the last level that was made into more is added to
+    `beyond` when a list is given, so a walk cut short says where.
+    """
+    found, waiting, seen = [], [(lot, 0)], {lot.pk}
     while waiting:
-        each = waiting.pop(0)
-        for provider in LOTS_MADE_FROM:
-            for child in provider(each):
-                if child is not None and child.pk not in seen:
-                    seen.add(child.pk)
-                    found.append(child)
-                    waiting.append(child)
+        each, level = waiting.pop(0)
+        children = [child for provider in LOTS_MADE_FROM for child in provider(each)]
+        if depth is not None and level >= depth:
+            if beyond is not None and any(child.pk not in seen for child in children if child):
+                beyond.append(each)
+            continue
+        for child in children:
+            if child is not None and child.pk not in seen:
+                seen.add(child.pk)
+                found.append(child)
+                waiting.append((child, level + 1))
     return found
 
 
@@ -125,11 +172,14 @@ def latest_inspection(lot, measured=False):
     the recall is the batch's verdict like any other. `measured`: the
     latest that measured something, recalls left out (a certificate's).
     """
-    standing = Inspection.objects.filter(lot=lot, posted=True, voided_at__isnull=True).exclude(
-        recalled_by__isnull=False, disposition=Disposition.AWAITING)
-    if measured:
-        standing = standing.filter(recalled_by__isnull=True)
-    return standing.order_by("-inspected_on", F("posted_at").desc(nulls_last=True), "-id").first()
+    def work():
+        standing = Inspection.objects.filter(lot=lot, posted=True, voided_at__isnull=True).exclude(
+            recalled_by__isnull=False, disposition=Disposition.AWAITING)
+        if measured:
+            standing = standing.filter(recalled_by__isnull=True)
+        return standing.order_by("-inspected_on", F("posted_at").desc(nulls_last=True), "-id").first()
+
+    return _remembered(("latest", lot.pk, measured), work)
 
 
 def recall_plan(lot):
@@ -230,6 +280,12 @@ def standing_verdicts(lot, lock=False):
 
 
 def release_status(lot):
+    """Where this batch stands (see `_release_status`), each batch of its lineage read once."""
+    with one_question():
+        return _remembered(("status", lot.pk), lambda: _release_status(lot))
+
+
+def _release_status(lot):
     """
     Where this batch stands.
 
@@ -287,6 +343,12 @@ def awaiting_decision(lot, action="issue"):
 
 
 def why_held(item, lot, warehouse=None, action="issue", reworking=None):
+    """The one release gate: see `_why_held`. Each batch of the lineage is read once a question."""
+    with one_question():
+        return _why_held(item, lot, warehouse=warehouse, action=action, reworking=reworking)
+
+
+def _why_held(item, lot, warehouse=None, action="issue", reworking=None):
     """
     Why `lot` of `item` may not be drawn from `warehouse`, in words, or "".
 
@@ -322,6 +384,11 @@ def why_held(item, lot, warehouse=None, action="issue", reworking=None):
     status = release_status(lot) if lot is not None else None
     if status == ReleaseStatus.HELD:
         if held is None:
+            holding = [(source, verdict) for source in lot_and_sources(lot)[1:]
+                       if (verdict := latest_inspection(source)) is not None and verdict.disposition in HOLDING]
+            if holding:
+                return (f"{lot} is held: it was re-made from a batch that is held "
+                        f"({recall_words(lot, holding)}). Inspect it before it can {action}.")
             return (f"{lot} is held: it was re-made from a batch that is held or not "
                     f"yet inspected. Inspect it before it can {action}.")
         if held.disposition in RELEASING:

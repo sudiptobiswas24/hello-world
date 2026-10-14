@@ -52,7 +52,45 @@ def runs_that_used(lot):
     return [(runs[pk], quantity) for pk, quantity in sorted(used.items()) if quantity > 0]
 
 
-def descendants(lot, depth=4, beyond=None):
+def made_into_by_runs(lot):
+    """
+    The lineage downward through production, for the release gate
+    (`register_lot_sources`, O207): the batches every run that used this
+    one put on a shelf, main output and by-products. The same two
+    questions `descendants` asks, so a recall and a trace follow one
+    lineage. At the run, as the genealogy is: every batch a run made is
+    made from every batch it used.
+    """
+    return [child for run, _quantity in runs_that_used(lot) for child in output_lots(run)
+            if child.pk != lot.pk]
+
+
+def held_inputs(lot):
+    """
+    The lineage upward through production, for the release gate: the
+    batches the runs that made this one consumed that quality holds now
+    (`demand.runs_that_made`, `demand.consumed_lots`, the genealogy's own).
+
+    Only the held ones, as a subcontractor's assemblies answer: quality
+    reads a batch whose sources all passed as passed, which is right for a
+    split and wrong for a run. Fabric woven from passed tape is not fabric
+    inspected, and under its own mandatory plan it would go unmeasured.
+    """
+    from apps.quality.models import ReleaseStatus
+    from apps.quality.release import release_status
+
+    from .demand import consumed_lots, runs_that_made
+
+    found = {}
+    for run in runs_that_made(lot):
+        for came_from, _item, _quantity in consumed_lots(run):
+            if came_from.pk != lot.pk and came_from.pk not in found and \
+                    release_status(came_from) == ReleaseStatus.HELD:
+                found[came_from.pk] = came_from
+    return list(found.values())
+
+
+def descendants(lot, depth=None, beyond=None):
     """
     Every batch made, directly or at a remove, from this one.
 
@@ -70,6 +108,9 @@ def descendants(lot, depth=4, beyond=None):
     """
     from .rebatch import remade_into
 
+    from apps.quality.release import LINEAGE_DEPTH
+
+    depth = LINEAGE_DEPTH if depth is None else depth
     seen = set()
 
     def walk(batch, level):
@@ -123,7 +164,7 @@ def held_by_customers(lots):
     ]
 
 
-def recall(lot, depth=4):
+def recall(lot, depth=None):
     """
     Everything a recall of this batch has to chase: the batches made
     from it, and the customers holding any of them — including this

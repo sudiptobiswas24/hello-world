@@ -161,9 +161,10 @@ def held_because(lot):
     Worked out from the gate when asked, never stored.
     """
     said = []
-    places = (lot.movements.values("warehouse").annotate(quantity=Sum("quantity"))
-              .filter(quantity__gt=0).order_by("warehouse"))
-    for warehouse in Warehouse.objects.filter(pk__in=[row["warehouse"] for row in places]).order_by("pk"):
+    # One query for where it is on hand, not one for the balances and another for the places.
+    places = (Warehouse.objects.filter(movements__lot=lot).annotate(held=Sum("movements__quantity"))
+              .filter(held__gt=0).order_by("pk"))
+    for warehouse in places:
         words = lot_held(lot.item, lot, warehouse, action="go")
         if words and words not in said:
             said.append(words)
