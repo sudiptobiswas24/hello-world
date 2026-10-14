@@ -64,14 +64,14 @@ class DatedFiguresTestCase(StatutoryTestCase):
             (day, quantity) for who, day, quantity in self.output if who == employee.pk and day <= up_to])
         self.addCleanup(PIECE_MEASURES.pop, "test_metres", None)
 
-    def worker(self, code, **fields):
+    def worker(self, code, hire=D(2020, 1, 1), **fields):
         from apps.core.models import Party, PartyRole, PartyRoleAssignment
 
         from .models import Employee
 
         party = Party.objects.create(code=f"P-{code}", name=code)
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.EMPLOYEE)
-        return Employee.objects.create(party=party, employee_number=code, hire_date=D(2020, 1, 1), **fields)
+        return Employee.objects.create(party=party, employee_number=code, hire_date=hire, **fields)
 
     def month_run(self, year, number, post=True, employees=None):
         start, end = month(year, number)
@@ -224,7 +224,8 @@ class OvertimeAtTheOrdinaryRateTests(DatedFiguresTestCase):
 
     def setUp(self):
         super().setUp()
-        self.basic.is_ordinary_wages = True
+        # A salary, paid for the days paid: a joiner's and an absentee's come down, their hour does not.
+        self.basic.is_ordinary_wages = self.basic.reduces_for_unpaid_leave = True
         self.basic.save()
         self.da = PayComponent.objects.create(code="DA", name="Dearness allowance", kind=ComponentKind.EARNING,
                                               expense_account=self.wages, sequence=15, is_ordinary_wages=True,
@@ -278,6 +279,58 @@ class OvertimeAtTheOrdinaryRateTests(DatedFiguresTestCase):
         line = self.overtime_on(self.month_run(2026, 10, post=False, employees=[weaver]), weaver)
         self.assertEqual(line.amount, Decimal("375.00"))
         self.assertEqual(line.kept_terms["piece_days_of"], "2026-09")
+
+    def test_the_rate_is_the_agreed_one_whenever_they_joined(self):
+        """Joined on the 1st, the 16th or the 31st of October: 13,500 is 62.50 an hour, 2 h at twice it 250.00."""
+        for joined, salary in ((1, "13500.00"), (16, "7000.00"), (31, "500.00")):
+            with self.subTest(joined=joined):
+                staff = self.worker(f"J{joined}", hire=D(2026, 10, joined), working_days="123456")
+                self.paid(staff, self.basic, "13500", since=D(2026, 10, joined))
+                self.paid(staff, self.overtime, "1", since=D(2026, 10, joined))
+                self.mark(staff, D(2026, 10, 31), "2")
+                slip = self.month_run(2026, 10, post=False, employees=[staff]).payslips.get()
+                self.assertEqual((slip.lines.get(component=self.basic).amount,
+                                  slip.lines.get(component=self.overtime).amount), (Decimal(salary), Decimal("250.00")))
+
+    def test_the_rate_is_the_agreed_one_when_unpaid_days_cut_the_month(self):
+        staff = self.worker("U1", working_days="123456")
+        self.paid(staff, self.basic, "13500")
+        self.paid(staff, self.overtime, "1")
+        for day in (5, 6):
+            self.mark(staff, D(2026, 10, day), status=AttendanceStatus.ABSENT)
+        self.mark(staff, D(2026, 10, 31), "2")
+        slip = self.month_run(2026, 10, post=False, employees=[staff]).payslips.get()
+        self.assertEqual((slip.lines.get(component=self.basic).amount, slip.lines.get(component=self.overtime).amount),
+                         (Decimal("12500.00"), Decimal("250.00")))
+
+    def test_a_shift_worker_joining_mid_month_is_paid_overtime_at_the_days_agreed_wage(self):
+        shift = self.worker("SJ", hire=D(2026, 10, 16), working_days="123456", paid_by_attendance=True)
+        self.paid(shift, self.basic, "10800", since=D(2026, 10, 16))
+        self.paid(shift, self.da, "1350", since=D(2026, 10, 16))
+        self.paid(shift, self.overtime, "1", since=D(2026, 10, 16))
+        day = D(2026, 10, 16)
+        while day.month == 10:
+            if day.isoweekday() != 7:
+                self.mark(shift, day, "2" if day.day == 31 else "0")
+            day += datetime.timedelta(days=1)
+        slip = self.month_run(2026, 10, post=False, employees=[shift]).payslips.get()
+        self.assertEqual((slip.lines.get(component=self.overtime).amount, slip.gross()),
+                         (Decimal("225.00"), Decimal("6525.00")))
+
+    def test_a_rate_changed_on_the_first_mid_month_or_the_last_day_is_read_on_the_day_worked(self):
+        """2 h on the 10th and 2 h on the 31st, 13,500 rising to 16,200: from the 1st 600.00, else 550.00."""
+        for since, owed in ((1, "600.00"), (16, "550.00"), (31, "550.00")):
+            with self.subTest(since=since):
+                staff = self.worker(f"R{since}", working_days="123456")
+                EmployeeCompensation.objects.create(employee=staff, component=self.basic, amount=Decimal("13500"),
+                                                    effective_from=D(2020, 1, 1),
+                                                    effective_to=D(2026, 10, since) - datetime.timedelta(days=1))
+                self.paid(staff, self.basic, "16200", since=D(2026, 10, since))
+                self.paid(staff, self.overtime, "1")
+                self.mark(staff, D(2026, 10, 10), "2")
+                self.mark(staff, D(2026, 10, 31), "2")
+                line = self.overtime_on(self.month_run(2026, 10, post=False, employees=[staff]), staff)
+                self.assertEqual(line.amount, Decimal(owed))
 
     def test_the_total_is_worked_out_first_and_rounded_once(self):
         staff = self.worker("S2", working_days="123456")

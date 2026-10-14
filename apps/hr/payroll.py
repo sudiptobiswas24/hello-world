@@ -1462,6 +1462,16 @@ class Payslip(AuditModel):
         period if none were. A day's rate over their hours a day is the
         hour's. Totalled first, divided last, rounded once by the
         component.
+
+        The rate is the agreed one, not what the period earned: a joiner on
+        the 16th, or a month cut by unpaid leave, is paid less salary for
+        it, and an hour of theirs is still worth the agreed figure over the
+        period's working days (13,500 over October's 27 is 500 a day for
+        all of them; what a joiner on the 16th earned, 7,000, over the 27
+        would be 259). It is the same divisor proration pays salary by, so a
+        day-rated worker's day of overtime matches a day of their wage. A
+        rate changed inside the period is read on the day the overtime was
+        worked.
         """
         from .attendance import AttendanceDay
 
