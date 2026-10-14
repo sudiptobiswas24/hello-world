@@ -52,7 +52,6 @@ from apps.core.models import (
     answer_to_its_document,
     correction_date,
     documents_it_answers_to,
-    lock_rows,
     serialised,
     to_date,
 )
@@ -676,18 +675,24 @@ class Inspection(AuditModel):
 
         Under a lock on the batch, so two inspections of it posting at once
         each see the other's date.
-        """
-        from .release import latest_inspection
 
-        lock_rows(self.lot, refresh=False)
-        standing = latest_inspection(self.lot)
-        if standing is None or standing.pk == self.pk:
-            return
-        self.inspected_on = correction_date(
-            self.inspected_on, standing.inspected_on,
-            f"{self.lot} cannot be inspected again on",
-            f"{standing.number} decided it",
-        )
+        The verdicts are the batch's own and those of every batch it was
+        re-made from (O146): PP-A rejected on 1 June and split into PP-A2
+        was passed by an inspection of PP-A2 dated 25 May, because only
+        PP-A2's own inspections were read.
+        """
+        from .release import standing_verdicts
+
+        for lot, standing in standing_verdicts(self.lot, lock=True):
+            if standing.pk == self.pk:
+                continue
+            own = lot.pk == self.lot_id
+            self.inspected_on = correction_date(
+                self.inspected_on, standing.inspected_on,
+                f"{self.lot} cannot be inspected {'again ' if own else ''}on",
+                f"{standing.number} decided it" if own
+                else f"{standing.number} decided {lot}, which it was made from,",
+            )
 
     @serialised("posted")
     def post(self, by=None):

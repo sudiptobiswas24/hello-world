@@ -23,6 +23,8 @@ from django.core.exceptions import ValidationError
 from django.db.models import F, Q
 from django.utils import timezone
 
+from apps.core.models import lock_rows
+
 from .models import Disposition, Inspection, InspectionPlan, ReleaseStatus
 
 
@@ -73,6 +75,35 @@ def latest_inspection(lot):
     return Inspection.objects.filter(
         lot=lot, posted=True, voided_at__isnull=True
     ).order_by("-inspected_on", F("posted_at").desc(nulls_last=True), "-id").first()
+
+
+def lot_and_sources(lot):
+    """`lot`, then every batch it was re-made from, theirs in turn, each once."""
+    found, waiting, seen = [], [lot], set()
+    while waiting:
+        each = waiting.pop(0)
+        if each is None or each.pk in seen:
+            continue
+        seen.add(each.pk)
+        found.append(each)
+        waiting.extend(lot_sources(each))
+    return found
+
+
+def standing_verdicts(lot, lock=False):
+    """
+    [(batch, inspection)]: the verdict standing for `lot` and for each batch
+    it was re-made from, its own first (O146). A re-inspection follows all
+    of them: PP-A rejected on 1 June and split into PP-A2 was passed by an
+    inspection of PP-A2 dated 25 May, read beside PP-A2's own inspections
+    only, of which there were none. `lock`: hold the batches first, in the
+    one lock order, so two inspections posting at once each see the other.
+    """
+    lots = lot_and_sources(lot)
+    if lock:
+        lock_rows(*lots, refresh=False)
+    return [(each, standing) for each in lots
+            if (standing := latest_inspection(each)) is not None]
 
 
 def release_status(lot):
