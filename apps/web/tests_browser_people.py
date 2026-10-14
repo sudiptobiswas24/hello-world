@@ -117,3 +117,42 @@ class MyPayslipsInTheBrowserTests(BrowserTestCase):
         expect(page.get_by_role("link", name="PDF")).to_have_attribute(
             "href", f"/api/hr/my-payslips/{run.payslips.get(employee=riley).pk}/pdf/")
         self.assertEqual(self.problems, [])
+
+    def test_the_professional_tax_register_reads_what_the_run_kept(self):
+        from decimal import Decimal
+
+        from apps.core.models import Company
+        from apps.hr.payroll import (ComponentBasis, ComponentKind, EmployeeCompensation, PayComponent,
+                                     PayComponentSlab, PayRun, Statutory)
+
+        net_pay = Account.objects.create(code="2300", name="Net pay payable", account_type=AccountType.LIABILITY)
+        company = Company.get()
+        company.net_pay_account = net_pay
+        company.save()
+        wages = Account.objects.create(code="6000", name="Wages", account_type=AccountType.EXPENSE)
+        owed = Account.objects.create(code="2330", name="PT payable", account_type=AccountType.LIABILITY)
+        salary = PayComponent.objects.create(code="SAL", name="Salary", kind=ComponentKind.EARNING, expense_account=wages,
+                                             sequence=10)
+        # After the salary: a slab is taken of the gross worked out before it.
+        pt = PayComponent.objects.create(code="PT", name="Professional tax", kind=ComponentKind.DEDUCTION,
+                                         basis=ComponentBasis.SLAB, liability_account=owed, statutory=Statutory.PT,
+                                         sequence=90)
+        PayComponentSlab.objects.create(component=pt, state="WB", above=Decimal("15000"), amount=Decimal("130"),
+                                        effective_from=datetime.date(2026, 4, 1))
+        worker = PeopleInTheBrowserTests.employee(self, "E008", "Mita Pal", None)
+        EmployeeCompensation.objects.create(employee=worker, component=salary, amount=Decimal("20000"),
+                                            effective_from=datetime.date(2026, 1, 1))
+        EmployeeCompensation.objects.create(employee=worker, component=pt, amount=Decimal("1"),
+                                            effective_from=datetime.date(2026, 1, 1))
+        run = PayRun.objects.create(period_start=datetime.date(2026, 6, 1), period_end=datetime.date(2026, 6, 30),
+                                    pay_date=datetime.date(2026, 6, 30))
+        run.calculate()
+        run.post()
+        page = self.sign_in(self.person("Payroll Officer"), "/app/payroll/registers")
+        page.locator("input[type=month]").fill("2026-06")
+        expect(page.get_by_role("heading", name="Statutory registers")).to_be_visible()
+        expect(self.rows()).to_have_count(1)
+        expect(self.rows().first).to_contain_text("E008")
+        expect(self.rows().first).to_contain_text("130.00")
+        expect(self.rows().first).to_contain_text("WB from 2026-04-01")
+        self.assertEqual(self.problems, [])
