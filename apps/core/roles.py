@@ -261,11 +261,19 @@ def give_or_propose(actor, user, group):
 
 
 def waiting_for(user):
-    """Proposals `user` could confirm now: pending, for a role they hold (any, for a superuser), not their own."""
+    """
+    Proposals `user` may confirm now (may_confirm): pending, for a role
+    they hold (any, for a superuser), not their own, and none the
+    two-person rule refuses them (review F7: the inbox listed proposals
+    whose Confirm the screen then withheld).
+    """
     pending = (RoleProposal.objects.filter(status=ProposalStatus.PENDING, user__is_active=True,
                                            proposed_by__in=keepers())
                .exclude(user=user).exclude(proposed_by=user))
-    return pending if user.is_superuser else pending.filter(group__in=user.groups.all())
+    if not user.is_superuser:
+        pending = pending.filter(group__in=user.groups.all())
+    return RoleProposal.objects.filter(pk__in=[proposal.pk for proposal in pending.select_related("group")
+                                               if proposal.may_confirm(user) is None])
 
 
 def lapse_what_died(by, user):

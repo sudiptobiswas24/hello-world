@@ -686,6 +686,15 @@ class NobodyActsThroughALoginTheyKeepTests(KeeperAndHolder):
         row = self.api(self.bk).get(f"{self.PROPOSALS}{self.pending(third, 'Bookkeeper').pk}/").json()
         self.assertIn("hr set puppet's password, so may sign in as puppet, who proposed this.", row["credentials"])
 
+    def test_the_inbox_lists_only_what_the_confirmer_may_confirm(self):
+        """Review F7: a proposal through a login its subject made was listed as waiting with no Confirm."""
+        puppet = self.make("puppet", ["HR Admin"])
+        RoleProposal.objects.create(user=self.hr, group=Group.objects.get(name="Bookkeeper"), proposed_by=puppet)
+        third = self.make("third", [])
+        self.hrc.post(f"{USERS}{third.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+        rows = self.api(self.bk).get(self.PROPOSALS, {"waiting": "true"}).json()
+        self.assertEqual([(row["username"], row["may_confirm"]) for row in rows], [("third", True)])
+
 
 class ACredentialIsKeptAtTheEventTests(KeeperAndHolder):
     """
