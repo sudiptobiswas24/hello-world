@@ -1974,6 +1974,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
     settlement_discount_withdrawal_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
     )
+    issued_as = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="Who issued it to whom, where and under which registrations, as they stood when it "
+                  "posted: what the printed tax invoice reads (documents.issued_particulars), never "
+                  "the company or the customer as they stand today.")
     posted_total = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
         help_text="The total when it posted, in its own currency. A fact of the "
@@ -2048,10 +2053,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
     def corrected_document(self):
         return self.credits
 
-    def render_pdf(self):
+    def render_pdf(self, copy="original"):
+        """The tax invoice or credit note as PDF bytes; `copy` is which of the three (documents.COPIES)."""
         from .documents import render_invoice_pdf
 
-        return render_invoice_pdf(self)
+        return render_invoice_pdf(self, copy=copy)
 
     def recipient_email(self):
         contact = self.customer.primary_contact()
@@ -2887,6 +2893,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             entry.post()
 
         self.record_taxes()
+        from .documents import issued_particulars
+
+        self.issued_as = issued_particulars(self)
         self.journal_entry = entry
         self.posted = True
         self.posted_at = timezone.now()
@@ -2895,7 +2904,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             update_fields=[
                 "number", "invoice_date", "due_date", "exchange_rate", "journal_entry",
                 "posted", "posted_at", "taxes_recorded", "party_gstin", "party_registration",
-                "place_of_supply", "posted_total", "updated_at",
+                "place_of_supply", "issued_as", "posted_total", "updated_at",
             ]
         )
 

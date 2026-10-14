@@ -423,9 +423,13 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
 
     @action(detail=True, methods=["get"])
     def pdf(self, request, pk=None):
+        """?copy=original (the default, for the recipient), duplicate (the transporter's) or triplicate (ours)."""
         invoice = self.get_object()
-        response = HttpResponse(invoice.render_pdf(), content_type="application/pdf")
+        copy = request.query_params.get("copy") or "original"
+        response = HttpResponse(invoice.render_pdf(copy=copy), content_type="application/pdf")
         name = invoice.number or f"draft-{invoice.pk}"
+        if copy != "original":
+            name += f"-{copy}"
         response["Content-Disposition"] = f'inline; filename="{name}.pdf"'
         return response
 
