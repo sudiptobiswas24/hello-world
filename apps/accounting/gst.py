@@ -242,6 +242,76 @@ class GstSettings(AuditModel):
         return cls.objects.filter(is_active=True).first()
 
 
+
+class LetterOfUndertaking(AuditModel):
+    """
+    The registration's Letter of Undertaking (Rule 96A, Form GST RFD-11): exports and supplies to an
+    SEZ made without paying IGST, for one financial year. Dated data, kept on each invoice made under
+    it as it stood (sales.documents.issued_particulars); an export under LUT dated on a day no LUT
+    covers is refused at posting.
+    """
+
+    registration = models.ForeignKey(GstSettings, on_delete=models.PROTECT, related_name="undertakings")
+    arn = models.CharField(max_length=20, help_text="The acknowledgement (ARN) the portal gave the LUT.")
+    financial_year = models.CharField(max_length=7, help_text="2026-27")
+    filed_on = models.DateField(help_text="The day the LUT was furnished, as acknowledged.")
+    valid_from = models.DateField()
+    valid_to = models.DateField()
+
+    class Meta:
+        ordering = ["-valid_from"]
+        verbose_name = "letter of undertaking"
+        constraints = [
+            models.CheckConstraint(check=models.Q(valid_to__gte=models.F("valid_from")),
+                                   name="lut_ends_after_it_starts"),
+            models.UniqueConstraint(fields=["registration", "arn"], name="one_lut_per_arn"),
+        ]
+
+    def __str__(self):
+        return f"LUT {self.arn} for {self.financial_year}"
+
+    def save(self, *args, **kwargs):
+        from .tds import financial_year
+
+        start, end = financial_year(self.valid_from)
+        if self.valid_to > end:
+            raise ValidationError({"valid_to": f"An LUT is for one financial year; {self.valid_from:%d %b %Y} is in "
+                                               f"the one ending {end:%d %b %Y}."})
+        year = f"{start.year}-{str(end.year)[2:]}"
+        if self.financial_year != year:
+            raise ValidationError({"financial_year": f"{self.valid_from:%d %b %Y} is in {year}, not "
+                                                     f"{self.financial_year}."})
+        if not self._state.adding:
+            before = LetterOfUndertaking.objects.get(pk=self.pk)
+            changed = any(getattr(before, name) != getattr(self, name)
+                          for name in ("arn", "financial_year", "filed_on", "valid_from", "valid_to"))
+            if changed and before.used_by_posted():
+                raise ValidationError("Posted invoices carry this LUT as it stood; record a new one.")
+        super().save(*args, **kwargs)
+
+    def used_by_posted(self):
+        from django.apps import apps
+
+        return apps.get_model("sales", "Invoice").objects.filter(
+            posted=True, issued_as__lut__arn=self.arn).exists()
+
+    def delete(self, *args, **kwargs):
+        if self.used_by_posted():
+            raise ValidationError("Posted invoices carry this LUT; it stays.")
+        return super().delete(*args, **kwargs)
+
+    @classmethod
+    def in_force(cls, day):
+        registration = GstSettings.active()
+        if registration is None:
+            return None
+        return cls.objects.filter(registration=registration, valid_from__lte=day, valid_to__gte=day).first()
+
+    def as_kept(self):
+        return {"arn": self.arn, "financial_year": self.financial_year, "filed_on": self.filed_on.isoformat(),
+                "valid_from": self.valid_from.isoformat(), "valid_to": self.valid_to.isoformat()}
+
+
 def _anything_recorded():
     """Whether any posted document froze its taxes. Asked of the models
     that record them, without this module importing sales or purchasing."""

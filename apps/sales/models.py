@@ -2903,7 +2903,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         self.record_taxes()
         from .documents import issued_particulars
 
-        self.issued_as = issued_particulars(self)
+        self.issued_as = issued_particulars(self, posting=True)
         from .tcs import collect
 
         self.tcs_amount = collect(self)

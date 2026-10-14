@@ -98,6 +98,13 @@ class GstReturnTestCase(TestCase):
         self.settings = GstSettings.objects.create(
             gstin=gstin("27AABCD1234E1Z"), interstate_position=inter
         )
+        from apps.accounting.models import LetterOfUndertaking
+
+        # Exports here are under LUT: one in force for the year they are dated in.
+        self.lut_2026 = LetterOfUndertaking.objects.create(
+            registration=self.settings, arn="AD2703260012345", financial_year="2026-27",
+            filed_on=datetime.date(2026, 3, 20), valid_from=datetime.date(2026, 4, 1),
+            valid_to=datetime.date(2027, 3, 31))
 
     def party(self, code, role=PartyRole.CUSTOMER, currency=None, **profile):
         party = Party.objects.create(code=code, name=code,

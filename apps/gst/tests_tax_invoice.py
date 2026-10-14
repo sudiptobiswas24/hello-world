@@ -155,6 +155,72 @@ class ExportTests(TaxInvoiceTestCase):
         self.assertIn("SUPPLY MEANT FOR EXPORT ON PAYMENT OF INTEGRATED TAX", self.text(invoice))
 
 
+class LetterOfUndertakingTests(TaxInvoiceTestCase):
+    """O218 follow-up: the LUT an export is made under, kept as it stood and printed beside the words."""
+
+    def export_on(self, day, post=True):
+        from apps.core.models import Country
+
+        abroad = self.party(f"EXP-{day:%m%d}", currency=self.usd, gst_registration="overseas",
+                            fiscal_position=self.lut)
+        self.address(abroad, "Jebel Ali Free Zone", "Dubai", "", "",
+                     country=Country.objects.get_or_create(code="AE", name="United Arab Emirates")[0])
+        return self.invoice(abroad, [(self.sack, "1000", "1.37", "0", self.pair)], currency=self.usd, day=day,
+                            post=post)
+
+    def test_the_year_changes_on_1_april(self):
+        import datetime
+
+        from apps.accounting.models import LetterOfUndertaking
+
+        LetterOfUndertaking.objects.create(
+            registration=self.settings, arn="AD2703250099999", financial_year="2025-26",
+            filed_on=datetime.date(2025, 3, 25), valid_from=datetime.date(2025, 4, 1),
+            valid_to=datetime.date(2026, 3, 31))
+        march, april = self.export_on(datetime.date(2026, 3, 31)), self.export_on(datetime.date(2026, 4, 1))
+        self.assertEqual((march.issued_as["lut"]["arn"], april.issued_as["lut"]["arn"]),
+                         ("AD2703250099999", "AD2703260012345"))
+        text = self.text(april)
+        self.assertIn("WITHOUT PAYMENT OF INTEGRATED TAX LUT ARN AD2703260012345 dated 20 Mar 2026, for 2026-27", text)
+        self.assertIn("LUT ARN AD2703250099999 dated 25 Mar 2025, for 2025-26", self.text(march))
+
+    def test_refused_at_posting_with_no_lut_in_force(self):
+        import datetime
+
+        from django.core.exceptions import ValidationError
+
+        draft = self.export_on(datetime.date(2026, 3, 31), post=False)
+        with self.assertRaisesMessage(ValidationError, "is an export or SEZ supply without IGST dated 31 Mar 2026, "
+                                                       "and no Letter of Undertaking is in force on that day"):
+            draft.post()
+        draft.refresh_from_db()
+        self.assertFalse(draft.posted)
+
+    def test_kept_as_it_stood(self):
+        import datetime
+
+        from django.core.exceptions import ValidationError
+
+        invoice = self.export_on(datetime.date(2026, 9, 10))
+        self.lut_2026.arn = "AD2703260054321"
+        with self.assertRaisesMessage(ValidationError, "Posted invoices carry this LUT as it stood"):
+            self.lut_2026.save()
+        note = invoice.create_credit_note()
+        self.assertEqual(note.issued_as["lut"]["arn"], "AD2703260012345")
+
+    def test_one_financial_year_each(self):
+        import datetime
+
+        from django.core.exceptions import ValidationError
+
+        from apps.accounting.models import LetterOfUndertaking
+
+        with self.assertRaisesMessage(ValidationError, "is in 2026-27, not 2025-26"):
+            LetterOfUndertaking.objects.create(
+                registration=self.settings, arn="X1", financial_year="2025-26", filed_on=datetime.date(2026, 4, 2),
+                valid_from=datetime.date(2026, 4, 2), valid_to=datetime.date(2027, 3, 31))
+
+
 class CreditNoteTests(TaxInvoiceTestCase):
     def test_it_names_the_invoice_it_credits(self):
         invoice = self.p1()
