@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
 from apps.accounting.models import Account, AccountType, JournalEntry, JournalLine
@@ -617,3 +617,35 @@ class AMethodARouteDoesNotMapIsRefusedTests(TestCase):
         found = [[shape for shape, _ in Command().actions_named_after_a_verb(["purchasing"], [cls])]
                  for cls in (Planted, Kept)]
         self.assertEqual(found, [["action named after a method"], []])
+
+
+class AViewSetRoutesOnlyWhatItCanDoTests(SimpleTestCase):
+    """
+    Review F6: RowHeldViewSetMixin and AuditableViewSetMixin defined update()
+    and destroy() outright, so the router mapped PUT and DELETE for a viewset
+    that could do neither, and its Allow header and OPTIONS advertised them.
+    """
+
+    def methods(self, viewset):
+        from rest_framework.routers import SimpleRouter
+
+        return set(SimpleRouter().get_method_map(viewset, {"put": "update", "patch": "partial_update",
+                                                           "delete": "destroy"}))
+
+    def test_a_viewset_that_only_deletes_routes_no_put(self):
+        from apps.gst.views import EwayBillViewSet, Gstr2bStatementViewSet
+
+        self.assertEqual(self.methods(Gstr2bStatementViewSet), {"delete"})
+        self.assertEqual(self.methods(EwayBillViewSet), {"delete"})
+
+    def test_a_read_only_viewset_routes_neither_and_a_model_viewset_both(self):
+        from rest_framework import viewsets
+
+        from apps.core.audit import AuditableViewSetMixin
+        from apps.core.views import CountryViewSet
+
+        class ReadOnly(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+            pass
+
+        self.assertEqual(self.methods(ReadOnly), set())
+        self.assertEqual(self.methods(CountryViewSet), {"put", "patch", "delete"})
