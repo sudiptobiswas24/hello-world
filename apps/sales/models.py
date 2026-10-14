@@ -39,6 +39,7 @@ from apps.core.models import (
     correction_date,
     answer_to_its_document,
     documents_it_answers_to,
+    lock_in_turn,
     lock_rows,
     only_one,
     prefetched,
@@ -2681,7 +2682,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             self.sales_rep_id = (CustomerProfile.objects.filter(party=customer)
                                  .values_list("sales_rep_id", flat=True).first())
 
+    @serialised("posted", held_first=True)
     def delete(self, *args, **kwargs):
+        # Held, then asked: read unlocked, a draft could be deleted as it posted, and its lines went
+        # before the invoice, against the lock order (O184's survey).
         if self.posted:
             raise ValidationError("Posted invoices cannot be deleted. Issue a credit note instead.")
         super().delete(*args, **kwargs)
@@ -4292,7 +4296,9 @@ class Delivery(AuditModel):
                 party_id=self.sales_order.customer_id).values_list("transporter_id", flat=True).first()
         super().save(*args, **kwargs)
 
+    @serialised("posted", held_first=True)
     def delete(self, *args, **kwargs):
+        # Held, then asked, as Invoice.delete.
         if self.posted:
             raise ValidationError(
                 "Posted deliveries cannot be deleted. Create a customer return instead."
@@ -4311,6 +4317,9 @@ class Delivery(AuditModel):
         # deliveries against one order must not both see the same room.
         lock_rows(self.sales_order)
         lines = list(self.lines.all())
+        # Its lines before the shelves, by the lock order: each line is written again once its stock
+        # has moved, and a document's lines are taken before the stock (O182).
+        lock_in_turn(sorted(lines, key=lambda line: line.pk))
         if not lines:
             raise ValidationError("Cannot post a delivery with no lines.")
         for line in lines:
@@ -4767,6 +4776,11 @@ class Delivery(AuditModel):
                 quantity_shipped=quantity,
                 unit_cost=line.unit_cost,
             )
+        if credit_invoices:
+            # The invoices it credits before the goods come back: the stock is taken last (O182).
+            lock_rows(*Invoice.objects.filter(posted=True, credits__isnull=True,
+                                              lines__order_line__in=self.lines.values("order_line"))
+                      .distinct().order_by("pk"), refresh=False)
         customer_return.post()
         # Credited for what came back on this return, not for everything
         # the delivery carried.
