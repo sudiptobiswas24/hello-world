@@ -1010,6 +1010,29 @@ class OneDecisionAtATimeRaceTests(RaceCase):
         self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, called_off(made.line)),
                       [(Decimal("80"), Decimal("70")), (Decimal("100"), Decimal("90"))])
 
+    def test_a_line_at_no_price_is_not_cut_below_a_call_off_written_at_once(self):
+        """
+        O36: the same at no price. A cut that leaves the line worth no less
+        read the call-offs without the line's lock: cut to 80 with 90
+        called off. Every cut now holds the line first.
+        """
+        from apps.sales import tests_call_offs
+        from apps.sales.call_offs import CallOff, called_off
+
+        made = fixture(self, tests_call_offs.CallOffTestCase)
+        line_pk = made.line.pk
+        SalesOrderLine.objects.filter(pk=line_pk).update(unit_price=Decimal("0"))
+
+        def cut():
+            line = SalesOrderLine.objects.get(pk=line_pk)
+            line.quantity = Decimal("80")
+            line.save()
+
+        self.once(race(None, cut, lambda: CallOff.objects.create(
+            line_id=line_pk, due_on=tests_call_offs.day(40), quantity=Decimal("20"))))
+        self.assertIn((SalesOrderLine.objects.get(pk=line_pk).quantity, called_off(made.line)),
+                      [(Decimal("80"), Decimal("70")), (Decimal("100"), Decimal("90"))])
+
     def test_two_orders_confirmed_at_once_do_not_both_fit_under_the_credit_limit(self):
         from apps.sales import tests_approvals
         from apps.sales.models import CustomerProfile, SalesOrder, committed_balance
