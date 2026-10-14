@@ -2091,3 +2091,64 @@ class PayrollOutputRaceTests(RaceCase):
         june = made.month(6, post=False)
         self.once(race(None, lambda: PayRun.objects.get(pk=june.pk).post(),
                        lambda: SalaryAdvance.objects.get(pk=advance.pk).void(on_date=datetime.date(2026, 7, 1))))
+
+    def test_one_payment_offered_to_the_file_and_to_a_slip_on_it_is_refused_in_words(self):
+        """
+        Each path held where the other would reach for what it holds: the file's past the payment, the
+        slip's before it. Taking the payment before the slips, the file waited on the slip and the slip
+        on the payment, and PostgreSQL ended one as a deadlock. Now both take the slip first.
+        """
+        import threading
+        from unittest.mock import patch
+
+        from django.db import transaction
+
+        from apps.hr import bank_file, payroll
+
+        made, written = self.bank_file()
+        slip = made.paid_run.payslips.get(employee=made.people[1])
+        # The file's total, so the file passes its checks and reaches for the slips.
+        shared = made.money(made.people[1].party, "23825.50")
+        barrier = threading.Barrier(2, timeout=3)
+        real_file, real_pay = bank_file.lock_rows, payroll.lock_rows
+
+        def meet():
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+
+        def file_locks(*rows, **kwargs):
+            real_file(*rows, **kwargs)
+            if any(isinstance(row, Payment) for row in rows):
+                meet()
+
+        def slip_locks(*rows, **kwargs):
+            if any(isinstance(row, Payment) for row in rows):
+                meet()
+            real_pay(*rows, **kwargs)
+
+        outcomes = [None, None]
+
+        def attempt(index, call):
+            try:
+                with transaction.atomic():
+                    call()
+                outcomes[index] = "done"
+            except Exception as exc:
+                outcomes[index] = f"refused: {exc}"
+            finally:
+                connection.close()
+
+        calls = [lambda: bank_file.SalaryTransferFile.objects.get(pk=written.pk).mark_paid(
+                     Payment.objects.get(pk=shared.pk)),
+                 lambda: Payslip.objects.get(pk=slip.pk).pay(Payment.objects.get(pk=shared.pk))]
+        with patch.object(bank_file, "lock_rows", file_locks), patch.object(payroll, "lock_rows", slip_locks):
+            threads = [threading.Thread(target=attempt, args=pair) for pair in enumerate(calls)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.assertFalse(any("deadlock" in str(outcome) for outcome in outcomes), outcomes)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertIn("net pay is 8450.50", outcomes[1])

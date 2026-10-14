@@ -92,9 +92,19 @@ class SalaryTransferFile(AuditModel):
 
         from .payroll import _net_pay_account
 
+        # One order for every path that pays a slip: the file, its run, the slips in key order, then
+        # the payment. Payslip.pay holds the slip before its payment; holding the payment first, one
+        # payment offered to both at once left each waiting on the other, and PostgreSQL ended one
+        # of them as a deadlock instead of a refusal in words.
+        rows = list(self.rows.select_related("payslip__employee").order_by("payslip_id"))
+        slips = [row.payslip for row in rows]
+        lock_rows(self.run)
+        lock_rows(*slips)
         lock_rows(payment)
         if self.payment_id is not None:
             raise ValidationError(f"{self} has been paid, by {self.payment}.")
+        if self.run.is_voided():
+            raise ValidationError(f"{self.run} has been voided; it owes nobody.")
         if not payment.posted or payment.is_voided():
             raise ValidationError("That payment is not posted, or has been voided: nothing left the bank.")
         if payment.direction != PaymentDirection.DISBURSEMENT:
@@ -108,9 +118,6 @@ class SalaryTransferFile(AuditModel):
             raise ValidationError(f"The payment is {payment.amount} and {self} totals {self.total}.")
         if payment.payslips.exists() or SalaryTransferFile.objects.filter(payment=payment).exists():
             raise ValidationError("That payment already settles other pay.")
-        rows = list(self.rows.select_related("payslip__employee"))
-        slips = [row.payslip for row in rows]
-        lock_rows(*slips)
         paid = [slip.employee.employee_number for slip in slips if slip.is_paid()]
         if paid:
             raise ValidationError(f"{', '.join(paid)} have been paid since {self} was written. Delete it and "
@@ -159,9 +166,11 @@ class SalaryTransfer(AuditModel):
 
         from .payroll import _net_pay_account
 
-        lock_rows(self.file, receipt)
+        # The file, the slip, then the money: the order mark_paid and Payslip.pay take them in.
         slip = self.payslip
+        lock_rows(self.file)
         lock_rows(slip)
+        lock_rows(receipt)
         if self.file.payment_id is None:
             raise ValidationError(f"{self.file} has not been paid; nothing was sent to return.")
         if self.is_returned():
