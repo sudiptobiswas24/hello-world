@@ -9,6 +9,10 @@ export { ACCOUNT, CURRENCY, MONEY_ACCOUNT } from "../purchasing/refs";
 export const SECTION: FieldDef["ref"] = {
   endpoint: "/api/accounting/tds-sections/", permission: "accounting.view_tdssection", label: coded,
 };
+/** A section tax is collected at source under (206C(1) scrap). */
+export const TCS_SECTION: FieldDef["ref"] = {
+  endpoint: "/api/accounting/tcs-sections/", permission: "accounting.view_tcssection", label: coded,
+};
 /** Any party, whatever its roles. */
 export const PARTY: FieldDef["pick"] = { endpoint: "/api/core/parties/", permission: "core.view_party", label: coded };
 /** A cost centre: who incurred a cost, in the analytic view of the books. */

@@ -253,13 +253,6 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
 
     # Every collection no screen keeps, and why it needs none.
     NO_SCREEN = {
-        # TCS (O219): driven through the API and the admin until its office screens are built,
-        # which g21 did not reach: the gap is registered, not hidden.
-        "/api/accounting/tcs-sections/": "TCS sections: no office screen yet (registered with O219's follow-up).",
-        "/api/accounting/tcs-rates/": "TCS rates and their confirmation: no office screen yet (O219 follow-up).",
-        "/api/accounting/tcs-declarations/": "Buyers' Form 127 declarations: no office screen yet (O219 follow-up).",
-        "/api/sales/tcs-collections/": "Made by posting an invoice; listed with no office screen yet (O219 follow-up).",
-        "/api/sales/tcs-challans/": "TCS challans: no office screen yet (O219 follow-up).",
         "/api/core/party-roles/": (
             "Read only. A party is made in its role, from the customer or vendor list or by HR, "
             "and a second trading role is given on the party page (parties/<id>/roles/)."

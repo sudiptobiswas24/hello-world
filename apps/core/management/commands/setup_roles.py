@@ -122,7 +122,8 @@ ROLES = {
         *crud("accounting", "tcsrate"),
         "accounting.confirm_tcsrate",
         *crud("accounting", "tcsdeclaration", actions=("add", "change", "view")),
-        *view("sales", "tcscollection", "tcschallan"),
+        *view("sales", "tcscollection"),
+        *crud("sales", "tcschallan", actions=("add", "view")),
         # TDS: what customers deducted, confirmed against Form 26AS; what
         # the company deducted and paid over, read for the return.
         *crud("sales", "customertds", actions=("add", "change", "view")),
@@ -353,6 +354,7 @@ ROLES = {
         # The item master and where it is kept: nobody else made an item
         # or a warehouse from the office before these screens.
         *crud("inventory", "item", actions=("add", "change", "view")),
+        *view("accounting", "tcssection"),
         *full("inventory", "itemunit", "warehouse", "itemtemplate", "itemattribute", "itemattributevalue"),
         *view("purchasing", "goodsreceipt", "purchaseorder"),
         *view("sales", "delivery", "salesorder"),
@@ -436,6 +438,7 @@ ROLES = {
               "crewassignment", "taperunsetting"),
         # A new sack is a new item before it is a specification.
         *crud("inventory", "item", actions=("add", "change", "view")),
+        *view("accounting", "tcssection"),
         *full("inventory", "itemunit"),
         *view("hr", "employee"),
     ],

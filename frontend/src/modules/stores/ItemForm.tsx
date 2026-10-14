@@ -1,6 +1,6 @@
 import { RecordScreen, type FieldDef, type PanelDef } from "../../views/RecordScreen";
 import type { SmartDef } from "../../views/SmartButtons";
-import { ACCOUNT } from "../accounts/refs";
+import { ACCOUNT, TCS_SECTION } from "../accounts/refs";
 import { ITEM } from "./refs";
 
 type Row = Record<string, unknown>;
@@ -66,6 +66,7 @@ export default function ItemForm() {
         { key: "cogs_account", label: "COGS account", kind: "pick", pick: ACCOUNT, hint: "Expense account charged when this item is sold" },
         { key: "is_active", label: "Active", kind: "bool", initial: true },
         { key: "hsn_code", label: "HSN code", hint: "The tariff code tax law classifies this under — HSN for goods, SAC for a service" },
+        { key: "tcs_section", label: "TCS on sale", kind: "ref", ref: TCS_SECTION, hint: "Goods tax is collected at source on when sold: scrap, for this plant" },
       ]}
       actions={[
         // A new standard revalues the stock on hand: a posting, so it is

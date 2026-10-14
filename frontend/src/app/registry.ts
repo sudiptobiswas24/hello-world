@@ -882,6 +882,26 @@ export const MODULES: Module[] = [
         keywords: "26q quarterly tds return", load: () => import("../modules/accounts/TdsReturn"),
       },
       {
+        path: "tcs-collected", label: "TCS collected", permission: "sales.view_tcscollection",
+        keywords: "tcs 206c 394 scrap collected due", load: () => import("../modules/accounts/TcsCollected"),
+      },
+      {
+        path: "tcs-challans", label: "TCS challans", permission: "sales.view_tcschallan",
+        create: "sales.add_tcschallan",
+        keywords: "tcs challan pay over bsr scrap", load: () => import("../modules/accounts/TcsChallans"),
+        detail: () => import("../modules/accounts/TcsChallanForm"),
+      },
+      {
+        path: "tcs-return", label: "TCS return", permission: "sales.view_tcscollection",
+        keywords: "143 27eq quarterly tcs return", load: () => import("../modules/accounts/TcsReturn"),
+      },
+      {
+        path: "tcs-declarations", label: "TCS declarations", permission: "accounting.view_tcsdeclaration",
+        create: "accounting.add_tcsdeclaration",
+        keywords: "form 127 27c declaration tcs exempt manufacture", load: () => import("../modules/accounts/TcsDeclarations"),
+        detail: () => import("../modules/accounts/TcsDeclarationForm"),
+      },
+      {
         path: "bank-stock-statement", label: "Bank stock statement", permission: "accounting.view_journalentry",
         keywords: "bank stock statement drawing power cash credit debtors creditors margin",
         load: () => import("../modules/accounts/BankStockStatement"),
@@ -1251,6 +1271,20 @@ export const MODULES: Module[] = [
         create: "accounting.add_tdssection",
         keywords: "tds 194q 194c 194j rate threshold", load: () => import("../modules/settings/TdsSections"),
         detail: () => import("../modules/settings/TdsSectionForm"),
+      },
+      {
+        path: "tcs-sections", label: "TCS sections", permission: "accounting.view_tcssection",
+        keep: "accounting.change_tcssection",
+        create: "accounting.add_tcssection",
+        keywords: "tcs 206c 394 scrap section", load: () => import("../modules/settings/TcsSections"),
+        detail: () => import("../modules/settings/TcsSectionForm"),
+      },
+      {
+        path: "tcs-rates", label: "TCS rates", permission: "accounting.view_tcsrate",
+        keep: "accounting.change_tcsrate",
+        create: "accounting.add_tcsrate",
+        keywords: "tcs rate confirm scrap", load: () => import("../modules/settings/TcsRates"),
+        detail: () => import("../modules/settings/TcsRateForm"),
       },
       {
         path: "numbering", label: "Document numbering", permission: "core.view_documentsequence",
