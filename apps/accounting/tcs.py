@@ -162,3 +162,25 @@ class TcsDeclaration(AuditModel):
     def covering(cls, party, section, day):
         return cls.objects.filter(party=party, section=section, valid_from__lte=day, valid_to__gte=day,
                                   received_on__lte=day).order_by("-valid_from", "-pk").first()
+
+
+class SeededDefault(AuditModel):
+    """
+    Something a setup command made for the accountant to review (setup_indian_books): an account, a
+    tax, a position, a rate. Listed until reviewed; what it names is the accountant's to keep or change.
+    """
+
+    model = models.CharField(max_length=100, help_text="app_label.model of what was seeded.")
+    object_id = models.PositiveBigIntegerField()
+    label = models.CharField(max_length=255)
+    reviewed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+                                    related_name="+")
+    reviewed_on = models.DateField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["reviewed_on", "id"]
+        verbose_name = "seeded default"
+        constraints = [models.UniqueConstraint(fields=["model", "object_id"], name="one_seeded_default_per_record")]
+
+    def __str__(self):
+        return f"{self.label} ({'reviewed' if self.reviewed_on else 'to review'})"
