@@ -316,6 +316,63 @@ class RaisingAReworkOrderTests(ReworkTestCase):
             order.release(TODAY)
 
 
+class AReworkRunIsTheQualityManagersToDecideTests(ReworkTestCase):
+    """
+    RISKS.md, decision 22: a failure under an advisory plan waits for the
+    Quality Manager, and rework is one of their three choices. A run raised
+    for the batch, re-pointed at it, or released once it came to wait,
+    would take the choice from them.
+    """
+
+    def waits(self, lot, value="1200"):
+        InspectionPlan.objects.filter(pk=self.plan.pk).update(is_mandatory=False)
+        inspection = Inspection.objects.create(lot=lot, plan=self.plan, inspected_on=TODAY)
+        Reading.objects.create(inspection=inspection, plan_line=self.plan.lines.get(), value=Decimal(value))
+        inspection.post()
+        self.assertEqual(inspection.disposition, Disposition.AWAITING)
+        return (f"{lot} is held: it failed {inspection.number} on 2026-06-01 and waits for the "
+                "Quality Manager's decision. It cannot be reworked until they decide.")
+
+    def test_not_raised_for_it(self):
+        lot = Lot.objects.create(item=self.tape, code="T-WAIT")
+        self.stock(self.tape, "500", "90", lot=lot)
+        said = self.waits(lot)
+        with self.assertRaisesMessage(ValidationError, said):
+            self.rework_order(lot)
+        self.assertFalse(WorkOrder.objects.filter(rework_of=lot).exists())
+
+    def test_nor_re_pointed_at_it(self):
+        order = self.rework_order(self.failed_lot())  # T-BAD, rejected under the mandatory plan
+        waiting = Lot.objects.create(item=self.tape, code="T-WAIT")
+        self.stock(self.tape, "500", "90", lot=waiting)
+        said = self.waits(waiting)
+        order.rework_of = waiting
+        with self.assertRaisesMessage(ValidationError, said):
+            order.save()
+        self.assertEqual(WorkOrder.objects.get(pk=order.pk).rework_of.code, "T-BAD")
+
+    def test_nor_released_once_its_batch_came_to_wait(self):
+        lot = self.failed_lot()
+        order = self.rework_order(lot)
+        Inspection.objects.get(lot=lot).void("Measured on the wrong gauge.")
+        said = self.waits(lot)
+        with self.assertRaisesMessage(ValidationError, said):
+            order.release(TODAY)
+        self.assertEqual(WorkOrder.objects.get(pk=order.pk).status, WorkOrderStatus.DRAFT)
+
+    def test_once_they_decide_rework_it_may_be(self):
+        from django.contrib.auth.models import User
+
+        lot = Lot.objects.create(item=self.tape, code="T-WAIT")
+        self.stock(self.tape, "500", "90", lot=lot)
+        self.waits(lot)
+        boss = User.objects.create_superuser("root")
+        Inspection.objects.get(lot=lot).decide(boss, Disposition.REWORK, "Re-draw it.")
+        order = self.rework_order(lot)
+        order.release(TODAY)
+        self.assertEqual(order.status, WorkOrderStatus.RELEASED)
+
+
 class DrawingTheFailedBatchTests(ReworkTestCase):
     def issue_rework(self, order, lot, quantity="470.4"):
         issue = MaterialIssue.objects.create(

@@ -1298,6 +1298,14 @@ class WorkOrder(AuditModel):
                 f"{self.rework_of} is a batch of {self.rework_of.item} and "
                 f"this run makes {self.item}."
             )
+        # Rework is one of the Quality Manager's three choices on a failure that
+        # waits for them (RISKS.md, decision 22): a run raised now would take it.
+        # The gate's own sentence, so the two cannot word it apart.
+        from apps.quality.release import awaiting_decision
+
+        said = awaiting_decision(self.rework_of, "be reworked")
+        if said:
+            raise ValidationError(said)
         if release_status(self.rework_of) != ReleaseStatus.HELD:
             raise ValidationError(
                 f"{self.rework_of} is not held — nothing has failed it. "
@@ -1545,7 +1553,26 @@ class WorkOrder(AuditModel):
                               "cancel this one."
                         for name in moved
                     })
+        self._check_not_reworking_a_decision()
         super().save(*args, **kwargs)
+
+    def _check_not_reworking_a_decision(self):
+        """
+        Raised for, or re-pointed at, a batch waiting for the Quality Manager:
+        refused, as release refuses it (`_check_rework`). Rework is one of
+        their three choices (RISKS.md, decision 22); a supervisor's run would
+        take it from them.
+        """
+        if self.rework_of_id is None:
+            return
+        if not self._state.adding and WorkOrder.objects.filter(
+                pk=self.pk, rework_of_id=self.rework_of_id).exists():
+            return
+        from apps.quality.release import awaiting_decision
+
+        said = awaiting_decision(self.rework_of, "be reworked")
+        if said:
+            raise ValidationError({"rework_of": [said]})
 
 
 class WorkOrderComponent(AuditModel):

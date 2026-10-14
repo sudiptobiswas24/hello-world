@@ -133,6 +133,19 @@ def release_status(lot):
     return ReleaseStatus.HELD
 
 
+def awaiting_decision(lot, action="issue"):
+    """
+    Why `lot` waits for the Quality Manager's decision, in words, or "":
+    its standing inspection failed under an advisory plan and nobody has
+    decided it. Said by the gate, and by a rework run, which would decide it.
+    """
+    held = latest_inspection(lot) if lot is not None else None
+    if held is None or held.disposition != Disposition.AWAITING:
+        return ""
+    return (f"{lot} is held: it failed {held.number} on {held.inspected_on} and waits "
+            f"for the Quality Manager's decision. It cannot {action} until they decide.")
+
+
 def why_held(item, lot, warehouse=None, action="issue", reworking=None):
     """
     Why `lot` of `item` may not be drawn from `warehouse`, in words, or "".
@@ -158,12 +171,12 @@ def why_held(item, lot, warehouse=None, action="issue", reworking=None):
     if warehouse is not None and warehouse.is_quarantine:
         return (f"{warehouse} holds goods awaiting inspection; accept them into a "
                 f"store before they can {action}.")
+    # Not even by a rework run: whether it is reworked is the Quality
+    # Manager's to decide, and a run drawing it would decide it for them.
+    said = awaiting_decision(lot, action)
+    if said:
+        return said
     held = latest_inspection(lot) if lot is not None else None
-    if held is not None and held.disposition == Disposition.AWAITING:
-        # Not even by a rework run: whether it is reworked is the Quality
-        # Manager's to decide, and a run drawing it would decide it for them.
-        return (f"{lot} is held: it failed {held.number} on {held.inspected_on} and waits "
-                f"for the Quality Manager's decision. It cannot {action} until they decide.")
     if lot is not None and reworking is not None and lot.pk == reworking.pk:
         return ""
     status = release_status(lot) if lot is not None else None

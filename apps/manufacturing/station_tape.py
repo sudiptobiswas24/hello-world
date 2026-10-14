@@ -131,13 +131,17 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
         station, operator, machine, order, spec.inspection_plan, "denier", denier_readings,
         "tape", supervisor, reason, shift_date, doff_code(machine, shift, shift_date), net,
         f"Doffed at {station}", instrument=instrument)
+    from apps.quality.models import Disposition
+
     return TapeDoff.objects.create(
         station=station, machine=machine, lot=lot, entry=entry, inspection=inspection,
         gross_kg=gross, scale_reading=reading,
         **typed_fields(source, supervisor, typed_reason, typed_note),
         bobbins=bobbins, core_type=core_type, net_kg=net,
         mean_denier=mean.quantize(Decimal("0.01")), weighed_by=operator, weighed_at=at,
-        shift=shift, shift_date=shift_date, conceded_by=None if passed else supervisor,
+        # Nobody concedes a batch that waits for the Quality Manager (RISKS.md, decision 22).
+        shift=shift, shift_date=shift_date,
+        conceded_by=None if passed or inspection.disposition == Disposition.AWAITING else supervisor,
         reason=reason,
     )
 

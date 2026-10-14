@@ -89,17 +89,37 @@ def logins_in(*groups):
 
 
 def _mail(person, record, subject, body, by):
-    """Mail one person; '' when it went, else why it did not."""
-    from apps.core.mail import deliver
+    """
+    Mail one person once what told them is saved: '' when it is to go, else
+    why it will not.
+
+    Sent on commit, never before. A station posts an inspection inside its
+    doff's own transaction, and a refusal later in that transaction left a
+    mail about a posting that never stood. What can be known now is said
+    now (no address, no mail server); a mail the server refuses after the
+    commit is written on the record, the answer having gone by then.
+    """
+    from django.core.mail import get_connection
+
+    from apps.core.mail import NOT_SET_UP, NotConfiguredBackend, deliver
 
     if not person.email:
         return "the login has no email address"
-    try:
-        deliver(record, person.email, subject, body or subject, user=by, what="To-do")
-    except ValidationError as refused:
-        return " ".join(refused.messages)
-    except (smtplib.SMTPException, OSError) as failed:
-        return f"the mail server did not take it: {failed}"
+    if isinstance(get_connection(), NotConfiguredBackend):
+        return NOT_SET_UP
+    address, username = person.email, person.get_username()
+    kind = ContentType.objects.get_for_model(type(record))
+
+    def send():
+        try:
+            deliver(record, address, subject, body or subject, user=by, what="To-do")
+        except (ValidationError, smtplib.SMTPException, OSError) as failed:
+            said = " ".join(failed.messages) if isinstance(failed, ValidationError) else str(failed)
+            Note.objects.create(content_type=kind, object_id=record.pk,
+                                body=f"The mail of the to-do to {username} did not go: {said}",
+                                created_by=by, updated_by=by)
+
+    transaction.on_commit(send)
     return ""
 
 
