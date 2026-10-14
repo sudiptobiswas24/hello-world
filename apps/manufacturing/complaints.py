@@ -31,7 +31,15 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, lock_rows, serialised, to_date
+from apps.core.models import (
+    AuditModel,
+    DocumentSequence,
+    answer_to_its_document,
+    documents_it_answers_to,
+    lock_rows,
+    serialised,
+    to_date,
+)
 
 ZERO = Decimal("0")
 
@@ -247,15 +255,29 @@ class ComplaintLot(AuditModel):
     def __str__(self):
         return f"{self.lot} on {self.complaint}"
 
-    def _check_open(self, complaint):
-        if not complaint.is_open():
-            raise ValidationError(f"{complaint} is {complaint.status}; reopen it to change it.")
+    def locked_before_it(self):
+        """The complaints it leaves and joins, as save() and delete() hold them."""
+        return documents_it_answers_to(self, "complaint")
 
+    def _check_open(self):
+        """
+        The complaint is open, asked with it held, as O118 did for actions:
+        reject() and close() hold it while they decide, and a batch added
+        at that moment read it unheld, found it open, and a rejected
+        complaint named a batch (O150). Removing the only batch as it
+        closed was the same read.
+        """
+        answer_to_its_document(
+            self, "complaint",
+            lambda complaint: f"{complaint} is {complaint.status}; reopen it to change it.",
+            fixed=lambda complaint: not complaint.is_open())
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         from apps.sales.models import DeliveryAllocation
 
+        self._check_open()
         complaint = Complaint.objects.get(pk=self.complaint_id)
-        self._check_open(complaint)
         if self.quantity is not None and self.quantity <= 0:
             raise ValidationError("A quantity complained of is more than nothing.")
         # Returned in full still counts: the customer had it, and the
@@ -267,8 +289,9 @@ class ComplaintLot(AuditModel):
             raise ValidationError(f"{self.lot} was never shipped to {complaint.customer}.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        self._check_open(self.complaint)
+        self._check_open()
         return super().delete(*args, **kwargs)
 
 

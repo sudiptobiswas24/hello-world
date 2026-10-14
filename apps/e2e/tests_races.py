@@ -1396,6 +1396,94 @@ class ComplaintRaceTests(RaceCase):
         undone = CorrectiveAction.objects.filter(complaint=complaint, done_on__isnull=True).count()
         self.assertFalse(complaint.status == ComplaintStatus.CLOSED and undone, outcomes)
 
+    def test_no_batch_is_named_on_a_complaint_as_it_is_rejected(self):
+        """
+        O150: reject() held the complaint; a batch added at the same moment
+        read it unheld, found it open, and the rejected complaint named it.
+        Sequentially the batch is refused ("reopen it to change it"). The
+        add starts once the reject has the complaint: added first, a batch
+        on a rejected complaint is what anyone would have seen.
+        """
+        from django.db.models.signals import pre_save
+
+        from apps.manufacturing.complaints import Complaint, ComplaintLot, ComplaintStatus
+        from apps.manufacturing.tests_complaints import ComplaintTestCase
+
+        made = fixture(self, ComplaintTestCase)
+        complaint = made.complaint()
+        deciding = threading.Event()
+        pre_save.connect(lambda **kwargs: deciding.set(), sender=Complaint, weak=False,
+                         dispatch_uid="race-deciding")
+        self.addCleanup(pre_save.disconnect, sender=Complaint, dispatch_uid="race-deciding")
+        outcomes = race(
+            (Complaint, ComplaintLot),
+            lambda: Complaint.objects.get(pk=complaint.pk).reject("Not our sacks", by=made.qa),
+            lambda: deciding.wait(5) and Complaint.objects.get(pk=complaint.pk).add_lot(made.tape_lot, "600"),
+        )
+        self.once(outcomes)
+        complaint.refresh_from_db()
+        named = complaint.complained_lots.count()
+        self.assertFalse(complaint.status == ComplaintStatus.REJECTED and named, outcomes)
+
+    def test_the_only_batch_is_not_taken_off_a_complaint_as_it_closes(self):
+        """O150: close() counts the batches under the complaint's lock; the removal now waits for it."""
+        from django.db.models.signals import pre_delete
+
+        from apps.manufacturing.complaints import Complaint, ComplaintLot, ComplaintStatus
+        from apps.manufacturing.tests_complaints import ComplaintTestCase
+
+        made = fixture(self, ComplaintTestCase)
+        complaint = made.ready()
+        row = complaint.complained_lots.get()
+        # The removal writes no row, so it is held where it deletes and the
+        # close where it saves, at one barrier: race() holds saves only.
+        from django.db.models.signals import pre_save
+
+        barrier, local = threading.Barrier(2, timeout=3), threading.local()
+
+        closing = threading.Event()
+
+        def pause(**kwargs):
+            closing.set()  # the close holds the complaint by now; the removal starts
+            if getattr(local, "armed", False):
+                local.armed = False
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass  # The other is waiting on our lock: carry on and commit.
+
+        pre_save.connect(pause, sender=Complaint, weak=False, dispatch_uid="race-close")
+        pre_delete.connect(pause, sender=ComplaintLot, weak=False, dispatch_uid="race-delete")
+        self.addCleanup(pre_save.disconnect, sender=Complaint, dispatch_uid="race-close")
+        self.addCleanup(pre_delete.disconnect, sender=ComplaintLot, dispatch_uid="race-delete")
+        calls = (
+            lambda: Complaint.objects.get(pk=complaint.pk).close(
+                "Metal in regrind", by=made.qa, on_date=run_fixture.TODAY + datetime.timedelta(days=1)),
+            lambda: closing.wait(5) and ComplaintLot.objects.get(pk=row.pk).delete(),
+        )
+        outcomes = [None, None]
+
+        def run(index, call):
+            local.armed = True
+            try:
+                with transaction.atomic():
+                    call()
+                outcomes[index] = "done"
+            except Exception as exc:
+                outcomes[index] = f"refused: {exc}"
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=run, args=pair) for pair in enumerate(calls)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.once(outcomes)
+        complaint.refresh_from_db()
+        self.assertFalse(complaint.status == ComplaintStatus.CLOSED and not complaint.complained_lots.exists(),
+                         outcomes)
+
     def test_a_complaint_is_not_paid_for_and_rejected_at_once(self):
         """settle() holds the complaint as reject() does, so one sees the other."""
         from apps.gst import tests_claims
