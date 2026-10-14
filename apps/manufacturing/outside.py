@@ -99,6 +99,12 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
         on_delete=models.PROTECT, related_name="+", editable=False,
     )
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
+    voided_on = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="The day the void is booked on: the period whose ITC-04 "
+                  "reports the withdrawal. Kept, because a void at no value "
+                  "writes no entry to read it from.",
+    )
 
     class Meta:
         ordering = ["movement_date", "id"]
@@ -249,8 +255,22 @@ class OutsideMovement(VoidedNotDeleted, AuditModel):
                 entry_date=on_date, memo=memo or f"Void of {self.number}"
             )
         self.voided_at = timezone.now()
-        super().save(update_fields=["voided_entry", "voided_at", "updated_at"])
+        self.voided_on = on_date
+        super().save(update_fields=["voided_entry", "voided_at", "voided_on", "updated_at"])
         return self.voided_entry
+
+    def void_date(self):
+        """
+        The day the void was booked on, or None. A void from before the day
+        was kept reads its reversal's date, or the day it was voided at.
+        """
+        if self.voided_at is None:
+            return None
+        if self.voided_on is not None:
+            return self.voided_on
+        if self.voided_entry_id:
+            return self.voided_entry.date
+        return to_date(self.voided_at)
 
 
 def _refuse_closed(on_date, doing):

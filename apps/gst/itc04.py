@@ -16,6 +16,7 @@ state tax for a job worker in our own state and integrated tax for one
 elsewhere. None is charged on a challan; the form asks for it anyway.
 """
 
+import datetime
 from collections import defaultdict
 from decimal import Decimal
 
@@ -43,6 +44,44 @@ def _rates(line, home_state):
 def _worker(challan):
     return {"gstin": challan.job_worker_gstin, "state": challan.job_worker_state,
             "name": challan.job_worker.name}
+
+
+def _withdrawn(operation, start, end, warnings):
+    """
+    Receipts booked before the period and voided in it: each withdrawn
+    from the challan line it was laid on when the earlier return was made,
+    at the quantity it was reported at there, negative, on the void's day.
+    """
+    voided = {
+        movement.pk: movement
+        for movement in operation.outside_movements.filter(
+            posted=True, voided_at__isnull=False, movement_date__lt=start,
+        ).select_related("voided_entry")
+        if start <= movement.void_date() <= end
+    }
+    if not voided:
+        return []
+    rows = []
+    for row in allocation(operation, standing_on=start - datetime.timedelta(days=1)).values():
+        line = row["line"]
+        for movement, quantity in row["events"]:
+            if movement.pk not in voided or quantity <= 0:
+                continue
+            warnings.append(
+                f"{movement.number}: {quantity} of {line.description} reported back on "
+                f"{movement.movement_date} was voided on {movement.void_date()}; withdrawn here."
+            )
+            rows.append({
+                **_worker(line.challan),
+                "job_worker_challan": movement.reference, "date": movement.void_date(),
+                "description": line.description, "uqc": _uqc(line),
+                "quantity": -quantity, "original_challan": line.challan.number,
+                "original_challan_date": line.challan.challan_date,
+                "nature_of_job_work": operation.name,
+                "losses_uqc": _uqc(line), "losses_quantity": ZERO,
+                "voids": movement.number,
+            })
+    return rows
 
 
 def itc04(start, end):
@@ -73,7 +112,10 @@ def itc04(start, end):
 
     for operation_lines in by_operation.values():
         operation = operation_lines[0].operation
-        for row in allocation(operation).values():
+        # What came back stands on its own period's return whenever it is
+        # voided after; a void in this period of one booked before it is
+        # this period's, a withdrawal (O187). A closed return never moves.
+        for row in allocation(operation, standing_on=end).values():
             line = row["line"]
             for movement, quantity in row["events"]:
                 if not start <= movement.movement_date <= end:
@@ -94,6 +136,7 @@ def itc04(start, end):
                     "nature_of_job_work": operation.name,
                     "losses_uqc": _uqc(line), "losses_quantity": ZERO,
                 })
+        received.extend(_withdrawn(operation, start, end, warnings))
     # A loss is only ever recorded against an issued challan, and a
     # challan with losses cannot be withdrawn; a loss withdrawn as an
     # error was never a loss.

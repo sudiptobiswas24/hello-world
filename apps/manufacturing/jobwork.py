@@ -360,7 +360,7 @@ def live_losses(line, as_of=None):
     return losses
 
 
-def allocation(operation, as_of=None):
+def allocation(operation, as_of=None, standing_on=None):
     """
     {line id: {sent, back, lost, outstanding, events}} for a step.
 
@@ -369,6 +369,10 @@ def allocation(operation, as_of=None):
     still out; work sent back for rework reopens the latest line that
     was filled. `events` is [(movement, quantity)] per line, negative
     for rework sent back. As of a day, only what had happened by then.
+
+    `standing_on` takes a movement voided after that day as standing:
+    what a return for a period ending then reported, and keeps reporting
+    whenever the void comes (O187). The void is the later period's.
     """
     lines = live_lines(operation, as_of)
     state = {
@@ -380,10 +384,16 @@ def allocation(operation, as_of=None):
         for line in lines
     }
     filled = []  # (line id, quantity) in the order it was laid
-    movements = operation.outside_receipts()
+    if standing_on is None:
+        movements = operation.outside_receipts()
+    else:
+        movements = operation.outside_movements.filter(posted=True).select_related("voided_entry")
     if as_of is not None:
         movements = movements.filter(movement_date__lte=as_of)
     movements = movements.order_by("movement_date", "id")
+    if standing_on is not None:
+        movements = [movement for movement in movements
+                     if movement.voided_at is None or movement.void_date() > standing_on]
     for movement in movements:
         quantity = movement.quantity
         if movement.is_return:
