@@ -115,3 +115,47 @@ class LeaveRequestTests(TestCase):
         request.cancel(by=request.employee)
         request.refresh_from_db()
         self.assertEqual(request.status, LeaveStatus.CANCELLED)
+
+
+class ADeletedLeaveRequestsHistoryTests(TestCase):
+    """
+    O131: a deleted leave request's history was read by anyone holding
+    view_leaverequest, which every employee does: a colleague read who
+    asked for leave and who deleted it. It is read under the leave rule
+    the request was: whoever reads every leave request reads a gone one's.
+    """
+
+    setUp = LeaveRequestTests.setUp
+    make_request = LeaveRequestTests.make_request
+
+    def test_a_colleague_does_not_read_a_deleted_leave_requests_history(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+
+        def person(name, roles, employee=None):
+            user = User.objects.create_user(name)
+            user.groups.add(*Group.objects.filter(name__in=roles))
+            if employee is not None:
+                employee.user = user
+                employee.save()
+            client = APIClient()
+            client.force_authenticate(user)
+            return client
+
+        hr = person("hr", ["HR Admin"])
+        colleague = Employee.objects.create(party=make_employee_party("EMP-7", "Sam Roy"), employee_number="E007",
+                                            hire_date="2025-01-01")
+        # An inspector, as every employee, asks for their own leave; the party scope limits them not at all.
+        sam = person("sam", ["Employee Self Service", "Quality Inspector"], colleague)
+        leave = self.make_request()
+        history = {"model": "hr.leaverequest", "id": leave.pk}
+        # Standing, it is Riley's and their manager's to read, not Sam's.
+        self.assertEqual(sam.get("/api/core/history/", history).status_code, 404)
+        self.assertEqual(hr.delete(f"/api/hr/leave-requests/{leave.pk}/").status_code, 204)
+        self.assertEqual(sam.get("/api/core/history/", history).status_code, 404,
+                         "a colleague reads the history of a deleted leave request")
+        kept = hr.get("/api/core/history/", history)
+        self.assertEqual((kept.status_code, [event["kind"] for event in kept.json()][:1]), (200, ["deleted"]))
