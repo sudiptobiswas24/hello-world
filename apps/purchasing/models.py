@@ -6631,12 +6631,26 @@ class GoodsReceipt(AuditModel):
         if not self.posted or self.reverses_id:
             return []
         rows = []
-        for line in self.lines.select_related("order_line__item", "lot", "receipt").order_by("pk"):
+        # Only lines made from components can be held for them: a plain
+        # 15-line receipt paid 61 queries at every posting to say nothing
+        # (review F7). Then what is still held, at what is still here
+        # (review F5): a lot sent back in full, or the part of a bay
+        # already conceded, is not waiting for anyone.
+        lines = self.lines.filter(order_line__components__isnull=False).distinct().select_related(
+            "order_line__item", "order_line__uom", "lot", "receipt", "landed_warehouse", "warehouse")
+        for line in lines.order_by("pk"):
             item = line.order_line.item
             sources = held_sources(line)
-            waiting = (held_by_quality(item, line.lot) if line.lot_id is not None
-                       else line.quarantined_quantity() > 0)
-            if not sources or not waiting:
+            if not sources:
+                continue
+            if line.lot_id is not None:
+                if not held_by_quality(item, line.lot):
+                    continue
+                per = item.to_stock_quantity(Decimal("1"), line.order_line.uom) or Decimal("1")
+                still = min(line.quantity_received - line.quantity_returned(), line.lot.on_hand_at(None) / per)
+            else:
+                still = line.quarantined_quantity()
+            if still <= 0:
                 continue
             words = " ".join(
                 why_held(lot.item, lot, warehouse=self.purchase_order.subcontract_warehouse,
@@ -6644,7 +6658,7 @@ class GoodsReceipt(AuditModel):
                 for lot in sources)
             rows.append({
                 "line": line.pk, "item": str(item), "lot": line.lot.code if line.lot_id else None,
-                "quantity": line.quantity_received, "warehouse": str(line.landed_warehouse or line.warehouse),
+                "quantity": still, "warehouse": str(line.landed_warehouse or line.warehouse),
                 "why": (f"Held: made by {self.purchase_order.vendor} from a batch quality held after it "
                         f"was sent. {words} Nothing issues or ships them until quality decides."),
             })
