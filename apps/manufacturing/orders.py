@@ -1281,7 +1281,7 @@ class WorkOrder(AuditModel):
             return self.wip_account
         return ManufacturingSettings.account("wip", why)
 
-    def add_cost(self, amount, on_date, journal_entry, memo=""):
+    def add_cost(self, amount, on_date, journal_entry, memo="", came_with=None):
         """
         Cost that reaches this run after the material it belongs to went in:
         freight landed on goods already issued to it is production cost, the
@@ -1297,7 +1297,7 @@ class WorkOrder(AuditModel):
         else:
             account = self.wip(f"cost is reaching {self}")
         AddedCost.objects.create(work_order=self, amount=amount, date=on_date, account=account,
-                                 journal_entry=journal_entry, memo=memo[:255])
+                                 journal_entry=journal_entry, memo=memo[:255], came_with=came_with)
         return account
 
     def _check_rework(self):
@@ -2244,6 +2244,43 @@ class VoidedNotDeleted:
         return super().delete(*args, **kwargs)
 
 
+def _give_back_added_cost(issue, lines, on_date, occurred_at, label):
+    """
+    A voided issue's goods go back to the shelf, and the freight that reached
+    the run with them goes back with them (R4): off the run (its WIP, or the
+    variance once it is closed), onto the shelf as a value-only movement, Dr
+    inventory. Left on the run, the 48 of freight on 6 units stayed in WIP on
+    a run with no material, and the 6 back on the shelf carried none of it.
+    """
+    entry, rows = None, []
+    for line in lines:
+        if line.stock_movement_id is None:
+            continue
+        owed = AddedCost.objects.filter(came_with_id=line.stock_movement_id).aggregate(
+            total=models.Sum("amount"))["total"] or Decimal("0")
+        if owed <= 0:
+            continue
+        if entry is None:
+            entry = JournalEntry.objects.create(date=on_date, reference=issue.number,
+                                                memo=f"{label}: landed cost back to the shelf"[:255])
+        account = issue.work_order.add_cost(-owed, on_date, entry, label, came_with=line.stock_movement)
+        StockMovement.objects.create(
+            item=line.item, warehouse=issue.warehouse, movement_type=MovementType.ADJUSTMENT,
+            uom=line.item.uom, lot=line.lot, bin=line.bin, quantity=Decimal("0"),
+            value_adjustment=owed, reference=issue.number, occurred_at=occurred_at,
+            notes=f"{label}: landed cost back with the goods",
+        )
+        rows += [(inventory_account_for(line.item), owed), (account, -owed)]
+    if entry is None:
+        return None
+    for account, value in rows:
+        JournalLine.objects.create(entry=entry, account=account, description=entry.memo,
+                                   debit=value if value > 0 else Decimal("0"),
+                                   credit=-value if value < 0 else Decimal("0"))
+    entry.post()
+    return entry
+
+
 class AddedCost(AuditModel):
     """
     Cost that reached a run after its material went in (WorkOrder.add_cost):
@@ -2260,6 +2297,11 @@ class AddedCost(AuditModel):
     )
     journal_entry = models.ForeignKey("accounting.JournalEntry", on_delete=models.PROTECT, related_name="+")
     memo = models.CharField(max_length=255, blank=True)
+    came_with = models.ForeignKey(
+        StockMovement, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The issue movement the goods it reached the run on left the shelf by: voided, "
+                  "the cost goes back to the shelf with them (R4).",
+    )
 
     class Meta:
         ordering = ["date", "id"]
@@ -2519,6 +2561,7 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
                 entry_date=on_date, memo=label
             )
         self.void_variance_entry = _post_void_variance(on_date, self.number, label, taken_back)
+        _give_back_added_cost(self, lines, on_date, occurred_at, label)
         self.voided_at = occurred_at
         super().save(update_fields=[
             "voided_entry", "void_variance_entry", "voided_at", "updated_at",
