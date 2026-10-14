@@ -220,11 +220,22 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
     kind = "LN" if isinstance(spec, LinerSpecification) else "BG"
     lot = Lot.objects.create(item=order.item, code=bag_code(machine, shift, shift_date, kind),
                              manufactured_on=shift_date)
-    # Off weight, the Quality Manager's to decide whatever the plan (decisions 22 and 23).
+    # Off weight, the Quality Manager's to decide whatever the plan (decisions 22 and 23), and
+    # so is a bundle cut from a roll, or a run coated, off its limits further up the line.
+    from .process_rolls import current_mount, off_rolls
+    from .station_coat import CoatingCheck
     from .station_gauge import floor_inspection
 
+    mounted = current_mount(machine)
+    made_from = [f"Cut from {roll.code}, booked off its limits at {roll.station}: {roll.reason}."
+                 for roll in (off_rolls(mounted) if mounted is not None else [])]
+    made_from += [f"{order} was coated off its weight at {check.station} on {check.shift_date} "
+                  f"({check.mean_gsm} GSM): {check.reason}."
+                  for check in CoatingCheck.objects.filter(
+                      report__operation__work_order=order, passed=False,
+                      voided_at__isnull=True).select_related("station").order_by("pk")]
     inspection = floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor,
-                                  reason, "off weight")
+                                  reason, "off weight", made_from=made_from)
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,
                                sample_reference=f"S{number}", instrument=instrument)
@@ -236,9 +247,6 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         work_centre=machine.work_centre, machine=machine, memo=f"Counted at {station}",
     )
     entry.post()
-    from .process_rolls import current_mount
-
-    mounted = current_mount(machine)
     return BagCount.objects.create(
         mount=mounted if mounted is not None and mounted.operation.work_order_id == order.pk
         else None,
@@ -319,11 +327,12 @@ def summary(start, end, station=None):
         for count in counts:
             key = key_of(count)
             row = rows.setdefault(key, {"who": label_of(count), "bundles": 0, "bags": 0,
-                                        "liners": 0, "conceded": 0, "deviation": ZERO})
+                                        "liners": 0, "off_weight_held": 0, "deviation": ZERO})
             row["bundles"] += 1
             # A liner sealed is not a sack stitched: counted apart.
             row["liners" if count.work_order.bom_id in liner_boms else "bags"] += count.bags
-            row["conceded"] += 0 if count.passed else 1
+            # Off weight is booked held for the Quality Manager, never conceded (decision 23).
+            row["off_weight_held"] += 0 if count.passed else 1
             row["deviation"] += (count.sample_mean_grams - count.target_grams) / count.target_grams
         for row in rows.values():
             row["mean_deviation_percent"] = (row.pop("deviation") / row["bundles"] * 100).quantize(

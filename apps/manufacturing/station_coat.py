@@ -139,8 +139,17 @@ def record_coating(station, operator, machine, metres, samples, supervisor=None,
         target_gsm=spec.lamination_gsm, lower_gsm=lower, upper_gsm=upper,
         mean_gsm=mean.quantize(Decimal("0.01")), passed=passed, checked_by=operator,
         checked_at=at, shift=shift, shift_date=shift_date,
-        conceded_by=None if passed else supervisor, reason=reason,
+        # Nobody concedes it at the station (decision 23, O204): the floor's note, kept.
+        conceded_by=None, reason=reason,
     )
+    if not passed:
+        from .station_gauge import off_check
+
+        # Work in progress: no lot and no plan to file an inspection under. The Quality Manager
+        # is told, and the bundles of this run counted while it stands wait for them.
+        off_check(check, station, supervisor, reason, "its coating weight",
+                  f"{run} coated off its weight ({check.mean_gsm} GSM against {lower}–{upper})",
+                  f"/production/work-orders/{run.pk}")
     # As stored: the places each column keeps, not the arithmetic's.
     return CoatingCheck.objects.select_related("report").get(pk=check.pk)
 

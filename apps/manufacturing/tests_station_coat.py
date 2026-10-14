@@ -107,8 +107,16 @@ class CoatingCheckTests(CoatingTestCase):
             self.check(samples=OFF, supervisor=self.supervisor)
         self.assertFalse(CoatingCheck.objects.exists())
         check = self.check(samples=OFF, supervisor=self.supervisor, reason="Die lip cleaned")
+        # Decision 23 (O204): nobody concedes it at the coater; the PIN and reason are the
+        # floor's note, and the Quality Manager is told.
         self.assertEqual((check.passed, check.mean_gsm, check.conceded_by, check.reason),
-                         (False, Decimal("23.00"), self.supervisor, "Die lip cleaned"))
+                         (False, Decimal("23.00"), None, "Die lip cleaned"))
+        from django.contrib.contenttypes.models import ContentType
+
+        from apps.core.chatter import FollowUp
+
+        self.assertFalse(FollowUp.objects.filter(  # no Quality Manager signs in here: nobody to tell
+            content_type=ContentType.objects.get_for_model(CoatingCheck)).exists())
 
     def test_what_a_check_must_be(self):
         with self.assertRaisesMessage(ValidationError, "Weigh 3 pairs of discs; 2"):

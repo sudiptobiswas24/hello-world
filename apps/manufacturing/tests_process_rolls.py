@@ -140,8 +140,10 @@ class LaminatedTests(RollsTestCase):
         with self.assertRaisesMessage(ValidationError, "Say why a roll off its lamination"):
             self.laminated("132.78", supervisor=self.supervisor)
         roll = self.laminated("132.78", supervisor=self.supervisor, reason="Die lip cleaned")
-        self.assertEqual((roll.passed, roll.added_gsm, roll.conceded_by),
-                         (False, Decimal("22.169"), self.supervisor))
+        # Decision 23 (O204): nobody concedes it at the station; the PIN and reason are the
+        # floor's note, and the Quality Manager decides what it reaches.
+        self.assertEqual((roll.passed, roll.added_gsm, roll.conceded_by, roll.reason),
+                         (False, Decimal("22.169"), None, "Die lip cleaned"))
 
     def test_what_a_roll_off_must_be(self):
         with self.assertRaisesMessage(ValidationError, "mount the roll first"):
@@ -167,6 +169,58 @@ class TheBundleKnowsItsRollTests(RollsTestCase):
                          [roll.code, self.fabric_lot.code])
         with self.assertRaisesMessage(ValidationError, "has already been mounted"):
             mount_roll(self.kx, self.operator, self.k1, roll.code, at=at(TODAY, 12, 5))
+
+
+class AnOffRollWaitsForTheQualityManagerTests(RollsTestCase):
+    """
+    O204, the rest: a laminated roll off its weight has no lot and no plan of its own, so
+    nobody concedes it and the Quality Manager is told; the bundle cut from it, whose own
+    weight passes, is the first thing that can be held, and waits for their decision.
+    """
+
+    def test_the_bundle_cut_from_it_waits_and_the_quality_manager_is_told(self):
+        from django.contrib.auth.models import Group, User
+        from django.contrib.contenttypes.models import ContentType
+        from django.core.management import call_command
+
+        from apps.core.chatter import FollowUp
+        from apps.quality.models import Disposition
+        from apps.quality.release import release_status
+
+        from .conversion import record_bags
+        from .process_rolls import ProcessRoll
+
+        call_command("setup_roles", verbosity=0)
+        User.objects.create_user("asha").groups.add(Group.objects.get(name="Quality Manager"))
+        self.mount()
+        roll = self.laminated("132.78", supervisor=self.supervisor, reason="Die lip cleaned")
+        (to_do,) = FollowUp.objects.filter(content_type=ContentType.objects.get_for_model(ProcessRoll),
+                                           object_id=roll.pk)
+        self.assertEqual(to_do.assigned_to.username, "asha")
+        self.assertIn(f"with {self.supervisor}'s PIN: Die lip cleaned", to_do.note)
+        mount_roll(self.cv, self.operator, self.c2, roll.code, at=at(TODAY, 11, 30))
+        grams = str(self.lam_spec.bag_grams().quantize(Decimal("0.001")))
+        count = record_bags(self.cv, self.operator, self.c2, "500", [grams] * 10, at=at(TODAY, 12))
+        self.assertEqual((count.passed, count.inspection.disposition, count.supervisor),
+                         (True, Disposition.AWAITING, None))
+        self.assertIn(f"Cut from {roll.code}, booked off its limits", count.inspection.notes)
+        self.assertEqual(release_status(count.inspection.lot), "held")
+
+    def test_a_bundle_of_a_run_coated_off_its_weight_waits_too(self):
+        from apps.quality.models import Disposition
+
+        from .conversion import record_bags
+        from .tests_station_coat import OFF
+
+        check = self.check(samples=OFF, supervisor=self.supervisor, reason="Die lip cleaned")
+        self.mount()
+        roll = self.laminated()
+        mount_roll(self.cv, self.operator, self.c2, roll.code, at=at(TODAY, 11, 30))
+        grams = str(self.lam_spec.bag_grams().quantize(Decimal("0.001")))
+        count = record_bags(self.cv, self.operator, self.c2, "500", [grams] * 10, at=at(TODAY, 12))
+        self.assertEqual((roll.passed, count.passed, count.inspection.disposition),
+                         (True, True, Disposition.AWAITING))
+        self.assertIn(f"was coated off its weight at {check.station}", count.inspection.notes)
 
 
 class WithdrawnTests(RollsTestCase):
@@ -506,7 +560,9 @@ class PrintCheckTests(RollsTestCase):
             self.printed(registration="1.4", supervisor=self.supervisor)
         roll = self.printed(registration="1.4", supervisor=self.supervisor,
                             reason="Customer accepted the proof")
-        self.assertEqual((roll.passed, roll.conceded_by), (False, self.supervisor))
+        # Not conceded at the press (decision 23, O204): the floor's note.
+        self.assertEqual((roll.passed, roll.conceded_by, roll.reason),
+                         (False, None, "Customer accepted the proof"))
 
     def test_the_wrong_artwork_is_refused_outright(self):
         with self.assertRaisesMessage(ValidationError, "D-AMB is on the press; "):

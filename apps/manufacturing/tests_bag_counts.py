@@ -198,7 +198,7 @@ class PerMachineAndOperatorTests(ConversionTestCase):
         found = summary(TODAY, TODAY, station=self.cv)
         machines = {row["who"]: row for row in found["by_machine"]}
         self.assertEqual((machines["C-1"]["bundles"], machines["C-1"]["bags"],
-                          machines["C-1"]["conceded"], machines["C-1"]["mean_deviation_percent"]),
+                          machines["C-1"]["off_weight_held"], machines["C-1"]["mean_deviation_percent"]),
                          (2, 1000, 1, Decimal("1.91")))
         self.assertEqual((machines["C-2"]["bags"], machines["C-2"]["mean_deviation_percent"]),
                          (400, Decimal("0.18")))
@@ -266,7 +266,7 @@ class BagStationApiTests(StationApiTestCase):
         report.force_authenticate(User.objects.create_superuser("manager"))
         rows = report.get(f"/api/manufacturing/station-reports/{self.cv.code}/bags/",
                           {"start": "2026-06-01", "end": "2026-06-01"}).json()
-        self.assertEqual([(row["who"], row["bags"], row["conceded"]) for row in rows["by_machine"]],
+        self.assertEqual([(row["who"], row["bags"], row["off_weight_held"]) for row in rows["by_machine"]],
                          [("C-1", 500, 1)])
 
 
