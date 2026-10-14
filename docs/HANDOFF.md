@@ -65,28 +65,39 @@ g18 is pushed (7b9473a, 11 October), all six lanes green on one tip. It holds:
   below allows a gate; they went in because they are the guard for the
   defect that held the gate, which the owner's standing instruction asks.
 
-docs/RISKS.md, "Open defects", is the one list of what is still open
-(118 rows after g18, O202 the newest).
+g19 is pushed (b70f722, 14 October), all six lanes green on one tip: the
+owner's decision 22 (an advisory failure waits for the Quality Manager;
+subcontract assemblies received and held, which only the Quality Manager
+concedes), O10's inspection part, O135, O145-O150, and the stale O126,
+O192-O194 taken off. scripts/gate/registercheck.py (ui lane) now fails a
+push whose commit subjects name a row still open, or a row whose status
+says fixed. Integrate by cherry-picking, never merging (finalize replays
+with cherry-pick).
 
-1. **g19 is in flight (14 October): the quality follow-up.** Two agents
-   from base 3e33028, briefs in docs/handoff/: `g19_qdec.md` (an advisory
-   failure waits for the Quality Manager, decision 22; O145, O146) and
-   `g19_sub.md` (subcontract assemblies received and held, O135/O148; O147,
-   O149, O150). Worktrees `$SP/fix_qdec` and `$SP/fix_sub`, snapshotted to
-   `claude/erp-wip-fix_qdec` and `claude/erp-wip-fix_sub`. At integration,
-   wire the subcontract receipt to `tell_the_quality_manager()`.
-   g20's money agent started early (base 784af1c, brief
-   docs/handoff/g20_money.md, worktree `$SP/fix_money`): its area barely
-   touches g19's. The cost agent (purchasing, inventory, manufacturing,
-   payroll costing, O187) starts once g19 is pushed.
-2. **Fix wave 2 (g20)** takes the rest, in this order: O187 (an ITC-04
-   void) first; then O182 and O184 (the sentinel's ranks and blind spots);
-   O167; O195-O202; exchange and settlement, pricing, GRNI residues,
-   commission, the remaining races, the inert features; and the older rows
-   (O2, O42, O48, O28 and others). Same rules: docs/handoff/fix_common.md,
-   Sonnet for audits and reviews, Opus for fixes, two agents at most.
+docs/RISKS.md, "Open defects", is the one list of what is still open.
+
+1. **g20 is in flight.** Its integration tree is `$SP/g20tree`, rebuilt on
+   g19's pushed tip: g20's money work (20 rows, reviewed and its findings
+   fixed; its purchasing migrations follow g19's as 0068 and 0069), O1
+   off (fixed in g17), and two briefs:
+   - `g20_cost.md` (fix_cost, `$SP/fix_cost`): landed cost, GRNI,
+     returns, stock, payroll facts, O187, O205, O206; 22 rows done,
+     reviewed (review_cost.md: five blockers), the findings being fixed.
+   - `g20_sec.md` (fix_sec2, `$SP/fix_sec2`): O124, O129, O131, O191,
+     O195, O196, O198.
+   Each joins after its review holds; then the six lanes.
+   **Lanes and agents compete for the machine.** In g19 three lanes beside
+   two agents took PostgreSQL half B to 101 minutes of its 115: start an
+   agent only when at most two lanes are left.
+2. **After g20:** the races (18 rows), then the remaining rules, minor and
+   statutory rows, then the owner's open decisions once answered: O204
+   (a mandatory-plan failure conceded at the machine), O207 (a recall of
+   lots made from a batch rejected later), O208 (unit price places).
 3. **Waiting on the tax adviser:** O60 for
    registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
+   **Waiting on the plant's accountant:** g20's O28 caps a leaver's
+   recovery at half the wages (the Payment of Wages Act's general ceiling);
+   confirm it for this plant.
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
