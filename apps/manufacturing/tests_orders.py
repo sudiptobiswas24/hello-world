@@ -1386,3 +1386,25 @@ class TheWipTileReadsEachRunsAccountTests(RunTestCase):
         order.refresh_from_db()
         self.issue(order, [(self.virgin, "10")]).post()
         self.assertEqual(work_in_progress(TODAY), Decimal("1000.00"))
+
+
+class ReleaseKeepsOneRowAnItemTests(RunTestCase):
+    """
+    O7: the same polymer listed in kg and in grammes froze two rows, each
+    counting every issue of it. One row now, in the stocking unit: what the
+    kg line draws plus 5,000 g per 100 kg made (50 kg on a 1,000 kg run).
+    """
+
+    def test_one_item_in_two_units_freezes_one_row(self):
+        alone = self.order()
+        alone.release(TODAY)
+        kg_only = alone.components.get(item=self.virgin).quantity_required
+        gramme = UnitOfMeasure.objects.create(code="g", name="Gramme", category=UnitOfMeasureCategory.WEIGHT,
+                                              base_unit=self.kg, conversion_factor=Decimal("0.001"))
+        BomComponent.objects.create(bom=self.bom, item=self.virgin, quantity=Decimal("5000"), uom=gramme,
+                                    waste_percent=Decimal("0"), line_number=9)
+        order = self.order()
+        order.release(TODAY)
+        (row,) = order.components.filter(item=self.virgin)
+        self.assertEqual((row.uom, row.quantity_required), (self.kg, kg_only + Decimal("50")))
+

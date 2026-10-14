@@ -41,6 +41,7 @@ backwards by bending it.
 """
 
 import datetime
+from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -1148,11 +1149,18 @@ class WorkOrder(AuditModel):
         # polymer the parent also takes directly would otherwise freeze
         # two rows for one item, and `quantity_issued()` reads every
         # issue of the item against each of them — counting it twice.
-        merged = {}
-        for component, required in drawn(
-            self.bom, self.quantity_ordered, self.uom, due
-        ):
-            key = (component.item_id, component.uom_id)
+        # By item alone, whatever unit each line lists it in (O7): keyed by
+        # item and unit, polymer in kg and in grammes froze two rows that
+        # each counted every issue of it. Lines in more than one unit are
+        # merged in the item's stocking unit.
+        merged, units = {}, defaultdict(set)
+        drawn_rows = list(drawn(self.bom, self.quantity_ordered, self.uom, due))
+        for component, _required in drawn_rows:
+            units[component.item_id].add(component.uom_id)
+        for component, required in drawn_rows:
+            key = component.item_id
+            if len(units[key]) > 1:
+                required = component.item.to_stock_quantity(required, component.uom)
             if key not in merged:
                 merged[key] = [component, Decimal("0"), []]
             merged[key][1] += required
@@ -1168,8 +1176,8 @@ class WorkOrder(AuditModel):
             merged.values(), start=1
         ):
             frozen = WorkOrderComponent.objects.create(
-                work_order=self, item=component.item,
-                quantity_required=required, uom=component.uom,
+                work_order=self, item=component.item, quantity_required=required,
+                uom=component.item.uom if len(units[component.item_id]) > 1 else component.uom,
                 # For show: every quantity above already carries its
                 # own line's waste, so a merged row's is the first line's.
                 waste_percent=component.waste_percent,
