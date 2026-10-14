@@ -171,6 +171,35 @@ class BankFileTests(OutputsTestCase):
         paid.void(on_date=D(2026, 7, 1))
         self.assertEqual(self.paid_run.unpaid_net(), Decimal("23825.50"))
 
+    def test_the_run_list_asks_whether_each_slip_is_paid_in_one_query_for_them_all(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def paid_by_a_file(run):
+            for person in run.payslips.values_list("employee", flat=True):
+                EmployeePayDetails.objects.get_or_create(employee_id=person, defaults={
+                    "account_holder": "Das", "account_number": f"3001{person:08d}", "ifsc": "SBIN0001234"})
+            made = SalaryTransferFile.prepare(run)
+            made.mark_paid(self.money(self.people[0].party, made.total, day=run.pay_date))
+
+        controller = self.as_role("Controller")
+        paid_by_a_file(self.paid_run)
+
+        def reads(run):
+            with CaptureQueriesContext(connection) as seen:
+                self.assertEqual(controller.get(f"/api/hr/pay-runs/{run.pk}/").status_code, 200)
+            return len(seen)
+
+        for code in ("E4", "E5", "E6"):
+            self.pay(self.employee(code), self.salary, "1000")
+        july = self.pay_run(D(2026, 7, 1), D(2026, 7, 31), pay_date=D(2026, 7, 31))
+        july.calculate()
+        july.post()
+        paid_by_a_file(july)
+        reads(july)  # The login's permissions are read once, on its first request.
+        # Three slips or six, each paid by a file: the same reads.
+        self.assertEqual(reads(july), reads(self.paid_run))
+
     def test_written_by_payroll_and_paid_by_whoever_posts_payroll(self):
         for person in self.people:
             self.banked(person)

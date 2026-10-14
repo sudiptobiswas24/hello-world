@@ -61,7 +61,10 @@ class SalaryTransferFile(AuditModel):
         if waiting is not None:
             raise ValidationError(f"{waiting} has been written for this run and not paid. Mark it paid, "
                                   "or delete it, before writing another.")
-        slips = [slip for slip in run.payslips.select_related("employee__party").order_by(
+        from .payroll import SLIP_PAYMENT_READS
+
+        slips = [slip for slip in run.payslips.select_related("employee__party").prefetch_related(
+            "lines", *SLIP_PAYMENT_READS).order_by(
             "employee__employee_number") if not slip.is_paid() and slip.net() > 0]
         if not slips:
             raise ValidationError(f"Nobody on {run} is still owed their pay.")
