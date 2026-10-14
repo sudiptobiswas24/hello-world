@@ -1597,3 +1597,43 @@ class TwoReturnsOnAConsolidatedInvoiceTests(RaceCase):
         outcomes = race((StockMovement, Invoice), *[give_back(d.pk) for d in deliveries])
         self.assertEqual(outcomes, ["done", "done"], f"AR {self.balance(self.ar)}")
         self.assertEqual(Invoice.objects.filter(credits=invoice, posted=True).count(), 2)
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class StatementAndChallanRaceTests(RaceCase):
+    def test_a_statement_does_not_close_over_a_line_unmatched_at_that_moment(self):
+        """
+        O63: September's statement, 0 to 1,000, its one line matched to the
+        1,000 received on the 2nd. It is closed while the line is unmatched.
+        close() held the statement; the line's save() read `closed` unlocked:
+        closed, with its only line unexplained. The line now asks its
+        statement under the statement's lock.
+        """
+        from apps.accounting.models import Account, AccountType, BankStatement, BankStatementLine
+        from apps.core.models import Company, Currency, Party, PartyRole, PartyRoleAssignment
+
+        inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
+        Company.objects.create(name="Co", base_currency=inr)
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        ar = Account.objects.create(code="1100", name="Receivables", account_type=AccountType.ASSET)
+        party = Party.objects.create(code="P", name="P", default_currency=inr)
+        PartyRoleAssignment.objects.create(party=party, role=PartyRole.CUSTOMER)
+        receipt = Payment.objects.create(
+            party=party, direction=PaymentDirection.RECEIPT, payment_date=datetime.date(2026, 9, 2),
+            amount=Decimal("1000"), currency=inr, bank_account=bank, counterpart_account=ar)
+        receipt.post()
+        statement = BankStatement.objects.create(
+            bank_account=bank, start_date=datetime.date(2026, 9, 1), end_date=datetime.date(2026, 9, 30),
+            opening_balance=Decimal("0"), closing_balance=Decimal("1000"))
+        line = BankStatementLine.objects.create(statement=statement, date=datetime.date(2026, 9, 2),
+                                                amount=Decimal("1000"))
+        line.match(receipt)
+        outcomes = race((BankStatement, BankStatementLine),
+                        lambda: BankStatement.objects.get(pk=statement.pk).close(),
+                        lambda: BankStatementLine.objects.get(pk=line.pk).unmatch())
+        statement.refresh_from_db()
+        line.refresh_from_db()
+        self.once(outcomes)
+        self.assertFalse(statement.closed and not line.is_resolved(),
+                         f"{outcomes}: the statement closed with its only line unexplained")
