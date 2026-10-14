@@ -20,10 +20,36 @@ neither could be read.
 from django.core.exceptions import ValidationError
 
 
+def hold_money_account(account):
+    """
+    `account`, held against being unmarked as money while the caller moves
+    money through it, and read again once held (O16).
+
+    Unmarking takes the account FOR UPDATE and then asks whether anything
+    is posted to it (Account._check_money); a payment read "holds money"
+    unlocked, and an account was unmarked as a payment posted through it:
+    both went through, and a payment's money sat on an account that is not
+    money. Held FOR SHARE, which payments through one bank take together
+    and an unmarking waits for: a payment never waits on another, and the
+    second of a payment and an unmarking reads what the first did.
+    PostgreSQL only: SQLite takes no row locks, and serialises its writers.
+    """
+    from django.db import connection, transaction
+
+    if connection.vendor == "postgresql" and transaction.get_connection().in_atomic_block:
+        table = connection.ops.quote_name(account._meta.db_table)
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT 1 FROM {table} WHERE id = %s FOR SHARE", [account.pk])
+    account.refresh_from_db(fields=["holds_money", "is_active"])
+    return account
+
+
 def refuse_as_money_account(account, field="bank_account"):
-    """Refused, beside `field`, unless money may move through `account`."""
+    """Refused, beside `field`, unless money may move through `account`: asked of it as held (hold_money_account)."""
     if account is None:
         return
+    if account.pk is not None:
+        hold_money_account(account)
     if not account.holds_money:
         raise ValidationError({field: [
             f"{account} is not a bank, cash or card account; money is paid from one, and into one."]})

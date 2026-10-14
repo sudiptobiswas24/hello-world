@@ -1695,6 +1695,32 @@ class LedgerRaceTests(RaceCase):
         self.assertFalse(entry.posted and not entry.is_balanced(),
                          f"{outcomes}: posted at {entry.total_debit()} against {entry.total_credit()}")
 
+    def test_an_account_is_not_unmarked_as_money_while_a_payment_posts_through_it(self):
+        """
+        O16: a draft receipt of 1,000 into the bank account posts while the
+        account is unmarked as holding money. Unmarking asked whether
+        anything was posted to it, and the payment whether it held money,
+        each unlocked: both went through, 1,000 of money on an account that
+        is not money.
+        """
+        from apps.accounting.models import Account
+
+        self.books()
+        receipt = Payment.objects.create(
+            party=self.party, direction=PaymentDirection.RECEIPT, payment_date=datetime.date(2026, 9, 2),
+            amount=Decimal("1000"), currency=self.inr, bank_account=self.bank, counterpart_account=self.ar)
+
+        def unmark():
+            account = Account.objects.get(pk=self.bank.pk)
+            account.holds_money = False
+            account.save()
+
+        outcomes = race((Account, JournalEntry), unmark, lambda: Payment.objects.get(pk=receipt.pk).post())
+        self.bank.refresh_from_db()
+        posted = JournalLine.objects.filter(account=self.bank, entry__posted=True).exists()
+        self.once(outcomes)
+        self.assertFalse(posted and not self.bank.holds_money, f"{outcomes}: posted through an account not money")
+
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
