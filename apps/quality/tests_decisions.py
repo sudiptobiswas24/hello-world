@@ -183,7 +183,8 @@ class OnlyTheQualityManagerDecidesTests(AwaitingTestCase):
 class ItWaitsHeldTests(AwaitingTestCase):
     def test_posted_it_is_held_and_says_so_to_the_inspector(self):
         inspection = self.failed()
-        response = self.post(inspection)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.post(inspection)
         self.assertEqual(response.status_code, 200, response.content)
         body = response.json()
         self.assertEqual((inspection.result, inspection.disposition, body["lot_status"]),
@@ -217,6 +218,39 @@ class ItWaitsHeldTests(AwaitingTestCase):
         self.assertIn("Not mailed: asha, ravi (Email is not set up on this server", body["warning"])
         self.assertIn("Not mailed: sunil (the login has no email address).", body["warning"])
         self.assertEqual(body["told"]["to_decide"], ["asha"])  # the to-do stands either way
+
+    def test_a_posting_rolled_back_after_it_mails_nobody(self):
+        """
+        A station posts inside its doff's own transaction: a refusal after
+        post() takes the posting back, and the mail must go with it.
+        """
+        from django.db import transaction
+
+        inspection = self.failed()
+        with self.captureOnCommitCallbacks(execute=True):
+            with self.assertRaisesMessage(ValidationError, "refused later"):
+                with transaction.atomic():
+                    Inspection.objects.get(pk=inspection.pk).post()
+                    self.assertEqual(self.to_dos(inspection).count(), 3)
+                    raise ValidationError("refused later in the same transaction")
+        self.assertEqual(mail.outbox, [])
+        self.assertEqual(self.to_dos(inspection).count(), 0)
+        inspection.refresh_from_db()
+        self.assertFalse(inspection.posted)
+
+    def test_a_mail_the_server_refuses_after_the_commit_is_written_on_the_record(self):
+        from unittest import mock
+
+        from apps.core.chatter import Note
+
+        inspection = self.failed()
+        with mock.patch("django.core.mail.EmailMessage.send", side_effect=OSError("connection refused")):
+            with self.captureOnCommitCallbacks(execute=True):
+                self.post(inspection)
+        said = sorted(Note.objects.filter(object_id=inspection.pk, body__startswith="The mail")
+                      .values_list("body", flat=True))
+        self.assertEqual(said, [f"The mail of the to-do to {name} did not go: connection refused"
+                                for name in ("asha", "ravi")])
 
     def test_nobody_in_the_role_is_said(self):
         self.users["asha"].groups.clear()
@@ -361,8 +395,9 @@ class LeftUndecidedTests(AwaitingTestCase):
 
 class TellingIsForAnyRecordTests(AwaitingTestCase):
     def test_the_quality_manager_is_given_a_to_do_about_a_batch(self):
-        told = tell_the_quality_manager(self.roll, "Look at R-001 before it is received",
-                                        link="/stock/lots/1")
+        with self.captureOnCommitCallbacks(execute=True):
+            told = tell_the_quality_manager(self.roll, "Look at R-001 before it is received",
+                                            link="/stock/lots/1")
         self.assertEqual((told.told, told.not_mailed, told.nobody), (["asha"], {}, ""))
         to_do = FollowUp.objects.get(assigned_to=self.users["asha"])
         self.assertEqual((to_do.record_model, to_do.object_id, to_do.due_on),

@@ -4,6 +4,13 @@ from django.core.exceptions import ValidationError
 from django.core.mail.backends.base import BaseEmailBackend
 
 
+NOT_SET_UP = (
+    "Email is not set up on this server, so nothing was sent. "
+    "Whoever looks after the server sets EMAIL_HOST and the lines "
+    "under it in .env (RUNBOOK.md, 'Email')."
+)
+
+
 class NotConfiguredBackend(BaseEmailBackend):
     """
     Refuses, in a sentence, rather than trying a mail server that is not
@@ -15,11 +22,7 @@ class NotConfiguredBackend(BaseEmailBackend):
     def send_messages(self, email_messages):
         if not email_messages:
             return 0
-        raise ValidationError(
-            "Email is not set up on this server, so nothing was sent. "
-            "Whoever looks after the server sets EMAIL_HOST and the lines "
-            "under it in .env (RUNBOOK.md, 'Email')."
-        )
+        raise ValidationError(NOT_SET_UP)
 
 
 def recipient_for(party):

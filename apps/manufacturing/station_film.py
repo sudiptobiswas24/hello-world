@@ -122,6 +122,8 @@ def record_film(station, operator, machine, gross_kg, core_type, metres, micron_
         station, operator, machine, order, spec.inspection_plan, "micron", micron_readings,
         "film", supervisor, reason, shift_date, film_code(machine, shift, shift_date), net,
         f"Wound off at {station}", instrument=instrument, prefix="M")
+    from apps.quality.models import Disposition
+
     return FilmRoll.objects.create(
         station=station, machine=machine, lot=lot, entry=entry, inspection=inspection,
         gross_kg=gross, scale_reading=reading,
@@ -129,7 +131,9 @@ def record_film(station, operator, machine, gross_kg, core_type, metres, micron_
         core_type=core_type, net_kg=net, metres=metres,
         mean_micron=mean.quantize(Decimal("0.01")),
         weighed_micron=weighed.quantize(Decimal("0.01")), weighed_by=operator, weighed_at=at,
-        shift=shift, shift_date=shift_date, conceded_by=None if passed else supervisor,
+        # Nobody concedes a batch that waits for the Quality Manager (RISKS.md, decision 22).
+        shift=shift, shift_date=shift_date,
+        conceded_by=None if passed or inspection.disposition == Disposition.AWAITING else supervisor,
         reason=reason,
     )
 
