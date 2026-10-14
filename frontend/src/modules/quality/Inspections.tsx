@@ -24,7 +24,8 @@ export default function Inspections() {
       rowKey={(row) => row.id}
       rowHref={(row) => `/quality/inspections/${row.id}`}
       searchHint="Number, batch, item"
-      facets={[{ label: "Draft", params: { posted: "false" } }, { label: "Failed", params: { result: "fail" } }]}
+      facets={[{ label: "Draft", params: { posted: "false" } }, { label: "Failed", params: { result: "fail" } },
+        { label: "Awaiting decision", params: { disposition: "awaiting" } }]}
       create={{ href: "/quality/inspections/new", permission: "quality.add_inspection" }}
     />
   );

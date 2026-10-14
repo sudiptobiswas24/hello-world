@@ -65,7 +65,8 @@ export interface ActionDef {
   when?: (record: Row) => boolean;
   /** Or worked out from the record: a statement's match offers its own lines. */
   fields?: FieldDef[] | ((record: Row) => FieldDef[]);
-  done: string;
+  /** Said when it is done; or worked out from the answer (a posting's warning). */
+  done: string | ((result: Row) => string);
   primary?: boolean;
   danger?: boolean;
   /** Where it posts, when not under the record (a repair raised on a stoppage). */

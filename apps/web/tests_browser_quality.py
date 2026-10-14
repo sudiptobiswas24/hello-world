@@ -56,3 +56,81 @@ class QualityInTheBrowserTests(BrowserMixin, QualityTestCase, StaticLiveServerTe
         self.assertEqual(release_status(self.roll), "released")
         expect(page.get_by_role("button", name="Add a reading")).to_have_count(0)
         self.assertEqual(self.problems, [])
+
+
+class AnAdvisoryFailureInTheBrowserTests(BrowserMixin, QualityTestCase, StaticLiveServerTestCase):
+    """
+    RISKS.md, decision 22, driven as the people who do it: Meera's readings
+    of 92, 92 and 92 average 92 against 83.125 to 91.875 under an advisory
+    plan. Posted, R-001 waits held for the Quality Manager; the Inspector
+    reads why and who was told, and the server refuses her a decision. The
+    Quality Manager finds it on her list, overdue (posted Monday 1 June,
+    due Tuesday 2 June), and rejects it from its page.
+    """
+
+    def test_the_inspector_is_warned_and_the_manager_decides(self):
+        import datetime
+
+        from django.utils import timezone
+
+        from apps.core.chatter import FollowUp
+        from apps.quality.models import Disposition
+
+        plan = self.plan(mandatory=False)
+        inspection = self.inspect(plan, [92, 92, 92])
+        inspector = self.person("Quality Inspector")
+        manager = self.login_for("Quality Manager")
+        manager.username = "asha_qm"
+        manager.save()
+        self.login_for("Production Supervisor")
+
+        page = self.sign_in(inspector, f"/app/quality/inspections/{inspection.pk}")
+        page.get_by_role("button", name="Post", exact=True).click()
+        held = page.get_by_role("note", name="Held for the Quality Manager")
+        expect(held).to_contain_text("The batch is HELD")
+        expect(held).to_contain_text("Told to decide, by a to-do due")
+        expect(held).to_contain_text("asha_qm")
+        expect(held).to_contain_text("Told for information: production_supervisor")
+        expect(page.get_by_role("button", name="Reject")).to_have_count(0)
+        inspection.refresh_from_db()
+        self.assertEqual((inspection.result, inspection.disposition), ("fail", Disposition.AWAITING))
+        self.assertEqual(release_status(self.roll), "held")
+        before = len(self.problems)
+        status = page.evaluate("""async (id) => {
+            const token = document.cookie.match(/(?:^|;\\s*)csrftoken=([^;]+)/)[1];
+            const reply = await fetch(`/api/quality/inspections/${id}/decide/`, {method: "POST",
+                headers: {"Content-Type": "application/json", "X-CSRFToken": token},
+                body: JSON.stringify({disposition: "reject", note: "I say so"})});
+            return reply.status;
+        }""", inspection.pk)
+        self.assertEqual(status, 403)
+        # That refusal was the point (its response, and the console's line for it); any other is a fault.
+        page.wait_for_timeout(200)
+        self.assertEqual(sorted(self.problems[before:]), sorted([
+            "Failed to load resource: the server responded with a status of 403 (Forbidden)",
+            f"403 {self.live_server_url}/api/quality/inspections/{inspection.pk}/decide/"]))
+        del self.problems[before:]
+
+        from apps.quality.models import Inspection as Kept
+
+        Kept.objects.filter(pk=inspection.pk).update(
+            posted_at=timezone.make_aware(datetime.datetime(2026, 6, 1, 10)))
+        page = self.sign_in(manager, "/app/quality/awaiting-decision", page=self.new_page())
+        row = page.locator("tbody tr", has_text=inspection.number)
+        expect(row).to_contain_text("Overdue")
+        expect(row).to_contain_text("02 Jun 2026")
+        row.get_by_role("link", name=inspection.number).click()
+        page.wait_for_url(re.compile(rf"/quality/inspections/{inspection.pk}$"))
+        for label in ("Use as is (concession)", "Rework", "Reject"):
+            expect(page.get_by_role("button", name=label, exact=True)).to_be_visible()
+        page.get_by_role("button", name="Reject", exact=True).click()
+        form = page.get_by_role("form", name="Reject")
+        form.get_by_label("Why").fill("Too heavy for the customer's filling line.")
+        form.get_by_role("button", name="Reject").click()
+        expect(page.locator(".toast", has_text="Rejected").first).to_be_visible()
+        inspection.refresh_from_db()
+        self.assertEqual((inspection.disposition, inspection.decision_login), (Disposition.REJECT, manager))
+        self.assertEqual(release_status(self.roll), "held")
+        self.assertEqual(FollowUp.objects.filter(object_id=inspection.pk, done_on__isnull=True).count(), 0)
+        expect(page.get_by_role("button", name="Reject", exact=True)).to_have_count(0)
+        self.assertEqual(self.problems, [])

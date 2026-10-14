@@ -292,7 +292,6 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         self.assertEqual(release_status(self.drum), "held")
         self.refused()
 
-
     def test_a_split_is_not_passed_by_a_verdict_dated_before_its_parents(self):
         """
         O146 (SplitBackdatedProbe): PP-A rejected on 1 June and split into
@@ -324,6 +323,32 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         early.save()
         early.post()
         self.assertEqual(release_status(part), "released")
+
+    def test_a_failure_under_an_advisory_plan_waits_for_the_quality_manager(self):
+        """
+        Decided by the owner (RISKS.md, 22), replacing AdvisoryFailureProbe's
+        evidence: a failed reading under an advisory plan is not rejected by
+        the system. It waits, held, for the Quality Manager.
+        """
+        InspectionPlan.objects.filter(pk=self.plan.pk).update(is_mandatory=False)
+        inspection = self.inspect(1200)  # nobody chose a disposition
+        self.assertEqual((inspection.result, inspection.disposition), ("fail", Disposition.AWAITING))
+        self.assertEqual(release_status(self.drum), "held")
+        with self.assertRaisesMessage(
+            ValidationError,
+            f"{self.drum} is held: it failed {inspection.number} on 2026-06-01 and waits for the "
+            "Quality Manager's decision. It cannot go into a run until they decide.",
+        ):
+            self.issue_the_drum().post()
+        self.assertEqual(self.drum.on_hand_at(self.plant), Decimal("3000"))
+
+    def test_nor_does_a_rework_run_draw_it_before_they_decide(self):
+        from apps.quality.release import why_held
+
+        InspectionPlan.objects.filter(pk=self.plan.pk).update(is_mandatory=False)
+        self.inspect(1200)
+        self.assertIn("waits for the Quality Manager's decision",
+                      why_held(self.virgin, self.drum, reworking=self.drum))
 
 
 class TheMeasurementExplainsTheMoneyTests(RunTestCase):
