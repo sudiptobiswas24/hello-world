@@ -4083,6 +4083,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             profile = PartyTaxProfile.objects.filter(party_id=self.vendor_id).first()
             self.msme_category = profile.msme_category if profile else ""
 
+        # Its lines, and the lines a note gives back, in one call in key order, before the shelves a
+        # charge lands on: each line is written again as the entry is built, and a document's lines
+        # are taken before the stock (O182).
+        held = list(self.lines.select_related("debits_line"))
+        lock_rows(*held, *(line.debits_line for line in held if line.debits_line_id), refresh=False)
         if self.is_debit_note():
             original = self.debits
             if not original.posted or not original.journal_entry_id:
@@ -4906,6 +4911,10 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         if basis <= 0:
             raise ValidationError("Those receipt lines have no value to spread the cost over.")
 
+        # Every shelf of every line at once, in key order, before the first is landed on: line by
+        # line, two charges onto the same two receipt lines listed the other way round each held one
+        # line's shelf and wanted the other's, and PostgreSQL ended one as a deadlock (O182).
+        lock_positions((line.order_line.item, place) for line in lines for place, _there in line.positions())
         applications, remaining = [], total
         for index, (line, value) in enumerate(zip(lines, values)):
             is_last = index == len(lines) - 1
@@ -6476,6 +6485,9 @@ class GoodsReceipt(AuditModel):
         # In key order: a return's line puts back what its line's earlier
         # siblings have not (_restore_components).
         lines = list(self.lines.order_by("pk"))
+        # Its lines before the shelves, by the lock order: each is written again once its stock has
+        # moved (O182).
+        lock_in_turn(lines)
         if not lines:
             raise ValidationError("Cannot post a goods receipt with no lines.")
         for line in lines:
@@ -7611,6 +7623,14 @@ class GoodsReceipt(AuditModel):
                     landed_warehouse=place,
                     quantity_received=part,
                 )
+        if debit_bills:
+            # The bills it debits, then their lines the notes give back, before the goods go back:
+            # the stock is taken last (O182).
+            billed = Bill.objects.filter(posted=True, debits__isnull=True,
+                                         lines__order_line__in=self.lines.values("order_line")).distinct()
+            lock_rows(*billed.order_by("pk"), refresh=False)
+            lock_rows(*BillLine.objects.filter(bill__in=billed, order_line__in=self.lines.values("order_line"))
+                      .order_by("pk"), refresh=False)
         return_receipt.post()
         return_receipt.debit_notes_created = (
             return_receipt._debit_returned_goods() if debit_bills else []
