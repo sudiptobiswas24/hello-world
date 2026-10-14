@@ -293,6 +293,39 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         self.refused()
 
 
+    def test_a_split_is_not_passed_by_a_verdict_dated_before_its_parents(self):
+        """
+        O146 (SplitBackdatedProbe): PP-A rejected on 1 June and split into
+        PP-A2 (60 kg) and PP-A3 (40 kg); an inspection of PP-A2 dated 25 May
+        passed and released it, because only PP-A2's own inspections were
+        read. The verdicts of the batches it was made from stand for it too.
+        """
+        from .rebatch import rebatch
+
+        rejection = self.inspect(1200)
+        part = Lot.objects.create(item=self.virgin, code="PP-A2")
+        rest = Lot.objects.create(item=self.virgin, code="PP-A3")
+        rebatch(self.virgin, self.plant, [(self.drum, "100")], [(part, "60"), (rest, "40")], "split",
+                on_date=TODAY)
+        self.assertEqual(release_status(part), "held")
+        early = Inspection.objects.create(lot=part, plan=self.plan,
+                                          inspected_on=TODAY - datetime.timedelta(days=7))
+        Reading.objects.create(inspection=early, plan_line=self.line, value=Decimal("1000"))
+        with self.assertRaisesMessage(
+            ValidationError,
+            f"{part} cannot be inspected on 2026-05-25: {rejection.number} decided {self.drum}, "
+            "which it was made from, on 2026-06-01",
+        ):
+            early.post()
+        self.assertFalse(Inspection.objects.get(pk=early.pk).posted)
+        self.assertEqual(release_status(part), "held")
+        # Dated the day it is measured, after the parent's verdict, it speaks.
+        early.inspected_on = TODAY
+        early.save()
+        early.post()
+        self.assertEqual(release_status(part), "released")
+
+
 class TheMeasurementExplainsTheMoneyTests(RunTestCase):
     def setUp(self):
         super().setUp()
