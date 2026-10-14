@@ -38,7 +38,7 @@ logins (O192): `RoleProposal.lapsed`, asked live, and marked by
 from django.conf import settings
 from django.contrib.auth.models import Group, Permission, User
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.db.models.signals import m2m_changed, post_save
 from django.dispatch import receiver
@@ -404,10 +404,19 @@ def lapse_on_giving(user):
     own, the admin site or a superuser's standing (O198). What a setter
     no longer reaches (_reached) stops working (_lapse).
     """
-    user = User.objects.get(pk=user.pk)
-    for kept in KeptCredential.objects.filter(user=user, lapsed=False, set_by__isnull=False).select_related("set_by"):
-        if kept.in_force(user) and not _reached(kept, user):
-            _lapse(kept, User.objects.get(pk=user.pk))
+    with transaction.atomic():
+        user = User.objects.get(pk=user.pk)
+        # Every credential row of this login held first, in key order: a
+        # lapse rewrites the email row and then the login's own, which out
+        # of order is a deadlock with a second lapse at the same moment
+        # (seen once the sentinel saw update(); g21).
+        held = list(KeptCredential.objects.select_for_update().filter(user=user).order_by("pk"))
+        for kept in held:
+            kept.refresh_from_db()  # a lapse before it may have rewritten this row
+            if kept.lapsed or kept.set_by_id is None:
+                continue
+            if kept.in_force(user) and not _reached(kept, user):
+                _lapse(kept, User.objects.get(pk=user.pk))
 
 
 def lapse_with_the_setter(setter):
