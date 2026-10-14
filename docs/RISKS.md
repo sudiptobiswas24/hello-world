@@ -308,12 +308,12 @@ missing), **minor**.
 | O132 | docs, frontend | docs/IMPORT.md still documents the employees import's roles column, which the import no longer reads; the leave screen does not offer Cancel to a manager the server allows | minor | open |
 | O133 | inventory, manufacturing | `allocate()` does not subtract tape loaded on a backflushed run's creels and not yet drawn: a pick naming no lot can choose a doff whose 100 kg is all on a creel | rule | open |
 | O134 | inventory | tracking.py's shortfall message ("Only ...") is not normalised, so PostgreSQL shows 300.0000 | minor | open |
-| O135 | purchasing, quality | A lot quality holds after it was sent to a subcontractor makes the subcontract receipt refuse ("held by quality"), with no way out short of moving the lot. The owner decides whether a receipt of goods already sent is allowed | rule | decide |
+| O135 | purchasing, quality | A lot quality holds after it was sent to a subcontractor makes the subcontract receipt refuse ("held by quality"), with no way out short of moving the lot. The owner decides whether a receipt of goods already sent is allowed | rule | decided (item 22): receive and hold; to build in g19 |
 | O136 | sales (CRM) | `Opportunity.sales_order` has no unique constraint in the database; only the lock in `win()` keeps one order to one opportunity | minor | open |
 | O145 | quality | In the fix-wave-1 quality commits: O113 half closed. A re-inspection dated the SAME day as the standing verdict is ranked by id: a rejection drafted first and posted last stands while the lot reads released | rule | queued, wave 1 follow-up; SameDayReinspectionProbe |
 | O146 | quality | In the fix-wave-1 quality commits: a split gets round the date rule. PP-A rejected 1 June, split into PP-A2; an inspection of PP-A2 dated 25 May passes and releases it. The rule reads only the lot's own inspections, not its parent's | minor | queued; SplitBackdatedProbe |
 | O147 | purchasing, quality | Subcontract components can leave a quarantine warehouse: `issue_components` never gives the release gate a warehouse (predates the fix; the fix's claim that every way out asks the gate does not hold). Also `pack` passes no warehouse, so a quarantine bay's bundles can be baled (the delivery still refuses them) | rule | queued; SubcontractQuarantineProbe |
-| O148 | purchasing, quality | In the fix-wave-1 quality commits: a batch released when sent and rejected afterwards blocks receipt of the assemblies made from it ("held by quality"). The same question as O135 | rule | queued; decide with O135; SubcontractHeldAfterSendingProbe |
+| O148 | purchasing, quality | In the fix-wave-1 quality commits: a batch released when sent and rejected afterwards blocks receipt of the assemblies made from it ("held by quality"). The same question as O135 | rule | queued, g19; decided (item 22); SubcontractHeldAfterSendingProbe |
 | O149 | purchasing | In the fix-wave-1 quality commits: a subcontract return gives each batch its proportional share rounded to 2 places: returned one at a time, F-1 0.99 and F-2 2.01 come back (F-2 gains 0.01 it never had), and a 3-of-10 return puts back fractional frames | books | queued; SubcontractReturnByBatchProbe |
 | O150 | manufacturing | The O118 lock was not applied to a complaint's batches: a reject and a batch added at once both finish (a rejected complaint names a batch; shown on PostgreSQL); removing the only batch as it closes has the same unlocked read | race | queued; ComplaintLotRaceProbe |
 | O151 | hr | An expense claim paid, unpaid and paid again overwrites `journal_entry` and `voided_entry`: after a second unpay, the first payment and its reversal belong to no claim and `claims_paid` cannot find them (hr/expenses.py:144-185) | books | open |
@@ -415,6 +415,20 @@ Upgrade notes, true of data made before the 8 October fixes:
    - Whoever made or changed a document cannot approve it, including
      someone who keyed in a requisition for a person without a login
      (O85).
+22. **Decided by the owner on 13 and 14 October 2026:**
+   - Assemblies a subcontractor sends back, made from a batch quality
+     held after it was sent, are received and held (O135, O148): the
+     receipt is recorded, the assemblies take the batch's hold, and
+     quality decides (rework, scrap, return, or accept on concession).
+     The processing charge is owed either way.
+   - A failed reading under an advisory plan is not rejected by the
+     system. The batch waits as "awaiting decision", with a stronger
+     warning. The Quality Manager owns the decision; the Production
+     Supervisor and the Stores Manager are told. Left undecided past the
+     next working day, it goes to the administrator. The first decision
+     stands; whoever recorded the reading cannot make it. The choices:
+     use as is (a concession they sign), rework, or reject. Each is told
+     by a to-do on their list, and by mail where mail is set up.
 
 ## Later items
 
