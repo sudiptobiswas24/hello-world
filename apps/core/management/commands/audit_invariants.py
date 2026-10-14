@@ -104,6 +104,7 @@ class Command(BaseCommand):
         findings += self.writes_around_the_mixin(labels)
         findings += self.unscoped_party_reads(labels)
         findings += self.bodies_read_past_the_object_parser(labels)
+        findings += self.actions_named_after_a_verb(labels)
         findings += self.admin_only_rules(labels)
         findings += self.dead_class_attributes(labels, sources)
         findings += self.entries_kept_past_the_edit_guard(labels, sources)
@@ -720,6 +721,30 @@ class Command(BaseCommand):
                 f"{', '.join(past)}, which hands it a list or a bare value: request.data.get answers 500. "
                 "Keep apps.core.api.ObjectJSONParser among its parser_classes.",
             ))
+        return findings
+
+    def actions_named_after_a_verb(self, labels, viewsets=None):
+        """
+        A viewset with an action named after an HTTP method (post, put,
+        patch, delete) that does not take AuditableViewSetMixin's dispatch:
+        DRF answers that method on every route not mapping it with the
+        action (review F6: POST to a GET-only report, a 500; POST to a
+        document's address, posted past its action's permission).
+        """
+        from apps.core.audit import AuditableViewSetMixin
+
+        findings = []
+        for view in self._routed_viewsets() if viewsets is None else viewsets:
+            if view.__module__.split(".")[0] != "apps" or view.__module__.split(".")[1] not in labels:
+                continue
+            verbs = [verb for verb in ("post", "put", "patch", "delete")
+                     if hasattr(getattr(view, verb, None), "mapping")]
+            if verbs and not issubclass(view, AuditableViewSetMixin):
+                findings.append((
+                    "action named after a method",
+                    f"{view.__module__.split('.')[1]}.{view.__name__} has an action named {', '.join(verbs)}, and "
+                    "without AuditableViewSetMixin's dispatch a route not mapping that method runs it.",
+                ))
         return findings
 
     def _scoped_view(self, view):
