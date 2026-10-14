@@ -5911,6 +5911,45 @@ def payment_run(due_by=None, vendor=None):
     return sorted(rows.values(), key=lambda row: -row["total"])
 
 
+def held_by_quality(item, lot):
+    """
+    Whether quality holds this batch: rejected, held for rework, or re-made
+    from one that is. The one hold a subcontractor's consumption takes
+    anyway (owner's decision, item 22, O135/O148): the batch went before
+    the verdict, the vendor used it, and the charge is owed either way.
+    Not yet inspected is not this; nor is expiry, nor a quarantine bay.
+    """
+    from apps.quality.models import ReleaseStatus
+    from apps.quality.release import release_status
+
+    return lot is not None and release_status(lot) == ReleaseStatus.HELD
+
+
+def consumed_batches(line):
+    """The component batches a subcontract receipt line consumed, as its consumption named them."""
+    from apps.inventory.models import Lot
+
+    ids = StockMovement.objects.filter(
+        reference=line.receipt.number, movement_type=MovementType.ISSUE,
+        notes=_consumed_note(line.receipt, line), lot__isnull=False,
+    ).values_list("lot", flat=True)
+    return list(Lot.objects.filter(pk__in=ids).select_related("item").order_by("id"))
+
+
+def assembled_from(lot):
+    """
+    The lineage quality asks (`apps.quality.release.register_lot_sources`):
+    the batches a subcontractor's assemblies of this batch were made from.
+    So a component held after it was sent holds the assemblies too, until
+    they are inspected themselves, at every door that asks the gate.
+    """
+    lines = GoodsReceiptLine.objects.filter(
+        lot=lot, receipt__posted=True, receipt__reverses__isnull=True,
+        order_line__components__isnull=False,
+    ).distinct().select_related("receipt")
+    return [source for line in lines for source in consumed_batches(line)]
+
+
 def _consumed_note(receipt, line):
     """
     What a subcontract receipt writes on the components it consumes for
@@ -6511,6 +6550,39 @@ class GoodsReceipt(AuditModel):
             ]
         )
 
+    def held_assemblies(self):
+        """
+        What this receipt brought in that quality holds for what it was
+        made from: a subcontractor's assemblies of a batch held since it was
+        sent (O135, O148), while they still wait. Kept by batch, until the
+        assemblies' batch is inspected itself; kept by none, while any is
+        still in quarantine. Worked out each time it is asked: an inspection
+        or a clearance answers it, and a stored flag would not hear either.
+        """
+        from apps.quality.release import why_held
+
+        if not self.posted or self.reverses_id:
+            return []
+        rows = []
+        for line in self.lines.select_related("order_line__item", "lot", "receipt").order_by("pk"):
+            item = line.order_line.item
+            sources = [lot for lot in consumed_batches(line) if held_by_quality(lot.item, lot)]
+            waiting = (held_by_quality(item, line.lot) if line.lot_id is not None
+                       else line.quarantined_quantity() > 0)
+            if not sources or not waiting:
+                continue
+            words = " ".join(
+                why_held(lot.item, lot, warehouse=self.purchase_order.subcontract_warehouse,
+                         action="go into anything more")
+                for lot in sources)
+            rows.append({
+                "line": line.pk, "item": str(item), "lot": line.lot.code if line.lot_id else None,
+                "quantity": line.quantity_received, "warehouse": str(line.landed_warehouse or line.warehouse),
+                "why": (f"Held: made by {self.purchase_order.vendor} from a batch quality held after it "
+                        f"was sent. {words} Nothing issues or ships them until quality decides."),
+            })
+        return rows
+
     def quarantined_lines(self):
         # Where the goods are, not where they are going: a route that
         # sends them through inspection puts them in quarantine while the
@@ -6713,6 +6785,7 @@ class GoodsReceipt(AuditModel):
             )
         warehouse = order.subcontract_warehouse
         consumed = Decimal("0")
+        planned = []
         for component in line.order_line.components.select_related("item"):
             if not component.item.track_inventory:
                 continue
@@ -6728,9 +6801,27 @@ class GoodsReceipt(AuditModel):
             # Batch by batch, as they were sent and as a delivery picks:
             # the soonest to expire at the subcontractor's that the release
             # gate lets go. Expiry is no bar here: what the vendor used it
-            # used before this receipt says so.
-            for lot, storage_bin, part in plan_issue(component.item, warehouse, used,
-                                                     on_date=self.receipt_date, allow_expired=True):
+            # used before this receipt says so. Nor is a batch quality held
+            # after it was sent: it is consumed where it lies and the
+            # assemblies take its hold (O135, O148). The receipt refused,
+            # with no way out short of moving the batch.
+            planned.append((component, plan_issue(
+                component.item, warehouse, used, on_date=self.receipt_date, allow_expired=True,
+                holds_let_through=held_by_quality)))
+        held = sorted({lot.code for component, plan in planned for lot, _bin, _part in plan
+                       if held_by_quality(component.item, lot)})
+        landed = line.warehouse.first_receipt_step()
+        if held and line.lot_id is None and not landed.is_quarantine:
+            # Kept by batch, the assemblies carry the hold through their
+            # lineage (assembled_from). Kept by none, only the place can.
+            raise ValidationError(
+                f"{line.order_line.item} is made from {', '.join(held)}, which quality has held "
+                f"since it went to {warehouse}. {line.order_line.item} is not kept by batch, so "
+                f"nothing at {landed} would carry that hold: receive them into a quarantine "
+                "warehouse, where nothing draws on them until quality decides."
+            )
+        for component, plan in planned:
+            for lot, storage_bin, part in plan:
                 # What the replay will take off, exactly: the rule every
                 # outbound path follows (inventory/costing.py), asked of each
                 # batch as the one before it is written.
