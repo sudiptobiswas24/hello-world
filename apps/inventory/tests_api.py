@@ -521,3 +521,59 @@ class VariantApiTests(ApiTestCase):
         self.assertEqual(
             Item.objects.filter(template=self.template, is_active=True).count(), 0
         )
+
+
+class AStoreNamesItsCustomerOnlyToTheirRepTests(TestCase):
+    """
+    O129: a warehouse held for a customer (customer-owned material) named
+    them to every rep. A rep reads every store, and whose material one
+    holds only for a customer they carry: the rep scope, as every read
+    naming a party asks it.
+    """
+
+    def setUp(self):
+        import datetime
+
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.hr.models import Employee
+        from apps.sales.models import CustomerProfile, SalesRep
+
+        call_command("setup_roles", verbosity=0)
+
+        def customer(code, rep):
+            party = Party.objects.create(code=code, name=f"Customer {code}")
+            PartyRoleAssignment.objects.create(party=party, role=PartyRole.CUSTOMER)
+            CustomerProfile.objects.create(party=party, sales_rep=rep)
+            return party
+
+        def rep(username):
+            user = User.objects.create_user(username)
+            user.groups.add(Group.objects.get(name="Sales Rep"))
+            person = Party.objects.create(code=f"REP-{username}", name=username.title())
+            PartyRoleAssignment.objects.create(party=person, role=PartyRole.EMPLOYEE)
+            Employee.objects.create(party=person, employee_number=f"E-{username}",
+                                    hire_date=datetime.date(2025, 1, 1), user=user)
+            SalesRep.objects.create(party=person)
+            return user, person
+
+        self.anita, anita = rep("anita")
+        _ravi, ravi = rep("ravi")
+        self.mine, self.theirs = customer("C1", anita), customer("C2", ravi)
+        self.store_mine = Warehouse.objects.create(code="CM1", name="Held for C1", held_for=self.mine)
+        self.store_theirs = Warehouse.objects.create(code="CM2", name="Held for C2", held_for=self.theirs)
+        self.api = APIClient()
+        self.api.force_authenticate(self.anita)
+
+    def test_a_rep_reads_every_store_and_only_their_own_customers_name_on_one(self):
+        rows = {row["code"]: row["held_for"] for row in self.api.get("/api/inventory/warehouses/").json()}
+        self.assertEqual((rows["CM1"], rows["CM2"]), (self.mine.pk, None))
+        one = self.api.get(f"/api/inventory/warehouses/{self.store_theirs.pk}/")
+        self.assertEqual((one.status_code, one.json()["held_for"]), (200, None))
+        # Nor is it asked by filter.
+        self.assertEqual(self.api.get("/api/inventory/warehouses/", {"held_for": self.theirs.pk}).json(), [])
+        self.assertEqual([row["code"] for row in self.api.get(
+            "/api/inventory/warehouses/", {"held_for": self.mine.pk}).json()], ["CM1"])

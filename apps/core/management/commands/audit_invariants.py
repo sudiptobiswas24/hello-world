@@ -640,9 +640,7 @@ class Command(BaseCommand):
 
     # Read unscoped on purpose or reported to the module that owns it, with
     # the reason. An entry the check no longer needs is reported as stale.
-    UNSCOPED_PARTY_READS_REPORTED = {
-        "inventory.WarehouseViewSet": "stores: a warehouse held for a customer (held_for) names them to every rep",
-    }
+    UNSCOPED_PARTY_READS_REPORTED = {}
     SCOPE_WORDS = ("scoped(", "carried_by(", "for_rep(", "rep_limit(")
     SCOPE_MIXINS = ("CustomerScopedMixin", "OwnedMixin")
 
