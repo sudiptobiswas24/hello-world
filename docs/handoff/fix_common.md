@@ -30,7 +30,7 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
 ## Committing
 - One commit per register id, or per root cause when one fix closes several ids; the message names every id it closes.
 - Commit with `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F <file>`.
-- The message says what was wrong, what is true now, and which test failed without the fix. It ends exactly with:
+- The message says what was wrong, what is true now, and which test failed without the fix. It ends exactly with the lines below, braces included: `{GATE}` is a placeholder the gate fills in, never the gate's name. In g19 both agents wrote `Gate: g19`, and every commit had to be rewritten.
 
       Gate: {GATE}
 

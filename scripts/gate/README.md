@@ -64,6 +64,12 @@ Commit as `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -F
 - `structcheck.py` compares each merged test file's classes and methods with the
   branches they came from. Run it after any integration whose conflicts were kept
   both ways: a conflict inside a class, kept both ways, still parses.
+- `registercheck.py <pushed base> <tip>` fails when a commit subject in the
+  range names a register row that is still open at the tip (the ui lane runs
+  it). Documentation-only commits are skipped: registering names rows too.
+- Integrate by cherry-picking, never by merging: `finalize.py` replays the
+  range with `cherry-pick`, which cannot replay a merge commit (g19 was
+  merged first and rebuilt).
 - `fastsettings.py` skips migrations in test databases. It is used for
   quick runs and for the Asia/Kolkata lane:
   `PYTHONPATH=scripts/gate manage.py test ... --settings=fastsettings`.

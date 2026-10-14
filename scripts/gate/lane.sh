@@ -42,6 +42,7 @@ ui)
         echo "HEAD: $(git rev-parse HEAD) dirty=$(git status --short | wc -l)"
         echo "UI:"; (cd frontend && npx tsc -b && npx vite build > /dev/null && npx vitest run 2>&1 | grep -E "Tests |Test Files") || echo "UI FAILED"
         python3 "$HERE/names.py" apps/core/tests_roles.py apps/core/tests_settings.py
+        python3 "$HERE/registercheck.py" origin/claude/erp-creation-guidance-ox5afo HEAD || echo "REGISTER FAILED"
         echo "AUDIT:"; .venv/bin/python manage.py audit_invariants 2>&1 | tail -3
         .venv/bin/python manage.py makemigrations --check --dry-run 2>&1 | tail -2
     } > "$LOGS/gate_${P}.out" 2>&1
