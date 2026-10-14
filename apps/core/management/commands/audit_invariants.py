@@ -763,6 +763,19 @@ class Command(BaseCommand):
     RELEASE_GATE = ("quality", "release.py")
     VERDICT_RANKED = re.compile(r"""order_by\(\s*['"]-inspected_on['"]""")
     ISSUES_ONLY_UNLESS_BACKFLUSHED = re.compile(r"\bnot\s+[\w.]+\.backflush\b")
+    # The gate's questions, and the place each takes the warehouse positionally (None: by name only).
+    GATE_ASKS = {"check_released": None, "why_held": 2, "lot_held": 2}
+
+    def _asked_without_the_warehouse(self, call):
+        name = getattr(call.func, "attr", getattr(call.func, "id", ""))
+        if name not in self.GATE_ASKS:
+            return False
+        for keyword in call.keywords:
+            if keyword.arg == "warehouse" or keyword.arg is None:
+                return isinstance(keyword.value, ast.Constant) and keyword.value.value is None
+        place = self.GATE_ASKS[name]
+        return place is None or len(call.args) <= place or (
+            isinstance(call.args[place], ast.Constant) and call.args[place].value is None)
 
     def release_past_the_gate(self, labels, sources):
         """
@@ -784,6 +797,10 @@ class Command(BaseCommand):
           (`order_by("-inspected_on", ...)`) rather than `latest_inspection`:
           ranked by id, a rejection drafted first and posted after the day's
           pass stood unheard and the lot read released (O145).
+        - one that asks the gate (`check_released`, `why_held`, `lot_held`)
+          without the warehouse it draws from cannot see a quarantine bay:
+          frames went to a subcontractor out of the inspection bay, and its
+          bundles could be baled (O147).
         """
         findings = []
         for label in labels:
@@ -815,6 +832,15 @@ class Command(BaseCommand):
                             "apps.quality.release.latest_inspection(), which ranks two verdicts of "
                             "one day by when each was posted.",
                         ))
+                    if not gate:
+                        for call in ast.walk(fn):
+                            if isinstance(call, ast.Call) and self._asked_without_the_warehouse(call):
+                                findings.append((
+                                    "release asked without the warehouse",
+                                    f"{key} asks the gate at line {call.lineno} without the warehouse "
+                                    "the batch leaves; a quarantine bay's goods go out unasked. Pass "
+                                    "warehouse= (plan_issue does, for whatever it plans).",
+                                ))
                     if self.ISSUES_ONLY_UNLESS_BACKFLUSHED.search(body) and "check_released(" not in body:
                         findings.append((
                             "release asked only by the issue",

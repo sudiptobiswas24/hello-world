@@ -23,11 +23,11 @@ from django.core.exceptions import ValidationError
 from django.db.models import Sum
 
 from .bins import bins_holding, suggest_pick, suggest_putaway, unbinned
-from .tracking import allocate
+from .tracking import allocate, lot_held
 
 
 def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
-               on_date=None, allow_expired=False):
+               on_date=None, allow_expired=False, holds_let_through=None):
     """
     Work out which lots and bins a withdrawal will actually take.
 
@@ -39,6 +39,13 @@ def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
     picker who says which batch they took is reporting a fact, and a
     system that overrules them with its own idea of what should have
     happened is recording fiction.
+
+    Every withdrawal it plans asks the release gate, from this warehouse:
+    what it chooses, batch by batch (`allocate`), and what it is told or
+    has no batch to choose. Each outbound door that asked for itself was
+    a door the warehouse went unasked through: components went to a
+    subcontractor out of the quarantine bay (O147). `holds_let_through`
+    is `allocate`'s.
     """
     quantity = Decimal(quantity)
     if quantity <= 0:
@@ -53,12 +60,14 @@ def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
 
     if tracked and lot is None:
         chosen = allocate(
-            item, warehouse, quantity, on_date=on_date, allow_expired=allow_expired
+            item, warehouse, quantity, on_date=on_date, allow_expired=allow_expired,
+            holds_let_through=holds_let_through,
         )
-    elif tracked:
-        chosen = [(lot, quantity)]
     else:
-        chosen = [(None, quantity)]
+        chosen = [(lot if tracked else None, quantity)]
+        said = lot_held(item, chosen[0][0], warehouse)
+        if said and not (holds_let_through and holds_let_through(item, chosen[0][0])):
+            raise ValidationError(said)
 
     plan = []
     for chosen_lot, chosen_quantity in chosen:
