@@ -107,6 +107,10 @@ class LeaverProbes(PieceworkTestCase):
         pf.base_components.set([self.per_metre])
         self.rate(pf, "12", SEP(1))
         self.weaver.uan = "100200300499"
+        # The ECR asks every member's date of birth: the pension share stops after 58.
+        from apps.hr.pay_details import EmployeePayDetails
+
+        EmployeePayDetails.objects.create(employee=self.weaver, date_of_birth=datetime.date(1990, 1, 1))
         self.weaver.save()
         self.paid_then_voided()
         self.woven("1500", SEP(21))

@@ -555,6 +555,7 @@ PAY_INPUTS = {
     "hr.Timesheet": "employee",
     "hr.TimesheetEntry": "timesheet.employee",
     "hr.SalaryAdvance": "employee",
+    "hr.EmployeePayDetails": "employee",
 }
 NOT_PAY_INPUTS = {
     "hr.Appraisal": "a review of the person; no run reads it",
@@ -564,8 +565,6 @@ NOT_PAY_INPUTS = {
     "hr.Applicant": "not yet an employee; no run pays them",
     "hr.Department": "names its manager; the run reads a department's cost centre as it posts, not a pay figure",
     "hr.Employee": "the person: an edit of the row waits on the lock the run holds on it",
-    "hr.EmployeePayDetails": "the bank file reads the account as it writes, and keeps what it wrote on each row; "
-                             "no run's figures read it",
 }
 
 
