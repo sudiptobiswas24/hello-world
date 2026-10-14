@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .api import refused_by_database
-from .audit import AuditableViewSetMixin
+from .audit import AuditableViewSetMixin, RowHeldViewSetMixin
 from .scoping import created, refuse_change, refuse_create, scoped, visible_parties
 from .models import (
     Address,
@@ -44,7 +44,7 @@ from .serializers import (
 )
 
 
-class CountryViewSet(viewsets.ModelViewSet):
+class CountryViewSet(RowHeldViewSetMixin, viewsets.ModelViewSet):
     queryset = Country.objects.all()
     serializer_class = CountrySerializer
     search_fields = ["code", "name"]
@@ -328,7 +328,7 @@ class PartyBankAccountViewSet(PartyScopedMixin, AuditableViewSetMixin, viewsets.
     filter_fields = ["party", "is_active"]
 
 
-class PartyTagViewSet(viewsets.ModelViewSet):
+class PartyTagViewSet(RowHeldViewSetMixin, viewsets.ModelViewSet):
     queryset = PartyTag.objects.all()
     serializer_class = PartyTagSerializer
     search_fields = ["name", "description"]

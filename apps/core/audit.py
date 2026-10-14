@@ -25,7 +25,55 @@ class AuditableAdminMixin:
 WRITES_ITS_OWN_HISTORY = {"send"}
 
 
-class AuditableViewSetMixin:
+class RowHeldViewSetMixin:
+    """
+    A PUT, PATCH or DELETE holds its row from the read to the write. The
+    part of AuditableViewSetMixin a viewset of a model with no stamps takes
+    (a country, a party tag, one's saved filter), and one that only deletes
+    (an e-invoice, an e-way bill, a month's GSTR-2B): without it, their
+    edits took no lock (O17).
+    """
+
+    # A PUT, PATCH or DELETE in one transaction, from the read to the
+    # write: get_object() reads its row under the lock. Defined here, they
+    # give a read-only viewset a PUT and DELETE route as well (the router
+    # routes whatever the class has): those answer 405, not a 500 from a
+    # base with nothing to call.
+    def update(self, request, *args, **kwargs):
+        if not hasattr(super(), "update"):
+            return self.http_method_not_allowed(request, *args, **kwargs)
+        with transaction.atomic():
+            self._changing = True
+            return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if not hasattr(super(), "destroy"):
+            return self.http_method_not_allowed(request, *args, **kwargs)
+        with transaction.atomic():
+            self._changing = True
+            return super().destroy(request, *args, **kwargs)
+
+    def get_object(self):
+        """
+        The row a PUT, PATCH or DELETE changes, read again once it is held.
+
+        DRF reads the row, checks the request against it and saves every
+        field it read. Two people editing one party at once, one its name
+        and the other its email: both read it, and whichever saved second
+        wrote the other's field back as it had found it. Held from the
+        read, the second waits for the first to commit, then reads what it
+        did. Read first to answer 404 and to know what to hold
+        (apps.core.models.lock_for_change).
+        """
+        found = super().get_object()
+        if getattr(self, "_changing", False):
+            lock_for_change(found, getattr(self.request, "data", None))
+            found = super().get_object()
+        return found
+
+
+
+class AuditableViewSetMixin(RowHeldViewSetMixin):
     # A method a route does not map answers 405. DRF finds a request's
     # handler by its method's name, so on a route that maps no POST, an
     # action named `post` answered it: a POST to a GET-only report ran
@@ -66,43 +114,6 @@ class AuditableViewSetMixin:
         with transaction.atomic():
             self._deleting = str(instance)
             instance.delete()
-
-    # A PUT, PATCH or DELETE in one transaction, from the read to the
-    # write: get_object() reads its row under the lock. Defined here, they
-    # give a read-only viewset a PUT and DELETE route as well (the router
-    # routes whatever the class has): those answer 405, not a 500 from a
-    # base with nothing to call.
-    def update(self, request, *args, **kwargs):
-        if not hasattr(super(), "update"):
-            return self.http_method_not_allowed(request, *args, **kwargs)
-        with transaction.atomic():
-            self._changing = True
-            return super().update(request, *args, **kwargs)
-
-    def destroy(self, request, *args, **kwargs):
-        if not hasattr(super(), "destroy"):
-            return self.http_method_not_allowed(request, *args, **kwargs)
-        with transaction.atomic():
-            self._changing = True
-            return super().destroy(request, *args, **kwargs)
-
-    def get_object(self):
-        """
-        The row a PUT, PATCH or DELETE changes, read again once it is held.
-
-        DRF reads the row, checks the request against it and saves every
-        field it read. Two people editing one party at once, one its name
-        and the other its email: both read it, and whichever saved second
-        wrote the other's field back as it had found it. Held from the
-        read, the second waits for the first to commit, then reads what it
-        did. Read first to answer 404 and to know what to hold
-        (apps.core.models.lock_for_change).
-        """
-        found = super().get_object()
-        if getattr(self, "_changing", False):
-            lock_for_change(found, getattr(self.request, "data", None))
-            found = super().get_object()
-        return found
 
     def finalize_response(self, request, response, *args, **kwargs):
         """
