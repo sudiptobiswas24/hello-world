@@ -157,3 +157,76 @@ class RepointedBillAllocationTests(MoneyCase):
             allocation.save()
         self.assertEqual(Bill.objects.get(pk=y.pk).amount_due(), Decimal("500.00"))
 
+
+class PricedInTheLinesTermsTests(MoneyCase):
+    """
+    O97, O98 (audit_pur AgreementTests). A blanket 10 @ 100 less 5% released
+    in full comes to 950.00. Agreed 100 a kg: 2 tonnes ordered with no price
+    typed are 100,000 a tonne, 200,000.00; a break at 1,000 kg is reached by
+    2 tonnes and not by half of one (calc_fix_money/pricing.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import UnitOfMeasure
+        from apps.inventory.models import Item
+
+        self.kg = UnitOfMeasure.objects.create(code="kg", name="Kilogramme")
+        self.tonne = UnitOfMeasure.objects.create(code="t", name="Tonne", base_unit=self.kg,
+                                                  conversion_factor=Decimal("1000"))
+        self.granule = Item.objects.create(sku="PP-GRAN", name="PP granules", uom=self.kg)
+
+    def ordered(self, quantity, uom):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=JAN(1))
+        return PurchaseOrderLine.objects.create(order=order, item=self.granule, uom=uom, quantity=Decimal(quantity))
+
+    def test_a_release_keeps_the_discount_agreed(self):
+        from .models import BlanketOrder, BlanketOrderLine
+
+        blanket = BlanketOrder.objects.create(vendor=self.vendor, start_date=JAN(1),
+                                              end_date=datetime.date(2026, 12, 31))
+        line = BlanketOrderLine.objects.create(blanket=blanket, item=self.item, uom=self.uom,
+                                               quantity=Decimal("10"), unit_price=Decimal("100"),
+                                               discount_percent=Decimal("5"))
+        blanket.confirm()
+        order = blanket.release({line: Decimal("10")}, order_date=JAN(5))
+        self.assertEqual(order.lines.get().net_amount(), Decimal("950.00"))
+
+    def test_an_agreed_price_per_kg_prices_an_order_in_tonnes(self):
+        from .models import VendorPrice
+
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=self.usd, unit_price=Decimal("100"))
+        line = self.ordered("2", self.tonne)
+        self.assertEqual((line.unit_price, line.net_amount()), (Decimal("100000.00"), Decimal("200000.00")))
+
+    def test_a_price_per_tonne_and_its_break_are_in_tonnes(self):
+        """The same agreed per tonne: 100,000 a tonne, and 90,000 from 1 tonne; ordered in kg."""
+        from .models import VendorPrice
+
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=self.usd, uom=self.tonne,
+                                   unit_price=Decimal("100000"))
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=self.usd, uom=self.tonne,
+                                   unit_price=Decimal("90000"), min_quantity=Decimal("1"))
+        self.assertEqual(self.ordered("2000", self.kg).unit_price, Decimal("90.00"), "2,000 kg reach the 1 t break")
+        self.assertEqual(self.ordered("500", self.kg).unit_price, Decimal("100.00"), "500 kg do not")
+
+    def test_agreed_per_kg_over_the_api_by_the_ap_manager(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ap")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post("/api/purchasing/vendor-prices/", {
+            "vendor": self.vendor.pk, "item": self.granule.pk, "currency": self.usd.pk, "unit_price": "100",
+            "uom": self.kg.pk, "min_quantity": "0"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["uom"], self.kg.pk)
+        self.assertEqual(self.ordered("2", self.tonne).unit_price, Decimal("100000.00"))
+        response = client.post("/api/purchasing/vendor-prices/", {
+            "vendor": self.vendor.pk, "item": self.granule.pk, "currency": self.usd.pk, "unit_price": "5",
+            "uom": self.uom.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)

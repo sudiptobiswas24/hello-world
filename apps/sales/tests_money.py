@@ -359,3 +359,44 @@ class WriteOffRecoveredInPartTests(MoneyCase):
         with self.assertRaisesMessage(ValidationError, "already been recovered"):
             invoice.recover_write_off(invoice.write_offs.get())
 
+
+class PricedInTheLinesTermsTests(MoneyCase):
+    """
+    O78, O79 (PricingProbe). The item's list price is 10 in base (USD). A
+    EUR line at 1.1 is priced 9.09; 2 boxes of 12 at 10 an each are 120 a
+    box, 240.00; a break at 24 eaches is reached by 2 boxes
+    (calc_fix_money/pricing.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import UnitOfMeasure
+
+        self.item.sale_price = D("10")
+        self.item.save()
+        self.box = UnitOfMeasure.objects.create(code="box", name="Box of 12", base_unit=self.uom,
+                                                conversion_factor=D("12"))
+
+    def line(self, currency, uom, quantity):
+        order = SalesOrder.objects.create(customer=self.customer, order_date=DAY, currency=currency)
+        return SalesOrderLine.objects.create(order=order, item=self.item, uom=uom, quantity=D(quantity),
+                                             revenue_account=self.revenue)
+
+    def test_an_order_in_another_currency_is_priced_in_it(self):
+        line = self.line(self.eur, self.uom, "1")
+        self.assertEqual(line.unit_price, D("9.09"), "10 USD is 9.09 EUR at 1.1")
+
+    def test_a_line_in_boxes_is_priced_per_box(self):
+        line = self.line(None, self.box, "2")
+        self.assertEqual((line.unit_price, line.net_amount()), (D("120.00"), D("240.00")),
+                         "(unit price per box, line net) at 10 an each, 12 to a box")
+
+    def test_a_break_in_eaches_is_reached_by_boxes(self):
+        from .models import PriceList, PriceListItem
+
+        prices = PriceList.objects.create(code="STD", name="Standard", is_default=True,
+                                          currency=Currency.objects.get(is_base=True))
+        PriceListItem.objects.create(price_list=prices, item=self.item, min_quantity=D("1"), unit_price=D("10"))
+        PriceListItem.objects.create(price_list=prices, item=self.item, min_quantity=D("24"), unit_price=D("9"))
+        self.assertEqual(self.line(None, self.box, "2").unit_price, D("108.00"), "24 eaches at 9, 12 to a box")
+        self.assertEqual(self.line(None, self.box, "1").unit_price, D("120.00"), "12 eaches at 10")

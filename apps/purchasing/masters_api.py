@@ -22,7 +22,7 @@ class VendorPriceSerializer(serializers.ModelSerializer):
     class Meta:
         model = VendorPrice
         fields = [
-            "id", "vendor", "item", "currency", "unit_price", "min_quantity", "vendor_item_code",
+            "id", "vendor", "item", "currency", "unit_price", "uom", "min_quantity", "vendor_item_code",
             "lead_time_days", "valid_from", "valid_to", "is_preferred", "is_active",
             "vendor_name", "item_label", "currency_code",
         ]
