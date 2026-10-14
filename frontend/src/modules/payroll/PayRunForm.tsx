@@ -58,6 +58,12 @@ export default function PayRunForm() {
   const [slipPage, setSlipPage] = useState(1);
   const slips = usePage<Slip>("/api/hr/payslips/", { run: run?.id }, slipPage, 100, Boolean(run) && can("hr.view_payslip"));
   const act = useAct<Run>();
+  const fileAct = useAct<{ id: number }>();
+  // The run's bank file: one row a slip still owed, refused while anybody on it has no bank details.
+  const writeBankFile = async () => {
+    const made = await fileAct.run("POST", "/api/hr/salary-files/", { run: run!.id }, { done: "Bank file written" });
+    if (made.ok) navigate(`/payroll/salary-files/${made.data.id}`);
+  };
 
   if (!isNew && record.isError) return <ErrorPanel error={record.error} retry={() => void record.refetch()} />;
   if (!isNew && !run) return <div className="loading">Opening…</div>;
@@ -101,6 +107,9 @@ export default function PayRunForm() {
             <a className="btn" href={`${ENDPOINT}${run.id}/ecr/`}>PF ECR file</a>
             <a className="btn" href={`${ENDPOINT}${run.id}/esi/`}>ESI file</a>
           </>
+        )}
+        {run?.status === "posted" && can("hr.add_salarytransferfile") && (
+          <ActionButton pending={fileAct.pending} onClick={() => void writeBankFile()}>Write bank file</ActionButton>
         )}
         {run?.status === "posted" && can("hr.post_payrun") && (
           <ActionButton danger pending={act.pending} onClick={() => {

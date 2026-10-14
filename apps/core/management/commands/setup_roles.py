@@ -141,8 +141,10 @@ ROLES = {
               "payrun", "payslip", "payslipline"),
         "hr.post_payrun",
         *crud("hr", "statutoryremittance", actions=("add", "delete", "view")),
-        # Pays the run's bank file, takes a returned transfer back, and voids an advance with its payment.
-        *view("hr", "employeepaydetails", "statutoryfigure", "salaryadvance", "salarytransfer"),
+        # Pays the run's bank file and takes a returned transfer back; pays an advance out and records it
+        # against its payment (reading the payments is the ledger's), and voids it with its payment.
+        *view("hr", "employeepaydetails", "statutoryfigure", "salarytransfer"),
+        *crud("hr", "salaryadvance", actions=("add", "change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "delete", "view")),
         "hr.void_salaryadvance",
         *crud("assets", "assetcategory"),
@@ -560,7 +562,8 @@ ROLES = {
         *crud("hr", "payrun", actions=("add", "change", "view")),
         # The bank and the returns' master data, the law's dated figures, advances and the bank file.
         *full("hr", "employeepaydetails", "statutoryfigure"),
-        *crud("hr", "salaryadvance", actions=("add", "change", "view")),
+        # An advance's instalment, not the advance: giving one is picking the payment out, the ledger's side.
+        *crud("hr", "salaryadvance", actions=("change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "view")), *view("hr", "salarytransfer"),
         # deliberately NOT hr.post_payrun: whoever works the payroll out
         # does not also put it in the ledger and pay it.

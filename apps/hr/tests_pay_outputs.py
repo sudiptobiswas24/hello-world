@@ -327,12 +327,13 @@ class AdvancesTests(OutputsTestCase):
         self.assertEqual(self.recovered_on(june, stayer), [Decimal("1140.00")])
         self.assertEqual(theirs.balance(), Decimal("3860.00"))
 
-    def test_given_by_payroll_and_voided_by_whoever_posts_payroll(self):
+    def test_given_and_voided_by_whoever_pays_it_out(self):
         payment = self.money(self.person.party, "5000", counterpart=self.advances, day=D(2026, 5, 20))
         officer, controller = self.as_role("Payroll Officer"), self.as_role("Controller")
-        made = officer.post("/api/hr/salary-advances/", {
-            "employee": self.person.pk, "payment": payment.pk, "component": self.recovery.pk, "amount": "5000",
-            "instalment": "2000", "recover_from": "2026-06-01"}, format="json")
+        given = {"employee": self.person.pk, "payment": payment.pk, "component": self.recovery.pk, "amount": "5000",
+                 "instalment": "2000", "recover_from": "2026-06-01"}
+        self.assertEqual(officer.post("/api/hr/salary-advances/", given, format="json").status_code, 403)
+        made = controller.post("/api/hr/salary-advances/", given, format="json")
         self.assertEqual(made.status_code, 201, made.content)
         self.assertEqual(made.json()["balance"], "5000.00")
         number = made.json()["id"]

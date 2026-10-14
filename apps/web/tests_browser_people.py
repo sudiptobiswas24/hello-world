@@ -156,3 +156,165 @@ class MyPayslipsInTheBrowserTests(BrowserTestCase):
         expect(self.rows().first).to_contain_text("130.00")
         expect(self.rows().first).to_contain_text("WB from 2026-04-01")
         self.assertEqual(self.problems, [])
+
+
+class PayrollScreensInTheBrowserTests(BrowserTestCase):
+    """The bank file, an advance, bank details and a statutory figure, each from the screen as the people who do it."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Company
+
+        self.net_pay = Account.objects.create(code="2390", name="Net pay payable", account_type=AccountType.LIABILITY)
+        self.bank = Account.objects.create(code="1090", name="Salary bank", account_type=AccountType.ASSET, holds_money=True)
+        self.wages = Account.objects.create(code="6090", name="Wages", account_type=AccountType.EXPENSE)
+        company = Company.get()
+        company.net_pay_account = self.net_pay
+        company.save()
+        self.currency = company.base_currency
+
+    def staff(self, number, amount, banked=True):
+        from decimal import Decimal
+
+        from apps.hr.pay_details import EmployeePayDetails
+        from apps.hr.payroll import ComponentKind, EmployeeCompensation, PayComponent
+
+        salary = PayComponent.objects.get_or_create(code="SAL", defaults={
+            "name": "Salary", "kind": ComponentKind.EARNING, "expense_account": self.wages, "sequence": 10})[0]
+        person = PeopleInTheBrowserTests.employee(self, number, f"{number} Das", None)
+        EmployeeCompensation.objects.create(employee=person, component=salary, amount=Decimal(amount),
+                                            effective_from=datetime.date(2026, 1, 1))
+        if banked:
+            EmployeePayDetails.objects.create(employee=person, account_holder=f"{number} Das",
+                                              account_number=f"3001{person.pk:08d}", ifsc="SBIN0001234")
+        return person
+
+    def june(self):
+        from apps.hr.payroll import PayRun
+
+        run = PayRun.objects.create(period_start=datetime.date(2026, 6, 1), period_end=datetime.date(2026, 6, 30),
+                                    pay_date=datetime.date(2026, 6, 30))
+        run.calculate()
+        run.post()
+        return run
+
+    def money(self, party, amount, counterpart=None, direction="disbursement", day=datetime.date(2026, 6, 30)):
+        from decimal import Decimal
+
+        from apps.accounting.models import Payment
+
+        payment = Payment.objects.create(party=party, direction=direction, payment_date=day, amount=Decimal(amount),
+                                         currency=self.currency, bank_account=self.bank,
+                                         counterpart_account=counterpart or self.net_pay)
+        payment.post()
+        return Payment.objects.get(pk=payment.pk)
+
+    def pick(self, page, form, label, text):
+        form.get_by_role("combobox", name=label).fill(text)
+        page.get_by_role("option", name=re.compile(re.escape(text))).first.click()
+
+    def test_the_bank_file_written_paid_and_one_transfer_returned(self):
+        from apps.hr.bank_file import SalaryTransferFile
+
+        people = [self.staff(code, amount) for code, amount in (("E1", "12000"), ("E2", "8450.50"), ("E3", "3375"))]
+        run = self.june()
+        officer = self.sign_in(self.person("Payroll Officer"), f"/app/payroll/runs/{run.pk}")
+        officer.get_by_role("button", name="Write bank file").click()
+        self.toast(officer, "Bank file written")
+        officer.wait_for_url(re.compile(r"/payroll/salary-files/\d+$"))
+        made = SalaryTransferFile.objects.get()
+        self.assertEqual(made.total, 23825.50)
+        expect(officer.get_by_role("button", name="Mark paid")).to_have_count(0)
+
+        bulk = self.money(people[0].party, "23825.50")
+        controller = self.sign_in(self.person("Controller"), f"/app/payroll/salary-files/{made.pk}", page=self.new_page())
+        controller.get_by_role("button", name="Mark paid", exact=True).click()
+        form = controller.get_by_role("form", name="Mark paid")
+        self.pick(controller, form, "Paid by", bulk.number)
+        form.get_by_role("button", name="Mark paid", exact=True).click()
+        self.toast(controller, "Marked paid")
+
+        receipt = self.money(people[1].party, "8450.50", direction="receipt")
+        controller.get_by_role("button", name="Return a transfer", exact=True).click()
+        form = controller.get_by_role("form", name="Return a transfer")
+        form.get_by_label("Transfer").select_option(str(made.rows.get(payslip__employee=people[1]).pk))
+        self.pick(controller, form, "Received back by", receipt.number)
+        form.get_by_role("button", name="Return a transfer", exact=True).click()
+        self.toast(controller, "Returned")
+        self.assertEqual([slip.is_paid() for slip in run.payslips.order_by("employee__employee_number")],
+                         [True, False, True])
+        self.assertEqual(self.problems, [])
+
+    def test_an_advance_given_recovered_by_a_run_and_voided(self):
+        from apps.hr.advances import SalaryAdvance
+        from apps.hr.payroll import ComponentBasis, ComponentKind, PayComponent, PayslipLine
+
+        advances = Account.objects.create(code="1390", name="Employee advances", account_type=AccountType.ASSET)
+        PayComponent.objects.create(code="ADV", name="Advance recovered", kind=ComponentKind.DEDUCTION,
+                                    basis=ComponentBasis.FIXED, liability_account=advances, sequence=80)
+        person = self.staff("A1", "12000")
+        given = self.money(person.party, "5000", counterpart=advances, day=datetime.date(2026, 5, 20))
+        # Given by whoever pays it out: picking the payment is reading the ledger (the Controller).
+        controller = self.sign_in(self.person("Controller"), "/app/payroll/advances/new")
+        officer = controller
+        self.pick(officer, officer, "Employee", "A1")
+        self.pick(officer, officer, "Paid by", given.number)
+        self.pick(officer, officer, "Recovered by", "ADV")
+        officer.get_by_label("Amount").fill("5000")
+        officer.get_by_label("Instalment").fill("2000")
+        officer.get_by_label("Recover from").fill("2026-06-01")
+        officer.get_by_role("button", name="Create", exact=True).click()
+        officer.wait_for_url(re.compile(r"/payroll/advances/\d+$"))
+        advance = SalaryAdvance.objects.get()
+        run = self.june()
+        self.assertEqual([line.amount for line in PayslipLine.objects.filter(advance=advance)], [2000])
+
+        controller.goto(f"{self.live_server_url}/app/payroll/advances/{advance.pk}")
+        controller.get_by_role("button", name="Void", exact=True).click()
+        form = controller.get_by_role("form", name="Void")
+        form.get_by_label("Voided on").fill("2026-07-01")
+        form.get_by_role("button", name="Void", exact=True).click()
+        expect(controller.get_by_text(re.compile("Void that run first")).first).to_be_visible()
+        run.void(on_date=datetime.date(2026, 7, 1))
+        controller.reload()
+        controller.get_by_role("button", name="Void", exact=True).click()
+        form = controller.get_by_role("form", name="Void")
+        form.get_by_label("Voided on").fill("2026-07-01")
+        form.get_by_role("button", name="Void", exact=True).click()
+        self.toast(controller, "Voided")
+        advance.refresh_from_db()
+        self.assertIsNotNone(advance.voided_at)
+        # The one refusal asked for above is a 400, in the console and in the responses; nothing else.
+        self.problems = [p for p in self.problems if not p.startswith("400 ") and "status of 400" not in p]
+        self.assertEqual(self.problems, [])
+
+    def test_bank_details_entered_by_payroll_and_not_offered_to_a_line_manager(self):
+        from apps.hr.pay_details import EmployeePayDetails
+
+        person = self.staff("E1", "12000", banked=False)
+        officer = self.sign_in(self.person("Payroll Officer"), "/app/payroll/pay-details/new")
+        self.pick(officer, officer, "Employee", "E1")
+        officer.get_by_label("Account holder").fill("E1 Das")
+        officer.get_by_label("Account number").fill("300100001111")
+        officer.get_by_label("IFSC").fill("sbin0001234")
+        officer.get_by_role("button", name="Create", exact=True).click()
+        officer.wait_for_url(re.compile(r"/payroll/pay-details/\d+$"))
+        self.assertEqual(EmployeePayDetails.objects.get(employee=person).ifsc, "SBIN0001234")
+        manager = self.sign_in(self.person("Line Manager"), "/app/payroll/employees", page=self.new_page())
+        expect(manager.get_by_role("heading", name="Employees")).to_be_visible()
+        expect(manager.get_by_role("link", name="Bank and PAN")).to_have_count(0)
+        self.assertEqual(self.problems, [])
+
+    def test_a_statutory_figure_entered_on_screen(self):
+        from apps.hr.statutory import StatutoryFigure
+
+        page = self.sign_in(self.person("Payroll Officer"), "/app/payroll/statutory-figures/new")
+        page.get_by_label("Figure").select_option("epf_ceiling")
+        page.get_by_label("Applies from").fill("2026-09-17")
+        page.get_by_label("Value").fill("25000")
+        page.get_by_label("Source").fill("S.O. 5109(E), to confirm")
+        page.get_by_role("button", name="Create", exact=True).click()
+        page.wait_for_url(re.compile(r"/payroll/statutory-figures/\d+$"))
+        figure = StatutoryFigure.objects.get()
+        self.assertEqual((figure.kind, figure.effective_from, figure.value), ("epf_ceiling", datetime.date(2026, 9, 17), 25000))
+        self.assertEqual(self.problems, [])

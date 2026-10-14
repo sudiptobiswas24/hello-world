@@ -22,6 +22,7 @@ export default function SalaryFiles() {
       endpoint="/api/hr/salary-files/"
       columns={columns}
       rowKey={(row) => row.id}
+      rowHref={(row) => `/payroll/salary-files/${row.id}`}
     />
   );
 }
