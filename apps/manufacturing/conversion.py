@@ -228,7 +228,7 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         disposition="" if passed or lab_to_finish or waits else Disposition.CONCESSION,
         decided_by=None if passed or waits else supervisor.party,
         decision_note="" if waits else reason,
-        notes=f"Booked off weight at {station}: {reason}" if waits else "",
+        notes=f"Booked off weight at {station} with {supervisor}'s PIN: {reason}" if waits else "",
     )
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,
@@ -248,7 +248,8 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         mount=mounted if mounted is not None and mounted.operation.work_order_id == order.pk
         else None,
         station=station, machine=machine, work_order=order, operator=operator,
-        supervisor=None if passed else supervisor, shift=shift, shift_date=shift_date,
+        # Nobody concedes a bundle the Quality Manager is to decide (RISKS.md, decision 22).
+        supervisor=None if passed or waits else supervisor, shift=shift, shift_date=shift_date,
         counted_at=at, bags=bags, target_grams=(line.lower_limit + line.upper_limit) / 2,
         sample_mean_grams=mean.quantize(Decimal("0.001"), ROUND_HALF_UP), passed=passed,
         entry=entry, inspection=inspection,

@@ -97,6 +97,9 @@ class DoffTests(TapeTestCase):
                          (True, Disposition.AWAITING, None))
         self.assertIn("Customer accepts heavy", doff.inspection.notes)
         self.assertEqual(release_status(doff.lot), ReleaseStatus.HELD)
+        # No concession is named: the supervisor's PIN let it be booked, which the notes say.
+        self.assertIsNone(doff.conceded_by)
+        self.assertIn(f"with {self.supervisor}'s PIN", doff.inspection.notes)
 
     def test_what_a_doff_must_be(self):
         with self.assertRaisesMessage(ValidationError, "Check the denier 3 times; 2"):

@@ -118,6 +118,19 @@ class WeighedBeforeBookedTests(ConversionTestCase):
         self.assertEqual((count.inspection.disposition, count.inspection.decided_by),
                          (Disposition.CONCESSION, self.supervisor.party))
 
+    def test_off_weight_under_an_advisory_plan_names_no_concession(self):
+        """RISKS.md, decision 22: the bundle waits, held, for the Quality Manager; nobody concedes it here."""
+        from apps.quality.models import InspectionPlan
+        from apps.quality.release import release_status
+
+        InspectionPlan.objects.update(is_mandatory=False)
+        count = self.count(sample=OUT, supervisor=self.supervisor, reason="Customer agreed +4%")
+        self.assertEqual((count.passed, count.supervisor), (False, None))
+        self.assertEqual((count.inspection.disposition, count.inspection.decided_by),
+                         (Disposition.AWAITING, None))
+        self.assertIn(f"with {self.supervisor}'s PIN: Customer agreed +4%", count.inspection.notes)
+        self.assertEqual(release_status(count.inspection.lot), "held")
+
     def test_the_limit_itself_is_in(self):
         self.assertTrue(self.count(sample=["113.3"] * 10).passed)
 
