@@ -781,6 +781,67 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
                          (Decimal("52.00"), Decimal("78.00"), Decimal("0")))
 
 
+    # The reverse of a bill's own landed freight: a debit note gives it back
+    # off where the bill landed it, followed wherever the goods went since
+    # (calc_fix_cost/given_back.py). Off the receipt's destination, a refund
+    # after a put-away left the stock room at -80.
+
+    def test_a_whole_bill_refunded_after_the_put_away_puts_every_account_back(self):
+        self.via_the_bay()
+        self.received()
+        before = (self.balance(self.inventory), self.balance(self.freight_expense), self.balance(self.grni))
+        bill = self.with_its_freight()
+        self.put_away()
+        bill.create_debit_note(memo="Refunded")
+        self.assertEqual((self.item.stock_value_at(self.warehouse), self.item.stock_value_at(self.bay)),
+                         (Decimal("50.00"), Decimal("0.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.freight_expense), self.balance(self.grni)),
+                         before)
+        self.assertEqual(before, (Decimal("50"), Decimal("0"), Decimal("-50")))
+
+    def test_refunded_while_the_goods_wait_in_the_bay_it_comes_off_the_bay(self):
+        # Landed on the bay (130), refunded before the put-away: given back off
+        # the stock room the receipt was bound for, the room read -80 and the bay 130.
+        self.via_the_bay()
+        self.received()
+        bill = self.with_its_freight()
+        self.freight_refunded(bill)
+        self.assertEqual((self.item.stock_value_at(self.bay), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("50.00"), Decimal("0.00")))
+        self.put_away("6")
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("30.00"))
+
+    def freight_refunded(self, bill):
+        freight = bill.lines.get(charge=self.freight)
+        return bill.create_debit_note(memo="Refunded", quantities={freight: Decimal("1")})
+
+    def test_refunded_after_the_goods_went_into_a_run_the_run_gives_it_back(self):
+        self.received()
+        run = self.issued_to_a_run("6")
+        bill = self.with_its_freight()
+        self.freight_refunded(bill)
+        self.assertEqual((self.balance(self.inventory), self.balance(self.wip), self.balance(self.cogs)),
+                         (Decimal("20.00"), Decimal("30.00"), Decimal("0")))
+        self.assertEqual(run.material_cost(), Decimal("30.00"))
+
+    def test_refunded_after_the_goods_were_written_off_cost_of_sales_gives_it_back(self):
+        self.received()
+        bill = self.with_its_freight()
+        self.written_off()
+        self.freight_refunded(bill)
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("0"), Decimal("-80"), Decimal("0.00")))
+
+    def test_refunded_after_the_goods_went_back_the_returns_variance_gives_it_back(self):
+        self.received()
+        bill = self.with_its_freight()
+        self.receipt.create_return(debit_bills=False)
+        self.assertEqual(self.balance(self.ppv), Decimal("80"))
+        self.freight_refunded(bill)
+        self.assertEqual((self.balance(self.ppv), self.balance(self.inventory), self.balance(self.cogs)),
+                         (Decimal("0"), Decimal("0"), Decimal("0")))
+
+
 class OneChargeLandsOnceTests(ThirdPartyLandedCostTests):
     """A freight bill could land on the goods and be capitalised onto a machine as well: 80.00
     of freight became 80.00 of stock and 80.00 of asset, and the freight account went to -80.00."""

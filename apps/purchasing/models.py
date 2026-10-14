@@ -3846,11 +3846,19 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         # stayed in stock (O2). A debit note gives back what its bill landed.
         placed = defaultdict(list)
         if not reverse:
+            from apps.manufacturing.orders import AddedCost
+
             for charge_line, receipt_line, amount in self._landed_on_receipt_lines():
                 base = round_money(amount * (rate or Decimal("1")))
                 item = receipt_line.order_line.item
                 memo = f"Landed cost from {self.number}: {charge_line.label()}"
+                before = set(AddedCost.objects.filter(journal_entry=entry).values_list("pk", flat=True))
                 movements, elsewhere = land_on_goods(receipt_line, base, self.number, memo, entry, self.bill_date)
+                # Kept, so a debit note gives it back off where it went (O2's reverse).
+                landing = LandedByItsBill.objects.create(charge_line=charge_line, receipt_line=receipt_line,
+                                                         amount=base)
+                landing.movements.set(movements)
+                landing.added_costs.set(AddedCost.objects.filter(journal_entry=entry).exclude(pk__in=before))
                 on_shelf = sum((movement.value_adjustment for movement in movements), Decimal("0"))
                 to_runs = sum((value for _account, value in elsewhere), Decimal("0"))
                 for account, value in ([(inventory_account_for, on_shelf)]
@@ -3911,6 +3919,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     debits.append((account, round_money(net * rate), label, line.cost_centre))
                 elif not reverse:
                     for account, base in placed[line.pk]:
+                        debits.append((account, base, f"{label} (landed)", None))
+                elif line.debits_line_id and line.debits_line.landings.exists():
+                    for account, base in self._give_back_landing(line, entry):
                         debits.append((account, base, f"{label} (landed)", None))
                 else:
                     for item_pk, base in shares.items():
@@ -4123,6 +4134,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return
         sign = Decimal("-1")
         for charge_line, item, warehouse, base in self.landed_in_base(self.exchange_rate):
+            if charge_line.debits_line_id and charge_line.debits_line.landings.exists():
+                continue  # given back off where it is now, as the note posted (_give_back_landing)
             StockMovement.objects.create(
                 item=item,
                 warehouse=warehouse,
@@ -4134,6 +4147,45 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 occurred_at=timezone.now(),
                 notes=f"Landed cost from {self.number}: {charge_line.label()}",
             )
+
+    def _give_back_landing(self, line, entry):
+        """
+        [(account, value)]: what a note's charge line gives back of what its
+        bill landed on the goods, taken off where the goods are now by the
+        rule the release follows (take_back_landed): the shelves the value
+        is on, the runs it went into, cost of sales for the rest. Off the
+        warehouse the receipt was bound for, a refund after a put-away left
+        the stock room at -80. Total first across notes: what this one and
+        those before it give back, less what those before it gave.
+        """
+        original = line.debits_line
+        landings = list(original.landings.select_related("receipt_line__order_line__item").order_by("id"))
+        whole = original.net_amount()
+        total = sum((landing.amount for landing in landings), Decimal("0"))
+        before = sum((note.net_amount() for note in original.debit_lines.filter(bill__posted=True)
+                      .exclude(pk=line.pk)), Decimal("0"))
+        given = min(line.net_amount(), whole - before)
+        back = round_money(total * (before + given) / whole) - round_money(total * before / whole) \
+            if whole else Decimal("0")
+        rows, remaining = [], back
+        memo = f"Landed cost given back on {self.number}"
+        for index, landing in enumerate(landings):
+            part = remaining if index == len(landings) - 1 else round_money(back * landing.amount / total)
+            remaining -= part
+            if not part:
+                continue
+            item = landing.receipt_line.order_line.item
+            off_shelf, elsewhere = take_back_landed(
+                item, list(landing.movements.select_related("warehouse", "adjusts", "lot", "bin").order_by("id")),
+                list(landing.added_costs.select_related("work_order")), landing.amount, part, entry,
+                self.bill_date, memo, self.number)
+            to_runs = sum((value for _account, value in elsewhere), Decimal("0"))
+            for account, value in ([(inventory_account_for(item), off_shelf)] + list(elsewhere)):
+                if value:
+                    rows.append((account, value))
+            if part - off_shelf - to_runs:
+                rows.append((cogs_account_for(item), part - off_shelf - to_runs))
+        return rows
 
     def _landed_cost_given_back(self, charges):
         """
@@ -7823,9 +7875,12 @@ def _landed_cost_entry(date, reference, memo):
 def _to_the_runs(value, where, entry, on_date, memo, sign=Decimal("1")):
     """
     [(account, value)]: the share of `value`, which left with goods, that
-    went into runs, each run's as `where` ([(kind, row, value)],
-    follow_value) weighs it: by what left on its issues against all that
-    left. The rest is cost of sales, the caller's to book.
+    went where cost of sales is not the answer, each as `where` ([(kind,
+    row, value)], follow_value) weighs it against all that left: into a
+    run on its issue, production cost (WorkOrder.add_cost, signed by
+    `sign`); back to the vendor on a return, the price variance the return
+    booked the shelf's difference to. The rest is cost of sales, the
+    caller's to book: goods sold or written off (the owner's decision).
     """
     from apps.manufacturing.orders import IssueDirection, MaterialIssueLine
 
@@ -7833,22 +7888,78 @@ def _to_the_runs(value, where, entry, on_date, memo, sign=Decimal("1")):
     total = sum((weight for _row, weight in gone), Decimal("0"))
     if total <= 0:
         return []
+    moved = [row.pk for row, _weight in gone]
     runs = {
         line.stock_movement_id: line.issue.work_order
         for line in MaterialIssueLine.objects.filter(
-            stock_movement__in=[row.pk for row, _weight in gone], issue__direction=IssueDirection.ISSUE,
+            stock_movement__in=moved, issue__direction=IssueDirection.ISSUE,
         ).select_related("issue__work_order")
     }
+    returned = set(GoodsReceiptLine.objects.filter(
+        stock_movement__in=moved, receipt__reverses__isnull=False).values_list("stock_movement_id", flat=True))
     weights = defaultdict(Decimal)
     for row, weight in gone:
         if row.pk in runs:
-            weights[runs[row.pk]] += weight
+            weights[("run", runs[row.pk].pk)] += weight
+        elif row.pk in returned:
+            weights[("returned", None)] += weight
+    orders = {order.pk: order for order in runs.values()}
     found = []
-    for order in sorted(weights, key=lambda order: order.pk):
-        share = round_money(value * weights[order] / total)
-        if share:
-            found.append((order.add_cost(sign * share, on_date, entry, memo), share))
+    for key in sorted(weights, key=lambda key: (key[0], key[1] or 0)):
+        share = round_money(value * weights[key] / total)
+        if not share:
+            continue
+        if key[0] == "run":
+            found.append((orders[key[1]].add_cost(sign * share, on_date, entry, memo), share))
+        else:
+            variance = Company.get().purchase_price_variance_account
+            if variance is None:
+                raise ValidationError("Landed cost on goods returned to the vendor goes to the price variance "
+                                      "their return booked, and the company has none configured.")
+            found.append((variance, share))
     return found
+
+
+def take_back_landed(item, landed, added, landed_amount, back, entry, on_date, memo, reference):
+    """
+    Give back `back` of `landed_amount` of cost that was put on goods: by
+    `landed`, the value-only movements it went onto shelves as, and
+    `added`, what it put into runs (AddedCost). The one reverse a release
+    and a debit note both take (O42, and the reverse of O2):
+    - off each shelf the value is on now, followed through every move;
+    - out of each run it went into, as recorded;
+    - out of whatever took it off the shelves since: a run, a return's
+      price variance (_to_the_runs);
+    - the rest out of cost of sales.
+    Returns (off_shelf, [(account, value)]); cost of sales is the rest.
+    """
+    share = back / landed_amount if landed_amount else Decimal("0")
+    where = [part for movement in landed for part in where_value_is(movement)]
+    lock_positions({(item, row.warehouse) for _kind, row, _value in where} | {(item, m.warehouse) for m in landed})
+    # Read again under the locks: an object read before the lock is stale.
+    where = [part for movement in landed for part in where_value_is(movement)]
+    off_shelf = Decimal("0")
+    for kind, row, value in where:
+        still = round_money(value * share)
+        if kind != "held" or still <= 0:
+            continue
+        on_landing = any(row.pk == movement.pk for movement in landed)
+        StockMovement.objects.create(
+            item=item, warehouse=row.warehouse,
+            movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+            lot=row.lot, bin=row.bin, adjusts=row.adjusts if on_landing else row,
+            quantity=Decimal("0"), value_adjustment=-still,
+            reference=reference, occurred_at=timezone.now(), notes=memo,
+        )
+        off_shelf += still
+    elsewhere = []
+    for cost in added:
+        taken = round_money(cost.amount * share)
+        if taken:
+            elsewhere.append((cost.work_order.add_cost(-taken, on_date, entry, memo), taken))
+    on_shelves = round_money(sum((m.value_adjustment for m in landed), Decimal("0")) * share)
+    elsewhere += _to_the_runs(on_shelves - off_shelf, where, entry, on_date, memo, sign=Decimal("-1"))
+    return off_shelf, elsewhere
 
 
 def _post_landed_cost(item, expense, amount, on_shelf, date, reference, memo, undoing=None,
@@ -7882,6 +7993,27 @@ def _post_landed_cost(item, expense, amount, on_shelf, date, reference, memo, un
             )
     entry.post()
     return entry
+
+
+class LandedByItsBill(AuditModel):
+    """
+    Where a bill's own capitalised charge went on one receipt line's goods
+    when the bill posted (land_on_goods): the movements it put on shelves
+    and the costs it added to runs; cost of sales took the rest. Kept, so a
+    debit note gives it back off where it is now (_give_back_landing).
+    """
+
+    charge_line = models.ForeignKey(BillLine, on_delete=models.PROTECT, related_name="landings")
+    receipt_line = models.ForeignKey(GoodsReceiptLine, on_delete=models.PROTECT, related_name="+")
+    amount = models.DecimalField(max_digits=18, decimal_places=2, help_text="In base, as the bill booked it.")
+    movements = models.ManyToManyField(StockMovement, blank=True, related_name="+")
+    added_costs = models.ManyToManyField("manufacturing.AddedCost", blank=True, related_name="+")
+
+    class Meta:
+        constraints = [models.CheckConstraint(check=Q(amount__gt=0), name="landed_by_its_bill_amount_positive")]
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("A landing is part of its posted bill; a debit note gives it back.")
 
 
 class CapitalisedFromStock(AuditModel):
@@ -8001,38 +8133,17 @@ class LandedCostApplication(AuditModel):
         landed = list(self.movements.select_related("warehouse", "adjusts", "lot", "bin").order_by("id"))
         if not landed and self.stock_movement_id:
             landed = [self.stock_movement]
-        # Followed to every shelf it has been moved to since (O42), each
-        # locked before it is read.
-        where = [part for movement in landed for part in where_value_is(movement)]
-        lock_positions({(item, row.warehouse) for _kind, row, _value in where} | {(item, m.warehouse) for m in landed})
-        where = [part for movement in landed for part in where_value_is(movement)]
+        from apps.manufacturing.orders import AddedCost
+
         memo = f"Landed cost released from {self.charge_line.bill.number}"
         entry = JournalEntry.objects.create(date=on_date, reference=self.journal_entry.reference,
                                             memo=f"Landed cost released from {item}")
-        off_shelf, landed_value = Decimal("0"), sum((m.value_adjustment for m in landed), Decimal("0"))
-        for kind, row, value in where:
-            still = round_money(value)
-            if kind != "held" or still <= 0:
-                continue
-            on_landing = any(row.pk == movement.pk for movement in landed)
-            StockMovement.objects.create(
-                item=item, warehouse=row.warehouse,
-                movement_type=MovementType.ADJUSTMENT, uom=item.uom,
-                lot=row.lot, bin=row.bin, adjusts=row.adjusts if on_landing else row,
-                quantity=Decimal("0"),
-                value_adjustment=-still,
-                reference=self.charge_line.bill.number,
-                occurred_at=timezone.now(), notes=memo,
-            )
-            off_shelf += still
-        from apps.manufacturing.orders import AddedCost
-
-        # What the landing put into runs comes back out of them, as recorded;
-        # what left the shelves since for a run comes out of that run (O48).
-        elsewhere = [(order.add_cost(-cost.amount, on_date, entry, memo), cost.amount)
-                     for cost in AddedCost.objects.filter(journal_entry=self.journal_entry)
-                     .select_related("work_order") for order in [cost.work_order]]
-        elsewhere += _to_the_runs(landed_value - off_shelf, where, entry, on_date, memo, sign=Decimal("-1"))
+        # Off every shelf it is on now (O42), out of the runs it went into
+        # (O48), the rest out of cost of sales: the reverse a debit note of
+        # a bill's own landed charge takes too.
+        off_shelf, elsewhere = take_back_landed(
+            item, landed, AddedCost.objects.filter(journal_entry=self.journal_entry).select_related("work_order"),
+            self.amount, self.amount, entry, on_date, memo, self.charge_line.bill.number)
         entry = _post_landed_cost(
             item, self.charge_line.posted_account or self.charge_line.expense_account,
             self.amount, on_shelf=off_shelf,
