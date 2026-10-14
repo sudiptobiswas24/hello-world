@@ -442,7 +442,8 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         warehouse = record_or_404(Warehouse, request.data.get("warehouse"), "warehouse")
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
         receipt.accept(warehouse, quantities=quantities, by=request.user,
-                       reason=str(request.data.get("reason", "")))
+                       # Words or nothing: str(None) is the reason "None" (review F6).
+                       reason=reason if isinstance(reason := request.data.get("reason"), str) else "")
         return Response(self.get_serializer(receipt).data)
 
     @action(detail=True, methods=["post"])

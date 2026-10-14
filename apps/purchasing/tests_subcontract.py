@@ -1009,3 +1009,15 @@ class TheQualityManagersToDoClosesWhenNothingIsHeldTests(_SentBatches):
         Reading.objects.create(inspection=inspection, plan_line=line, value=Decimal("0.5"))
         inspection.post(by=self.manager)
         self.assertEqual((self.receipt.held_assemblies(), self.open()), ([], 0))
+
+
+class ANullReasonIsNoReasonTests(HeldAssembliesAcceptedAreAConcessionTests):
+    """Review F6: {"reason": null} was taken as the reason "None", false as "False", 0 as "0"."""
+
+    def test_null_false_zero_and_a_list_are_no_reason(self):
+        receipt = self.received()
+        for bad in (None, False, 0, []):
+            response = self.accept(self.manager, receipt, reason=bad)
+            self.assertEqual(response.status_code, 400, repr(bad))
+            self.assertIn("is a concession", response.content.decode())
+        self.assertEqual(self.assembly.on_hand_at(self.bay), Decimal("10"))
