@@ -55,6 +55,17 @@ can prove.
 
 ## Known limits in the code
 
+- **Pay slips posted before hr migration 0022** have no kept days, marker
+  or wage base (`kept_paid_days is None`): they read the working pattern,
+  holiday region, leave, register and PF settings as they stand, so a later
+  edit restates them. Only months worked out after g20 are frozen. Nothing
+  is invented for the old ones.
+- **A run counted in a unit of another chain** (pieces of a kg item) cannot
+  be released ("Cannot convert pc to kg"), so `check_output`,
+  `outside_earned`, `conversion_earned` and `time_variance_minutes` read a
+  date-independent factor. Were such runs ever allowed, those four would
+  need each entry's own day's factor (g20 review R10).
+
 - **Approvals seeded before sales 0064 whose notes name no figures**
   (the rest of O200, closed in g20): a line cut after the seed keeps what
   it held, and total and margin stay empty. The history cannot tell what
@@ -231,13 +242,6 @@ missing), **minor**.
 
 | Id | Area | Defect | Kind | State |
 |---|---|---|---|---|
-| O2 | purchasing | Landed cost on the same bill (`Bill._record_landed_cost`, `_split_across_warehouses`) still lands on the line's destination and always debits inventory: the mirror of stores finding 6 | books | open |
-| O3 | inventory | A write-down given an explicit unit cost books that cost, not what the shelf loses (`cost_of_removing`) | books | open |
-| O4 | inventory | The importer reads 8-place opening costs into a 4-place field | books | open |
-| O5 | payroll | Editing a working pattern or holiday region restates posted slips' day counts: a frozen fact read live | books | open |
-| O6 | payroll | The EPFO ECR reads the PF wage ceiling live, not as it stood for the month | books | open |
-| O7 | manufacturing | Release merges components by item and unit: the same item in two units freezes two rows that each count all its issues | books | open |
-| O8 | manufacturing | The WIP tile (apps/web/bank.py) reads the account in settings, not each run's recorded WIP account | books | open |
 | O11 | inventory | Cancelling a put-away transfer leaves its receipt route move standing | rule | open |
 | O12 | assets | `place_in_service` accepts an in-service date still to come | rule | open |
 | O13 | assets | `depreciated_before` is not enforced on a draft made by hand | rule | open |
@@ -254,35 +258,23 @@ missing), **minor**.
 | O25 | frontend | RecordScreen's afterCreate comment says it decides where to go after a delete; the code does not (mistake 1) | minor | open |
 | O26 | assets | Capitalising a bill line has no API action | minor | open |
 | O27 | inventory | Migrations 0030 and 0037 have no migration test | rule | open |
-| O28 | payroll | A leaver's final pay too small for what is taken back: the shortfall becomes a receivable from the former employee; PF/ESI wages drop by what is taken back. A roll voided after the final slip was paid: the same receivable, and the void is not refused (quality corrections must stay possible). Confirmed by the owner on 9 October. What the final run takes back must stay within the legal limit on deductions from one wage payment (believed to be half the wages; the plant's accountant to confirm); the rest is the receivable. Not built | books | to build |
 | O29 | accounting, assets | A period closes while its depreciation is uncharged. Decided: refuse it, through a period-close check that accounting keeps and assets registers with. Not built | rule | to build |
-| O31 | payroll | A leaver's piece-work recovery happens only if the leaving date is set before the final run is calculated. Set after that run posts, no later run includes the person, and the overpayment is never recovered, with nothing said | books | open |
 | O32 | hr | `LeaveRequest.cancel(on_date)` takes any date: called in code with a day before the leave, it cancels a holiday already taken and restores the balance. The API passes no date | rule | open |
 | O34 | assets | The fixed-asset register is not footed against the ledger in the daily health checks | rule | open |
 | O35 | core | `locked_before_it()` is read from the instance as it stood before the lock: an allocation re-pointed to another payment at the same moment locks the old payment | race | minor |
 | O36 | sales | A line's check against its call-offs runs under the line's lock only on a confirmed order whose line drops in value; a cut on a draft order, or on a zero-price line, made through model code reads the call-offs unlocked (the API path is locked) | race | minor |
 | O37 | hr, purchasing, sales, manufacturing | These save() methods lock a related row without declaring it in `locked_before_it()`, so an API edit holds the row first and the related row second: hr/timesheets.py:342, hr/payroll.py:1472, hr/contract_labour.py:75, purchasing/models.py:615, :2478, :2523, sales/models.py:1393, manufacturing/maintenance.py:346 (line numbers at 7f726a5). No opposite-order path traced yet. One pair is known: sales `reopen()` locks the line then the customer, while a line saved from code that grows the order locks the customer then the line (sales/models.py:1406 and :1474) One pair is known: sales `reopen()` locks the line then the customer, while a line saved from code that grows the order locks the customer then the line (sales/models.py:1406 and :1474) | race | open, unproven |
-| O38 | purchasing | `_restore_components` puts components back at the consumed unit cost times the quantity, with no remainder carried (under a paisa at eight places) | books | minor |
 | O39 | inventory | reservations.py:75 reads `held_at` before the lock, so it can lock the wrong second shelf | race | open |
 | O40 | core | Audit gaps: `per_unit_withdrawal_rates` skips inventory/models.py and `average_cost_at`; `shelf_read_before_lock` sees a read and a lock only inside one function | rule | open |
-| O41 | manufacturing | `_booked` converts each entry at today's unit factor; a conversion that depends on the date makes `quantity_produced` drift from what went on the shelf | books | minor |
-| O42 | purchasing | A landed-cost release takes off each shelf it landed on what that shelf still holds of it, and the rest out of cost of sales. Goods moved to another shelf after the landing (a put-away from the bay) carried their freight with them, but the release does not follow them: landed on the bay, put away, released, the bay gives up 0, cost of sales is credited 80, and the stock room keeps the 80. Shelf and ledger agree; the release does nothing. `value_still_held` must follow a transfer's value to the shelf it went to | books | open, next |
 | O45 | manufacturing, core | Three admin mixins refuse the same thing (`PostedNotDeletedMixin`, `PostedImmutableAdminMixin`, `PostedDocumentAdminMixin`): fold into one (mistake 5) | rule | open |
 | O46 | core | `unlocked_open_runs` sees only `.is_open()`; a run's status compared to RELEASED by a function that does not hold the run goes unreported (station clock and job work were found by reading) | rule | open |
-| O47 | manufacturing | `TapeLoad.kg` keeps 3 places but `load_tape` accepts 4: 48.9796 kg is stored as 48.980, 0.0004 kg more than the shelf held | books | minor |
-| O48 | purchasing, manufacturing | Landed cost on goods no longer on a shelf goes to cost of sales. The owner decided on 9 October that the share on goods issued to production goes to production cost instead (the run they went into), and only the share on goods sold or written off goes to cost of sales. Not built. O42 touches the same code | books | to build |
-| O56 | purchasing | A debit note's lines drop the bill line's cost centre (and the prepayment version too): loom shed 1,000 less 300 reads LOOM 1,000 and unallocated -300 | books | minor; CostCentreProbe |
 | O63 | accounting | Race: a statement closes while one of its lines is unmatched (`close()` locks the statement; the line's save() reads `closed` unlocked): closed with a line unexplained. Shown on PostgreSQL | race | open; AccountingRaceProbe |
 | O64 | purchasing | Race: a TDS deduction reversed while a challan pays it (`TdsChallan.pay` reads what is owed unlocked, then updates): reversed and paid, TDS payable +700 paid for nothing. Shown on PostgreSQL | race | open; AccountingRaceProbe |
 | O77 | sales | The credit limit adds currencies at face value: 600 USD plus 380 EUR reads 980 against 1,000; the true figure is 1,018.00 | rule | open; CreditLimitProbe |
 | O81 | sales | The dunning mail asks for the whole balance and the last due date, not what the notice records as overdue (mistake 1) | minor | open; DunningProbe |
-| O89 | purchasing | A bill posted before any of its goods arrive leaves goods-received-not-invoiced uncleared for good: billed 10 @ 5, then received, GRNI -50 and purchases 50 (expected 0 and 0). A drop-ship billed before receipt has the same posting (code only) | books | open; audit_pur probes |
 | O91 | purchasing | The match's price check ignores the agreed discount: 10 @ 100 less 10% agreed, billed at 100 with tolerance 0, posts with 100 of price variance | rule | open; audit_pur probes |
-| O93 | purchasing | Billing one receipt in parts leaves a paisa on GRNI: each bill's accrual is rounded on its own | books | minor; audit_pur probes |
-| O94 | purchasing | A return is debited to the oldest bill, not the one that paid for the goods returned: 15.00 debited and 4.00 variance kept, expected 16.20 and 2.80 | books | minor; audit_pur probes |
 | O95 | purchasing | The same vendor invoice number in another case is accepted: INV-77 and inv-77 both post | rule | minor; audit_pur probes |
 | O99 | purchasing | A hand-typed price passes the approval rule whenever an agreed price exists, used or not: agreed 5.00, typed 50.00, confirmed with no approval reasons. `price_against_agreement` exists and nothing calls it | rule | open; audit_pur probes |
-| O101 | purchasing, assets | Capitalising a received stock line takes its cost out of GRNI and leaves it in stock too: GRNI -12,000, inventory 12,000, plant 12,000 | books | open; audit_pur probes |
 | O108 | purchasing | Race: an RFQ award and a direct order on one requisition both go through (each holds a different lock): 20 ordered against a request for 10. Shown on PostgreSQL | race | open; audit_pur races |
 | O109 | purchasing, sales | Built and never called (shape 2): settlement discounts on both sides (`Bill.take_settlement_discount`, `Invoice.apply_settlement_discount`), `Bill.match_report`, `PurchaseRequisition.suggested_vendors`, `BlanketOrderLine.is_fully_released`. Each should be reached from its screen or action, or removed | rule | open |
 | O123 | purchasing, quality | `GoodsReceipt.accept` never asks the lot's release status, so a lot quality rejected can be cleared onto a pickable shelf (downstream gates still hold it). Seen in code, not probed | rule | verify |
@@ -306,7 +298,6 @@ missing), **minor**.
 | O176 | hr | Paying an expense claim may be dated ahead (refused only before the claim); an existing test relies on paying ahead, so `ExpenseClaim.pay` stays exempted from the correction-date check. Refusing a day still to come would match the rule that nothing is posted for a day that has not come | rule | minor |
 | O182 | core, inventory | The lock-order sentinel (apps/core/lock_order.py) leaves 54 models unranked; `inventory.stockposition` is taken both before and after orders, receipts and bill lines, so those paths are unchecked for deadlock. Rank it and the six named in UNRANKED Shown on PostgreSQL: two `BillLine.allocate_landed_cost` calls onto the same two receipt lines in opposite order deadlock on stockposition (purchasing/models.py:4425, :4512; predates wave 1) (docs/handoff/reports/review_trade3.md #2) | race | open, wave 2 |
 | O184 | core | The lock-order sentinel cannot see locks taken by update(), save() or delete(), joined tables under select_related, a values_list without pk, or any unranked model (which also skips the key-order check) (docs/handoff/reports/review_trade3.md #1) | race | open, wave 2 |
-| O187 | gst | In the fix-wave-1 statutory commits: ITC-04 reads a job-worker value receipt by its own date and leaves voided ones out whenever the void happened, so voiding a closed month's receipt (now allowed, by a reversal in an open month) rewrites that closed month's return. The void belongs in the period it happens | statutory | open, wave 2 first |
 | O188 | purchasing | MSME report: a part settled wholly by a debit note or TDS (no payment) has no paid-on day, so days late runs to the report date: unpaid 0.00, days late 168 (docs/handoff/reports/fix_stat.md, seen #1) | statutory | open |
 | O189 | purchasing | `Bill.pay_by()` and the bill's shown due date are still the whole bill's when one delivery is objected to (the payment run is right) (docs/handoff/reports/fix_stat.md, seen #2) | statutory | minor |
 | O190 | purchasing | A debit note left unkeyed by migration 0063 (a collision), edited as a draft, is re-keyed by clean() and refused by the constraint with a generic message (docs/handoff/reports/fix_stat.md, seen #3) | minor | open |
@@ -318,11 +309,15 @@ missing), **minor**.
 | O202 | manufacturing, sales | A cost sheet, a test certificate and a price-variation bill made over the API carry no created_by: quoting.cost(), certificates.issue() and bill_variation() take no maker. Their history line names who; the stamp on the record is blank (seen 2026-10-11, exempted in audit_invariants WRITES_AROUND_THE_MIXIN_ON_PURPOSE) | audit trail | open |
 | O203 | quality | The Quality Manager's escalation counts Monday to Friday and never sees a plant holiday: quality may not import hr, whose calendar knows them. A failure posted the day before Diwali goes to the administrator on Diwali. A calendar hook in core, as lot holds have, would let hr answer (seen 2026-10-14) | minor | open |
 | O204 | quality, manufacturing | Decide (owner): at the machines a failed doff, film roll or bag bundle under a MANDATORY plan is still released on the spot by the supervisor's concession (station_gauge.gauged_batch), while the same failure under an advisory plan now waits for the Quality Manager (decision 22). The stricter plan is the easier one round. Recommended: mandatory failures wait for the Quality Manager too (seen 2026-10-14) | rule | decide |
-| O205 | inventory | The rest of O10, whose inspection part g19 closed: a posted stock adjustment or stock count can still be deleted (audit_invariants `DELETABLE_REPORTED`), leaving its movements and entry behind (seen 2026-10-14) | rule | open, g20 |
-| O206 | purchasing | Fractional subcontract returns leave a paisa between the inventory account and the shelf: 0.333 frame per assembly, F-1 1.11 and F-2 98.89 at 8, receive 10, return 1, 1, 3, 2, 1, 2: the shelf ends at 0.00, inventory +0.01, PPV -0.01. Each return books its own price difference, rounded on its own. Present before g19 (docs/handoff/reports/fix_sub2.md "F10") (seen 2026-10-14) | books | open, g20 |
 | O207 | quality | Decide (owner), a recall: a lot that passed its own inspection stays released when a batch it was made from is rejected afterwards (A-1 passed 15 January; F-1, inside it, rejected 2 February). Recommended: a later rejection of a source holds what is still in stock of the lots made from it, and the Quality Manager is told (seen 2026-10-14) | rule | decide |
 | O208 | sales | Decide (owner), low: a unit price keeps 2 places, so a price converted from another currency is rounded to the paisa per unit and the line follows the rate: 1,000 units at 10 USD / 1.1 come to 9,090.00, not 9,090.91. Exact would need the unit-price columns of order, quotation and invoice lines widened (6 places), which changes every price the API shows. Kept at 2: the rate printed on the invoice is the one charged (seen 2026-10-14) | books | decide, low |
 | O209 | accounting | After g20's settlement slices: deleting or re-pointing a middle allocation re-states only its own slice, so a paisa may reappear on the control account; credit notes on an invoice still book their own lines' bases, not a slice of the invoice's. Not probed (docs/handoff/reports/fix_money.md, "Review fixes") (seen 2026-10-14) | books | open, unproven |
+| O210 | inventory | `follow_value` (inventory/costing.py) follows transfer steps only: goods cleared out of inspection are not followed, so the share of landed freight on goods since gone is classed as cost of sales whatever they went into (the shelf share is right). docs/handoff/reports/fix_cost.md, seen #4 (seen 2026-10-14) | books | open |
+| O211 | purchasing | O94's ranges compare gross receipt quantities with bills in posting order: a return posted between two bills shifts which bill a later return finds first (`_bill_lines_that_paid_for`). fix_cost.md seen #5 (seen 2026-10-14) | books | minor |
+| O212 | core | `reported_without_the_period` (audit_invariants) maps every word of a followed function, docstrings included, to a model: "made" in a docstring reported ProcessRoll. Two docstrings were reworded to pass; the check should read code, not words. fix_cost.md seen #6 (seen 2026-10-14) | minor | open |
+| O213 | hr | Outside a final run, a take-back for earlier runs is netted into the period's piece-work earning (payroll.py `work_out`, PER_UNIT), so PF/ESI wages drop by it. Decided by the integrator on the owner's rule for leavers (item 20): PF/ESI wages are never reduced by a recovery, on any run (seen 2026-10-14) | books | open |
+| O214 | hr | The deduction cap (half the wages) applies on a leaver's final slip only; the Payment of Wages Act ceiling applies to every wage payment. The accountant is to confirm the ceiling for this plant (seen 2026-10-14) | statutory | open |
+| O215 | hr, accounting | A leaver's shortfall becomes a receivable from the former employee (O28), but nothing settles it: a receipt against it is unbuilt (seen 2026-10-14) | rule | to build |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
