@@ -38,14 +38,17 @@ def applicable_price_lists(customer=None, currency=None, on_date=None):
         profile = getattr(customer, "customer_profile", None)
         if profile is not None and profile.price_list_id:
             # A list priced in another currency must not price this document:
-            # 5 EUR is not 5 USD. A list with no currency is currency-agnostic.
+            # 5 EUR is not 5 USD. A list with no currency is in the base, converted.
             chosen = profile.price_list
             if currency is None or chosen.currency_id in (None, currency.pk):
                 candidates.append(chosen)
 
     defaults = PriceList.objects.filter(is_active=True, is_default=True)
     if currency is not None:
-        defaults = defaults.filter(currency=currency)
+        # In the document's currency first; then one in none, which is in the base and is
+        # converted (a decision: the integrator's, review item 5).
+        candidates.extend(defaults.filter(currency=currency))
+        defaults = defaults.filter(currency__isnull=True)
     candidates.extend(defaults)
 
     return [
@@ -70,5 +73,9 @@ def resolve_price(item, customer=None, quantity=Decimal("1"), currency=None, on_
     for price_list in applicable_price_lists(customer, currency, on_date):
         entry = _entry_for(price_list, item, in_stock)
         if entry is not None:
-            return per_line_unit(entry.unit_price, item=item, uom=uom, on_date=on_date)
+            # A list in no currency is in the base, and is converted as any base price is
+            # (a decision, review item 5): 5 on it was 5 EUR on a EUR line and 5 USD on a USD one.
+            return per_line_unit(entry.unit_price, item=item, uom=uom, price_currency=price_list.currency,
+                                 currency=currency if price_list.currency_id is None else price_list.currency,
+                                 on_date=on_date)
     return per_line_unit(item.sale_price, item=item, uom=uom, currency=currency, on_date=on_date)
