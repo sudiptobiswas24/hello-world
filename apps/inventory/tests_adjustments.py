@@ -545,3 +545,63 @@ class StockCountTests(AdjustmentTestCase):
         count.post()
         count.refresh_from_db()
         self.assertTrue(count.number.startswith("CNT-"))
+
+
+class AWriteDownAtACostOfItsOwnTests(AdjustmentTestCase):
+    """
+    O3. A thousand at 4 and two thousand at 3 (10,000): a thousand written off
+    takes 3,333.33 off the shelf. Given 5 each, it booked 5,000 against a shelf
+    that gave up 3,333.33. It is refused in words; at the shelf's own rate it posts.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.stock("1000", "4")
+        self.stock("2000", "3")
+
+    def test_a_cost_other_than_the_shelfs_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "at what the shelf holds them at, 3333.33"):
+            self.adjust("-1000", reason=self.shrink, cost="5")
+        self.assertEqual(self.balance(self.inventory), Decimal("0"))
+
+    def test_at_the_shelfs_own_rate_it_books_what_the_shelf_gave_up(self):
+        self.adjust("-1000", reason=self.shrink, cost="3.3333")
+        self.assertEqual((self.balance(self.inventory), self.item.stock_value_at(self.warehouse)),
+                         (Decimal("-3333.33"), Decimal("6666.67")))
+
+
+class APostedStockDocumentIsNotDeletedTests(AdjustmentTestCase):
+    """O205: a posted adjustment or count deleted left its movements and entry behind."""
+
+    def test_a_posted_adjustment_cannot_be_deleted(self):
+        self.stock("100", "5")
+        adjustment = self.adjust("-4", reason=self.shrink)
+        with self.assertRaisesMessage(ValidationError, "Cannot delete a posted adjustment"):
+            adjustment.delete()
+        self.assertTrue(StockAdjustment.objects.filter(pk=adjustment.pk).exists())
+
+    def test_a_posted_count_cannot_be_deleted(self):
+        self.stock("100", "5")
+        count = StockCount.objects.create(count_date=datetime.date(2026, 3, 1), warehouse=self.warehouse,
+                                          reason=self.recount)
+        count.add(self.item, "100")
+        count.post()
+        with self.assertRaisesMessage(ValidationError, "Cannot delete a posted count"):
+            count.delete()
+
+    def test_the_store_head_is_refused_over_the_api_and_a_draft_still_goes(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        head = User.objects.create_user("stores_head")
+        head.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient()
+        client.force_authenticate(head)
+        self.stock("100", "5")
+        posted = self.adjust("-4", reason=self.shrink)
+        refused = client.delete(f"/api/inventory/stock-adjustments/{posted.pk}/")
+        self.assertEqual(refused.status_code, 400, refused.content[:300])
+        draft = self.adjust("-1", reason=self.shrink, post=False)
+        self.assertIn(client.delete(f"/api/inventory/stock-adjustments/{draft.pk}/").status_code, (204, 403))
