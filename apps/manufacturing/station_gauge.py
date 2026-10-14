@@ -17,7 +17,13 @@ from django.utils import timezone
 ZERO = Decimal("0")
 
 
-def floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor, reason, off):
+def floor_note(station, supervisor, reason, off):
+    """What booking something off its limits at the machines records: whose PIN, and why."""
+    return f"Booked {off} at {station} with {supervisor}'s PIN: {reason}"
+
+
+def floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor, reason, off,
+                     made_from=()):
     """
     The inspection a batch booked at the machines opens: a doff, a film
     roll, a bundle of bags. One shape for all three, so one rule.
@@ -29,14 +35,41 @@ def floor_inspection(lot, plan, operator, shift_date, passed, station, superviso
     the floor's note on the inspection, never a concession, and the same
     when the lab finishes the inspection later (`failed_at_the_machines`
     makes that posting wait too).
+
+    `made_from`: the floor's notes of checks off their limits further up
+    the line that have no batch of their own to hold (a laminated or
+    printed roll, a coating check: work in progress, no lot, no plan; see
+    `off_check`). This batch is the first thing they reach that can be
+    held, so it waits for the Quality Manager as its own failure would,
+    however its own reading came out.
     """
     from apps.quality.models import Inspection
 
+    notes = ([] if passed else [floor_note(station, supervisor, reason, off)]) + list(made_from)
     return Inspection.objects.create(
         lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
-        failed_at_the_machines=not passed,
-        notes="" if passed else f"Booked {off} at {station} with {supervisor}'s PIN: {reason}",
+        failed_at_the_machines=bool(notes), notes=" ".join(notes),
     )
+
+
+def off_check(record, station, supervisor, reason, off, what, link, by=None):
+    """
+    A check off its limits at the machines with no batch to hold: a
+    laminated or printed roll, a coating check (work in progress inside a
+    run, with no lot and no inspection plan to file an inspection under).
+    Nobody concedes it (decision 23): the supervisor's PIN and reason are
+    the floor's note, the Quality Manager is told by a to-do on the check,
+    and the bundles made from it wait for their decision (`floor_inspection`'s
+    `made_from`). Returns (note, Told).
+    """
+    from apps.quality.decisions import tell_the_quality_manager
+
+    note = floor_note(station, supervisor, reason, off)
+    told = tell_the_quality_manager(
+        record, f"Off at the machines: {what}"[:255], link=link, by=by,
+        body=(f"{what}. {note}. Nobody has conceded it: the bundles made from it are held for "
+              "your decision as they are counted (use as is, rework or reject)."))
+    return note, told
 
 
 def weigh_gross(station, operator, supervisor, gross_kg, source, at, typed_reason="",

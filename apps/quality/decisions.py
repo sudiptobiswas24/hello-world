@@ -209,6 +209,14 @@ def tell_on_posting(inspection, by=None):
         summary = f"Decide {inspection.number}: {inspection.lot} passed but is made from {names}, held"
         first = [f"{inspection.lot} passed ({inspection.number}) but is made from {names}, which "
                  "quality holds."]
+    elif inspection.result == Result.PASS and inspection.failed_at_the_machines:
+        # Its own reading passed; what it was made from was off at the machines (decision 23).
+        body = (f"{inspection.lot} ({inspection.lot.item}) passed {inspection.number} on "
+                f"{inspection.inspected_on:%d %b %Y}, but it was made at the machines from work off "
+                f"its limits: {inspection.notes} The batch is held until the Quality Manager "
+                "decides to use it as is, rework it or reject it.")
+        summary = f"Decide {inspection.number}: {inspection.lot} made from work off its limits, held"
+        first = [f"{inspection.lot} was made from work off its limits at the machines ({inspection.number})."]
     else:
         failed = _failed(inspection)
         body = (f"{inspection.lot} ({inspection.lot.item}) failed {inspection.number} on "

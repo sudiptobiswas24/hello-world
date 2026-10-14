@@ -843,11 +843,14 @@ class Inspection(AuditModel):
         # waits, held, for the Quality Manager (RISKS.md, decision 22), and
         # nobody decides it as it is posted, whoever posts it. Nor one booked
         # off its line at the machines, whatever the plan (decision 23).
-        waits = self.result == Result.FAIL and (not self.plan.is_mandatory or self.failed_at_the_machines)
+        # A batch made at the machines from work off its limits further up the line (a roll, a
+        # coating) waits however its own reading came out: that check had nothing else to hold.
+        waits = ((self.result == Result.FAIL and not self.plan.is_mandatory)
+                 or self.failed_at_the_machines)
         if waits and self.disposition:
             raise ValidationError(
-                f"{self.lot} failed under {self.plan}"
-                + (", which is advisory" if not self.plan.is_mandatory else ", off its line at the machines")
+                f"{self.lot} {'failed' if self.result == Result.FAIL else 'was made off its limits'} under {self.plan}"
+                + (", off its line at the machines" if self.failed_at_the_machines else ", which is advisory")
                 + ", so the Quality Manager decides what happens to it, not whoever posts the readings. "
                 "Leave the decision blank and post: the batch is held until they decide."
             )

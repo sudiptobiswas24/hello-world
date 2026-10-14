@@ -388,7 +388,7 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
         check_supervisor(station, supervisor, operator)
         if not reason:
             raise ValidationError(f"Say why a roll off {off} is taken.")
-        values["conceded_by"] = supervisor
+        # Nobody concedes it at the station (decision 23, O204): the floor's note, kept.
         values["reason"] = reason[:255]
     count = ProcessRoll.objects.filter(machine=machine, shift=shift,
                                        shift_date=shift_date).count()
@@ -400,7 +400,28 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
         **typed_fields(source, supervisor, typed_reason, typed_note), net_kg=net,
         metres=metres, weighed_by=operator, weighed_at=at, shift=shift, shift_date=shift_date,
         **values)
+    if not values["passed"]:
+        from .station_gauge import off_check
+
+        # No lot and no plan to file an inspection under (a roll inside the run): the Quality
+        # Manager is told, and the bundles converted from it wait for them (off_rolls).
+        off_check(roll, station, supervisor, reason, off, f"{code} on {run} is off {off}",
+                  f"/production/work-orders/{run.pk}")
     return ProcessRoll.objects.get(pk=roll.pk)
+
+
+def off_rolls(mount):
+    """The standing rolls off their limits in a mount's chain: what it was made from, at every step."""
+    found, seen = [], set()
+    while mount is not None and mount.pk not in seen:
+        seen.add(mount.pk)
+        roll = mount.roll
+        if roll is None:
+            break
+        if roll.passed is False and roll.voided_at is None:
+            found.append(roll)
+        mount = roll.mount
+    return found
 
 
 @transaction.atomic
