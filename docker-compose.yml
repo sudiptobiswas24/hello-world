@@ -91,6 +91,8 @@ services:
     volumes:
       - ./deploy:/deploy:ro
       - ./backups:/backups
+      # The attachments, archived with each dump and put back by a restore.
+      - media:/media
 
 volumes:
   pgdata:
