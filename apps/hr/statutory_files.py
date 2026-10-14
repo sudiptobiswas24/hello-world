@@ -64,8 +64,11 @@ def wage_base(slip, line):
         base = sum((other.amount for other in slip.lines.all() if other.component_id in wanted), Decimal("0"))
     else:
         base = slip.taxable_gross()
-    if component.base_ceiling is not None:
-        base = min(base, component.base_ceiling)
+    # The ceiling as it stood when the slip was worked out (O6); a slip from
+    # before it was kept reads the component's.
+    ceiling = line.base_ceiling if slip.kept_paid_days is not None else component.base_ceiling
+    if ceiling is not None:
+        base = min(base, ceiling)
     return base
 
 
@@ -102,7 +105,7 @@ def ecr_rows(run):
         else:
             eps = (eps_wages * EPS_RATE / 100).quantize(RUPEE, rounding=ROUND_HALF_UP)
             epf_diff = employer - eps
-        ncp = slip.unpaid_leave_days() + slip.absent_days()
+        _paid, ncp = slip.kept_days()
         rows.append({
             "uan": slip.employee.uan, "name": slip.employee.party.name,
             "gross": _rupees(slip.gross()), "epf_wages": _rupees(epf_wages), "eps_wages": _rupees(eps_wages),
@@ -144,7 +147,7 @@ def esi_rows(run):
         if not slip.employee.esi_number:
             unnamed.append(slip.employee.employee_number)
             continue
-        days = slip.days_employed() - slip.unpaid_leave_days() - slip.absent_days()
+        days, _ncp = slip.kept_days()
         left = slip.employee.termination_date
         rows.append({
             "ip": slip.employee.esi_number, "name": slip.employee.party.name,

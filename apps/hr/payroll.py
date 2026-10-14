@@ -801,6 +801,15 @@ class Payslip(AuditModel):
                   "again from these.",
     )
     note = models.CharField(max_length=255, blank=True)
+    kept_paid_days = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Working days employed less unpaid leave and absences, as the slip was worked "
+                  "out: what the ESI return files (O5).",
+    )
+    kept_ncp_days = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="Unpaid leave and absences as the slip was worked out: the ECR's NCP days (O5).",
+    )
 
     class Meta:
         ordering = ["employee"]
@@ -962,8 +971,21 @@ class Payslip(AuditModel):
         self.hours = None if hours is None else Decimal(hours).quantize(Decimal("0.01"))
         for line in self.work_out(self.hours):
             line.save()
-        super().save(update_fields=["hours", "updated_at"])
+        # Kept as worked out, with the lines: a working pattern or holiday
+        # region edited after the run restated a posted month's days on its
+        # ESI and ECR files (O5). The register's days move the lines too, so
+        # check_current refuses a post they have moved under.
+        away = self.unpaid_leave_days() + self.absent_days()
+        self.kept_paid_days, self.kept_ncp_days = self.days_employed() - away, away
+        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "updated_at"])
         return list(self.lines.all())
+
+    def kept_days(self):
+        """(paid days, NCP days): as worked out, or for a slip from before they were kept, read now."""
+        if self.kept_paid_days is not None and self.kept_ncp_days is not None:
+            return self.kept_paid_days, self.kept_ncp_days
+        away = self.unpaid_leave_days() + self.absent_days()
+        return self.days_employed() - away, away
 
     def check_current(self):
         """
@@ -1070,6 +1092,7 @@ class Payslip(AuditModel):
                     is_taxable=component.is_taxable,
                     amount=amount,
                     quantity=quantity,
+                    base_ceiling=component.base_ceiling,
                 ))
                 if kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
@@ -1360,6 +1383,11 @@ class PayslipLine(AuditModel):
                   "so the payslip can still be explained after the next rise.",
     )
     is_taxable = models.BooleanField(default=True, editable=False)
+    base_ceiling = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The wage ceiling the component capped its base at when the slip was worked "
+                  "out: the ECR files the PF wages as they stood for the month (O6).",
+    )
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     quantity = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
@@ -1415,7 +1443,8 @@ class PayslipLine(AuditModel):
 
 def _as_worked_out(line):
     """What a payslip line says about somebody's pay: two workings of a slip are compared on it."""
-    return (line.component_id, line.kind, line.basis, line.is_taxable, line.rate, line.amount, line.quantity)
+    return (line.component_id, line.kind, line.basis, line.is_taxable, line.rate, line.amount, line.quantity,
+            line.base_ceiling)
 
 
 def _by_component(lines):
