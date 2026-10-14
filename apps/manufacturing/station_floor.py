@@ -36,13 +36,20 @@ from django.utils import timezone
 ZERO = Decimal("0")
 
 
-def _number(value, what):
+def _number(value, what, places=None):
+    """
+    A positive number typed at a station. With `places`, what the field it
+    is kept in holds, more is refused in words: kept at three, 48.9796 kg
+    went on the creel as 48.980, 0.0004 kg the shelf never held (O47).
+    """
     try:
         number = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         raise ValidationError(f"{what} is a number.")
     if not number.is_finite() or number <= 0:
         raise ValidationError(f"{what} is more than nothing.")
+    if places is not None and number != number.quantize(Decimal(1).scaleb(-places)):
+        raise ValidationError(f"{what} is kept to {places} places; {format(number, 'f')} has more.")
     return number
 
 

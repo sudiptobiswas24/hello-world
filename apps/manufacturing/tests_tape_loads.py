@@ -317,3 +317,18 @@ class AHeldDoffIsRefusedAtTheCreelTests(TapeLoadTestCase):
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("D-1 is held", response.content.decode())
         self.assertEqual(self.standing(), 0)
+
+
+class ATapeLoadKeepsItsPlacesTests(TapeLoadTestCase):
+    """O47: TapeLoad.kg keeps three places; 48.9796 kg was stored as 48.980, 0.0004 kg the shelf never held."""
+
+    def test_more_places_than_it_keeps_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "kept to 3 places; 48.9796 has more"):
+            self.load("D-1", "48.9796", CreelSide.WARP, 9)
+        self.assertEqual(self.doffs["D-1"].on_hand_at(self.plant), Decimal("100.0000"))
+
+    def test_three_places_go_on_as_given(self):
+        load = self.load("D-1", "48.980", CreelSide.WARP, 9)
+        load.refresh_from_db()
+        self.assertEqual((load.kg, self.doffs["D-1"].on_hand_at(self.plant)),
+                         (Decimal("48.980"), Decimal("51.0200")))
