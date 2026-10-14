@@ -28,9 +28,11 @@ from apps.core.models import DocumentSequence
 
 from .models import Disposition, Inspection, ReleaseStatus
 from .release import (
+    LINEAGE_DEPTH,
     RELEASING,
     latest_inspection,
     lots_made_from,
+    one_question,
     open_recall,
     recall_plan,
     release_status,
@@ -86,41 +88,77 @@ def recall(verdict, by=None):
     Inspection.post() with the batch and every lot made from it locked.
 
     A lot held by its own verdict already, or with a recall open, is not
-    recalled again. A lot with no plan to file a recall under (no
-    inspection of its own and none in force) is held all the same, by the
-    gate; it is not told.
+    recalled again. Two things are said rather than passed over, by one
+    to-do on the verdict itself: a lot held with no inspection plan to
+    file a recall under (it has no inspection of its own and its item no
+    plan in force), and lots the walk did not follow past LINEAGE_DEPTH
+    levels. A recall that stopped without saying so would read as complete.
     """
     from .decisions import tell_the_quality_manager
 
-    source, made = verdict.lot, []
-    for lot in lots_made_from(verdict.lot):
-        if release_status(lot) != ReleaseStatus.HELD or open_recall(lot) is not None:
-            continue
-        own = latest_inspection(lot)
-        if own is not None and own.disposition not in RELEASING:
-            continue
-        plan = recall_plan(lot)
-        if plan is None:
-            continue
-        today = timezone.localdate()
-        recall_of = Inspection(
-            lot=lot, plan=plan, inspected_on=today, disposition=Disposition.AWAITING,
-            recalled_by=verdict, posted=True, posted_at=timezone.now(),
-            number=DocumentSequence.next_for("quality.inspection", today, name="Inspections",
-                                             prefix="QC-"),
-        )
-        recall_of.notes = _body(lot, source, verdict, own, recall_of.number)
-        recall_of.save()
-        told = tell_the_quality_manager(
-            recall_of, f"Decide {recall_of.number}: {lot} recalled, made from {source} ({verdict.number})",
-            link=f"/quality/inspections/{recall_of.pk}", by=by, body=recall_of.notes)
-        said = [f"{lot} is recalled ({recall_of.number})."]
-        if told.told:
-            said.append(f"Told to decide: {', '.join(told.told)}.")
-        said.extend(told.failures())
-        Inspection.objects.filter(pk=recall_of.pk).update(told=" ".join(said))
-        made.append(recall_of)
+    source, made, unfiled, beyond = verdict.lot, [], [], []
+    with one_question():
+        lots = lots_made_from(verdict.lot, depth=LINEAGE_DEPTH, beyond=beyond)
+        for lot in lots:
+            if release_status(lot) != ReleaseStatus.HELD or open_recall(lot) is not None:
+                continue
+            own = latest_inspection(lot)
+            if own is not None and own.disposition not in RELEASING:
+                continue
+            plan = recall_plan(lot)
+            if plan is None:
+                unfiled.append(lot)
+                continue
+            made.append(_recall_one(verdict, lot, own, plan, by))
+    if unfiled or beyond:
+        said = [f"{source} is {verdict_words(verdict)}."]
+        if unfiled:
+            said.append(
+                "Held with it, made from it, and not given a recall to decide because the item has "
+                "no inspection plan to file one under (it goes again when the source does, or once "
+                "it is inspected under a plan): " + "; ".join(_where(lot) for lot in unfiled) + ".")
+        if beyond:
+            said.append(
+                f"Not followed past {LINEAGE_DEPTH} levels, so whatever was made from these is not "
+                "named here; trace each from Stores, Batches: "
+                + ", ".join(str(lot) for lot in beyond) + ".")
+        tell_the_quality_manager(
+            verdict, f"Recall from {source} ({verdict.number}): lots without a recall to decide",
+            link=f"/quality/inspections/{verdict.pk}", by=by, body=" ".join(said))
     return made
+
+
+def _where(lot):
+    unit = lot.item.uom.code if lot.item.uom_id else ""
+    in_stock, gone = where_it_is(lot)
+    stock = (", ".join(f"{_figure(quantity)} {unit} in {warehouse}" for warehouse, quantity in in_stock)
+             or "nothing in stock")
+    went = (", gone: " + ", ".join(f"{_figure(quantity)} {unit} on {reference}" for reference, quantity in gone)
+            if gone else "")
+    return f"{lot} ({stock}{went})"
+
+
+def _recall_one(verdict, lot, own, plan, by):
+    from .decisions import tell_the_quality_manager
+
+    source, today = verdict.lot, timezone.localdate()
+    recall_of = Inspection(
+        lot=lot, plan=plan, inspected_on=today, disposition=Disposition.AWAITING,
+        recalled_by=verdict, posted=True, posted_at=timezone.now(),
+        number=DocumentSequence.next_for("quality.inspection", today, name="Inspections",
+                                         prefix="QC-"),
+    )
+    recall_of.notes = _body(lot, source, verdict, own, recall_of.number)
+    recall_of.save()
+    told = tell_the_quality_manager(
+        recall_of, f"Decide {recall_of.number}: {lot} recalled, made from {source} ({verdict.number})",
+        link=f"/quality/inspections/{recall_of.pk}", by=by, body=recall_of.notes)
+    said = [f"{lot} is recalled ({recall_of.number})."]
+    if told.told:
+        said.append(f"Told to decide: {', '.join(told.told)}.")
+    said.extend(told.failures())
+    Inspection.objects.filter(pk=recall_of.pk).update(told=" ".join(said))
+    return recall_of
 
 
 def recall_stands(recall_of):
