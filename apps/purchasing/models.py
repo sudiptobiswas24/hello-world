@@ -1,6 +1,6 @@
 import datetime
 from collections import defaultdict
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -5950,6 +5950,31 @@ def assembled_from(lot):
     return [source for line in lines for source in consumed_batches(line)]
 
 
+def _returned_note(receipt, line):
+    """What a return writes on the components it puts back for one of its lines."""
+    return f"Components returned with {receipt.number} for line {line.reverses_line_id}, {line.pk}"
+
+
+def _apportion(remaining, total):
+    """
+    `total` shared out in proportion to `remaining`, none above its own,
+    the shares summing to `total`: whole units when every figure is whole
+    (a frame is not returned in fifths), else to the paisa; what rounding
+    leaves goes to the largest remainders, the earliest on a tie.
+    """
+    whole = all(value == value.to_integral_value() for value in [*remaining, total])
+    step = Decimal("1") if whole else Decimal("0.01")
+    base = sum(remaining, Decimal("0"))
+    if base <= 0 or total >= base:
+        return list(remaining)
+    exact = [value * total / base for value in remaining]
+    shares = [(value / step).to_integral_value(rounding=ROUND_FLOOR) * step for value in exact]
+    left = int(((total - sum(shares, Decimal("0"))) / step).to_integral_value())
+    for index in sorted(range(len(exact)), key=lambda i: (shares[i] - exact[i], i))[:left]:
+        shares[index] += step
+    return shares
+
+
 def _consumed_note(receipt, line):
     """
     What a subcontract receipt writes on the components it consumes for
@@ -6143,7 +6168,9 @@ class GoodsReceipt(AuditModel):
         # What each line has received is read and decided on; two receipts
         # against one order must not both see the same room.
         lock_rows(self.purchase_order)
-        lines = list(self.lines.all())
+        # In key order: a return's line puts back what its line's earlier
+        # siblings have not (_restore_components).
+        lines = list(self.lines.order_by("pk"))
         if not lines:
             raise ValidationError("Cannot post a goods receipt with no lines.")
         for line in lines:
@@ -6723,8 +6750,16 @@ class GoodsReceipt(AuditModel):
         order = self.purchase_order
         warehouse = order.subcontract_warehouse
         original = line.reverses_line
-        share = (line.quantity_received / original.quantity_received
-                 if original is not None and original.quantity_received else Decimal("1"))
+        # What of the original line came back before this line: posted
+        # returns, and this return's own lines already put back (post()
+        # walks them in key order).
+        earlier = [
+            back for back in GoodsReceiptLine.objects.filter(reverses_line=original).exclude(
+                pk=line.pk).select_related("receipt")
+            if back.receipt.posted or (back.receipt_id == self.pk and back.pk < line.pk)
+        ] if original is not None else []
+        left = (original.quantity_received - sum((back.quantity_received for back in earlier), Decimal("0"))
+                if original is not None else line.quantity_received)
         restored = Decimal("0")
         for component in line.order_line.components.select_related("item"):
             if not component.item.track_inventory:
@@ -6742,16 +6777,27 @@ class GoodsReceipt(AuditModel):
             if not taken:
                 taken = [movement for movement in [consumed.first()] if movement is not None]
             if taken:
-                # Back to the batches they came out of, each its share, the
-                # last taking what rounding leaves of the whole.
-                back = round_money(sum((-movement.quantity for movement in taken), Decimal("0")) * share)
-                rows, given = [], Decimal("0")
-                for index, movement in enumerate(taken):
-                    quantity = (back - given if index == len(taken) - 1
-                                else round_money(-movement.quantity * share))
-                    given += quantity
-                    rows.append((movement.lot, movement.bin, quantity,
-                                 movement.unit_cost or Decimal("0")))
+                # Each batch what it gave less what it has had back, shared
+                # in proportion to that: total first, divide last. Each
+                # return's share rounded on its own gave F-2 back 2.01 of
+                # the 2 it gave, three returns of one (O149); the last
+                # return now puts back exactly what is left.
+                # A return from before this wrote no line on its rows; found as it was.
+                put_back = StockMovement.objects.filter(
+                    item=component.item, warehouse=warehouse, movement_type=MovementType.RECEIPT,
+                    notes__in=[note for back in earlier for note in (
+                        _returned_note(back.receipt, back), f"Components returned with {back.receipt.number}")],
+                )
+                remaining = []
+                for movement in taken:
+                    had = put_back.filter(lot=movement.lot, bin=movement.bin).aggregate(
+                        total=models.Sum("quantity"))["total"] or Decimal("0")
+                    remaining.append(-movement.quantity - had)
+                owed = sum(remaining, Decimal("0"))
+                total = owed if line.quantity_received >= left else round_money(
+                    owed * line.quantity_received / left)
+                rows = [(movement.lot, movement.bin, quantity, movement.unit_cost or Decimal("0"))
+                        for movement, quantity in zip(taken, _apportion(remaining, total))]
             else:
                 # A receipt from before consumption was recorded this way.
                 rows = [(None, None, round_money(component.quantity_per * line.quantity_received),
@@ -6767,7 +6813,7 @@ class GoodsReceipt(AuditModel):
                     lot=lot, bin=storage_bin, quantity=quantity, unit_cost=cost,
                     reference=self.number,
                     occurred_at=timezone.now(),
-                    notes=f"Components returned with {self.number}",
+                    notes=_returned_note(self, line),
                 )
                 restored += quantity * cost
         return restored / line.quantity_received
