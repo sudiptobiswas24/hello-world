@@ -6036,6 +6036,12 @@ class GoodsReceipt(AuditModel):
     )
     posted = models.BooleanField(default=False)
     posted_at = models.DateTimeField(null=True, blank=True)
+    posted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        editable=False,
+        help_text="Who posted it, which is who received the goods as much as whoever keyed it: "
+                  "neither decides a concession on them. Blank on receipts posted before it was kept.",
+    )
     # Kept, as every document keeps what it posted: corrected by a return, never by reversing its
     # entries from the journal (JournalEntry.recorded_by).
     journal_entry = models.ForeignKey(
@@ -6172,10 +6178,20 @@ class GoodsReceipt(AuditModel):
             raise ValidationError("Posted goods receipts cannot be deleted. Create a return instead.")
         super().delete(*args, **kwargs)
 
+    def received_by(self):
+        """
+        The logins that received these goods: whoever keyed the receipt or
+        its lines, and whoever posted it. None of them decides a concession
+        on what came in, nor is told to (review F2): posting stamps no
+        author, so the person who posted it was told to decide it.
+        """
+        return authors(self, "lines") | ({self.posted_by_id} if self.posted_by_id else set())
+
     @serialised("posted", held_first=True)
-    def post(self):
+    def post(self, by=None):
         if self.posted:
             raise ValidationError("This goods receipt is already posted.")
+        self.posted_by = by
         # What each line has received is read and decided on; two receipts
         # against one order must not both see the same room.
         lock_rows(self.purchase_order)
@@ -6414,7 +6430,7 @@ class GoodsReceipt(AuditModel):
         super(GoodsReceipt, self).save(
             update_fields=[
                 "number", "receipt_date", "exchange_rate", "posted",
-                "posted_at", "journal_entry", "price_difference_entry", "updated_at",
+                "posted_at", "posted_by", "journal_entry", "price_difference_entry", "updated_at",
             ]
         )
         # Received and held, the Quality Manager decides (decision 22): a
@@ -6428,7 +6444,7 @@ class GoodsReceipt(AuditModel):
             self.quality_told = tell_the_quality_manager(
                 self, f"Decide {self.number}: {len(held)} line(s) of assemblies made from a batch "
                       f"quality holds, from {self.purchase_order.vendor}",
-                link=f"/purchasing/goods-in/{self.pk}", barred=authors(self, "lines"),
+                link=f"/purchasing/goods-in/{self.pk}", barred=self.received_by(),
                 body="\n".join(row["why"] for row in held))
 
     def _freeze_accrual(self, line):
@@ -6682,7 +6698,7 @@ class GoodsReceipt(AuditModel):
                     "from, is held by quality. Accepting them is a concession: it needs the name of "
                     "whoever decides it and a reason."
                 )
-            check_not_raised_by(by, authors(self, "lines"), self)
+            check_not_raised_by(by, self.received_by(), self)
             # The Quality Manager's, as any decision on a batch quality
             # rejected is (decision 22), not every holder of the receipt
             # inspection's right.

@@ -460,7 +460,7 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def post_receipt(self, request, pk=None):
         receipt = self.get_object()
         try:
-            receipt.post()
+            receipt.post(by=request.user)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         # Received and held says so in the answer, with why (O135, O148).
