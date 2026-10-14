@@ -4,7 +4,7 @@ import re
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
@@ -12,6 +12,8 @@ UDYAM = re.compile(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$")
 
 from apps.core.models import (
     AuditModel,
+    answer_to_its_document,
+    documents_it_answers_to,
     Country,
     Currency,
     DocumentSequence,
@@ -1507,11 +1509,19 @@ class BankStatementLine(AuditModel):
     def is_resolved(self):
         return bool(self.payment_id or self.journal_entry_id or self.returned_payment_id or self.booked_entry_id)
 
+    def locked_before_it(self):
+        """The statements it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "statement")
+
+    def _check_open(self):
+        # Under the statement's lock, which close() holds while it reads the lines: asked unlocked, a
+        # line was unmatched as its statement closed, and the statement closed over it unexplained (O63).
+        answer_to_its_document(self, "statement", "This statement is closed. Reopen it to make changes.",
+                               fixed=lambda statement: statement.closed)
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.statement_id and BankStatement.objects.filter(
-            pk=self.statement_id, closed=True
-        ).exists():
-            raise ValidationError("This statement is closed. Reopen it to make changes.")
+        self._check_open()
         if not self._state.adding:
             # Matching checked the amount against the payment, and posting
             # booked it; changed afterwards, the line says one thing and
@@ -1524,14 +1534,14 @@ class BankStatementLine(AuditModel):
                                       "changing it.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.statement.closed:
-            raise ValidationError("This statement is closed. Reopen it to make changes.")
+        self._check_open()
         if self.journal_entry_id:
             raise ValidationError("This line was posted to the ledger; reverse it first.")
         super().delete(*args, **kwargs)
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
     def match(self, payment):
         """Say this line is that payment."""
         if self.is_resolved():
@@ -1569,7 +1579,7 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["payment", "updated_at"])
         return self
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
     def match_entry(self, entry):
         """
         Say this line is money a document already booked through the bank (a
@@ -1593,7 +1603,7 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["booked_entry", "updated_at"])
         return self
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
     def unmatch(self):
         if self.journal_entry_id:
             raise ValidationError("This line was posted, not matched. Reverse it instead.")
@@ -1610,7 +1620,7 @@ class BankStatementLine(AuditModel):
         self.payment = self.returned_payment = None
         self.save(update_fields=["payment", "returned_payment", "updated_at"])
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
     def post_to(self, account, party=None, memo=""):
         """
         Explain a line that is not a payment at all — a bank charge,
@@ -1655,7 +1665,7 @@ class BankStatementLine(AuditModel):
         self.save(update_fields=["journal_entry", "updated_at"])
         return entry
 
-    @serialised("payment", "journal_entry", "returned_payment", "booked_entry")
+    @serialised("payment", "journal_entry", "returned_payment", "booked_entry", held_first=True)
     def reverse_posting(self, on_date=None):
         """
         Take back a line posted to the wrong account. `unmatch` said to
