@@ -12,11 +12,11 @@ One server, four containers, started together by `docker compose`:
 | `db` | PostgreSQL 16 | the `pgdata` volume |
 | `web` | the application (gunicorn, 3 workers) | nothing; it is rebuilt from the code |
 | `proxy` | Caddy: HTTPS, and the only thing listening on ports 80/443 | the `caddy_data` volume (certificates) |
-| `backup` | a nightly `pg_dump` | `./backups` next to this file |
+| `backup` | a nightly `pg_dump` and an archive of the attachments | `./backups` next to this file |
 
-The database is the whole of the business state. Nothing is uploaded
-or stored on disk anywhere else, so a database backup is a complete
-backup.
+The business state is in two places: the database, and the files
+attached to records (a PO copy, an LR scan), which live in the `media`
+volume. A complete backup is both, and the nightly one takes both.
 
 ## The server
 
@@ -278,9 +278,19 @@ sign-in). Point whatever monitoring the plant has at it.
 
 ## Backups
 
-Every night at `BACKUP_AT` the `backup` container writes
-`backups/erp_YYYY-MM-DD_HHMM.dump`, and deletes those older than
-`BACKUP_KEEP_DAYS`. Check that it is working:
+Every night at `BACKUP_AT` the `backup` container writes one backup as
+two files with the same stamp, and deletes those older than
+`BACKUP_KEEP_DAYS`:
+
+| file | what is in it |
+|---|---|
+| `backups/erp_YYYY-MM-DD_HHMM.dump` | the whole database (PostgreSQL custom format) |
+| `backups/erp_YYYY-MM-DD_HHMM.media.tar.gz` | every attached file, from the `media` volume |
+
+Neither is a backup without the other: the database says a file is
+attached, and only the archive holds it. Copy them together. The log
+line for each backup names both files and how many attachments it holds.
+Check that it is working:
 
 ```sh
 ls -lh backups/
@@ -293,12 +303,6 @@ For a backup right now (before an update, before an import):
 docker compose run --rm backup now
 ```
 
-Files attached to records (a PO copy, an LR scan) are not in the
-database: they live in the `media` volume. Back it up with the dumps
-(`docker compose cp web:/app/media backups/media`, or copy the volume
-with the same tool that copies `backups/`); a restore without it leaves
-every record saying "attached" with nothing to open.
-
 **These backups sit on the same disk as the database.** They protect
 against a bad import or a mistaken deletion. They do not protect against
 the disk failing, fire or theft. Copy `backups/` off the machine every
@@ -307,8 +311,9 @@ is the plant's choice. Having none is the one choice that is wrong.
 
 ### Restoring
 
-Restoring replaces everything with the backup, and everything entered
-since then is lost.
+Restoring replaces the database and the attachments with the backup,
+and everything entered or attached since then is lost. Name the `.dump`;
+the archive with the same stamp beside it is restored with it.
 
 ```sh
 docker compose stop web
@@ -317,7 +322,11 @@ docker compose start web
 ```
 
 It asks for `yes` before it touches anything, and refuses a file that is
-not a readable backup.
+not a readable backup or an archive that is not readable. A dump with no
+archive beside it (one taken before attachments were backed up) is
+refused too, since the attachments would be left as they are now rather
+than as they were; `RESTORE_WITHOUT_MEDIA=yes` restores the database
+alone when that is what is meant.
 
 ### Proving a backup restores
 
@@ -328,8 +337,16 @@ month, restore the latest into a scratch database and look at it:
 docker compose exec db createdb -U erp erp_check
 docker compose exec -T db pg_restore -U erp -d erp_check --no-owner < backups/<newest file>.dump
 docker compose exec db psql -U erp -d erp_check -c "select count(*) from accounting_journalentry"
+docker compose exec db psql -U erp -d erp_check -c "select count(*) from core_attachment"
 docker compose exec db dropdb -U erp erp_check
+tar -tzf backups/<newest file>.media.tar.gz | grep -vc '/$'
 ```
+
+The two counts should agree in kind: as many files in the archive as the
+attachments the database lists (more, if old files were replaced). An
+archive with none while records say "attached" is a backup that lost
+them. `apps/core/tests_backup.py` takes a backup, deletes an attachment
+and restores it, on PostgreSQL, with these same scripts.
 
 ## Updating to a new version
 
