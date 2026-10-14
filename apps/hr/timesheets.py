@@ -334,6 +334,10 @@ class TimesheetEntry(AuditModel):
                 f"leave on {self.date}; time cannot also be claimed for it."
             )
 
+    def locked_before_it(self):
+        """The employee, as save() takes it before the entry: an edit through the API holds it first (O37)."""
+        return [self.timesheet.employee] if self.timesheet_id else []
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         if self.timesheet_id:

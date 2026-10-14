@@ -1619,6 +1619,14 @@ class StatutoryRemittance(AuditModel):
     def __str__(self):
         return f"{self.liability_account.code} {self.period:%b %Y} {self.amount}"
 
+    def locked_before_it(self):
+        """
+        The liability account, then the payment, as save() takes them (lock_rows' order): an edit
+        through the API holds them before the remittance (O37).
+        """
+        return [self.liability_account if self.liability_account_id else None,
+                self.payment if self.payment_id else None]
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         if self.pk:
