@@ -103,8 +103,12 @@ def check_may_know(actor, user):
             "email are set by someone who does, or once the proposal is decided.")
 
 
-def issue_password(actor, user, password):
-    """`actor` sets `user`'s password, checked as any password is, and is kept as knowing it (roles.KeptCredential)."""
+def issue_password(actor, user, password, as_confirmer=False):
+    """
+    `actor` sets `user`'s password, checked as any password is, and is kept
+    as knowing it (roles.KeptCredential): as a keeper, or `as_confirmer`
+    with a role's confirm.
+    """
     check_may_know(actor, user)
     try:
         password_validation.validate_password(password, user)
@@ -112,7 +116,7 @@ def issue_password(actor, user, password):
         raise DRFValidationError({"password": refused.messages})
     user.set_password(password)
     user.save(update_fields=["password"])
-    record_credential(user, KeptCredential.PASSWORD, actor)
+    record_credential(user, KeptCredential.PASSWORD, actor, as_confirmer=as_confirmer)
 
 
 class TrustedEmailResetForm(PasswordResetForm):
@@ -212,6 +216,7 @@ class UserSerializer(serializers.ModelSerializer):
         user = User.objects.create_user(password=password, **validated_data)
         me = self.context["request"].user
         # Set before any role is proposed: one confirmed later lapses them (roles.lapse_on_giving).
+        record_credential(user, KeptCredential.LOGIN, me)
         record_credential(user, KeptCredential.PASSWORD, me)
         if user.email:
             record_credential(user, KeptCredential.EMAIL, me)

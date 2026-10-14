@@ -45,7 +45,7 @@ class RoleProposalSerializer(serializers.ModelSerializer):
         return _who(proposal.decided_by)
 
     def get_credentials(self, proposal):
-        return " ".join(credentials_in_words(proposal.user)) if proposal.status == "pending" else ""
+        return " ".join(credentials_in_words(proposal)) if proposal.status == "pending" else ""
 
     def get_may_confirm(self, proposal):
         return proposal.status == "pending" and proposal.may_confirm(self.context["request"].user) is None
@@ -105,7 +105,7 @@ class RoleProposalViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
             response = self._decided(request, "confirm")
             if password:
                 proposal = RoleProposal.objects.select_related("user").get(pk=response.data["id"])
-                issue_password(request.user, proposal.user, password)
+                issue_password(request.user, proposal.user, password, as_confirmer=True)
         return response
 
     @action(detail=True, methods=["post"])

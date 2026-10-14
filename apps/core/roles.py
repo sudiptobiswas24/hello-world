@@ -24,10 +24,12 @@ login is given a role the setter could not give, by any door (the
 `m2m_changed` receiver), the password stops working and the email is
 no longer trusted for a reset (`lapse_on_giving`). Any right does it,
 not only a role: a permission of its own or the admin site given in the
-admin (O198). What is kept of a password is a keyed digest of its hash,
-never the hash (`fingerprint`); one set before the record began is kept
-with no setter and said in words to whoever confirms a role for the
-login (`credentials_in_words`). A proposal lapses
+admin (O198). Who set a password is kept when it is set and ends at
+its next change, never read off the hash, which is not kept; who made
+the login is kept too, and no password change ends it (review F1, F3,
+F8). A setter switched off or demoted knows nothing it set (review F2).
+One set before the record began is kept with no setter and said in
+words to whoever confirms a role for the login (`credentials_in_words`). A proposal lapses
 with its login switched off (O193) or its proposer no longer keeping
 logins (O192): `RoleProposal.lapsed`, asked live, and marked by
 `lapse_what_died` where the keeper's own actions switch either off.
@@ -41,7 +43,6 @@ from django.db.models import Q
 from django.db.models.signals import m2m_changed, post_save
 from django.dispatch import receiver
 from django.utils import timezone
-from django.utils.crypto import salted_hmac
 
 from .models import serialised
 
@@ -142,9 +143,10 @@ class RoleProposal(models.Model):
         # Nor through a login one of them signs in as (O195).
         for who in (user, proposer):
             if acts_as(who, by):
-                return f"{who} set your password or email, and so signs in as you: someone else confirms it."
+                return f"{who} made your login or set your password or email, and so signs in as you: someone else confirms it."
         if acts_as(user, proposer):
-            return (f"{user} set the password or email of {proposer}, who proposed it: proposed through a login "
+            return (f"{user} made the login of {proposer}, who proposed it, or set its password or email: proposed "
+                    f"through a login "
                     f"{user} signs in as, it is {user}'s own proposal for themselves.")
         if not may_give(by, self.group):
             return f"{self.group} is confirmed by someone who holds it, and you do not."
@@ -187,14 +189,18 @@ class RoleProposal(models.Model):
 
 def who_knows(login):
     """
-    The logins that can sign in as `login` (O195): whoever set its
-    password or email, still in force (KeptCredential), and whoever can
-    sign in as them, and so on.
+    The logins that can sign in as `login` (O195): whoever made it or set
+    its password or email, still in their reach (KeptCredential), and
+    whoever can sign in as them, and so on. Who made it is a fact its own
+    password change does not end (review F1: puppet set its "own"
+    password, which was HR's, and proposed for HR again).
     """
     known, frontier = set(), {login.pk}
     while frontier:
-        rows = KeptCredential.objects.filter(user__in=frontier, lapsed=False, set_by__isnull=False).select_related("user")
-        frontier = {row.set_by_id for row in rows if row.in_force(row.user)} - known - {login.pk}
+        rows = (KeptCredential.objects.filter(user__in=frontier, lapsed=False, set_by__isnull=False)
+                .select_related("user", "set_by"))
+        frontier = {row.set_by_id for row in rows if row.in_force(row.user) and _reached(row, row.user)}
+        frontier -= known | {login.pk}
         known |= frontier
     return known
 
@@ -233,8 +239,8 @@ def give_or_propose(actor, user, group):
     if actor.pk == user.pk:
         raise ValidationError("Roles on your own login are someone else's to give.")
     if acts_as(user, actor):
-        raise ValidationError(f"{user} set your password or email, and so signs in as you: what you give or "
-                              f"propose for {user} would be {user}'s own doing. Someone else does it.")
+        raise ValidationError(f"{user} made your login or set your password or email, and so signs in as you: what "
+                              f"you give or propose for {user} would be {user}'s own doing. Someone else does it.")
     if user.groups.filter(pk=group.pk).exists():
         return None
     if not may_give(actor, group) and not may_propose(actor):
@@ -277,35 +283,43 @@ def lapse_what_died(by, user):
         status=ProposalStatus.LAPSED, decided_by=by, decided_at=timezone.now())
 
 
-# What a kept password is digested with (fingerprint); migration 0033 digests the hashes kept before it the same way.
-KEPT_PASSWORD_SALT = "apps.core.roles.KeptCredential.password"
-
-
-def fingerprint(password_hash):
-    """A keyed digest of a password's hash: says whether a login's password is still the one set, and is no copy of it (O198)."""
-    return salted_hmac(KEPT_PASSWORD_SALT, password_hash, algorithm="sha256").hexdigest()
-
-
 class KeptCredential(models.Model):
     """
-    A login's password or email as someone other than its person set it
-    (O157): they know it. `value` is what was set: the password's
-    fingerprint (never its hash, O198), or the address. Once the login's
-    own differs, nobody else knows it. `set_by` None: set before who set
-    it was kept (migration 0033); said in words, never lapsed, since it
-    may be its person's own (credentials_in_words).
+    Who other than a login's person can sign in as it (O157, O195): who
+    made the login (LOGIN), who set its password (PASSWORD), who set its
+    email (EMAIL). Facts kept at the event, never worked out again from
+    the password's hash, and no copy of the hash is kept (O198; review F3
+    and F8: a re-hash at sign-in, or a new SECRET_KEY, forgot the keeper).
+
+    A PASSWORD row ends at the next change of the password, by anyone
+    (`_a_saved_login`: the person's own through set_password or the
+    password-change page, a keeper's, a reset); whoever issues the next
+    one is kept for it. An EMAIL row holds while the address is the one
+    set. A LOGIN row ends with neither: the maker chose the first password
+    and could change it as the login, so the login's "own" password may
+    be the maker's (review F1). Each lapses once what it reached is out of
+    its setter's reach (lapse_on_giving: the login given what the setter
+    could not give, which for a LOGIN row is the way back: someone other
+    than its maker confirming a role above them; lapse_with_the_setter: a
+    setter switched off or losing the right, review F2). A lapse makes the
+    password unusable and the email untrusted for a reset. `set_by` None:
+    set before who set it was kept (migration 0033), said in words to the
+    confirmer, never lapsed.
     """
 
-    PASSWORD, EMAIL = "password", "email"
+    PASSWORD, EMAIL, LOGIN = "password", "email", "login"
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="kept_credentials")
-    kind = models.CharField(max_length=8, choices=[(PASSWORD, "Password"), (EMAIL, "Email")])
-    value = models.CharField(max_length=254)
+    kind = models.CharField(max_length=8, choices=[(PASSWORD, "Password"), (EMAIL, "Email"), (LOGIN, "Login made")])
+    # The address, for an email. Nothing for a password or a login: never the hash.
+    value = models.CharField(max_length=254, blank=True)
     set_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
                                related_name="+")
     set_at = models.DateTimeField(default=timezone.now)
-    # Given a role `set_by` could not give: a password made unusable, an email not trusted for a reset.
+    # Out of its setter's reach: a password made unusable, an email not trusted for a reset.
     lapsed = models.BooleanField(default=False)
+    # Issued by whoever confirmed a role for the login (RoleProposal confirm), not by a keeper of logins.
+    as_confirmer = models.BooleanField(default=False)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["user", "kind"], name="one_kept_credential_per_kind")]
@@ -314,94 +328,172 @@ class KeptCredential(models.Model):
         return f"{self.user}'s {self.kind}, set by {self.set_by or 'someone not on record'}"
 
     def in_force(self, user):
-        """Whether the login's own is still what `set_by` set."""
-        if self.kind == self.PASSWORD:
-            return user.has_usable_password() and fingerprint(user.password) == self.value
-        return bool(self.value) and user.email.lower() == self.value.lower()
+        """Whether it still stands: not lapsed, and an email still the login's address."""
+        if self.lapsed:
+            return False
+        if self.kind == self.EMAIL:
+            return bool(self.value) and user.email.lower() == self.value.lower()
+        return True
 
 
-def record_credential(user, kind, by):
-    """`by` set `user`'s password or email (KeptCredential.PASSWORD or EMAIL): kept, unless it is their own."""
-    if by.pk == user.pk:
-        KeptCredential.objects.filter(user=user, kind=kind).delete()
+def record_credential(user, kind, by, as_confirmer=False):
+    """
+    `by` set `user`'s password or email, or made the login (KeptCredential's
+    kinds), as a keeper of logins or, `as_confirmer`, with a role's confirm:
+    kept, unless it is their own.
+    """
+    if by is None or by.pk == user.pk:
+        # Their own password ended the last one as it was saved (_a_saved_login); their own address ends its record.
+        if kind == KeptCredential.EMAIL:
+            KeptCredential.objects.filter(user=user, kind=kind).delete()
         return
-    value = fingerprint(user.password) if kind == KeptCredential.PASSWORD else user.email
     KeptCredential.objects.update_or_create(user=user, kind=kind, defaults={
-        "value": value, "set_by": by, "set_at": timezone.now(), "lapsed": False})
+        "value": user.email if kind == KeptCredential.EMAIL else "", "set_by": by, "set_at": timezone.now(),
+        "lapsed": False, "as_confirmer": as_confirmer})
+
+
+def _reached(kept, user):
+    """
+    Whether `kept`'s setter still reaches `user`. A maker: until the login
+    holds what they could not give. A password or email: while its setter
+    is switched on, still holds the right it was set with (keeping logins,
+    or confirming roles) and could give everything the login holds
+    (held_beyond). A keeper demoted or switched off knows none it set
+    (review F2), as a proposal lapses with its proposer (O192).
+    """
+    setter = kept.set_by
+    if kept.kind == KeptCredential.LOGIN:
+        return not held_beyond(setter, user)
+    right = setter.has_perm("core.confirm_roleproposal") if kept.as_confirmer else may_propose(setter)
+    return setter.is_active and right and not held_beyond(setter, user)
+
+
+def _lapse(kept, user):
+    """
+    What `kept.set_by` set or made stops working: a password is made
+    unusable; a login's maker loses its password too (unless someone else
+    issued the one it has: its "own" may be the maker's) and its email,
+    unless someone else set it, is no longer trusted for a reset.
+    """
+    if kept.kind in (KeptCredential.PASSWORD, KeptCredential.LOGIN):
+        issued = KeptCredential.objects.filter(user=user, kind=KeptCredential.PASSWORD, lapsed=False,
+                                               set_by__isnull=False).exclude(set_by=kept.set_by_id).exists()
+        if (kept.kind == KeptCredential.PASSWORD or not issued) and user.has_usable_password():
+            user.set_unusable_password()
+            user.save(update_fields=["password"])
+    if kept.kind == KeptCredential.LOGIN and user.email:
+        email = KeptCredential.objects.filter(user=user, kind=KeptCredential.EMAIL).first()
+        if email is None or not email.in_force(user) or email.set_by_id in (None, kept.set_by_id):
+            KeptCredential.objects.update_or_create(user=user, kind=KeptCredential.EMAIL, defaults={
+                "value": user.email, "set_by": kept.set_by, "set_at": timezone.now(), "lapsed": True})
+    kept.lapsed = True
+    kept.save(update_fields=["lapsed"])
 
 
 def lapse_on_giving(user):
     """
     `user` was given a right, by any door: a role, a permission of its
-    own, the admin site or a superuser's standing (O198: the admin gave
-    the last three and the keeper's password kept working). What someone
-    who could not have given what it now holds (held_beyond) set on the
-    login stops working. Its password is made unusable (whoever may keep
-    the login issues the next one); its email is not trusted for a reset
-    until someone who may keep the login sets it again.
+    own, the admin site or a superuser's standing (O198). What a setter
+    no longer reaches (_reached) stops working (_lapse).
     """
     user = User.objects.get(pk=user.pk)
     for kept in KeptCredential.objects.filter(user=user, lapsed=False, set_by__isnull=False).select_related("set_by"):
-        if not kept.in_force(user) or not held_beyond(kept.set_by, user):
-            continue
-        if kept.kind == KeptCredential.PASSWORD:
-            user.set_unusable_password()
-            user.save(update_fields=["password"])
-        kept.lapsed = True
-        kept.save(update_fields=["lapsed"])
+        if kept.in_force(user) and not _reached(kept, user):
+            _lapse(kept, User.objects.get(pk=user.pk))
+
+
+def lapse_with_the_setter(setter):
+    """
+    `setter` lost a right or was switched off (review F2): every password
+    or email it set that it no longer reaches (_reached) stops working. What it made stays its: the login's own password may be the
+    maker's, and the way back is someone else confirming a role for it.
+    """
+    setter = User.objects.get(pk=setter.pk)
+    for kept in (KeptCredential.objects.filter(set_by=setter, lapsed=False).exclude(kind=KeptCredential.LOGIN)
+                 .select_related("user")):
+        kept.set_by = setter
+        if kept.in_force(kept.user) and not _reached(kept, kept.user):
+            _lapse(kept, kept.user)
 
 
 def trusted_for_reset(user):
-    """Whether a reset mail may go to `user`'s email: not one set by someone since out-ranked (lapse_on_giving)."""
+    """Whether a reset mail may go to `user`'s email: not one set by someone since out of reach (_lapse)."""
     return not KeptCredential.objects.filter(user=user, kind=KeptCredential.EMAIL, lapsed=True,
                                              value__iexact=user.email).exists()
 
 
-def credentials_in_words(user):
+def credentials_in_words(proposal):
     """
-    Who may know `user`'s password and email, in words, for whoever is
-    asked to confirm a role for it. What a keeper set lapses when the role
-    is given (lapse_on_giving); what was set before who set it was kept is
-    only said (O198), since it may be its person's own.
+    Who other than its person may sign in as the login a role is proposed
+    for, and as the login that proposed it, in words, for whoever is asked
+    to confirm it (O195, O198). What a keeper set lapses when the role is
+    given; what was set before who set it was kept is only said, since it
+    may be its person's own.
     """
     said = []
-    for kept in KeptCredential.objects.filter(user=user, lapsed=False).select_related("set_by"):
-        if not kept.in_force(user):
-            continue
-        what = "password" if kept.kind == KeptCredential.PASSWORD else "email"
-        if kept.set_by_id is None:
-            said.append(f"Who set {user}'s {what} is not on record: it was set before the office kept who sets one, "
-                        "and whoever set it may still sign in as it. Issue the next password with the confirm "
-                        "unless it was its person's own.")
-        else:
-            said.append(f"{kept.set_by} set {user}'s {what}; it stops working once a role {kept.set_by} "
-                        "could not give is confirmed.")
+    for login in (proposal.user, proposal.proposed_by):
+        for kept in KeptCredential.objects.filter(user=login).select_related("set_by").order_by("kind"):
+            if not kept.in_force(login):
+                continue
+            what = {KeptCredential.PASSWORD: "password", KeptCredential.EMAIL: "email",
+                    KeptCredential.LOGIN: "login"}[kept.kind]
+            verb = "made" if kept.kind == KeptCredential.LOGIN else "set"
+            if kept.set_by_id is None:
+                if login.pk == proposal.user_id:
+                    said.append(f"Who set {login}'s {what} is not on record: it was set before the office kept who "
+                                "sets one, and whoever set it may still sign in as it. Issue the next password with "
+                                "the confirm unless it was its person's own.")
+            elif login.pk == proposal.user_id:
+                said.append(f"{kept.set_by} {verb} {login}'s {what}; it stops working once a role {kept.set_by} "
+                            "could not give is confirmed.")
+            else:
+                said.append(f"{kept.set_by} {verb} {login}'s {what}, so may sign in as {login}, who proposed this.")
     return said
 
 
 @receiver(m2m_changed, sender=User.groups.through)
 @receiver(m2m_changed, sender=User.user_permissions.through)
-def _credentials_lapse_with_a_new_right(sender, instance, action, reverse, pk_set, **kwargs):
-    """Every door that gives a role or a permission of its own (a confirm, a grant, the admin, group.user_set)."""
-    if action != "post_add" or not pk_set:
+def _a_login_gaining_or_losing_a_right(sender, instance, action, reverse, pk_set, **kwargs):
+    """Every door that gives or takes a role or a permission of its own (a confirm, a grant, the admin, user_set)."""
+    if action not in ("post_add", "post_remove", "post_clear"):
         return
-    for user in (User.objects.filter(pk__in=pk_set) if reverse else [instance]):
-        lapse_on_giving(user)
+    for user in (list(User.objects.filter(pk__in=pk_set or ())) if reverse else [instance]):
+        if action == "post_add":
+            lapse_on_giving(user)
+        else:
+            lapse_with_the_setter(user)
 
 
 @receiver(m2m_changed, sender=Group.permissions.through)
-def _credentials_lapse_with_a_role_widened(sender, instance, action, reverse, pk_set, **kwargs):
-    """A permission added to a role is given to everyone holding it."""
-    if action != "post_add" or not pk_set:
+def _a_role_widened_or_narrowed(sender, instance, action, reverse, pk_set, **kwargs):
+    """A permission added to a role is given to everyone holding it; one taken, taken from them."""
+    if action not in ("post_add", "post_remove", "post_clear"):
         return
-    groups = Group.objects.filter(pk__in=pk_set) if reverse else [instance]
-    for user in User.objects.filter(groups__in=groups, kept_credentials__lapsed=False).distinct():
-        lapse_on_giving(user)
+    groups = list(Group.objects.filter(pk__in=pk_set or ())) if reverse else [instance]
+    holders = User.objects.filter(groups__in=groups).distinct()
+    if action == "post_add":
+        for user in holders.filter(kept_credentials__lapsed=False).distinct():
+            lapse_on_giving(user)
+    else:
+        for user in holders.filter(pk__in=KeptCredential.objects.filter(lapsed=False).values("set_by")):
+            lapse_with_the_setter(user)
 
 
 @receiver(post_save, sender=User)
-def _credentials_lapse_with_a_standing(sender, instance, created, update_fields=None, **kwargs):
-    """The admin site or a superuser's standing, given by saving the login (the admin's form)."""
-    if created or (update_fields is not None and not {"is_staff", "is_superuser"} & set(update_fields)):
+def _a_saved_login(sender, instance, created, update_fields=None, **kwargs):
+    """
+    A password changed: whoever set the last one no longer knows this one
+    (whoever issued it records it next). Django's set_password leaves
+    `_password` for save(); a re-hash at sign-in clears it first, so is no
+    change (review F3). And the admin site, a superuser's standing or
+    being switched off, given or taken by saving the login.
+    """
+    if created:
         return
-    lapse_on_giving(instance)
+    if getattr(instance, "_password", None) is not None:
+        KeptCredential.objects.filter(user=instance, kind=KeptCredential.PASSWORD).delete()
+    fields = None if update_fields is None else set(update_fields)
+    if fields is None or fields & {"is_staff", "is_superuser"}:
+        lapse_on_giving(instance)
+    if fields is None or fields & {"is_active", "is_staff", "is_superuser"}:
+        lapse_with_the_setter(instance)
