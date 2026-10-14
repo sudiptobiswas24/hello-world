@@ -1667,6 +1667,10 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
         if self.pk:
             from .call_offs import called_off, plain
 
+            # Under the line's lock, after its order, as a call-off is weighed: held only for a cut
+            # on a confirmed order worth less, a cut on a draft or of a line at no price read the
+            # call-offs unlocked, and 90 was called off a line of 80 (O36).
+            self._hold_with_its_orders()
             called = called_off(self)
             if called > self.quantity:
                 raise ValidationError(
