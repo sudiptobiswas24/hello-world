@@ -140,7 +140,7 @@ def register_lot_hold(ask):
         LOT_HOLDS.append(ask)
 
 
-def lot_held(item, lot, warehouse):
+def lot_held(item, lot, warehouse, action="issue"):
     """
     Why this batch may not be drawn from `warehouse`, in words, or "".
 
@@ -149,8 +149,25 @@ def lot_held(item, lot, warehouse):
     the inspection bay, and bundles there were baled (O147). `lot` is None
     for an item kept by no batch, which the bay holds just the same.
     """
-    return next((said for said in (ask(item, lot, warehouse=warehouse) for ask in LOT_HOLDS)
-                 if said), "")
+    return next((said for said in (ask(item, lot, warehouse=warehouse, action=action)
+                                   for ask in LOT_HOLDS) if said), "")
+
+
+def held_because(lot):
+    """
+    Why this batch may not go, in the gate's own words, from each place it
+    is on hand: "" for one that may go from all of them. What a stock list
+    shows beside the batch (O207): held lots stay listed, and say why.
+    Worked out from the gate when asked, never stored.
+    """
+    said = []
+    places = (lot.movements.values("warehouse").annotate(quantity=Sum("quantity"))
+              .filter(quantity__gt=0).order_by("warehouse"))
+    for warehouse in Warehouse.objects.filter(pk__in=[row["warehouse"] for row in places]).order_by("pk"):
+        words = lot_held(lot.item, lot, warehouse, action="go")
+        if words and words not in said:
+            said.append(words)
+    return " ".join(said)
 
 
 def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds_let_through=None,

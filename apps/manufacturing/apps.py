@@ -17,12 +17,12 @@ class ManufacturingConfig(AppConfig):
         from .conversion import bags_converted, liners_sealed
         from .inward import ownership_problems
         from .piecework import kilograms_woven, metres_woven
-        from .rebatch import sources
+        from .rebatch import made_into, sources
         from .shifts import shift_starts
         from .woven import sack_units
 
         register_unit_provider(sack_units)
-        register_lot_sources(sources)
+        register_lot_sources(sources, made_into)
         register_material_checker(material_problems)
         register_ownership_checker(ownership_problems)
         register_piece_measure("metres_woven", "Metres woven", metres_woven)

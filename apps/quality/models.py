@@ -53,6 +53,7 @@ from apps.core.models import (
     answer_to_its_document,
     correction_date,
     documents_it_answers_to,
+    lock_rows,
     serialised,
     to_date,
 )
@@ -516,6 +517,12 @@ class Inspection(AuditModel):
         help_text="Booked off its line at the machines (a doff, a film roll, a bag bundle) outside "
                   "its gauge with a supervisor's PIN. A failure then waits for the Quality Manager "
                   "whatever the plan (decision 23): nobody concedes it on the spot.")
+    recalled_by = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="recalls",
+        editable=False,
+        help_text="A recall (O207): the verdict on a batch this lot was made from that held it "
+                  "after this lot's own release. It measures nothing; it waits for the Quality "
+                  "Manager's decision on this lot.")
 
     class Meta:
         ordering = ["-inspected_on", "-id"]
@@ -673,6 +680,9 @@ class Inspection(AuditModel):
 
     def raised_by(self):
         """The logins that made or changed it or its readings, and the one it says measured it."""
+        if self.recalled_by_id is not None:
+            # A recall is the system's, measured by nobody: nobody is barred from deciding it.
+            return set()
         found = authors(self, "readings")
         measured = getattr(self.inspected_by, "employee_profile", None) if self.inspected_by_id else None
         if measured is not None and measured.user_id:
@@ -714,8 +724,15 @@ class Inspection(AuditModel):
         Quality Manager is theirs to decide: a second verdict beside it,
         passed or not, would decide it for them.
         """
-        from .release import standing_verdicts
+        from .release import lot_and_sources, open_recall, standing_verdicts
 
+        for lot in lot_and_sources(self.lot):
+            waiting = open_recall(lot)
+            if waiting is not None:
+                raise ValidationError(
+                    f"{waiting.number} recalled {lot} and waits for the Quality Manager's decision. "
+                    f"Another verdict on {self.lot} now would decide it for them: they decide "
+                    f"{waiting.number} first.")
         for lot, standing in standing_verdicts(self.lot, lock=True):
             if standing.pk == self.pk:
                 continue
@@ -814,6 +831,12 @@ class Inspection(AuditModel):
                 "Awaiting the Quality Manager's decision is not chosen: it is what a "
                 "failure under an advisory plan posts as. Leave the decision blank."
             )
+        from .release import lot_and_sources, lots_made_from
+
+        # The batch, what it was made from and everything made from it, in
+        # one key order: what this verdict holds is recalled under the same
+        # locks a second verdict on another source of it would take (O207).
+        lock_rows(*lot_and_sources(self.lot), *lots_made_from(self.lot), refresh=False)
         self._check_follows_the_standing_verdict()
         self.result = self._judge()
         # A failure under an advisory plan is not rejected by the system: it
@@ -882,6 +905,15 @@ class Inspection(AuditModel):
             from .release import lot_decided
 
             lot_decided(self.lot, by)
+        from .recall import lift_when_committed, recall
+        from .release import HOLDING
+
+        # Held now, it holds what was made from it (O207); released, it may
+        # free a recall of something made from it.
+        self.recalled = recall(self, by) if self.disposition in HOLDING else []
+        if self.disposition not in HOLDING:
+            lift_when_committed(self.lot, f"{self.lot} was {self.get_disposition_display().lower()} "
+                                          f"by {self.number}.")
         return self
 
     @serialised("posted", "voided_at", "disposition", "decided_at", "decision_login")
@@ -911,6 +943,13 @@ class Inspection(AuditModel):
                                   f"{self.get_disposition_display().lower()}.")
         if by is None or not by.has_perm("quality.decide_inspection"):
             raise ValidationError("The Quality Manager decides a failure under an advisory plan.")
+        if self.recalled_by_id is not None:
+            from .recall import recall_stands
+
+            if not recall_stands(self):
+                raise ValidationError(
+                    f"{self} recalled {self.lot}, and nothing inside it is held any more: its own "
+                    "release stands again, so there is nothing to decide.")
         if disposition not in DECISIONS:
             raise ValidationError("Decide it as one of: use as is (a concession), rework, or reject.")
         if not isinstance(note, str):
@@ -943,6 +982,10 @@ class Inspection(AuditModel):
         from .release import lot_decided
 
         lot_decided(self.lot, by)
+        if disposition == Disposition.CONCESSION:
+            from .recall import lift_when_committed
+
+            lift_when_committed(self.lot, f"{self.lot} was taken as is by {self.number}.")
         return self
 
     @serialised("posted", "voided_at", "disposition", "escalated_on")
@@ -957,6 +1000,13 @@ class Inspection(AuditModel):
             return None
         if today <= self.decision_due_on():
             return None
+        if self.recalled_by_id is not None:
+            from .recall import recall_stands
+
+            if not recall_stands(self):
+                # Lifted, and its lift not yet written: nothing is overdue.
+                self.void("The recall is lifted: nothing inside the batch is held any more.")
+                return None
         from .decisions import tell_the_administrator
 
         told = tell_the_administrator(self, today)
@@ -1014,6 +1064,10 @@ class Inspection(AuditModel):
             from .decisions import close_to_dos
 
             close_to_dos(self, by, f"{self} was voided, so there is nothing to decide: {reason}")
+        from .recall import lift_when_committed
+
+        # The verdict gone, a recall it made may have nothing left to hold (O207).
+        lift_when_committed(self.lot, f"{self.number} was voided: {reason}")
         return self
 
     def save(self, *args, **kwargs):
