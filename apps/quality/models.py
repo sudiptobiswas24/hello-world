@@ -889,11 +889,17 @@ class Inspection(AuditModel):
             raise ValidationError("The Quality Manager decides a failure under an advisory plan.")
         if disposition not in DECISIONS:
             raise ValidationError("Decide it as one of: use as is (a concession), rework, or reject.")
-        note = " ".join((note or "").split())
+        if not isinstance(note, str):
+            raise ValidationError("Say why in words: the note is text.")
+        note = " ".join(note.split())
         if not note:
             raise ValidationError("Say why: the decision is what is asked about when the batch is argued over.")
+        limit = Inspection._meta.get_field("decision_note").max_length
+        if len(note) > limit:
+            raise ValidationError(f"Say why in at most {limit} characters; this is {len(note)}. "
+                                  "Nothing is cut: shorten it, and put the rest in a note on the inspection.")
         check_not_raised_by(by, self.raised_by(), self)
-        self.disposition, self.decision_note = disposition, note[:255]
+        self.disposition, self.decision_note = disposition, note
         try:
             if disposition == Disposition.CONCESSION:
                 self._check_concession(by)
@@ -927,8 +933,11 @@ class Inspection(AuditModel):
         from .decisions import tell_the_administrator
 
         told = tell_the_administrator(self, today)
-        self.escalated_on = today
-        super().save(update_fields=["escalated_on", "updated_at"])
+        if told.told:
+            # Recorded only when somebody was told: one that reached nobody
+            # is tried again on the next run, and says so again.
+            self.escalated_on = today
+            super().save(update_fields=["escalated_on", "updated_at"])
         return told
 
     @serialised("posted", "voided_at", "disposition")
@@ -942,6 +951,14 @@ class Inspection(AuditModel):
         'passed'. One still waiting for the Quality Manager closes their
         to-dos and everyone else's on it: there is nothing left to decide.
         `by` is who voided it, for those to-dos.
+
+        Voiding one that waits takes the hold off with nobody deciding, and
+        voiding one the Quality Manager decided undoes their decision: an
+        Inspector voided a failure and posted a pass, and the batch went with
+        nobody deciding (review Q01). Both are the Quality Manager's
+        (`quality.decide_inspection`), as the decision is. From code naming
+        nobody (a station withdrawing a batch with its output) it is not
+        asked: the batch goes with it.
         """
         if not self.posted:
             raise ValidationError(f"{self} is not posted.")
@@ -953,6 +970,16 @@ class Inspection(AuditModel):
                 "was withdrawn and nobody said why is a batch somebody will "
                 "release again."
             )
+        if by is not None and not by.has_perm("quality.decide_inspection"):
+            if self.disposition == Disposition.AWAITING:
+                raise ValidationError(
+                    f"{self} waits for the Quality Manager's decision. Voided, {self.lot} would go "
+                    "with nobody deciding: the Quality Manager voids it, if it was taken wrong.")
+            if self.decided_at is not None:
+                raise ValidationError(
+                    f"{self} was decided by the Quality Manager "
+                    f"({self.get_disposition_display().lower()}). Voided, their decision would be "
+                    "undone: they void it, if it was taken wrong.")
         self.voided_at = timezone.now()
         self.voided_reason = reason
         super().save(update_fields=["voided_at", "voided_reason", "updated_at"])
@@ -971,6 +998,19 @@ class Inspection(AuditModel):
                     "another."
                 )
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """
+        A posted inspection is not deleted (O10): it is what holds or
+        releases its batch, and gone, the batch reads never inspected, its
+        readings go by cascade and its to-dos stay on nothing. Voided, with
+        a reason, it stays as the record of what was measured.
+        """
+        if Inspection.objects.filter(pk=self.pk, posted=True).exists():
+            raise ValidationError(
+                f"{self} is posted: it is what holds or releases {self.lot}. Void it, with a "
+                "reason, rather than delete it.")
+        return super().delete(*args, **kwargs)
 
 
 class Reading(AuditModel):

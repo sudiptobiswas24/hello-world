@@ -23,7 +23,6 @@ after it rather than a working day later.
 """
 
 import datetime
-import smtplib
 from dataclasses import dataclass, field
 
 from django.contrib.auth import get_user_model
@@ -111,9 +110,11 @@ def _mail(person, record, subject, body, by):
     kind = ContentType.objects.get_for_model(type(record))
 
     def send():
+        # Anything at all: the posting has stood by now, and one mail failing
+        # must neither answer it with an error nor stop the mails after it.
         try:
             deliver(record, address, subject, body or subject, user=by, what="To-do")
-        except (ValidationError, smtplib.SMTPException, OSError) as failed:
+        except Exception as failed:  # noqa: BLE001
             said = " ".join(failed.messages) if isinstance(failed, ValidationError) else str(failed)
             Note.objects.create(content_type=kind, object_id=record.pk,
                                 body=f"The mail of the to-do to {username} did not go: {said}",
@@ -150,19 +151,27 @@ def tell(people, record, summary, due_on, link="", by=None, body=""):
     return told
 
 
-def tell_the_quality_manager(record, summary, link="", by=None, body="", due_on=None):
+def tell_the_quality_manager(record, summary, link="", by=None, body="", due_on=None, barred=()):
     """
     Every active login in the Quality Manager role: a to-do about `record`
     (due the next working day unless `due_on`), and a mail. Returns a
     `Told`: `told`, the usernames given a to-do; `not_mailed`, each one no
-    mail reached and why; `nobody`, said when no login holds the role.
+    mail reached and why; `nobody`, said when no login may decide it.
+
+    `barred`: pks of logins who may not decide `record` (they raised it);
+    not told to decide, and named in `nobody` when they are all there is.
     """
-    people = list(logins_in(QUALITY_MANAGER))
+    holders = list(logins_in(QUALITY_MANAGER))
+    people = [person for person in holders if person.pk not in barred or person.is_superuser]
     told = tell(people, record, summary, due_on or next_working_day(timezone.localdate()),
                 link=link, by=by, body=body)
-    if not people:
+    if not holders:
         told.nobody = ("Nobody signs in as Quality Manager, so nobody has been told to decide: "
                        "tell whoever looks after the logins.")
+    elif not people:
+        names = ", ".join(person.get_username() for person in holders)
+        told.nobody = (f"Nobody who may decide it has been told: {names} raised or changed it, and "
+                       "somebody else decides. Tell whoever looks after the logins.")
     return told
 
 
@@ -192,12 +201,14 @@ def tell_on_posting(inspection, by=None):
             f"{inspection.inspected_on:%d %b %Y}: {failed} outside the plan's limits. The plan is "
             "advisory, so the system has not rejected it: the batch is held until the Quality "
             "Manager decides to use it as is, rework it or reject it.")
+    raised = inspection.raised_by()
     deciders = tell_the_quality_manager(
         inspection, f"Decide {inspection.number}: {inspection.lot} failed ({failed}) and is held",
-        link=link, by=by, body=body, due_on=due)
+        link=link, by=by, body=body, due_on=due, barred=raised)
     asked = set(deciders.told) | set(deciders.not_told)
+    # A Quality Manager who raised it may not decide it: told, for information.
     informed = tell(
-        logins_in(*FOR_INFORMATION).exclude(username__in=asked), inspection,
+        logins_in(QUALITY_MANAGER, *FOR_INFORMATION).exclude(username__in=asked), inspection,
         f"For information: {inspection.lot} is held until the Quality Manager decides {inspection.number}",
         due, link=link, by=by, body=body)
     said = [

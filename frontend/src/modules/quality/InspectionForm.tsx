@@ -6,6 +6,8 @@ type Row = Record<string, unknown> & { id: number };
 const draft = (row: Row) => !row.posted;
 /** A failure under an advisory plan, posted, held for the Quality Manager. */
 const waits = (row: Row) => Boolean(row.posted) && !row.voided_at && row.disposition === "awaiting";
+/** Waiting for the Quality Manager or decided by them: theirs to void. */
+const theirs = (row: Row) => row.disposition === "awaiting" || Boolean(row.decided_at);
 const WHY = [{ key: "note", label: "Why", kind: "text" as const, wide: true }];
 const decision = (label: string, disposition: string, done: string) => ({
   label, path: disposition, permission: "quality.decide_inspection", when: waits, done, fields: WHY,
@@ -56,7 +58,12 @@ export default function InspectionForm() {
         decision("Rework", "rework", "Held for rework"),
         decision("Reject", "reject", "Rejected"),
         { label: "Void", path: "void", permission: "quality.change_inspection", danger: true,
-          when: (row) => Boolean(row.posted) && !row.voided_at, done: "Voided",
+          when: (row) => Boolean(row.posted) && !row.voided_at && !theirs(row), done: "Voided",
+          fields: [{ key: "reason", label: "Why", kind: "text" }] },
+        // Waiting for the Quality Manager, or decided by them: voiding it is theirs (the server asks).
+        { label: "Void", path: "void-theirs", permission: "quality.decide_inspection", danger: true,
+          when: (row) => Boolean(row.posted) && !row.voided_at && theirs(row), done: "Voided",
+          url: (row: Row) => `/api/quality/inspections/${row.id}/void/`,
           fields: [{ key: "reason", label: "Why", kind: "text" }] },
       ]}
       panels={[{

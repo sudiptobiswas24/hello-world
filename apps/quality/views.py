@@ -68,8 +68,18 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     search_fields = ["number", "lot__code", "lot__item__sku", "lot__item__name"]
     date_field = "inspected_on"
     ordering_fields = ["inspected_on", "number"]
+    def get_queryset(self):
+        found = super().get_queryset()
+        # "Awaiting" asked of the list is what still waits: a voided one keeps
+        # the disposition it was posted with, and waits for nobody (review V01).
+        if self.request.query_params.get("disposition") == "awaiting":
+            found = found.filter(posted=True, voided_at__isnull=True)
+        return found
+
     action_permission_map = {
         "post": "quality.change_inspection",
+        # Voiding one that waits for the Quality Manager, or that they decided,
+        # also needs quality.decide_inspection: Inspection.void asks it.
         "void": "quality.change_inspection",
         # The Quality Manager's: an Inspector who may post and void may not decide.
         "decide": "quality.decide_inspection",
