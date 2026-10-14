@@ -400,3 +400,5 @@ class PricedInTheLinesTermsTests(MoneyCase):
         PriceListItem.objects.create(price_list=prices, item=self.item, min_quantity=D("24"), unit_price=D("9"))
         self.assertEqual(self.line(None, self.box, "2").unit_price, D("108.00"), "24 eaches at 9, 12 to a box")
         self.assertEqual(self.line(None, self.box, "1").unit_price, D("120.00"), "12 eaches at 10")
+
+
