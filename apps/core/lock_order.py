@@ -245,18 +245,19 @@ def _named_keys(query):
     return None
 
 
-def _keys_matched(compiler_, query):
+def _keys_matched(compiler_, query, in_order=False):
     """The pks `query`'s filter matches, read with a plain select: the rows its UPDATE or DELETE will lock."""
     from django.db.models.sql.constants import MULTI
     from django.db.models.sql.query import Query
 
     named = _named_keys(query)
     if named is not None:
-        return sorted(named)
+        return list(named) if in_order else sorted(named)
     select = query.chain(klass=Query)
     select.select_for_update = False
     select.select_related = False
-    select.clear_ordering(force=True)
+    if not in_order:
+        select.clear_ordering(force=True)
     select.extra = {}
     select.select = ()
     select.default_cols = False
@@ -266,7 +267,11 @@ def _keys_matched(compiler_, query):
     connection.force_debug_cursor = False
     try:
         rows = select.get_compiler(compiler_.using).execute_sql(MULTI)
-        return sorted(row[0] for chunk in (rows or ()) for row in chunk)
+        keys = [row[0] for chunk in (rows or ()) for row in chunk]
+        # A select_for_update() takes its rows in the order it reads them (its order_by): read back
+        # in that order, not sorted, or a lock in descending key order passed as one in key order
+        # (review F8). An UPDATE or DELETE has no order of its own: its rows count as taken in key order.
+        return keys if in_order else sorted(keys)
     finally:
         connection.force_debug_cursor = logged
 
@@ -322,13 +327,13 @@ def install():
         else:
             # values_list("code"): the rows are locked all the same; read which (O184).
             try:
-                pks = _keys_matched(self, self.query) if rows else []
+                pks = _keys_matched(self, self.query, in_order=True) if rows else []
             except Exception:  # an annotation or slice the plain select cannot carry: as before
                 pks = None
         of = self.query.select_for_update_of
         if not of or "self" in of:
             taken(self.connection, self.query.model._meta.label_lower,
-                  sorted(pks) if pks and index is None else pks)
+                  pks)
         for label, keys in sorted(_joined(self, rows), key=lambda pair: RANK.get(pair[0], len(RANK))):
             taken(self.connection, label, sorted(set(keys)), how=JOINED)
         return result
