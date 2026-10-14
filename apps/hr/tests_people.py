@@ -577,3 +577,48 @@ class TheAuditSeesAnUnregisteredBankMovementTests(TestCase):
 
     def test_as_it_stands_it_is_not(self):
         self.assertEqual(self.findings(), [])
+
+
+class ADeletedRecordsHistoryIsReadAsTheRecordWasTests(PeopleTestCase):
+    """
+    Review F4, O131's shape for expense claims and appraisals: their
+    screens read a login its own and its reports' only, and said nothing
+    about a deleted one, so an inspector with self service read the
+    history of a colleague's deleted claim or appraisal. One rule now
+    (endpoints.narrows_for): a screen that narrows by login gives no gone
+    record's history to those it narrows for. The reviewer's numbers.
+    """
+
+    def inspector(self, name="insp"):
+        from django.contrib.auth.models import Group, User
+
+        user = User.objects.create_user(name)
+        user.groups.add(*Group.objects.filter(name__in=["Employee Self Service", "Quality Inspector"]))
+        return self.as_(user)
+
+    def gone_history(self, url, history, make):
+        record = make()
+        insp = self.inspector()
+        hr = self.as_(self.hr)
+        standing = insp.get("/api/core/history/", history(record)).status_code
+        self.assertEqual(hr.delete(f"{url}{record.pk}/").status_code, 204)
+        return standing, insp.get("/api/core/history/", history(record)), hr.get("/api/core/history/", history(record)).status_code
+
+    def test_a_deleted_expense_claims_history_is_not_read_by_a_colleague(self):
+        standing, gone, hr = self.gone_history(
+            "/api/hr/expense-claims/", lambda c: {"model": "hr.expenseclaim", "id": c.pk}, lambda: self.claim(self.riley))
+        self.assertEqual((standing, gone.status_code, hr), (404, 404, 200),
+                         f"standing {standing}; after delete the inspector reads: {gone.content[:200]}")
+
+    def test_a_deleted_appraisals_history_is_not_read_by_a_colleague(self):
+        import datetime
+
+        from .appraisals import Appraisal
+
+        def make():
+            return Appraisal.objects.create(employee=self.riley, reviewer=self.manager,
+                                            period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 6, 30))
+        standing, gone, hr = self.gone_history(
+            "/api/hr/appraisals/", lambda a: {"model": "hr.appraisal", "id": a.pk}, make)
+        self.assertEqual((standing, gone.status_code, hr), (404, 404, 200),
+                         f"standing {standing}; after delete the inspector reads: {gone.content[:200]}")
