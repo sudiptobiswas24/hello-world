@@ -1101,10 +1101,8 @@ class Command(BaseCommand):
     # and reported to the module that owns each rather than fixed from
     # outside it. Each comes off when its guard lands: an entry the check
     # no longer needs is reported as stale.
-    DELETABLE_REPORTED = {
-        "inventory.StockAdjustment": "stores: its movements and entry would stay",
-        "inventory.StockCount": "stores: a sheet with no difference is the only evidence",
-    }
+    # O205 took the last two off: a posted adjustment and a posted count refuse it.
+    DELETABLE_REPORTED = {}
 
     def mutable_posted_documents(self, labels, sources):
         """
