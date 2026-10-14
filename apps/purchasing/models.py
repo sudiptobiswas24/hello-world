@@ -6944,6 +6944,21 @@ class GoodsReceipt(AuditModel):
                 f"nothing at {landed} would carry that hold: receive them into a quarantine "
                 "warehouse, where nothing draws on them until quality decides."
             )
+        if held and line.lot_id is not None:
+            from apps.quality.release import latest_inspection
+
+            # The lineage holds a lot only while it stands on no inspection
+            # of its own (release_status). Five made from F-1 joined A-1,
+            # passed on 15 January before F-1 was rejected, and read as
+            # released: the lot's own pass spoke for assemblies it never saw.
+            standing = latest_inspection(line.lot)
+            if standing is not None:
+                raise ValidationError(
+                    f"{line.lot} stands on its own inspection ({standing.number}, "
+                    f"{standing.inspected_on}). These {line.order_line.item} are made from "
+                    f"{', '.join(held)}, which quality holds, and in {line.lot} they would be read "
+                    "by that inspection, not held: receive them into a lot of their own."
+                )
         for component, plan in planned:
             for lot, storage_bin, part in plan:
                 # What the replay will take off, exactly: the rule every
