@@ -36,6 +36,13 @@ class WarehouseSerializer(serializers.ModelSerializer):
             "held_for",
         ]
 
+    def to_representation(self, warehouse):
+        data = super().to_representation(warehouse)
+        # Named only to a login that may read that customer (WarehouseViewSet.get_queryset, O129).
+        if not getattr(warehouse, "held_for_seen", True):
+            data["held_for"] = None
+        return data
+
 
 class ItemUnitSerializer(serializers.ModelSerializer):
     uom_code = serializers.CharField(source="uom.code", read_only=True)

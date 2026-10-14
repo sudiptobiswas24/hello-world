@@ -86,6 +86,24 @@ class WarehouseViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     filter_fields = ["is_active", "is_quarantine", "is_transit", "held_for"]
     search_fields = ["code", "name"]
 
+    def get_queryset(self):
+        # Every login reads the stores; whose material one holds (held_for) only one that may read
+        # that customer (O129, the rep scope): a rep read another rep's customer off a store.
+        from django.db.models import Exists, OuterRef
+
+        from apps.core.models import Party
+        from apps.core.scoping import scoped
+
+        seen = scoped(Party.objects.filter(pk=OuterRef("held_for")), self.request.user)
+        return super().get_queryset().annotate(held_for_seen=Exists(seen))
+
+    def filter_queryset(self, queryset):
+        queryset = super().filter_queryset(queryset)
+        # ?held_for= asks whose material a store holds: answered only of a customer the login may read.
+        if "held_for" in self.request.query_params:
+            queryset = queryset.filter(held_for_seen=True)
+        return queryset
+
 
 class ItemUnitViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     """Bales, cartons: a unit an item is also counted in, from another chain."""
