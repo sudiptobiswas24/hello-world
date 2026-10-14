@@ -568,3 +568,31 @@ class ComponentsComeBackBatchByBatchTests(_SentBatches):
         receipt.create_return(quantities={receipt.lines.get(): Decimal("7")}, debit_bills=False)
         self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
                          (Decimal("4"), Decimal("6")))
+
+
+class AssembliesAreNotPassedByTheirComponentsTests(_SentBatches):
+    """
+    The lineage carries a hold, never a pass: frames passed are not an
+    assembly inspected. Ten assemblies of A-2 from F-1, passed on 1 January,
+    under the assembly's own mandatory plan, wait for their own inspection.
+    """
+
+    def test_an_assembly_from_passed_batches_still_waits_for_its_own_inspection(self):
+        from apps.quality.models import Characteristic, InspectionPlan, PlanLine
+        from apps.quality.release import check_released
+
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        made = self.lot_model.objects.create(item=self.assembly, code="A-2")
+        self.mandatory_plan()
+        sent = self.batch("F-1", "100")
+        self.inspect(sent, "0.5", datetime.date(2026, 1, 1))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        torque = Characteristic.objects.create(code="TRQ", name="Torque", uom=self.uom)
+        own = InspectionPlan.objects.create(item=self.assembly, is_mandatory=True)
+        PlanLine.objects.create(plan=own, characteristic=torque, lower_limit=Decimal("0"),
+                                upper_limit=Decimal("1"))
+        self.receive_into(order, "10", self.warehouse, lot=made)
+        with self.assertRaisesMessage(ValidationError, "A-2 has not been inspected"):
+            check_released(self.assembly, made, action="be shipped", warehouse=self.warehouse)
