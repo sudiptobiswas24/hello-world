@@ -609,3 +609,74 @@ class KeptPasswordsAreDigestedTests(TransactionTestCase):
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
 
+
+class NobodyActsThroughALoginTheyKeepTests(KeeperAndHolder):
+    """
+    O195: "nobody acts on their own login" compared logins only. HR made
+    puppet holding HR Admin (its to give, so its first password stays
+    HR's), and as puppet proposed Bookkeeper for HR's own login; a real
+    Bookkeeper confirmed, seeing "proposed by puppet". A login whose
+    password or email someone set is theirs to act through, and nothing
+    they do through it is for themselves. As the people in their roles.
+    """
+
+    def test_the_keeper_proposes_nothing_for_itself_through_a_login_it_made(self):
+        puppet = self.make("puppet", ["HR Admin"])
+        proposed = self.api(puppet).post(f"{USERS}{self.hr.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+        self.assertEqual(proposed.status_code, 400, proposed.content)
+        self.assertIn("signs in as you", str(proposed.content))
+        self.assertFalse(RoleProposal.objects.filter(user=self.hr).exists())
+
+    def test_one_made_before_the_rule_is_not_confirmed(self):
+        puppet = self.make("puppet", ["HR Admin"])
+        proposal = RoleProposal.objects.create(user=self.hr, group=Group.objects.get(name="Bookkeeper"),
+                                               proposed_by=puppet)
+        self.assertEqual(self.confirm(self.bk, proposal).status_code, 400)
+        self.assertFalse(self.holds(self.hr, "Bookkeeper"))
+
+    def test_once_its_person_sets_their_own_password_it_is_theirs(self):
+        puppet = self.make("puppet", ["HR Admin"])
+        own = self.api(puppet).post(f"{USERS}{puppet.pk}/set_password/", {"password": "Their-Own-Pw-2026-zq"},
+                                    format="json")
+        self.assertEqual(own.status_code, 200, own.content)
+        proposed = self.api(puppet).post(f"{USERS}{self.hr.pk}/grant/", {"role": "Bookkeeper"}, format="json")
+        self.assertEqual(proposed.status_code, 200, proposed.content)
+        self.assertEqual(self.confirm(self.bk, self.pending(self.hr, "Bookkeeper")).status_code, 200)
+
+
+class APersonsLoginIsGivenWhatItsLinkWouldTakeTests(KeeperAndHolder):
+    """
+    O196, O194 in reverse: HR linked an empty login to an employee, then
+    proposed Controller for it, and a Controller confirmed: a Controller
+    login linked to a person, which the link rule refuses HR. One rule
+    (users_api.linked_holding), read at the link and at the role.
+    """
+
+    def setUp(self):
+        import datetime
+
+        from apps.hr.models import Employee
+        from apps.hr.tests_people import make_employee_party
+
+        super().setUp()
+        self.ctl = self.person("ctl", "Controller")
+        self.b1 = self.make("b1", [])
+        self.boss = Employee.objects.create(party=make_employee_party("B1", "B1"), employee_number="B1",
+                                            hire_date=datetime.date(2025, 1, 1))
+        linked = self.hrc.patch(f"/api/hr/employees/{self.boss.pk}/", {"user": self.b1.pk}, format="json")
+        self.assertEqual(linked.status_code, 200, linked.content)
+
+    def test_the_keeper_proposes_no_role_the_link_would_have_refused(self):
+        proposed = self.hrc.post(f"{USERS}{self.b1.pk}/grant/", {"role": "Controller"}, format="json")
+        self.assertEqual(proposed.status_code, 400, proposed.content)
+        self.assertIn("Controller", str(proposed.content))
+        self.assertFalse(RoleProposal.objects.filter(user=self.b1).exists())
+        # One the keeper gives itself, the link takes.
+        self.assertEqual(self.hrc.post(f"{USERS}{self.b1.pk}/grant/", {"role": "HR Admin"}, format="json")
+                         .status_code, 200)
+
+    def test_one_proposed_before_the_rule_is_not_confirmed_by_a_holder_who_keeps_no_logins(self):
+        proposal = RoleProposal.objects.create(user=self.b1, group=Group.objects.get(name="Controller"),
+                                               proposed_by=self.hr)
+        got = (self.confirm(self.ctl, proposal).status_code, self.holds(self.b1, "Controller"))
+        self.assertEqual(got, (400, False), "a Controller login is linked to a person by confirming its role")

@@ -5,7 +5,11 @@ Whoever keeps logins (auth.change_user, the HR Admin) gives a role they
 hold themselves directly. One they do not hold they only propose: it is
 given when someone who already holds it, or a superuser, confirms it.
 The proposer never confirms their own proposal, and nobody proposes or
-confirms anything for their own login. Taking a role away, or switching
+confirms anything for their own login, nor through a login whose
+password or email they set (`acts_as`, O195: HR made `puppet` with HR
+Admin, knew its password, and as puppet proposed Bookkeeper for HR's own
+login). A person's login is given only what the link to the person
+would have taken (`refused_for_its_person`, O196). Taking a role away, or switching
 a login off, needs nobody else (users_api).
 
 `may_give` is the one place that says who gives a role on their own;
@@ -130,13 +134,21 @@ class RoleProposal(models.Model):
         said = self.lapsed()
         if said:
             return said
-        if by.pk == self.user_id:
+        user, proposer = User.objects.get(pk=self.user_id), User.objects.get(pk=self.proposed_by_id)
+        if by.pk == user.pk:
             return "Roles on your own login are someone else's to confirm."
-        if by.pk == self.proposed_by_id:
+        if by.pk == proposer.pk:
             return f"You proposed {self.group}: someone else who holds it confirms it."
+        # Nor through a login one of them signs in as (O195).
+        for who in (user, proposer):
+            if acts_as(who, by):
+                return f"{who} set your password or email, and so signs in as you: someone else confirms it."
+        if acts_as(user, proposer):
+            return (f"{user} set the password or email of {proposer}, who proposed it: proposed through a login "
+                    f"{user} signs in as, it is {user}'s own proposal for themselves.")
         if not may_give(by, self.group):
             return f"{self.group} is confirmed by someone who holds it, and you do not."
-        return None
+        return refused_for_its_person(by, user, self.group)
 
     def may_decline(self, by):
         """Why `by` may not decline it, or None: whoever could confirm it, or its proposer withdrawing it."""
@@ -173,6 +185,45 @@ class RoleProposal(models.Model):
         self._decide(by, ProposalStatus.DECLINED)
 
 
+def who_knows(login):
+    """
+    The logins that can sign in as `login` (O195): whoever set its
+    password or email, still in force (KeptCredential), and whoever can
+    sign in as them, and so on.
+    """
+    known, frontier = set(), {login.pk}
+    while frontier:
+        rows = KeptCredential.objects.filter(user__in=frontier, lapsed=False, set_by__isnull=False).select_related("user")
+        frontier = {row.set_by_id for row in rows if row.in_force(row.user)} - known - {login.pk}
+        known |= frontier
+    return known
+
+
+def acts_as(person, login):
+    """Whether `person` is `login` or can sign in as it (who_knows): what is done through it is theirs."""
+    return person.pk == login.pk or person.pk in who_knows(login)
+
+
+def refused_for_its_person(actor, user, group):
+    """
+    Why `actor` may not give or confirm `group` for `user` while `user`
+    is a person's login, or None (O196). HR linked an empty login to an
+    employee, proposed Controller for it, and a Controller confirmed: a
+    Controller login linked to a person, which the link itself would
+    have refused (O194). The link rule for one role
+    (users_api.linked_holding), asked here as the link asks it, so
+    neither order gets round it.
+    """
+    from .scoping import party_of
+    from .users_api import linked_holding
+
+    person = party_of(user)
+    if person is None or linked_holding(actor, group):
+        return None
+    return (f"{user} is the login of {person}: a person's login is given {group} by a superuser, or by whoever "
+            f"keeps logins and holds {group}, as only they link a login holding it to a person.")
+
+
 def give_or_propose(actor, user, group):
     """
     Give `group` to `user` if `actor` may (may_give), or propose it if
@@ -181,12 +232,18 @@ def give_or_propose(actor, user, group):
     """
     if actor.pk == user.pk:
         raise ValidationError("Roles on your own login are someone else's to give.")
+    if acts_as(user, actor):
+        raise ValidationError(f"{user} set your password or email, and so signs in as you: what you give or "
+                              f"propose for {user} would be {user}'s own doing. Someone else does it.")
+    if user.groups.filter(pk=group.pk).exists():
+        return None
+    if not may_give(actor, group) and not may_propose(actor):
+        raise ValidationError(f"{group} is given by someone who holds it, and you do not.")
+    said = refused_for_its_person(actor, user, group)
+    if said:
+        raise ValidationError(said)
     if may_give(actor, group):
         user.groups.add(group)
-        return None
-    if not may_propose(actor):
-        raise ValidationError(f"{group} is given by someone who holds it, and you do not.")
-    if user.groups.filter(pk=group.pk).exists():
         return None
     # One that lapsed (RoleProposal.lapsed) gives way to this keeper's.
     dead = RoleProposal.objects.filter(user=user, group=group, status=ProposalStatus.PENDING).first()
