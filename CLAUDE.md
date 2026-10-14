@@ -348,7 +348,10 @@ Every defect seen and not fixed goes into docs/RISKS.md, "Open
 defects", with an id, the day it is seen. A notes file, a commit
 message or an agent's report alone is not a record: none of them is
 read when choosing the next work. A row comes off only in the commit
-that fixes it, naming its id.
+that fixes it, naming its id. g18 fixed three rows and left them open,
+so the next brief would have sent an agent to fix them again: the ui
+lane now runs `scripts/gate/registercheck.py`, which fails a push whose
+commit subjects name a row still open.
 
 `.claude/skills/audit/SKILL.md` holds the defect shapes three audits
 found, and `python manage.py audit_invariants` checks the mechanical
