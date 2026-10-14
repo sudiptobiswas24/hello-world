@@ -365,3 +365,81 @@ class BatchKeptComponentsTests(SubcontractTestCase):
         self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
                          (Decimal("2"), Decimal("3")))
         self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("40.00"))
+
+
+class _SentBatches(SubcontractTestCase):
+    """Frames kept by batch, 100 of F-1 at 8 in the store unless a test says otherwise."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.inventory.models import Lot
+
+        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
+        self.frame.refresh_from_db()
+        StockMovement.objects.filter(item=self.frame).delete()
+        self.lot_model = Lot
+
+    def batch(self, code, quantity, expires=None, warehouse=None):
+        made = self.lot_model.objects.create(item=self.frame, code=code, expires_on=expires)
+        StockMovement.objects.create(item=self.frame, warehouse=warehouse or self.warehouse,
+                                     movement_type=MovementType.RECEIPT, uom=self.frame.uom,
+                                     quantity=Decimal(quantity), unit_cost=Decimal("8"), lot=made,
+                                     occurred_at=timezone.now())
+        return made
+
+    def inspect(self, lot, value, on):
+        from apps.quality.models import Inspection, Reading
+
+        inspection = Inspection.objects.create(lot=lot, plan=self.plan, inspected_on=on)
+        Reading.objects.create(inspection=inspection, plan_line=self.plan_line, value=Decimal(value))
+        inspection.post()
+        return inspection
+
+    def mandatory_plan(self):
+        from apps.quality.models import Characteristic, InspectionPlan, PlanLine
+
+        check = Characteristic.objects.create(code="FLAT", name="Flatness", uom=self.uom)
+        self.plan = InspectionPlan.objects.create(item=self.frame, is_mandatory=True)
+        self.plan_line = PlanLine.objects.create(plan=self.plan, characteristic=check,
+                                                 lower_limit=Decimal("0"), upper_limit=Decimal("1"))
+
+    def sent_then_rejected(self):
+        """F-1 passed on 1 January and sent; failed on 2 January, rejected under a mandatory plan."""
+        self.mandatory_plan()
+        sent = self.batch("F-1", "100")
+        self.inspect(sent, "0.5", datetime.date(2026, 1, 1))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.inspect(sent, "3", datetime.date(2026, 1, 2))
+        return sent, order
+
+    def receive_into(self, order, quantity, warehouse, lot=None):
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.first(), lot=lot,
+                                        warehouse=warehouse, quantity_received=Decimal(quantity))
+        receipt.post()
+        return receipt
+
+
+class ComponentsNeverLeaveQuarantineTests(_SentBatches):
+    """O147: issue_components gave the gate no warehouse; QA's frames went to the subcontractor."""
+
+    def test_batches_in_a_quarantine_bay_are_not_sent(self):
+        bay = Warehouse.objects.create(code="QA", name="Inspection bay", is_quarantine=True)
+        self.batch("F-Q", "100", warehouse=bay)
+        self.stock(self.motor, "100", "12", warehouse=bay)
+        order = self.subcontract_order("10")
+        with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
+            order.issue_components(bay)
+        self.assertEqual((self.frame.on_hand_at(bay), self.frame.on_hand_at(self.subcontractor)),
+                         (Decimal("100"), Decimal("0")))
+
+    def test_what_is_not_kept_by_batch_is_not_sent_either(self):
+        Item.objects.filter(pk=self.frame.pk).update(tracking="none")
+        self.frame.refresh_from_db()
+        bay = Warehouse.objects.create(code="QA", name="Inspection bay", is_quarantine=True)
+        self.stock(self.frame, "100", "8", warehouse=bay)
+        self.stock(self.motor, "100", "12", warehouse=bay)
+        with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
+            self.subcontract_order("10").issue_components(bay)
+        self.assertEqual(self.motor.on_hand_at(bay), Decimal("100"))

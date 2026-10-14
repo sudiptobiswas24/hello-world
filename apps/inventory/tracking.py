@@ -130,8 +130,8 @@ def _expiry_order(lot):
 
 # Why a batch may not be drawn whatever the shelf holds, said by the
 # module that decides it (quality registers its release gate when it
-# loads): `fn(item, lot) -> words, or ""`. Here so a pick asks without
-# inventory importing whoever answers.
+# loads): `fn(item, lot, warehouse=...) -> words, or ""`. Here so a pick
+# asks without inventory importing whoever answers.
 LOT_HOLDS = []
 
 
@@ -140,12 +140,20 @@ def register_lot_hold(ask):
         LOT_HOLDS.append(ask)
 
 
-def lot_held(item, lot):
-    """Why this batch may not be drawn, in words, or ""."""
-    return next((said for said in (ask(item, lot) for ask in LOT_HOLDS) if said), "")
+def lot_held(item, lot, warehouse):
+    """
+    Why this batch may not be drawn from `warehouse`, in words, or "".
+
+    The warehouse is not optional. Asked of the batch alone, the gate
+    could not see a quarantine bay: frames went to a subcontractor out of
+    the inspection bay, and bundles there were baled (O147). `lot` is None
+    for an item kept by no batch, which the bay holds just the same.
+    """
+    return next((said for said in (ask(item, lot, warehouse=warehouse) for ask in LOT_HOLDS)
+                 if said), "")
 
 
-def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
+def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds_let_through=None):
     """
     Choose which lots to ship, soonest to expire first.
 
@@ -160,6 +168,11 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
     quality holds: chosen for nobody in particular, a rejected drum went
     onto a lorry once its inspection plan was retired, because the line
     that named no batch was the line nothing asked about.
+
+    `holds_let_through(item, lot)` names the holds a caller takes anyway:
+    a subcontractor's assemblies consume the batch they were made from
+    whatever quality said of it after it was sent (owner's decision, item
+    22). Everything else the gate says still skips the batch.
     """
     quantity = Decimal(quantity)
     if quantity <= 0:
@@ -170,14 +183,17 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
     remaining = quantity
     skipped = Decimal("0")
     held = Decimal("0")
+    why = ""
     for lot, available in lots_at(item, warehouse):
         if remaining <= 0:
             break
         if not allow_expired and lot.has_expired(on_date):
             skipped += available
             continue
-        if lot_held(item, lot):
+        said = lot_held(item, lot, warehouse)
+        if said and not (holds_let_through and holds_let_through(item, lot)):
             held += available
+            why = why or said
             continue
         drawn = min(available, remaining)
         taken.append((lot, drawn))
@@ -191,7 +207,7 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False):
         if skipped:
             message += f" {skipped} is on the shelf but expired."
         if held:
-            message += f" {format(held.normalize(), 'f')} is on the shelf and held by quality."
+            message += f" {format(held.normalize(), 'f')} is on the shelf and held by quality: {why}"
         raise ValidationError(message)
     return taken
 

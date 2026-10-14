@@ -206,3 +206,16 @@ class ScannedLabelTests(BaleTestCase):
         missing = client.get("/api/manufacturing/bales/scan/", {"number": "BL-NOWHERE"})
         self.assertEqual((missing.status_code, missing.json()["detail"]), (404, "No bale is numbered 'BL-NOWHERE'."))
         self.assertEqual(client.get("/api/manufacturing/bales/scan/").status_code, 404)
+
+
+class NoBaleOutOfQuarantineTests(BaleTestCase):
+    """O147: pack() asked the gate of the bundle alone, so a quarantine bay's bundles were baled."""
+
+    def test_bundles_in_a_quarantine_bay_are_not_baled(self):
+        from apps.inventory.models import Warehouse
+
+        Warehouse.objects.filter(pk=self.plant.pk).update(is_quarantine=True)
+        self.plant.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
+            self.bale()
+        self.assertFalse(Bale.objects.exists())
