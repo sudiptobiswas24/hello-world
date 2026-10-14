@@ -188,6 +188,10 @@ built.
    **Waiting on the plant's accountant:** the 20 figures in the gap
    analysis's last section (EPF ceiling, TCS rate on scrap, GST rates on
    sacks and scrap, West Bengal PT and LWF), and the leaver deduction cap.
+   Added by g21: whether B2CL's invoice-value threshold counts TCS (the
+   code counts it); that EPS stops from the month after the member turns
+   58; the overtime multiple (2); which day of the month decides the EPF
+   ceiling that applies (the code: the period's last day).
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
