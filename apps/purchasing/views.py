@@ -458,7 +458,8 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             receipt.post()
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
-        return Response(self.get_serializer(receipt).data)
+        # Received and held says so in the answer, with why (O135, O148).
+        return Response({**self.get_serializer(receipt).data, "held": receipt.held_assemblies()})
 
     @action(detail=True, methods=["post"])
     def return_receipt(self, request, pk=None):

@@ -443,3 +443,99 @@ class ComponentsNeverLeaveQuarantineTests(_SentBatches):
         with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
             self.subcontract_order("10").issue_components(bay)
         self.assertEqual(self.motor.on_hand_at(bay), Decimal("100"))
+
+
+class AssembliesFromABatchHeldSinceTests(_SentBatches):
+    """
+    O135, O148 (owner's decision, item 22): ten assemblies back from the
+    subcontractor, made from F-1 before F-1 was rejected, are received and
+    held. Frame 8 + two motors at 12 + 5 of assembly: 37 each, 370.00.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        self.made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+
+    def test_the_receipt_is_recorded_and_the_batch_consumed_where_it_lies(self):
+        sent, order = self.sent_then_rejected()
+        self.receive_into(order, "10", self.warehouse, lot=self.made)
+        self.assertEqual((sent.on_hand_at(self.subcontractor), self.motor.on_hand_at(self.subcontractor)),
+                         (Decimal("0"), Decimal("0")))
+        self.assertEqual(self.made.on_hand_at(self.warehouse), Decimal("10"))
+        self.assertEqual(self.assembly.stock_value_at(self.warehouse), Decimal("370.00"))
+
+    def test_the_assemblies_take_the_hold_until_inspected_themselves(self):
+        from apps.quality.release import check_released
+
+        _sent, order = self.sent_then_rejected()
+        receipt = self.receive_into(order, "10", self.warehouse, lot=self.made)
+        with self.assertRaisesMessage(ValidationError, "A-1 is held"):
+            check_released(self.assembly, self.made, action="be shipped", warehouse=self.warehouse)
+        (held,) = receipt.held_assemblies()
+        self.assertEqual((held["lot"], held["item"]), ("A-1", str(self.assembly)))
+        self.assertIn("F-1 is held", held["why"])
+
+    def test_returned_to_the_subcontractor_they_put_back_what_they_took(self):
+        sent, order = self.sent_then_rejected()
+        receipt = self.receive_into(order, "10", self.warehouse, lot=self.made)
+        receipt.create_return(debit_bills=False)
+        self.assertEqual((sent.on_hand_at(self.subcontractor), self.motor.on_hand_at(self.subcontractor),
+                          self.made.on_hand_at(self.warehouse)), (Decimal("10"), Decimal("20"), Decimal("0")))
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("80.00"))
+
+    def test_a_batch_only_awaiting_inspection_still_bars_the_receipt(self):
+        sent = self.batch("F-1", "100")
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.mandatory_plan()
+        with self.assertRaisesMessage(ValidationError, "held by quality"):
+            self.receive_into(order, "10", self.warehouse, lot=self.made)
+        self.assertEqual(sent.on_hand_at(self.subcontractor), Decimal("10"))
+
+    def test_the_answer_says_they_are_held_through_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        _sent, order = self.sent_then_rejected()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.first(), lot=self.made,
+                                        warehouse=self.warehouse, quantity_received=Decimal("10"))
+        clerk = User.objects.create(username="stores")
+        clerk.groups.add(Group.objects.get(name="Warehouse Staff"))
+        client = APIClient()
+        client.force_authenticate(clerk)
+        response = client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/post_receipt/")
+        self.assertEqual(response.status_code, 200, response.content)
+        (held,) = response.json()["held"]
+        self.assertEqual(held["lot"], "A-1")
+        self.assertIn("F-1 is held", held["why"])
+
+
+class UntrackedAssembliesFromAHeldBatchTests(_SentBatches):
+    """O135, O148: an assembly not kept by batch cannot carry the hold, so it is received into quarantine."""
+
+    def test_a_store_is_refused_and_says_why(self):
+        sent, order = self.sent_then_rejected()
+        with self.assertRaisesMessage(ValidationError, "receive them into a quarantine warehouse"):
+            self.receive_into(order, "10", self.warehouse)
+        self.assertEqual(sent.on_hand_at(self.subcontractor), Decimal("10"))
+
+    def test_received_into_quarantine_nothing_draws_them_and_rejected_they_go_back(self):
+        from apps.quality.release import check_released
+
+        bay = Warehouse.objects.create(code="QA", name="Inspection bay", is_quarantine=True)
+        sent, order = self.sent_then_rejected()
+        receipt = self.receive_into(order, "10", bay)
+        self.assertEqual((self.assembly.on_hand_at(bay), sent.on_hand_at(self.subcontractor)),
+                         (Decimal("10"), Decimal("0")))
+        with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
+            check_released(self.assembly, None, action="be shipped", warehouse=bay)
+        (held,) = receipt.held_assemblies()
+        self.assertEqual(held["lot"], None)
+        receipt.reject(note="Made from F-1, rejected", debit_bills=False)
+        self.assertEqual((self.assembly.on_hand_at(bay), sent.on_hand_at(self.subcontractor),
+                          self.motor.on_hand_at(self.subcontractor)), (Decimal("0"), Decimal("10"), Decimal("20")))
