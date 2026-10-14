@@ -57,6 +57,23 @@ def register_lot_sources(provider):
         LOT_SOURCES.append(provider)
 
 
+# Who wants to hear that a batch has a new verdict (posted or decided): the
+# module that holds something on it, `fn(lot, by)`. Registered so quality
+# tells without importing it: a receipt's to-dos close when nothing on it is
+# held any more (purchasing).
+LOT_DECIDED = []
+
+
+def register_lot_decided(listener):
+    if listener not in LOT_DECIDED:
+        LOT_DECIDED.append(listener)
+
+
+def lot_decided(lot, by=None):
+    for listener in LOT_DECIDED:
+        listener(lot, by)
+
+
 def lot_sources(lot):
     found = []
     for provider in LOT_SOURCES:
@@ -152,7 +169,13 @@ def awaiting_decision(lot, action="issue"):
     held = latest_inspection(lot) if lot is not None else None
     if held is None or held.disposition != Disposition.AWAITING:
         return ""
-    return (f"{lot} is held: it failed {held.number} on {held.inspected_on} and waits "
+    from .models import Result
+
+    # A pass waits too when what it was made from is held (review F3).
+    verdict = "passed" if held.result == Result.PASS else "failed"
+    made_from = (f", but it is made from {', '.join(str(source) for source in held_inside(lot))}, "
+                 "which quality holds," if verdict == "passed" else "")
+    return (f"{lot} is held: it {verdict} {held.number} on {held.inspected_on}{made_from} and waits "
             f"for the Quality Manager's decision. It cannot {action} until they decide.")
 
 

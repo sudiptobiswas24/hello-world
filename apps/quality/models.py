@@ -871,6 +871,10 @@ class Inspection(AuditModel):
             self.telling = tell_on_posting(self, by)
             self.told = self.telling.warning
             Inspection.objects.filter(pk=self.pk).update(told=self.told)
+        else:
+            from .release import lot_decided
+
+            lot_decided(self.lot, by)
         return self
 
     @serialised("posted", "voided_at", "disposition", "decided_at", "decision_login")
@@ -929,6 +933,9 @@ class Inspection(AuditModel):
         from .decisions import close_to_dos
 
         close_to_dos(self, by, f"{self} decided: {self.get_disposition_display().lower()}. {note}")
+        from .release import lot_decided
+
+        lot_decided(self.lot, by)
         return self
 
     @serialised("posted", "voided_at", "disposition", "escalated_on")
