@@ -5789,9 +5789,9 @@ def commission_report(date_from=None, date_to=None):
 
     Collected means money that stands (O74: a bounced cheque counted) and
     includes money taken up front (O75): a deposit drawn down against the
-    invoice is collected on the day it is drawn, as far as the deposit was
-    itself paid, its paid money taken by its drawdowns in order. 300 taken
-    up front and 700 paid counted 700.
+    invoice is collected as far as the deposit was itself paid, its paid
+    money taken by its drawdowns in order, on the later of the drawdown's
+    day and the money's. 300 taken up front and 700 paid counted 700.
     """
     date_from = to_date(date_from)
     date_to = to_date(date_to)
@@ -5801,16 +5801,34 @@ def commission_report(date_from=None, date_to=None):
         return not ((date_from and day < date_from) or (date_to and day > date_to))
 
     def collected_up_front(invoice):
-        """[(day, amount)] of this invoice's drawdowns that the deposit's paid money covers."""
+        """
+        [(day, amount)] of this invoice's drawdowns that the deposit's money covers:
+        the deposit's standing receipts, oldest first, cover its drawdowns, oldest
+        first, and each part counts on the later of the day it was drawn and the day
+        the money that covers it came in (review F8). Dated by the drawdown alone, 300
+        drawn on 6 March and paid on 10 April was March's commission from 10 April,
+        and a March already reported moved.
+        """
         rows = []
         for application in invoice.deposit_applications.all():
             deposit = application.deposit
-            paid = deposit.amount_paid()
-            earlier = sum((other.amount for other in deposit.applications.all()
-                           if (other.date, other.pk) < (application.date, application.pk)), Decimal("0"))
-            covered = min(application.amount, max(paid - earlier, Decimal("0")))
-            if covered:
-                rows.append((application.date, covered))
+            money = sorted(((to_date(row.payment.payment_date), row.pk, row.amount)
+                            for row in standing_allocations(deposit)), key=lambda row: row[:2])
+            drawn = sorted(deposit.applications.all(), key=lambda row: (row.date, row.pk))
+            receipts = [[day, amount] for day, _, amount in money]
+            for drawdown in drawn:
+                wanted = drawdown.amount
+                while wanted > 0 and receipts:
+                    day, amount = receipts[0]
+                    taken = min(wanted, amount)
+                    if drawdown.pk == application.pk:
+                        rows.append((max(to_date(drawdown.date), day), taken))
+                    wanted -= taken
+                    receipts[0][1] -= taken
+                    if receipts[0][1] <= 0:
+                        receipts.pop(0)
+                if drawdown.pk == application.pk:
+                    break
         return rows
 
     rows = []
