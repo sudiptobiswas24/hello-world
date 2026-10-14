@@ -287,3 +287,37 @@ class ChallansInTableThirteenTests(Itc04TestCase):
                          ("job_work_challans", self.first.number, self.second.number, 2, 1))
         (detail,) = gstr1_json(result)["doc_issue"]["doc_det"]
         self.assertEqual((detail["doc_num"], detail["docs"][0]["net_issue"]), (9, 1))
+
+
+class AVoidIsReportedInItsOwnPeriodTests(Itc04TestCase):
+    """
+    O187. 100 kg back from the laminator at 1,400 on 1 June, June closed, voided
+    today (in the second half-year). The first half-year's return reported the
+    100 and keeps reporting it; the void is withdrawn on the second half's, on
+    its own day. Voided within its own half-year, it nets to nothing there.
+    """
+
+    H2 = (datetime.date(2026, 10, 1), datetime.date(2027, 3, 31))
+
+    def close_june(self):
+        AccountingPeriod.objects.create(name="Jun", start_date=datetime.date(2026, 6, 1),
+                                        end_date=datetime.date(2026, 6, 30)).close()
+
+    def test_a_closed_months_receipt_voided_later_stays_on_its_return(self):
+        receipt = self.back(self.lamination, "100", "1400")
+        self.close_june()
+        receipt.void(on_date=datetime.date(2026, 10, 14))
+        self.assertEqual([(r["original_challan"], r["quantity"], r["date"]) for r in itc04(*H1)["received"]],
+                         [(self.first.number, Decimal("100"), datetime.date(2026, 6, 1))])
+        later = itc04(*self.H2)
+        self.assertEqual([(r["original_challan"], r["quantity"], r["date"], r["voids"]) for r in later["received"]],
+                         [(self.first.number, Decimal("-100"), datetime.date(2026, 10, 14), receipt.number)])
+        self.assertTrue(any("withdrawn here" in warning for warning in later["warnings"]))
+
+    def test_voided_in_its_own_period_it_is_on_neither(self):
+        receipt = self.back(self.lamination, "100", "0")
+        receipt.void(on_date=datetime.date(2026, 6, 2))
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.voided_on, datetime.date(2026, 6, 2))
+        self.assertEqual(itc04(*H1)["received"], [])
+        self.assertEqual(itc04(*self.H2)["received"], [])
