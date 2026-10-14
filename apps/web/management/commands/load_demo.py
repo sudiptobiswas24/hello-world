@@ -889,6 +889,10 @@ class Command(BaseCommand):
                     run.post()
 
         with step("People: expense claims, appraisals, openings and applicants, leave"):
+            # One transaction for the section (step), where each request in the plant is its own: the
+            # people it changes leave for, held first in key order, as every pay input holds its person
+            # (apps.hr.models.hold_the_employee, O20), so a later request takes a row already held.
+            lock_rows(*M("hr.Employee").objects.order_by("pk"), refresh=False)
             Claim, ClaimLine = M("hr.ExpenseClaim"), M("hr.ExpenseLine")
 
             def claim(employee, when, purpose, rows):

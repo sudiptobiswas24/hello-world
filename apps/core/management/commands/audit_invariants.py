@@ -95,6 +95,7 @@ class Command(BaseCommand):
         findings += self.mutable_posted_documents(labels, sources)
         # The same, widened to lines a route of their own writes (shared rule B).
         findings += self.lines_not_answering_to_their_document(labels, sources)
+        findings += self.pay_inputs_not_holding_their_employee(labels, sources)
         findings += self.frozen_fields_uncovered(labels, sources)
         findings += self.unconstrained_numbers(labels)
         findings += self.unsigned_money(labels)
@@ -1295,6 +1296,50 @@ class Command(BaseCommand):
             ))
         findings += [("stale exemption", f"{key} answers to its document now; take it off LINES_REPORTED.")
                      for key in sorted(set(self.LINES_REPORTED) - reported) if key.split(".")[0] in labels]
+        return findings
+
+    def pay_inputs_not_holding_their_employee(self, labels, sources):
+        """
+        Shared rule (O20): what a pay run reads holds the person before it
+        changes (apps.hr.models.hold_the_employee), as PayRun.post holds
+        everyone it pays. Leave cancelled, a rate edited and a timesheet
+        approved as the run posted each asked "has a posted run paid on
+        this?" without the person's lock, and the run posted at a figure
+        that no longer stood. Every hr model naming an employee is a pay
+        input (PAY_INPUTS) or says why not (NOT_PAY_INPUTS); a pay input's
+        save() and delete() call hold_the_employee(), it names the person in
+        locked_before_it(), and its @serialised methods hold that first.
+        """
+        if "hr" not in labels:
+            return []
+        from django.apps import apps as registry
+        from django.db import models as dj
+
+        from apps.hr.models import NOT_PAY_INPUTS, PAY_INPUTS, Employee
+
+        findings = []
+        code = non_test_text(sources["hr"])
+        for model in registry.get_app_config("hr").get_models():
+            key = model._meta.label
+            names = any(isinstance(field, dj.ForeignKey) and field.related_model is Employee
+                        for field in model._meta.fields)
+            if names and key not in PAY_INPUTS and key not in NOT_PAY_INPUTS:
+                findings.append(("pay input unclassified",
+                                 f"{key} names an employee: add it to apps.hr.models.PAY_INPUTS, or to "
+                                 "NOT_PAY_INPUTS with the reason no pay run reads it."))
+        for key in sorted(PAY_INPUTS):
+            model = registry.get_model(key)
+            missing = [m for m in ("save", "delete") if not self._calls(model, code, m, "hold_the_employee(")]
+            if missing or not hasattr(model, "locked_before_it"):
+                findings.append(("pay input not holding its employee",
+                                 f"{key}: {' and '.join(f'{m}()' for m in missing) or 'locked_before_it()'} "
+                                 "does not hold the person first (hold_the_employee)."))
+            body = self._class_body(code, model.__name__) or ""
+            for match in re.finditer(r"@serialised\(([^)]*)\)\s*\n\s*def (\w+)", body):
+                if "held_first" not in match.group(1):
+                    findings.append(("pay input not holding its employee",
+                                     f"{key}.{match.group(2)}() is @serialised without held_first: it holds the "
+                                     "record before the person, the other way round from save()."))
         return findings
 
     def _calls(self, model, code, method, call):

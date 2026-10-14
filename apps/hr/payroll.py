@@ -45,6 +45,7 @@ from apps.accounting.models import (
 )
 from apps.core.models import (
     AuditModel,
+    documents_it_answers_to,
     Company,
     correction_date,
     DocumentSequence,
@@ -54,7 +55,7 @@ from apps.core.models import (
 )
 
 from .calendars import working_days
-from .models import Employee, LeaveRequest, LeaveStatus
+from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
 
 
 class ComponentKind(models.TextChoices):
@@ -407,7 +408,15 @@ class EmployeeCompensation(AuditModel):
             last = min(last, stored.effective_to)
         return last, stored
 
+    def locked_before_it(self):
+        """The person (or the two, moved), as save() holds them first (hold_the_employee, O20)."""
+        return documents_it_answers_to(self, "employee")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        # The person first: what posted runs paid on this rate is read next, and a run posting
+        # at that moment paid 13,500 on a rate that then read 14,000 (O20).
+        hold_the_employee(*self.locked_before_it())
         # Dated, not overwritten - the docstring's promise, kept here: a
         # rate a posted run paid on keeps its figure and its start, and
         # is only closed off, not before the last day it was paid on.
@@ -426,7 +435,9 @@ class EmployeeCompensation(AuditModel):
         self.clean()
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
         paid = self.paid_to()
         if paid is not None and paid[0] is not None:
             raise ValidationError(f"{paid[1]} has been paid on, to {paid[0]}; it stays.")

@@ -25,7 +25,9 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import Extensible, AuditModel, Party, PartyRole, lock_rows, serialised, to_date
+from apps.core.models import (
+    Extensible, AuditModel, Party, PartyRole, documents_it_answers_to, lock_rows, serialised, to_date,
+)
 
 from .calendars import (  # noqa: F401
     DEFAULT_WORKING_DAYS,
@@ -528,6 +530,48 @@ class LeaveType(models.TextChoices):
     OTHER = "other", "Other"
 
 
+
+# What a pay run reads of a person, by model, and the path to the person:
+# each holds that person before it changes (hold_the_employee), as
+# PayRun.post holds everyone it pays before it works each slip out again
+# (O20). audit_invariants (pay_inputs_not_holding_their_employee) asks
+# every hr model naming an employee to be one of these or say why not.
+PAY_INPUTS = {
+    "hr.AttendanceDay": "employee",
+    "hr.LeaveRequest": "employee",
+    "hr.EmployeeCompensation": "employee",
+    "hr.Timesheet": "employee",
+    "hr.TimesheetEntry": "timesheet.employee",
+}
+NOT_PAY_INPUTS = {
+    "hr.Appraisal": "a review of the person; no run reads it",
+    "hr.ExpenseClaim": "paid by its own payment, not by a run",
+    "hr.LeaveEntitlement": "the days a person may take; a run reads the leave taken, not the allowance",
+    "hr.Payslip": "the run's own record, written under the run's lock and the person's",
+    "hr.Applicant": "not yet an employee; no run pays them",
+    "hr.Department": "names its manager; the run reads a department's cost centre as it posts, not a pay figure",
+    "hr.Employee": "the person: an edit of the row waits on the lock the run holds on it",
+}
+
+
+def hold_the_employee(*employees):
+    """
+    Shared rule (O20): a change to anything a pay run reads holds the
+    person first, in key order.
+
+    PayRun.post holds every employee it pays, then works each slip out
+    again; a change that asked "has a posted run paid on this?" without
+    that lock went through as the run posted, and the run was posted at a
+    figure that no longer stood: leave cancelled as its run posted left the
+    day docked, and a rate edited inside a paid period read 14,000 under a
+    run that paid 13,500. Call it first, inside the change's transaction,
+    and name the person in the record's locked_before_it(), so an edit
+    through the API holds them in the same order.
+    """
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("hold_the_employee() outside a transaction holds nothing.")
+    lock_rows(*employees, refresh=False)
+
 class LeaveRequest(AuditModel):
     employee = models.ForeignKey(Employee, related_name="leave_requests", on_delete=models.CASCADE)
     policy = models.ForeignKey(
@@ -662,7 +706,13 @@ class LeaveRequest(AuditModel):
                 f"{clash.end_date}; the same days cannot be taken off twice."
             )
 
+    def locked_before_it(self):
+        """The person, as every change of a request holds them first (hold_the_employee, O20)."""
+        return documents_it_answers_to(self, "employee")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
         if self.pk:
             previous = LeaveRequest.objects.filter(pk=self.pk).first()
             if previous is not None and previous.employee_id != self.employee_id:
@@ -691,7 +741,9 @@ class LeaveRequest(AuditModel):
         self.clean()
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
         # An approval is undone by cancelling it, which asks whether its days
         # have been taken or paid on. Deleted, approved unpaid leave that a
         # posted run had docked went with nothing asked, and the payslip kept
@@ -735,7 +787,7 @@ class LeaveRequest(AuditModel):
                 f"{by} does not manage {self.employee}: their manager, a manager above "
                 "them, or their department's manager decides their leave.")
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def approve(self, by, note="", as_hr=False):
         if self.status != LeaveStatus.PENDING:
             raise ValidationError("Only a pending leave request can be approved.")
@@ -835,7 +887,7 @@ class LeaveRequest(AuditModel):
                 f"in {self.start_date.year} and this request is {wanted}."
             )
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def withdraw_approval(self, by, note="", as_hr=False):
         """
         Put an approved request back in the queue.
@@ -876,7 +928,7 @@ class LeaveRequest(AuditModel):
         ])
         return self
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def reject(self, by, reason=None, as_hr=False):
         if self.status != LeaveStatus.PENDING:
             raise ValidationError("Only a pending leave request can be rejected.")
@@ -909,7 +961,7 @@ class LeaveRequest(AuditModel):
             raise ValidationError(f"{self.employee}'s leave is cancelled by them, or by whoever decides it.")
         self.check_approver(by)
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def cancel(self, on_date=None, by=None, as_hr=False, may_decide=False):
         """
         Give the days back, as `by` (see check_canceller).
