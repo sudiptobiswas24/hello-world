@@ -7028,6 +7028,19 @@ class GoodsReceipt(AuditModel):
         occurred_at = occurred_at or timezone.now()
 
         selected = self._inspection_selection(quantities)
+        # Accepted is cleared: a batch quality holds (rejected, held for
+        # rework, awaiting its decision, recalled) does not go onto a shelf
+        # it can be picked from as accepted (O123). The gate says why; the
+        # batch goes back to the vendor (reject), or quality decides it first.
+        from apps.quality.release import why_held
+
+        for line, _quantity in selected:
+            if line.lot_id is not None and held_by_quality(line.order_line.item, line.lot):
+                said = why_held(line.order_line.item, line.lot, warehouse=warehouse,
+                                action="be cleared onto a shelf")
+                raise ValidationError(
+                    f"{said} Send it back to the vendor (reject), or the Quality Manager decides it "
+                    "first; then it can be accepted.")
         reason = str(reason or "").strip()
         conceded = sorted({lot.code for line, _quantity in selected if line.lot_id is None
                            for lot in held_sources(line)})

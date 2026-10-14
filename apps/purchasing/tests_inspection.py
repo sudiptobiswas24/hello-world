@@ -232,3 +232,56 @@ class RejectTests(InspectionTestCase):
         receipt = self.receive(order, "10")
         with self.assertRaisesMessage(ValidationError, "nothing awaiting inspection"):
             receipt.accept(self.warehouse)
+
+
+class ARejectedBatchIsNotClearedTests(InspectionTestCase):
+    """
+    O123: accept never asked the batch's release, so ten drums quality rejected
+    in the inspection bay were cleared onto a shelf they could be picked from.
+    The gate says why it may not; sending them back still works.
+    """
+
+    def test_accepting_a_rejected_batch_is_refused_and_it_goes_back_instead(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.inventory.models import Lot, TrackingMode
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        call_command("setup_roles", verbosity=0)
+        self.item.tracking = TrackingMode.LOT
+        self.item.save()
+        drums = Lot.objects.create(item=self.item, code="DR-7")
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        order_line = PurchaseOrderLine.objects.create(
+            order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+            unit_price=Decimal("5"), inspect_on_receipt=True)
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order_line, warehouse=self.quarantine,
+                                        quantity_received=Decimal("10"), lot=drums)
+        receipt.post()
+        plan = InspectionPlan.objects.create(item=self.item, is_mandatory=True)
+        check = Characteristic.objects.create(code="MFI", name="Melt flow", uom=self.uom)
+        plan_line = PlanLine.objects.create(plan=plan, characteristic=check, target=Decimal("3"),
+                                            lower_limit=Decimal("2.5"), upper_limit=Decimal("3.5"),
+                                            sample_size=1, line_number=1)
+        inspection = Inspection.objects.create(lot=drums, plan=plan, inspected_on=datetime.date(2026, 1, 6))
+        Reading.objects.create(inspection=inspection, plan_line=plan_line, value=Decimal("4.2"),
+                               sample_reference="S1")
+        inspection.post()
+        user = User.objects.create_user("meera")
+        user.groups.add(Group.objects.get(name="Quality Inspector"))
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/accept/",
+                               {"warehouse": self.warehouse.pk}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn(f"DR-7 is held: rejected on 2026-01-06 ({inspection.number}). It cannot be "
+                      "cleared onto a shelf.", str(response.content))
+        self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("0"))
+        response = client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/reject/",
+                               {"note": "Melt flow 4.2"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(self.item.on_hand_at(self.quarantine), Decimal("0"))
