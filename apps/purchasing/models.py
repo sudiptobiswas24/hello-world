@@ -74,7 +74,10 @@ from apps.accounting.settlement import (
     installment_schedule,
     oldest_overdue,
     owed_beyond,
+    held_base_left,
     post_drawdown,
+    standing_allocations,
+    standing_paid,
     RealisedOnItsOwnDay,
     refuse_other_control_account,
     booked_beside,
@@ -3327,15 +3330,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                                                           "that day has not come."]})
 
     def amount_paid(self):
-        # A voided payment is money that never arrived — a bounced cheque,
-        # a recalled transfer. Its allocation stays on record as history,
-        # but nothing counts it any more.
-        return sum(
-            (allocation.amount
-             for allocation in self.payment_allocations.all()
-             if not allocation.payment.is_voided()),
-            Decimal("0"),
-        )
+        # What still stands of the money applied to it (settlement.standing_paid).
+        return standing_paid(self)
 
     def amount_debited(self):
         """Value of posted debit notes issued against this bill."""
@@ -3368,6 +3364,16 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not self.is_prepayment:
             return Decimal("0")
         return self.total() - self.prepayment_applied() - self.amount_debited()
+
+    def prepayment_base_left(self, account):
+        """What is still held, in base, as the prepayment, its drawdowns and its notes booked it."""
+        return held_base_left(
+            account,
+            [self.journal_entry]
+            + [application.journal_entry for application in self.applications.all()]
+            + [note.journal_entry for note in self.debit_notes.all() if note.posted],
+            is_receivable=False,
+        )
 
     @transaction.atomic
     def apply_prepayment(self, prepayment, amount=None, on_date=None):
@@ -3415,9 +3421,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 f"{self.amount_due()} due on the bill)."
             )
 
-        account = Company.get().vendor_prepayment_account
-        if account is None:
-            raise ValidationError("The company has no vendor prepayment account configured.")
+        # Taken off the account the prepayment was held in, as its line booked
+        # it, not today's setting (O105), as sales draws a deposit down.
+        account = prepayment.lines.get().expense_account
 
         entry, fx_entry = post_drawdown(
             party=self.vendor, held_account=account,
@@ -3426,6 +3432,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             date=on_date, reference=self.number,
             memo=f"Prepayment {prepayment.number} applied to {self.number}",
             is_receivable=False,
+            held_left=(left, prepayment.prepayment_base_left(account)),
         )
         return PrepaymentApplication.objects.create(
             bill=self, prepayment=prepayment, amount=amount, date=on_date,
@@ -3575,11 +3582,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         if not self.is_debit_note():
             return Decimal("0")
-        refunded = sum(
-            (allocation.amount for allocation in self.payment_allocations.all()),
-            Decimal("0"),
-        )
-        return self.total() - self.amount_absorbed() - self.reversed_discount - refunded
+        # Only a refund that stands: one bounced is owed again (O53), as sales' mirror reads it.
+        return self.total() - self.amount_absorbed() - self.reversed_discount - self.amount_paid()
 
     def amount_due(self):
         if self.is_debit_note():
@@ -5271,9 +5275,7 @@ class BillPayment(RealisedOnItsOwnDay, AuditModel):
 
         # amount_due() already means "refund still owed" on a debit note,
         # so one ceiling serves both directions.
-        outstanding = self.bill.amount_due() + (
-            BillPayment.objects.filter(pk=self.pk).first().amount if self.pk else Decimal("0")
-        )
+        outstanding = self.outstanding_for_it()
         if self.amount > outstanding:
             raise ValidationError(
                 f"The bill only has {outstanding} outstanding; cannot apply {self.amount}."
@@ -5305,7 +5307,10 @@ class BillPayment(RealisedOnItsOwnDay, AuditModel):
 
     def settles(self):
         document = self.bill
-        return document, document.bill_date, document.vendor, document.payable_account, False
+        # A debit note sits on the other side of the payable, settled by money
+        # the vendor returns: its exchange difference reads the other way (O70).
+        return (document, document.bill_date, document.vendor, document.payable_account,
+                document.is_debit_note())
 
 
 @transaction.atomic

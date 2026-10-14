@@ -115,6 +115,8 @@ class Command(BaseCommand):
         findings += self.per_unit_withdrawal_rates(labels, sources)
         findings += self.movements_written_around_save(labels, sources)
         findings += self.release_past_the_gate(labels, sources)
+        findings += self.allocations_counted_past_a_void(labels, sources)
+        findings += self.drawdowns_from_todays_setting(labels, sources)
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -1486,6 +1488,70 @@ class Command(BaseCommand):
         return findings
 
     # -- shape 4: a setting read live by a later posting ------------------
+    # Functions that walk a document's payment allocations whole, with why: each
+    # shows a voided payment as well as the money, so it reads every row.
+    READS_EVERY_ALLOCATION = {
+        "sales.customer_statement": "a statement shows the money in and, on its own day, the bounce back out "
+                                    "(_payment_entries)",
+        "accounting.standing_allocations": "the rule itself",
+    }
+
+    @staticmethod
+    def _functions(sources, label):
+        """(qualified name, source text) of every function in a module's code, tests and migrations left out."""
+        for path, text in sources[label].items():
+            if "test" in path.name or "migrations" in path.parts:
+                continue
+            for node in ast.walk(ast.parse(text)):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield f"{label}.{node.name}", ast.get_source_segment(text, node) or ""
+
+    def allocations_counted_past_a_void(self, labels, sources):
+        """
+        A document's payment allocations summed whole, a voided payment counted with the rest.
+
+        A debit note's refund counted every allocation: the vendor's 300 refund bounced and
+        the note still read settled while the payable held 300 (O53). Commission on
+        collection paid on a bounced cheque (O74). What stands is
+        accounting.settlement.standing_allocations(); a function that must see every row
+        says why in READS_EVERY_ALLOCATION.
+        """
+        findings = []
+        for label in labels:
+            seen = set()
+            for name, text in self._functions(sources, label):
+                if name in self.READS_EVERY_ALLOCATION or name in seen:
+                    continue
+                if re.search(r"\.payment_allocations\.all\(\)", text):
+                    seen.add(name)
+                    findings.append((
+                        "allocations counted past a void",
+                        f"{name} walks payment_allocations whole; a bounced payment counts with the "
+                        "rest. Ask settlement.standing_allocations(), or say why in "
+                        "READS_EVERY_ALLOCATION.",
+                    ))
+        return findings
+
+    def drawdowns_from_todays_setting(self, labels, sources):
+        """
+        Money held drawn down off the account the company names today.
+
+        A prepayment paid into 1400 was drawn off 1401 once the setting moved: 1400 kept
+        +15 and 1401 went to -15 (O105). The held account is the one the money went to,
+        as its document's line booked it; a function that calls post_drawdown() reads no
+        Company setting.
+        """
+        findings = []
+        for label in labels:
+            for name, text in self._functions(sources, label):
+                if "post_drawdown(" in text and re.search(r"Company\.get\(\)\.\w+_account\b", text):
+                    findings.append((
+                        "drawdown from today's setting",
+                        f"{name} draws money held down off a Company setting read now; take the "
+                        "account the deposit or prepayment was booked to.",
+                    ))
+        return findings
+
     def kept_settings_read_live(self, labels, sources):
         """
         A field a record keeps from a related one, read through the relation instead.

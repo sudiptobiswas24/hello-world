@@ -163,8 +163,10 @@ def earlier_of(rows, act, settled):
 
 def _standing(bill, day):
     """[(paid on, amount)] of payments against the bill made by `day` that still stand."""
-    return [(to_date(row.payment.payment_date), row.amount) for row in bill.payment_allocations.all()
-            if not row.payment.is_voided() and to_date(row.payment.payment_date) <= day]
+    from apps.accounting.settlement import standing_allocations
+
+    return [(to_date(row.payment.payment_date), row.amount) for row in standing_allocations(bill)
+            if to_date(row.payment.payment_date) <= day]
 
 
 def msme_bills(start, end, as_of=None):
