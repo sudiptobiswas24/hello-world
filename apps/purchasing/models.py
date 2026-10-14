@@ -633,6 +633,10 @@ class RfqQuote(AuditModel):
     def __str__(self):
         return f"{self.invitation.vendor} @ {self.unit_price}"
 
+    def locked_before_it(self):
+        """The invitation, as save() takes it before the quote: an edit through the API holds it first (O37)."""
+        return [self.invitation] if self.invitation_id else []
+
     def save(self, *args, **kwargs):
         # A quote given while the request was out; after the award it is the
         # record of how the vendor was chosen, and moves no more.
