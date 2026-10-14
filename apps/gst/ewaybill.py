@@ -374,7 +374,13 @@ def _invoice_payload(invoice):
         "totInvValue": float(document.value),
         "itemList": items,
     }
-    required, because = _limit_test(document.value, registration)
+    # The consignment's value is the supply's (Rule 138) with its GST: TCS collected with it is
+    # income tax, not part of the value of supply (CBIC Circular 76/50/2018-GST as corrected on
+    # 7 March 2019), so it counts in totInvValue as an other value but never towards the limit.
+    from apps.accounting.models import round_money
+
+    tcs = round_money(invoice.tcs_amount * (invoice.exchange_rate or Decimal("1")))
+    required, because = _limit_test(document.value - tcs, registration)
     return payload, required, because
 
 
