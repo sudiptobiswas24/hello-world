@@ -96,6 +96,7 @@ class ExpenseClaim(AuditModel):
         self.claim_date = to_date(self.claim_date) or timezone.localdate()
         super().save(*args, **kwargs)
 
+    @serialised("status")
     def delete(self, *args, **kwargs):
         if self.status != ClaimStatus.DRAFT:
             raise ValidationError(f"{self} was submitted; it is rejected, not deleted.")

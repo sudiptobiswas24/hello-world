@@ -68,6 +68,7 @@ class Appraisal(AuditModel):
             raise ValidationError({"rating": ["A rating is 1 to 5."]})
         super().save(*args, **kwargs)
 
+    @serialised("status")
     def delete(self, *args, **kwargs):
         if self.status != AppraisalStatus.DRAFT:
             raise ValidationError(f"{self} was submitted; it is part of the record.")

@@ -356,6 +356,7 @@ class CorrectiveAction(AuditModel):
         super().save(*args, **kwargs)
 
     @transaction.atomic
+    @serialised("done_on")
     def delete(self, *args, **kwargs):
         if self.done_on is not None:
             raise ValidationError(f"{self} is done; it is part of the record.")

@@ -88,6 +88,7 @@ class _Posted(AuditModel):
             raise ValidationError(f"{self} is posted. Void it and raise another.")
         super().save(*args, **kwargs)
 
+    @serialised("posted")
     def delete(self, *args, **kwargs):
         if self.posted:
             raise ValidationError(f"{self} is posted; void it.")

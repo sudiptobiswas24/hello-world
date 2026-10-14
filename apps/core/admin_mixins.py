@@ -19,6 +19,8 @@ from django.db import transaction
 from django.db.models import ProtectedError, RestrictedError
 from django.utils.translation import gettext_lazy
 
+from .models import lock_for_change
+
 
 class PostedImmutableAdminMixin:
     def has_change_permission(self, request, obj=None):
@@ -67,13 +69,20 @@ def delete_selected(modeladmin, request, queryset):
     _deletable, _counts, lacking, protected = modeladmin.get_deleted_objects(queryset, request)
     if not request.POST.get("post") or lacking or protected:
         return djangos_delete_selected(modeladmin, request, queryset)
-    rows = list(queryset)
+    rows = sorted(queryset, key=lambda row: row.pk)
     row = None
     try:
         with transaction.atomic():
             modeladmin.log_deletions(request, rows)
             for row in rows:
-                row.delete()
+                # Held from the read to the delete, as the change and delete views hold theirs
+                # (RowHeldAdminMixin): read unlocked, a draft payment deleted as it posted left its
+                # entry posted on the bank with no payment behind it (O22). What its delete() holds
+                # first is held first (lock_for_change); then it is read again.
+                lock_for_change(row)
+                row = type(row)._base_manager.filter(pk=row.pk).first()
+                if row is not None:
+                    row.delete()
     except (ValidationError, ProtectedError, RestrictedError) as refused:
         said = " ".join(getattr(refused, "messages", None) or [str(refused)])
         modeladmin.message_user(request, f"Nothing was deleted. {row}: {said}", messages.ERROR)
