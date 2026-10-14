@@ -682,8 +682,8 @@ on the owner's answer.
 - **L22 Billing and shipping policy per item:** ordered or delivered
   quantity billed, ship complete or in parts.
 - **L23 Landed cost by weight,** for freight on polymer.
-- **L24 (?) Branch transfers** (if godowns are in other states): e-way
-  bill and branch-transfer invoice.
+- ~~L24 Branch transfers~~ — not needed: the plant has no godowns in
+  other states (owner, 14 October).
 - **L25 Machine counters** read automatically (loom picks, extruder kg),
   and the scale-bridge client (O225).
 - **L26 The recycling line:** granule lots with melt-flow and
@@ -709,7 +709,7 @@ on the owner's answer.
   payroll; India's sandwich leave, comp-off for overtime, biometric
   device import.
 - **L36 Attachments in offsite storage,** with the backup (O221).
-- **L37 (?) Export incentives and duty-free imports,** if the plant uses
-  them: RoDTEP or duty drawback receivable on each shipping bill, and
+- **L37 Export incentives and duty-free imports** (not used yet; the
+  owner plans to start soon, 14 October: build before the first claim): RoDTEP or duty drawback receivable on each shipping bill, and
   Advance Authorisation or EPCG licences with their export obligation
   tracked against the imports made under them.
