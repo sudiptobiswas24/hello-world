@@ -1408,3 +1408,31 @@ class ReleaseKeepsOneRowAnItemTests(RunTestCase):
         (row,) = order.components.filter(item=self.virgin)
         self.assertEqual((row.uom, row.quantity_required), (self.kg, kg_only + Decimal("50")))
 
+
+class CountedAtTheFactorOfItsDayTests(RunTestCase):
+    """
+    O41: tape booked as 10 pieces of 2 kg; the piece respecified at 3 kg
+    afterwards. The shelf took 20 kg; restated at today's factor the run
+    counted 30. Counted at the factor of the entry's day, 20.
+    """
+
+    def test_a_factor_changed_later_does_not_restate_what_was_made(self):
+        from unittest import mock
+
+        from apps.inventory import models as inventory
+
+        piece = UnitOfMeasure.objects.create(code="pc", name="Piece", category=UnitOfMeasureCategory.COUNT)
+        state = {"respecified": False}
+
+        def weight(item, root, on_date):
+            if item.pk != self.tape.pk or root.pk != piece.pk:
+                return None
+            return root, Decimal("3") if state["respecified"] and on_date > TODAY else Decimal("2")
+
+        with mock.patch.object(inventory, "UNIT_PROVIDERS", [weight]):
+            order = self.order()
+            order.release(TODAY)
+            self.produce(order, "10", uom=piece).post()
+            state["respecified"] = True
+            self.assertEqual((order.quantity_produced(), self.tape.on_hand_at(self.plant)),
+                             (Decimal("20"), Decimal("20")))
