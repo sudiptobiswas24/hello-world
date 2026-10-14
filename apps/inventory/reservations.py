@@ -25,7 +25,7 @@ from decimal import Decimal
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 
@@ -105,9 +105,26 @@ class ReservationManager(models.Manager.from_queryset(ReservationQuerySet)):
             )
             return existing, shortfall
 
-        return self.create(
-            source=source, item=item, warehouse=warehouse, quantity=taken
-        ), shortfall
+        try:
+            with transaction.atomic():
+                return self.create(
+                    source=source, item=item, warehouse=warehouse, quantity=taken
+                ), shortfall
+        except IntegrityError:
+            # Another first claim of this source made one as this one read none: two
+            # first claims of one source to two shelves shared no lock, and the unique
+            # index refused the second, where one after the other the second moves the
+            # first (review F7, O39). The index made this one wait for the other to
+            # commit; it is moved here, as a claim standing elsewhere is above. Its shelf
+            # is not held, and need not be: the shelf a claim leaves only gains. The
+            # source is not locked first because its callers take the customer before
+            # the line (sales.salesorderline after core.party), and the lock order puts
+            # the line first.
+            existing = self.for_source(source).open().select_for_update().get()
+            existing.quantity = existing.consumed + taken
+            existing.warehouse = warehouse
+            super(StockReservation, existing).save(update_fields=["quantity", "warehouse", "updated_at"])
+            return existing, shortfall
 
 
 class StockReservation(AuditModel):
