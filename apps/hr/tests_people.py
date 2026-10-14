@@ -183,6 +183,8 @@ class ClaimTests(PeopleTestCase):
         claim.unpay("Paid from petty cash, should be bank", on_date=datetime.date(2026, 6, 4))
         self.assertEqual((claim.status, claim.voided_entry.posted, claim.decision_note[:16]), (ClaimStatus.APPROVED, True, "Payment reversed"))
         self.assertEqual(JournalLine.objects.filter(entry=claim.voided_entry, account=self.cash, debit=Decimal("450")).count(), 1)
+        # Taken here: paid again, the claim names that payment's reversal and no older one (O151).
+        first_reversal = claim.voided_entry
         # Approved again, it reads as unpaid: no date or drawer left from the payment reversed.
         claim.refresh_from_db()
         self.assertEqual((claim.paid_on, claim.paid_from), (None, None))
@@ -195,7 +197,6 @@ class ClaimTests(PeopleTestCase):
         # Reversed a second time, the claim still keeps the first reversal (O164: it belonged to
         # nothing, and left the bank's movements); reversed from the journal it would pay the
         # claim from petty cash again, so it is corrected on the claim.
-        first_reversal = claim.voided_entry
         claim.unpay("Bank account closed", on_date=datetime.date(2026, 6, 6))
         self.assertEqual(first_reversal.recorded_by(), claim)
         with self.assertRaisesMessage(ValidationError, "was posted by expense claim"):
@@ -528,6 +529,26 @@ class ClaimOnTheStatementTests(PeopleTestCase):
         second_back = ExpenseClaim.objects.get(pk=self.paid.pk).voided_entry
         self.assertEqual(set(bank_movements(self.bank)), {first, first_back, second, second_back})
         self.assertEqual(len({first, first_back, second, second_back}), 4)
+
+    def test_paid_unpaid_and_paid_again_keeps_every_entry_and_names_its_own(self):
+        # O151: paid again, the claim named the first payment's reversal as this payment's own, and
+        # the first pair belonged to nothing once overwritten. Every entry stays recorded on the
+        # claim; journal_entry and voided_entry name the payment standing and nothing else.
+        from .expenses import claims_paid
+
+        first = self.paid.journal_entry
+        self.paid.unpay("Wrong account", on_date=datetime.date(2026, 7, 8))
+        first_back = ExpenseClaim.objects.get(pk=self.paid.pk).voided_entry
+        self.paid.pay(self.bank, on_date=datetime.date(2026, 7, 9))
+        claim = ExpenseClaim.objects.get(pk=self.paid.pk)
+        self.assertEqual((claim.status, claim.voided_entry), (ClaimStatus.PAID, None))
+        second = claim.journal_entry
+        self.paid.unpay("Paid twice", on_date=datetime.date(2026, 7, 10))
+        claim = ExpenseClaim.objects.get(pk=self.paid.pk)
+        entries = {first, first_back, second, claim.voided_entry}
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(set(claims_paid().filter(pk__in=[entry.pk for entry in entries])), entries)
+        self.assertEqual({entry.recorded_by() for entry in entries}, {claim})
 
     def test_matched_by_the_bookkeeper_over_the_api(self):
         client = self.as_(self.books)
