@@ -15,7 +15,7 @@ from rest_framework.response import Response
 
 from .api import flag
 from .audit import AuditableViewSetMixin
-from .roles import RoleProposal, waiting_for
+from .roles import RoleProposal, credentials_in_words, waiting_for
 
 
 def _who(user):
@@ -29,11 +29,13 @@ class RoleProposalSerializer(serializers.ModelSerializer):
     decided_by_name = serializers.SerializerMethodField()
     may_confirm = serializers.SerializerMethodField()
     may_decline = serializers.SerializerMethodField()
+    # Who may know the login's password and email, in words, for whoever confirms (O198).
+    credentials = serializers.SerializerMethodField()
 
     class Meta:
         model = RoleProposal
         fields = ["id", "user", "username", "group", "role", "status", "proposed_by", "proposed_by_name",
-                  "proposed_at", "decided_by", "decided_by_name", "decided_at", "may_confirm", "may_decline"]
+                  "proposed_at", "decided_by", "decided_by_name", "decided_at", "may_confirm", "may_decline", "credentials"]
         read_only_fields = fields
 
     def get_proposed_by_name(self, proposal):
@@ -41,6 +43,9 @@ class RoleProposalSerializer(serializers.ModelSerializer):
 
     def get_decided_by_name(self, proposal):
         return _who(proposal.decided_by)
+
+    def get_credentials(self, proposal):
+        return " ".join(credentials_in_words(proposal.user)) if proposal.status == "pending" else ""
 
     def get_may_confirm(self, proposal):
         return proposal.status == "pending" and proposal.may_confirm(self.context["request"].user) is None
