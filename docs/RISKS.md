@@ -231,7 +231,6 @@ missing), **minor**.
 
 | Id | Area | Defect | Kind | State |
 |---|---|---|---|---|
-| O1 | sales | `DeliveryAllocation.delete` reads `self.delivery`, which the model does not have: deleting any allocation fails | crash | fixed in g17 |
 | O2 | purchasing | Landed cost on the same bill (`Bill._record_landed_cost`, `_split_across_warehouses`) still lands on the line's destination and always debits inventory: the mirror of stores finding 6 | books | open |
 | O3 | inventory | A write-down given an explicit unit cost books that cost, not what the shelf loses (`cost_of_removing`) | books | open |
 | O4 | inventory | The importer reads 8-place opening costs into a 4-place field | books | open |
