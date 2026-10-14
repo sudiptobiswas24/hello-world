@@ -172,8 +172,13 @@ class ExpenseClaim(AuditModel):
                 JournalLine.objects.create(entry=entry, account=account, debit=amount)
             JournalLine.objects.create(entry=entry, account=paid_from, credit=self.total())
             entry.post()
+            # journal_entry and voided_entry name this payment and its reversal; every
+            # earlier pair stays recorded on the claim (bank_entries, claims_paid). Left
+            # standing, a claim paid again named the first payment's reversal as its own:
+            # paid, and read as reversed (O151).
             self.status, self.paid_on, self.paid_from, self.journal_entry = ClaimStatus.PAID, on_date, paid_from, entry
-            self._move(["status", "paid_on", "paid_from", "journal_entry"])
+            self.voided_entry = None
+            self._move(["status", "paid_on", "paid_from", "journal_entry", "voided_entry"])
             self.bank_entries.add(entry)
 
     @serialised("status")
