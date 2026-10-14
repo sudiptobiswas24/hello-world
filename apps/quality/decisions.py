@@ -194,17 +194,32 @@ def tell_on_posting(inspection, by=None):
     Manager for information: a to-do each, due the next working day, and
     a mail. Returns the `Posting`, whose warning is the answer to the post.
     """
+    from .models import Result
+    from .release import held_inside
+
     link = f"/quality/inspections/{inspection.pk}"
     due = inspection.decision_due_on()
-    failed = _failed(inspection)
-    body = (f"{inspection.lot} ({inspection.lot.item}) failed {inspection.number} on "
-            f"{inspection.inspected_on:%d %b %Y}: {failed} outside the plan's limits. The plan is "
-            "advisory, so the system has not rejected it: the batch is held until the Quality "
-            "Manager decides to use it as is, rework it or reject it.")
+    inside = held_inside(inspection.lot) if inspection.result == Result.PASS else []
+    if inside:
+        names = ", ".join(str(lot) for lot in inside)
+        body = (f"{inspection.lot} ({inspection.lot.item}) passed {inspection.number} on "
+                f"{inspection.inspected_on:%d %b %Y}, but it is made from {names}, which quality "
+                "holds, and its own pass cannot show a defect inside them: the batch is held until "
+                "the Quality Manager decides to use it as is, rework it or reject it.")
+        summary = f"Decide {inspection.number}: {inspection.lot} passed but is made from {names}, held"
+        first = [f"{inspection.lot} passed ({inspection.number}) but is made from {names}, which "
+                 "quality holds."]
+    else:
+        failed = _failed(inspection)
+        body = (f"{inspection.lot} ({inspection.lot.item}) failed {inspection.number} on "
+                f"{inspection.inspected_on:%d %b %Y}: {failed} outside the plan's limits. The plan is "
+                "advisory, so the system has not rejected it: the batch is held until the Quality "
+                "Manager decides to use it as is, rework it or reject it.")
+        summary = f"Decide {inspection.number}: {inspection.lot} failed ({failed}) and is held"
+        first = [f"{inspection.lot} FAILED: {failed} outside the plan's limits ({inspection.number})."]
     raised = inspection.raised_by()
     deciders = tell_the_quality_manager(
-        inspection, f"Decide {inspection.number}: {inspection.lot} failed ({failed}) and is held",
-        link=link, by=by, body=body, due_on=due, barred=raised)
+        inspection, summary, link=link, by=by, body=body, due_on=due, barred=raised)
     asked = set(deciders.told) | set(deciders.not_told)
     # A Quality Manager who raised it may not decide it: told, for information.
     informed = tell(
@@ -212,7 +227,7 @@ def tell_on_posting(inspection, by=None):
         f"For information: {inspection.lot} is held until the Quality Manager decides {inspection.number}",
         due, link=link, by=by, body=body)
     said = [
-        f"{inspection.lot} FAILED: {failed} outside the plan's limits ({inspection.number}).",
+        *first,
         "The batch is HELD. Nobody may issue it, load it or ship it until the Quality Manager "
         "decides whether to use it as is, rework it or reject it.",
     ]
