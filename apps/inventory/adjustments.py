@@ -616,24 +616,31 @@ class StockAdjustmentLine(AuditModel):
         super().save(update_fields=["reversal_movement", "updated_at"])
         return self.reversal_movement
 
+    def locked_before_it(self):
+        """The adjustments it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, "adjustment")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.adjustment_id and StockAdjustment.objects.filter(
-            pk=self.adjustment_id, posted=True
-        ).exists():
-            raise ValidationError(
-                "Cannot modify a line on a posted adjustment. Void it and raise another."
-            )
+        from apps.core.models import answer_to_its_document
+
+        # Shared rule B (O124): the adjustment it leaves and the one it joins, both held.
+        answer_to_its_document(
+            self, "adjustment", "Cannot modify a line on a posted adjustment. Void it and raise another.")
         if self.uom_id is None and self.item_id:
             self.uom = self.item.uom
         if self.item_id and self.uom_id:
             self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.adjustment.posted:
-            raise ValidationError(
-                "Cannot delete a line on a posted adjustment. Void it and raise another."
-            )
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(
+            self, "adjustment", "Cannot delete a line on a posted adjustment. Void it and raise another.")
         super().delete(*args, **kwargs)
 
 
@@ -875,9 +882,18 @@ class StockCountLine(AuditModel):
         """
         return self.counted_in_stock_units() - self.system_quantity
 
+    def locked_before_it(self):
+        """The counts it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, "count")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.count_id and StockCount.objects.filter(pk=self.count_id, posted=True).exists():
-            raise ValidationError("Cannot modify a line on a posted count.")
+        from apps.core.models import answer_to_its_document
+
+        # Shared rule B (O124): the count it leaves and the one it joins, both held.
+        answer_to_its_document(self, "count", "Cannot modify a line on a posted count.")
         if self.count_id and self.item_id:
             _refuse_counting_twice(self, StockCountLine.objects.filter(
                 count_id=self.count_id, item_id=self.item_id).select_related("bin", "item"))
@@ -887,7 +903,9 @@ class StockCountLine(AuditModel):
             self.item.check_uom(self.uom)
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.count.posted:
-            raise ValidationError("Cannot delete a line on a posted count.")
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "count", "Cannot delete a line on a posted count.")
         super().delete(*args, **kwargs)

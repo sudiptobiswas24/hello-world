@@ -87,9 +87,18 @@ class ProductionScrap(AuditModel):
     def __str__(self):
         return f"{_q(self.quantity)} {self.reason.code}"
 
+    def locked_before_it(self):
+        """The entries it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, "entry")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.entry.posted:
-            raise ValidationError(f"{self.entry} is posted; its scrap is as it was booked.")
+        from apps.core.models import answer_to_its_document
+
+        # Shared rule B (O124): the entry it leaves and the one it joins, both held.
+        answer_to_its_document(self, "entry", lambda entry: f"{entry} is posted; its scrap is as it was booked.")
         if self._state.adding and not self.reason.is_active:
             raise ValidationError(f"{self.reason} is no longer used.")
         if self.operation_id and self.operation.work_order_id != self.entry.work_order_id:
@@ -98,9 +107,11 @@ class ProductionScrap(AuditModel):
                                   f"{self.entry.work_order}.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.entry.posted:
-            raise ValidationError(f"{self.entry} is posted; its scrap is as it was booked.")
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, "entry", lambda entry: f"{entry} is posted; its scrap is as it was booked.")
         return super().delete(*args, **kwargs)
 
     def stock_quantity(self):

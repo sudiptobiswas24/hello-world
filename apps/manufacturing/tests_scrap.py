@@ -213,3 +213,28 @@ class StepsApiTests(StepsTestCase):
         response = client.patch(f"/api/manufacturing/production-scrap/{line.pk}/",
                                 {"quantity": "1"}, format="json")
         self.assertEqual(response.status_code, 400)
+
+
+class ScrapAnswersToBothEntriesTests(StepsTestCase):
+    """
+    O124: scrap's save() asked only the entry it joins, unlocked, so a
+    Production Supervisor moved booked scrap off a posted entry into a
+    draft one. Now it answers to both (answer_to_its_document), held.
+    """
+
+    def test_booked_scrap_is_not_moved_off_its_posted_entry(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        supervisor = User.objects.create_user("supervisor")
+        supervisor.groups.add(Group.objects.get(name="Production Supervisor"))
+        api = APIClient()
+        api.force_authenticate(supervisor)
+        posted = self.book("10", "5", [(self.seam, "5", None)])
+        draft = self.produce(self.run_, "10", "0")
+        line = posted.scrap_lines.get()
+        moved = api.patch(f"/api/manufacturing/production-scrap/{line.pk}/", {"entry": draft.pk}, format="json")
+        self.assertEqual(moved.status_code, 400, moved.content)
+        self.assertIn("its scrap is as it was booked", str(moved.content))
+        self.assertEqual(ProductionScrap.objects.get(pk=line.pk).entry_id, posted.pk)

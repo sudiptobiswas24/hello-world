@@ -111,17 +111,31 @@ class _Line(AuditModel):
     class Meta:
         abstract = True
 
+    # The field naming the document it is a line of.
+    DOCUMENT = None
+
     def document(self):
         raise NotImplementedError
 
+    def locked_before_it(self):
+        """The documents it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        from apps.core.models import documents_it_answers_to
+
+        return documents_it_answers_to(self, self.DOCUMENT)
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.document().posted:
-            raise ValidationError(f"{self.document()} is posted; its lines do not change.")
+        from apps.core.models import answer_to_its_document
+
+        # Shared rule B (O124): the document it leaves and the one it joins, both held.
+        answer_to_its_document(self, self.DOCUMENT, lambda document: f"{document} is posted; its lines do not change.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.document().posted:
-            raise ValidationError(f"{self.document()} is posted; its lines do not change.")
+        from apps.core.models import answer_to_its_document
+
+        answer_to_its_document(self, self.DOCUMENT, lambda document: f"{document} is posted; its lines do not change.")
         return super().delete(*args, **kwargs)
 
     def _check(self):
@@ -219,6 +233,7 @@ class CustomerMaterialReceipt(_Posted):
 
 
 class CustomerMaterialReceiptLine(_Line):
+    DOCUMENT = "receipt"
     receipt = models.ForeignKey(CustomerMaterialReceipt, on_delete=models.CASCADE,
                                 related_name="lines")
     declared_value = models.DecimalField(
@@ -318,6 +333,7 @@ class CustomerMaterialReturn(_Posted):
 
 
 class CustomerMaterialReturnLine(_Line):
+    DOCUMENT = "material_return"
     material_return = models.ForeignKey(CustomerMaterialReturn, on_delete=models.CASCADE,
                                         related_name="lines")
     receipt_line = models.ForeignKey(CustomerMaterialReceiptLine, on_delete=models.PROTECT,

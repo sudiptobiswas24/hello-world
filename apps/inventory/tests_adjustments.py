@@ -605,3 +605,39 @@ class APostedStockDocumentIsNotDeletedTests(AdjustmentTestCase):
         self.assertEqual(refused.status_code, 400, refused.content[:300])
         draft = self.adjust("-1", reason=self.shrink, post=False)
         self.assertIn(client.delete(f"/api/inventory/stock-adjustments/{draft.pk}/").status_code, (204, 403))
+
+
+class ALineAnswersToBothAdjustmentsTests(AdjustmentTestCase):
+    """
+    O124: a line's save() asked only the adjustment it joins, unlocked, so
+    a Stores Manager moved the only line off a posted adjustment into a
+    draft: the posted one read no lines while its movement and entry
+    stood. Now it answers to both (answer_to_its_document), held.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        manager = User.objects.create_user("stores")
+        manager.groups.add(Group.objects.get(name="Stores Manager"))
+        self.api = APIClient()
+        self.api.force_authenticate(manager)
+
+    def test_a_line_is_not_moved_off_a_posted_adjustment(self):
+        self.stock("100", "5")
+        posted = self.adjust("-4", reason=self.shrink)
+        draft = self.adjust("-1", reason=self.shrink, post=False)
+        line = posted.lines.get()
+        moved = self.api.patch(f"/api/inventory/stock-adjustment-lines/{line.pk}/", {"adjustment": draft.pk},
+                               format="json")
+        self.assertEqual(moved.status_code, 400, moved.content)
+        self.assertIn("posted adjustment", str(moved.content))
+        self.assertEqual((posted.lines.count(), draft.lines.count()), (1, 1))
+        # The draft's own line still changes.
+        own = draft.lines.get()
+        self.assertEqual(self.api.patch(f"/api/inventory/stock-adjustment-lines/{own.pk}/", {"quantity": "-2"},
+                                        format="json").status_code, 200)
