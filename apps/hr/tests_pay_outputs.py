@@ -237,7 +237,8 @@ class PayslipsOnPaperTests(OutputsTestCase):
         own = me.get(f"/api/hr/my-payslips/{slip.pk}/pdf/")
         self.assertEqual((own.status_code, own.content[:4]), (200, b"%PDF"))
         self.assertEqual(me.get(f"/api/hr/payslips/{other.pk}/").status_code, 403)
-        self.assertEqual(self.as_role("Employee Self Service").get("/api/hr/my-payslips/").status_code, 403)
+        nobody = self.as_role("Employee Self Service").get("/api/hr/my-payslips/")
+        self.assertEqual((nobody.status_code, nobody.json()), (200, []))
         self.assertEqual(self.as_role("Line Manager", employee=self.employee("E9")).get(
             "/api/hr/my-payslips/").status_code, 403)
 
