@@ -41,7 +41,11 @@ def applicable_prices(item, vendor, quantity=None, currency=None, on_date=None, 
         if price.covers(on_date) and price.covers_quantity(
             quantity_in_price_unit(quantity, item=item, uom=uom, price_uom=price.uom, on_date=on_date))
     ]
-    return sorted(candidates, key=lambda price: (-price.min_quantity, price.pk))
+    # The biggest break the order reaches wins, its size read in one unit (review F4): a kg
+    # price from 1,000 kg and a tonne price from 2 t, 3 t ordered, took the kg price because
+    # 1,000 is more than 2.
+    return sorted(candidates, key=lambda price: (
+        -quantity_in_price_unit(price.min_quantity, item=item, uom=price.uom, on_date=on_date), price.pk))
 
 
 def resolve_purchase_price(item, vendor, quantity=None, currency=None, on_date=None, uom=None):
@@ -55,7 +59,10 @@ def resolve_purchase_price(item, vendor, quantity=None, currency=None, on_date=N
     prices = applicable_prices(item, vendor, quantity, currency, on_date, uom=uom)
     if not prices:
         return None
-    return per_line_unit(prices[0].unit_price, item=item, price_uom=prices[0].uom, uom=uom, on_date=on_date)
+    # Asked with no currency (an estimate, a reorder row), the price is restated in base (review F5):
+    # 10 EUR at 1.1 is 11.00, not 10.
+    return per_line_unit(prices[0].unit_price, item=item, price_uom=prices[0].uom, uom=uom,
+                         price_currency=prices[0].currency, currency=currency, on_date=on_date)
 
 
 def resolve_lead_time(item, vendor, quantity=None, currency=None, on_date=None):
@@ -89,4 +96,10 @@ def preferred_vendor(item, on_date=None):
     preferred = [price for price in prices if price.is_preferred]
     if preferred:
         return preferred[0].vendor
-    return min(prices, key=lambda price: price.unit_price).vendor
+    # Cheapest in one currency and one unit (O100, review F4): the base price per the item's own
+    # unit, by the rule every price is restated by. 90,000 a tonne is 90 a kg, below 100 a kg.
+    from apps.accounting.pricing import per_line_unit
+
+    return min(prices, key=lambda price: (per_line_unit(
+        price.unit_price, item=item, price_uom=price.uom, price_currency=price.currency, on_date=on_date),
+        price.pk)).vendor

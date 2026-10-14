@@ -232,6 +232,47 @@ class PricedInTheLinesTermsTests(MoneyCase):
         self.assertEqual(response.status_code, 400, response.content)
 
 
+class PricedInOneUnitAndCurrencyTests(PricedInTheLinesTermsTests):
+    """
+    Review F4, F5 and O100 for units (calc_fix_money/review/pricing2.py). 100 a kg from 1,000 kg and
+    90,000 a tonne from 2 t: 3 t reach both, and the bigger break, 2 t, prices them at 90,000 a tonne.
+    V-2's 90,000 a tonne is 90 a kg, below V-1's 100: V-2 is preferred. A vendor price of 10 EUR at
+    1.1 asked in no currency is 11.00 in base.
+    """
+
+    def test_the_bigger_break_wins_across_units(self):
+        from .models import VendorPrice
+
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=self.usd, uom=self.kg,
+                                   unit_price=Decimal("100"), min_quantity=Decimal("1000"))
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=self.usd, uom=self.tonne,
+                                   unit_price=Decimal("90000"), min_quantity=Decimal("2"))
+        self.assertEqual(self.ordered("3", self.tonne).unit_price, Decimal("90000.00"))
+
+    def test_the_cheaper_vendor_per_kilo_is_preferred_whatever_unit_it_quotes_in(self):
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from .models import VendorPrice
+        from .pricing import preferred_vendor
+
+        other = Party.objects.create(code="V-2", name="Bulk granules", default_currency=self.usd)
+        PartyRoleAssignment.objects.create(party=other, role=PartyRole.VENDOR)
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=self.usd, uom=self.kg,
+                                   unit_price=Decimal("100"))
+        VendorPrice.objects.create(vendor=other, item=self.granule, currency=self.usd, uom=self.tonne,
+                                   unit_price=Decimal("90000"))
+        self.assertEqual(preferred_vendor(self.granule, JAN(5)), other)
+
+    def test_a_euro_price_asked_in_no_currency_is_in_base(self):
+        from .models import VendorPrice
+        from .pricing import resolve_purchase_price
+
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("1.1"), valid_from=JAN(1))
+        VendorPrice.objects.create(vendor=self.vendor, item=self.granule, currency=eur, unit_price=Decimal("10"))
+        self.assertEqual(resolve_purchase_price(self.granule, self.vendor, quantity=Decimal("5"), on_date=JAN(5)),
+                         Decimal("11.00"))
+
+
 from apps.accounting.models import Payment, PaymentDirection  # noqa: E402
 from .models import BillPayment  # noqa: E402
 from .tests_audit import VendorSettlementDiscountTests  # noqa: E402
