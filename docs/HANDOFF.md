@@ -85,13 +85,25 @@ Odoo 19 (notes in odoo19_research/); its last section is what the
 accountant or tax adviser must confirm before the statutory items are
 built.
 
-1. **g21, next.** Its tree is built from g20's pushed tip.
-   - fix_race's fifteen commits (`$SP/fix_race`, from d4f1827): 15 of 17
-     race rows, the sentinel seeing update/save/delete and joins, the whole
-     suite clean with it raising; O39 closed as not a defect (every outcome
-     matches a serial order), say so in its row. Its review is still to do.
-   - fix_qrecall (brief docs/handoff/g21_qrecall.md): decision 23 (O204,
-     O207, the "held because" column), and O123.
+1. **g21, in flight (14 October, evening).** The tree is `$SP/g21tree`,
+   built on the branch tip by cherry-picking. A snapshot of it is on
+   `claude/erp-wip-g21tree`.
+   - In the tree:
+     - fix_race, with its review fixes (F1 to F9; F10 is O230). The 17
+       race rows are closed and O226 to O230 registered.
+     - fix_qrecall: decision 23 (O204 with lamination, print and coating;
+       O207 with production runs), O123 with its lock. O231 and O232
+       registered.
+     - The whole fast suite passed on the combined tree (6472 tests).
+       The race tests passed on PostgreSQL (108 tests).
+   - Running: fix_people (`$SP/fix_people`, from 8de3b19, brief
+     docs/handoff/g21_people.md) and fix_acct (`$SP/fix_acct`, from
+     6f568a6, brief g21_acct.md).
+   - Still to do:
+     - Review fix_qrecall (Sonnet), then fix_people and fix_acct when
+       they report.
+     - Cherry-pick their commits into the tree and close their rows.
+     - The six lanes, finalize, push.
    - The go-live build list from the gap analysis, the items that wait on
      nobody first: the tax invoice's Rule 46 content (O218), e-invoice
      cancellation (O220), the backup of attachments (O221), printed
