@@ -208,6 +208,31 @@ class SalesRaceTests(RaceCase):
                 invoice_id=invoice.pk, payment_id=payment.pk, amount=Decimal("1000"))
             for invoice in invoices]))
 
+    def test_an_irn_is_not_cancelled_as_a_payment_settles_its_invoice(self):
+        """
+        O220: the cancellation decides on what settles the invoice, and an allocation adds to it. Both
+        hold the invoice: one wins, and the other is refused. Unheld, the invoice was paid and reversed
+        by a full credit note at once, which no order of the two gives.
+        """
+        from django.utils import timezone
+
+        from apps.gst.einvoice import EInvoice
+
+        invoice = self.bill(self.make_order("10", "100"))
+        payment = self.receipt("1000")
+        record = EInvoice.objects.create(
+            invoice=invoice, payload={}, irn="b" * 64, ack_number="1", signed_qr="x",
+            ack_date=timezone.now() - datetime.timedelta(minutes=5),
+            cancel_reason="2", cancel_remarks="Wrong rate", cancel_payload={"Irn": "b" * 64, "CnlRsn": "2"})
+        outcomes = race((InvoicePayment, Invoice),
+                        lambda: InvoicePayment.objects.create(invoice_id=invoice.pk, payment_id=payment.pk,
+                                                              amount=Decimal("1000")),
+                        lambda: EInvoice.objects.get(pk=record.pk).record_cancellation(timezone.now()))
+        self.once(outcomes)
+        paid = InvoicePayment.objects.filter(invoice=invoice).exists()
+        cancelled = EInvoice.objects.get(pk=record.pk).cancelled_at is not None
+        self.assertNotEqual(paid, cancelled, outcomes)
+
     def test_an_invoice_is_credited_once(self):
         invoice = self.bill(self.make_order("10", "100"))
         self.once(race(Invoice, *[
