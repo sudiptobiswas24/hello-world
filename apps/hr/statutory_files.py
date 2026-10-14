@@ -27,7 +27,10 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 
+from apps.core.models import to_date
+
 from .payroll import ComponentKind, PayRunStatus, Statutory
+from .statutory import pension_stops
 
 EPS_CEILING = Decimal("15000")
 EPS_RATE = Decimal("8.33")
@@ -87,6 +90,18 @@ def pension_ceiling(line):
     return Decimal(term[2]) if term else EPS_CEILING
 
 
+def born_as_kept(slip, line):
+    """
+    The date of birth the run read for the slip (kept on its PF line). A run that read none, or a slip
+    from before it was kept, reads it now: entered since, it is a fact the run lacked, not a change.
+    """
+    terms = line.kept_terms or {}
+    if terms.get("born"):
+        return to_date(terms["born"])
+    details = getattr(slip.employee, "pay_details", None)
+    return details.date_of_birth if details is not None else None
+
+
 def _posted(run):
     if run.status != PayRunStatus.POSTED:
         raise ValidationError("Only a posted run is filed; this one is "
@@ -101,7 +116,7 @@ def _slips(run):
 def ecr_rows(run):
     """[{uan, name, gross, epf_wages, eps_wages, edli_wages, epf, eps, epf_diff, ncp_days, refund}] for every member with a PF line."""
     _posted(run)
-    rows, unnamed = [], []
+    rows, unnamed, undated = [], [], []
     for slip in _slips(run):
         lines = _lines(slip)
         pf = lines.get(Statutory.PF)
@@ -111,7 +126,13 @@ def ecr_rows(run):
             unnamed.append(slip.employee.employee_number)
             continue
         epf_wages = wage_base(slip, pf[0])
-        eps_wages = min(epf_wages, pension_ceiling(pf[0]))
+        capped = min(epf_wages, pension_ceiling(pf[0]))
+        born = born_as_kept(slip, pf[0])
+        if born is None:
+            undated.append(slip.employee.employee_number)
+            continue
+        # From the month after the member turns 58, no pension: the whole employer share is EPF's.
+        eps_wages = Decimal("0") if pension_stops(born, run.period_end) else capped
         employer = sum((line.amount for line in lines.get(Statutory.PF_EMPLOYER, [])), Decimal("0"))
         named_eps = lines.get(Statutory.EPS)
         if named_eps:
@@ -124,12 +145,15 @@ def ecr_rows(run):
         rows.append({
             "uan": slip.employee.uan, "name": slip.employee.party.name,
             "gross": _rupees(slip.gross()), "epf_wages": _rupees(epf_wages), "eps_wages": _rupees(eps_wages),
-            "edli_wages": _rupees(eps_wages), "epf": _rupees(sum((line.amount for line in pf), Decimal("0"))),
+            "edli_wages": _rupees(capped), "epf": _rupees(sum((line.amount for line in pf), Decimal("0"))),
             "eps": _rupees(eps), "epf_diff": _rupees(epf_diff), "ncp_days": _days(ncp), "refund": 0,
         })
     if unnamed:
         raise ValidationError(f"No UAN on {', '.join(unnamed)}: the ECR names a member by it. "
                               "Set it on the employee and ask again.")
+    if undated:
+        raise ValidationError(f"No date of birth on {', '.join(undated)}: the pension share stops the month after "
+                              "a member turns 58, and the ECR cannot tell. Enter it in their pay details.")
     return rows
 
 

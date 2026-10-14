@@ -16,6 +16,10 @@ class FiledMonthKeptTests(FilesTestCase):
         """
         c = self.person("C", basic="9000", hra="3000")
         c.uan = "100200300402"
+        # The ECR asks every member's date of birth: the pension share stops after 58.
+        from .pay_details import EmployeePayDetails
+
+        EmployeePayDetails.objects.create(employee=c, date_of_birth=datetime.date(1990, 1, 1))
         c.save()
         run = self.run_for(*JUNE)
         before = {row["name"]: row["epf_wages"] for row in ecr_rows(run)}

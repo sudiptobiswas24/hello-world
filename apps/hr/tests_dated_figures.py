@@ -42,8 +42,10 @@ from .payroll import (
     PayComponentSlab,
     PayRun,
     Statutory,
+    Rounding,
     register_piece_measure,
 )
+from .pay_details import EmployeePayDetails
 from .statutory import FigureKind, StatutoryFigure
 from .statutory_files import ecr_rows, lwf_register, pt_register
 from .tests_statutory import StatutoryTestCase
@@ -98,6 +100,7 @@ class TheWageCeilingIsKeptForTheMonthTests(DatedFiguresTestCase):
         for number, person in enumerate((self.a, self.b, self.c)):
             person.uan = f"10000000000{number}"
             person.save()
+            EmployeePayDetails.objects.create(employee=person, date_of_birth=D(1990, 1, 1))
         self.rise = StatutoryFigure.objects.create(kind=FigureKind.EPF_WAGE_CEILING, effective_from=D(2026, 9, 17),
                                                    value=Decimal("25000"), source="S.O. 5109(E), to confirm")
 
@@ -141,6 +144,73 @@ class TheWageCeilingIsKeptForTheMonthTests(DatedFiguresTestCase):
         self.pf.base_ceiling = Decimal("15000")
         with self.assertRaisesMessage(ValidationError, "not both"):
             self.pf.save()
+
+
+class ThePensionShareStopsAfter58Tests(DatedFiguresTestCase):
+    """
+    Basic 20,000, PF wages capped at 15,000: in the month a member turns 58, EPS 1,250 and the EPF
+    difference 550; from the next month EPS wages and EPS nothing, the whole 1,800 EPF's. EDLI wages
+    stay 15,000. Turning 58 on the 1st, the 15th or the 31st of October 2026 alike.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for component, marked in ((self.pf, Statutory.PF), (self.pf_er, Statutory.PF_EMPLOYER)):
+            component.statutory = marked
+            component.save()
+        self.c = self.person("C", basic="20000")
+        self.c.uan = "100000000009"
+        self.c.save()
+
+    def row(self, number, person=None):
+        run = self.month_run(2026, number, employees=[person or self.c])
+        found = ecr_rows(run)[0]
+        return found["eps_wages"], found["eps"], found["epf_diff"], found["edli_wages"]
+
+    def test_from_the_month_after_the_58th_birthday(self):
+        for number, born in enumerate((D(1968, 10, 1), D(1968, 10, 15), D(1968, 10, 31))):
+            with self.subTest(born=born):
+                person = self.person(f"P{number}", basic="20000")
+                person.uan = f"10000000002{number}"
+                person.save()
+                EmployeePayDetails.objects.create(employee=person, date_of_birth=born)
+                self.assertEqual(self.row(10, person), (15000, 1250, 550, 15000))
+                self.assertEqual(self.row(11, person), (0, 0, 1800, 15000))
+
+    def test_the_date_read_is_kept_and_a_member_with_none_is_named(self):
+        october = self.month_run(2026, 10, employees=[self.c])
+        with self.assertRaisesMessage(ValidationError, "No date of birth on C"):
+            ecr_rows(october)
+        details = EmployeePayDetails.objects.create(employee=self.c, date_of_birth=D(1968, 9, 20))
+        # October's run read none: entered since, it is read now. 58 in September: no pension in October.
+        self.assertEqual(ecr_rows(october)[0]["eps"], 0)
+        self.assertEqual(self.row(11)[:2], (0, 0))
+        # November's run read 20 September 1968, and keeps it when the date is corrected.
+        details.date_of_birth = D(1990, 1, 1)
+        details.save()
+        self.assertEqual(ecr_rows(PayRun.objects.get(period_end=D(2026, 11, 30)))[0]["eps"], 0)
+        self.assertEqual(self.line(PayRun.objects.get(period_end=D(2026, 11, 30)), self.c, self.pf).kept_terms["born"],
+                         "1968-09-20")
+
+    def test_a_pension_share_of_its_own_goes_to_the_provident_fund_past_58(self):
+        eps = self.percent("EPS", 65, ComponentKind.EMPLOYER_COST, self.pf_payable, base=[self.basic, self.special],
+                           ceiling="15000", rounding=Rounding.RUPEE)
+        eps.statutory = Statutory.EPS
+        eps.save()
+        # Employer EPF 3.67% and pension 8.33% of 15,000: 551 and 1,250 to the rupee.
+        member = self.worker("D", uan="100000000030")
+        for component, rate in ((self.basic, "20000"), (self.pf, "12"), (self.pf_er, "3.67"), (eps, "8.33")):
+            self.paid(member, component, rate)
+        with self.assertRaisesMessage(ValidationError, "No date of birth on D"):
+            self.month_run(2026, 11, post=False, employees=[member])
+        EmployeePayDetails.objects.create(employee=member, date_of_birth=D(1968, 10, 15))
+        found = ecr_rows(self.month_run(2026, 10, employees=[member]))[0]
+        self.assertEqual((found["eps"], found["epf_diff"]), (1250, 551))
+        november = self.month_run(2026, 11, employees=[member])
+        line = self.line(november, member, eps)
+        self.assertEqual((line.kept_statutory, line.description), (Statutory.PF_EMPLOYER, "EPS, to provident fund past 58"))
+        found = ecr_rows(november)[0]
+        self.assertEqual((found["eps_wages"], found["eps"], found["epf_diff"]), (0, 0, 551 + 1250))
 
 
 class ProfessionalTaxSchedulesTests(DatedFiguresTestCase):

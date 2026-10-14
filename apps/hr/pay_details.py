@@ -9,18 +9,20 @@ which every path reaches (Django calls no full_clean() for code): an IFSC is
 four letters, a nought and six letters or digits; a PAN five letters, four
 digits and a letter; an account number nine to eighteen digits.
 
-Not a pay input: no run's figures read it. The bank file reads it as it is
-written and keeps what it wrote on each row.
+A pay input: a run reads the date of birth for the pension share (EPS stops
+the month after 58) and keeps it on the slip, so a change holds the person
+first, as every pay input does (O20). The bank file reads the account as
+it is written and keeps what it wrote on each row.
 """
 
 import re
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
-from apps.core.models import AuditModel, to_date
+from apps.core.models import AuditModel, documents_it_answers_to, to_date
 
-from .models import Employee
+from .models import Employee, hold_the_employee
 
 IFSC = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
 PAN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
@@ -41,7 +43,18 @@ class EmployeePayDetails(AuditModel):
     def __str__(self):
         return f"Pay details of {self.employee}"
 
+    def locked_before_it(self):
+        """The person, as save() holds them first (hold_the_employee, O20)."""
+        return documents_it_answers_to(self, "employee")
+
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
+        return super().delete(*args, **kwargs)
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
         self.ifsc = self.ifsc.strip().upper()
         self.pan = self.pan.strip().upper()
         self.account_number = self.account_number.replace(" ", "")

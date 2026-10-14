@@ -33,6 +33,11 @@ class FilesTestCase(StatutoryTestCase):
         self.a.save()
         self.b.uan = "100200300401"
         self.b.save()
+        from .pay_details import EmployeePayDetails
+
+        for person in (self.a, self.b):
+            # Under 58: the pension share stops the month after (follow-up 3); the ECR asks.
+            EmployeePayDetails.objects.create(employee=person, date_of_birth=datetime.date(1990, 1, 1))
 
 
 class EcrTests(FilesTestCase):

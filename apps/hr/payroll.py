@@ -56,7 +56,7 @@ from apps.core.models import (
 
 from .calendars import working_days
 from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
-from .statutory import CEILINGS, FigureKind, figure_as_of, refuse_if_kept
+from .statutory import CEILINGS, FigureKind, figure_as_of, pension_stops, refuse_if_kept
 
 
 class ComponentKind(models.TextChoices):
@@ -1244,10 +1244,24 @@ class Payslip(AuditModel):
                     so_far = component.round(unrounded)
                     owed.append((row, so_far - taken, None))
                     taken = so_far
+            marked, label = component.statutory or "", component.name
             if component.statutory in PF_KINDS:
-                # The ECR files EPS wages at the pension ceiling of the month (O222).
-                self._terms(component.pk)["eps_ceiling"] = figure_as_of(
+                # The ECR files EPS wages at the pension ceiling of the month (O222), and none from the
+                # month after the member turns 58: the date of birth read is kept with it.
+                kept = self._terms(component.pk)
+                kept["eps_ceiling"] = figure_as_of(
                     FigureKind.EPS_WAGE_CEILING, self.run.period_end, self.employee.work_state)[1]
+                details = getattr(self.employee, "pay_details", None)
+                born = details.date_of_birth if details is not None else None
+                kept["born"] = born.isoformat() if born else None
+                if component.statutory == Statutory.EPS:
+                    if born is None:
+                        raise ValidationError(
+                            f"No date of birth on {self.employee}: {component.code} is the pension share, which "
+                            "stops the month after 58, and this run cannot tell. Enter it in their pay details.")
+                    if pension_stops(born, self.run.period_end):
+                        # Past 58 the whole employer share is the provident fund's.
+                        marked, label = Statutory.PF_EMPLOYER, f"{component.name}, to provident fund past 58"
             for row, amount, quantity in owed:
                 amount, kind = component.round(amount), component.kind
                 rate = row.amount
@@ -1268,7 +1282,7 @@ class Payslip(AuditModel):
                     payslip=self,
                     component=component,
                     kind=kind,
-                    description=component.name if kind == component.kind else f"{component.name}, taken back",
+                    description=label if kind == component.kind else f"{component.name}, taken back",
                     # Frozen: the rate, the basis and the account as they stood
                     # when this slip was worked out. All three can change, and
                     # a payslip that restates itself afterwards cannot be
@@ -1279,7 +1293,7 @@ class Payslip(AuditModel):
                     amount=amount,
                     quantity=quantity,
                     base_ceiling=self._ceiling(component),
-                    kept_statutory=component.statutory or "",
+                    kept_statutory=marked,
                     kept_base=sorted(other.pk for other in component.base_components.all()),
                     kept_terms=self._kept.get(component.pk) or None,
                 ))

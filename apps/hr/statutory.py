@@ -87,6 +87,18 @@ class StatutoryFigure(AuditModel):
         return super().delete(*args, **kwargs)
 
 
+# The pension scheme's age: EPS is paid for the month a member turns 58 in and not after; the whole
+# employer share then goes to the provident fund. The law's rule, kept here; the date of birth the run
+# read is kept on the slip's PF lines (kept_terms["born"]). To confirm with the accountant.
+PENSION_AGE = 58
+
+
+def pension_stops(born, period_end):
+    """Whether the month ending `period_end` is after the month the member born on `born` turns 58 in."""
+    born, period_end = to_date(born), to_date(period_end)
+    return (period_end.year, period_end.month) > (born.year + PENSION_AGE, born.month)
+
+
 def figure_as_of(kind, day, state=""):
     """(value, kept term) of `kind` on `day`: the latest row from on or before it, the state's over every state's."""
     day = to_date(day)
