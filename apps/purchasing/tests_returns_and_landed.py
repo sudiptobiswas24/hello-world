@@ -520,13 +520,15 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.assertEqual((self.item.stock_value_at(self.bay), self.item.stock_value_at(self.warehouse)),
                          (Decimal("130.00"), Decimal("0.00")))
 
-    def test_freight_on_goods_already_gone_is_cost_of_sales(self):
+    def test_freight_on_goods_already_written_off_goes_where_the_write_off_posted(self):
+        # The integrator's ruling (R1): the write-off took 50 to its account;
+        # the 80 that landed on those goods follows: 130 there, cost of sales 0.
         self.first_in_first_out()
         order, self.receipt = self.goods_received("10", "5")
         self.written_off()
         self.landed()
-        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
-                         (Decimal("0"), Decimal("80")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.expense)),
+                         (Decimal("0"), Decimal("0"), Decimal("130")))
         self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("0.00"))
 
     def test_released_it_comes_back_off_the_bay(self):
@@ -542,7 +544,9 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.assertEqual((self.balance(self.inventory), self.balance(self.freight_expense)),
                          (Decimal("50"), Decimal("80")))
 
-    def test_released_after_the_goods_went_it_comes_out_of_cost_of_sales(self):
+    def test_released_after_the_goods_were_written_off_it_comes_out_of_the_write_offs_account(self):
+        # Written off at 130 to the reason's account, the freight left with the
+        # goods; released, that account gives the 80 back (R1): 50 there.
         self.first_in_first_out()
         order, self.receipt = self.goods_received("10", "5")
         application = self.landed()
@@ -550,23 +554,23 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         application.release()
         self.assertEqual((self.balance(self.inventory), self.item.stock_value_at(self.warehouse)),
                          (Decimal("0"), Decimal("0.00")))
-        self.assertEqual((self.balance(self.cogs), self.balance(self.freight_expense)),
-                         (Decimal("-80"), Decimal("80")))
+        self.assertEqual((self.balance(self.cogs), self.balance(self.freight_expense), self.balance(self.expense)),
+                         (Decimal("0"), Decimal("80"), Decimal("50")))
 
-    def test_released_when_it_never_reached_a_shelf_it_comes_out_of_cost_of_sales(self):
+    def test_released_when_it_never_reached_a_shelf_it_comes_back_from_where_it_went(self):
         self.first_in_first_out()
         order, self.receipt = self.goods_received("10", "5")
         self.written_off()
         application = self.landed()
-        # In cost of sales while it stands, or the release proves nothing:
-        # debited to inventory, the release credited inventory back and
-        # every balance below came out the same.
-        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
-                         (Decimal("0"), Decimal("80")))
+        # On the write-off's account while it stands (50 + 80, R1), or the
+        # release proves nothing: debited to inventory, the release credited
+        # inventory back and every balance below came out the same.
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.expense)),
+                         (Decimal("0"), Decimal("0"), Decimal("130")))
         application.release()
         self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
-                          self.balance(self.freight_expense)),
-                         (Decimal("0"), Decimal("0"), Decimal("80")))
+                          self.balance(self.freight_expense), self.balance(self.expense)),
+                         (Decimal("0"), Decimal("0"), Decimal("80"), Decimal("50")))
 
 
     # Ten received into the bay and put away before the freight bill came:
@@ -626,10 +630,12 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         order, self.receipt = self.goods_received("10", "5")
         self.written_off_but_one()
         self.landed()
+        # Nine of ten written off (45 to the reason's account): the one left
+        # bears 8, and the 72 on the nine follows them to that account (R1).
         self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("13.00"))
         self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
-                          self.balance(self.freight_expense)),
-                         (Decimal("13.00"), Decimal("72.00"), Decimal("0.00")))
+                          self.balance(self.freight_expense), self.balance(self.expense)),
+                         (Decimal("13.00"), Decimal("0"), Decimal("0.00"), Decimal("117.00")))
 
     def test_under_fifo_goods_cleared_from_inspection_take_it_on_their_shelf(self):
         from apps.inventory.models import Warehouse
@@ -675,9 +681,11 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
     def test_released_after_eight_went_the_two_left_give_back_their_share(self):
         self.released_after_eight_of_ten_went()
         self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("10.00"))
+        # Eight written off at 13 (104 to the reason's account); released, the
+        # two left give back 16 and the 64 comes back off that account (R1): 40.
         self.assertEqual((self.balance(self.inventory), self.balance(self.cogs),
                           self.balance(self.freight_expense), self.balance(self.expense)),
-                         (Decimal("10.00"), Decimal("-64.00"), Decimal("80.00"), Decimal("104.00")))
+                         (Decimal("10.00"), Decimal("0"), Decimal("80.00"), Decimal("40.00")))
 
     def test_under_fifo_the_two_left_of_the_layer_give_back_their_share(self):
         from apps.inventory.reports import reconcile_to_ledger
@@ -685,8 +693,8 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.first_in_first_out()
         self.released_after_eight_of_ten_went()
         self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("10.00"))
-        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)),
-                         (Decimal("10.00"), Decimal("-64.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.expense)),
+                         (Decimal("10.00"), Decimal("0"), Decimal("40.00")))
         self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
 
 
@@ -743,12 +751,15 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
         self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.freight_expense)),
                          (Decimal("50"), Decimal("0"), Decimal("80")))
 
-    def test_its_own_bills_freight_on_goods_gone_is_cost_of_sales(self):
-        # O2: the bill's own freight debited inventory whatever had happened to the goods.
+    def test_its_own_bills_freight_on_goods_written_off_goes_where_the_write_off_posted(self):
+        # O2: the bill's own freight debited inventory whatever had happened to
+        # the goods. Written off (50 to the reason's account), the 80 follows
+        # them there (R1): 130, cost of sales 0.
         self.received()
         self.written_off()
         self.with_its_freight()
-        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs)), (Decimal("0"), Decimal("80")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.expense)),
+                         (Decimal("0"), Decimal("0"), Decimal("130")))
         self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("0.00"))
 
     def test_its_own_bills_freight_lands_on_the_bay_the_goods_wait_in(self):
@@ -824,13 +835,16 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
                          (Decimal("20.00"), Decimal("30.00"), Decimal("0")))
         self.assertEqual(run.material_cost(), Decimal("30.00"))
 
-    def test_refunded_after_the_goods_were_written_off_cost_of_sales_gives_it_back(self):
+    def test_refunded_after_the_goods_were_written_off_the_write_offs_account_gives_it_back(self):
+        # Landed (130), all ten written off at 130 to the reason's account,
+        # the freight refunded: that account gives back the 80 (R1): 50 left.
         self.received()
         bill = self.with_its_freight()
         self.written_off()
         self.freight_refunded(bill)
-        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.item.stock_value_at(self.warehouse)),
-                         (Decimal("0"), Decimal("-80"), Decimal("0.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.expense),
+                          self.item.stock_value_at(self.warehouse)),
+                         (Decimal("0"), Decimal("0"), Decimal("50"), Decimal("0.00")))
 
     def test_refunded_after_the_goods_went_back_the_returns_variance_gives_it_back(self):
         self.received()
