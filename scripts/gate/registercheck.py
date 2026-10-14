@@ -7,8 +7,8 @@ the tip:
 A fix commit names the ids it closes in its subject ("O150: a complaint's
 batches ..."), and the row comes off in a commit of the same push. g18 closed
 O192, O193 and O194 and left their rows open, so the next wave's brief would
-have sent an agent to fix them again. Documentation-only commits are skipped:
-"Register O199-O201" names rows it has just opened.
+have sent an agent to fix them again. A commit that touches only docs/ is
+skipped: "Register O199-O201" names rows it has just opened.
 """
 import re, subprocess, sys
 
@@ -30,7 +30,8 @@ register = git("show", f"{tip}:docs/RISKS.md")
 open_rows = set(re.findall(r"^\| (O\d+) \|", register.split("## Open defects", 1)[1].split("\n## ", 1)[0], re.M))
 stale = []
 for sha in git("log", "--format=%H", f"{base}..{tip}").split():
-    if "Gate: documentation only" in git("log", "-1", "--format=%B", sha):
+    touched = git("diff-tree", "--no-commit-id", "--name-only", "-r", sha).split()
+    if touched and all(path.startswith("docs/") for path in touched):
         continue
     subject = git("log", "-1", "--format=%s", sha).strip()
     stale += [(row, sha[:7], subject) for row in sorted(ids(subject) & open_rows)]
