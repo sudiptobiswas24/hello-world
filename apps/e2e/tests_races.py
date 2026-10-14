@@ -2045,3 +2045,49 @@ class NoBatchClearedPastItsRejectionRaceTests(RaceCase):
         if accepted is not None:
             self.assertLess(accepted.created_at, rejection.posted_at,
                             "the drums were cleared after their rejection was posted")
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class PayrollOutputRaceTests(RaceCase):
+    """g21: the run's bank file is paid once, and an advance does not go as a run recovers it."""
+
+    def bank_file(self):
+        from apps.hr import tests_pay_outputs
+        from apps.hr.bank_file import SalaryTransferFile
+
+        made = fixture(self, tests_pay_outputs.BankFileTests)
+        for person in made.people:
+            made.banked(person)
+        return made, SalaryTransferFile.prepare(made.paid_run)
+
+    def test_a_bank_file_is_paid_once(self):
+        from apps.hr.bank_file import SalaryTransferFile
+
+        made, written = self.bank_file()
+        payments = [made.money(made.people[0].party, "23825.50") for _ in range(2)]
+        self.once(race(Payslip, *[
+            lambda payment=payment: SalaryTransferFile.objects.get(pk=written.pk).mark_paid(
+                Payment.objects.get(pk=payment.pk)) for payment in payments]))
+
+    def test_a_slip_is_not_paid_by_the_file_and_by_a_payment_of_its_own(self):
+        from apps.hr.bank_file import SalaryTransferFile
+
+        made, written = self.bank_file()
+        slip = made.paid_run.payslips.get(employee=made.people[1])
+        bulk, own = made.money(made.people[0].party, "23825.50"), made.money(made.people[1].party, "8450.50")
+        self.once(race(Payslip,
+                       lambda: SalaryTransferFile.objects.get(pk=written.pk).mark_paid(Payment.objects.get(pk=bulk.pk)),
+                       lambda: Payslip.objects.get(pk=slip.pk).pay(Payment.objects.get(pk=own.pk))))
+
+    def test_an_advance_is_not_voided_as_a_run_recovers_it(self):
+        import datetime
+
+        from apps.hr import tests_pay_outputs
+        from apps.hr.advances import SalaryAdvance
+
+        made = fixture(self, tests_pay_outputs.AdvancesTests)
+        advance = made.give()
+        june = made.month(6, post=False)
+        self.once(race(None, lambda: PayRun.objects.get(pk=june.pk).post(),
+                       lambda: SalaryAdvance.objects.get(pk=advance.pk).void(on_date=datetime.date(2026, 7, 1))))

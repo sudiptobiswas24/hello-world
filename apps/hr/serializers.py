@@ -52,7 +52,7 @@ class EmployeeSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer)
             "hire_date",
             "termination_date",
             "employment_status",
-            "working_days", "holiday_region", "paid_by_attendance", "uan", "esi_number", "user", "name",
+            "working_days", "holiday_region", "paid_by_attendance", "uan", "esi_number", "work_state", "hours_a_day", "user", "name",
             "department_name", "new_name", "extra",
         ]
         extra_kwargs = {"party": {"required": False}}

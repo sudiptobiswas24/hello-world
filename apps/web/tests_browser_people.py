@@ -82,3 +82,38 @@ class PeopleInTheBrowserTests(BrowserTestCase):
         self.assertEqual((employee.party.name, employee.job_title, employee.hire_date), ("Asha Devi", "Loom operator", datetime.date(2026, 7, 1)))
         expect(page.get_by_text("Asha Devi").first).to_be_visible()
         self.assertEqual(self.problems, [])
+
+
+class MyPayslipsInTheBrowserTests(BrowserTestCase):
+    """Riley reads Riley's payslips, and only Riley's; the run is June's, posted."""
+
+    def test_an_employee_sees_their_own_payslips_and_nobody_elses(self):
+        from decimal import Decimal
+
+        from apps.hr.payroll import ComponentKind, EmployeeCompensation, PayComponent, PayRun
+
+        Account.objects.create(code="2300", name="Net pay payable", account_type=AccountType.LIABILITY)
+        from apps.core.models import Company
+
+        company = Company.get()
+        company.net_pay_account = Account.objects.get(code="2300")
+        company.save()
+        wages = Account.objects.create(code="6000", name="Wages", account_type=AccountType.EXPENSE)
+        salary = PayComponent.objects.create(code="SAL", name="Salary", kind=ComponentKind.EARNING, expense_account=wages)
+        riley = PeopleInTheBrowserTests.employee(self, "E005", "Riley Chen", self.person("Employee Self Service"))
+        other = PeopleInTheBrowserTests.employee(self, "E007", "Sam Roy", None)
+        for person, amount in ((riley, "12000"), (other, "15550")):
+            EmployeeCompensation.objects.create(employee=person, component=salary, amount=Decimal(amount),
+                                                effective_from=datetime.date(2026, 1, 1))
+        run = PayRun.objects.create(period_start=datetime.date(2026, 6, 1), period_end=datetime.date(2026, 6, 30),
+                                    pay_date=datetime.date(2026, 6, 30))
+        run.calculate()
+        run.post()
+        page = self.sign_in(riley.user, "/app/payroll/my-payslips")
+        expect(page.get_by_role("heading", name="My payslips")).to_be_visible()
+        expect(self.rows()).to_have_count(1)
+        expect(self.rows().first).to_contain_text("12,000.00")
+        expect(page.locator("tbody")).not_to_contain_text("15,550.00")
+        expect(page.get_by_role("link", name="PDF")).to_have_attribute(
+            "href", f"/api/hr/my-payslips/{run.payslips.get(employee=riley).pk}/pdf/")
+        self.assertEqual(self.problems, [])

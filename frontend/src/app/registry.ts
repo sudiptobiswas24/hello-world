@@ -960,6 +960,32 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/PayRunForm"),
       },
       {
+        path: "my-payslips", label: "My payslips", permission: "hr.view_own_payslip",
+        keywords: "my payslip salary slip wages", load: () => import("../modules/payroll/MyPayslips"),
+      },
+      {
+        path: "pay-details", label: "Bank and PAN", permission: "hr.view_employeepaydetails",
+        create: "hr.add_employeepaydetails",
+        keywords: "bank account ifsc pan date of birth", load: () => import("../modules/payroll/PayDetails"),
+        detail: () => import("../modules/payroll/PayDetailsForm"),
+      },
+      {
+        path: "advances", label: "Advances and loans", permission: "hr.view_salaryadvance",
+        create: "hr.add_salaryadvance",
+        keywords: "salary advance loan recovery instalment", load: () => import("../modules/payroll/Advances"),
+        detail: () => import("../modules/payroll/AdvanceForm"),
+      },
+      {
+        path: "salary-files", label: "Bank files", permission: "hr.view_salarytransferfile",
+        keywords: "bank file salary transfer neft bulk upload", load: () => import("../modules/payroll/SalaryFiles"),
+      },
+      {
+        path: "statutory-figures", label: "Statutory figures", permission: "hr.view_statutoryfigure",
+        create: "hr.add_statutoryfigure",
+        keywords: "epf eps wage ceiling overtime multiple law", load: () => import("../modules/payroll/StatutoryFigures"),
+        detail: () => import("../modules/payroll/StatutoryFigureForm"),
+      },
+      {
         path: "dues", label: "Statutory dues", permission: "hr.view_statutoryremittance",
         keywords: "pf esi tds professional tax remittance", load: () => import("../modules/payroll/Liabilities"),
       },

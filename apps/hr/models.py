@@ -139,6 +139,16 @@ class Employee(Extensible, AuditModel):
         help_text="The ESI insurance number (IP number), ten digits: what the monthly "
                   "contribution file names the person by.",
     )
+    work_state = models.CharField(
+        max_length=32, blank=True,
+        help_text="The state they work in, whose professional tax and welfare fund schedules apply. Blank "
+                  "serves when the schedules name one state only.",
+    )
+    hours_a_day = models.DecimalField(
+        max_digits=4, decimal_places=2, default=Decimal("8"),
+        help_text="The hours of their working day: a day's ordinary rate of wages over these is the hour's "
+                  "overtime is paid on.",
+    )
 
     class Meta:
         ordering = ["employee_number"]
@@ -542,6 +552,7 @@ PAY_INPUTS = {
     "hr.EmployeeCompensation": "employee",
     "hr.Timesheet": "employee",
     "hr.TimesheetEntry": "timesheet.employee",
+    "hr.SalaryAdvance": "employee",
 }
 NOT_PAY_INPUTS = {
     "hr.Appraisal": "a review of the person; no run reads it",
@@ -551,6 +562,8 @@ NOT_PAY_INPUTS = {
     "hr.Applicant": "not yet an employee; no run pays them",
     "hr.Department": "names its manager; the run reads a department's cost centre as it posts, not a pay figure",
     "hr.Employee": "the person: an edit of the row waits on the lock the run holds on it",
+    "hr.EmployeePayDetails": "the bank file reads the account as it writes, and keeps what it wrote on each row; "
+                             "no run's figures read it",
 }
 
 
@@ -1074,3 +1087,7 @@ from .contract_labour import ContractWorker, LabourContractor  # noqa: E402,F401
 from .expenses import ClaimStatus, ExpenseClaim, ExpenseLine  # noqa: E402,F401
 from .appraisals import Appraisal, AppraisalStatus  # noqa: E402,F401
 from .recruitment import Applicant, JobOpening, OpeningStatus, Source, Stage  # noqa: E402,F401
+from .statutory import StatutoryFigure  # noqa: E402,F401
+from .pay_details import EmployeePayDetails  # noqa: E402,F401
+from .advances import SalaryAdvance  # noqa: E402,F401
+from .bank_file import SalaryTransfer, SalaryTransferFile  # noqa: E402,F401
