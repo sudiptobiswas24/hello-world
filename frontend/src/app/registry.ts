@@ -700,6 +700,12 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/quality/InspectionForm"),
       },
       {
+        // What waits for the Quality Manager: failures under an advisory plan (RISKS.md, decision 22).
+        path: "awaiting-decision", label: "Awaiting decision", permission: "quality.decide_inspection",
+        keywords: "advisory failure concession rework reject held decide overdue",
+        load: () => import("../modules/quality/Awaiting"),
+      },
+      {
         path: "batch-status", label: "Batch status", permission: "quality.view_inspection", also: ["inventory.view_lot"],
         keywords: "released held lot status", load: () => import("../modules/quality/BatchStatus"),
       },

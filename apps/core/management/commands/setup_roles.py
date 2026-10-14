@@ -347,6 +347,8 @@ ROLES = {
               "customermaterialreceipt", "customermaterialreceiptline",
               "customermaterialreturn", "customermaterialreturnline"),
         *view("manufacturing", "workorder", "workorderoperation"),
+        # Told when a batch is held for the Quality Manager: the to-do opens the inspection.
+        *view("quality", "inspection", "reading"),
     ],
     # -- the plant ------------------------------------------------------
     "Production Supervisor": [
@@ -372,6 +374,8 @@ ROLES = {
         *view("manufacturing", "loomstation", "stationattempt", "maintenanceschedule",
               "energymeter", "coatingcheck", "testcertificate", "complaint"),
         "manufacturing.weigh_at_station",
+        # Told when a batch is held for the Quality Manager: the to-do opens the inspection.
+        *view("quality", "inspection", "reading"),
         # deliberately NOT the specifications, bills, routings or rates: the
         # floor makes what was specified, and a supervisor who could change
         # the bill could make any variance disappear. Nor costing.
@@ -470,6 +474,8 @@ ROLES = {
         *HOW_IT_IS_MADE,
         *full("quality", "inspection", "reading", "calibration", "instrument",
               "characteristic", "inspectionplan", "planline"),
+        # A failure under an advisory plan waits for them (RISKS.md, decision 22).
+        "quality.decide_inspection",
         *crud("quality", "qualitysettings", actions=("change", "view")),
         *full("manufacturing", "complaint", "complaintlot", "correctiveaction", "qualityalert",
               "coatingcheck", "testcertificate"),

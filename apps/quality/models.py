@@ -39,6 +39,7 @@ it does not go into another run.
 
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import F, Q
@@ -421,6 +422,13 @@ class Disposition(models.TextChoices):
     CONCESSION = "concession", "Accepted by concession"
     REWORK = "rework", "Held for rework"
     REJECT = "reject", "Rejected"
+    # A failure under an advisory plan: held, and the Quality Manager's to
+    # decide (RISKS.md "Decisions taken", 22). Never chosen; posted as.
+    AWAITING = "awaiting", "Awaiting the Quality Manager's decision"
+
+
+# What the Quality Manager may decide an awaiting inspection as.
+DECISIONS = (Disposition.CONCESSION, Disposition.REWORK, Disposition.REJECT)
 
 
 class ReleaseStatus(models.TextChoices):
@@ -469,6 +477,22 @@ class Inspection(AuditModel):
                   "with when the next one is argued about.",
     )
     decision_note = models.CharField(max_length=255, blank=True)
+    decided_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text="When the Quality Manager decided a failure that waited for them.")
+    decision_login = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="+", editable=False,
+        help_text="The login that decided a failure that waited: the first decision stands.")
+    told = models.TextField(
+        blank=True, editable=False,
+        help_text="What posting a failure that waits said: who was told, and who was not "
+                  "mailed. Kept as it was said, not worked out again from whoever holds "
+                  "the role later.")
+    escalated_on = models.DateField(
+        null=True, blank=True, editable=False,
+        help_text="The day a failure left undecided past the next working day went to "
+                  "the administrator. Once per inspection.")
     result = models.CharField(
         max_length=8, choices=Result.choices, blank=True, editable=False,
         help_text="Worked out from the readings when this posted, and frozen. "
@@ -496,6 +520,8 @@ class Inspection(AuditModel):
                 name="inspection_number_unique",
             ),
         ]
+        permissions = [("decide_inspection",
+                        "Can decide a failure under an advisory plan (concession, rework or reject)")]
 
     def __str__(self):
         return self.number or f"Draft inspection of {self.lot}"
@@ -679,13 +705,21 @@ class Inspection(AuditModel):
         The verdicts are the batch's own and those of every batch it was
         re-made from (O146): PP-A rejected on 1 June and split into PP-A2
         was passed by an inspection of PP-A2 dated 25 May, because only
-        PP-A2's own inspections were read.
+        PP-A2's own inspections were read. And a failure waiting for the
+        Quality Manager is theirs to decide: a second verdict beside it,
+        passed or not, would decide it for them.
         """
         from .release import standing_verdicts
 
         for lot, standing in standing_verdicts(self.lot, lock=True):
             if standing.pk == self.pk:
                 continue
+            if standing.disposition == Disposition.AWAITING:
+                raise ValidationError(
+                    f"{standing.number} failed {lot} on {standing.inspected_on} and waits for "
+                    f"the Quality Manager's decision. Another verdict on {self.lot} now would "
+                    f"decide it for them: they decide {standing.number}, or it is voided, first."
+                )
             own = lot.pk == self.lot_id
             self.inspected_on = correction_date(
                 self.inspected_on, standing.inspected_on,
@@ -693,6 +727,45 @@ class Inspection(AuditModel):
                 f"{standing.number} decided it" if own
                 else f"{standing.number} decided {lot}, which it was made from,",
             )
+
+    def _check_concession(self, by):
+        """
+        What a concession asks, posted so or decided later: a failure to
+        concede, the person taking it (the login's own, never a name typed)
+        and why, and a second person where the plant asks for one.
+        """
+        if self.result == Result.PASS:
+            raise ValidationError(
+                f"{self.lot} passed; there is nothing to concede."
+            )
+        if by is not None:
+            self.decided_by = self._signer(by)
+        if self.decided_by_id is None or not self.decision_note:
+            raise ValidationError(
+                "A concession needs a name against it and a reason. An "
+                "out-of-specification batch released by nobody in "
+                "particular leaves nothing to answer with when the next "
+                "one is argued about."
+            )
+        if QualitySettings.get().concessions_need_a_second_person:
+            if self.self_approved():
+                raise ValidationError(
+                    f"{self.inspected_by} measured this batch and would also "
+                    "be taking it out of specification. This plant asks for a "
+                    "second person on a concession."
+                )
+            check_not_raised_by(by, self.raised_by(), self)
+
+    def waits_for_a_decision(self):
+        """Posted, standing, and the Quality Manager's still to decide."""
+        return self.posted and not self.is_voided() and self.disposition == Disposition.AWAITING
+
+    def decision_due_on(self):
+        """The next working day after it was posted: when the Quality Manager's to-do falls due."""
+        from .decisions import next_working_day
+
+        posted = timezone.localdate(self.posted_at) if self.posted_at else to_date(self.inspected_on)
+        return next_working_day(posted)
 
     @serialised("posted")
     def post(self, by=None):
@@ -704,6 +777,9 @@ class Inspection(AuditModel):
         """
         if self.posted:
             raise ValidationError(f"{self} is already posted.")
+        # What the plan says now, not what the caller's copy said: whether a
+        # failure waits for the Quality Manager is decided from it here.
+        self.plan = InspectionPlan.objects.get(pk=self.plan_id)
         if not self.plan.is_active:
             raise ValidationError(
                 f"{self.plan} has been retired. Measuring against limits the "
@@ -726,9 +802,27 @@ class Inspection(AuditModel):
                 "past the pallet."
             )
         self.inspected_on = to_date(self.inspected_on)
+        if self.disposition == Disposition.AWAITING:
+            raise ValidationError(
+                "Awaiting the Quality Manager's decision is not chosen: it is what a "
+                "failure under an advisory plan posts as. Leave the decision blank."
+            )
         self._check_follows_the_standing_verdict()
         self.result = self._judge()
-        if not self.disposition:
+        # A failure under an advisory plan is not rejected by the system: it
+        # waits, held, for the Quality Manager (RISKS.md, decision 22), and
+        # nobody decides it as it is posted, whoever posts it.
+        waits = self.result == Result.FAIL and not self.plan.is_mandatory
+        if waits and self.disposition:
+            raise ValidationError(
+                f"{self.lot} failed under {self.plan}, which is advisory, so the Quality "
+                f"Manager decides what happens to it, not whoever posts the readings. "
+                "Leave the decision blank and post: the batch is held until they decide."
+            )
+        if waits:
+            self.disposition = Disposition.AWAITING
+            self.decided_by = None
+        elif not self.disposition:
             self.disposition = (
                 Disposition.ACCEPT if self.result == Result.PASS
                 else Disposition.REJECT
@@ -740,27 +834,7 @@ class Inspection(AuditModel):
                 "it — the difference is the whole point of recording either."
             )
         if self.disposition == Disposition.CONCESSION:
-            if self.result == Result.PASS:
-                raise ValidationError(
-                    f"{self.lot} passed; there is nothing to concede."
-                )
-            if by is not None:
-                self.decided_by = self._signer(by)
-            if self.decided_by_id is None or not self.decision_note:
-                raise ValidationError(
-                    "A concession needs a name against it and a reason. An "
-                    "out-of-specification batch released by nobody in "
-                    "particular leaves nothing to answer with when the next "
-                    "one is argued about."
-                )
-            if QualitySettings.get().concessions_need_a_second_person:
-                if self.self_approved():
-                    raise ValidationError(
-                        f"{self.inspected_by} measured this batch and would also "
-                        "be taking it out of specification. This plant asks for a "
-                        "second person on a concession."
-                    )
-                check_not_raised_by(by, self.raised_by(), self)
+            self._check_concession(by)
         from .calibration import check_readings
 
         check_readings(self)
@@ -775,17 +849,99 @@ class Inspection(AuditModel):
             "number", "inspected_on", "result", "disposition", "decided_by", "posted", "lot_size", "sampling",
             "posted_at", "updated_at",
         ])
+        self.telling = None
+        if waits:
+            from .decisions import tell_on_posting
+
+            # Who was told, and who was not mailed, is a fact of the posting:
+            # kept as said, for the page and for whoever asks later.
+            self.telling = tell_on_posting(self, by)
+            self.told = self.telling.warning
+            Inspection.objects.filter(pk=self.pk).update(told=self.told)
         return self
 
-    @serialised("posted", "voided_at")
-    def void(self, reason=""):
+    @serialised("posted", "voided_at", "disposition", "decided_at", "decision_login")
+    def decide(self, by, disposition, note=""):
+        """
+        The Quality Manager's decision on a failure that waited for them:
+        use as is (a concession they sign), rework, or reject, and why.
+
+        Only a holder of `quality.decide_inspection`, and never whoever
+        recorded the readings or raised the inspection, whatever the plant
+        asks of a concession posted outright. The first decision stands:
+        two pressed at once, the second waits for the first's lock and is
+        told it was decided. Deciding closes everyone's to-do on it, as done
+        by the decider. Not dated by hand: stamped as it is taken, so there
+        is no day to argue with the verdict it follows.
+        """
+        if not self.posted or self.is_voided():
+            raise ValidationError(f"{self} is {'voided' if self.posted else 'not posted'}: there is "
+                                  "nothing to decide.")
+        if self.disposition != Disposition.AWAITING:
+            if self.decided_at is not None:
+                who = self.decision_login.get_username() if self.decision_login_id else "someone"
+                raise ValidationError(
+                    f"{self} was decided already: {self.get_disposition_display().lower()}, by {who} "
+                    f"at {timezone.localtime(self.decided_at):%d %b %Y %H:%M}. The first decision stands.")
+            raise ValidationError(f"{self} is not waiting for a decision: it is "
+                                  f"{self.get_disposition_display().lower()}.")
+        if by is None or not by.has_perm("quality.decide_inspection"):
+            raise ValidationError("The Quality Manager decides a failure under an advisory plan.")
+        if disposition not in DECISIONS:
+            raise ValidationError("Decide it as one of: use as is (a concession), rework, or reject.")
+        note = " ".join((note or "").split())
+        if not note:
+            raise ValidationError("Say why: the decision is what is asked about when the batch is argued over.")
+        check_not_raised_by(by, self.raised_by(), self)
+        self.disposition, self.decision_note = disposition, note[:255]
+        try:
+            if disposition == Disposition.CONCESSION:
+                self._check_concession(by)
+            else:
+                employee = getattr(by, "employee", None)
+                self.decided_by = employee.party if employee is not None else None
+        except ValidationError:
+            self.refresh_from_db(fields=["disposition", "decision_note", "decided_by"])
+            raise
+        self.decided_at = timezone.now()
+        self.decision_login = by
+        super().save(update_fields=["disposition", "decision_note", "decided_by", "decided_at",
+                                    "decision_login", "updated_at"])
+        from .decisions import close_to_dos
+
+        close_to_dos(self, by, f"{self} decided: {self.get_disposition_display().lower()}. {note}")
+        return self
+
+    @serialised("posted", "voided_at", "disposition", "escalated_on")
+    def escalate(self, today=None):
+        """
+        Left undecided past the next working day: to the administrator,
+        once. Run again, it finds the day recorded and writes nothing.
+        Returns who was told, or None when there was nothing to do.
+        """
+        today = to_date(today) or timezone.localdate()
+        if not self.waits_for_a_decision() or self.escalated_on is not None:
+            return None
+        if today <= self.decision_due_on():
+            return None
+        from .decisions import tell_the_administrator
+
+        told = tell_the_administrator(self, today)
+        self.escalated_on = today
+        super().save(update_fields=["escalated_on", "updated_at"])
+        return told
+
+    @serialised("posted", "voided_at", "disposition")
+    def void(self, reason="", by=None):
         """
         Undo a posting.
 
         The batch's status is whatever its latest standing inspection
         says, so voiding this one hands the question back to the one
         before it — or to nobody, which is 'not yet inspected' and not
-        'passed'.
+        'passed'. One still waiting for the Quality Manager closes their
+        to-dos and everyone else's on it: there is nothing left to decide.
+        `by` is who voided it, for those to-dos.
         """
         if not self.posted:
             raise ValidationError(f"{self} is not posted.")
@@ -800,6 +956,10 @@ class Inspection(AuditModel):
         self.voided_at = timezone.now()
         self.voided_reason = reason
         super().save(update_fields=["voided_at", "voided_reason", "updated_at"])
+        if self.disposition == Disposition.AWAITING:
+            from .decisions import close_to_dos
+
+            close_to_dos(self, by, f"{self} was voided, so there is nothing to decide: {reason}")
         return self
 
     def save(self, *args, **kwargs):

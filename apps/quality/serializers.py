@@ -79,6 +79,11 @@ class InspectionSerializer(serializers.ModelSerializer):
         return f"{inspection.lot.item.sku} · {inspection.lot.item.name}"
     self_approved = serializers.SerializerMethodField()
     lot_status = serializers.SerializerMethodField()
+    disposition_label = serializers.CharField(source="get_disposition_display", read_only=True)
+    decided_by_name = serializers.CharField(source="decided_by.name", read_only=True, default="")
+    decision_login_name = serializers.CharField(source="decision_login.username", read_only=True,
+                                                default="")
+    decision_due_on = serializers.SerializerMethodField()
 
     class Meta:
         model = Inspection
@@ -86,10 +91,17 @@ class InspectionSerializer(serializers.ModelSerializer):
                   "disposition", "decided_by", "decision_note", "result",
                   "posted", "posted_at", "voided_at", "voided_reason", "notes",
                   "readings", "self_approved", "lot_status", "lot_size", "sampling",
-                  "lot_code", "item_label", "plan_name", "inspected_by_name"]
-        # decided_by is the login that posts a concession (Inspection.post), never typed.
+                  "lot_code", "item_label", "plan_name", "inspected_by_name",
+                  "disposition_label", "decided_by_name", "decided_at", "decision_login",
+                  "decision_login_name", "told", "escalated_on", "decision_due_on"]
+        # decided_by is the login that posts a concession (Inspection.post), never typed;
+        # the rest of the decision is the Quality Manager's, taken by decide/.
         read_only_fields = ["number", "result", "posted", "posted_at",
-                            "voided_at", "voided_reason", "sampling", "decided_by"]
+                            "voided_at", "voided_reason", "sampling", "decided_by",
+                            "decided_at", "decision_login", "told", "escalated_on"]
+
+    def get_decision_due_on(self, obj):
+        return obj.decision_due_on() if obj.waits_for_a_decision() else None
 
     def get_self_approved(self, obj):
         return obj.self_approved()

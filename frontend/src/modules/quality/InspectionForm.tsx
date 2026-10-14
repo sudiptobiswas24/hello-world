@@ -1,8 +1,17 @@
+import { dateTime } from "../../lib/format";
 import { RecordScreen } from "../../views/RecordScreen";
 import { DISPOSITIONS, INSTRUMENT, LOT, PERSON, PLAN } from "./refs";
 
 type Row = Record<string, unknown> & { id: number };
 const draft = (row: Row) => !row.posted;
+/** A failure under an advisory plan, posted, held for the Quality Manager. */
+const waits = (row: Row) => Boolean(row.posted) && !row.voided_at && row.disposition === "awaiting";
+const WHY = [{ key: "note", label: "Why", kind: "text" as const, wide: true }];
+const decision = (label: string, disposition: string, done: string) => ({
+  label, path: disposition, permission: "quality.decide_inspection", when: waits, done, fields: WHY,
+  url: (row: Row) => `/api/quality/inspections/${row.id}/decide/`,
+  body: (values: Row) => ({ disposition, note: values.note }),
+});
 
 /**
  * One batch against its plan: the readings, the result the limits give,
@@ -18,8 +27,12 @@ export default function InspectionForm() {
       newTitle="New inspection"
       heading={(row) => `${String(row.number || "Inspection")} · ${String(row.lot_code ?? "")}`}
       state={(row) => (row.voided_at ? { label: "Voided", tone: "draft" }
+        : waits(row) ? { label: "Awaiting the Quality Manager", tone: "warn" }
         : row.posted ? { label: String(row.lot_status ?? "posted"), tone: row.result === "fail" ? "warn" : "done" }
         : { label: "Draft", tone: "open" })}
+      note={(row) => (row && waits(row) && row.told
+        ? <div className="note warn" role="note" aria-label="Held for the Quality Manager">{String(row.told)}</div>
+        : null)}
       permissions={{ add: "quality.add_inspection", change: "quality.change_inspection" }}
       editable={draft}
       fields={[
@@ -28,13 +41,20 @@ export default function InspectionForm() {
         { key: "inspected_on", label: "Inspected on", kind: "date" },
         { key: "inspected_by", label: "By", kind: "pick", pick: PERSON, show: (row) => String(row.inspected_by_name || "—") },
         { key: "lot_size", label: "Batch size", kind: "integer", hint: "Sets the sample under an AQL plan" },
-        { key: "disposition", label: "Decision", kind: "choice", choices: DISPOSITIONS },
+        { key: "disposition", label: "Decision", kind: "choice", choices: DISPOSITIONS,
+          show: (row) => String(row.disposition_label || "—") },
         { key: "decision_note", label: "Why", kind: "text", wide: true },
+        { key: "decision_login_name", label: "Decided by", readOnly: true, existingOnly: true,
+          show: (row) => (row.decided_at ? `${String(row.decided_by_name || row.decision_login_name)}, ${dateTime(String(row.decided_at))}` : "—") },
         { key: "notes", label: "Notes", kind: "textarea" },
         { key: "result", label: "Result", readOnly: true },
       ]}
       actions={[
-        { label: "Post", path: "post", permission: "quality.change_inspection", when: draft, primary: true, done: "Posted" },
+        { label: "Post", path: "post", permission: "quality.change_inspection", when: draft, primary: true,
+          done: (result) => String(result.warning || "Posted") },
+        decision("Use as is (concession)", "concession", "Taken by concession"),
+        decision("Rework", "rework", "Held for rework"),
+        decision("Reject", "reject", "Rejected"),
         { label: "Void", path: "void", permission: "quality.change_inspection", danger: true,
           when: (row) => Boolean(row.posted) && !row.voided_at, done: "Voided",
           fields: [{ key: "reason", label: "Why", kind: "text" }] },

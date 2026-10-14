@@ -131,6 +131,21 @@ class QualityTests(RolesTestCase):
         client = self.as_("Quality Manager")
         self.assertNotEqual(client.post(PLANS, {}, format="json").status_code, 403)
 
+    def test_a_failure_under_an_advisory_plan_is_the_managers_to_decide(self):
+        """RISKS.md, decision 22: the Quality Manager decides; the Inspector does not."""
+        self.assertReads(self.as_("Quality Manager"), f"{INSPECTIONS}awaiting/")
+        self.assertRefused(self.as_("Quality Inspector"), f"{INSPECTIONS}awaiting/")
+        self.assertEqual(self.as_("Quality Inspector", "Station").post(f"{INSPECTIONS}1/decide/", {},
+                                                                       format="json").status_code, 403)
+        self.assertTrue(User.objects.get(username="Quality_Manager").has_perm("quality.decide_inspection"))
+
+    def test_those_told_of_it_can_open_it(self):
+        for role in ("Production Supervisor", "Stores Manager"):
+            with self.subTest(role=role):
+                client = self.as_(role)
+                self.assertReads(client, INSPECTIONS)
+                self.assertEqual(client.post(f"{INSPECTIONS}1/decide/", {}, format="json").status_code, 403)
+
 
 class GstTests(RolesTestCase):
     def test_the_officer_compiles_returns_from_what_was_booked(self):
