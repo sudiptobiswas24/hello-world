@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from apps.core.audit import AuditableAdminMixin
+from apps.core.audit import AuditableAdminMixin, RowHeldAdminMixin
 
 from .models import (
     AdjustmentReason,
@@ -200,7 +200,7 @@ class StockTransferAdmin(AuditableAdminMixin, admin.ModelAdmin):
 
 
 @admin.register(StockReservation)
-class StockReservationAdmin(admin.ModelAdmin):
+class StockReservationAdmin(RowHeldAdminMixin, admin.ModelAdmin):
     """
     Read-only: a reservation is made and released by the document that
     holds it, and one created here is a claim nothing will ever give
