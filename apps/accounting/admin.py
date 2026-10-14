@@ -4,6 +4,7 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    SeededDefault,
     Account,
     BankStatement,
     BankStatementLine,
@@ -105,3 +106,13 @@ class PaymentAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAd
     list_filter = ("direction", "posted", "currency")
     search_fields = ("number", "reference", "party__name")
     readonly_fields = ("number", "exchange_rate", "posted", "posted_at", "journal_entry")
+
+
+@admin.register(SeededDefault)
+class SeededDefaultAdmin(admin.ModelAdmin):
+    """What setup_indian_books seeded, for the accountant to review and mark reviewed."""
+
+    list_display = ["label", "model", "object_id", "reviewed_by", "reviewed_on"]
+    list_filter = ["reviewed_on", "model"]
+    fields = ["label", "model", "object_id", "reviewed_by", "reviewed_on"]
+    readonly_fields = ["label", "model", "object_id"]
