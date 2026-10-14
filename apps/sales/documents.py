@@ -6,6 +6,7 @@ their figures are summarised.
 """
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from reportlab.lib.units import mm
 
 from apps.accounting.trade_terms import freight_meta
@@ -13,22 +14,216 @@ from apps.core.documents import money, render_document, rupees_in_words
 from apps.core.models import Company
 
 
-def render_invoice_pdf(invoice):
-    """Return the invoice as PDF bytes."""
+COPIES = {
+    "original": "Original for recipient",
+    "duplicate": "Duplicate for transporter",
+    "triplicate": "Triplicate for supplier",
+}
+HEAD_NAMES = {"cgst": "CGST", "sgst": "SGST", "igst": "IGST", "cess": "Cess"}
+HEAD_ORDER = ("cgst", "sgst", "igst", "cess")
+
+
+def _address_lines(address):
+    return address.formatted().splitlines() if address is not None else []
+
+
+def _state_of(address):
+    from apps.accounting.gst import state_code
+
+    return (state_code(address) or "") if address is not None else ""
+
+
+def issued_particulars(invoice):
+    """
+    Who issued the invoice to whom, and where, as it stands at posting: what
+    CGST Rule 46 has the paper say, kept with the invoice so a reprint says
+    what was issued. The company renamed, moved or re-registered, or the
+    customer renamed, would otherwise reprint every invoice they ever had.
+    """
+    from apps.accounting.gst import GstSettings
+
+    company = Company.get()
+    registration = GstSettings.active()
+    customer = invoice.customer
+    billed = invoice.billed_to()
+    shipped = invoice.shipping_address
+    gstin = invoice.party_gstin
+    if not invoice.taxes_recorded:
+        # A draft, or a document from before taxes were kept: the customer's registration as it stands.
+        profile = getattr(customer, "tax_profile", None)
+        gstin = (profile.gstin or "") if profile else ""
+    particulars = {
+        "supplier": {
+            "name": company.legal_name or company.name,
+            "trade_name": company.name,
+            "address": _address_lines(company.address),
+            "gstin": registration.gstin if registration else "",
+            "state": registration.state if registration else _state_of(company.address),
+        },
+        "recipient": {
+            "name": customer.legal_name or customer.name,
+            "address": _address_lines(billed),
+            "gstin": gstin,
+            "state": gstin[:2] if gstin else _state_of(billed),
+        },
+        "delivery": None,
+    }
+    if shipped is not None and (billed is None or shipped.pk != billed.pk):
+        particulars["delivery"] = {"address": _address_lines(shipped), "state": _state_of(shipped)}
+    return particulars
+
+
+def _state_name(code):
+    from apps.accounting.gst import OVERSEAS_PLACE, STATES
+
+    if not code:
+        return ""
+    if code == OVERSEAS_PLACE:
+        return f"Other country ({code})"
+    return f"{STATES.get(code, code)} ({code})"
+
+
+def _line_taxes(invoice, line):
+    """[(head, rate, amount, reverse charge)] as the line posted; as it computes on a draft."""
+    if invoice.taxes_recorded:
+        return [(row.gst_head or row.tax.code, row.rate, row.amount, row.reverse_charge)
+                for row in line.recorded_taxes.all()]
+    return [(tax.gst_head or tax.code, tax.rate, amount, tax.reverse_charge)
+            for tax, amount in line.tax_amounts()]
+
+
+def _unit(line):
+    item = getattr(line, "item", None)
+    if item is None:
+        return ""
+    unit = getattr(getattr(line, "order_line", None), "uom", None) or item.uom
+    return unit.code if unit else ""
+
+
+def _rate(value):
+    return f"{value.normalize():f}%"
+
+
+def export_words(invoice):
+    """What Rule 46's proviso has an export or SEZ invoice say, by whether it bore integrated tax."""
+    registration = invoice.party_registration
+    if registration not in ("overseas", "sez"):
+        return None
+    paid = any(head == "igst" and amount > 0
+               for line in invoice.lines.all() for head, _, amount, _ in _line_taxes(invoice, line))
+    if registration == "overseas":
+        return ("SUPPLY MEANT FOR EXPORT ON PAYMENT OF INTEGRATED TAX" if paid else
+                "SUPPLY MEANT FOR EXPORT UNDER BOND OR LETTER OF UNDERTAKING WITHOUT PAYMENT OF "
+                "INTEGRATED TAX")
+    return ("SUPPLY MEANT FOR SEZ UNIT OR SEZ DEVELOPER FOR AUTHORISED OPERATIONS ON PAYMENT OF "
+            "INTEGRATED TAX" if paid else
+            "SUPPLY MEANT FOR SEZ UNIT OR SEZ DEVELOPER FOR AUTHORISED OPERATIONS UNDER BOND OR "
+            "LETTER OF UNDERTAKING WITHOUT PAYMENT OF INTEGRATED TAX")
+
+
+def tax_invoice(invoice, copy="original"):
+    """
+    What the printed tax invoice or credit note says, field by field (CGST
+    Rule 46 and, for a note, Rule 53), read from what the document posted:
+    its kept registrations and place of supply, each line's kept HSN and
+    taxes. A draft reads as it would post, and says it is a draft.
+
+    An invoice posted before `issued_as` existed prints the company and the
+    customer as they stand, which is all it ever printed.
+    """
+    if copy not in COPIES:
+        raise ValidationError(f"{copy!r} is not a copy; say {', '.join(COPIES)}.")
+    issued = invoice.issued_as or issued_particulars(invoice)
+    supplier, recipient = issued["supplier"], issued["recipient"]
+    note = invoice.is_credit_note()
+    if note:
+        heading = "Credit Note"
+    elif supplier["gstin"] and not invoice.is_down_payment:
+        heading = "Tax Invoice"
+    else:
+        heading = "Invoice"
+
+    lines, by_rate, reverse_charge = [], {}, False
+    for line in sorted(invoice.lines.all(), key=lambda line: line.pk):
+        taxes = _line_taxes(invoice, line)
+        taxable = line.posted_net if line.posted_net is not None else line.net_amount()
+        charged = []
+        for head, rate, amount, reverse in sorted(
+                taxes, key=lambda row: HEAD_ORDER.index(row[0]) if row[0] in HEAD_ORDER else 9):
+            reverse_charge = reverse_charge or reverse
+            charged.append((HEAD_NAMES.get(head, head), rate, amount))
+            key = (HEAD_ORDER.index(head) if head in HEAD_ORDER else 9, HEAD_NAMES.get(head, head), rate)
+            by_rate[key] = by_rate.get(key, Decimal("0")) + amount
+        lines.append({
+            "description": line.label(),
+            "hsn": (line.hsn_code if invoice.taxes_recorded else line.current_hsn()) or "",
+            "quantity": line.quantity, "unit": _unit(line), "unit_price": line.unit_price,
+            "discount_percent": line.discount_percent, "taxable": taxable, "taxes": charged,
+            "amount": taxable + sum((amount for _, _, amount in charged), Decimal("0")),
+        })
+    return {
+        "heading": heading,
+        "copy": COPIES[copy],
+        "number": invoice.number or "(draft)",
+        "date": invoice.invoice_date,
+        "supplier": supplier | {"state_name": _state_name(supplier["state"])},
+        "recipient": recipient | {"state_name": _state_name(recipient["state"])},
+        "delivery": (issued["delivery"] | {"state_name": _state_name(issued["delivery"]["state"])}
+                     if issued["delivery"] else None),
+        "place_of_supply": _state_name(invoice.place_of_supply) if invoice.taxes_recorded else "",
+        "reverse_charge": "Yes" if reverse_charge else "No",
+        "credits": ({"number": invoice.credits.number, "date": invoice.credits.invoice_date}
+                    if note and invoice.credits_id else None),
+        "lines": lines,
+        "taxable": sum((line["taxable"] for line in lines), Decimal("0")),
+        "taxes": [(name, rate, amount) for (_, name, rate), amount in sorted(by_rate.items())],
+        "export": export_words(invoice),
+        "signatory": supplier["name"],
+    }
+
+
+def _party_text(recipient):
+    lines = [f"<b>{recipient['name']}</b>", *recipient["address"]]
+    lines.append(f"GSTIN {recipient['gstin']}" if recipient["gstin"] else "Unregistered")
+    if recipient["state_name"]:
+        lines.append(f"State {recipient['state_name']}")
+    return "<br/>".join(lines)
+
+
+def _letterhead_text(supplier):
+    lines = [f"<b>{supplier['trade_name'] or supplier['name']}</b>"]
+    if supplier["trade_name"] and supplier["name"] != supplier["trade_name"]:
+        lines.append(supplier["name"])
+    lines.extend(supplier["address"])
+    if supplier["gstin"]:
+        lines.append(f"GSTIN {supplier['gstin']}")
+    if supplier["state_name"]:
+        lines.append(f"State {supplier['state_name']}")
+    return "<br/>".join(lines)
+
+
+def render_invoice_pdf(invoice, copy="original"):
+    """Return the invoice as PDF bytes: the tax invoice Rule 46 describes, or the credit note naming its invoice."""
     currency = invoice.currency
+    printed = tax_invoice(invoice, copy)
     meta = [
-        ["Number", invoice.number or "(draft)"],
-        ["Date", invoice.invoice_date.strftime("%d %b %Y") if invoice.invoice_date else ""],
-        ["Due", invoice.due_date.strftime("%d %b %Y") if invoice.due_date else ""],
+        ["Number", printed["number"]],
+        ["Date", printed["date"].strftime("%d %b %Y") if printed["date"] else ""],
     ]
+    if printed["credits"]:
+        meta.append(["Against", f"{printed['credits']['number']} dated "
+                                f"{printed['credits']['date']:%d %b %Y}"])
+    if printed["place_of_supply"]:
+        meta.append(["Place of supply", printed["place_of_supply"]])
+    meta.append(["Reverse charge", printed["reverse_charge"]])
+    if invoice.due_date:
+        meta.append(["Due", invoice.due_date.strftime("%d %b %Y")])
     if invoice.payment_terms_id:
         meta.append(["Terms", invoice.payment_terms.name])
     if invoice.sales_order_id:
         meta += freight_meta(invoice.sales_order)
     if invoice.reference:
         meta.append(["Reference", invoice.reference])
-    if invoice.is_credit_note() and invoice.credits_id:
-        meta.append(["Credits", invoice.credits.number])
     from .models import invoice_stamps
 
     qr = None
@@ -36,9 +231,24 @@ def render_invoice_pdf(invoice):
         meta.extend([label, value] for label, value in stamp["rows"])
         qr = qr or stamp.get("qr")
 
-    totals = [["Subtotal", invoice.subtotal()]]
-    for tax, amount in sorted(invoice.tax_breakdown().items(), key=lambda pair: pair[0].code):
-        totals.append([tax.name, amount])
+    header = ["Description", "HSN/SAC", "Qty", "Rate", "Taxable value", "Tax", "Amount"]
+    rows = []
+    for line in printed["lines"]:
+        description = line["description"]
+        if line["discount_percent"]:
+            description += f"<br/>less {line['discount_percent'].normalize():f}%"
+        rows.append([
+            description, line["hsn"] or "—",
+            f"{line['quantity']:,.2f} {line['unit']}".strip(),
+            money(line["unit_price"], currency), money(line["taxable"], currency),
+            "<br/>".join(f"{name} {_rate(rate)}<br/>{money(amount, currency)}"
+                         for name, rate, amount in line["taxes"]) or "—",
+            money(line["amount"], currency),
+        ])
+    table = (header, rows, [38 * mm, 20 * mm, 22 * mm, 20 * mm, 25 * mm, 24 * mm, 25 * mm])
+
+    totals = [["Taxable value", printed["taxable"]]]
+    totals += [[f"{name} @ {_rate(rate)}", amount] for name, rate, amount in printed["taxes"]]
     totals.append(["Total", invoice.total()])
     if invoice.amount_paid():
         totals.append(["Paid", f"-{money(invoice.amount_paid(), currency)}"])
@@ -56,10 +266,23 @@ def render_invoice_pdf(invoice):
     if particulars and not invoice.is_credit_note():
         note = f"{note or ''} Please remit to {particulars}.".strip()
 
+    blocks = []
+    if printed["delivery"]:
+        delivery = printed["delivery"]
+        text = "<br/>".join(delivery["address"])
+        if delivery["state_name"]:
+            text += f"<br/>State {delivery['state_name']}"
+        blocks.append(("DELIVERED TO", text))
+    if printed["export"]:
+        blocks.append(("", f"<b>{printed['export']}</b>"))
+
     return render_document(
-        heading="Credit Note" if invoice.is_credit_note() else "Invoice",
+        heading=printed["heading"], subheading=printed["copy"],
         document=invoice, party=invoice.customer, address=invoice.billing_address,
-        meta=meta, totals=totals, note=note, qr=qr,
+        letterhead_text=_letterhead_text(printed["supplier"]),
+        party_text=_party_text(printed["recipient"]),
+        meta=meta, totals=totals, note=note, qr=qr, table=table, currency=currency,
+        blocks=blocks, signatory=printed["signatory"],
     )
 
 

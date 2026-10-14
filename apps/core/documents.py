@@ -59,7 +59,8 @@ def money(amount, currency):
 
 def render_document(*, heading, document, party, address, meta, totals,
                      party_label="BILL TO", note=None, table=None, currency=None,
-                     number="", qr=None):
+                     number="", qr=None, letterhead_text=None, party_text=None,
+                     subheading=None, blocks=(), signatory=None):
     """
     `meta` is [[label, value]] for the details block; `totals` is
     [[label, Decimal]] with the last row emphasised as the bottom line.
@@ -67,6 +68,12 @@ def render_document(*, heading, document, party, address, meta, totals,
     `table` is (header, rows, col_widths) for documents whose body isn't a
     list of priced lines — a statement, for instance. Without it the body
     is built from `document.lines`.
+
+    A document that prints what it was issued as, rather than the company
+    and the party as they stand today (a tax invoice), passes
+    `letterhead_text` and `party_text`. `subheading` prints under the
+    heading (which copy this is); `blocks` are (label, text) printed after
+    the totals; `signatory` closes the page with who signs for whom.
     """
     company = Company.get()
     currency = currency or getattr(document, "currency", None)
@@ -82,6 +89,8 @@ def render_document(*, heading, document, party, address, meta, totals,
 
     shown_number = number or getattr(document, "number", "") or ""
     title = [Paragraph(heading, style["title"])]
+    if subheading:
+        title.append(Paragraph(f"<b>{subheading}</b>", style["right"]))
     if shown_number:
         # The number as Code 128, so the paper scans back into the system
         # (a purchase order at the gate, a challan at dispatch).
@@ -89,7 +98,7 @@ def render_document(*, heading, document, party, address, meta, totals,
                                      quiet=False))
     story = [
         Table(
-            [[Paragraph(letterhead(company), style["body"]), title]],
+            [[Paragraph(letterhead_text or letterhead(company), style["body"]), title]],
             colWidths=[95 * mm, 79 * mm],
             style=TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -100,7 +109,7 @@ def render_document(*, heading, document, party, address, meta, totals,
         Spacer(1, 2 * mm),
         Table(
             [[Paragraph(party_label, style["h2"]), "", Paragraph("DETAILS", style["h2"])],
-             [Paragraph(f"<b>{party.name}</b><br/>{address_block(address)}", style["body"]),
+             [Paragraph(party_text or f"<b>{party.name}</b><br/>{address_block(address)}", style["body"]),
               "",
               Table(
                   [[Paragraph(label, style["muted"]), Paragraph(str(value), style["body"])]
@@ -189,9 +198,21 @@ def render_document(*, heading, document, party, address, meta, totals,
         story.append(Spacer(1, 6 * mm))
         story.append(Paragraph(note, style["muted"]))
 
+    for label, text in blocks:
+        story.append(Spacer(1, 4 * mm))
+        if label:
+            story.append(Paragraph(label, style["h2"]))
+        story.append(Paragraph(text, style["body"]))
+
     if qr:
         story.append(Spacer(1, 6 * mm))
         story.append(qr_drawing(qr))
+
+    if signatory:
+        story.append(Spacer(1, 8 * mm))
+        story.append(Paragraph(f"For <b>{signatory}</b>", style["right"]))
+        story.append(Spacer(1, 12 * mm))
+        story.append(Paragraph("Authorised signatory", style["right"]))
 
     footer = [company.legal_name or company.name]
     if company.tax_id:
