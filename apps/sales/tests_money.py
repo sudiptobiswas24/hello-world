@@ -326,6 +326,18 @@ class NoteLineBookedWhereItsLineWasTests(MoneyCase):
         self.note.post()
         self.assertEqual((self.balance(self.revenue), self.balance(self.other)), (D("-900"), D("0")))
 
+    def test_a_line_naming_no_line_is_held_to_its_originals_accounts(self):
+        """Review F6: "Goodwill" 100 typed on the note to 4100 is refused; to 4000 it posts, 4000 at -900."""
+        from .models import InvoiceLine
+
+        with self.assertRaisesMessage(ValidationError, "a note on it is booked there too"):
+            InvoiceLine.objects.create(invoice=self.note, description="Goodwill", quantity=D("1"),
+                                       unit_price=D("100"), revenue_account=self.other)
+        InvoiceLine.objects.create(invoice=self.note, description="Goodwill", quantity=D("1"),
+                                   unit_price=D("100"), revenue_account=self.revenue)
+        self.note.post()
+        self.assertEqual((self.balance(self.revenue), self.balance(self.other)), (D("-900"), D("0")))
+
 
 class WriteOffRecoveredInPartTests(MoneyCase):
     """
