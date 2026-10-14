@@ -761,6 +761,7 @@ class Command(BaseCommand):
 
     # Where the release question is answered: apps/quality/release.py.
     RELEASE_GATE = ("quality", "release.py")
+    VERDICT_RANKED = re.compile(r"""order_by\(\s*['"]-inspected_on['"]""")
     ISSUES_ONLY_UNLESS_BACKFLUSHED = re.compile(r"\bnot\s+[\w.]+\.backflush\b")
 
     def release_past_the_gate(self, labels, sources):
@@ -778,7 +779,11 @@ class Command(BaseCommand):
         - one that reads both today's plan (`plan_for`) and a verdict
           (`release_status`) outside the gate is deciding release itself;
         - one that issues only when the run does not backflush, and never
-          asks `check_released`, lets the backflushed run past.
+          asks `check_released`, lets the backflushed run past;
+        - one that picks a batch's standing inspection by its own ranking
+          (`order_by("-inspected_on", ...)`) rather than `latest_inspection`:
+          ranked by id, a rejection drafted first and posted after the day's
+          pass stood unheard and the lot read released (O145).
         """
         findings = []
         for label in labels:
@@ -802,6 +807,13 @@ class Command(BaseCommand):
                             f"{key} reads today's plan and a batch's verdict and decides from them; "
                             "ask the gate (apps.quality.release.why_held / may_be_drawn), which "
                             "holds a rejected batch whatever the plan says today.",
+                        ))
+                    if not gate and self.VERDICT_RANKED.search(body):
+                        findings.append((
+                            "verdict ranked outside the gate",
+                            f"{key} picks a batch's standing inspection by its own order; ask "
+                            "apps.quality.release.latest_inspection(), which ranks two verdicts of "
+                            "one day by when each was posted.",
                         ))
                     if self.ISSUES_ONLY_UNLESS_BACKFLUSHED.search(body) and "check_released(" not in body:
                         findings.append((

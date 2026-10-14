@@ -20,7 +20,7 @@ which is no. A stored flag would have had to remember to do that.
 
 
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .models import Disposition, Inspection, InspectionPlan, ReleaseStatus
@@ -63,10 +63,16 @@ def lot_sources(lot):
 
 
 def latest_inspection(lot):
-    """The inspection that currently speaks for this batch."""
+    """
+    The inspection that currently speaks for this batch: the latest dated,
+    and of two on one day the one posted last (O145). Ranked by id, a
+    rejection drafted first and posted after the day's pass stood beside it
+    unheard, and the lot read released. Posting is the decision; drafting
+    is not. An old row with no posting time ranks after those with one.
+    """
     return Inspection.objects.filter(
         lot=lot, posted=True, voided_at__isnull=True
-    ).order_by("-inspected_on", "-id").first()
+    ).order_by("-inspected_on", F("posted_at").desc(nulls_last=True), "-id").first()
 
 
 def release_status(lot):
