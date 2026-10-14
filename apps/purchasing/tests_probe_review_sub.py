@@ -603,3 +603,286 @@ class EachOrderItsOwnProbes(_Base):
         rb.create_return(debit_bills=False)
         self.assertEqual((f1.on_hand_at(self.subcontractor), f2.on_hand_at(self.subcontractor)),
                          (D("10"), D("10")))
+
+
+class MoreProbes(_Base):
+    track_assembly = False
+
+    def setUp(self):
+        super().setUp()
+        self.receiver = self.person("stores_qm", "Warehouse Staff", "Quality Manager")
+        self.manager = self.person("qm", "Quality Manager")
+        self.inspector = self.person("insp", "Quality Inspector")
+        self.stores_manager = self.person("sm", "Stores Manager")
+
+    def accept(self, user, receipt, **data):
+        return self.api(user).post(f"/api/purchasing/goods-receipts/{receipt.pk}/accept/",
+                                   {"warehouse": self.warehouse.pk, **data}, format="json")
+
+    def held_in_bay(self):
+        _sent, order = self.sent_then_rejected()
+        receipt = self.draft(order, by=self.receiver)
+        self.line_for(receipt, "10", self.bay, by=self.receiver)
+        receipt.post()
+        return receipt
+
+    def test_a_null_reason_is_not_the_word_None(self):
+        """{"reason": null} reaches accept() as str(None) = 'None', which is a reason."""
+        receipt = self.held_in_bay()
+        response = self.accept(self.manager, receipt, reason=None)
+        self.assertEqual(response.status_code, 400, "a null reason was taken as the reason 'None'")
+
+    def test_a_false_or_zero_reason_is_not_a_reason(self):
+        receipt = self.held_in_bay()
+        for bad in (False, 0, [], {}):
+            self.assertEqual(self.accept(self.manager, receipt, reason=bad).status_code, 400, repr(bad))
+
+    def test_stores_manager_is_refused(self):
+        receipt = self.held_in_bay()
+        self.assertIn(self.accept(self.stores_manager, receipt, reason="ok").status_code, (400, 403))
+        self.assertEqual(self.assembly.on_hand_at(self.bay), D("10"))
+
+    def test_mixed_receipt_ordinary_line_clears_without_a_concession_and_both_need_the_manager(self):
+        """One PO: 10 assemblies (held) and 5 motors bought plain, both in the bay."""
+        from .models import PurchaseOrderLine
+
+        _sent, order = self.sent_then_rejected()
+        plain = PurchaseOrderLine.objects.create(order=order, item=self.motor, uom=self.uom,
+                                                 quantity=D("5"), unit_price=D("12"))
+        receipt = self.draft(order, by=self.receiver)
+        held_line = self.line_for(receipt, "10", self.bay, by=self.receiver)
+        ordinary = GoodsReceiptLine.objects.create(receipt=receipt, order_line=plain, warehouse=self.bay,
+                                                   quantity_received=D("5"), created_by=self.receiver)
+        receipt.post()
+        # The inspector clears the plain motors alone.
+        response = self.accept(self.inspector, receipt, quantities={str(ordinary.pk): "5"})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.assembly.on_hand_at(self.bay), D("10"))
+        # ...but not both.
+        response = self.accept(self.inspector, receipt)
+        self.assertEqual(response.status_code, 400, response.content)
+
+    def test_untracked_for_the_order_whose_own_batch_passed_goes_to_a_store_and_the_other_to_the_bay(self):
+        self.mandatory_plan()
+        f1 = self.batch("F-1", "10", datetime.date(2026, 12, 31))
+        f2 = self.batch("F-2", "10", datetime.date(2027, 6, 30))
+        for batch in (f1, f2):
+            self.inspect(batch, "0.5", datetime.date(2026, 1, 1))
+        order_a = self.subcontract_order("10")
+        order_a.issue_components(self.warehouse)
+        order_b = self.subcontract_order("10")
+        order_b.issue_components(self.warehouse)
+        self.inspect(f1, "3", datetime.date(2026, 1, 2))
+        receipt_b = self.receive_into(order_b, "10", self.warehouse)  # B's own F-2 passed: a store is fine
+        self.assertEqual(receipt_b.held_assemblies(), [])
+        with self.assertRaisesMessage(ValidationError, "quarantine warehouse"):
+            self.receive_into(order_a, "10", self.warehouse)
+        receipt_a = self.receive_into(order_a, "10", self.bay)
+        self.assertEqual(len(receipt_a.held_assemblies()), 1)
+
+    def test_a_plain_receipt_posts_without_a_query_per_line_for_held_assemblies(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from .models import PurchaseOrder, PurchaseOrderLine
+
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        for index in range(15):
+            item = Item.objects.create(sku=f"X{index}", name=f"X{index}", uom=self.uom)
+            PurchaseOrderLine.objects.create(order=order, item=item, uom=self.uom, quantity=D("1"), unit_price=D("2"))
+        order.confirm()
+        receipt = self.draft(order)
+        for line in order.lines.all():
+            GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                            quantity_received=D("1"))
+        receipt.post()
+        with CaptureQueriesContext(connection) as queries:
+            receipt.held_assemblies()
+        self.assertLessEqual(len(queries), 5, f"{len(queries)} queries to say nothing is held on a plain 15-line receipt")
+
+    def test_may_be_drawn_asks_the_bay_only_when_given_it(self):
+        from apps.quality.release import may_be_drawn
+
+        self.assertFalse(may_be_drawn(self.assembly, None, self.bay))
+        self.assertFalse(may_be_drawn(self.motor, None, self.bay))
+        # the default still cannot see a bay
+        self.assertFalse(may_be_drawn(self.motor, None), "may_be_drawn(item, lot) with no warehouse still reads a bay as usable")
+
+    def test_lot_held_and_plan_issue_refuse_a_bay_for_an_untracked_item_and_a_named_lot(self):
+        from apps.inventory.picking import plan_issue
+
+        self.stock(self.motor, "10", "12", warehouse=self.bay)
+        with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
+            plan_issue(self.motor, self.bay, D("5"))
+        lot = self.batch("F-Q", "10", warehouse=self.bay)
+        with self.assertRaisesMessage(ValidationError, "holds goods awaiting inspection"):
+            plan_issue(self.frame, self.bay, D("5"), lot=lot)
+        with self.assertRaises(ValidationError):
+            plan_issue(self.frame, self.bay, D("5"))
+
+
+class ApportionFuzz(_Base):
+    track_assembly = False
+
+    def test_apportion_never_overshoots_and_always_sums(self):
+        import random
+
+        from apps.accounting.mixins import round_money
+        from .models import _apportion
+
+        rng = random.Random(135)
+        for case in range(4000):
+            whole = rng.random() < 0.6
+            n = rng.randint(1, 4)
+            if whole:
+                remaining = [D(rng.randint(0, 40)) for _ in range(n)]
+            else:
+                remaining = [D(rng.randint(0, 4000)) / D(100) for _ in range(n)]
+            owed = sum(remaining, D("0"))
+            if owed <= 0:
+                continue
+            left = rng.randint(2, 60)
+            qty = rng.randint(1, left - 1)
+            total = round_money(owed * qty / left)
+            shares = _apportion(remaining, total)
+            ok = (len(shares) == n and all(D("0") <= s <= r for s, r in zip(shares, remaining))
+                  and (total >= owed or sum(shares, D("0")) == total))
+            self.assertTrue(ok, (remaining, qty, left, total, shares))
+
+
+class LastProbes(_Base):
+    track_assembly = False
+
+    def test_the_mail_really_goes_on_commit_and_names_the_receipt(self):
+        manager = self.person("qm", "Quality Manager")
+        receiver = self.person("stores", "Warehouse Staff")
+        _sent, order = self.sent_then_rejected()
+        receipt = self.draft(order, by=receiver)
+        self.line_for(receipt, "10", self.bay, by=receiver)
+        mail.outbox.clear()
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            receipt.post()
+        told = receipt.quality_told
+        self.assertEqual((told.told, told.not_mailed), (["qm"], {}), told.__dict__)
+        self.assertEqual((len(callbacks), len(mail.outbox)), (1, 0))
+        callbacks[0]()
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [manager.email])
+        self.assertIn(receipt.number, mail.outbox[0].subject + mail.outbox[0].body)
+
+    def test_a_tracked_lot_cleared_out_of_the_bay_by_an_ordinary_accept_stays_held(self):
+        """Lot A-1 received into the bay; the Inspector accepts it into the store (no concession asked for a tracked lot); the lot still holds."""
+        from apps.quality.release import why_held
+
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        inspector = self.person("insp", "Quality Inspector")
+        _sent, order = self.sent_then_rejected()
+        made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        receipt = self.receive_into(order, "10", self.bay, lot=made)
+        response = self.api(inspector).post(f"/api/purchasing/goods-receipts/{receipt.pk}/accept/",
+                                            {"warehouse": self.warehouse.pk}, format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(made.on_hand_at(self.warehouse), D("10"))
+        self.assertNotEqual(why_held(self.assembly, made, warehouse=self.warehouse), "")
+        self.assertEqual(len(receipt.held_assemblies()), 1)
+
+    def test_fractional_returns_leave_the_ledger_and_the_shelf_agreeing(self):
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company
+
+        company = Company.get()
+        ppv = Account.objects.create(code="5900", name="PPV", account_type=AccountType.EXPENSE)
+        company.purchase_price_variance_account = ppv
+        company.save()
+        first = self.batch("F-1", "1.11", datetime.date(2026, 12, 31))
+        self.batch("F-2", "98.89", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10", confirm=False)
+        SubcontractComponent.objects.filter(item=self.frame).update(quantity_per=D("0.333"))
+        order.confirm()
+        order.issue_components(self.warehouse)
+        inv0, value0 = self.balance(self.inventory), self.total_value()
+        receipt = self.receive(order, "10")
+        line = receipt.lines.get()
+        for step in (1, 1, 3, 2, 1, 2):
+            receipt.create_return(quantities={line: D(step)}, debit_bills=False)
+        self.assertEqual(self.total_value(), value0)
+        self.assertEqual(self.balance(self.inventory) - inv0, self.total_value() - value0)
+        self.assertEqual(self.balance(self.grni), D("0.00"))
+        self.assertEqual(self.balance(ppv), D("0.00"), "price differences should net to nothing when everything came back")
+
+
+class VisibilityAndTrackedBooks(_Base):
+    track_assembly = False
+
+    def test_the_concession_shows_who_decided_it_on_the_receipt_inspection_answer(self):
+        manager = self.person("qm", "Quality Manager")
+        _sent, order = self.sent_then_rejected()
+        receipt = self.draft(order, by=self.person("clerk", "Warehouse Staff"))
+        self.line_for(receipt, "10", self.bay)
+        receipt.post()
+        response = self.api(manager).post(f"/api/purchasing/goods-receipts/{receipt.pk}/accept/",
+                                          {"warehouse": self.warehouse.pk, "reason": "Re-checked at the vendor"},
+                                          format="json")
+        self.assertEqual(response.status_code, 200, response.content)
+        answer = self.api(manager).get(f"/api/purchasing/goods-receipts/{receipt.pk}/inspection/").json()
+        (decided,) = answer["decided"]
+        self.assertEqual(decided["note"], "Re-checked at the vendor")
+        self.assertIn("qm", str(decided), "the answer names the reason but not whoever conceded it")
+
+    def test_tracked_held_receipt_return_receive_again_agrees_with_the_ledger(self):
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        sent, order = self.sent_then_rejected()
+        inv0, grni0, value0 = self.balance(self.inventory), self.balance(self.grni), self.total_value()
+        first = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        receipt = self.receive_into(order, "10", self.warehouse, lot=first)
+        self.assertEqual(self.total_value() - value0, self.balance(self.inventory) - inv0)
+        self.assertEqual(self.balance(self.grni) - grni0, D("-50.00"))
+        receipt.create_return(debit_bills=False)
+        self.assertEqual((self.balance(self.inventory), self.balance(self.grni), self.total_value()), (inv0, grni0, value0))
+        again = self.lot_model.objects.create(item=self.assembly, code="A-2")
+        second = self.receive_into(order, "10", self.warehouse, lot=again)
+        self.assertEqual(self.total_value() - value0, D("50.00"))
+        self.assertEqual(self.balance(self.inventory) - inv0, D("50.00"))
+        self.assertEqual(len(second.held_assemblies()), 1)
+
+
+class AdvisoryAwaitingProbes(_Base):
+    """The other half of g19: an advisory failure awaits the Quality Manager's decision; F-1 sent, then failed."""
+
+    def advisory_failed(self):
+        from apps.quality.models import Characteristic, Disposition, InspectionPlan, PlanLine
+        from apps.quality.release import latest_inspection
+
+        check = Characteristic.objects.create(code="FLAT", name="Flatness", uom=self.uom)
+        self.plan = InspectionPlan.objects.create(item=self.frame, is_mandatory=False)
+        self.plan_line = PlanLine.objects.create(plan=self.plan, characteristic=check,
+                                                 lower_limit=D("0"), upper_limit=D("1"))
+        sent = self.batch("F-1", "100")
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        self.inspect(sent, "3", datetime.date(2026, 1, 2))
+        self.assertEqual(latest_inspection(sent).disposition, Disposition.AWAITING)
+        return sent, order
+
+    def test_assemblies_made_from_a_batch_awaiting_decision_are_held_and_not_passable_by_an_inspector(self):
+        from apps.quality.release import why_held
+
+        _sent, order = self.advisory_failed()
+        made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        receipt = self.receive_into(order, "10", self.warehouse, lot=made)
+        self.assertEqual(len(receipt.held_assemblies()), 1)
+        self.assertNotEqual(why_held(self.assembly, made, warehouse=self.warehouse), "")
+        self.assembly_plan(mandatory=False)
+        with self.assertRaisesMessage(ValidationError, "waits for"):
+            self.inspect_assembly(made, "0.5", datetime.date(2026, 2, 5))
+
+    def test_untracked_awaiting_decision_goes_to_the_bay_only(self):
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="none")
+        self.assembly.refresh_from_db()
+        _sent, order = self.advisory_failed()
+        with self.assertRaisesMessage(ValidationError, "quarantine warehouse"):
+            self.receive_into(order, "10", self.warehouse)
+        receipt = self.receive_into(order, "10", self.bay)
+        self.assertEqual(len(receipt.held_assemblies()), 1)
