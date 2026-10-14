@@ -703,3 +703,11 @@ class WhoCancelsLeaveTests(LeaveTestCase):
         with self.assertRaisesMessage(ValidationError, "cancelled by them, or by whoever decides it"):
             self.booking.cancel(by=self.employee("OTHER"))
         self.assertEqual(LeaveRequest.objects.get(pk=self.booking.pk).status, LeaveStatus.APPROVED)
+
+
+class APolicyHoldsNoSettingNothingReadsTests(TestCase):
+    def test_there_is_no_approval_switch_that_every_request_ignores(self):
+        """O223: requires_approval was stored and never read; every request is decided by a manager."""
+        from .models import LeavePolicy
+
+        self.assertNotIn("requires_approval", {field.name for field in LeavePolicy._meta.get_fields()})
