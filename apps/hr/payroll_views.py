@@ -53,7 +53,7 @@ class PayComponentSerializer(serializers.ModelSerializer):
                   "liability_account", "recoverable_account", "measure", "is_taxable", "reduces_for_unpaid_leave",
                   "sequence", "is_active", "base_components", "base_ceiling",
                   "coverage_components", "coverage_ceiling", "coverage_period_months",
-                  "rounding", "remit_by_day", "statutory"]
+                  "rounding", "remit_by_day", "statutory", "is_ordinary_wages", "ceiling_figure"]
 
     def validate(self, attrs):
         # ModelSerializer does not run model.clean(); save() does, and its
@@ -72,7 +72,7 @@ class PayComponentSerializer(serializers.ModelSerializer):
 class SlabSerializer(serializers.ModelSerializer):
     class Meta:
         model = PayComponentSlab
-        fields = ["id", "component", "above", "up_to", "month", "amount"]
+        fields = ["id", "component", "above", "up_to", "month", "amount", "state", "effective_from"]
 
 
 class RemittanceSerializer(serializers.ModelSerializer):
@@ -238,7 +238,13 @@ class PayslipViewSet(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
     filter_fields = ["run", "employee"]
     queryset = Payslip.objects.select_related("employee__party", "run", "payment__journal_entry").prefetch_related(
         "payment__journal_entry__reversed_by", "lines__component")
-    action_permission_map = {"pay": "hr.post_payrun"}
+    action_permission_map = {"pay": "hr.post_payrun", "pdf": "hr.view_payslip"}
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        from .pay_api import _pdf
+
+        return _pdf(self.get_object())
 
     def list(self, request):
         # Paged like every list: the first 500 and silence about the rest

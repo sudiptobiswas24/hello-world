@@ -56,6 +56,7 @@ from apps.core.models import (
 
 from .calendars import working_days
 from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
+from .statutory import CEILINGS, FigureKind, figure_as_of, refuse_if_kept
 
 
 class ComponentKind(models.TextChoices):
@@ -71,6 +72,7 @@ class ComponentBasis(models.TextChoices):
     PER_UNIT = "per_unit", "Rate per unit produced"
     PER_OVERTIME_HOUR = "overtime", "Rate per overtime hour on the attendance register"
     SLAB = "slab", "Amount from a slab of its base"
+    OVERTIME_ORDINARY = "ot_ordinary", "Overtime hours at the multiple of the ordinary rate of wages"
 
 
 class Rounding(models.TextChoices):
@@ -89,6 +91,11 @@ class Statutory(models.TextChoices):
     ESI = "esi", "ESI, the employee's share"
     ESI_EMPLOYER = "esi_employer", "ESI, the employer's share"
     PT = "pt", "Professional tax"
+    LWF = "lwf", "Labour welfare fund, the employee's share"
+    LWF_EMPLOYER = "lwf_employer", "Labour welfare fund, the employer's share"
+
+
+PF_KINDS = (Statutory.PF, Statutory.PF_EMPLOYER, Statutory.EPS)
 
 
 # What piece work can be counted in, registered by the modules that record
@@ -157,6 +164,16 @@ class PayComponent(AuditModel):
                   "before it.",
     )
     is_active = models.BooleanField(default=True)
+    is_ordinary_wages = models.BooleanField(
+        default=False,
+        help_text="Part of the ordinary rate of wages overtime is paid at: basic and dearness "
+                  "allowance, not bonus, overtime or reimbursement. Fixed, hourly and piece earnings.",
+    )
+    ceiling_figure = models.CharField(
+        max_length=32, blank=True, choices=[("", "Its own ceiling, if any")] + [(k.value, k.label) for k in CEILINGS],
+        help_text="Cap the base at this dated figure, as it stood on the last day of the run's period, "
+                  "instead of a ceiling of its own.",
+    )
 
     # Statutory contributions are not a percentage of everything paid.
     # Provident fund is 12% of basic and the allowances paid to all, on
@@ -223,7 +240,17 @@ class PayComponent(AuditModel):
             )
         if self.remit_by_day is not None and not 1 <= self.remit_by_day <= 28:
             raise ValidationError(f"{self.code}: pay it over by a day from 1 to 28.")
-        if self.basis == ComponentBasis.PER_OVERTIME_HOUR and self.kind != ComponentKind.EARNING:
+        if self.ceiling_figure and self.base_ceiling is not None:
+            raise ValidationError(f"{self.code}: its base is capped at a ceiling of its own or at the dated "
+                                  f"{self.get_ceiling_figure_display()}, not both.")
+        if self.ceiling_figure and self.basis not in (ComponentBasis.PERCENT_OF_GROSS, ComponentBasis.SLAB):
+            raise ValidationError(f"{self.code}: only what is taken of a base has a ceiling.")
+        if self.is_ordinary_wages and (self.kind != ComponentKind.EARNING or self.basis not in (
+                ComponentBasis.FIXED, ComponentBasis.PER_HOUR, ComponentBasis.PER_UNIT)):
+            raise ValidationError(f"{self.code}: the ordinary rate of wages is made of fixed, hourly and piece "
+                                  "earnings.")
+        if self.basis in (ComponentBasis.PER_OVERTIME_HOUR, ComponentBasis.OVERTIME_ORDINARY) \
+                and self.kind != ComponentKind.EARNING:
             raise ValidationError(f"{self.code}: overtime is something earned.")
         if self.basis == ComponentBasis.PER_UNIT:
             if self.kind != ComponentKind.EARNING:
@@ -257,14 +284,42 @@ class PayComponent(AuditModel):
         self.clean()
         super().save(*args, **kwargs)
 
-    def slab_for(self, base, month):
-        """The slab amount for `base` in `month`; one for that month wins."""
-        rows = [slab for slab in self.slabs.all()
-                if slab.above < base and (slab.up_to is None or base <= slab.up_to)]
-        dated = [slab for slab in rows if slab.month == month]
+    def slab_on(self, base, day, state="", who=None):
+        """
+        (amount, kept term) for `base` on `day`, from the schedule that stood
+        then: the slabs of `state` (or of every state), of the latest date
+        on or before `day`; one for that month wins over every month's.
+        Slabs for one state only serve a person whose state is not set;
+        for several, the person's state decides, and it must be said.
+        """
+        slabs = list(self.slabs.all())
+        states = sorted({slab.state for slab in slabs if slab.state})
+        mine = [slab for slab in slabs if state and slab.state == state] or [
+            slab for slab in slabs if not slab.state]
+        if not mine and states:
+            if state or len(states) > 1:
+                raise ValidationError(
+                    f"{self.code} has slabs for {', '.join(states)} and {who or 'this person'} works in "
+                    f"{state or 'no state said'}. Set the state they work in, or slabs for it.")
+            mine = slabs
+        day = to_date(day)
+        stood = sorted({slab.effective_from for slab in mine
+                        if slab.effective_from is None or slab.effective_from <= day},
+                       key=lambda when: (when is not None, when))
+        if not stood:
+            return Decimal("0"), None
+        schedule = [slab for slab in mine if slab.effective_from == stood[-1]]
+        rows = [slab for slab in schedule if slab.above < base and (slab.up_to is None or base <= slab.up_to)]
+        dated = [slab for slab in rows if slab.month == day.month]
         general = [slab for slab in rows if slab.month is None]
         chosen = (dated or general or [None])[0]
-        return chosen.amount if chosen is not None else Decimal("0")
+        if chosen is None:
+            return Decimal("0"), None
+        return chosen.amount, [chosen.pk, stood[-1].isoformat() if stood[-1] else None, chosen.state]
+
+    def slab_for(self, base, month):
+        """The slab amount for `base` in `month` of every state's undated schedule (the slabs as they were)."""
+        return self.slab_on(base, datetime.date(2000, month, 1))[0]
 
 
 # The legal limit on what one wage payment may lose to deductions, believed to be
@@ -284,9 +339,16 @@ class PayComponentSlab(AuditModel):
     up_to = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
     month = models.PositiveSmallIntegerField(null=True, blank=True)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
+    state = models.CharField(
+        max_length=32, blank=True,
+        help_text="The state whose schedule this band is of; blank is every state's.")
+    effective_from = models.DateField(
+        null=True, blank=True,
+        help_text="The day the schedule this band is of applies from; blank is from the start. A pay run "
+                  "reads the schedule that stood on the last day of its period.")
 
     class Meta:
-        ordering = ["component", "month", "above"]
+        ordering = ["component", "state", "effective_from", "month", "above"]
         constraints = [
             models.CheckConstraint(check=Q(amount__gte=0), name="slab_amount_not_negative"),
             models.CheckConstraint(check=Q(above__gte=0), name="slab_above_not_negative"),
@@ -296,11 +358,23 @@ class PayComponentSlab(AuditModel):
                                    name="slab_month_is_a_month"),
         ]
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        self.effective_from = to_date(self.effective_from)
+        if self.pk is not None:
+            lock_rows(self, refresh=False)
+            stored = PayComponentSlab.objects.get(pk=self.pk)
+            if [getattr(stored, f) for f in ("component_id", "above", "up_to", "month", "amount", "state",
+                                             "effective_from")] != [
+                    getattr(self, f) for f in ("component_id", "above", "up_to", "month", "amount", "state",
+                                               "effective_from")]:
+                refuse_if_kept("slab", stored.pk, str(stored), "changed")
         # Two bands over one wage: slab_for took the first, and tax was
         # under-deducted with nothing said. Bands of one component for one
         # month (or for every month) may touch, not overlap.
-        others = PayComponentSlab.objects.filter(component_id=self.component_id, month=self.month).exclude(pk=self.pk)
+        others = PayComponentSlab.objects.filter(
+            component_id=self.component_id, month=self.month, state=self.state,
+            effective_from=self.effective_from).exclude(pk=self.pk)
         for other in others:
             starts_below_its_top = other.up_to is None or self.above < other.up_to
             its_start_below_my_top = self.up_to is None or other.above < self.up_to
@@ -311,9 +385,16 @@ class PayComponentSlab(AuditModel):
                 )
         super().save(*args, **kwargs)
 
+    @transaction.atomic
+    def delete(self, *args, **kwargs):
+        lock_rows(self, refresh=False)
+        refuse_if_kept("slab", self.pk, str(self), "deleted")
+        return super().delete(*args, **kwargs)
+
     def __str__(self):
         top = self.up_to if self.up_to is not None else "and over"
-        return f"{self.component.code} {self.above}-{top}: {self.amount}"
+        dated = f" from {self.effective_from}" if self.effective_from else ""
+        return f"{self.component.code}{' ' + self.state if self.state else ''}{dated} {self.above}-{top}: {self.amount}"
 
 
 class EmployeeCompensation(AuditModel):
@@ -366,6 +447,10 @@ class EmployeeCompensation(AuditModel):
         self.effective_to = to_date(self.effective_to)
         if self.effective_to and self.effective_to < self.effective_from:
             raise ValidationError("effective_to cannot precede effective_from.")
+        if self.component.basis == ComponentBasis.OVERTIME_ORDINARY and self.amount != 1:
+            raise ValidationError(
+                f"{self.component.code} is paid at a multiple of {self.employee}'s ordinary rate of wages, worked "
+                "out from their pay; it is not a rate typed for them. Give it as 1: they are paid overtime.")
         overlapping = EmployeeCompensation.objects.filter(
             employee=self.employee, component=self.component,
         ).filter(
@@ -646,7 +731,7 @@ class PayRun(AuditModel):
                 return
             bucket[key] = bucket.get(key, Decimal("0")) + amount
 
-        net_total, owed_by = Decimal("0"), []
+        net_total, owed_by, recovered = Decimal("0"), [], []
         for slip in slips:
             department = slip.employee.department
             centre = department.centre if department is not None else None
@@ -657,7 +742,8 @@ class PayRun(AuditModel):
                 # different cost centre and this entry must not follow it.
                 # And what it is owed into: the liabilities report reads this,
                 # not the component, whose account can be changed later.
-                owed_into = None if ComponentKind.EARNING in (line.kind, line.component.kind) else (
+                # An advance recovered is a receivable cleared, not a sum owed over to anyone.
+                owed_into = None if ComponentKind.EARNING in (line.kind, line.component.kind) or line.advance_id else (
                     account if line.kind == ComponentKind.DEDUCTION
                     else line.component.liability_account
                 )
@@ -671,6 +757,9 @@ class PayRun(AuditModel):
                     )
                 if line.kind == ComponentKind.EARNING:
                     add(debits, (account, centre), line.amount)
+                elif line.kind == ComponentKind.DEDUCTION and line.advance_id:
+                    # Against the person, as the payment that gave it was.
+                    recovered.append((account, slip.employee.party, line.amount))
                 elif line.kind == ComponentKind.DEDUCTION:
                     add(credits, account, line.amount)
                 else:
@@ -708,6 +797,9 @@ class PayRun(AuditModel):
         for account, party, amount in owed_by:
             JournalLine.objects.create(entry=entry, account=account, party=party, debit=amount,
                                        description=f"Owed back by a former employee: {label}"[:255])
+        for account, party, amount in recovered:
+            JournalLine.objects.create(entry=entry, account=account, party=party, credit=amount,
+                                       description=f"Advance recovered: {label}"[:255])
         entry.post()
 
         self.journal_entry = entry
@@ -882,6 +974,7 @@ class Payslip(AuditModel):
 
     class Meta:
         ordering = ["employee"]
+        permissions = [("view_own_payslip", "Can read one's own payslips (my-payslips)")]
         constraints = [
             models.UniqueConstraint(
                 fields=["run", "employee"], name="one_payslip_per_employee_per_run"
@@ -929,7 +1022,10 @@ class Payslip(AuditModel):
         account said four thousand. Whether somebody has been paid is a
         question about the payment, not about the pointer to it.
         """
-        return self.payment_id is not None and not self.payment.is_voided()
+        if self.payment_id is None or self.payment.is_voided():
+            return False
+        # Paid by a bank file whose transfer to this person came back (bank_file.py).
+        return not any(row.is_returned() for row in self.transfers.filter(file__payment_id=self.payment_id))
 
     # -- working out what somebody earned --------------------------------
 
@@ -1102,6 +1198,9 @@ class Payslip(AuditModel):
         at its own rate.
         """
         proportion = self.paid_proportion()
+        # The dated figures each component was worked out at, kept on its lines (kept_terms), and the
+        # overtime hours each rate row paid for.
+        self._kept, self._hours = {}, {}
         rows = EmployeeCompensation.objects.filter(
             employee=self.employee,
             component__is_active=True,
@@ -1143,8 +1242,16 @@ class Payslip(AuditModel):
                     so_far = component.round(unrounded)
                     owed.append((row, so_far - taken, None))
                     taken = so_far
+            if component.statutory in PF_KINDS:
+                # The ECR files EPS wages at the pension ceiling of the month (O222).
+                self._terms(component.pk)["eps_ceiling"] = figure_as_of(
+                    FigureKind.EPS_WAGE_CEILING, self.run.period_end, self.employee.work_state)[1]
             for row, amount, quantity in owed:
                 amount, kind = component.round(amount), component.kind
+                rate = row.amount
+                if component.basis == ComponentBasis.OVERTIME_ORDINARY and amount > 0:
+                    quantity = self._hours.get(row.pk)
+                    rate = (amount / quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
                 if amount < 0 and component.basis == ComponentBasis.PER_UNIT and self.is_final():
                     # More taken back than earned waits for the next run, and
                     # somebody leaving has none: a roll voided after it was paid
@@ -1164,20 +1271,22 @@ class Payslip(AuditModel):
                     # when this slip was worked out. All three can change, and
                     # a payslip that restates itself afterwards cannot be
                     # reconciled to the entry that paid it.
-                    rate=row.amount,
+                    rate=rate,
                     basis=component.basis,
                     is_taxable=component.is_taxable,
                     amount=amount,
                     quantity=quantity,
-                    base_ceiling=component.base_ceiling,
+                    base_ceiling=self._ceiling(component),
                     kept_statutory=component.statutory or "",
                     kept_base=sorted(other.pk for other in component.base_components.all()),
+                    kept_terms=self._kept.get(component.pk) or None,
                 ))
                 if kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
         self.recoverable, self.recoverable_component = Decimal("0"), None
         if self.is_final():
             lines = self._within_the_deduction_cap(lines)
+        lines += self._advance_recoveries(lines)
         earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0.00"))
         deducted = sum((line.amount for line in lines if line.kind == ComponentKind.DEDUCTION), Decimal("0.00"))
         if deducted > earned:
@@ -1295,6 +1404,114 @@ class Payslip(AuditModel):
             kept.append(line)
         return kept
 
+    def _advance_recoveries(self, lines):
+        """
+        A deduction line for each advance or loan this slip recovers from
+        (advances.py): the instalment, or what is left if less, and on a
+        final slip all that is left; never past the deduction cap, the
+        rest waiting for the next run, or on a final slip staying owed on
+        the advance, a receivable already (O28).
+        """
+        from .advances import advances_to_recover
+
+        advances = advances_to_recover(self)
+        if not advances:
+            return []
+        earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0"))
+        deducted = sum((line.amount for line in lines if line.kind == ComponentKind.DEDUCTION), Decimal("0"))
+        room = max((earned * DEDUCTION_CAP).quantize(Decimal("0.01"), rounding=ROUND_DOWN) - deducted, Decimal("0"))
+        found = []
+        for advance in advances:
+            left = advance.balance()
+            take = min(left if self.is_final() else min(advance.instalment, left), room)
+            if take <= 0:
+                continue
+            room -= take
+            found.append(PayslipLine(
+                payslip=self, component=advance.component, kind=ComponentKind.DEDUCTION,
+                description=f"{advance.component.name}: {advance.get_kind_display().lower()} of {advance.amount}",
+                rate=advance.instalment, basis=advance.component.basis, is_taxable=advance.component.is_taxable,
+                amount=take, kept_statutory="", kept_base=[], advance=advance,
+            ))
+        return found
+
+    def _terms(self, component_id):
+        """What the dated figures `component_id` is worked out at on this slip: kept on its lines."""
+        return self.__dict__.setdefault("_kept", {}).setdefault(component_id, {})
+
+    def _ceiling(self, component):
+        """The cap on `component`'s base this period: its own, or the dated figure on the period's last day (O222)."""
+        if not component.ceiling_figure:
+            return component.base_ceiling
+        value, term = figure_as_of(component.ceiling_figure, self.run.period_end, self.employee.work_state)
+        self._terms(component.pk)[component.ceiling_figure] = term
+        return round_money(value)
+
+    def _overtime_at_ordinary_rate(self, row, start, end):
+        """
+        Overtime at the multiple (dated data, default 2) of the ordinary
+        rate of wages, for the hours the register shows from `start` to
+        `end`. The ordinary rate is made of the components marked as
+        ordinary wages in force on the day the overtime was worked: a
+        period's fixed figure over the working days the person's pattern
+        gives the period, an hourly rate times their hours a day, and
+        piece work at the daily average of what was earned on the days
+        worked in the month before (the Factories Act, s.59(2)), or in this
+        period if none were. A day's rate over their hours a day is the
+        hour's. Totalled first, divided last, rounded once by the
+        component.
+        """
+        from .attendance import AttendanceDay
+
+        worked = list(AttendanceDay.objects.filter(
+            employee=self.employee, on__range=(start, end), overtime_hours__gt=0).values_list("on", "overtime_hours"))
+        self.__dict__.setdefault("_hours", {})[row.pk] = sum((hours for _day, hours in worked), Decimal("0"))
+        if not worked:
+            return Decimal("0")
+        multiplier, term = figure_as_of(FigureKind.OVERTIME_MULTIPLIER, self.run.period_end, self.employee.work_state)
+        hours_a_day = self.employee.hours_a_day
+        kept = self._terms(row.component_id)
+        kept["overtime_multiplier"], kept["hours_a_day"] = term, f"{hours_a_day.normalize():f}"
+        ordinary = list(EmployeeCompensation.objects.filter(
+            employee=self.employee, component__is_ordinary_wages=True, component__is_active=True,
+        ).select_related("component"))
+        full, averages, wages = self.period_working_days(), {}, Decimal("0")
+        for day, hours in worked:
+            per_day = Decimal("0")
+            for component_id in sorted({other.component_id for other in ordinary}):
+                rates = [other for other in ordinary if other.component_id == component_id and other.covers(day)]
+                if not rates:
+                    continue
+                rate = rates[0]
+                if rate.component.basis == ComponentBasis.PER_UNIT:
+                    if component_id not in averages:
+                        averages[component_id] = self._piece_day_average(rate.component)
+                    per_day += averages[component_id][0]
+                elif rate.component.basis == ComponentBasis.PER_HOUR:
+                    per_day += rate.amount * hours_a_day
+                elif full > 0:
+                    per_day += rate.amount / full
+            wages += hours * per_day
+        if averages:
+            kept["piece_days_of"] = ",".join(sorted({month for _a, month in averages.values()}))
+        return wages * multiplier / hours_a_day
+
+    def _piece_day_average(self, component):
+        """(a day's piece earnings on average, the month it was read from) for overtime's ordinary rate."""
+        _label, counter = PIECE_MEASURES[component.measure]
+        rates = list(EmployeeCompensation.objects.filter(employee=self.employee, component=component))
+        this_month = self.run.period_start.replace(day=1)
+        before = this_month - datetime.timedelta(days=1)
+        for first, last in ((before.replace(day=1), before), (self.run.period_start, self.run.period_end)):
+            by_day = {}
+            for day, quantity in counter(self.employee, last):
+                rate = next((r for r in rates if r.covers(day)), None) if day >= first else None
+                if rate is not None:
+                    by_day[day] = by_day.get(day, Decimal("0")) + quantity * rate.amount
+            if by_day:
+                return sum(by_day.values(), Decimal("0")) / len(by_day), f"{first:%Y-%m}"
+        return Decimal("0"), "none"
+
     def is_final(self):
         """Whether the person leaves inside this run's period, so no run of theirs comes after it."""
         left = self.employee.termination_date
@@ -1387,13 +1604,18 @@ class Payslip(AuditModel):
                 return Decimal("0")
             base = self._sum_of(component, list(component.base_components.all()),
                                 computed, running_taxable)
-            if component.base_ceiling is not None:
-                base = min(base, component.base_ceiling)
+            ceiling = self._ceiling(component)
+            if ceiling is not None:
+                base = min(base, ceiling)
             if component.basis == ComponentBasis.SLAB:
-                amount = component.slab_for(base, self.run.period_end.month)
+                amount, term = component.slab_on(base, self.run.period_end, self.employee.work_state, self.employee)
+                if term is not None:
+                    self._terms(component.pk)["slab"] = term
             else:
                 amount = base * row.amount / Decimal("100")
             return amount if whole else self._part(amount, start, end)
+        if component.basis == ComponentBasis.OVERTIME_ORDINARY:
+            return self._overtime_at_ordinary_rate(row, start, end)
         if component.basis == ComponentBasis.PER_OVERTIME_HOUR:
             from .attendance import overtime_hours
 
@@ -1519,6 +1741,16 @@ class PayslipLine(AuditModel):
         help_text="The components it was taken of, as listed then (R7): the files read the base "
                   "as it stood for the month.",
     )
+    kept_terms = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="The dated figures the law set that the line was worked out at, each [row, from, value]: "
+                  "the wage ceilings, the slab schedule, the overtime multiple. The files and registers read "
+                  "these, never today's table.",
+    )
+    advance = models.ForeignKey(
+        "hr.SalaryAdvance", null=True, blank=True, on_delete=models.PROTECT, related_name="recoveries",
+        editable=False, help_text="The advance or loan this deduction recovers.",
+    )
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     quantity = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
@@ -1574,8 +1806,10 @@ class PayslipLine(AuditModel):
 
 def _as_worked_out(line):
     """What a payslip line says about somebody's pay: two workings of a slip are compared on it."""
+    terms = tuple(sorted((key, tuple(value) if isinstance(value, list) else value)
+                         for key, value in (line.kept_terms or {}).items()))
     return (line.component_id, line.kind, line.basis, line.is_taxable, line.rate, line.amount, line.quantity,
-            line.base_ceiling, line.kept_statutory, tuple(line.kept_base or ()))
+            line.base_ceiling, line.kept_statutory, tuple(line.kept_base or ()), terms, line.advance_id)
 
 
 def _by_component(lines):

@@ -136,6 +136,10 @@ ROLES = {
               "payrun", "payslip", "payslipline"),
         "hr.post_payrun",
         *crud("hr", "statutoryremittance", actions=("add", "delete", "view")),
+        # Pays the run's bank file, takes a returned transfer back, and voids an advance with its payment.
+        *view("hr", "employeepaydetails", "statutoryfigure", "salaryadvance", "salarytransfer"),
+        *crud("hr", "salarytransferfile", actions=("add", "delete", "view")),
+        "hr.void_salaryadvance",
         *crud("assets", "assetcategory"),
         *crud("assets", "fixedasset"),
         *crud("assets", "depreciationentry", actions=("view",)),
@@ -545,6 +549,10 @@ ROLES = {
         "hr.view_every_leaverequest",
         *full("hr", "paycomponent", "paycomponentslab", "employeecompensation"),
         *crud("hr", "payrun", actions=("add", "change", "view")),
+        # The bank and the returns' master data, the law's dated figures, advances and the bank file.
+        *full("hr", "employeepaydetails", "statutoryfigure"),
+        *crud("hr", "salaryadvance", actions=("add", "change", "view")),
+        *crud("hr", "salarytransferfile", actions=("add", "view")), *view("hr", "salarytransfer"),
         # deliberately NOT hr.post_payrun: whoever works the payroll out
         # does not also put it in the ledger and pay it.
     ],
@@ -567,6 +575,8 @@ ROLES = {
         # their own request.
         *crud("hr", "leaverequest", actions=("add", "view")),
         *view("hr", "leavepolicy"),
+        # One's own payslips (my-payslips/), and nobody else's.
+        "hr.view_own_payslip",
         # deliberately NOT hr.decide_leaverequest
         # One's own expenses, and one's own appraisal to read and acknowledge.
         # The expense accounts, to say what a line was for.

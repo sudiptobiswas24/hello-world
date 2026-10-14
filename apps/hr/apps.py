@@ -18,3 +18,9 @@ class HrConfig(AppConfig):
         register_me_extra(me_as_employee)
         register_user_party(party_of_login)
         register_bank_movements(claims_paid)
+
+        from apps.accounting.models import register_void_follow_up
+
+        from .advances import refuse_void_of_a_recovered_advance
+
+        register_void_follow_up(refuse_void_of_a_recovered_advance)

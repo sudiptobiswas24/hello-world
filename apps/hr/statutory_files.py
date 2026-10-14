@@ -21,6 +21,7 @@ template's six columns, as CSV to paste into it.
 """
 
 import csv
+import datetime
 import io
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -80,6 +81,12 @@ def wage_base(slip, line):
     return base
 
 
+def pension_ceiling(line):
+    """The EPS wage ceiling the line was worked out at (O222); a line from before it was kept, the old constant."""
+    term = (line.kept_terms or {}).get("eps_ceiling")
+    return Decimal(term[2]) if term else EPS_CEILING
+
+
 def _posted(run):
     if run.status != PayRunStatus.POSTED:
         raise ValidationError("Only a posted run is filed; this one is "
@@ -104,7 +111,7 @@ def ecr_rows(run):
             unnamed.append(slip.employee.employee_number)
             continue
         epf_wages = wage_base(slip, pf[0])
-        eps_wages = min(epf_wages, EPS_CEILING)
+        eps_wages = min(epf_wages, pension_ceiling(pf[0]))
         employer = sum((line.amount for line in lines.get(Statutory.PF_EMPLOYER, [])), Decimal("0"))
         named_eps = lines.get(Statutory.EPS)
         if named_eps:
@@ -176,3 +183,53 @@ def esi_csv(run):
     for row in esi_rows(run):
         writer.writerow([row["ip"], row["name"], row["days"], row["wages"], row["reason"], row["last_day"]])
     return out.getvalue()
+
+
+def _schedule(line, key):
+    term = (line.kept_terms or {}).get(key) or [None, None, ""]
+    return {"state": term[2] or "", "from": term[1] or ""}
+
+
+def _month_runs(month):
+    """Posted runs whose period ends in `month` (a date in it)."""
+    from .payroll import PayRun
+
+    first = month.replace(day=1)
+    following = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    return PayRun.objects.filter(status=PayRunStatus.POSTED, period_end__gte=first, period_end__lt=following)
+
+
+def pt_register(month):
+    """
+    Professional tax for `month`: one row a slip with a PT line, from the
+    posted runs, at the wages, amount and schedule (state, from) the slip
+    kept; never today's slabs.
+    """
+    rows = []
+    for run in _month_runs(month).order_by("period_end", "pk"):
+        for slip in _slips(run):
+            lines = _lines(slip).get(Statutory.PT)
+            if not lines:
+                continue
+            rows.append({"run": run.number, "employee": slip.employee.employee_number,
+                         "name": slip.employee.party.name, "wages": wage_base(slip, lines[0]),
+                         "tax": sum((line.amount for line in lines), Decimal("0")),
+                         **_schedule(lines[0], "slab")})
+    return rows
+
+
+def lwf_register(month):
+    """The Labour Welfare Fund for `month`: each slip's employee and employer shares as kept."""
+    rows = []
+    for run in _month_runs(month).order_by("period_end", "pk"):
+        for slip in _slips(run):
+            lines = _lines(slip)
+            mine, theirs = lines.get(Statutory.LWF, []), lines.get(Statutory.LWF_EMPLOYER, [])
+            if not mine and not theirs:
+                continue
+            rows.append({"run": run.number, "employee": slip.employee.employee_number,
+                         "name": slip.employee.party.name,
+                         "employee_share": sum((line.amount for line in mine), Decimal("0")),
+                         "employer_share": sum((line.amount for line in theirs), Decimal("0")),
+                         **_schedule((mine or theirs)[0], "slab")})
+    return rows
