@@ -6,9 +6,8 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .endpoints import may_read
+from .endpoints import may_read, may_read_gone
 from .history import history
-from .scoping import visible_parties
 
 
 class HistoryView(viewsets.ViewSet):
@@ -25,12 +24,10 @@ class HistoryView(viewsets.ViewSet):
         if not request.user.has_perm(f"{model._meta.app_label}.view_{model._meta.model_name}"):
             raise PermissionDenied(f"Reading {model._meta.verbose_name_plural} is not yours.")
         # Not only the kind but the record: a rep reads the history of their own customers' orders.
-        # A deleted record's is read by whoever may read its kind, unless the party scope limits
-        # the login: whose it was cannot be asked of a row that is gone, and a rep read the
-        # deleted order of another rep's customer.
+        # A deleted record's only by whoever reads every one of its kind (endpoints.may_read_gone).
         if model._default_manager.filter(pk=int(pk)).exists():
             if not may_read(request.user, model, int(pk)):
                 raise NotFound()
-        elif visible_parties(request.user) is not None:
+        elif not may_read_gone(request.user, model):
             raise NotFound()
         return Response(history(model, int(pk)))
