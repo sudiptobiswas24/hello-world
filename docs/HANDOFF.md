@@ -86,6 +86,9 @@ docs/RISKS.md, "Open defects", is the one list of what is still open.
    - `g20_sec.md` (fix_sec2, `$SP/fix_sec2`): O124, O129, O131, O191,
      O195, O196, O198.
    Each joins after its review holds; then the six lanes.
+   Since: cost and security joined the tree (review of the security work
+   in flight, review_sec3); g21's race agent started early from d4f1827
+   (brief docs/handoff/g21_race.md, worktree `$SP/fix_race`).
    **Lanes and agents compete for the machine.** In g19 three lanes beside
    two agents took PostgreSQL half B to 101 minutes of its 115: start an
    agent only when at most two lanes are left.
