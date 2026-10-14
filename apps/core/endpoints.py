@@ -15,6 +15,7 @@ import re
 from functools import lru_cache
 
 from django.apps import apps
+from django.contrib.auth.models import User
 from django.http import HttpRequest
 from django.urls import URLPattern, URLResolver, get_resolver
 from rest_framework.permissions import IsAuthenticated
@@ -62,6 +63,18 @@ def may_read_kind(user, model):
     return user.has_perm(f"{model._meta.app_label}.view_{model._meta.model_name}")
 
 
+def _view(cls, user):
+    """An instance of viewset `cls` reading one record for `user`, as its retrieve does."""
+    asked = HttpRequest()
+    asked.method = "GET"
+    asked.user = user
+    request = Request(asked)
+    request.user = user
+    view = cls(request=request, args=(), kwargs={}, format_kwarg=None, action="retrieve")
+    view.headers = {}
+    return view
+
+
 def may_read(user, model, pk):
     """
     Whether `user` may read record `pk` of `model`: the kind's view
@@ -73,17 +86,40 @@ def may_read(user, model, pk):
     classes = served()[1].get(model._meta.label_lower, [])
     if not classes:
         return model._default_manager.filter(pk=pk).exists()
-    asked = HttpRequest()
-    asked.method = "GET"
-    asked.user = user
-    request = Request(asked)
-    request.user = user
-    for cls in classes:
-        view = cls(request=request, args=(), kwargs={}, format_kwarg=None, action="retrieve")
-        view.headers = {}
-        if view.get_queryset().filter(pk=pk).exists():
-            return True
-    return False
+    return any(_view(cls, user).get_queryset().filter(pk=pk).exists() for cls in classes)
+
+
+def _narrowed_by(queryset):
+    """The WHERE of `queryset`, compiled: what narrows it, as SQL and its parameters."""
+    from django.core.exceptions import EmptyResultSet, FullResultSet
+
+    compiler = queryset.query.get_compiler(using=queryset.db)
+    compiler.pre_sql_setup()
+    try:
+        sql, params = compiler.compile(compiler.where)
+    except FullResultSet:
+        return "", ()
+    except EmptyResultSet:
+        return "nothing", ()
+    return sql, tuple(params)
+
+
+def narrows_for(cls, user):
+    """
+    Whether viewset `cls` reads `user` only some of its kind: its queryset
+    for them is narrowed further than for a superuser. Asked of the
+    queryset itself, so a screen that narrows by login says so by being
+    written that way, and declares nothing (review F4: expense claims,
+    their lines and appraisals narrowed by login and said nothing). A
+    queryset that cannot be built for the comparison counts as narrowed.
+    """
+    if user.is_superuser:
+        return False
+    try:
+        everyone = User(username="", is_superuser=True, is_active=True)
+        return _narrowed_by(_view(cls, user).get_queryset()) != _narrowed_by(_view(cls, everyone).get_queryset())
+    except Exception:  # noqa: BLE001 - a rule that cannot be read refuses
+        return True
 
 
 def may_read_gone(user, model):
@@ -92,17 +128,16 @@ def may_read_gone(user, model):
     (its history). Whose it was cannot be asked of a row that is gone, so
     a login that reads only some of the kind reads none of the gone ones:
     one the party scope limits (a rep read the deleted order of another
-    rep's customer), or one a screen serving the kind reads only some
-    rows to, by its own `reads_only_some(user)`, the rule its queryset
-    asks (O131: anyone holding view_leaverequest read the history of a
-    colleague's deleted leave request).
+    rep's customer), or one a screen serving the kind narrows for
+    (narrows_for: O131, a colleague read the history of a deleted leave
+    request; review F4, of an expense claim and an appraisal). One rule
+    for every kind, read off the queryset each screen already asks.
     """
     from .scoping import visible_parties
 
     if not may_read_kind(user, model) or visible_parties(user) is not None:
         return False
-    return not any(getattr(cls, "reads_only_some", None) is not None and cls.reads_only_some(user)
-                   for cls in served()[1].get(model._meta.label_lower, []))
+    return not any(narrows_for(cls, user) for cls in served()[1].get(model._meta.label_lower, []))
 
 
 class EndpointsView(APIView):
