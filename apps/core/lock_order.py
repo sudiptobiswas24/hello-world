@@ -144,8 +144,9 @@ def _survey(kind, *key):
 # (O184). A ranked model's select_for_update() is checked whatever this
 # says, as it was before any of it was seen.
 UNSEEN = {
-    "core.address": "take_primary() clears the party's other primaries after holding the one it saves: two "
-                    "addresses of one party made primary at once can deadlock",
+    "core.address": "take_primary() clears a party's other primaries after the row it saves, rows of one model "
+                    "out of key order; harmless, because every write of a party's addresses holds the party "
+                    "first (locked_before_it, take_primary), so two never overlap (review F9)",
     "core.contact": "take_primary(), as core.address",
     "core.documentsequence": "a document numbering a second document type takes that type's row after its own, "
                              "in no fixed order between types (sales.Invoice.post)",
