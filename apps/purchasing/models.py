@@ -51,6 +51,7 @@ from apps.core.models import (
     PartyRole,
     PaymentTerms,
     UnitOfMeasure,
+    lock_in_turn,
     lock_rows,
     only_one,
     prefetched,
@@ -462,6 +463,7 @@ class RequestForQuotation(AuditModel):
                 "who quoted the whole requirement, or split the RFQ."
             )
 
+        hold_requisition_lines([line.requisition_line for line in lines if line.requisition_line_id])
         for line in lines:
             asked = line.requisition_line
             if asked is not None and line.quantity > asked.quantity - asked.quantity_ordered():
@@ -830,10 +832,9 @@ class PurchaseRequisition(AuditModel):
             raise ValidationError("Only an approved requisition can be ordered.")
         _require_vendor_role(vendor)
 
-        selected = [
-            line for line in (lines if lines is not None else self.lines.all())
-            if line.quantity_ordered() < line.quantity
-        ]
+        candidates = list(lines if lines is not None else self.lines.all())
+        hold_requisition_lines(candidates)
+        selected = [line for line in candidates if line.quantity_ordered() < line.quantity]
         if not selected:
             raise ValidationError("Every line on this requisition has already been ordered.")
 
@@ -951,6 +952,22 @@ class PurchaseRequisitionLine(AuditModel):
     def quantity_open(self):
         """What is left to order or to ask about: nothing or more."""
         return max(self.quantity - self.quantity_ordered() - self.quantity_quoting(), Decimal("0"))
+
+
+def hold_requisition_lines(lines):
+    """
+    Hold the request lines an order is about to be made against, each
+    request before its lines, and re-read them, so that what is already on
+    order is read after the lock. An award held its RFQ and an order made
+    straight from the request held the request: each read nothing ordered,
+    and both ordered 10 against a request for 10 (O108). Every path that
+    orders a request line takes them here.
+    """
+    lines = [line for line in lines if line is not None]
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError("hold_requisition_lines() outside a transaction holds nothing.")
+    lock_in_turn([PurchaseRequisition(pk=pk) for pk in sorted({line.requisition_id for line in lines})])
+    lock_rows(*lines)
 
 
 def request_quotes(lines, issue_date=None, response_due=None):
