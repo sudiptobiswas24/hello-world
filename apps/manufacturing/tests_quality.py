@@ -276,6 +276,23 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         self.assertEqual(self.filler.on_hand_at(hold), Decimal("100"))
 
 
+    def test_of_two_verdicts_on_one_day_the_later_posting_stands(self):
+        """
+        O145 (SameDayReinspectionProbe): a rejection drafted first, a pass
+        drafted after it and posted first, both dated 1 June. Ranked by id
+        the pass stood and PP-A read released; posted last, the rejection
+        speaks.
+        """
+        rejecting = Inspection.objects.create(lot=self.drum, plan=self.plan, inspected_on=TODAY)
+        Reading.objects.create(inspection=rejecting, plan_line=self.line, value=Decimal("1200"))
+        passing = self.inspect(1000)
+        self.assertLess(rejecting.pk, passing.pk)
+        rejecting.post()
+        self.assertEqual(rejecting.disposition, Disposition.REJECT)
+        self.assertEqual(release_status(self.drum), "held")
+        self.refused()
+
+
 class TheMeasurementExplainsTheMoneyTests(RunTestCase):
     def setUp(self):
         super().setUp()

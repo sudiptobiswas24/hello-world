@@ -55,3 +55,25 @@ class AskedOnlyByTheIssueTests(SimpleTestCase):
         asking = LOADED_UNASKED.replace("    if not run.backflush:",
                                         "    check_released(lot.item, lot)\n    if not run.backflush:")
         self.assertEqual(asked(asking, label="manufacturing"), [])
+
+
+RANKED_HERE = '''
+def standing(lot):
+    return Inspection.objects.filter(lot=lot, posted=True).order_by("-inspected_on", "-id").first()
+'''
+
+
+class AVerdictRankedOutsideTheGateTests(SimpleTestCase):
+    """O145: two verdicts of one day ranked by id; the later posting must stand."""
+
+    def test_a_standing_inspection_picked_by_its_own_order_is_reported(self):
+        (finding,) = asked(RANKED_HERE, label="manufacturing")
+        self.assertEqual(finding[0], "verdict ranked outside the gate")
+        self.assertIn("manufacturing/example.py:2 standing()", finding[1])
+
+    def test_the_gate_itself_is_not(self):
+        self.assertEqual(asked(RANKED_HERE, label="quality", name="release.py"), [])
+
+    def test_a_list_oldest_first_is_not(self):
+        self.assertEqual(asked(RANKED_HERE.replace('"-inspected_on", "-id"', '"inspected_on", "id"'),
+                               label="manufacturing"), [])
