@@ -375,6 +375,7 @@ class MaintenanceJob(AuditModel):
             raise ValidationError(
                 f"A job is where its {noun} is: {source.machine or source.work_centre}.")
 
+    @serialised("done_on")
     def delete(self, *args, **kwargs):
         if self.done_on is not None:
             raise ValidationError(f"{self} is done; it is as it was done.")

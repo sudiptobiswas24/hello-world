@@ -3830,6 +3830,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 "really is a second invoice, give it the vendor's own distinct number."
             )
 
+    @serialised("posted", held_first=True)
     def delete(self, *args, **kwargs):
         if self.posted:
             raise ValidationError("Posted bills cannot be deleted. Issue a debit note instead.")
@@ -6464,6 +6465,7 @@ class GoodsReceipt(AuditModel):
         self.save(update_fields=sorted(self.OBJECTION_FIELDS))
         return self
 
+    @serialised("posted", held_first=True)
     def delete(self, *args, **kwargs):
         if self.posted:
             raise ValidationError("Posted goods receipts cannot be deleted. Create a return instead.")

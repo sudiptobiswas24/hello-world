@@ -200,6 +200,7 @@ class AccountingPeriod(AuditModel):
         on_date = to_date(on_date)
         return self.start_date <= on_date <= self.end_date
 
+    @serialised("closed")
     def delete(self, *args, **kwargs):
         # Deleting a closed period would unlock its months as a side
         # effect of tidying up; unlocking is a decision, made by reopening.
@@ -312,6 +313,7 @@ class JournalEntry(AuditModel):
             )
         super().save(*args, **kwargs)
 
+    @serialised("posted")
     def delete(self, *args, **kwargs):
         if self.posted or self._was_posted_in_db():
             raise ValidationError(
@@ -1102,6 +1104,7 @@ class Payment(AuditModel):
                 "between two accounts, not out of one and into it again."]})
         super().save(*args, **kwargs)
 
+    @serialised("posted")
     def delete(self, *args, **kwargs):
         if self.posted:
             raise ValidationError("Posted payments cannot be deleted. Void the payment instead.")
@@ -1292,6 +1295,7 @@ class BankStatement(AuditModel):
             refuse_as_money_account(self.bank_account)
         super().save(*args, **kwargs)
 
+    @serialised("closed")
     def delete(self, *args, **kwargs):
         # Its lines go with it, and a line posted to an account would leave
         # its entry in the ledger with nothing to say why.

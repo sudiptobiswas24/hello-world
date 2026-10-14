@@ -278,6 +278,7 @@ class FixedAsset(Extensible, AuditModel):
                 )
         super().save(*args, **kwargs)
 
+    @serialised("capitalisation_entry", "status")
     def delete(self, *args, **kwargs):
         if self.status != AssetStatus.DRAFT or self.capitalisation_entry_id:
             raise ValidationError(

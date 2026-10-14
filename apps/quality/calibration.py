@@ -132,6 +132,7 @@ class Calibration(AuditModel):
             raise ValidationError(f"{self} is posted. Void it and record another.")
         super().save(*args, **kwargs)
 
+    @serialised("posted")
     def delete(self, *args, **kwargs):
         if self.posted:
             raise ValidationError(f"{self} is posted; void it.")
