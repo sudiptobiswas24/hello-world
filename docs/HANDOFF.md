@@ -75,6 +75,10 @@ docs/RISKS.md, "Open defects", is the one list of what is still open
    O149, O150). Worktrees `$SP/fix_qdec` and `$SP/fix_sub`, snapshotted to
    `claude/erp-wip-fix_qdec` and `claude/erp-wip-fix_sub`. At integration,
    wire the subcontract receipt to `tell_the_quality_manager()`.
+   g20's money agent started early (base 784af1c, brief
+   docs/handoff/g20_money.md, worktree `$SP/fix_money`): its area barely
+   touches g19's. The cost agent (purchasing, inventory, manufacturing,
+   payroll costing, O187) starts once g19 is pushed.
 2. **Fix wave 2 (g20)** takes the rest, in this order: O187 (an ITC-04
    void) first; then O182 and O184 (the sentinel's ranks and blind spots);
    O167; O195-O202; exchange and settlement, pricing, GRNI residues,
