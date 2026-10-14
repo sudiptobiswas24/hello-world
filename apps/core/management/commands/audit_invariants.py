@@ -1250,7 +1250,6 @@ class Command(BaseCommand):
         "sales.InvoicePayment": "an allocation: deleting it is how it is undone, posted invoice or not",
         "purchasing.BillPayment": "an allocation: deleting it is how it is undone, posted bill or not",
         "sales.DunningNotice": "a notice sent about an invoice, which is always posted",
-        "accounting.JournalLine": "asks both entries itself (_on_a_posted_entry)",
     }
 
     def lines_not_answering_to_their_document(self, labels, sources):

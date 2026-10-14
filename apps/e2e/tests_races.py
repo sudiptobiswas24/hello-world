@@ -1662,6 +1662,42 @@ class StatementAndChallanRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class LedgerRaceTests(RaceCase):
+    def books(self):
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import Company, Currency, Party, PartyRole, PartyRoleAssignment
+
+        self.inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
+        Company.objects.create(name="Co", base_currency=self.inr)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET,
+                                           holds_money=True)
+        self.ar = Account.objects.create(code="1100", name="Receivables", account_type=AccountType.ASSET)
+        self.party = Party.objects.create(code="P", name="P", default_currency=self.inr)
+        PartyRoleAssignment.objects.create(party=self.party, role=PartyRole.CUSTOMER)
+
+    def test_a_line_is_not_added_to_an_entry_as_it_posts(self):
+        """
+        O125: a draft entry, Dr receivables 100 / Cr bank 100, posts while a
+        line of Dr 50 is added to it. The line asked "posted?" without the
+        entry's lock, which post() holds while it totals the lines: posted,
+        and then 150 against 100.
+        """
+        self.books()
+        entry = JournalEntry.objects.create(date=datetime.date(2026, 9, 2), memo="By hand")
+        JournalLine.objects.create(entry=entry, account=self.ar, debit=Decimal("100"))
+        JournalLine.objects.create(entry=entry, account=self.bank, credit=Decimal("100"))
+        outcomes = race((JournalEntry, JournalLine),
+                        lambda: JournalEntry.objects.get(pk=entry.pk).post(),
+                        lambda: JournalLine.objects.create(entry=JournalEntry.objects.get(pk=entry.pk),
+                                                           account=self.ar, debit=Decimal("50")))
+        entry.refresh_from_db()
+        self.once(outcomes)
+        self.assertFalse(entry.posted and not entry.is_balanced(),
+                         f"{outcomes}: posted at {entry.total_debit()} against {entry.total_credit()}")
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TwoLandedCostsOnTheSameTwoReceiptLinesTests(RaceCase):
     """
     O182: 10 widgets at 5 and 10 gadgets at 15 received at one warehouse;
