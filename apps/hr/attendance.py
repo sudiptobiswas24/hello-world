@@ -27,7 +27,7 @@ from apps.core.csvrows import RowError, date, read
 from apps.core.models import AuditModel, lock_rows
 
 from .calendars import holidays_between, parse_working_days
-from .models import Employee, LeaveRequest, LeaveStatus
+from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
 
 # What a shift's code means on the clock, registered by the module that
 # keeps the shifts (manufacturing), so hr imports none of it.
@@ -109,7 +109,7 @@ class AttendanceDay(AuditModel):
         # Leave is approved against the register under the same lock: the
         # day marked as the leave is approved would find no leave, and the
         # leave no mark.
-        lock_rows(*self.locked_before_it(), refresh=False)
+        hold_the_employee(*self.locked_before_it())
         if not self.employee.is_employed_on(self.on):
             raise ValidationError({"on": f"{self.employee} was not employed on {self.on}."})
         if self.status == AttendanceStatus.ABSENT and (self.time_in or self.overtime_hours):
@@ -133,7 +133,11 @@ class AttendanceDay(AuditModel):
             self.late_minutes = minutes_late(starts, self.time_in)
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
+        # The person first, as save() and every pay input hold them (hold_the_employee, O20): asked
+        # unlocked, a day was deleted as the run that paid on it posted.
+        hold_the_employee(*self.locked_before_it())
         _refuse_if_paid(self.employee, self.on)
         return super().delete(*args, **kwargs)
 

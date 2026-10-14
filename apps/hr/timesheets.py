@@ -26,10 +26,10 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, lock_rows, serialised, to_date
+from apps.core.models import AuditModel, documents_it_answers_to, lock_rows, serialised, to_date
 
 from .calendars import parse_working_days
-from .models import Employee, LeaveRequest, LeaveStatus
+from .models import Employee, LeaveRequest, LeaveStatus, hold_the_employee
 
 # A day has twenty-four hours and nobody works all of them. The cap is
 # not about labour law, which differs everywhere — it is about catching
@@ -129,7 +129,13 @@ class Timesheet(AuditModel):
                 f"{clash.period_start} to {clash.period_end}."
             )
 
+    def locked_before_it(self):
+        """The person, as every change of a sheet holds them first (apps.hr.models.hold_the_employee, O20)."""
+        return documents_it_answers_to(self, "employee")
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
         if self.pk:
             previous = Timesheet.objects.filter(pk=self.pk).first()
             if previous is not None and previous.status == TimesheetStatus.APPROVED:
@@ -144,7 +150,9 @@ class Timesheet(AuditModel):
         self.clean()
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
+        hold_the_employee(*self.locked_before_it())
         # Its entries go with it, past their own refusal once approved: hours
         # a posted run paid on, gone. Sent back first, which asks that.
         stored = Timesheet.objects.filter(pk=self.pk).values_list("status", flat=True).first()
@@ -154,7 +162,7 @@ class Timesheet(AuditModel):
 
     # -- the decision, and its reverse ----------------------------------
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def submit(self):
         if self.status != TimesheetStatus.DRAFT:
             raise ValidationError("Only a draft timesheet can be submitted.")
@@ -171,7 +179,7 @@ class Timesheet(AuditModel):
         if by.pk == self.employee_id:
             raise ValidationError(f"{self.employee} cannot approve their own hours.")
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def approve(self, by):
         if self.status != TimesheetStatus.SUBMITTED:
             raise ValidationError("Only a submitted timesheet can be approved.")
@@ -191,7 +199,7 @@ class Timesheet(AuditModel):
         super().save(update_fields=["status", "decided_by", "decided_at", "updated_at"])
         return self
 
-    @serialised("status")
+    @serialised("status", held_first=True)
     def reject(self, by, note=""):
         if self.status != TimesheetStatus.SUBMITTED:
             raise ValidationError("Only a submitted timesheet can be rejected.")
@@ -207,7 +215,7 @@ class Timesheet(AuditModel):
         return self
 
     @transaction.atomic
-    @serialised("status")
+    @serialised("status", held_first=True)
     def send_back(self, note=""):
         """
         Put an approved or rejected sheet back in the author's hands.
@@ -343,7 +351,7 @@ class TimesheetEntry(AuditModel):
         if self.timesheet_id:
             # Leave is approved against the hours under the same lock, so
             # the two are not each found clear of the other.
-            lock_rows(self.timesheet.employee, refresh=False)
+            hold_the_employee(self.timesheet.employee)
             status = Timesheet.objects.filter(pk=self.timesheet_id).values_list(
                 "status", flat=True
             ).first()
@@ -355,8 +363,12 @@ class TimesheetEntry(AuditModel):
         self.clean()
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.timesheet.status == TimesheetStatus.APPROVED:
+        # The person, then the sheet's status read as held: read unlocked, an hour was removed as
+        # its sheet was approved (O20, hold_the_employee).
+        hold_the_employee(self.timesheet.employee)
+        if Timesheet.objects.filter(pk=self.timesheet_id, status=TimesheetStatus.APPROVED).exists():
             raise ValidationError(
                 "This timesheet has been approved; its hours can no longer be removed."
             )
