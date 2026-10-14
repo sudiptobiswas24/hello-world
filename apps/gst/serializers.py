@@ -12,7 +12,8 @@ class EInvoiceSerializer(serializers.ModelSerializer):
     class Meta:
         model = EInvoice
         fields = ["id", "invoice", "invoice_number", "payload", "irn", "ack_number",
-                  "ack_date", "signed_qr", "warnings", "created_at", "updated_at"]
+                  "ack_date", "signed_qr", "cancel_reason", "cancel_remarks", "cancel_payload",
+                  "cancelled_at", "cancellation_note", "warnings", "created_at", "updated_at"]
         read_only_fields = fields
 
     def get_warnings(self, obj):
