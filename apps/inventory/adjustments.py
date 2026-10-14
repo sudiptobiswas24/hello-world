@@ -346,6 +346,13 @@ class StockAdjustment(AuditModel):
                 )
         super().save(*args, **kwargs)
 
+    def delete(self, *args, **kwargs):
+        # Posted, its movements and its entry stand; deleted, they stayed
+        # with nothing left to say why (O205, the rest of O10).
+        if self.pk and StockAdjustment.objects.filter(pk=self.pk, posted=True).exists():
+            raise ValidationError("Cannot delete a posted adjustment. Void it and raise another.")
+        super().delete(*args, **kwargs)
+
 
 class StockAdjustmentLine(AuditModel):
     adjustment = models.ForeignKey(
@@ -461,7 +468,7 @@ class StockAdjustmentLine(AuditModel):
             return self.movement
 
         quantity = self.stock_quantity()
-        if self.unit_cost is None and quantity < 0:
+        if quantity < 0:
             # An outbound movement is valued by the replay, so the ledger
             # entry has to use the same number or the two records of what
             # left the shelf disagree. Freezing it is what makes the entry
@@ -474,7 +481,16 @@ class StockAdjustmentLine(AuditModel):
             # wrote 1,000 of 3,000 worth 10,000 off the books at 3,333.30
             # while the shelf gave up 3,333.33; the rate is for reading.
             taking = item.cost_of_removing(adjustment.warehouse, -quantity, lot=self.lot)
-            self.unit_cost = (taking / -quantity).quantize(Decimal("0.0001"))
+            rate = (taking / -quantity).quantize(Decimal("0.0001"))
+            # Given a cost of its own, a write-down booked that while the
+            # shelf gave up what it held them at, and the two parted (O3).
+            # A different value is a revaluation, not a write-down.
+            if self.unit_cost is not None and self.unit_cost != rate:
+                raise ValidationError(
+                    f"{-quantity} {item.uom} of {item} leave {adjustment.warehouse} at what the shelf "
+                    f"holds them at, {round_money(taking)} ({rate} each), not at {self.unit_cost}. Leave the "
+                    "cost blank, or revalue the stock with a line of no quantity.")
+            self.unit_cost = rate
             self.posted_value = -taking
         else:
             if self.unit_cost is None:
@@ -766,6 +782,15 @@ class StockCount(AuditModel):
                     "adjustment it raised if the numbers were wrong."
                 )
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # A posted sheet is the evidence of what was on the shelf, even with
+        # no difference to adjust (O205).
+        if self.pk and StockCount.objects.filter(pk=self.pk, posted=True).exists():
+            raise ValidationError(
+                "Cannot delete a posted count. The sheet is the evidence; void the "
+                "adjustment it raised if the numbers were wrong.")
+        super().delete(*args, **kwargs)
 
 
 class StockCountLine(AuditModel):
