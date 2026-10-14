@@ -281,6 +281,12 @@ class BrowserMixin:
         page.fill("#id_username", user.username)
         page.fill("#id_password", PASSWORD)
         page.click("button[type=submit]")
+        if path.startswith("/app"):
+            # The application shows "Opening..." until it knows who this is,
+            # with no navigation at all: a test that counts a link absent
+            # straight after signing in passed there, whatever the rail then
+            # offered (a rep saw the Accounts tab for a week, unseen).
+            expect(page.get_by_role("navigation", name="Modules")).to_be_visible()
         return page
 
     def rows(self):

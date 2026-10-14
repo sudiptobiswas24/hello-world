@@ -785,7 +785,10 @@ export const MODULES: Module[] = [
         edit: () => import("../modules/accounts/AccountForm"),
       },
       {
-        path: "cost-centres", label: "Cost centres", permission: "accounting.view_costcentre", create: "accounting.add_costcentre",
+        // Every role reads cost centres to name one on a line; only whoever
+        // keeps them is offered the list (a rep was offered the books' tab).
+        path: "cost-centres", label: "Cost centres", permission: "accounting.view_costcentre",
+        keep: "accounting.change_costcentre", create: "accounting.add_costcentre",
         keywords: "cost centre analytic department shed line", load: () => import("../modules/accounts/CostCentres"),
         detail: () => import("../modules/accounts/CostCentreForm"),
       },

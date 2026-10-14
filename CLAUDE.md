@@ -238,6 +238,12 @@ Go through it before running anything.
   `_databases_support_transactions` returning False.
 - Run with `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium`,
   or they skip and the count looks right.
+- An absence counted straight after signing in proves nothing: until the
+  application knows who signed in it shows "Opening..." with no
+  navigation, and `to_have_count(0)` passes there on its first look. A
+  rep was offered the Accounts tab for a week while the test said no.
+  `sign_in()` now waits for the rail; anything else asserted absent waits
+  first for something that must be present.
 - On SQLite every cursor call is serialised (`OneCallAtATime` in
   `apps/web/tests_browser.py`). Without it two requests at once deadlock
   on the GIL inside Django's date functions and the whole run hangs,

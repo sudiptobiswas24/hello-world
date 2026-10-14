@@ -55,6 +55,11 @@ can prove.
 
 ## Known limits in the code
 
+- **Unit prices keep two places** (the owner's decision 23, O208): a price
+  converted from another currency is rounded to the paisa per unit and the
+  line follows that rate, so 1,000 units at 10 USD / 1.1 come to 9,090.00,
+  not 9,090.91. The rate on the invoice is the one charged.
+
 - **Pay slips posted before hr migration 0022** have no kept days, marker
   or wage base (`kept_paid_days is None`): they read the working pattern,
   holiday region, leave, register and PF settings as they stand, so a later
@@ -301,9 +306,8 @@ missing), **minor**.
 | O197 | core | `UserViewSet.perform_create` and `perform_update` run without a transaction: a create refused while giving roles answers 400 but leaves the login made, with no roles (docs/handoff/reports/fix_sec.md, seen #3) | rule | open |
 | O202 | manufacturing, sales | A cost sheet, a test certificate and a price-variation bill made over the API carry no created_by: quoting.cost(), certificates.issue() and bill_variation() take no maker. Their history line names who; the stamp on the record is blank (seen 2026-10-11, exempted in audit_invariants WRITES_AROUND_THE_MIXIN_ON_PURPOSE) | audit trail | open |
 | O203 | quality | The Quality Manager's escalation counts Monday to Friday and never sees a plant holiday: quality may not import hr, whose calendar knows them. A failure posted the day before Diwali goes to the administrator on Diwali. A calendar hook in core, as lot holds have, would let hr answer (seen 2026-10-14) | minor | open |
-| O204 | quality, manufacturing | Decide (owner): at the machines a failed doff, film roll or bag bundle under a MANDATORY plan is still released on the spot by the supervisor's concession (station_gauge.gauged_batch), while the same failure under an advisory plan now waits for the Quality Manager (decision 22). The stricter plan is the easier one round. Recommended: mandatory failures wait for the Quality Manager too (seen 2026-10-14) | rule | decide |
-| O207 | quality | Decide (owner), a recall: a lot that passed its own inspection stays released when a batch it was made from is rejected afterwards (A-1 passed 15 January; F-1, inside it, rejected 2 February). Recommended: a later rejection of a source holds what is still in stock of the lots made from it, and the Quality Manager is told (seen 2026-10-14) | rule | decide |
-| O208 | sales | Decide (owner), low: a unit price keeps 2 places, so a price converted from another currency is rounded to the paisa per unit and the line follows the rate: 1,000 units at 10 USD / 1.1 come to 9,090.00, not 9,090.91. Exact would need the unit-price columns of order, quotation and invoice lines widened (6 places), which changes every price the API shows. Kept at 2: the rate printed on the invoice is the one charged (seen 2026-10-14) | books | decide, low |
+| O204 | quality, manufacturing | Decide (owner): at the machines a failed doff, film roll or bag bundle under a MANDATORY plan is still released on the spot by the supervisor's concession (station_gauge.gauged_batch), while the same failure under an advisory plan now waits for the Quality Manager (decision 22). The stricter plan is the easier one round. Recommended: mandatory failures wait for the Quality Manager too (seen 2026-10-14) | rule | decided (item 23); to build in g21 |
+| O207 | quality | Decide (owner), a recall: a lot that passed its own inspection stays released when a batch it was made from is rejected afterwards (A-1 passed 15 January; F-1, inside it, rejected 2 February). Recommended: a later rejection of a source holds what is still in stock of the lots made from it, and the Quality Manager is told (seen 2026-10-14) | rule | decided (item 23); to build in g21 |
 | O209 | accounting | After g20's settlement slices: deleting or re-pointing a middle allocation re-states only its own slice, so a paisa may reappear on the control account; credit notes on an invoice still book their own lines' bases, not a slice of the invoice's. Not probed (docs/handoff/reports/fix_money.md, "Review fixes") (seen 2026-10-14) | books | open, unproven |
 | O210 | inventory | `follow_value` (inventory/costing.py) follows transfer steps only: goods cleared out of inspection are not followed, so the share of landed freight on goods since gone is classed as cost of sales whatever they went into (the shelf share is right). docs/handoff/reports/fix_cost.md, seen #4 (seen 2026-10-14) | books | open |
 | O211 | purchasing | O94's ranges compare gross receipt quantities with bills in posting order: a return posted between two bills shifts which bill a later return finds first (`_bill_lines_that_paid_for`). fix_cost.md seen #5 (seen 2026-10-14) | books | minor |
@@ -400,6 +404,15 @@ Upgrade notes, true of data made before the 8 October fixes:
      use as is (a concession they sign), rework, or reject. Each is told
      by a to-do on their list, and by mail where mail is set up.
 
+23. **Decided by the owner on 14 October 2026:**
+   - A failure under a mandatory plan at the machines (doff, film roll,
+     bag bundle) waits for the Quality Manager too, as decision 22 has an
+     advisory one wait: no supervisor concedes it on the spot (O204).
+   - A recall: a batch rejected after lots were made from it holds what is
+     still in stock of those lots, and the Quality Manager is told. Stock
+     lists keep showing them, with a column saying why each is held (O207).
+   - Unit prices keep two places; a price converted from another currency
+     is rounded to the paisa per unit (O208). Not to change.
 ## Later items
 
 Tracked here until done; each moves to "Known limits" with what it does
