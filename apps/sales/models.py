@@ -1689,6 +1689,7 @@ class SalesOrderLine(TaxedLineMixin, AuditModel):
                 quantity=self.quantity,
                 currency=self.order.currency,
                 on_date=self.order.order_date,
+                uom=self.uom,
             )
             if self.unit_price is None:
                 raise ValidationError(
@@ -5671,6 +5672,7 @@ class QuotationLine(TaxedLineMixin, AuditModel):
                 quantity=self.quantity,
                 currency=self.quotation.currency,
                 on_date=self.quotation.quotation_date,
+                uom=self.uom,
             )
             if self.unit_price is None:
                 raise ValidationError(

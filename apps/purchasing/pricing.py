@@ -16,7 +16,7 @@ party, this item, this quantity, on this date.
 from decimal import Decimal
 
 
-def applicable_prices(item, vendor, quantity=None, currency=None, on_date=None):
+def applicable_prices(item, vendor, quantity=None, currency=None, on_date=None, uom=None):
     """
     Agreed prices that cover this item for this vendor, best first.
 
@@ -24,23 +24,38 @@ def applicable_prices(item, vendor, quantity=None, currency=None, on_date=None):
     order actually reaches beats a general one, and a larger break beats
     a smaller. A buyer ordering 1,000 should get the 1,000 price without
     having to remember it exists.
+
+    A break is reached by the quantity in the price's own unit (O98): 2
+    tonnes reach a break of 1,000 kg. `quantity` is in `uom`, blank for the
+    item's stocking unit.
     """
+    from apps.accounting.pricing import quantity_in_price_unit
+
     from .models import VendorPrice
 
     prices = VendorPrice.objects.filter(item=item, vendor=vendor, is_active=True)
     if currency is not None:
         prices = prices.filter(currency=currency)
     candidates = [
-        price for price in prices.select_related("currency")
-        if price.covers(on_date) and price.covers_quantity(quantity)
+        price for price in prices.select_related("currency", "uom")
+        if price.covers(on_date) and price.covers_quantity(
+            quantity_in_price_unit(quantity, item=item, uom=uom, price_uom=price.uom, on_date=on_date))
     ]
     return sorted(candidates, key=lambda price: (-price.min_quantity, price.pk))
 
 
-def resolve_purchase_price(item, vendor, quantity=None, currency=None, on_date=None):
-    """The unit price to use, or None if nothing has been agreed."""
-    prices = applicable_prices(item, vendor, quantity, currency, on_date)
-    return prices[0].unit_price if prices else None
+def resolve_purchase_price(item, vendor, quantity=None, currency=None, on_date=None, uom=None):
+    """
+    The unit price to use, per `uom` (blank: the item's stocking unit), or
+    None if nothing has been agreed: 100 a kg agreed prices a tonne at
+    100,000 (accounting.pricing, the rule sales prices by too).
+    """
+    from apps.accounting.pricing import per_line_unit
+
+    prices = applicable_prices(item, vendor, quantity, currency, on_date, uom=uom)
+    if not prices:
+        return None
+    return per_line_unit(prices[0].unit_price, item=item, price_uom=prices[0].uom, uom=uom, on_date=on_date)
 
 
 def resolve_lead_time(item, vendor, quantity=None, currency=None, on_date=None):
