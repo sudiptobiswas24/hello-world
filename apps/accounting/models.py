@@ -1329,13 +1329,20 @@ class BankStatement(AuditModel):
         These are the legitimate reason the books and the bank differ, and
         naming them is the difference between a reconciliation and a
         shrug.
+
+        As they stood at the statement's end (O52), as unpresented_entries()
+        reads them: presented by a line dated by then, voided by an entry
+        dated by then. September's cheque of 400 presented on 2 October, or
+        cancelled on 3 October, was outstanding on 30 September all the
+        same; read from today's facts, September read nothing unpresented
+        and differed by -400 for good.
         """
         matched = BankStatementLine.objects.filter(
-            payment__isnull=False
+            payment__isnull=False, date__lte=self.end_date,
         ).values_list("payment_id", flat=True)
         payments = Payment.objects.filter(
-            bank_account=self.bank_account, posted=True,
-            payment_date__lte=self.end_date, voided_entry__isnull=True,
+            models.Q(voided_entry__isnull=True) | models.Q(voided_entry__date__gt=self.end_date),
+            bank_account=self.bank_account, posted=True, payment_date__lte=self.end_date,
         ).exclude(pk__in=matched)
         return list(payments)
 
