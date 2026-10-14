@@ -596,3 +596,78 @@ class AssembliesAreNotPassedByTheirComponentsTests(_SentBatches):
         self.receive_into(order, "10", self.warehouse, lot=made)
         with self.assertRaisesMessage(ValidationError, "A-2 has not been inspected"):
             check_released(self.assembly, made, action="be shipped", warehouse=self.warehouse)
+
+
+class EachOrderConsumesWhatWasSentOnItTests(_SentBatches):
+    """
+    Follow-up to O135: F-1 (sooner to expire, rejected after it went) sent 10
+    for order A, F-2 (passed) 10 for order B. B received first consumed F-1,
+    first expired over the whole bay: B's assemblies held, A's, made from
+    F-1, released. Each order now consumes its own batches first.
+    """
+
+    def setUp(self):
+        super().setUp()
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        self.mandatory_plan()
+        self.f1 = self.batch("F-1", "10", datetime.date(2026, 12, 31))
+        self.f2 = self.batch("F-2", "10", datetime.date(2027, 6, 30))
+        for batch in (self.f1, self.f2):
+            self.inspect(batch, "0.5", datetime.date(2026, 1, 1))
+        self.order_a = self.subcontract_order("10")
+        self.order_a.issue_components(self.warehouse)
+        self.order_b = self.subcontract_order("10")
+        self.order_b.issue_components(self.warehouse)
+        self.inspect(self.f1, "3", datetime.date(2026, 1, 2))
+        self.lot_a = self.lot_model.objects.create(item=self.assembly, code="A-A")
+        self.lot_b = self.lot_model.objects.create(item=self.assembly, code="A-B")
+
+    def at_sub(self):
+        return (self.f1.on_hand_at(self.subcontractor), self.f2.on_hand_at(self.subcontractor))
+
+    def released(self, lot):
+        from apps.quality.release import why_held
+
+        return why_held(self.assembly, lot, warehouse=self.warehouse) == ""
+
+    def test_the_order_received_first_consumes_its_own_batch(self):
+        self.assertEqual(self.at_sub(), (Decimal("10"), Decimal("10")))
+        receipt_b = self.receive_into(self.order_b, "10", self.warehouse, lot=self.lot_b)
+        self.assertEqual(self.at_sub(), (Decimal("10"), Decimal("0")))
+        receipt_a = self.receive_into(self.order_a, "10", self.warehouse, lot=self.lot_a)
+        self.assertEqual(self.at_sub(), (Decimal("0"), Decimal("0")))
+        self.assertEqual((self.released(self.lot_b), self.released(self.lot_a)), (True, False))
+        self.assertEqual((receipt_b.held_assemblies(), len(receipt_a.held_assemblies())), ([], 1))
+
+    def test_partial_receipts_in_turn_each_take_their_own(self):
+        lot_a2 = self.lot_model.objects.create(item=self.assembly, code="A-A2")
+        lot_b2 = self.lot_model.objects.create(item=self.assembly, code="A-B2")
+        self.receive_into(self.order_a, "5", self.warehouse, lot=self.lot_a)
+        self.assertEqual(self.at_sub(), (Decimal("5"), Decimal("10")))
+        self.receive_into(self.order_b, "5", self.warehouse, lot=self.lot_b)
+        self.assertEqual(self.at_sub(), (Decimal("5"), Decimal("5")))
+        self.receive_into(self.order_a, "5", self.warehouse, lot=lot_a2)
+        self.receive_into(self.order_b, "5", self.warehouse, lot=lot_b2)
+        self.assertEqual(self.at_sub(), (Decimal("0"), Decimal("0")))
+        self.assertEqual([self.released(lot) for lot in (self.lot_a, lot_a2, self.lot_b, lot_b2)],
+                         [False, False, True, True])
+
+    def test_returned_and_received_again_b_takes_its_own_batch_back(self):
+        """A goods receipt has no void: a full return is how it is undone."""
+        receipt_b = self.receive_into(self.order_b, "10", self.warehouse, lot=self.lot_b)
+        receipt_b.create_return(debit_bills=False)
+        self.assertEqual(self.at_sub(), (Decimal("10"), Decimal("10")))
+        self.assertEqual(self.lot_b.on_hand_at(self.warehouse), Decimal("0"))
+        again = self.lot_model.objects.create(item=self.assembly, code="A-B3")
+        self.receive_into(self.order_b, "10", self.warehouse, lot=again)
+        self.assertEqual(self.at_sub(), (Decimal("10"), Decimal("0")))
+        self.assertTrue(self.released(again))
+
+    def test_short_of_its_own_it_takes_what_else_is_there(self):
+        receipt_b = self.receive_into(self.order_b, "10", self.warehouse, lot=self.lot_b)
+        receipt_b.create_return(quantities={receipt_b.lines.get(): Decimal("4")}, debit_bills=False)
+        self.order_a.lines.update(quantity=Decimal("14"))
+        self.receive_into(self.order_a, "14", self.warehouse, lot=self.lot_a)
+        # A's own ten of F-1, then four of F-2 put back from B's return.
+        self.assertEqual(self.at_sub(), (Decimal("0"), Decimal("0")))

@@ -153,7 +153,8 @@ def lot_held(item, lot, warehouse):
                  if said), "")
 
 
-def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds_let_through=None):
+def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds_let_through=None,
+             preferring=None):
     """
     Choose which lots to ship, soonest to expire first.
 
@@ -173,6 +174,13 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
     a subcontractor's assemblies consume the batch they were made from
     whatever quality said of it after it was sent (owner's decision, item
     22). Everything else the gate says still skips the batch.
+
+    `preferring` ({lot pk: quantity}) is taken first, up to those
+    quantities, soonest to expire first; then anything else, as above. A
+    subcontractor's receipt prefers what was sent on its own order: first
+    expired over the whole bay, order B's receipt consumed the batch sent
+    for order A, which quality had rejected, and B's assemblies were held
+    while A's, made from it, were not.
     """
     quantity = Decimal(quantity)
     if quantity <= 0:
@@ -184,7 +192,13 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
     skipped = Decimal("0")
     held = Decimal("0")
     why = ""
-    for lot, available in lots_at(item, warehouse):
+    found = lots_at(item, warehouse)
+    preferring = {pk: Decimal(share) for pk, share in (preferring or {}).items() if share > 0}
+    first = [(lot, min(available, preferring[lot.pk])) for lot, available in found if lot.pk in preferring]
+    shares = {lot.pk: share for lot, share in first}
+    then = [(lot, available - shares.get(lot.pk, Decimal("0"))) for lot, available in found]
+    chosen = {}
+    for lot, available in first + [pair for pair in then if pair[1] > 0]:
         if remaining <= 0:
             break
         if not allow_expired and lot.has_expired(on_date):
@@ -196,8 +210,12 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
             why = why or said
             continue
         drawn = min(available, remaining)
-        taken.append((lot, drawn))
+        if lot.pk not in chosen:
+            chosen[lot.pk] = [lot, Decimal("0")]
+            taken.append(chosen[lot.pk])
+        chosen[lot.pk][1] += drawn
         remaining -= drawn
+    taken = [(lot, drawn) for lot, drawn in taken]
 
     if remaining > 0:
         message = (
