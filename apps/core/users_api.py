@@ -50,8 +50,8 @@ from rest_framework.response import Response
 
 from .api import required
 from .audit import AuditableViewSetMixin
-from .roles import (KeptCredential, ProposalStatus, give_or_propose, lapse_what_died, may_give, record_credential,
-                    trusted_for_reset)
+from .roles import (KeptCredential, ProposalStatus, give_or_propose, held_beyond, lapse_what_died, may_give,
+                    record_credential, trusted_for_reset)
 
 
 def roles_beyond(actor, groups):
@@ -68,11 +68,6 @@ def _given_or_proposed(actor, user, groups):
         raise DRFValidationError({"roles": refused.messages})
 
 
-def _own_permissions(user):
-    return {f"{app_label}.{codename}" for app_label, codename in
-            user.user_permissions.values_list("content_type__app_label", "codename")}
-
-
 def check_may_administer(actor, user):
     """
     Refuse changing a login that holds what `actor` could not give it: a
@@ -82,13 +77,7 @@ def check_may_administer(actor, user):
     Taking access away, or giving or proposing a role, is not asked this
     (UserViewSet.KEEPER_GAINS_NOTHING).
     """
-    if actor.is_superuser:
-        return
-    beyond = roles_beyond(actor, user.groups.all())
-    if not beyond and _own_permissions(user) - actor.get_all_permissions():
-        beyond = ["permissions of its own"]
-    if not beyond and user.is_staff and not actor.is_staff:
-        beyond = ["the admin site"]
+    beyond = held_beyond(actor, user)
     if beyond:
         raise PermissionDenied(
             f"{user.get_username()} holds {', '.join(beyond)}, which you do not: someone who does keeps that login.")
