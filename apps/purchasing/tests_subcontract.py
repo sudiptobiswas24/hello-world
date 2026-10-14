@@ -671,3 +671,80 @@ class EachOrderConsumesWhatWasSentOnItTests(_SentBatches):
         self.receive_into(self.order_a, "14", self.warehouse, lot=self.lot_a)
         # A's own ten of F-1, then four of F-2 put back from B's return.
         self.assertEqual(self.at_sub(), (Decimal("0"), Decimal("0")))
+
+
+class HeldAssembliesAcceptedAreAConcessionTests(_SentBatches):
+    """
+    Follow-up to O135: ten assemblies kept by no batch, made from F-1 and
+    received into the bay, cleared to the store. That is a concession on a
+    rejected batch: a named decider, a reason, and not whoever received them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        self.bay = Warehouse.objects.create(code="QA", name="Inspection bay", is_quarantine=True)
+        self.receiver = User.objects.create(username="stores_qm")
+        self.manager = User.objects.create(username="qm")
+        for user, roles in ((self.receiver, ("Warehouse Staff", "Quality Manager")),
+                            (self.manager, ("Quality Manager",))):
+            user.groups.add(*Group.objects.filter(name__in=roles))
+
+    def received(self):
+        _sent, order = self.sent_then_rejected()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1),
+                                              created_by=self.receiver)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.first(), warehouse=self.bay,
+                                        quantity_received=Decimal("10"), created_by=self.receiver)
+        receipt.post()
+        return receipt
+
+    def accept(self, user, receipt, **data):
+        from rest_framework.test import APIClient
+
+        client = APIClient()
+        client.force_authenticate(user)
+        return client.post(f"/api/purchasing/goods-receipts/{receipt.pk}/accept/",
+                           {"warehouse": self.warehouse.pk, **data}, format="json")
+
+    def test_without_a_reason_it_is_refused(self):
+        receipt = self.received()
+        response = self.accept(self.manager, receipt)
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("is a concession", response.content.decode())
+        self.assertEqual(self.assembly.on_hand_at(self.bay), Decimal("10"))
+
+    def test_whoever_received_them_does_not_decide_it(self):
+        receipt = self.received()
+        response = self.accept(self.receiver, receipt, reason="Frames re-checked at the vendor")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("somebody else approves it", response.content.decode())
+        self.assertEqual(self.assembly.on_hand_at(self.bay), Decimal("10"))
+
+    def test_another_with_a_reason_clears_them_and_is_named(self):
+        from .models import ReceiptInspection
+
+        receipt = self.received()
+        response = self.accept(self.manager, receipt, reason="Frames re-checked at the vendor")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual((self.assembly.on_hand_at(self.bay), self.assembly.on_hand_at(self.warehouse)),
+                         (Decimal("0"), Decimal("10")))
+        decision = ReceiptInspection.objects.get(receipt_line__receipt=receipt)
+        self.assertEqual((decision.decided_by, decision.note), (self.manager, "Frames re-checked at the vendor"))
+
+    def test_goods_held_for_nothing_but_inspection_clear_as_before(self):
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        PurchaseOrderLine.objects.create(order=order, item=self.motor, uom=self.uom,
+                                         quantity=Decimal("5"), unit_price=Decimal("12"))
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1),
+                                              created_by=self.receiver)
+        GoodsReceiptLine.objects.create(receipt=receipt, order_line=order.lines.first(), warehouse=self.bay,
+                                        quantity_received=Decimal("5"), created_by=self.receiver)
+        receipt.post()
+        response = self.accept(self.receiver, receipt)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(self.motor.on_hand_at(self.bay), Decimal("0"))

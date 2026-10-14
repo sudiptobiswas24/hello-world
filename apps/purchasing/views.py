@@ -433,11 +433,16 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
-        """{warehouse, quantities?}: held goods passed, cleared to a shelf they can ship from."""
+        """
+        {warehouse, quantities?, reason?}: held goods passed, cleared to a shelf they can ship from.
+        Assemblies held for the batch they were made from are a concession: a reason, and
+        whoever asks is named as deciding it.
+        """
         receipt = self.get_object()
         warehouse = record_or_404(Warehouse, request.data.get("warehouse"), "warehouse")
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
-        receipt.accept(warehouse, quantities=quantities)
+        receipt.accept(warehouse, quantities=quantities, by=request.user,
+                       reason=str(request.data.get("reason", "")))
         return Response(self.get_serializer(receipt).data)
 
     @action(detail=True, methods=["post"])
