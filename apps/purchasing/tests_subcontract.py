@@ -539,3 +539,32 @@ class UntrackedAssembliesFromAHeldBatchTests(_SentBatches):
         receipt.reject(note="Made from F-1, rejected", debit_bills=False)
         self.assertEqual((self.assembly.on_hand_at(bay), sent.on_hand_at(self.subcontractor),
                           self.motor.on_hand_at(self.subcontractor)), (Decimal("0"), Decimal("10"), Decimal("20")))
+
+
+class ComponentsComeBackBatchByBatchTests(_SentBatches):
+    """O149: each batch gets back what it gave, however the assemblies come back."""
+
+    def test_returned_one_at_a_time_each_batch_gets_back_what_it_gave(self):
+        first = self.batch("F-1", "1", datetime.date(2026, 12, 31))
+        second = self.batch("F-2", "99", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("3")
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "3")
+        for _ in range(3):
+            receipt.create_return(quantities={receipt.lines.get(): Decimal("1")}, debit_bills=False)
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("1"), Decimal("2")))
+
+    def test_three_of_ten_put_back_whole_frames_and_the_rest_the_remainder(self):
+        first = self.batch("F-1", "4", datetime.date(2026, 12, 31))
+        second = self.batch("F-2", "96", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        receipt = self.receive(order, "10")
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("3")}, debit_bills=False)
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("1"), Decimal("2")))
+        self.assertEqual(self.frame.stock_value_at(self.subcontractor), Decimal("24.00"))
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("7")}, debit_bills=False)
+        self.assertEqual((first.on_hand_at(self.subcontractor), second.on_hand_at(self.subcontractor)),
+                         (Decimal("4"), Decimal("6")))
