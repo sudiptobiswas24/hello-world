@@ -14,6 +14,7 @@ from apps.core.models import (
     AuditModel,
     answer_to_its_document,
     documents_it_answers_to,
+    row_lock_query,
     Country,
     Currency,
     DocumentSequence,
@@ -68,6 +69,7 @@ class Account(AuditModel):
         self._check_tree()
         self._check_money()
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         # In save() as well: ModelSerializer never calls clean(), and the
         # office writes through the API. Only the admin ever asked this.
@@ -91,6 +93,9 @@ class Account(AuditModel):
         before = Account.objects.filter(pk=self.pk).values_list("holds_money", flat=True).first()
         if before is None or before == self.holds_money:
             return
+        # FOR UPDATE, which waits for a payment holding it as money (money.hold_money_account), and
+        # then asked: unlocked, it was unmarked as a payment posted through it (O16).
+        list(row_lock_query(Account, self.pk))
         if JournalLine.objects.filter(account=self, entry__posted=True).exists():
             was = "a bank, cash or card account" if before else "not one"
             raise ValidationError({"holds_money": [
@@ -451,12 +456,9 @@ class JournalLine(AuditModel):
         if not self.debit and not self.credit:
             raise ValidationError("A journal line must have either a debit or a credit.")
 
-    def _on_a_posted_entry(self):
-        """Where it is going and where it has been, both asked of the database: moved out of a
-        posted entry into a draft, a line left an invoice's entry unbalanced and its amount off the
-        ledger."""
-        return (bool(self.entry_id) and JournalEntry.objects.filter(pk=self.entry_id, posted=True).exists()) or (
-            bool(self.pk) and JournalLine.objects.filter(pk=self.pk, entry__posted=True).exists())
+    def locked_before_it(self):
+        """The entries it leaves and joins, as save() holds them (apps.core.models.answer_to_its_document)."""
+        return documents_it_answers_to(self, "entry")
 
     # Where it is going and where it has been, both held and both asked of the database: moved out of
     # a posted entry into a draft, a line left an invoice's entry unbalanced and its amount off the
@@ -464,17 +466,14 @@ class JournalLine(AuditModel):
     # could be added as the entry posted (O125).
     @transaction.atomic
     def save(self, *args, **kwargs):
-        if self._on_a_posted_entry():
-            raise ValidationError(
-                "Cannot modify a line on a posted journal entry. Create a reversing entry instead."
-            )
+        answer_to_its_document(
+            self, "entry", "Cannot modify a line on a posted journal entry. Create a reversing entry instead.")
         super().save(*args, **kwargs)
 
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self._on_a_posted_entry():
-            raise ValidationError(
-                "Cannot delete a line on a posted journal entry. Create a reversing entry instead."
-            )
+        answer_to_its_document(
+            self, "entry", "Cannot delete a line on a posted journal entry. Create a reversing entry instead.")
         super().delete(*args, **kwargs)
 
 
