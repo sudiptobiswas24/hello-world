@@ -213,6 +213,10 @@ class Item(Extensible, AuditModel):
                   "every GST invoice line and in the HSN summary of the "
                   "return; the rate is still the tax's, not the code's.",
     )
+    tcs_section = models.ForeignKey(
+        "accounting.TcsSection", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Goods tax is collected at source on when sold (scrap, section 206C(1); 394 from April "
+                  "2026): the section names the rate by the day it applies from.")
     description = models.TextField(blank=True)
     item_type = models.CharField(max_length=16, choices=ItemType.choices, default=ItemType.GOODS)
     # db_default too: a row written by a migration's historical model, or

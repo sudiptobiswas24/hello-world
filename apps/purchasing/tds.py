@@ -184,51 +184,27 @@ class TdsChallan(AuditModel):
 
     @classmethod
     def pay(cls, section, month, date, bank_account, challan_number, bsr_code):
-        """Pay over everything deducted under `section` in `month` and not yet paid."""
-        from apps.accounting.money import refuse_as_money_account
+        """Pay over everything deducted under `section` in `month` and not yet paid (challans.pay_over, shared with TCS)."""
+        from apps.accounting.challans import pay_over
 
         month = to_date(month).replace(day=1)
         following = (month.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-        with transaction.atomic():
-            # The bank held as money inside the transaction that moves the money: asked before it
-            # opened, the hold ended with the statement and the bank was unmarked meanwhile (review F4).
-            refuse_as_money_account(bank_account)
-            lock_rows(section)
-            waiting = (TdsDeduction.objects.filter(section=section, date__gte=month, date__lt=following)
-                       .filter(Q(challan__isnull=True) | Q(challan__voided_entry__isnull=False)))
-            # The deductions it pays, held before they are read, as reverse() holds the one it takes
-            # back: read unlocked, a deduction was reversed as the challan paid it over, and 700 was
-            # paid to the government for nothing (O64).
-            list(TdsDeduction.objects.select_for_update().filter(pk__in=list(waiting.values_list("pk", flat=True)))
-                 .order_by("pk").values_list("pk", flat=True))
-            owed = list(_live(waiting))
-            if not owed:
-                raise ValidationError(f"Nothing deducted under {section.code} in {month:%B %Y} is waiting "
-                                      "to be paid over.")
-            if section.payable_account_id is None:
-                raise ValidationError(f"{section} has no payable account.")
-            total = sum((row.amount for row in owed), Decimal("0"))
-            memo = f"TDS {section.code} for {month:%B %Y}, challan {challan_number}"
-            entry = JournalEntry.objects.create(date=to_date(date), reference=challan_number, memo=memo)
-            JournalLine.objects.create(entry=entry, account=section.payable_account, debit=total,
-                                       description=memo)
-            JournalLine.objects.create(entry=entry, account=bank_account, credit=total, description=memo)
-            entry.post()
-            challan = cls.objects.create(section=section, month=month, date=to_date(date),
-                                         bank_account=bank_account, challan_number=challan_number,
-                                         bsr_code=bsr_code, amount=total, journal_entry=entry)
-            TdsDeduction.objects.filter(pk__in=[row.pk for row in owed]).update(challan=challan)
-            return challan
+        waiting = (TdsDeduction.objects.filter(section=section, date__gte=month, date__lt=following)
+                   .filter(Q(challan__isnull=True) | Q(challan__voided_entry__isnull=False)))
+        return pay_over(
+            section, waiting, _live, bank_account, date, challan_number,
+            what=f"deducted under {section.code} in {month:%B %Y}",
+            memo=f"TDS {section.code} for {month:%B %Y}, challan {challan_number}",
+            make_challan=lambda total, entry: cls.objects.create(
+                section=section, month=month, date=to_date(date), bank_account=bank_account,
+                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry))
 
     @serialised("voided_entry")
     def void(self, on_date=None):
         """The payment did not go through: the tax is owed again, and its deductions wait for another."""
-        if self.voided_entry_id:
-            raise ValidationError("This challan has already been voided.")
-        self.voided_entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or self.date, memo=f"Voided: {self.journal_entry.memo}")
-        super().save(update_fields=["voided_entry", "updated_at"])
-        return self.voided_entry
+        from apps.accounting.challans import void_challan
+
+        return void_challan(self, on_date)
 
 
 def challans_paid():

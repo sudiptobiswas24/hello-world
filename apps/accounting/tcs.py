@@ -1,0 +1,164 @@
+"""
+Tax collected at source: the company collects it from a buyer on top of
+the sale and pays it over by challan. The plant's case is scrap (section
+206C(1) of the 1961 Act; section 394 of the Income-tax Act 2025 from
+1 April 2026).
+
+Everything the law sets is data with the day it applies from, never a
+figure written here: which goods (an item names its section,
+inventory.Item.tcs_section), the rate on a buyer with a PAN and without
+one (TcsRate, by the day it applies from), whether the base takes in the
+GST charged, and the buyer's declaration that the goods are for its own
+manufacture and not for trading (Form 127 from April 2026; Form 27C before),
+which exempts. A rate is collected at only once the accountant has
+confirmed it: a figure seeded by a setup command, or typed by anyone else,
+waits for that, and a scrap sale meanwhile is refused in words rather
+than collected at a guess.
+
+What one invoice collected is kept on it (sales.tcs.TcsCollection), as
+the rate and declaration stood. The challan that pays it over is the TDS
+challan's mechanism (challans.pay_over), shared so the two cannot drift.
+"""
+
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.db.models import Q
+
+from apps.core.models import AuditModel
+
+
+class TcsSection(AuditModel):
+    code = models.CharField(max_length=16, unique=True, help_text="206C(1), or 394 from April 2026")
+    name = models.CharField(max_length=128, help_text="What it is collected on: scrap.")
+    form_code = models.CharField(
+        max_length=8, blank=True,
+        help_text="The collection code the quarterly return (Form 143, was 27EQ) files it under.")
+    base_includes_gst = models.BooleanField(
+        default=True, help_text="Collected on the sale value with the GST charged on it, as the accountant reads "
+                                "the section; off, on the taxable value alone.")
+    payable_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="Where tax collected is owed until a challan pays it over.")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        verbose_name = "TCS section"
+
+    def __str__(self):
+        return f"{self.code} {self.name}"
+
+    def save(self, *args, **kwargs):
+        from .money import refuse_money_kept_as, settings_fields
+
+        refuse_money_kept_as(self, *settings_fields(TcsSection))
+        super().save(*args, **kwargs)
+
+    def rate_on(self, day):
+        """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""
+        rate = self.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
+        if rate is None:
+            raise ValidationError(f"TCS under {self.code} has no rate from {day:%d %b %Y} or before; the "
+                                  "accountant enters the rate the law sets and the day it applies from.")
+        if rate.confirmed_on is None:
+            raise ValidationError(
+                f"The {self.code} rate of {rate.rate_percent.normalize():f}% from {rate.applies_from:%d %b %Y} "
+                "is not confirmed by the accountant, so nothing is collected at it yet. Confirm it, or correct "
+                "it, under the TCS rates.")
+        return rate
+
+
+class TcsRate(AuditModel):
+    section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="rates")
+    applies_from = models.DateField(help_text="The first day the law sets this rate for.")
+    rate_percent = models.DecimalField(max_digits=7, decimal_places=4,
+                                       help_text="Collected from a buyer whose PAN is on file.")
+    no_pan_rate_percent = models.DecimalField(
+        max_digits=7, decimal_places=4,
+        help_text="Collected from a buyer with no PAN on file (section 206CC: twice the rate or five per cent, "
+                  "whichever is higher, as the law stands).")
+    authority = models.CharField(max_length=128, blank=True,
+                                 help_text="Where the rate comes from: the section, the notification.")
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+                                     related_name="+", editable=False)
+    confirmed_on = models.DateField(null=True, blank=True, editable=False,
+                                    help_text="When the accountant confirmed it. Until then nothing is "
+                                              "collected at it.")
+
+    class Meta:
+        ordering = ["section", "-applies_from"]
+        verbose_name = "TCS rate"
+        permissions = [("confirm_tcsrate", "Can confirm a TCS rate as the law's")]
+        constraints = [
+            models.UniqueConstraint(fields=["section", "applies_from"], name="one_tcs_rate_per_section_and_day"),
+            models.CheckConstraint(check=Q(rate_percent__gte=0) & Q(no_pan_rate_percent__gte=0),
+                                   name="tcs_rates_not_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.section.code} {self.rate_percent.normalize():f}% from {self.applies_from}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            before = TcsRate.objects.get(pk=self.pk)
+            changed = any(getattr(before, name) != getattr(self, name)
+                          for name in ("section_id", "applies_from", "rate_percent", "no_pan_rate_percent"))
+            if changed and self.collections.exists():
+                raise ValidationError("Invoices collected at this rate; a new rate is a new row from the day "
+                                      "it applies.")
+            if changed:
+                # A changed figure is a new figure: the accountant confirms it again.
+                self.confirmed_by, self.confirmed_on = None, None
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.collections.exists():
+            raise ValidationError("Invoices collected at this rate; it stays.")
+        return super().delete(*args, **kwargs)
+
+    def confirm(self, user):
+        """The accountant's word that the rate is the law's: from now it is collected at."""
+        from django.utils import timezone
+
+        self.confirmed_by, self.confirmed_on = user, timezone.localdate()
+        super().save(update_fields=["confirmed_by", "confirmed_on", "updated_at"])
+
+
+class TcsDeclaration(AuditModel):
+    """The buyer's declaration (Form 127; Form 27C before April 2026) that exempts it from collection."""
+
+    party = models.ForeignKey("core.Party", on_delete=models.PROTECT, related_name="tcs_declarations")
+    section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="declarations")
+    form = models.CharField(max_length=8, default="127", help_text="127, or 27C before April 2026.")
+    reference = models.CharField(max_length=64, blank=True, help_text="Its number or the buyer's reference.")
+    received_on = models.DateField()
+    valid_from = models.DateField()
+    valid_to = models.DateField(help_text="Usually the financial year's last day.")
+
+    class Meta:
+        ordering = ["-valid_from", "-id"]
+        verbose_name = "TCS declaration"
+        constraints = [models.CheckConstraint(check=Q(valid_to__gte=models.F("valid_from")),
+                                              name="tcs_declaration_ends_after_it_starts")]
+
+    def __str__(self):
+        return f"Form {self.form} from {self.party} for {self.section.code}"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding and self.collections.exists():
+            before = TcsDeclaration.objects.get(pk=self.pk)
+            if any(getattr(before, name) != getattr(self, name)
+                   for name in ("party_id", "section_id", "valid_from", "received_on")):
+                raise ValidationError("Invoices were exempted under this declaration as it stood; record a new one.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.collections.exists():
+            raise ValidationError("Invoices were exempted under this declaration; it stays.")
+        return super().delete(*args, **kwargs)
+
+    @classmethod
+    def covering(cls, party, section, day):
+        return cls.objects.filter(party=party, section=section, valid_from__lte=day, valid_to__gte=day,
+                                  received_on__lte=day).order_by("-valid_from", "-pk").first()

@@ -14,6 +14,11 @@ class SalesConfig(AppConfig):
         from .models import InvoicePayment, undo_what_it_settled
         from .scoping import SalesScope
 
+        from apps.accounting.models import register_bank_movements
+
+        from .tcs import tcs_challans_paid
+
+        register_bank_movements(tcs_challans_paid)
         register_allocation_model(InvoicePayment)
         register_void_follow_up(undo_what_it_settled)
         register_party_scope(SalesScope())
