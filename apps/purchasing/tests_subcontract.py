@@ -1011,6 +1011,20 @@ class TheQualityManagersToDoClosesWhenNothingIsHeldTests(_SentBatches):
         self.assertEqual((self.receipt.held_assemblies(), self.open()), ([], 0))
 
 
+class TheConcessionNamesItsDeciderTests(HeldAssembliesAcceptedAreAConcessionTests):
+    """Review F9: the receipt inspection's answer gave the reason and not who conceded."""
+
+    def test_the_inspection_answer_says_who_decided(self):
+        from rest_framework.test import APIClient
+
+        receipt = self.received()
+        self.assertEqual(self.accept(self.manager, receipt, reason="Re-checked at the vendor").status_code, 200)
+        client = APIClient()
+        client.force_authenticate(self.manager)
+        (decided,) = client.get(f"/api/purchasing/goods-receipts/{receipt.pk}/inspection/").json()["decided"]
+        self.assertEqual((decided["decided_by"], decided["note"]), ("qm", "Re-checked at the vendor"))
+
+
 class ANullReasonIsNoReasonTests(HeldAssembliesAcceptedAreAConcessionTests):
     """Review F6: {"reason": null} was taken as the reason "None", false as "False", 0 as "0"."""
 
