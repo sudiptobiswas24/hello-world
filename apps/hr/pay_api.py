@@ -15,7 +15,6 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -221,7 +220,9 @@ class MyPayslipsView(viewsets.GenericViewSet):
     def _mine(self, request):
         employee = getattr(request.user, "employee", None)
         if employee is None:
-            raise PermissionDenied("This login is nobody's on the payroll.")
+            # A login that is nobody's on the payroll has no payslips: an empty list, not a refusal of
+            # a screen its role offers (the browser sweep opens every offered screen as each role).
+            return Payslip.objects.none()
         return Payslip.objects.filter(employee=employee, run__status=PayRunStatus.POSTED).select_related(
             "employee__party", "run", "payment__journal_entry").prefetch_related(
             "lines__component", *SLIP_PAYMENT_READS).order_by(
