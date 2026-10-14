@@ -982,6 +982,7 @@ export const MODULES: Module[] = [
       {
         path: "salary-files", label: "Bank files", permission: "hr.view_salarytransferfile",
         keywords: "bank file salary transfer neft bulk upload", load: () => import("../modules/payroll/SalaryFiles"),
+        detail: () => import("../modules/payroll/SalaryFileForm"), also: ["hr.view_salarytransfer"],
       },
       {
         path: "statutory-figures", label: "Statutory figures", permission: "hr.view_statutoryfigure",
