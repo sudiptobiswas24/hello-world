@@ -158,11 +158,16 @@ def why_held(item, lot, warehouse=None, action="issue", reworking=None):
     if warehouse is not None and warehouse.is_quarantine:
         return (f"{warehouse} holds goods awaiting inspection; accept them into a "
                 f"store before they can {action}.")
+    held = latest_inspection(lot) if lot is not None else None
+    if held is not None and held.disposition == Disposition.AWAITING:
+        # Not even by a rework run: whether it is reworked is the Quality
+        # Manager's to decide, and a run drawing it would decide it for them.
+        return (f"{lot} is held: it failed {held.number} on {held.inspected_on} and waits "
+                f"for the Quality Manager's decision. It cannot {action} until they decide.")
     if lot is not None and reworking is not None and lot.pk == reworking.pk:
         return ""
     status = release_status(lot) if lot is not None else None
     if status == ReleaseStatus.HELD:
-        held = latest_inspection(lot)
         if held is None:
             return (f"{lot} is held: it was re-made from a batch that is held or not "
                     f"yet inspected. Inspect it before it can {action}.")

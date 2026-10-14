@@ -87,6 +87,17 @@ class DoffTests(TapeTestCase):
                          (Disposition.CONCESSION, self.supervisor))
         self.assertEqual(release_status(doff.lot), ReleaseStatus.RELEASED)
 
+    def test_off_denier_under_an_advisory_plan_waits_for_the_quality_manager(self):
+        """RISKS.md, decision 22: nobody concedes it at the station; it is held for the Quality Manager."""
+        from apps.quality.models import InspectionPlan
+
+        InspectionPlan.objects.update(is_mandatory=False)
+        doff = self.doff(OFF, supervisor=self.supervisor, reason="Customer accepts heavy")
+        self.assertEqual((doff.inspection.posted, doff.inspection.disposition, doff.inspection.decided_by),
+                         (True, Disposition.AWAITING, None))
+        self.assertIn("Customer accepts heavy", doff.inspection.notes)
+        self.assertEqual(release_status(doff.lot), ReleaseStatus.HELD)
+
     def test_what_a_doff_must_be(self):
         with self.assertRaisesMessage(ValidationError, "Check the denier 3 times; 2"):
             self.doff(ON[:2])

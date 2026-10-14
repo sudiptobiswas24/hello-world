@@ -319,7 +319,10 @@ class WhatTheMachineMayTakeTests(RollsTestCase):
                                    value=line.lower_limit - 10, sample_reference=f"S{number}")
         inspection.post()
         WorkOrder.objects.filter(pk=self.lam_run.pk).update(backflush=True)
-        with self.assertRaisesMessage(ValidationError, f"{self.fabric_lot.code} is held: rejected"):
+        # The plan is advisory here, so the failure waits, held, for the Quality
+        # Manager (RISKS.md, decision 22) rather than being rejected by the system.
+        with self.assertRaisesMessage(ValidationError, f"{self.fabric_lot.code} is held: it failed "
+                                                       f"{inspection.number}"):
             self.mount()
         self.assertFalse(RollMount.objects.filter(lot=self.fabric_lot).exists())
 

@@ -71,6 +71,9 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     action_permission_map = {
         "post": "quality.change_inspection",
         "void": "quality.change_inspection",
+        # The Quality Manager's: an Inspector who may post and void may not decide.
+        "decide": "quality.decide_inspection",
+        "awaiting": "quality.decide_inspection",
     }
 
     @action(detail=True, methods=["post"])
@@ -78,13 +81,54 @@ class InspectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         inspection = self.get_object()
         # The login posting a concession is who took the batch (decided_by), not a name typed in.
         _run(inspection.post, by=request.user)
-        return Response(self.get_serializer(inspection).data)
+        data = self.get_serializer(inspection).data
+        telling = getattr(inspection, "telling", None)
+        if telling is not None:
+            # The stronger warning, in the answer the inspector reads: held,
+            # until whom, who was told, and every mail that did not go.
+            data["warning"] = telling.warning
+            data["told"] = {"to_decide": telling.deciders.told, "for_information": telling.informed.told}
+            data["not_mailed"] = {**telling.deciders.not_mailed, **telling.informed.not_mailed}
+            data["not_told"] = {**telling.deciders.not_told, **telling.informed.not_told}
+        return Response(data)
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
         inspection = self.get_object()
-        _run(inspection.void, reason=request.data.get("reason", ""))
+        _run(inspection.void, reason=request.data.get("reason", ""), by=request.user)
         return Response(self.get_serializer(inspection).data)
+
+    @action(detail=True, methods=["post"])
+    def decide(self, request, pk=None):
+        """{"disposition": "concession" | "rework" | "reject", "note": "..."}: the first decision stands."""
+        inspection = self.get_object()
+        _run(inspection.decide, request.user, request.data.get("disposition", ""),
+             request.data.get("note", ""))
+        return Response(self.get_serializer(inspection).data)
+
+    @action(detail=False, methods=["get"])
+    def awaiting(self, request):
+        """What waits for the Quality Manager, oldest first, each saying whether it is overdue."""
+        from django.utils import timezone
+
+        from .models import Disposition
+
+        today = timezone.localdate()
+        rows = self.get_queryset().filter(
+            posted=True, voided_at__isnull=True, disposition=Disposition.AWAITING,
+        ).order_by("posted_at", "pk")
+        found = []
+        for inspection in rows:
+            due = inspection.decision_due_on()
+            found.append({
+                "id": inspection.pk, "number": inspection.number, "lot_code": inspection.lot.code,
+                "item_label": f"{inspection.lot.item.sku} · {inspection.lot.item.name}",
+                "inspected_on": inspection.inspected_on,
+                "posted_at": inspection.posted_at,
+                "failed": ", ".join(str(row["characteristic"]) for row in inspection.failed_lines()),
+                "due_on": due, "overdue": today > due, "escalated_on": inspection.escalated_on,
+            })
+        return Response(found)
 
 
 class ReadingViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):

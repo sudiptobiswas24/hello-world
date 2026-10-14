@@ -72,10 +72,16 @@ def gauged_batch(station, operator, machine, order, plan, gauge, readings, noun,
             raise ValidationError(f"Say why {noun} off its {gauge} is taken.")
     lab_to_finish = len(lines) > 1
     lot = Lot.objects.create(item=order.item, code=code, manufactured_on=shift_date)
+    # Under an advisory plan an off batch is the Quality Manager's to decide
+    # (RISKS.md, decision 22): it posts awaiting them, held, and the floor's
+    # reason goes with it as a note, not as a concession nobody may take there.
+    waits = not passed and not plan.is_mandatory
     inspection = Inspection.objects.create(
         lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
-        disposition="" if passed or lab_to_finish else Disposition.CONCESSION,
-        decided_by=None if passed else supervisor.party, decision_note=reason,
+        disposition="" if passed or lab_to_finish or waits else Disposition.CONCESSION,
+        decided_by=None if passed or waits else supervisor.party,
+        decision_note="" if waits else reason,
+        notes=f"Booked off its {gauge} at {station}: {reason}" if waits else "",
     )
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,

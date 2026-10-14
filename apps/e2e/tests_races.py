@@ -1086,6 +1086,33 @@ class OneDecisionAtATimeRaceTests(RaceCase):
 
 @tag("race")
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class QualityDecisionRaceTests(RaceCase):
+    """RISKS.md, decision 22: the first decision on a failure that waits stands."""
+
+    def test_two_quality_managers_deciding_at_once_one_wins(self):
+        from django.contrib.auth.models import Group, User
+
+        from apps.quality import tests_decisions as decisions_fixture
+        from apps.quality.models import Disposition, Inspection
+
+        made = fixture(self, decisions_fixture.AwaitingTestCase)
+        inspection = made.awaiting()
+        second = User.objects.create_user("kiran")
+        second.groups.add(Group.objects.get(name="Quality Manager"))
+        first = made.users["asha"]
+        outcomes = race(Inspection,
+                        lambda: Inspection.objects.get(pk=inspection.pk).decide(
+                            first, Disposition.REJECT, "Too heavy for the order."),
+                        lambda: Inspection.objects.get(pk=inspection.pk).decide(
+                            User.objects.get(pk=second.pk), Disposition.REWORK, "Re-wind it."))
+        self.once(outcomes)
+        self.assertIn("was decided already", next(o for o in outcomes if o != "done"))
+        inspection.refresh_from_db()
+        self.assertIn(inspection.disposition, (Disposition.REJECT, Disposition.REWORK))
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class EditRaceTests(RaceCase):
     """
     Two people editing one record through the API at once, each a field of
