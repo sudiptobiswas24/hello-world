@@ -105,3 +105,27 @@ class FilesApiTests(FilesTestCase):
         self.assertEqual(self.as_("Sales Rep").get(f"/api/hr/pay-runs/{run.pk}/ecr/").status_code, 403)
         draft = self.run_for(datetime.date(2026, 7, 1), datetime.date(2026, 7, 31), post=False)
         self.assertEqual(officer.get(f"/api/hr/pay-runs/{draft.pk}/ecr/").status_code, 400)
+
+
+class FiledAsTheMonthStoodTests(FilesTestCase):
+    """
+    O5, O6: what a posted month's files read is kept on its slips. June is
+    posted with a PF ceiling of 15,000 and A working Monday to Friday (22
+    days paid). Raised to 21,000 afterwards, B's PF wages (basic 20,000) read
+    20,000; A put on a four-day week, the ESI file read June's Mondays to Thursdays.
+    """
+
+    def test_the_pf_ceiling_raised_after_the_run_does_not_restate_it(self):
+        run = self.run_for(*JUNE)
+        self.pf.base_ceiling = 21000
+        self.pf.save()
+        row = ecr_rows(run)[1]
+        self.assertEqual((row["name"], row["epf_wages"], row["eps_wages"]), ("B", 15000, 15000))
+
+    def test_a_working_pattern_edited_after_the_run_does_not_restate_its_days(self):
+        run = self.run_for(*JUNE)
+        self.a.working_days = "1234"
+        self.a.save()
+        [row] = esi_rows(run)
+        self.assertEqual(row["days"], 22)
+        self.assertEqual(ecr_rows(run)[0]["ncp_days"], 0)
