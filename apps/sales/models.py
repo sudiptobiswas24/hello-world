@@ -85,6 +85,7 @@ from apps.accounting.settlement import (
     held_base_left,
     last_of_held,
     slice_of,
+    spent_undoing,
     booked_on,
     post_drawdown,
     standing_allocations,
@@ -2524,8 +2525,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         used = Decimal("0")
         for note in invoice.credit_notes.filter(posted=True).order_by("invoice_date", "pk"):
             # Less what it recorded undoing: that part cleared nothing owed (O80).
-            share = min(note.total() - note.reversed_write_off - note.reversed_discount,
-                        max(capacity - used, Decimal("0")))
+            share = min(note.total() - spent_undoing(note), max(capacity - used, Decimal("0")))
             if note.pk == self.pk:
                 return share
             used += share
@@ -2562,8 +2562,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         the 300 recovered from the rest, and the money paid for it could not be
         applied (O80).
         """
-        return sum((note.reversed_write_off + note.reversed_discount
-                    for note in self.credit_notes.all() if note.posted), Decimal("0"))
+        return sum((spent_undoing(note) for note in self.credit_notes.all() if note.posted), Decimal("0"))
 
     def settlement_status(self):
         if not self.posted:
