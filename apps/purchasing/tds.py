@@ -187,10 +187,12 @@ class TdsChallan(AuditModel):
         """Pay over everything deducted under `section` in `month` and not yet paid."""
         from apps.accounting.money import refuse_as_money_account
 
-        refuse_as_money_account(bank_account)
         month = to_date(month).replace(day=1)
         following = (month.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
         with transaction.atomic():
+            # The bank held as money inside the transaction that moves the money: asked before it
+            # opened, the hold ended with the statement and the bank was unmarked meanwhile (review F4).
+            refuse_as_money_account(bank_account)
             lock_rows(section)
             waiting = (TdsDeduction.objects.filter(section=section, date__gte=month, date__lt=following)
                        .filter(Q(challan__isnull=True) | Q(challan__voided_entry__isnull=False)))

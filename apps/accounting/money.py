@@ -36,7 +36,11 @@ def hold_money_account(account):
     """
     from django.db import connection, transaction
 
-    if connection.vendor == "postgresql" and transaction.get_connection().in_atomic_block:
+    if not transaction.get_connection().in_atomic_block:
+        # Held outside a transaction, the lock ends with the statement: TdsChallan.pay asked here
+        # before its transaction opened, and paid through a bank unmarked meanwhile (review F4).
+        raise RuntimeError("hold_money_account() outside a transaction holds nothing.")
+    if connection.vendor == "postgresql":
         table = connection.ops.quote_name(account._meta.db_table)
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT 1 FROM {table} WHERE id = %s FOR SHARE", [account.pk])
@@ -45,11 +49,21 @@ def hold_money_account(account):
 
 
 def refuse_as_money_account(account, field="bank_account"):
-    """Refused, beside `field`, unless money may move through `account`: asked of it as held (hold_money_account)."""
+    """
+    Refused, beside `field`, unless money may move through `account`.
+
+    Inside a transaction, where money is moved, asked of the account as held
+    (hold_money_account). Outside one, as a draft is saved, only read: that
+    decides nothing, and the move asks again inside its own transaction.
+    """
+    from django.db import transaction
+
     if account is None:
         return
-    if account.pk is not None:
+    if account.pk is not None and transaction.get_connection().in_atomic_block:
         hold_money_account(account)
+    elif account.pk is not None:
+        account.refresh_from_db(fields=["holds_money", "is_active"])
     if not account.holds_money:
         raise ValidationError({field: [
             f"{account} is not a bank, cash or card account; money is paid from one, and into one."]})
