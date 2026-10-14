@@ -55,6 +55,11 @@ can prove.
 
 ## Known limits in the code
 
+- **An invoice posted before g21 reprints today's names** (O218): the
+  details a tax invoice prints are kept at posting (`Invoice.issued_as`)
+  only from g21 on; an invoice posted earlier, with no record of how it was
+  issued, prints the parties' current names and addresses. No real invoice
+  exists before g21, so only test and demo data are affected.
 - **Unit prices keep two places** (the owner's decision 23, O208): a price
   converted from another currency is rounded to the paisa per unit and the
   line follows that rate, so 1,000 units at 10 USD / 1.1 come to 9,090.00,
@@ -297,12 +302,6 @@ missing), **minor**.
 | O215 | hr, accounting | A leaver's shortfall becomes a receivable from the former employee (O28), but nothing settles it: a receipt against it is unbuilt (seen 2026-10-14) | rule | to build |
 | O216 | core | A keeper that reset its own password on a login it made, and then lost its right or left, still knows that password: the lapse ends what the keeper set for others, not what it set as the login. docs/handoff/reports/fix_sec2.md, "Review fixes" (seen 2026-10-14) | security | open |
 | O217 | core | A password reset through a link sent to an email HR set is recorded as set by nobody, so HR, which can read that mailbox, is not counted as knowing it. fix_sec2.md, "Review fixes" (seen 2026-10-14) | security | open |
-| O218 | sales, core | The printed tax invoice (apps/core/documents.py, the only invoice print) carries no GSTIN of the buyer, no HSN code, no place of supply and no tax split by head and rate, which CGST Rule 46 requires on a tax invoice; it has the amount in words and the IRN/QR. A go-live blocker. docs/handoff/reports/odoo19_gap_analysis.md (seen 2026-10-14) | statutory | open, g21 |
-| O219 | sales, accounting | TCS is absent: nothing collects tax at source on the plant's scrap sales (section 206C(1), from 1 April 2026 section 394 of the Income-tax Act 2025; the rate, 1% or 2%, is the accountant's to confirm), keeps a TCS payable account, or files its return (Form 143, was 27EQ). The plant sells its scrap (owner, 14 October). A go-live blocker (seen 2026-10-14) | statutory | open, g21 |
-| O220 | gst | An e-invoice cannot be cancelled: apps/gst/einvoice.py builds the IRN payload only; a cancellation within the portal's window, and the document's state after it, are unbuilt (seen 2026-10-14) | statutory | open, g21 |
-| O221 | core | The nightly backup (RUNBOOK.md, "a complete backup") is a pg_dump; attachments live in the `media` volume, which it does not copy (RUNBOOK lines near 296). A restore loses every attached file (seen 2026-10-14) | books | open, g21 |
-| O222 | hr | `EPS_CEILING = 15000` is a constant (apps/hr/statutory_files.py:31): a setting read live where a fact for the month should be kept. Reports say the EPF wage ceiling rose to 25,000 on 17 September 2026 (S.O. 5109(E)); to confirm with the accountant, then held as dated data (seen 2026-10-14) | statutory | open, g21 |
-| O223 | hr | `LeavePolicy.requires_approval` is stored and never read (an inert setting, audit shape 2) (seen 2026-10-14) | rule | open |
 | O224 | hr | The contract-labour registers follow the Contract Labour Act, which the Occupational Safety, Health and Working Conditions Code replaced from 21 November 2025; the registers the Code asks for are to be confirmed with the adviser (seen 2026-10-14) | statutory | open |
 | O225 | manufacturing | The station's scale bridge has its endpoint, but the program that reads the scale and posts to it is not in the repository: at go-live a weight is typed (seen 2026-10-14) | rule | open |
 | O226 | core, manufacturing, assets, inventory, accounting | Nine lock shapes the sentinel is told not to see (UNSEEN in apps/core/lock_order.py), each taking rows of one model in an order of its own: document numbering of a second type after the first (core/models.py next_value), WorkOrder.void's entries (manufacturing/orders.py near 3249), depreciate_all's assets (assets/views.py near 150), costing.publish's items (manufacturing/costing.py near 343), the woven bag's BOMs and plans (manufacturing/woven.py near 241, 363), dispatch commit's operations (manufacturing/dispatch.py near 295), a roll mount's void (manufacturing/process_rolls.py near 425), roll_up's standards (manufacturing/costing.py near 180), the station clock's void (manufacturing/station_clock.py near 176). Two at once can deadlock on PostgreSQL (seen 2026-10-14, fix_race) | race | minor, one at a time, each with a race() test |
@@ -312,6 +311,9 @@ missing), **minor**.
 | O230 | accounting | A payment can be voided while a bank statement line is matched to it: the line then reads as matched to a voided payment and the reconciliation is wrong. Decide the rule (refuse the void until the line is unmatched, or unmatch it in the void and say so) and how a bounced cheque's two statement lines are matched (seen 2026-10-14, review_race F10; serial, not a race) | rule | open |
 | O231 | inventory, quality | The "Held because" column is N+1: `LotSerializer.held_because` asks the gate once per row, about 10 queries a lot (providers, plan, latest verdict, on hand), 248 for a page of 25 batches; `why_held` over three levels of lineage takes 26. It needs a page-wide form of the gate, each provider asked once for the page (seen 2026-10-14, fix_qrecall) | minor | open |
 | O232 | manufacturing | One coating check off its weight holds every bag bundle of its run counted while the check stands, because nothing ties a disc check to the roll it was taken on: 2,100 m coated with one disc pair off and 20 bundles wait for the Quality Manager. Safe, but coarse (conversion.py record_bags, coating `made_from`) (seen 2026-10-14, fix_qrecall) | rule | open |
+| O233 | purchasing, accounting | TDS rates are a table of today's figures, not dated rows kept on the deduction as they stood (TCS, built in g21, is dated): a rate change re-rates nothing posted, but a deduction drafted before the change and posted after it takes the new rate with no record of which applied (L14) (seen 2026-10-14, fix_acct) | statutory | open |
+| O234 | purchasing, accounting | TCS a supplier collects from the plant (section 206C, e.g. on a vehicle bought over ten lakh) is not recorded: the bill has no TCS line, the plant's TCS receivable (credit in its own return) is never booked, and the bill's total disagrees with the supplier's (seen 2026-10-14, fix_acct) | statutory | minor |
+| O235 | sales | There is no sales debit note (a supplementary invoice for an amount short-billed, CGST section 34(3)), so neither its posting nor its print exists; a price rise after invoicing is billed as a new invoice (seen 2026-10-14, fix_acct) | statutory | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
