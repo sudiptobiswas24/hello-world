@@ -852,8 +852,14 @@ def take_primary(row, **scope):
     no scope: the company's own address is nobody's rival, and the
     database does not hold party-less rows to one.
     """
-    if None not in scope.values():
-        only_one(row, "is_primary", **scope)
+    if None in scope.values():
+        return
+    if getattr(row, "is_primary", False):
+        # The party first, as the row's locked_before_it() names it: two of one party's addresses
+        # made primary at once each cleared nothing and both saved primary, and the second was
+        # refused by the unique index (review F9). Held, the second clears the first.
+        lock_rows(Party(pk=scope["party_id"]), refresh=False)
+    only_one(row, "is_primary", **scope)
 
 
 class AddressType(models.TextChoices):
@@ -906,6 +912,10 @@ class Address(AuditModel):
 
     def __str__(self):
         return self.one_line()
+
+    def locked_before_it(self):
+        """The party (or the two, moved), as save() holds it before clearing its other primaries (take_primary)."""
+        return documents_it_answers_to(self, "party")
 
     def save(self, *args, **kwargs):
         if self.pk:
@@ -981,6 +991,10 @@ class Contact(AuditModel):
 
     def __str__(self):
         return f"{self.full_name()} ({self.party.name})"
+
+    def locked_before_it(self):
+        """The party (or the two, moved), as save() holds it before clearing its other primaries (take_primary)."""
+        return documents_it_answers_to(self, "party")
 
     def save(self, *args, **kwargs):
         with transaction.atomic():
