@@ -131,8 +131,6 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
         station, operator, machine, order, spec.inspection_plan, "denier", denier_readings,
         "tape", supervisor, reason, shift_date, doff_code(machine, shift, shift_date), net,
         f"Doffed at {station}", instrument=instrument)
-    from apps.quality.models import Disposition
-
     return TapeDoff.objects.create(
         station=station, machine=machine, lot=lot, entry=entry, inspection=inspection,
         gross_kg=gross, scale_reading=reading,
@@ -141,7 +139,9 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
         mean_denier=mean.quantize(Decimal("0.01")), weighed_by=operator, weighed_at=at,
         # Nobody concedes a batch that waits for the Quality Manager (RISKS.md, decision 22).
         shift=shift, shift_date=shift_date,
-        conceded_by=None if passed or inspection.disposition == Disposition.AWAITING else supervisor,
+        # Off under an advisory plan, it waits for the Quality Manager however the
+        # lab finishes it: nobody concedes it here (review S02).
+        conceded_by=None if passed or not spec.inspection_plan.is_mandatory else supervisor,
         reason=reason,
     )
 

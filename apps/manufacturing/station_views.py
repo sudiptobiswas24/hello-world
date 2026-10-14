@@ -65,6 +65,18 @@ def _exact(value):
     return None if value is None else str(value)
 
 
+def _held(inspection):
+    """
+    What posting it said, where the batch waits for the Quality Manager: that
+    it is held, until whom, and who was told (RISKS.md, decision 22). Else None.
+    The supervisor who gave a PIN is told here, not when a load is refused.
+    """
+    if inspection is None or not inspection.waits_for_a_decision():
+        return None
+    return inspection.told or (f"{inspection.lot} is HELD until the Quality Manager decides "
+                               f"{inspection.number}.")
+
+
 def _person(employee):
     return {"number": employee.employee_number, "name": employee.party.name}
 
@@ -366,6 +378,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "conceded_by": _person(count.supervisor) if count.supervisor_id else None,
             "inspection": count.inspection.number,
             "awaiting_lab": not count.inspection.posted,
+            "held": _held(count.inspection),
         }, status=201)
 
     @action(detail=True, methods=["post"], url_path=r"bags/(?P<count>[0-9]+)/void")
@@ -642,6 +655,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "mean_denier": _exact(doff.mean_denier),
             "inspection": doff.inspection.number or None,
             "awaiting_lab": not doff.inspection.posted,
+            "held": _held(doff.inspection),
         }, status=201)
 
     @action(detail=True, methods=["post"], url_path="load-tape")
@@ -690,6 +704,7 @@ class LoomStationViewSet(viewsets.GenericViewSet):
             "mean_micron": _exact(roll.mean_micron),
             "weighed_micron": _exact(roll.weighed_micron),
             "inspection": roll.inspection.number or None,
+            "held": _held(roll.inspection),
         }, status=201)
 
     @action(detail=True, methods=["post"], url_path=r"film/(?P<row>[0-9]+)/void")

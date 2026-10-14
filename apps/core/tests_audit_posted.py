@@ -46,10 +46,12 @@ class APostedDocumentIsNotDeletedTests(SimpleTestCase):
         ))], ["deletable posted document"])
 
     def test_an_exemption_outlives_nothing(self):
-        found = Command().mutable_posted_documents(["quality"], {"quality": {
-            Path("apps/quality/example.py"): "class Inspection(AuditModel):\n" + SAVE + (
+        # quality.Inspection came off the list when its delete() was guarded (O10); a
+        # model still on it stands in.
+        found = Command().mutable_posted_documents(["inventory"], {"inventory": {
+            Path("apps/inventory/example.py"): "class StockCount(AuditModel):\n" + SAVE + (
                 "    def delete(self, *args, **kwargs):\n"
                 "        if self.posted:\n"
                 "            raise ValidationError('posted')\n"
             )}})
-        self.assertEqual([shape for shape, _ in found], ["stale exemption"])
+        self.assertEqual([shape for shape, detail in found if "StockCount" in detail], ["stale exemption"])

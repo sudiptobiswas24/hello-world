@@ -1076,7 +1076,6 @@ class Command(BaseCommand):
     DELETABLE_REPORTED = {
         "inventory.StockAdjustment": "stores: its movements and entry would stay",
         "inventory.StockCount": "stores: a sheet with no difference is the only evidence",
-        "quality.Inspection": "quality: the batch would read as never inspected",
     }
 
     def mutable_posted_documents(self, labels, sources):

@@ -164,6 +164,22 @@ class LabFinishesTests(StationTestCase):
         doff.inspection.post()
         self.assertEqual(release_status(doff.lot), ReleaseStatus.RELEASED)
 
+    def test_off_under_an_advisory_plan_names_no_concession_when_the_lab_finishes(self):
+        """Review S02: left for the lab, the doff named the supervisor; then it waited for the Quality Manager."""
+        from apps.quality.models import Disposition, InspectionPlan
+
+        InspectionPlan.objects.update(is_mandatory=False)
+        doff = record_tape(self.tx, self.operator, self.e1, "60.0", 8, self.bobbin, OFF, at=NOON,
+                           supervisor=self.supervisor, reason="Customer accepts heavy")
+        self.assertIsNone(doff.conceded_by)
+        line = doff.inspection.plan.lines.get(derived_from="tenacity")
+        for number in range(line.sample_size):
+            Reading.objects.create(inspection=doff.inspection, plan_line=line,
+                                   value=Decimal("4.8"), sample_reference=f"T{number}")
+        doff.inspection.post()
+        doff.refresh_from_db()
+        self.assertEqual((doff.inspection.disposition, doff.conceded_by), (Disposition.AWAITING, None))
+
     def test_withdrawn_before_the_lab_its_open_inspection_goes(self):
         from apps.quality.models import Inspection
 
@@ -177,6 +193,23 @@ class TapeApiTests(StationApiTestCase):
         super().setUp()
         build_tape_line(self)
         self.base = f"/api/manufacturing/stations/{self.tx.code}/"
+
+    def test_the_station_is_told_a_doff_is_held_for_the_quality_manager(self):
+        """Review S03: denier 1,085 under an advisory plan was a 201 with no word of the hold."""
+        from apps.quality.models import InspectionPlan
+
+        InspectionPlan.objects.update(is_mandatory=False)
+        self.client.post(self.base + "sign-in/", {"pin": self.pin}, format="json")
+        response = self.client.post(self.base + "tape/", {
+            "machine": "E-1", "gross_kg": "60.0", "bobbins": 8, "core": "BOB", "denier": OFF,
+            "supervisor_pin": self.supervisor_pin, "reason": "Customer accepts heavy"}, format="json")
+        self.assertEqual(response.status_code, 201, response.content)
+        held = response.json()["held"]
+        self.assertIn("The batch is HELD", held)
+        self.assertIn("Nobody signs in as Quality Manager", held)
+        on = self.client.post(self.base + "tape/", {
+            "machine": "E-1", "gross_kg": "60.0", "bobbins": 8, "core": "BOB", "denier": ON}, format="json")
+        self.assertIsNone(on.json()["held"])
 
     def test_doffed_and_withdrawn_at_the_station(self):
         self.client.post(self.base + "sign-in/", {"pin": self.pin}, format="json")
