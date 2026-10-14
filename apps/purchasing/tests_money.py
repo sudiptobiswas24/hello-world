@@ -230,3 +230,5 @@ class PricedInTheLinesTermsTests(MoneyCase):
             "vendor": self.vendor.pk, "item": self.granule.pk, "currency": self.usd.pk, "unit_price": "5",
             "uom": self.uom.pk}, format="json")
         self.assertEqual(response.status_code, 400, response.content)
+
+

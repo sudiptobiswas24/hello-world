@@ -75,6 +75,9 @@ from apps.accounting.settlement import (
     oldest_overdue,
     owed_beyond,
     held_base_left,
+    last_of_held,
+    slice_of,
+    booked_on,
     post_drawdown,
     standing_allocations,
     standing_paid,
@@ -3442,6 +3445,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             memo=f"Prepayment {prepayment.number} applied to {self.number}",
             is_receivable=False,
             held_left=(left, prepayment.prepayment_base_left(account)),
+            document_slice=(booked_on(self.journal_entry, self.payable_account), self.total(),
+                            self.total() - self.amount_due()),
         )
         return PrepaymentApplication.objects.create(
             bill=self, prepayment=prepayment, amount=amount, date=on_date,
@@ -3841,7 +3846,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             if line.posted_account_id != account.pk:
                 line.posted_account = account
                 super(BillLine, line).save(update_fields=["posted_account", "updated_at"])
-            if line.clears_grni():
+            if line.held_base is not None:
+                # The last of a prepayment debited back: the base left on it (last_of_held).
+                debits.append((account, line.held_base, label, line.cost_centre))
+            elif line.clears_grni():
                 # Clear the accrual at exactly what the receipts booked —
                 # at their agreed price and at THEIR rate, not this
                 # bill's. Clearing it at the billed price instead leaves
@@ -4507,6 +4515,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     f"Only {left} of {self.number} is left to take back; cannot take back {amount}.")
             left = amount
         line = self.lines.get()  # One, by _check_prepayment_shape().
+        # Taking back the last of it, at the base left, as a drawdown takes it (O51).
+        held_base = last_of_held(left, (self.prepayment_unapplied(), self.prepayment_base_left(line.expense_account)))
         debit_note = Bill.objects.create(
             vendor=self.vendor,
             bill_date=timezone.localdate(),
@@ -4524,6 +4534,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             quantity=Decimal("1"),
             unit_price=left,
             expense_account=line.expense_account,
+            held_base=held_base,
         )
         debit_note.post(memo=memo)
         return debit_note
@@ -4547,6 +4558,11 @@ BILL_FIGURES = (
 
 class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
     bill = models.ForeignKey(Bill, related_name="lines", on_delete=models.CASCADE)
+    held_base = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="On the line that gives back the last of a deposit or prepayment: the base left on the "
+                  "account that held it, which it books instead of its amount at the rate (O51).",
+    )
     debits_line = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="debit_lines",
         help_text="On a debit note line, the bill line being given back.",
