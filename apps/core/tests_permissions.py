@@ -447,3 +447,61 @@ class EveryWriteGoesThroughTheHistoryMixinTests(TestCase):
         for method in ("put", "delete"):
             response = getattr(client, method)("/api/manufacturing/work-order-operations/1/")
             self.assertEqual(response.status_code, 405, method)
+
+
+class ABodyIsAnObjectTests(TestCase):
+    """
+    O191: an action reading request.data.get answered 500 on a body that
+    was a list (supplier_note, objection; three hundred actions read their
+    body that way). The parser every view uses refuses a JSON body that is
+    not an object, in words; audit_invariants reports a view that parses
+    JSON past it.
+    """
+
+    def test_a_list_or_a_bare_value_is_refused_in_words_not_500(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        bookkeeper = User.objects.create_user("bk")
+        bookkeeper.groups.add(Group.objects.get(name="Bookkeeper"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(bookkeeper)
+        # The confirm reads its body ({"password"}) before it finds the proposal.
+        confirm = "/api/core/role-proposals/0/confirm/"
+        answers = [(body, (answer := client.post(confirm, body, content_type="application/json")).status_code,
+                    "as an object" in str(answer.content)) for body in ("[]", '[{"password": "x"}]', '"x"', "7", "null")]
+        self.assertEqual(answers, [(body, 400, True) for body in ("[]", '[{"password": "x"}]', '"x"', "7", "null")])
+        self.assertEqual(client.post(confirm, "{not json", content_type="application/json").status_code, 400)
+        # An object is read as before: no such proposal.
+        self.assertEqual(client.post(confirm, {}, format="json").status_code, 404)
+
+    def planted(self, own_parser):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+        from rest_framework.parsers import JSONParser
+        from rest_framework.response import Response
+
+        from apps.core.api import ObjectJSONParser
+
+        class Planted(viewsets.ViewSet):
+            parser_classes = [JSONParser if own_parser else ObjectJSONParser]
+
+            @action(detail=True, methods=["post"])
+            def note(self, request, pk=None):
+                return Response({"note": request.data.get("note")})
+
+        Planted.__module__ = "apps.purchasing.views"
+        return Planted
+
+    def found(self, view):
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [shape for shape, _detail in Command().bodies_read_past_the_object_parser(["purchasing"], [view])]
+
+    def test_a_planted_view_parsing_json_past_it_is_reported(self):
+        self.assertEqual(self.found(self.planted(True)), ["body read past the object parser"])
+
+    def test_one_keeping_it_is_not(self):
+        self.assertEqual(self.found(self.planted(False)), [])

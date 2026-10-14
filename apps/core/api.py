@@ -27,9 +27,11 @@ from django.db.models import (
     RestrictedError,
     UniqueConstraint,
 )
+from rest_framework.exceptions import ParseError
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.filters import BaseFilterBackend, OrderingFilter, SearchFilter
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
@@ -224,6 +226,27 @@ def money_amount(data, name):
     if amount != amount.quantize(Decimal("0.01")):
         raise DRFValidationError({name: ["Money has two places: give it to the paisa."]})
     return amount
+
+
+class ObjectJSONParser(JSONParser):
+    """
+    Every JSON body as what each action reads it as: an object of named
+    fields. The actions read their body with request.data.get, three
+    hundred of them, and a list or a bare value posted to one answered
+    500 (O191: AttributeError: 'list' object has no attribute 'get', on
+    supplier_note and objection). Refused here, where every action reads
+    its body, in words, before any of them asks; a body that is not JSON
+    at all is refused by the parser itself (400, "JSON parse error").
+    The default parser (settings.REST_FRAMEWORK); audit_invariants
+    reports a view that reads its body past it.
+    """
+
+    def parse(self, stream, media_type=None, parser_context=None):
+        data = super().parse(stream, media_type, parser_context)
+        if not isinstance(data, dict):
+            raise ParseError(
+                f"Send the fields as an object, {{\"name\": value}}, not {type(data).__name__ if data is not None else 'null'}.")
+        return data
 
 
 TRUE = {"true", "1", "yes", "on"}

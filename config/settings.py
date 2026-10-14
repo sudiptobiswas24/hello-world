@@ -296,6 +296,13 @@ REST_FRAMEWORK = {
     # ValidationError. Without this a caller who broke a rule got a 500
     # instead of the sentence the model wrote for them.
     "EXCEPTION_HANDLER": "apps.core.api.exception_handler",
+    # A JSON body is an object of named fields, or a 400 in words: actions read it with
+    # request.data.get, and a list answered 500 (apps/core/api.py ObjectJSONParser, O191).
+    "DEFAULT_PARSER_CLASSES": [
+        "apps.core.api.ObjectJSONParser",
+        "rest_framework.parsers.FormParser",
+        "rest_framework.parsers.MultiPartParser",
+    ],
     # Lists in pages of 50; the body stays a list, the count is in the
     # X-Total-Count header (apps/core/api.py).
     # Every Decimal as its exact string, never a float (apps/core/renderers.py).
