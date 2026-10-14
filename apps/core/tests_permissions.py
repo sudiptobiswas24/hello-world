@@ -522,3 +522,98 @@ class ABodyIsAnObjectTests(TestCase):
     def test_one_keeping_it_is_not(self):
         self.assertEqual(self.found(self.planted(False)), [])
 
+
+class AMethodARouteDoesNotMapIsRefusedTests(TestCase):
+    """
+    Review F6: DRF finds a request's handler by its method's name, so on a
+    route mapping no POST an action named `post` answered it. POST to a
+    GET-only report (job-work still-out, the material register, inspections
+    awaiting) ran the post action with no document: a 500. POST to a
+    document's own address ran it on that document, asked only add_. Every
+    route of every such viewset is asked, as a login holding every right
+    but no superuser; and the Stores Manager's adjustment stays a draft.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import Group, Permission, User
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        everything = Group.objects.create(name="Everything")
+        everything.permissions.set(Permission.objects.all())
+        self.user = User.objects.create_user("everything")
+        self.user.groups.add(everything)
+
+    def unmapped(self):
+        """[(method, path)] for every routed path of a viewset with an action named after a method it does not map."""
+        import re
+
+        from django.urls import get_resolver
+
+        found = []
+
+        def walk(patterns, prefix):
+            for entry in patterns:
+                here = prefix + str(entry.pattern)
+                if hasattr(entry, "url_patterns"):
+                    walk(entry.url_patterns, here)
+                    continue
+                cls, actions = getattr(entry.callback, "cls", None), getattr(entry.callback, "actions", None)
+                if cls is None or actions is None or "format" in here:
+                    continue
+                path = "/" + re.sub(r"\(\?P<\w+>[^)]*\)", "1", here).replace("^", "").replace("$", "")
+                for verb in ("post", "put", "patch", "delete"):
+                    if verb not in actions and hasattr(getattr(cls, verb, None), "mapping"):
+                        found.append((verb, path.replace("//", "/")))
+
+        walk(get_resolver().url_patterns, "")
+        return found
+
+    def test_every_route_answers_405_to_a_method_it_does_not_map(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(self.user)
+        routes = self.unmapped()
+        self.assertIn(("post", "/api/manufacturing/job-work-challans/still-out/"), routes)
+        answers = {(verb, path): getattr(client, verb)(path, {}, format="json").status_code for verb, path in routes}
+        self.assertEqual({key: code for key, code in answers.items() if code != 405}, {})
+
+    def test_a_post_to_a_drafts_address_does_not_post_it(self):
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        from apps.inventory.tests_adjustments import AdjustmentTestCase
+
+        fixture = AdjustmentTestCase()
+        AdjustmentTestCase.setUp(fixture)
+        fixture.stock("100", "5")
+        draft = fixture.adjust("-4", reason=fixture.shrink, post=False)
+        manager = User.objects.create_user("stores")
+        manager.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(manager)
+        got = client.post(f"/api/inventory/stock-adjustments/{draft.pk}/", {}, format="json")
+        draft.refresh_from_db()
+        self.assertEqual((got.status_code, draft.posted), (405, False))
+
+    def test_a_planted_verb_named_action_without_the_mixin_is_reported(self):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+
+        from apps.core.audit import AuditableViewSetMixin
+        from apps.core.management.commands.audit_invariants import Command
+
+        class Planted(viewsets.ViewSet):
+            @action(detail=True, methods=["post"])
+            def post(self, request, pk=None):
+                return None
+
+        class Kept(AuditableViewSetMixin, Planted):
+            pass
+
+        for cls in (Planted, Kept):
+            cls.__module__ = "apps.purchasing.views"
+        found = [[shape for shape, _ in Command().actions_named_after_a_verb(["purchasing"], [cls])]
+                 for cls in (Planted, Kept)]
+        self.assertEqual(found, [["action named after a method"], []])

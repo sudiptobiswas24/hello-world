@@ -26,6 +26,21 @@ WRITES_ITS_OWN_HISTORY = {"send"}
 
 
 class AuditableViewSetMixin:
+    # A method a route does not map answers 405. DRF finds a request's
+    # handler by its method's name, so on a route that maps no POST, an
+    # action named `post` answered it: a POST to a GET-only report ran
+    # the document's post action with no document (a 500), and a POST to
+    # a document's own address posted it, asked only the add_ permission,
+    # not its action's (review F6). audit_invariants reports a viewset
+    # with such an action that does not take this.
+    def dispatch(self, request, *args, **kwargs):
+        mapped = getattr(self, "action_map", None)
+        if mapped is not None:
+            for verb in self.http_method_names:
+                if verb not in mapped and hasattr(getattr(type(self), verb, None), "mapping"):
+                    setattr(self, verb, self.http_method_not_allowed)
+        return super().dispatch(request, *args, **kwargs)
+
     # Each write in a savepoint of its own: when the database refuses it
     # (a check constraint no serializer runs), only that write is undone
     # and the connection is still good for the answer that says why. A
