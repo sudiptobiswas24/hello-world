@@ -11,7 +11,7 @@ from reportlab.lib.units import mm
 
 from apps.accounting.trade_terms import freight_meta
 from apps.core.documents import money, render_document, rupees_in_words
-from apps.core.models import Company
+from apps.core.models import Company, to_date
 
 
 COPIES = {
@@ -33,7 +33,38 @@ def _state_of(address):
     return (state_code(address) or "") if address is not None else ""
 
 
-def issued_particulars(invoice):
+def _without_igst_abroad(invoice):
+    """An export or SEZ supply bearing no IGST: made under bond or LUT."""
+    return invoice.party_registration in ("overseas", "sez") and not any(
+        head == "igst" and amount > 0
+        for line in invoice.lines.all() for head, _, amount, _ in _line_taxes(invoice, line))
+
+
+def _undertaking(invoice, posting):
+    """
+    The LUT an export without IGST is made under, as kept: its original's on a credit note; else the
+    one in force on its date, and refused at posting when there is none.
+    """
+    from apps.accounting.models import LetterOfUndertaking
+
+    if invoice.is_credit_note():
+        return (invoice.credits.issued_as or {}).get("lut") if invoice.credits_id else None
+    if not _without_igst_abroad(invoice):
+        return None
+    day = to_date(invoice.invoice_date)
+    found = LetterOfUndertaking.in_force(day)
+    if found is None and posting:
+        from apps.accounting.gst import GstSettings
+
+        if GstSettings.active() is not None:
+            raise ValidationError(
+                f"{invoice.number or 'This invoice'} is an export or SEZ supply without IGST dated "
+                f"{day:%d %b %Y}, and no Letter of Undertaking is in force on that day. Record the LUT "
+                "for that financial year (its ARN), or charge IGST.")
+    return found.as_kept() if found else None
+
+
+def issued_particulars(invoice, posting=False):
     """
     Who issued the invoice to whom, and where, as it stands at posting: what
     CGST Rule 46 has the paper say, kept with the invoice so a reprint says
@@ -67,6 +98,7 @@ def issued_particulars(invoice):
             "state": gstin[:2] if gstin else _state_of(billed),
         },
         "delivery": None,
+        "lut": _undertaking(invoice, posting),
     }
     if shipped is not None and (billed is None or shipped.pk != billed.pk):
         particulars["delivery"] = {"address": _address_lines(shipped), "state": _state_of(shipped)}
@@ -178,6 +210,7 @@ def tax_invoice(invoice, copy="original"):
         "taxable": sum((line["taxable"] for line in lines), Decimal("0")),
         "taxes": [(name, rate, amount) for (_, name, rate), amount in sorted(by_rate.items())],
         "export": export_words(invoice),
+        "lut": issued.get("lut"),
         "tcs": [{"section": row.section.code, "rate": row.rate_percent, "base": row.base, "amount": row.amount,
                  "declaration": (f"Form {row.declaration.form} {row.declaration.reference}".strip()
                                  + f" received {row.declaration.received_on:%d %b %Y}") if row.declaration_id else None,
@@ -284,7 +317,12 @@ def render_invoice_pdf(invoice, copy="original"):
             text += f"<br/>State {delivery['state_name']}"
         blocks.append(("DELIVERED TO", text))
     if printed["export"]:
-        blocks.append(("", f"<b>{printed['export']}</b>"))
+        words = f"<b>{printed['export']}</b>"
+        if printed["lut"] and "WITHOUT PAYMENT" in printed["export"]:
+            lut = printed["lut"]
+            words += (f"<br/>LUT ARN {lut['arn']} dated {to_date(lut['filed_on']):%d %b %Y}, "
+                      f"for {lut['financial_year']}")
+        blocks.append(("", words))
     for row in printed["tcs"]:
         if row["declaration"]:
             blocks.append(("", f"TCS u/s {row['section']} not collected: the buyer's declaration, "
