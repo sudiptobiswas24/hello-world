@@ -330,49 +330,106 @@ def goods_held(item, warehouse, quantity, sources=(), lot=None):
 
 def value_still_held(movement):
     """
-    What of a value-only movement's value its shelf still holds: the share
-    the goods it landed on that are still there bear. The mirror of
+    What of a value-only movement's value its shelves still hold: the share
+    the goods it landed on that are still there bear, on whatever shelf
+    they have been moved to since (where_value_is). The mirror of
     goods_held, for taking it back off.
+    """
+    return sum((value for kind, _row, value in where_value_is(movement) if kind == "held"), Decimal("0"))
+
+
+def where_value_is(movement):
+    """
+    [(kind, row, value)]: where a value-only movement's value is now.
+    "held": still on a shelf, `row` being the movement it sits on there
+    (the landing itself, or the arrival of a transfer that carried it on);
+    "gone": left with goods, `row` the movement that took them out (an
+    issue to a run, a delivery, a write-off).
 
     Landed on ten and eight written off since, the two left carry a fifth
     of it; the eight took the rest with them, wherever they went. Taken
     back whole, 80 came off two units worth 26 and priced them at minus
     27. Under FIFO it is what is left of the layer it raised; under the
     average, and within a batch, each withdrawal since took its share of
-    the shelf's value, this included, as the replays take it.
+    the shelf's value, this included, as the replays take it. A transfer
+    out is not a withdrawal: what it took arrived on the next shelf and is
+    followed there (O42: landed on the bay and put away, the bay gave up
+    nothing, cost of sales was credited 80 and the stock room kept it).
 
     Walked from the start, not from a fold: the movement may be older
     than the fold, which keeps no trace of it.
     """
     amount = movement.value_adjustment or Decimal("0")
     item = movement.item
+    if amount <= 0 or item.costing_method == CostingMethod.STANDARD:
+        return []
+    return follow_value(movement, amount)
+
+
+def follow_value(start, amount, layer_id=None, depth=0):
+    """
+    Where `amount`, put on the goods on `start`'s shelf at `start`, went:
+    [(kind, row, value)] as where_value_is says. `start` may be a goods
+    movement (an arrival), asked what share of a cost incurred on what it
+    brought would have gone where.
+    """
+    from .transfers import StockTransferStep
+
+    item, warehouse = start.item, start.warehouse
     method = item.costing_method
-    if amount <= 0 or method == CostingMethod.STANDARD:
-        return Decimal("0")
-    history = _movements(item, movement.warehouse)
-    if method == CostingMethod.FIFO and movement.adjusts_id is not None:
-        def raised_layer(layers):
-            return next((layer[0] for layer in layers
-                         if layer[2] == movement.adjusts_id and layer[0] > 0), Decimal("0"))
+    history = _movements(item, warehouse)
+    hops = {
+        step.out_movement_id: step.in_movement
+        for step in StockTransferStep.objects.filter(
+            out_movement__item=item, out_movement__warehouse=warehouse,
+        ).select_related("in_movement__warehouse", "in_movement__item")
+    }
+    found = []
+
+    def took(row, value):
+        if value <= 0:
+            return
+        arrived = hops.get(row.pk)
+        if arrived is not None and depth < 32:
+            found.extend(follow_value(arrived, value, layer_id=arrived.pk, depth=depth + 1))
+        else:
+            found.append(("gone", row, value))
+
+    if layer_id is None and start.quantity > 0:
+        layer_id = start.pk
+    elif layer_id is None:
+        layer_id = start.adjusts_id
+    if method == CostingMethod.FIFO and layer_id is not None:
+        def layer(layers):
+            return next((each[0] for each in layers if each[2] == layer_id and each[0] > 0), Decimal("0"))
 
         layers, raised = [], None
         for row in history:
+            before = layer(layers) if raised else None
             _fifo_step(layers, row, item)
-            if row.pk == movement.pk:
-                raised = raised_layer(layers)
-        if not raised:
-            return Decimal("0")
-        return amount * raised_layer(layers) / raised
+            if raised and row.quantity < 0:
+                took(row, amount * (before - layer(layers)) / raised)
+            if row.pk == start.pk:
+                raised = layer(layers)
+                if not raised:
+                    return []
+        if raised is None:
+            return []
+        left = amount * layer(layers) / raised
+        return found + ([("held", start, left)] if left > 0 else [])
     left, held = None, Decimal("0")
     for row in history:
-        if method == CostingMethod.SPECIFIC and row.lot_id != movement.lot_id:
+        if method == CostingMethod.SPECIFIC and row.lot_id != start.lot_id:
             continue
         if row.quantity < 0 and left is not None and held > 0:
-            left -= left * min(-row.quantity, held) / held
+            taken = left * min(-row.quantity, held) / held
+            left -= taken
+            took(row, taken)
         held += row.quantity
-        if row.pk == movement.pk:
+        if row.pk == start.pk:
             left = amount
-    return max(left or Decimal("0"), Decimal("0"))
+    left = max(left or Decimal("0"), Decimal("0"))
+    return found + ([("held", start, left)] if left > 0 else [])
 
 
 def unit_cost_for(item, warehouse, quantity, lot=None):

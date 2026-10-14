@@ -92,6 +92,11 @@ class AssetCategory(AuditModel):
         return self.name
 
 
+# Asked as an asset is un-capitalised, by modules that took something to make it:
+# purchasing's machine taken off a shelf goes back there (O101). (asset, on_date).
+UNDOING_CAPITALISATION = []
+
+
 class FixedAsset(Extensible, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     name = models.CharField(max_length=255)
@@ -516,6 +521,8 @@ class FixedAsset(Extensible, AuditModel):
         self.capitalisation_entry.create_reversal(
             entry_date=on_date, memo=memo or f"Un-capitalised {self}"
         )
+        for undo in UNDOING_CAPITALISATION:
+            undo(self, on_date)
         # Cancelled, not disposed: nothing was sold or scrapped, the
         # capitalisation simply never stood — and the register, which
         # shows it only until the day it was undone, must not show it as a disposal.

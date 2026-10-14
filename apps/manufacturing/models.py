@@ -128,6 +128,7 @@ from .routing import (  # noqa: F401
 from .orders import (  # noqa: F401
     IssueDirection,
     ManufacturingSettings,
+    AddedCost,
     MaterialIssue,
     MaterialIssueLine,
     ProductionByproduct,
