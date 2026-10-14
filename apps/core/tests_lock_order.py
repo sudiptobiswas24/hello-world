@@ -81,6 +81,12 @@ class TheSentinelSeesEveryLockAStatementTakesTests(TestCase):
                 list(Party.objects.select_for_update().filter(pk=self.second.pk).values_list("code", flat=True))
                 list(Party.objects.select_for_update().filter(pk=self.first.pk).values_list("code", flat=True))
 
+    def test_a_values_list_lock_is_checked_in_the_order_it_was_taken(self):
+        # Review F8: descending key order read as codes passed, the keys read back sorted.
+        with self.assertRaises(LockOrderViolation):
+            with transaction.atomic():
+                list(Party.objects.select_for_update().order_by("-pk").values_list("code", flat=True))
+
     def test_an_update_takes_its_rows(self):
         with self.assertRaisesMessage(LockOrderViolation, "(update)"):
             with transaction.atomic():
