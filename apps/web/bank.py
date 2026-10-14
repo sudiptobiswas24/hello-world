@@ -32,13 +32,21 @@ WITHIN_NINETY = ("current", "1-30", "31-60", "61-90")
 
 
 def work_in_progress(as_of):
-    """The balance on the work-in-progress account at the date, or nothing where no account is set."""
-    from apps.manufacturing.orders import ManufacturingSettings
+    """
+    The balance at the date on every account work in progress is held on:
+    each run's, recorded when it was released, and the setting's. Read
+    from the setting alone, a run released before the account was changed
+    went on holding its material where the tile no longer looked (O8).
+    """
+    from apps.manufacturing.orders import ManufacturingSettings, WorkOrder
 
     settings = ManufacturingSettings.objects.first()
-    if settings is None or settings.wip_account_id is None:
+    accounts = set(WorkOrder.objects.filter(wip_account__isnull=False).values_list("wip_account_id", flat=True))
+    if settings is not None and settings.wip_account_id is not None:
+        accounts.add(settings.wip_account_id)
+    if not accounts:
         return ZERO
-    totals = JournalLine.objects.filter(account_id=settings.wip_account_id, entry__posted=True,
+    totals = JournalLine.objects.filter(account_id__in=accounts, entry__posted=True,
                                         entry__date__lte=as_of).aggregate(debit=Sum("debit"), credit=Sum("credit"))
     return (totals["debit"] or ZERO) - (totals["credit"] or ZERO)
 
