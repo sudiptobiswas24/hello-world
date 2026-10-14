@@ -123,6 +123,11 @@ class PayComponent(AuditModel):
         help_text="Where an earning or an employer cost is charged. A department's "
                   "cost centre overrides it for that department's staff.",
     )
+    recoverable_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="What a former employee owes of this component that their final pay may not take "
+                  "back: a receivable (O28, the owner's decision of 9 October).",
+    )
     liability_account = models.ForeignKey(
         "accounting.Account", null=True, blank=True, on_delete=models.PROTECT,
         related_name="+",
@@ -259,6 +264,11 @@ class PayComponent(AuditModel):
         general = [slab for slab in rows if slab.month is None]
         chosen = (dated or general or [None])[0]
         return chosen.amount if chosen is not None else Decimal("0")
+
+
+# The legal limit on what one wage payment may lose to deductions, believed to be
+# half the wages; the plant's accountant to confirm (the owner's decision on O28).
+DEDUCTION_CAP = Decimal("0.5")
 
 
 class PayComponentSlab(AuditModel):
@@ -523,6 +533,7 @@ class PayRun(AuditModel):
             if to_date(person.hire_date) <= self.period_end
             and (person.termination_date is None or to_date(person.termination_date) >= self.period_start)
         ]
+        people += self._leavers_owing(people, among=employees)
         if not people:
             raise ValidationError("Nobody is employed during this period.")
 
@@ -535,6 +546,29 @@ class PayRun(AuditModel):
             "period_start", "period_end", "pay_date", "status", "updated_at",
         ])
         return list(self.payslips.all())
+
+    def _leavers_owing(self, people, among=None):
+        """
+        People who left before this period and still owe piece work back (O31):
+        a run posted before their leaving date was set had no final slip to
+        take it from, and no run after included them. On this run their slip
+        is final; it has no wages, so what is owed is a receivable (O28).
+        """
+        on = {person.pk for person in people}
+        found = []
+        candidates = Employee.objects.all() if among is None else Employee.objects.filter(
+            pk__in=[person.pk for person in among])
+        for person in candidates.filter(
+                termination_date__lt=self.period_start,
+                compensation__component__basis=ComponentBasis.PER_UNIT).distinct():
+            if person.pk in on:
+                continue
+            probe = Payslip(run=self, employee=person)
+            components = {row.component for row in EmployeeCompensation.objects.filter(
+                employee=person, component__basis=ComponentBasis.PER_UNIT).select_related("component")}
+            if any(probe.piece_work(component)[0] < 0 for component in components):
+                found.append(person)
+        return found
 
     def _eligible_employees(self):
         """Everyone with pay in force at any point in the period."""
@@ -556,7 +590,9 @@ class PayRun(AuditModel):
         slips = list(self.payslips.prefetch_related("lines"))
         if not slips:
             raise ValidationError("Cannot post a pay run with no payslips.")
-        if not any(slip.lines.exists() for slip in slips):
+        # A former employee's slip owing something back has no lines and is
+        # still the record of it (O28, O31).
+        if not any(slip.lines.exists() or slip.recoverable for slip in slips):
             # Otherwise this posts an entry with no lines, which balances
             # trivially and records nothing, against a run that looks as
             # though payroll was done.
@@ -577,7 +613,7 @@ class PayRun(AuditModel):
         # with no pay set up was refused June's pay as paid already, and the
         # register and leave read their June as paid on.
         for slip in slips:
-            if not slip.lines.exists():
+            if not slip.lines.exists() and not slip.recoverable:
                 slip.delete()
         slips = [slip for slip in slips if slip.pk is not None]
         self._check_not_already_paid()
@@ -599,7 +635,7 @@ class PayRun(AuditModel):
                 return
             bucket[key] = bucket.get(key, Decimal("0")) + amount
 
-        net_total = Decimal("0")
+        net_total, owed_by = Decimal("0"), []
         for slip in slips:
             department = slip.employee.department
             centre = department.centre if department is not None else None
@@ -630,6 +666,18 @@ class PayRun(AuditModel):
                     add(debits, (account, centre), line.amount)
                     add(credits, line.component.liability_account, line.amount)
             net_total += slip.net()
+            if slip.recoverable:
+                # What the final pay could not take back: owed by the former
+                # employee, out of the wages it was charged to (O28).
+                component = slip.recoverable_component
+                if component.recoverable_account_id is None:
+                    raise ValidationError(
+                        f"{slip.employee} leaves owing {slip.recoverable} of {component.code} that their final "
+                        f"pay may not take back, and {component.code} has no account for what a former "
+                        "employee owes. Set its recoverable account, then post.")
+                probe = PayslipLine(payslip=slip, component=component, kind=ComponentKind.DEDUCTION)
+                add(credits, probe.resolve_account(), slip.recoverable)
+                owed_by.append((component.recoverable_account, slip.employee.party, slip.recoverable))
 
         add(credits, _net_pay_account(), net_total)
 
@@ -646,6 +694,9 @@ class PayRun(AuditModel):
                 entry=entry, account=account, credit=round_money(amount),
                 description=label[:255],
             )
+        for account, party, amount in owed_by:
+            JournalLine.objects.create(entry=entry, account=account, party=party, debit=amount,
+                                       description=f"Owed back by a former employee: {label}"[:255])
         entry.post()
 
         self.journal_entry = entry
@@ -801,6 +852,13 @@ class Payslip(AuditModel):
                   "again from these.",
     )
     note = models.CharField(max_length=255, blank=True)
+    recoverable = models.DecimalField(
+        max_digits=18, decimal_places=2, default=0, editable=False,
+        help_text="Taken back beyond what a final pay may lose: owed by the former employee (O28).",
+    )
+    recoverable_component = models.ForeignKey(
+        PayComponent, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+    )
     kept_paid_days = models.DecimalField(
         max_digits=6, decimal_places=2, null=True, blank=True, editable=False,
         help_text="Working days employed less unpaid leave and absences, as the slip was worked "
@@ -977,7 +1035,8 @@ class Payslip(AuditModel):
         # check_current refuses a post they have moved under.
         away = self.unpaid_leave_days() + self.absent_days()
         self.kept_paid_days, self.kept_ncp_days = self.days_employed() - away, away
-        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "updated_at"])
+        super().save(update_fields=["hours", "kept_paid_days", "kept_ncp_days", "recoverable",
+                                    "recoverable_component", "updated_at"])
         return list(self.lines.all())
 
     def kept_days(self):
@@ -1000,8 +1059,10 @@ class Payslip(AuditModel):
         from nothing, 1,250.00 for 850.00. Asked by post() with the
         person held, so nothing it reads moves until the entry is made.
         """
+        kept = (self.recoverable, self.recoverable_component_id)
         now, then = self.work_out(self.hours), list(self.lines.select_related("component"))
-        if Counter(map(_as_worked_out, now)) == Counter(map(_as_worked_out, then)):
+        if Counter(map(_as_worked_out, now)) == Counter(map(_as_worked_out, then)) \
+                and (self.recoverable, self.recoverable_component_id) == kept:
             return
         before, after = _by_component(then), _by_component(now)
         moved = [component for component in sorted(set(before) | set(after), key=lambda c: (c.sequence, c.code))
@@ -1051,8 +1112,13 @@ class Payslip(AuditModel):
             if component.basis == ComponentBasis.PER_UNIT:
                 # Piece work is worked out once, at each day's own rate,
                 # however many rows it has.
-                amount, quantity, row = self.piece_work(component)
+                amount, quantity, row, here, made_here = self.piece_work(component, split=True)
                 owed = [(row, amount, quantity)]
+                if self.is_final() and amount < here:
+                    # A leaver's own last weeks are wages, and what is taken
+                    # back for earlier runs is a deduction beside them: netted,
+                    # the recovery came off their PF and ESI wages (O28).
+                    owed = [(row, here, made_here), (row, amount - here, quantity - made_here)]
             else:
                 # Each rate is taken of the gross before the component, not
                 # of what its own earlier rate added to it.
@@ -1096,6 +1162,9 @@ class Payslip(AuditModel):
                 ))
                 if kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
+        self.recoverable, self.recoverable_component = Decimal("0"), None
+        if self.is_final():
+            lines = self._within_the_deduction_cap(lines)
         earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0.00"))
         deducted = sum((line.amount for line in lines if line.kind == ComponentKind.DEDUCTION), Decimal("0.00"))
         if deducted > earned:
@@ -1125,7 +1194,7 @@ class Payslip(AuditModel):
         employed = self.days_employed()
         return amount * self.days_employed(start, end) / employed if employed > 0 else Decimal("0")
 
-    def piece_work(self, component):
+    def piece_work(self, component, split=False):
         """
         (amount, quantity, rate row) owed for piece work on this run.
 
@@ -1158,21 +1227,58 @@ class Payslip(AuditModel):
         rates = list(EmployeeCompensation.objects.filter(
             employee=self.employee, component=component,
         ).order_by("effective_from"))
-        earned, made = Decimal("0"), Decimal("0")
+        earned, made, here, made_here = Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")
         for day, quantity in counter(self.employee, self.run.period_end):
             row = next((rate for rate in rates if rate.covers(day)), None)
             if row is not None:
                 earned += quantity * row.amount
                 made += quantity
+                if day >= self.run.period_start:
+                    here += quantity * row.amount
+                    made_here += quantity
         # What a final run took back counts against what was paid.
         paid_amount, paid_quantity = Decimal("0"), Decimal("0")
         for kind, amount, quantity in paid_lines.values_list("kind", "amount", "quantity"):
             sign = -1 if kind == ComponentKind.DEDUCTION else 1
             paid_amount += sign * amount
             paid_quantity += sign * (quantity or Decimal("0"))
+        # And what a final run left owed as a receivable was taken back too.
+        paid_amount -= Payslip.objects.filter(
+            employee=self.employee, run__status=PayRunStatus.POSTED, recoverable_component=component,
+        ).exclude(run=self.run).aggregate(total=Sum("recoverable"))["total"] or Decimal("0")
         in_force = next((rate for rate in reversed(rates)
                          if rate.effective_from <= self.run.period_end), rates[-1])
+        if split:
+            return (round_money(earned) - paid_amount, made - paid_quantity, in_force,
+                    round_money(here), made_here)
         return round_money(earned) - paid_amount, made - paid_quantity, in_force
+
+    def _within_the_deduction_cap(self, lines):
+        """
+        A leaver's final pay takes back no more than the legal limit on what
+        one wage payment may lose: deductions together at most
+        DEDUCTION_CAP of the wages. What is taken back beyond it is owed by
+        the former employee (`recoverable`), posted as a receivable (O28).
+        """
+        earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0"))
+        taken = [line for line in lines
+                 if line.kind == ComponentKind.DEDUCTION and line.component.kind == ComponentKind.EARNING]
+        others = sum((line.amount for line in lines
+                      if line.kind == ComponentKind.DEDUCTION and line not in taken), Decimal("0"))
+        allowed = max(round_money(earned * DEDUCTION_CAP) - others, Decimal("0"))
+        kept = []
+        for line in lines:
+            if line in taken:
+                take = min(line.amount, allowed)
+                allowed -= take
+                if take < line.amount:
+                    self.recoverable += line.amount - take
+                    self.recoverable_component = line.component
+                line.amount = take
+                if not take:
+                    continue
+            kept.append(line)
+        return kept
 
     def is_final(self):
         """Whether the person leaves inside this run's period, so no run of theirs comes after it."""

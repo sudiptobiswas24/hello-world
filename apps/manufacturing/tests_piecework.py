@@ -197,18 +197,83 @@ class ALeaversFinalRunTests(PieceworkTestCase):
         account = self.per_metre.expense_account
         return sum((line.debit - line.credit for line in JournalLine.objects.filter(account=account)), Decimal("0"))
 
-    def test_with_nothing_else_to_take_it_from_the_final_run_is_refused_by_name(self):
+    def owed_back(self):
+        # O28, the owner's decision of 9 October: what the final pay may not
+        # take back is a receivable from the former employee.
+        self.receivable = Account.objects.create(code="1390", name="Owed by former employees",
+                                                 account_type=AccountType.ASSET)
+        self.per_metre.recoverable_account = self.receivable
+        self.per_metre.save()
+
+    def balance(self, account):
+        from apps.accounting.models import JournalLine
+
+        return sum((line.debit - line.credit for line in JournalLine.objects.filter(account=account)), Decimal("0"))
+
+    def test_with_nothing_else_to_take_it_from_it_is_owed_back(self):
+        # Was refused ("400.00 deducted against 0.00 earned"), the owner decided
+        # otherwise (O28): no wages, so nothing is deducted and all 400.00 is owed.
+        self.owed_back()
         self.paid_then_voided()
         self.weaver.terminate(on_date=SEP(20))
-        with self.assertRaisesMessage(ValidationError, "400.00 deducted against 0.00 earned"):
-            self.pay(SEP(16), SEP(30))
+        (slip,) = self.pay(SEP(16), SEP(30)).payslips.all()
+        self.assertEqual((slip.net(), slip.recoverable, self.balance(self.receivable), self.wages()),
+                         (Decimal("0.00"), Decimal("400.00"), Decimal("400.00"), Decimal("0.00")))
 
-    def test_what_they_wove_before_leaving_pays_it_back_first(self):
-        # 1,500 m at 0.45 on the 21st, 675.00, less the 400.00: 275.00 for 500 m.
+    def test_more_than_half_the_final_pay_is_owed_back_not_deducted(self):
+        # An allowance of 600 is the final pay: half, 300.00, is taken back on
+        # the slip and the other 100.00 of the 400.00 is owed. Wages: 400 of
+        # piece work and 600 of allowance in the first fortnight, 600 in the
+        # second, less 300 and 100 taken back: 1,200.00.
+        self.owed_back()
+        allowance = PayComponent.objects.create(
+            code="ALW", name="Attendance allowance", kind=ComponentKind.EARNING,
+            basis=ComponentBasis.FIXED, expense_account=self.per_metre.expense_account)
+        self.rate(allowance, "600", SEP(1))
+        self.paid_then_voided()
+        self.weaver.terminate(on_date=SEP(30))
+        (slip,) = self.pay(SEP(16), SEP(30)).payslips.all()
+        taken = slip.lines.get(component=self.per_metre)
+        self.assertEqual((taken.kind, taken.amount, slip.recoverable, slip.net(), self.balance(self.receivable),
+                          self.wages()),
+                         (ComponentKind.DEDUCTION, Decimal("300.00"), Decimal("100.00"), Decimal("300.00"),
+                          Decimal("100.00"), Decimal("1200.00")))
+
+    def test_what_they_wove_before_leaving_stays_wages_beside_what_is_taken_back(self):
+        # 1,500 m at 0.45 on the 21st, 675.00, and the 400.00 taken back beside
+        # it, capped at half the wages: 337.50 deducted, 62.50 owed, 337.50 net.
+        # Netted to one line of 275.00 for 500 m, the recovery came off their PF
+        # and ESI wages and past the cap (O28; this test asserted that until then).
+        self.owed_back()
         self.paid_then_voided()
         self.woven("1500", SEP(21))
         self.weaver.terminate(on_date=SEP(25))
-        self.assertEqual(self.line(self.pay(SEP(16), SEP(30))), (Decimal("500"), Decimal("275.00"), Decimal("0.45")))
+        (slip,) = self.pay(SEP(16), SEP(30)).payslips.all()
+        lines = sorted((line.kind, line.quantity, line.amount) for line in slip.lines.filter(component=self.per_metre))
+        self.assertEqual(lines, [(ComponentKind.DEDUCTION, Decimal("1000"), Decimal("337.50")),
+                                 (ComponentKind.EARNING, Decimal("1500"), Decimal("675.00"))])
+        self.assertEqual((slip.gross(), slip.net(), slip.recoverable), (Decimal("675.00"), Decimal("337.50"),
+                                                                        Decimal("62.50")))
+
+    def test_a_leaving_date_set_after_the_final_run_still_takes_it_back(self):
+        # O31: the second half of September posted before the leaving date was
+        # set, so it took nothing back (it waits for a next run), and no run
+        # after it included the weaver. October's run does, and with no wages
+        # all 400.00 is owed back; November's does not include them again.
+        self.owed_back()
+        allowance = PayComponent.objects.create(
+            code="ALW", name="Attendance allowance", kind=ComponentKind.EARNING,
+            basis=ComponentBasis.FIXED, expense_account=self.per_metre.expense_account)
+        self.rate(allowance, "600", SEP(1))
+        self.paid_then_voided()
+        (second,) = self.pay(SEP(16), SEP(30)).payslips.all()
+        self.assertFalse(second.lines.filter(component=self.per_metre).exists())
+        self.weaver.terminate(on_date=SEP(30))
+        october = self.pay(datetime.date(2026, 10, 1), datetime.date(2026, 10, 31))
+        self.assertEqual([slip.recoverable for slip in october.payslips.all()], [Decimal("400.00")])
+        self.assertEqual(self.balance(self.receivable), Decimal("400.00"))
+        with self.assertRaisesMessage(ValidationError, "Nobody is employed"):
+            self.pay(datetime.date(2026, 11, 1), datetime.date(2026, 11, 30))
 
     def test_the_rest_comes_off_their_final_pay_once_and_a_void_puts_it_back(self):
         from apps.hr.payroll import PayslipLine
