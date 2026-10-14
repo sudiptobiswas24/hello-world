@@ -5939,15 +5939,22 @@ def consumed_batches(line):
 def assembled_from(lot):
     """
     The lineage quality asks (`apps.quality.release.register_lot_sources`):
-    the batches a subcontractor's assemblies of this batch were made from.
-    So a component held after it was sent holds the assemblies too, until
-    they are inspected themselves, at every door that asks the gate.
+    the batches a subcontractor's assemblies of this batch were made from
+    that quality holds. So a component held after it was sent holds the
+    assemblies too, until they are inspected themselves, at every door that
+    asks the gate.
+
+    Only the held ones. Quality reads a batch whose sources all passed as
+    passed, which is right for a split or a join of one item and wrong for
+    an assembly: frames passed are not an assembly inspected, and an
+    assembly under its own mandatory plan would have gone out unmeasured.
     """
     lines = GoodsReceiptLine.objects.filter(
         lot=lot, receipt__posted=True, receipt__reverses__isnull=True,
         order_line__components__isnull=False,
     ).distinct().select_related("receipt")
-    return [source for line in lines for source in consumed_batches(line)]
+    return [source for line in lines for source in consumed_batches(line)
+            if held_by_quality(source.item, source)]
 
 
 def _returned_note(receipt, line):
