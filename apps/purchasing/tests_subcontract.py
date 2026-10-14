@@ -1035,3 +1035,81 @@ class ANullReasonIsNoReasonTests(HeldAssembliesAcceptedAreAConcessionTests):
             self.assertEqual(response.status_code, 400, repr(bad))
             self.assertIn("is a concession", response.content.decode())
         self.assertEqual(self.assembly.on_hand_at(self.bay), Decimal("10"))
+
+
+class FractionalReturnsBookTotalFirstTests(SubcontractTestCase):
+    """
+    O206 (fix_sub2 F10): 0.333 frame per assembly, frames F-1 1.11 and F-2 98.89 at 8,
+    10 assemblies received, returned 1, 1, 3, 2, 1, 2. Everything is back where it
+    started: the shelf, the inventory account, GRNI and the price variance all at
+    nothing. Each return rounded on its own left inventory +0.01 and PPV -0.01.
+    """
+
+    def batch(self, code, quantity, expires):
+        from apps.inventory.models import Lot
+
+        made = Lot.objects.create(item=self.frame, code=code, expires_on=expires)
+        StockMovement.objects.create(item=self.frame, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+                                     uom=self.frame.uom, quantity=Decimal(quantity), unit_cost=Decimal("8"),
+                                     lot=made, occurred_at=timezone.now())
+
+    def total_value(self):
+        return sum((item.stock_value_at(place) for item in (self.frame, self.motor, self.assembly)
+                    for place in (self.warehouse, self.subcontractor)), Decimal("0"))
+
+    def test_six_fractional_returns_leave_no_paisa_between_shelf_and_ledger(self):
+        from apps.accounting.models import Account, AccountType
+
+        from .models import SubcontractComponent
+
+        Item.objects.filter(pk=self.frame.pk).update(tracking="lot")
+        self.frame.refresh_from_db()
+        StockMovement.objects.filter(item=self.frame).delete()
+        company = Company.get()
+        ppv = Account.objects.create(code="5900", name="PPV", account_type=AccountType.EXPENSE)
+        company.purchase_price_variance_account = ppv
+        company.save()
+        self.batch("F-1", "1.11", datetime.date(2026, 12, 31))
+        self.batch("F-2", "98.89", datetime.date(2027, 6, 30))
+        order = self.subcontract_order("10", confirm=False)
+        SubcontractComponent.objects.filter(item=self.frame).update(quantity_per=Decimal("0.333"))
+        order.confirm()
+        order.issue_components(self.warehouse)
+        inventory, value = self.balance(self.inventory), self.total_value()
+        receipt = self.receive(order, "10")
+        line = receipt.lines.get()
+        for step in (1, 1, 3, 2, 1, 2):
+            receipt.create_return(quantities={line: Decimal(step)}, debit_bills=False)
+        self.assertEqual((self.total_value() - value, self.balance(self.inventory) - inventory,
+                          self.balance(self.grni), self.balance(ppv)),
+                         (Decimal("0.00"), Decimal("0"), Decimal("0"), Decimal("0")))
+
+
+class RestoredComponentsCarryTheirRemainderTests(SubcontractTestCase):
+    """
+    O38: 70,000 frames worth 1,000,000 (30,000 at 10, 40,000 at 17.50), half a
+    frame to an assembly, 130,000 made and all sent back. The 65,000 consumed
+    took 928,571.42857142...; put back at the eight-place rate 14.28571429 they
+    came to 928,571.42885, 0.00028 the shelf never had. The last return carries
+    the remainder at the places a movement keeps (calc_fix_cost/o38.txt).
+    """
+
+    def test_the_last_return_puts_back_what_the_consumption_took(self):
+        from apps.inventory.costing import replay
+
+        from .models import SubcontractComponent
+
+        StockMovement.objects.filter(item=self.frame).delete()
+        for quantity, cost in (("30000", "10"), ("40000", "17.50")):
+            StockMovement.objects.create(item=self.frame, warehouse=self.warehouse, movement_type=MovementType.RECEIPT,
+                                         uom=self.frame.uom, quantity=Decimal(quantity), unit_cost=Decimal(cost),
+                                         occurred_at=timezone.now())
+        order = self.subcontract_order("130000", confirm=False)
+        SubcontractComponent.objects.filter(item=self.motor).delete()
+        SubcontractComponent.objects.filter(item=self.frame).update(quantity_per=Decimal("0.5"))
+        order.confirm()
+        order.issue_components(self.warehouse)
+        sent = replay(self.frame, self.subcontractor)[1]
+        receipt = self.receive(order, "130000")
+        receipt.create_return(debit_bills=False)
+        self.assertLess(abs(replay(self.frame, self.subcontractor)[1] - sent), Decimal("0.0001"))
