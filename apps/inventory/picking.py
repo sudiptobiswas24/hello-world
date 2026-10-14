@@ -27,7 +27,7 @@ from .tracking import allocate, lot_held
 
 
 def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
-               on_date=None, allow_expired=False, holds_let_through=None):
+               on_date=None, allow_expired=False, holds_let_through=None, preferring=None):
     """
     Work out which lots and bins a withdrawal will actually take.
 
@@ -45,7 +45,7 @@ def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
     has no batch to choose. Each outbound door that asked for itself was
     a door the warehouse went unasked through: components went to a
     subcontractor out of the quarantine bay (O147). `holds_let_through`
-    is `allocate`'s.
+    and `preferring` are `allocate`'s.
     """
     quantity = Decimal(quantity)
     if quantity <= 0:
@@ -61,7 +61,7 @@ def plan_issue(item, warehouse, quantity, lot=None, storage_bin=None,
     if tracked and lot is None:
         chosen = allocate(
             item, warehouse, quantity, on_date=on_date, allow_expired=allow_expired,
-            holds_let_through=holds_let_through,
+            holds_let_through=holds_let_through, preferring=preferring,
         )
     else:
         chosen = [(lot if tracked else None, quantity)]
