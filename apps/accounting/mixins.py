@@ -196,6 +196,28 @@ def value_left(corrected, corrects, already, on):
     return value, corrected.quantity - already(corrected)
 
 
+def booked_left(corrected, corrects, on):
+    """What is left of `corrected` as the documents booked it: its net less every posted note line's on it."""
+    notes = type(corrected)._base_manager.filter(**{corrects: corrected, f"{on}__posted": True})
+    return corrected.net_amount() - sum((note.net_amount() for note in notes), Decimal("0"))
+
+
+def _lines_booking(target, quantity):
+    """Note lines, 2-place prices, of `quantity` whose booked nets add to `target` exactly."""
+    cent = Decimal("0.01")
+    price = (target / quantity).quantize(cent, rounding=ROUND_DOWN) if quantity else Decimal("0")
+    if quantity <= 1:
+        # A step of quantity x 0.01 is under a paisa, so one of two prices books it.
+        for candidate in (price, price + cent):
+            if round_money(quantity * candidate) == target:
+                return [(quantity, candidate, Decimal("0"))]
+        return [(quantity, price, Decimal("0"))]
+    if round_money(quantity * price) == target:
+        return [(quantity, price, Decimal("0"))]
+    first = round_money((quantity - 1) * price)
+    return [(quantity - 1, price, Decimal("0")), (Decimal("1"), target - first, Decimal("0"))]
+
+
 def priced_to_give_back(corrected, quantity, corrects, already, on):
     """
     The note lines, as (quantity, unit price, discount), that give back
@@ -204,8 +226,23 @@ def priced_to_give_back(corrected, quantity, corrects, already, on):
     10 x 100 with a claim of 100 gives back 900 for the ten, and the claim
     keeps what it gave. The share is a total divided last; when the paisa
     does not divide it, one unit takes what is left, so the whole comes back.
+
+    What the rule allows, in words (O199): a part of what is left is given
+    back at its share of the value left, unrounded, and may book up to a
+    paisa under it; the last of a line is given back at what is left of it
+    as the documents booked it, to the paisa, so the line's notes add up to
+    what it booked. 2.5 at 3.33 books 8.33; two notes of 1.25 booked 4.16
+    each and left a paisa on the receivable, where the second now books
+    4.17 (0.25 at 3.33 and 1 at 3.34).
     """
     left, held = value_left(corrected, corrects, already, on)
+    if quantity == held and held > 0:
+        target = booked_left(corrected, corrects, on)
+        own = type(corrected)(quantity=quantity, unit_price=corrected.unit_price or Decimal("0"),
+                              discount_percent=corrected.discount_percent or Decimal("0"))
+        if own.net_amount() == target:
+            return [(quantity, corrected.unit_price, corrected.discount_percent)]
+        return _lines_booking(max(target, Decimal("0")), quantity)
     share = left if quantity == held else (left * quantity / held if held > 0 else Decimal("0"))
     if share >= quantity * (corrected.unit_price or Decimal("0")) * (1 - corrected.discount_percent / Decimal("100")):
         return [(quantity, corrected.unit_price, corrected.discount_percent)]
@@ -237,6 +274,7 @@ def refuse_correcting_past_what_it_holds(lines, corrects, already, on, by_value_
 
     going = defaultdict(Decimal)
     worth = defaultdict(Decimal)
+    booked = defaultdict(Decimal)
     held = {}
     for line in lines:
         corrected = getattr(line, corrects) if getattr(line, f"{corrects}_id") else None
@@ -245,6 +283,7 @@ def refuse_correcting_past_what_it_holds(lines, corrects, already, on, by_value_
         held[corrected.pk] = corrected
         going[corrected.pk] += line.quantity
         worth[corrected.pk] += line_value(line)
+        booked[corrected.pk] += line.net_amount()
         if by_value_only:
             continue
         given = already(corrected)
@@ -254,6 +293,14 @@ def refuse_correcting_past_what_it_holds(lines, corrects, already, on, by_value_
                 f"{corrected.document()} is left to give back; this note gives back {plain(going[corrected.pk])}."]})
     for pk, corrected in held.items():
         left, quantity = value_left(corrected, corrects, already, on)
+        if not by_value_only and going[pk] == quantity and quantity > 0:
+            # The last of the line: held to what is left of it as booked, to the paisa (O199).
+            last = booked_left(corrected, corrects, on)
+            if booked[pk] > last:
+                raise ValidationError({corrects: [
+                    f"{corrected.label()} on {corrected.document()} has {last} left to give back; "
+                    f"this note gives back {booked[pk]}."]})
+            continue
         cap = left if by_value_only or going[pk] == quantity else (
             left * going[pk] / quantity if quantity > 0 else Decimal("0"))
         if worth[pk] > cap:
