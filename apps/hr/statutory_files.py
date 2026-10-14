@@ -49,7 +49,8 @@ def _lines(slip):
     """The slip's lines by their statutory kind; an earning's kind is ignored."""
     by_kind = {}
     for line in slip.lines.all():
-        kind = line.component.statutory
+        # The marker as it stood for the month (R7); a slip from before it was kept reads it now.
+        kind = line.kept_statutory if slip.kept_paid_days is not None else line.component.statutory
         if kind and line.kind != ComponentKind.EARNING:
             by_kind.setdefault(kind, []).append(line)
     return by_kind
@@ -58,10 +59,17 @@ def _lines(slip):
 def wage_base(slip, line):
     """What a percentage line was taken of, from the slip's own lines, capped as its component caps it."""
     component = line.component
-    named = list(component.base_components.all())
+    # The list as it stood for the month (R7); a slip from before it was kept reads it now.
+    named = (line.kept_base if slip.kept_paid_days is not None and line.kept_base is not None
+             else [other.pk for other in component.base_components.all()])
     if named:
-        wanted = {other.pk for other in named}
-        base = sum((other.amount for other in slip.lines.all() if other.component_id in wanted), Decimal("0"))
+        wanted = set(named)
+        # Earnings only (R3): a leaver's final slip carries what is taken back
+        # on the same component as a deduction, and counted, the ECR filed PF
+        # wages of 675 earned plus 256.50 taken back. Not reduced by the
+        # recovery (the owner's decision), and not raised by it either.
+        base = sum((other.amount for other in slip.lines.all()
+                    if other.component_id in wanted and other.kind == ComponentKind.EARNING), Decimal("0"))
     else:
         base = slip.taxable_gross()
     # The ceiling as it stood when the slip was worked out (O6); a slip from

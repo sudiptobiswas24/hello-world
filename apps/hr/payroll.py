@@ -29,7 +29,7 @@ track of somebody's wages.
 
 import datetime
 from collections import Counter
-from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal
 from itertools import groupby
 
 from django.core.exceptions import ValidationError
@@ -1159,6 +1159,8 @@ class Payslip(AuditModel):
                     amount=amount,
                     quantity=quantity,
                     base_ceiling=component.base_ceiling,
+                    kept_statutory=component.statutory or "",
+                    kept_base=sorted(other.pk for other in component.base_components.all()),
                 ))
                 if kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
@@ -1265,7 +1267,9 @@ class Payslip(AuditModel):
                  if line.kind == ComponentKind.DEDUCTION and line.component.kind == ComponentKind.EARNING]
         others = sum((line.amount for line in lines
                       if line.kind == ComponentKind.DEDUCTION and line not in taken), Decimal("0"))
-        allowed = max(round_money(earned * DEDUCTION_CAP) - others, Decimal("0"))
+        # Down, never up: a legal ceiling is not passed by a paisa (166.665 is 166.66).
+        allowed = max((earned * DEDUCTION_CAP).quantize(Decimal("0.01"), rounding=ROUND_DOWN) - others,
+                      Decimal("0"))
         kept = []
         for line in lines:
             if line in taken:
@@ -1494,6 +1498,16 @@ class PayslipLine(AuditModel):
         help_text="The wage ceiling the component capped its base at when the slip was worked "
                   "out: the ECR files the PF wages as they stood for the month (O6).",
     )
+    kept_statutory = models.CharField(
+        max_length=16, blank=True, editable=False,
+        help_text="Which statutory contribution the component was marked as when the slip was "
+                  "worked out (R7): re-marked later, a filed month's ECR named nobody.",
+    )
+    kept_base = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="The components it was taken of, as listed then (R7): the files read the base "
+                  "as it stood for the month.",
+    )
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     quantity = models.DecimalField(
         max_digits=18, decimal_places=4, null=True, blank=True, editable=False,
@@ -1550,7 +1564,7 @@ class PayslipLine(AuditModel):
 def _as_worked_out(line):
     """What a payslip line says about somebody's pay: two workings of a slip are compared on it."""
     return (line.component_id, line.kind, line.basis, line.is_taxable, line.rate, line.amount, line.quantity,
-            line.base_ceiling)
+            line.base_ceiling, line.kept_statutory, tuple(line.kept_base or ()))
 
 
 def _by_component(lines):
