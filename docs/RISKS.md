@@ -609,3 +609,44 @@ not cover, or is deleted with the commit that finishes it.
     so is the history of a record since deleted: a rep may read what
     happened to another rep's deleted order. *Do:* nothing unless a
     deleted record's history turns out to say more than its kind's.
+
+The reach plan (owner, 14 October, from the Odoo 19 gap analysis): the
+ERP is deep in what the plant decides and thin in what carries it to
+people. After g21's go-live items, in this order:
+
+- **L6 Documents that leave the building.** Every outgoing document
+  prints (RFQ, purchase order, delivery challan, debit and credit notes,
+  remittance advice), mails from its own screen, and keeps the mail in
+  its history. Inbound mail lands on the record it answers (a reply to an
+  order on the order; mail to a sales address as a lead).
+- **L7 WhatsApp.** Invoices, reminders and order confirmations sent on
+  WhatsApp through a business provider (the owner chooses which), the
+  message kept on the record.
+- **L8 Analysis.** Every list grouped, totalled and charted (pivot and
+  graph), exported to Excel; an owner's dashboard of production, sales,
+  cash, stock and quality, each figure opening the records behind it.
+- **L9 Scanning in stores.** Item and bin barcodes (and GTIN where a
+  customer asks), and receive, pick, issue, count and transfer by scan on
+  a handheld, offline-tolerant.
+- **L10 Rules the owner configures.** Automation rules (when something
+  happens and a condition holds: notify, set, create a follow-up) and
+  approvals in stages, set up on screens, not in code; BOM change orders
+  in stages.
+- **L11 The shop floor.** Step instructions and photo checks on the
+  station screens, maintenance requests raised by operators, and an
+  equipment register (vendor, serial, warranty, documents).
+- **L12 Security.** Two-factor sign-in, session time-outs, and API keys
+  for anything that integrates.
+- **L13 CRM basics.** Quotation templates, section and note lines, lead
+  merge, mail-to-lead, activity planning.
+- **L14 Law as data everywhere.** One dated-parameter mechanism for every
+  rate, ceiling, slab and threshold the law sets (g21 starts it in
+  payroll and TCS); the next budget or notification is a data entry.
+- **L15 Plastic-waste EPR,** if the tax adviser confirms the plant must
+  register as a plastic-packaging producer under the Plastic Waste
+  Management Rules: what it places on the market, what it recovers and
+  recycles, and the returns on the CPCB portal; with recycled-content
+  tracking for the recycling line.
+
+Until the pilot, plant logic already ahead of Odoo (scheduling, quality
+statistics, maintenance, costing) is not deepened further: defects only.

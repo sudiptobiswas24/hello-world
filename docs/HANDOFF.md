@@ -103,9 +103,19 @@ built.
      before the December run), the bonus ceiling (the higher of 7,000 and
      the minimum wage), the Income-tax Act 2025 section and form names,
      the Indian chart and GST taxes seeded.
-2. **After g21:** the remaining rules, minor and statutory rows.
+2. **After g21: the reach plan** (docs/RISKS.md "Later items", L6 to L15,
+   decided by the owner on 14 October). g22: documents that leave the
+   building (L6) and security (L12); g23: analysis (L8) and CRM basics
+   (L13); g24: scanning in stores (L9) and the shop floor (L11); g25:
+   rules the owner configures (L10) and WhatsApp (L7); L14 runs through
+   all of them. Remaining rule, minor and statutory rows ride along with
+   whichever round touches their module. Plant logic already ahead of
+   Odoo is not deepened before the pilot: defects only.
 3. **Waiting on the tax adviser:** O60 for
    registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
+   **Waiting on the tax adviser, also:** whether the plant must register as
+   a plastic-packaging producer for EPR under the Plastic Waste Management
+   Rules (L15).
    **Waiting on the plant's accountant:** the 20 figures in the gap
    analysis's last section (EPF ceiling, TCS rate on scrap, GST rates on
    sacks and scrap, West Bengal PT and LWF), and the leaver deduction cap.
