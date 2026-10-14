@@ -14,7 +14,7 @@ can prove.
 
 1. **No real person has used it yet.** Every flow was driven by tests
    written by the people who built it, in a browser, as each role. The
-   screens open without error for all 17 roles (`apps/web/tests_browser_sweep.py`),
+   screens open without error for all 20 roles (`apps/web/tests_browser_sweep.py`),
    but whether the plant's own clerks can find their way, and whether
    the words on the screens are the plant's words, is unknown.
    *Do:* the pilot in docs/PILOT.md: a fortnight, two or three people
@@ -317,6 +317,14 @@ missing), **minor**.
 | O215 | hr, accounting | A leaver's shortfall becomes a receivable from the former employee (O28), but nothing settles it: a receipt against it is unbuilt (seen 2026-10-14) | rule | to build |
 | O216 | core | A keeper that reset its own password on a login it made, and then lost its right or left, still knows that password: the lapse ends what the keeper set for others, not what it set as the login. docs/handoff/reports/fix_sec2.md, "Review fixes" (seen 2026-10-14) | security | open |
 | O217 | core | A password reset through a link sent to an email HR set is recorded as set by nobody, so HR, which can read that mailbox, is not counted as knowing it. fix_sec2.md, "Review fixes" (seen 2026-10-14) | security | open |
+| O218 | sales, core | The printed tax invoice (apps/core/documents.py, the only invoice print) carries no GSTIN of the buyer, no HSN code, no place of supply and no tax split by head and rate, which CGST Rule 46 requires on a tax invoice; it has the amount in words and the IRN/QR. A go-live blocker. docs/handoff/reports/odoo19_gap_analysis.md (seen 2026-10-14) | statutory | open, g21 |
+| O219 | sales, accounting | TCS is absent: nothing collects tax at source on the plant's scrap sales (section 206C(1), from 1 April 2026 section 394 of the Income-tax Act 2025; the rate, 1% or 2%, is the accountant's to confirm), keeps a TCS payable account, or files its return (Form 143, was 27EQ). The plant sells its scrap (owner, 14 October). A go-live blocker (seen 2026-10-14) | statutory | open, g21 |
+| O220 | gst | An e-invoice cannot be cancelled: apps/gst/einvoice.py builds the IRN payload only; a cancellation within the portal's window, and the document's state after it, are unbuilt (seen 2026-10-14) | statutory | open, g21 |
+| O221 | core | The nightly backup (RUNBOOK.md, "a complete backup") is a pg_dump; attachments live in the `media` volume, which it does not copy (RUNBOOK lines near 296). A restore loses every attached file (seen 2026-10-14) | books | open, g21 |
+| O222 | hr | `EPS_CEILING = 15000` is a constant (apps/hr/statutory_files.py:31): a setting read live where a fact for the month should be kept. Reports say the EPF wage ceiling rose to 25,000 on 17 September 2026 (S.O. 5109(E)); to confirm with the accountant, then held as dated data (seen 2026-10-14) | statutory | open, g21 |
+| O223 | hr | `LeavePolicy.requires_approval` is stored and never read (an inert setting, audit shape 2) (seen 2026-10-14) | rule | open |
+| O224 | hr | The contract-labour registers follow the Contract Labour Act, which the Occupational Safety, Health and Working Conditions Code replaced from 21 November 2025; the registers the Code asks for are to be confirmed with the adviser (seen 2026-10-14) | statutory | open |
+| O225 | manufacturing | The station's scale bridge has its endpoint, but the program that reads the scale and posts to it is not in the repository: at go-live a weight is typed (seen 2026-10-14) | rule | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.

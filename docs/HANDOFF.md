@@ -65,42 +65,50 @@ g18 is pushed (7b9473a, 11 October), all six lanes green on one tip. It holds:
   below allows a gate; they went in because they are the guard for the
   defect that held the gate, which the owner's standing instruction asks.
 
-g19 is pushed (b70f722, 14 October), all six lanes green on one tip: the
-owner's decision 22 (an advisory failure waits for the Quality Manager;
-subcontract assemblies received and held, which only the Quality Manager
-concedes), O10's inspection part, O135, O145-O150, and the stale O126,
-O192-O194 taken off. scripts/gate/registercheck.py (ui lane) now fails a
-push whose commit subjects name a row still open, or a row whose status
-says fixed. Integrate by cherry-picking, never merging (finalize replays
-with cherry-pick).
+g20 is pushed (ebbf607, 14 October), all six lanes green on one tip: 49
+rows (money and settlement, cost and payroll facts, security and crashes),
+each reviewed and its findings fixed; a rep no longer offered the books'
+tab, with sign_in() waiting for the rail; the owner's decision 23. g19
+(b70f722) holds decision 22. scripts/gate/registercheck.py (ui lane)
+fails a push whose commit subjects name a row still open, or a row whose
+status says fixed. Integrate by cherry-picking, never merging. Agents
+write `Gate: g19`/`g20` instead of the placeholder unless told: check
+every commit for `Gate: {GATE}` before finalize, and fix the messages by
+a replay whose tree is identical (as g19 and g20 were).
+
+**The plant (owner, 14 October):** West Bengal; sells its PP scrap now and
+plans in-house recycling; no Hindi screens.
 
 docs/RISKS.md, "Open defects", is the one list of what is still open.
+docs/handoff/reports/odoo19_gap_analysis.md compares every module with
+Odoo 19 (notes in odoo19_research/); its last section is what the
+accountant or tax adviser must confirm before the statutory items are
+built.
 
-1. **g20 is in flight.** Its integration tree is `$SP/g20tree`, rebuilt on
-   g19's pushed tip: g20's money work (20 rows, reviewed and its findings
-   fixed; its purchasing migrations follow g19's as 0068 and 0069), O1
-   off (fixed in g17), and two briefs:
-   - `g20_cost.md` (fix_cost, `$SP/fix_cost`): landed cost, GRNI,
-     returns, stock, payroll facts, O187, O205, O206; 22 rows done,
-     reviewed (review_cost.md: five blockers), the findings being fixed.
-   - `g20_sec.md` (fix_sec2, `$SP/fix_sec2`): O124, O129, O131, O191,
-     O195, O196, O198.
-   Each joins after its review holds; then the six lanes.
-   Since: cost and security joined the tree (review of the security work
-   in flight, review_sec3); g21's race agent started early from d4f1827
-   (brief docs/handoff/g21_race.md, worktree `$SP/fix_race`).
-   **Lanes and agents compete for the machine.** In g19 three lanes beside
-   two agents took PostgreSQL half B to 101 minutes of its 115: start an
-   agent only when at most two lanes are left.
-2. **After g20:** the races (18 rows), then the remaining rules, minor and
-   statutory rows, then the owner's open decisions once answered: O204
-   (a mandatory-plan failure conceded at the machine), O207 (a recall of
-   lots made from a batch rejected later), O208 (unit price places).
+1. **g21, next.** Its tree is built from g20's pushed tip.
+   - fix_race's fifteen commits (`$SP/fix_race`, from d4f1827): 15 of 17
+     race rows, the sentinel seeing update/save/delete and joins, the whole
+     suite clean with it raising; O39 closed as not a defect (every outcome
+     matches a serial order), say so in its row. Its review is still to do.
+   - fix_qrecall (brief docs/handoff/g21_qrecall.md): decision 23 (O204,
+     O207, the "held because" column), and O123.
+   - The go-live build list from the gap analysis, the items that wait on
+     nobody first: the tax invoice's Rule 46 content (O218), e-invoice
+     cancellation (O220), the backup of attachments (O221), printed
+     payslips and their self-service, employee bank, PAN and joining
+     data, the bank payment file, a salary-advance ledger, overtime rate
+     derived, professional-tax slabs with effective dates and a state.
+   - Then, once the accountant confirms: TCS on scrap (O219), the EPF
+     ceiling as dated data (O222), the Labour Welfare Fund (West Bengal,
+     before the December run), the bonus ceiling (the higher of 7,000 and
+     the minimum wage), the Income-tax Act 2025 section and form names,
+     the Indian chart and GST taxes seeded.
+2. **After g21:** the remaining rules, minor and statutory rows.
 3. **Waiting on the tax adviser:** O60 for
    registered bill-to-ship-to buyers, O153, O166 (e-way bill codes).
-   **Waiting on the plant's accountant:** g20's O28 caps a leaver's
-   recovery at half the wages (the Payment of Wages Act's general ceiling);
-   confirm it for this plant.
+   **Waiting on the plant's accountant:** the 20 figures in the gap
+   analysis's last section (EPF ceiling, TCS rate on scrap, GST rates on
+   sacks and scrap, West Bengal PT and LWF), and the leaver deduction cap.
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
