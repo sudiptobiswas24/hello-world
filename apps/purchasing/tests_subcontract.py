@@ -795,3 +795,39 @@ class HeldAssembliesAcceptedAreAConcessionTests(_SentBatches):
         response = self.accept(self.receiver, receipt)
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(self.motor.on_hand_at(self.bay), Decimal("0"))
+
+
+class HeldAssembliesKeepALotOfTheirOwnTests(_SentBatches):
+    """
+    Review F1: F-1 passed 1 January and went for 10 assemblies; 5 came back
+    into A-1, which passed its own inspection on 15 January; F-1 was
+    rejected on 2 February; the other 5, into A-1, read as released.
+    """
+
+    def test_held_assemblies_are_not_received_into_a_lot_already_inspected(self):
+        from apps.quality.models import Characteristic, Inspection, InspectionPlan, PlanLine, Reading
+
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        self.mandatory_plan()
+        torque = Characteristic.objects.create(code="TRQ", name="Torque", uom=self.uom)
+        own = InspectionPlan.objects.create(item=self.assembly, is_mandatory=True)
+        own_line = PlanLine.objects.create(plan=own, characteristic=torque, lower_limit=Decimal("0"),
+                                           upper_limit=Decimal("1"))
+        sent = self.batch("F-1", "10", datetime.date(2026, 12, 31))
+        self.inspect(sent, "0.5", datetime.date(2026, 1, 1))
+        order = self.subcontract_order("10")
+        order.issue_components(self.warehouse)
+        made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        self.receive_into(order, "5", self.warehouse, lot=made)
+        inspection = Inspection.objects.create(lot=made, plan=own, inspected_on=datetime.date(2026, 1, 15))
+        Reading.objects.create(inspection=inspection, plan_line=own_line, value=Decimal("0.5"))
+        inspection.post()
+        self.inspect(sent, "3", datetime.date(2026, 2, 2))
+        with self.assertRaisesMessage(ValidationError, "receive them into a lot of their own"):
+            self.receive_into(order, "5", self.warehouse, lot=made)
+        self.assertEqual((made.on_hand_at(self.warehouse), sent.on_hand_at(self.subcontractor)),
+                         (Decimal("5"), Decimal("5")))
+        apart = self.lot_model.objects.create(item=self.assembly, code="A-2")
+        receipt = self.receive_into(order, "5", self.warehouse, lot=apart)
+        self.assertEqual(len(receipt.held_assemblies()), 1)
