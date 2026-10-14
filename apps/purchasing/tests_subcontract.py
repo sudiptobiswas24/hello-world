@@ -914,3 +914,50 @@ class WhoeverPostedTheReceiptReceivedItTests(HeldAssembliesAcceptedAreAConcessio
         response = self.accept(self.receiver, receipt, reason="I received them and they are fine")
         self.assertEqual(response.status_code, 400, response.content)
         self.assertIn("somebody else approves it", response.content.decode())
+
+
+class HeldAssembliesSayWhatIsStillHeldTests(_SentBatches):
+    """Review F5 and F7: the receipt lists what still waits, at what still waits, and asks only subcontract lines."""
+
+    def test_a_tracked_lot_sent_back_in_full_is_not_listed(self):
+        Item.objects.filter(pk=self.assembly.pk).update(tracking="lot")
+        self.assembly.refresh_from_db()
+        _sent, order = self.sent_then_rejected()
+        made = self.lot_model.objects.create(item=self.assembly, code="A-1")
+        receipt = self.receive_into(order, "10", self.warehouse, lot=made)
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("4")}, debit_bills=False)
+        (row,) = receipt.held_assemblies()
+        self.assertEqual(row["quantity"], Decimal("6"))
+        receipt.create_return(debit_bills=False)
+        self.assertEqual(receipt.held_assemblies(), [])
+
+    def test_untracked_four_of_ten_conceded_leaves_six_listed(self):
+        from django.contrib.auth.models import User
+
+        bay = Warehouse.objects.create(code="QA", name="Inspection bay", is_quarantine=True)
+        _sent, order = self.sent_then_rejected()
+        receipt = self.receive_into(order, "10", bay)
+        boss = User.objects.create(username="boss", is_superuser=True)
+        receipt.accept(self.warehouse, quantities={receipt.lines.get(): Decimal("4")}, by=boss,
+                       reason="Four re-checked at the vendor")
+        (row,) = receipt.held_assemblies()
+        self.assertEqual(row["quantity"], Decimal("6"))
+
+    def test_a_plain_receipt_asks_once(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
+        for index in range(15):
+            item = Item.objects.create(sku=f"X{index}", name=f"X{index}", uom=self.uom)
+            PurchaseOrderLine.objects.create(order=order, item=item, uom=self.uom, quantity=Decimal("1"),
+                                             unit_price=Decimal("2"))
+        order.confirm()
+        receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 2, 1))
+        for line in order.lines.all():
+            GoodsReceiptLine.objects.create(receipt=receipt, order_line=line, warehouse=self.warehouse,
+                                            quantity_received=Decimal("1"))
+        receipt.post()
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(receipt.held_assemblies(), [])
+        self.assertEqual(len(queries), 1)
