@@ -3,7 +3,7 @@ A doff off tape line E-1: 60.0 kg gross on 8 bobbins of 0.5 kg, so 56
 kg of 1,000-denier tape. Denier checks of 1,002, 998 and 1,005 average
 1,001.67, inside 950 to 1,050: the batch is inspected and released.
 Checks averaging 1,085 are off: booked only with a supervisor and a
-reason, as a concession. With a tenacity minimum on the specification,
+reason, held for the Quality Manager whatever the plan (decision 23). With a tenacity minimum on the specification,
 the line's denier is not the whole inspection: it waits for the lab.
 """
 
@@ -83,9 +83,13 @@ class DoffTests(TapeTestCase):
         with self.assertRaisesMessage(ValidationError, "Say why tape off its denier"):
             self.doff(OFF, supervisor=self.supervisor)
         doff = self.doff(OFF, supervisor=self.supervisor, reason="Customer accepts heavy")
-        self.assertEqual((doff.inspection.disposition, doff.conceded_by),
-                         (Disposition.CONCESSION, self.supervisor))
-        self.assertEqual(release_status(doff.lot), ReleaseStatus.RELEASED)
+        # Decision 23 (O204): under a mandatory plan too, it waits for the Quality Manager. The
+        # supervisor's PIN booked it, held; the PIN and the reason are the floor's note.
+        self.assertEqual((doff.inspection.disposition, doff.inspection.decided_by, doff.conceded_by),
+                         (Disposition.AWAITING, None, None))
+        self.assertEqual(doff.inspection.decision_note, "")
+        self.assertIn(f"with {self.supervisor}'s PIN: Customer accepts heavy", doff.inspection.notes)
+        self.assertEqual(release_status(doff.lot), ReleaseStatus.HELD)
 
     def test_off_denier_under_an_advisory_plan_waits_for_the_quality_manager(self):
         """RISKS.md, decision 22: nobody concedes it at the station; it is held for the Quality Manager."""
@@ -179,6 +183,22 @@ class LabFinishesTests(StationTestCase):
         doff.inspection.post()
         doff.refresh_from_db()
         self.assertEqual((doff.inspection.disposition, doff.conceded_by), (Disposition.AWAITING, None))
+
+    def test_off_under_a_mandatory_plan_waits_for_the_quality_manager_when_the_lab_finishes(self):
+        """Decision 23 (O204): the lab finishing it neither rejects it nor takes the floor's concession."""
+        from apps.quality.models import Disposition
+
+        doff = record_tape(self.tx, self.operator, self.e1, "60.0", 8, self.bobbin, OFF, at=NOON,
+                           supervisor=self.supervisor, reason="Customer accepts heavy")
+        self.assertEqual((doff.inspection.decided_by, doff.inspection.decision_note, doff.conceded_by),
+                         (None, "", None))
+        line = doff.inspection.plan.lines.get(derived_from="tenacity")
+        for number in range(line.sample_size):
+            Reading.objects.create(inspection=doff.inspection, plan_line=line,
+                                   value=Decimal("4.8"), sample_reference=f"T{number}")
+        doff.inspection.post()
+        self.assertEqual((doff.inspection.disposition, release_status(doff.lot)),
+                         (Disposition.AWAITING, ReleaseStatus.HELD))
 
     def test_withdrawn_before_the_lab_its_open_inspection_goes(self):
         from apps.quality.models import Inspection

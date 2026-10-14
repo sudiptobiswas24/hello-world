@@ -148,7 +148,7 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
                 at=None, instrument=None):
     """Count a bundle off `machine`, weigh its sample, and book it if it may be booked."""
     from apps.inventory.models import Lot
-    from apps.quality.models import Disposition, Inspection, Reading
+    from apps.quality.models import Reading
 
     from .machines import Machine
     from .orders import ProductionEntry
@@ -220,16 +220,11 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
     kind = "LN" if isinstance(spec, LinerSpecification) else "BG"
     lot = Lot.objects.create(item=order.item, code=bag_code(machine, shift, shift_date, kind),
                              manufactured_on=shift_date)
-    # Under an advisory plan an off bundle is the Quality Manager's to decide
-    # (RISKS.md, decision 22): it posts awaiting them, held, the reason a note.
-    waits = not passed and not plan.is_mandatory
-    inspection = Inspection.objects.create(
-        lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
-        disposition="" if passed or lab_to_finish or waits else Disposition.CONCESSION,
-        decided_by=None if passed or waits else supervisor.party,
-        decision_note="" if waits else reason,
-        notes=f"Booked off weight at {station} with {supervisor}'s PIN: {reason}" if waits else "",
-    )
+    # Off weight, the Quality Manager's to decide whatever the plan (decisions 22 and 23).
+    from .station_gauge import floor_inspection
+
+    inspection = floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor,
+                                  reason, "off weight")
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,
                                sample_reference=f"S{number}", instrument=instrument)
@@ -248,8 +243,8 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
         mount=mounted if mounted is not None and mounted.operation.work_order_id == order.pk
         else None,
         station=station, machine=machine, work_order=order, operator=operator,
-        # Nobody concedes a bundle the Quality Manager is to decide (RISKS.md, decision 22).
-        supervisor=None if passed or waits else supervisor, shift=shift, shift_date=shift_date,
+        # Nobody concedes a bundle at the station: the Quality Manager decides (decisions 22, 23).
+        supervisor=None, shift=shift, shift_date=shift_date,
         counted_at=at, bags=bags, target_grams=(line.lower_limit + line.upper_limit) / 2,
         sample_mean_grams=mean.quantize(Decimal("0.001"), ROUND_HALF_UP), passed=passed,
         entry=entry, inspection=inspection,

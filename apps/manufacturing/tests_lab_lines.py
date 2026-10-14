@@ -105,9 +105,13 @@ class TheLabFinishesTests(LabLinesTestCase):
 
         self.tested(seam_strength_min_n=Decimal("400"))
         count = self.count(sample=OUT, supervisor=self.supervisor, reason="Customer agreed")
+        # Decision 23 (O204): the supervisor's PIN books it, held, as the floor's note; nobody is
+        # named as deciding it, and when the lab finishes it, it waits for the Quality Manager.
         self.assertEqual((count.passed, count.inspection.disposition,
-                          count.inspection.decided_by, count.inspection.posted),
-                         (False, "", self.supervisor.party, False))
+                          count.inspection.decided_by, count.inspection.posted,
+                          count.inspection.failed_at_the_machines),
+                         (False, "", None, False, True))
+        self.assertIn(f"with {self.supervisor}'s PIN: Customer agreed", count.inspection.notes)
 
     def test_withdrawn_before_the_lab_it_comes_off_the_list(self):
         self.tested(seam_strength_min_n=Decimal("400"))

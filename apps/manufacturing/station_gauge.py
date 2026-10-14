@@ -17,6 +17,28 @@ from django.utils import timezone
 ZERO = Decimal("0")
 
 
+def floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor, reason, off):
+    """
+    The inspection a batch booked at the machines opens: a doff, a film
+    roll, a bundle of bags. One shape for all three, so one rule.
+
+    Off its limits, it is the Quality Manager's to decide whatever the plan
+    (RISKS.md, decisions 22 and 23): it posts awaiting them, held, and
+    nobody concedes it at the station, a mandatory plan included. The
+    supervisor's PIN and reason let the batch be booked, held; they are
+    the floor's note on the inspection, never a concession, and the same
+    when the lab finishes the inspection later (`failed_at_the_machines`
+    makes that posting wait too).
+    """
+    from apps.quality.models import Inspection
+
+    return Inspection.objects.create(
+        lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
+        failed_at_the_machines=not passed,
+        notes="" if passed else f"Booked {off} at {station} with {supervisor}'s PIN: {reason}",
+    )
+
+
 def weigh_gross(station, operator, supervisor, gross_kg, source, at, typed_reason="",
                 typed_note=""):
     """(gross, scale reading): the scale's weight, or a typed one somebody approved."""
@@ -49,7 +71,7 @@ def gauged_batch(station, operator, machine, order, plan, gauge, readings, noun,
     finish, and the batch stays not-yet-inspected until it does.
     """
     from apps.inventory.models import Lot
-    from apps.quality.models import Disposition, Inspection, Reading
+    from apps.quality.models import Reading
 
     from .orders import ProductionEntry
     from .station import check_supervisor
@@ -72,17 +94,8 @@ def gauged_batch(station, operator, machine, order, plan, gauge, readings, noun,
             raise ValidationError(f"Say why {noun} off its {gauge} is taken.")
     lab_to_finish = len(lines) > 1
     lot = Lot.objects.create(item=order.item, code=code, manufactured_on=shift_date)
-    # Under an advisory plan an off batch is the Quality Manager's to decide
-    # (RISKS.md, decision 22): it posts awaiting them, held, and the floor's
-    # reason goes with it as a note, not as a concession nobody may take there.
-    waits = not passed and not plan.is_mandatory
-    inspection = Inspection.objects.create(
-        lot=lot, plan=plan, inspected_on=shift_date, inspected_by=operator.party,
-        disposition="" if passed or lab_to_finish or waits else Disposition.CONCESSION,
-        decided_by=None if passed or waits else supervisor.party,
-        decision_note="" if waits else reason,
-        notes=f"Booked off its {gauge} at {station} with {supervisor}'s PIN: {reason}" if waits else "",
-    )
+    inspection = floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor,
+                                  reason, f"off its {gauge}")
     for number, value in enumerate(values, start=1):
         Reading.objects.create(inspection=inspection, plan_line=line, value=value,
                                sample_reference=f"{prefix}{number}", instrument=instrument)

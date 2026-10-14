@@ -152,8 +152,9 @@ class BridgedTapeTests(BridgedTestCase):
         self.read("60.0")
         doff = record_tape(self.tx, self.operator, self.e1, None, 8, self.bobbin, OFF,
                            at=CONFIRM, supervisor=self.supervisor, reason="Heavy is fine")
+        # Nobody concedes it at the station (decision 23): it waits for the Quality Manager.
         self.assertEqual((doff.weight_source, doff.weight_approved_by, doff.conceded_by),
-                         ("scale", None, self.supervisor))
+                         ("scale", None, None))
 
     def test_typed_with_a_supervisor_and_a_reason(self):
         with self.assertRaisesMessage(ValidationError, "needs a supervisor's PIN"):
