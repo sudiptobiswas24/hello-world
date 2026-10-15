@@ -305,7 +305,10 @@ class LetterOfUndertaking(AuditModel):
         registration = GstSettings.active()
         if registration is None:
             return None
-        return cls.objects.filter(registration=registration, valid_from__lte=day, valid_to__gte=day).first()
+        # From the later of its start and its filing: an LUT is furnished before the export it covers
+        # (Rule 96A), so one filed on 5 April does not cover an invoice of the 2nd (review F14).
+        return cls.objects.filter(registration=registration, valid_from__lte=day, filed_on__lte=day,
+                                  valid_to__gte=day).first()
 
     def as_kept(self):
         return {"arn": self.arn, "financial_year": self.financial_year, "filed_on": self.filed_on.isoformat(),
