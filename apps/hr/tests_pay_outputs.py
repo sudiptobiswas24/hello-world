@@ -372,6 +372,19 @@ class AdvancesTests(OutputsTestCase):
                          (Decimal("3000.00"), Decimal("0"), Decimal("3000.00")))
         self.assertEqual(advance.receivable_account, self.advances)
 
+    def test_an_instalment_is_a_months_however_many_runs_pay_the_month(self):
+        """Review A7, decided 15 October: June in two runs takes 2,000 once; July 2,000 again."""
+        advance = self.give()
+        runs = []
+        for first, last in ((D(2026, 6, 1), D(2026, 6, 15)), (D(2026, 6, 16), D(2026, 6, 30)),
+                            (D(2026, 7, 1), D(2026, 7, 31))):
+            run = self.pay_run(first, last, pay_date=last)
+            run.calculate()
+            run.post()
+            runs.append(run)
+        self.assertEqual([self.recovered_on(run) for run in runs], [[Decimal("2000.00")], [], [Decimal("2000.00")]])
+        self.assertEqual(advance.balance(), Decimal("1000.00"))
+
     def test_an_advance_whose_payment_alone_was_voided_is_owed_nothing(self):
         """Review RP8."""
         advance = self.give()

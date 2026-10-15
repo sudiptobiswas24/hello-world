@@ -236,7 +236,11 @@ def pt_register(month):
             if not lines:
                 continue
             rows.append({"run": run.number, "employee": slip.employee.employee_number,
-                         "name": slip.employee.party.name, "wages": wage_base(slip, lines[0]),
+                         "name": slip.employee.party.name,
+                         # The month's wages the band was read at: this run's, and what runs before it of the
+                         # month paid on (kept on the line, review RP5).
+                         "wages": wage_base(slip, lines[0]) + Decimal(
+                             ((lines[0].kept_terms or {}).get("month_before") or ["0"])[0]),
                          "tax": sum((line.amount for line in lines), Decimal("0")),
                          **_schedule(lines[0], "slab")})
     return rows

@@ -1239,9 +1239,12 @@ class Payslip(AuditModel):
                 # closed on 9 June and opened again on the 10th, paid 319 + 682 = 1,001. Each
                 # line is what the running total rounds to less what the lines before it took.
                 owed, unrounded, taken = [], Decimal("0"), Decimal("0")
+                # A slab is a month's figure (professional tax, the welfare fund): what other posted runs of
+                # the month took of it comes off, once, however many rates the component has (review RP5).
+                rebate = self._month_before(component)[1] if component.basis == ComponentBasis.SLAB else 0
                 for row in group:
                     unrounded += self._amount_for(row, proportion, before, hours, computed)
-                    so_far = component.round(unrounded)
+                    so_far = component.round(max(unrounded - rebate, Decimal("0")))
                     owed.append((row, so_far - taken, None))
                     taken = so_far
             marked, label = component.statutory or "", component.name
@@ -1439,7 +1442,10 @@ class Payslip(AuditModel):
         found = []
         for advance in advances:
             left = advance.balance()
-            take = min(left if self.is_final() else min(advance.instalment, left), room)
+            # An instalment is a month's (decided 15 October, review A7): what other posted runs of the month
+            # took of it comes off; a final slip takes all that is left, within the cap.
+            month_taken = advance.taken_in_month(self.run)
+            take = min(left if self.is_final() else min(max(advance.instalment - month_taken, 0), left), room)
             if take <= 0:
                 continue
             room -= take
@@ -1448,8 +1454,37 @@ class Payslip(AuditModel):
                 description=f"{advance.component.name}: {advance.get_kind_display().lower()} of {advance.amount}",
                 rate=advance.instalment, basis=advance.component.basis, is_taxable=advance.component.is_taxable,
                 amount=take, kept_statutory="", kept_base=[], advance=advance,
+                kept_terms={"month_before": ["0.00", f"{month_taken:.2f}"]} if month_taken else None,
             ))
         return found
+
+    def _month_before(self, component):
+        """
+        (base, taken): what this person's other posted runs whose period ends in this run's month paid
+        `component`'s base on, and what they took of it. A slab (professional tax per month, the welfare fund
+        per its months) is owed once a period on the period's wages, however many runs pay them (decided 15
+        October, review RP5): two fortnights of June took the welfare fund twice, 6 and 30 for 3 and 15. Kept
+        on the line as month_before, so its register and its void read what it was worked out from. A run of
+        the month voided is not counted: the month is owed again, and the next run of it takes it.
+        """
+        cache = self.__dict__.setdefault("_month", {})
+        if component.pk not in cache:
+            first = self.run.period_end.replace(day=1)
+            following = (first + datetime.timedelta(days=32)).replace(day=1)
+            slips = Payslip.objects.filter(
+                employee=self.employee, run__status=PayRunStatus.POSTED, run__period_end__gte=first,
+                run__period_end__lt=following).exclude(run=self.run).prefetch_related("lines")
+            named = {other.pk for other in component.base_components.all()}
+            base = taken = Decimal("0")
+            for slip in slips:
+                for line in slip.lines.all():
+                    if line.component_id == component.pk and line.kind == component.kind:
+                        taken += line.amount
+                    elif line.kind == ComponentKind.EARNING and (
+                            line.component_id in named if named else line.is_taxable):
+                        base += line.amount
+            cache[component.pk] = (base, taken)
+        return cache[component.pk]
 
     def _terms(self, component_id):
         """What the dated figures `component_id` is worked out at on this slip: kept on its lines."""
@@ -1634,7 +1669,12 @@ class Payslip(AuditModel):
             if ceiling is not None:
                 base = min(base, ceiling)
             if component.basis == ComponentBasis.SLAB:
-                amount, term = component.slab_on(base, self.run.period_end, self.employee.work_state, self.employee)
+                # The band of the month's wages: this run's base and what other posted runs of the month paid on.
+                earlier_base, earlier_taken = self._month_before(component)
+                if earlier_base or earlier_taken:
+                    self._terms(component.pk)["month_before"] = [f"{earlier_base:.2f}", f"{earlier_taken:.2f}"]
+                amount, term = component.slab_on(base + earlier_base, self.run.period_end, self.employee.work_state,
+                                                 self.employee)
                 if term is not None:
                     self._terms(component.pk)["slab"] = term
             else:

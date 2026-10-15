@@ -50,7 +50,8 @@ class SalaryAdvance(AuditModel):
         help_text="The deduction it is recovered by; its account is the advance receivable.")
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     instalment = models.DecimalField(max_digits=18, decimal_places=2,
-                                     help_text="What each pay run takes back, or what is left if less.")
+                                     help_text="What each month's pay takes back, however many runs pay the month, "
+                                               "or what is left if less.")
     recover_from = models.DateField(help_text="The first pay period ending on or after this day recovers.")
     note = models.CharField(max_length=255, blank=True)
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
@@ -79,6 +80,19 @@ class SalaryAdvance(AuditModel):
         from .payroll import PayRunStatus, PayslipLine
 
         return PayslipLine.objects.filter(advance=self, payslip__run__status=PayRunStatus.POSTED).aggregate(
+            total=Sum("amount"))["total"] or Decimal("0.00")
+
+    def taken_in_month(self, run):
+        """What other posted runs whose period ends in `run`'s month took of it: an instalment is a month's."""
+        import datetime
+
+        from .payroll import PayRunStatus, PayslipLine
+
+        first = run.period_end.replace(day=1)
+        following = (first + datetime.timedelta(days=32)).replace(day=1)
+        return PayslipLine.objects.filter(
+            advance=self, payslip__run__status=PayRunStatus.POSTED, payslip__run__period_end__gte=first,
+            payslip__run__period_end__lt=following).exclude(payslip__run=run).aggregate(
             total=Sum("amount"))["total"] or Decimal("0.00")
 
     def balance(self):
