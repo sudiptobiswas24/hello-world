@@ -22,6 +22,19 @@ def run(**options):
 
 
 class SetupIndianBooksTests(TestCase):
+    def test_a_taken_code_of_another_purpose_is_reported_and_nothing_wired_into_it(self):
+        """Review F12: 2201 is the plant's Rent payable, 2260 an expense."""
+        rent = Account.objects.create(code="2201", name="Rent payable", account_type=AccountType.LIABILITY)
+        welfare = Account.objects.create(code="2260", name="Staff welfare", account_type=AccountType.EXPENSE)
+        out = run()
+        self.assertIn("collision, for the accountant: account 2201 is 'Rent payable' (liability), not Output CGST: "
+                      "left as it is and nothing wired into it; Output CGST seeded as 2201-IN", out)
+        self.assertEqual(Tax.objects.get(code="CGST2.5").collected_account.code, "2201-IN")
+        self.assertEqual(TcsSection.objects.get(code="SCRAP").payable_account.code, "2260-IN")
+        self.assertFalse(Tax.objects.filter(collected_account__in=[rent, welfare]).exists())
+        rent.refresh_from_db()
+        self.assertEqual(rent.name, "Rent payable")
+
     def setUp(self):
         inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
         Company.objects.create(name="Bengal Woven Sacks", base_currency=inr)
@@ -42,13 +55,18 @@ class SetupIndianBooksTests(TestCase):
                          "IGST0")
         self.assertTrue(FiscalPosition.objects.filter(code="INTRA").exists())
         self.assertEqual(Account.objects.get(code="2260").account_type, AccountType.LIABILITY)
-        self.assertEqual(TcsSection.objects.get(code="206C(1)").payable_account.code, "2260")
+        self.assertEqual(TcsSection.objects.get(code="SCRAP").payable_account.code, "2260")
         self.assertTrue(Account.objects.get(code="2250").name.startswith("TDS payable"))
 
     def test_seeded_is_listed_for_review_and_the_rate_is_not_confirmed(self):
         out = run()
-        (rate,) = TcsRate.objects.all()
-        self.assertEqual((rate.rate_percent, rate.confirmed_on), (D("1"), None))
+        # Review F13: the section by date, both unconfirmed, and the rate question put to the accountant.
+        self.assertEqual([(str(rate.applies_from), rate.section_code, rate.rate_percent, rate.confirmed_on)
+                          for rate in TcsRate.objects.order_by("applies_from")],
+                         [("2025-04-01", "206C(1)", D("1"), None), ("2026-04-01", "394(1)", D("2"), None)])
+        rate = TcsRate.objects.get(section_code="394(1)")
+        self.assertIn("1% or 2% under 394(1) from 1 April 2026?",
+                      SeededDefault.objects.get(model="accounting.tcsrate", object_id=rate.pk).label)
         self.assertEqual(SeededDefault.objects.filter(reviewed_on__isnull=True).count(),
                          SeededDefault.objects.count())
         self.assertTrue(SeededDefault.objects.filter(model="accounting.tcsrate", object_id=rate.pk).exists())

@@ -39,11 +39,12 @@ class TcsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
 class TcsRateSerializer(serializers.ModelSerializer):
     section_code = serializers.CharField(source="section.code", read_only=True)
+    law_section = serializers.CharField(source="section_code", required=False, allow_blank=True, max_length=16)
 
     class Meta:
         model = TcsRate
         fields = ["id", "section", "section_code", "applies_from", "rate_percent", "no_pan_rate_percent",
-                  "authority", "confirmed_by", "confirmed_on"]
+                  "authority", "law_section", "confirmed_by", "confirmed_on"]
         read_only_fields = ["confirmed_by", "confirmed_on"]
 
 

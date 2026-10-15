@@ -178,7 +178,7 @@ class SetupBooks(TestCase):
     def test_an_account_of_the_wrong_kind_is_not_used_for_the_tcs_payable(self):
         expense = Account.objects.create(code="2260", name="Staff welfare", account_type=AccountType.EXPENSE)
         self.run_it()
-        section = TcsSection.objects.get(code="206C(1)")
+        section = TcsSection.objects.get(code="SCRAP")
         self.assertNotEqual(section.payable_account_id, expense.pk, "TCS is owed into an expense account")
 
     def test_a_bad_gstin_is_refused_not_stored(self):
@@ -189,8 +189,8 @@ class SetupBooks(TestCase):
 
     def test_it_never_marks_anything_confirmed_and_collects_nothing_until_confirmed(self):
         self.run_it()
-        section = TcsSection.objects.get(code="206C(1)")
-        rate = section.rates.get()
-        self.assertIsNone(rate.confirmed_on)
-        with self.assertRaises(Exception):
-            section.rate_on(datetime.date(2026, 9, 10))
+        section = TcsSection.objects.get(code="SCRAP")
+        self.assertEqual(list(section.rates.exclude(confirmed_on=None)), [])  # both seeded rates (review F13)
+        for day in (datetime.date(2026, 3, 31), datetime.date(2026, 9, 10)):
+            with self.assertRaises(Exception):
+                section.rate_on(day)

@@ -17,6 +17,7 @@ export default function TcsRateForm() {
         { key: "applies_from", label: "Applies from", kind: "date" },
         { key: "rate_percent", label: "Rate %", kind: "decimal", places: 4, hint: "Collected from a buyer whose PAN is on file" },
         { key: "no_pan_rate_percent", label: "Without PAN %", kind: "decimal", places: 4, hint: "Section 206CC" },
+        { key: "law_section", label: "Section in law", hint: "206C(1) until 31 March 2026, 394(1) from 1 April 2026; printed on the invoice" },
         { key: "authority", label: "Authority", hint: "The section or notification it comes from" },
         { key: "confirmed_on", label: "Confirmed on", kind: "date", existingOnly: true, readOnly: true },
       ]}
