@@ -219,7 +219,7 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         self.inspect(1000)
         retest = self.inspect(1200)
         self.assertEqual(release_status(self.drum), "held")
-        retest.void("Retained sample was the wrong drum")
+        retest.void("Retained sample was the wrong drum", by=quality_manager())
         self.assertEqual(release_status(self.drum), "released")
 
     def test_a_held_batch_may_still_be_moved_to_a_rejects_store(self):

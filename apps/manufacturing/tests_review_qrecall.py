@@ -173,7 +173,7 @@ class TheLiftRacingANewVerdict(Base):
 
         rejection = self.reject_b1()
         with self.captureOnCommitCallbacks(execute=False) as callbacks:
-            rejection.void("typo")
+            rejection.void("typo", by=User.objects.get(username="asha"))
         original, posted = recall_module.recall_stands, []
 
         def interleaved(recall_of):
@@ -307,7 +307,7 @@ class Escalation(Base):
     def test_a_recall_whose_source_no_longer_holds_is_voided_not_escalated(self):
         rejection = self.reject_b1()
         recall = self.recall_of(self.a)
-        rejection.void("Scale out")  # in code: the lift has not run
+        rejection.void("Scale out", by=User.objects.get(username="asha"))  # in code: the lift has not run
         root = User.objects.create_superuser("root", "root@example.com", "x")
         recall = Inspection.objects.get(pk=recall.pk)
         told = recall.escalate(timezone.localdate() + datetime.timedelta(days=10))

@@ -12,9 +12,8 @@ disagree.
 import datetime
 from decimal import Decimal
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
-from django.core.management import call_command
 from django.test import TestCase
 
 from apps.core.models import Party, UnitOfMeasure, UnitOfMeasureCategory
@@ -328,18 +327,21 @@ class NotYetInspectedIsNotPassedTests(QualityTestCase):
         self.assertIn("does not name one", str(caught.exception))
 
 
-def quality_manager(party):
+def quality_manager(party=None):
     """
-    A Quality Manager's login, signed as `party`: a concession is theirs to take, whoever posts the
-    readings (rereview 2), and is signed by the login's own person, never a name typed.
+    A Quality Manager's login, signed as `party` when given: a concession is theirs to take, whoever
+    posts the readings (rereview 2), and is signed by the login's own person, never a name typed; a
+    hold is theirs to lift, in code as through the API (rereview 1 and 3).
     """
     from django.contrib.auth.models import Permission
 
     from apps.core.models import PartyRole, PartyRoleAssignment
     from apps.hr.models import Employee
 
-    user = User.objects.create_user(f"qm-{party.code.lower()}")
+    user = User.objects.create_user(f"qm-{party.code.lower()}" if party else f"qm-{User.objects.count() + 1}")
     user.user_permissions.add(Permission.objects.get(codename="decide_inspection", content_type__app_label="quality"))
+    if party is None:
+        return user
     PartyRoleAssignment.objects.get_or_create(party=party, role=PartyRole.EMPLOYEE)
     Employee.objects.create(party=party, employee_number=f"E-{party.code}", hire_date=datetime.date(2020, 1, 1),
                             user=user)
@@ -363,13 +365,6 @@ class VoidingHandsTheQuestionBackTests(QualityTestCase):
             inspection.void()
         self.assertIn("nobody said why", str(caught.exception))
 
-    def quality_manager(self):
-        """Who posts a pass over a rejection: only the Quality Manager lifts a hold (rereview 1)."""
-        call_command("setup_roles", verbosity=0)
-        user = User.objects.create_user("qm")
-        user.groups.add(Group.objects.get(name="Quality Manager"))
-        return user
-
     def test_the_latest_standing_inspection_speaks(self):
         plan = self.plan()
         first = self.inspect(plan, [92, 92, 92])
@@ -378,7 +373,7 @@ class VoidingHandsTheQuestionBackTests(QualityTestCase):
         second = self.inspect(plan, [87, 88, 89])
         second.inspected_on = TODAY + datetime.timedelta(days=1)
         second.save()
-        second.post(self.quality_manager())
+        second.post(quality_manager())
         self.assertEqual(release_status(self.roll), ReleaseStatus.RELEASED)
 
     def test_and_voiding_it_hands_back_to_the_one_before(self):
@@ -388,7 +383,7 @@ class VoidingHandsTheQuestionBackTests(QualityTestCase):
         second = self.inspect(plan, [87, 88, 89])
         second.inspected_on = TODAY + datetime.timedelta(days=1)
         second.save()
-        second.post(self.quality_manager())
+        second.post(quality_manager())
         second.void("Wrong roll.")
         self.assertEqual(release_status(self.roll), ReleaseStatus.HELD)
 
