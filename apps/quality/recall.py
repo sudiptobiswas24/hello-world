@@ -24,12 +24,14 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DocumentSequence
+from apps.core.models import DocumentSequence, lock_rows
 
 from .models import Disposition, Inspection, ReleaseStatus
 from .release import (
-    LINEAGE_DEPTH,
+    HOLDING,
     RELEASING,
+    holding_sources,
+    lot_and_sources,
     latest_inspection,
     lots_made_from,
     one_question,
@@ -87,45 +89,96 @@ def recall(verdict, by=None):
     holds now, with a to-do each. Returns [recall]. Called by
     Inspection.post() with the batch and every lot made from it locked.
 
-    A lot held by its own verdict already, or with a recall open, is not
-    recalled again. Two things are said rather than passed over, by one
-    to-do on the verdict itself: a lot held with no inspection plan to
-    file a recall under (it has no inspection of its own and its item no
-    plan in force), and lots the walk did not follow past LINEAGE_DEPTH
-    levels. A recall that stopped without saying so would read as complete.
+    Followed as far as the hold reaches: the hold is read from the lineage
+    with no limit, so the telling has none either (review F6), and the walk
+    ends on a loop because it visits each batch once.
+
+    A lot with a recall already open is told again, on that recall, naming
+    this hold too (review F4): the Quality Manager decides it knowing every
+    batch inside it that is held. A lot awaiting its own decision gets a
+    recall too, so that taking its own failure as is does not take what is
+    inside it as is. A lot rejected or held for rework by its own verdict is
+    held whatever is inside it, and not recalled. A lot with no inspection
+    plan to file a recall under is named in a to-do on the verdict itself.
     """
     from .decisions import tell_the_quality_manager
 
-    source, made, unfiled, beyond = verdict.lot, [], [], []
+    source, made, unfiled = verdict.lot, [], []
     with one_question():
-        lots = lots_made_from(verdict.lot, depth=LINEAGE_DEPTH, beyond=beyond)
-        for lot in lots:
-            if release_status(lot) != ReleaseStatus.HELD or open_recall(lot) is not None:
+        for lot in lots_made_from(verdict.lot):
+            waiting = open_recall(lot)
+            if waiting is not None:
+                also_held(waiting, verdict, by)
+                continue
+            if release_status(lot) != ReleaseStatus.HELD:
                 continue
             own = latest_inspection(lot)
-            if own is not None and own.disposition not in RELEASING:
+            if own is not None and own.disposition in (Disposition.REJECT, Disposition.REWORK):
                 continue
             plan = recall_plan(lot)
             if plan is None:
                 unfiled.append(lot)
                 continue
             made.append(_recall_one(verdict, lot, own, plan, by))
-    if unfiled or beyond:
-        said = [f"{source} is {verdict_words(verdict)}."]
-        if unfiled:
-            said.append(
+    if unfiled:
+        said = [f"{source} is {verdict_words(verdict)}.",
                 "Held with it, made from it, and not given a recall to decide because the item has "
                 "no inspection plan to file one under (it goes again when the source does, or once "
-                "it is inspected under a plan): " + "; ".join(_where(lot) for lot in unfiled) + ".")
-        if beyond:
-            said.append(
-                f"Not followed past {LINEAGE_DEPTH} levels, so whatever was made from these is not "
-                "named here; trace each from Stores, Batches: "
-                + ", ".join(str(lot) for lot in beyond) + ".")
+                "it is inspected under a plan): " + "; ".join(_where(lot) for lot in unfiled) + "."]
         tell_the_quality_manager(
             verdict, f"Recall from {source} ({verdict.number}): lots without a recall to decide",
             link=f"/quality/inspections/{verdict.pk}", by=by, body=" ".join(said))
     return made
+
+
+def also_held(recall_of, verdict, by=None):
+    """
+    A further hold on a lot whose recall is still open (review F4): the
+    Quality Manager's open to-do on the recall now names it too, so one
+    to-do a lot still says every batch inside it that holds it (two
+    rejections at once on two sources of one lot: one to-do, naming both).
+    With no to-do open on it any more, they are given a new one. A note on
+    the recall records it either way; the posted recall is not rewritten.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from apps.core.chatter import FollowUp, Note
+
+    from .decisions import tell_the_quality_manager
+
+    line = (f"Also held: {recall_of.lot} is made from {verdict.lot}, {verdict_words(verdict)}. "
+            f"Decide {recall_of.number} knowing both.")
+    kind = ContentType.objects.get_for_model(Inspection)
+    Note.objects.create(content_type=kind, object_id=recall_of.pk, body=line, created_by=by, updated_by=by)
+    waiting = list(FollowUp.objects.filter(content_type=kind, object_id=recall_of.pk,
+                                           done_on__isnull=True).order_by("pk"))
+    for to_do in waiting:
+        FollowUp.objects.filter(pk=to_do.pk).update(
+            note=f"{to_do.note} {line}".strip(),
+            summary=f"{to_do.summary}; also {verdict.lot} ({verdict.number})"[:255])
+    if not waiting:
+        tell_the_quality_manager(
+            recall_of, f"{recall_of.number}: {recall_of.lot} also made from {verdict.lot} ({verdict.number}), held",
+            link=f"/quality/inspections/{recall_of.pk}", by=by, body=line)
+
+
+def refile(lot, by=None):
+    """
+    A recall for `lot` if something inside it holds it and nothing waits
+    for the Quality Manager's decision on it (review F6): its recall was
+    voided while the source still held, or its own rejection was voided.
+    Never stuck held with nothing to decide. Returns the recall or None.
+    """
+    if open_recall(lot) is not None or release_status(lot) != ReleaseStatus.HELD:
+        return None
+    holding = holding_sources(lot)
+    own = latest_inspection(lot)
+    if not holding or (own is not None and own.disposition not in RELEASING):
+        return None
+    plan = recall_plan(lot)
+    if plan is None:
+        return None
+    return _recall_one(holding[-1][1], lot, own, plan, by)
 
 
 def _where(lot):
@@ -177,14 +230,29 @@ def lift_when_committed(lot, why):
     key order. The hold itself does not wait for this (the gate reads it
     from the source's verdict); only the recall's to-do does.
     """
-    def lift():
-        with transaction.atomic():
-            ids = [each.pk for each in lots_made_from(lot)]
-            for recall_of in Inspection.objects.filter(
-                    lot_id__in=ids, posted=True, voided_at__isnull=True, recalled_by__isnull=False,
-                    disposition=Disposition.AWAITING).order_by("pk"):
-                if not recall_stands(recall_of):
-                    recall_of.void(f"The recall is lifted: {why}"[:255])
+    transaction.on_commit(lambda: lift(lot, why))
 
-    transaction.on_commit(lift)
+
+def lift(lot, why):
+    """The lift itself, in its own transaction (see `lift_when_committed`)."""
+    with transaction.atomic():
+        lots = lots_made_from(lot)
+        # Under the very locks a new verdict on the source takes (Inspection.post: the batch,
+        # what it was made from, everything made from it, in one key order), and read afresh
+        # after them: a lift and a new hold are one after the other (review F3).
+        lock_rows(*lot_and_sources(lot), *lots, refresh=False)
+        for recall_of in Inspection.objects.filter(
+                lot_id__in=[each.pk for each in lots], posted=True, voided_at__isnull=True,
+                recalled_by__isnull=False, disposition=Disposition.AWAITING).order_by("pk"):
+            asked = timezone.now()
+            if recall_stands(recall_of):
+                continue
+            # Voided only on what was read: a hold posted since keeps it (it found the recall
+            # open and told the Quality Manager on it).
+            inside = [each.pk for each in lot_and_sources(recall_of.lot)[1:]]
+            if not Inspection.objects.filter(
+                    lot_id__in=inside, posted=True, voided_at__isnull=True, posted_at__gte=asked,
+                    disposition__in=HOLDING).exists():
+                recall_of.void(f"The recall is lifted: {why}"[:255])
+
 

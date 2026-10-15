@@ -987,9 +987,20 @@ class Inspection(AuditModel):
         lot_decided(self.lot, by)
         close_to_dos(self, by, f"{self} decided: {self.get_disposition_display().lower()}. {note}")
         if disposition == Disposition.CONCESSION:
+            from apps.core.chatter import Note
+            from django.contrib.contenttypes.models import ContentType
+
             from .recall import lift_when_committed
+            from .release import still_held_words
 
             lift_when_committed(self.lot, f"{self.lot} was taken as is by {self.number}.")
+            # Taken as is over what it was decided on, never over a hold it did not show (review
+            # F4): a batch inside it still held keeps it held, and the decision says so.
+            self.still_held = still_held_words(self.lot)
+            if self.still_held:
+                Note.objects.create(content_type=ContentType.objects.get_for_model(Inspection),
+                                    object_id=self.pk, created_by=by, updated_by=by,
+                                    body=f"Taken as is by {self.number}, and still held: {self.still_held}")
         return self
 
     @serialised("posted", "voided_at", "disposition", "escalated_on")
@@ -1077,10 +1088,12 @@ class Inspection(AuditModel):
             from .decisions import close_to_dos
 
             close_to_dos(self, by, f"{self} was voided, so there is nothing to decide: {reason}")
-        from .recall import lift_when_committed
+        from .recall import lift_when_committed, refile
 
-        # The verdict gone, a recall it made may have nothing left to hold (O207).
+        # The verdict gone, a recall it made may have nothing left to hold (O207); and the batch
+        # itself, still held by what is inside it, is never left with nothing to decide (review F6).
         lift_when_committed(self.lot, f"{self.number} was voided: {reason}")
+        refile(self.lot, by)
         return self
 
     def save(self, *args, **kwargs):
