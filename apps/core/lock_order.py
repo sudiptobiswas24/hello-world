@@ -49,6 +49,13 @@ LOCK_ORDER = (
     #    bill it settles (every path the survey of 14 October saw)
     "core.party",
     "accounting.payment",
+    # 3a. what a payment pays in payroll, after it (rereview 5, 6): Payment.void holds the payment
+    #     and its follow-up the bank file or the slip; paying a file or a slip and returning a
+    #     transfer take the money first (hr.payroll.hold_the_money_first), then the file, the
+    #     transfer on it, then the slips.
+    "hr.salarytransferfile",
+    "hr.salarytransfer",
+    "hr.payslip",
     # 4. the documents that move against an order: receipts, then
     #    deliveries (a drop-ship receipt makes the delivery), then bills,
     #    then invoices. A return is a delivery or receipt, a note a bill or
