@@ -361,6 +361,23 @@ class AdvancesTests(OutputsTestCase):
         self.assertEqual(self.recovered_on(june, stayer), [Decimal("1140.00")])
         self.assertEqual(theirs.balance(), Decimal("3860.00"))
 
+    def test_recovery_is_credited_where_the_advance_was_given_whatever_the_component_says_now(self):
+        """Review RP4: given against 1300; the component re-pointed to 1301; June recovers 2,000 from 1300."""
+        advance = self.give()
+        moved = Account.objects.create(code="1301", name="Employee advances (new)", account_type=AccountType.ASSET)
+        self.recovery.liability_account = moved
+        self.recovery.save()
+        self.month(6)
+        self.assertEqual((self.balance(self.advances), self.balance(moved), advance.balance()),
+                         (Decimal("3000.00"), Decimal("0"), Decimal("3000.00")))
+        self.assertEqual(advance.receivable_account, self.advances)
+
+    def test_an_advance_whose_payment_alone_was_voided_is_owed_nothing(self):
+        """Review RP8."""
+        advance = self.give()
+        Payment.objects.get(pk=advance.payment_id).void(on_date=D(2026, 5, 25))
+        self.assertEqual((self.balance(self.advances), advance.balance()), (Decimal("0.00"), Decimal("0.00")))
+
     def test_given_and_voided_by_whoever_pays_it_out(self):
         payment = self.money(self.person.party, "5000", counterpart=self.advances, day=D(2026, 5, 20))
         officer, controller = self.as_role("Payroll Officer"), self.as_role("Controller")

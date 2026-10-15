@@ -66,6 +66,14 @@ class SalaryAdvance(AuditModel):
     def __str__(self):
         return f"{self.get_kind_display()} {self.pk} to {self.employee} {self.amount}"
 
+    @property
+    def receivable_account(self):
+        """
+        The account it was given against: its payment's, posted and so fixed (review RP4). Every recovery is
+        credited there, whatever the recovery component's account says later.
+        """
+        return self.payment.counterpart_account
+
     def recovered(self):
         """What posted runs have taken back of it."""
         from .payroll import PayRunStatus, PayslipLine
@@ -74,6 +82,9 @@ class SalaryAdvance(AuditModel):
             total=Sum("amount"))["total"] or Decimal("0.00")
 
     def balance(self):
+        """What is still owed: nothing once the advance, or its payment on its own, is voided (review RP8)."""
+        if not self.stands():
+            return Decimal("0.00")
         return self.amount - self.recovered()
 
     def stands(self):

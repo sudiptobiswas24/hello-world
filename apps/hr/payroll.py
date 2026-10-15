@@ -1825,6 +1825,9 @@ class PayslipLine(AuditModel):
         """
         if self.posted_account_id:
             return self.posted_account
+        if self.advance_id:
+            # Where the advance was given: its posted payment's account (review RP4), not the component's now.
+            return self.advance.receivable_account
         if self.kind == ComponentKind.DEDUCTION and self.component.kind == ComponentKind.DEDUCTION:
             return self.component.liability_account
         # An earning, an employer cost, or an earning taken back (a final
