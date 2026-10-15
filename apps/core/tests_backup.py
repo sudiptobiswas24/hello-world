@@ -58,6 +58,8 @@ class ABackupRestoresItsAttachmentsTests(SimpleTestCase):
         (dump,) = self.backups.glob("erp_*.dump")
         (archive,) = self.backups.glob("erp_*.media.tar.gz")
         self.assertEqual(archive.name, dump.name.replace(".dump", ".media.tar.gz"))
+        (manifest,) = self.backups.glob("erp_*.media.sha256")
+        self.assertIn("./attachments/2026/10/lr-4471.pdf", manifest.read_text())
         self.assertIn("1 files", taken.stdout)
 
         # Lost after the backup: the scan and its record; and a file attached since, which the restore removes.
@@ -85,3 +87,21 @@ class ABackupRestoresItsAttachmentsTests(SimpleTestCase):
         alone = self.run_script(str(DEPLOY / "restore.sh"), str(dump), env=self.env | {"RESTORE_WITHOUT_MEDIA": "yes"})
         self.assertEqual(alone.returncode, 0, alone.stderr)
         self.assertEqual(self.psql(self.url, "SELECT count(*) FROM attached"), "1")
+
+
+    def test_an_archive_that_does_not_match_its_manifest_restores_nothing(self):
+        """Review F15: the restore checks every attachment's content, not only that there is one."""
+        taken = self.run_script(str(DEPLOY / "backup.sh"), "now")
+        self.assertEqual(taken.returncode, 0, taken.stderr)
+        (dump,) = self.backups.glob("erp_*.dump")
+        (manifest,) = self.backups.glob("erp_*.media.sha256")
+        digest, name = manifest.read_text().split(maxsplit=1)
+        manifest.write_text(f"{'0' * len(digest)}  {name}")
+        self.psql(self.url, "DELETE FROM attached")
+        self.scan.write_bytes(b"after the backup")
+        refused = self.run_script(str(DEPLOY / "restore.sh"), str(dump))
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("does not match", refused.stderr)
+        self.assertEqual((self.scan.read_bytes(), self.psql(self.url, "SELECT count(*) FROM attached")),
+                         (b"after the backup", "0"))
+        self.assertEqual(sorted(path.name for path in self.media.iterdir()), ["attachments"])

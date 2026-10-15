@@ -29,15 +29,20 @@ dump() {
     [ -d "$MEDIA_DIR" ] || { echo "no attachments directory at $MEDIA_DIR: mount the media volume" >&2; exit 1; }
     # The attachments first: a dump with no archive beside it is the backup
     # that loses every attached file, so it is never left looking complete.
+    manifest="${BACKUP_DIR}/erp_${stamp}.media.sha256"
     tar -C "$MEDIA_DIR" -czf "${media}.partial" .
+    # What each attached file was, byte for byte: the restore checks every file it puts back against it.
+    (cd "$MEDIA_DIR" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum) > "${manifest}.partial"
     pg_dump --format=custom --no-owner --file="${target}.partial" "$DATABASE_URL"
     # Renamed only once complete, so a half-written file is never taken
     # for a backup.
+    mv "${manifest}.partial" "$manifest"
     mv "${media}.partial" "$media"
     mv "${target}.partial" "$target"
     echo "$(date '+%F %T') backup written: $target ($(du -h "$target" | cut -f1)), $media ($(du -h "$media" | cut -f1), $(tar -tzf "$media" | grep -vc '/$') files)"
     find "$BACKUP_DIR" -name 'erp_*.dump' -mtime +"$BACKUP_KEEP_DAYS" -delete
     find "$BACKUP_DIR" -name 'erp_*.media.tar.gz' -mtime +"$BACKUP_KEEP_DAYS" -delete
+    find "$BACKUP_DIR" -name 'erp_*.media.sha256' -mtime +"$BACKUP_KEEP_DAYS" -delete
     find "$BACKUP_DIR" -name '*.partial' -mmin +60 -delete
 }
 
