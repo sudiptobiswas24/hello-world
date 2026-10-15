@@ -25,13 +25,15 @@ from .crm import Activity, Campaign, Lead, Opportunity, follow_ups_due
 from .models import CustomerProfile, Quotation
 from .tests_base import SalesTestCase, carries_every_customer
 
-TODAY = timezone.localdate()
-TOMORROW = TODAY + datetime.timedelta(days=1)
 
 
 class CrmTestCase(SalesTestCase):
     def setUp(self):
         super().setUp()
+        # Read when each test starts, not when the module is imported: a run that crosses midnight
+        # would otherwise compare yesterday's date with the views' today.
+        self.today = timezone.localdate()
+        self.tomorrow = self.today + datetime.timedelta(days=1)
         call_command("setup_roles", verbosity=0)
         self.expo = Campaign.objects.create(code="EXPO26", name="PlastIndia March 2026", channel="exhibition",
                                             starts_on=datetime.date(2026, 3, 1), ends_on=datetime.date(2026, 3, 5),
@@ -124,7 +126,7 @@ class ConversionTests(CrmTestCase):
                           opportunity.title), (party, self.dana_party, self.expo, "new", "20,000 cement sacks a month"))
         self.assertTrue(opportunity.number.startswith("OP-"))
         found = Lead.objects.get(pk=lead["id"])
-        self.assertEqual((found.status, found.converted_party, found.converted_on), ("converted", party, TODAY))
+        self.assertEqual((found.status, found.converted_party, found.converted_on), ("converted", party, self.today))
         # Closed: converted twice, lost after, edited after, all refused.
         self.assertEqual(self.dana.post(f"/api/sales/leads/{lead['id']}/convert/", {"code": "C-SHREE2"}, format="json").status_code, 400)
         self.assertEqual(self.dana.post(f"/api/sales/leads/{lead['id']}/lose/", {"reason": "x"}, format="json").status_code, 400)
@@ -156,7 +158,7 @@ class OpportunityTests(CrmTestCase):
         valued = self.dana.patch(url, {"value": "250000", "expected_on": "2026-06-30"}, format="json")
         self.assertEqual(valued.status_code, 200, valued.content)
         self.assertEqual((valued.json()["chance"], valued.json()["weighted_value"]), (10, "25000.00"))
-        quoted = self.dana.post(url + "quote/", {"quotation_date": str(TODAY), "valid_until": str(TODAY + datetime.timedelta(days=30))},
+        quoted = self.dana.post(url + "quote/", {"quotation_date": str(self.today), "valid_until": str(self.today + datetime.timedelta(days=30))},
                                 format="json")
         self.assertEqual(quoted.status_code, 201, quoted.content)
         quotation = Quotation.objects.get(pk=quoted.json()["quotation"])
@@ -164,14 +166,14 @@ class OpportunityTests(CrmTestCase):
                          (opportunity.customer, self.dana_party, opportunity.number))
         self.assertEqual((quoted.json()["opportunity"]["stage"], quoted.json()["opportunity"]["weighted_value"]),
                          ("quoted", "150000.00"))
-        self.assertEqual(self.dana.post(url + "quote/", {"quotation_date": str(TODAY)}, format="json").status_code, 400)
+        self.assertEqual(self.dana.post(url + "quote/", {"quotation_date": str(self.today)}, format="json").status_code, 400)
         [row] = [row for row in self.dana.get("/api/sales/opportunities/pipeline/").json() if row["stage"] == "quoted"]
         self.assertEqual((row["count"], row["value"], row["weighted"]), (1, "250000.00", "150000.00"))
         self.assertEqual([row["count"] for row in self.ravi.get("/api/sales/opportunities/pipeline/").json()], [0, 0, 0, 0, 0])
 
         won = self.dana.post(url + "win/", {}, format="json")
         self.assertEqual((won.status_code, won.json()["stage"], won.json()["closed_on"], won.json()["chance"]),
-                         (200, "won", str(TODAY), 100))
+                         (200, "won", str(self.today), 100))
         self.assertEqual(self.dana.post(url + "win/", {}, format="json").status_code, 400)
         self.assertEqual(self.dana.post(url + "lose/", {"reason": "x"}, format="json").status_code, 400)
         self.assertEqual(self.dana.patch(url, {"value": "1"}, format="json").status_code, 400)
@@ -228,7 +230,7 @@ class ActivityTests(CrmTestCase):
     def test_logged_against_one_thing_and_followed_up(self):
         lead = self.lead()
         call = self.dana.post("/api/sales/activities/", {
-            "kind": "call", "lead": lead["id"], "summary": "Spoke to Mehta; wants samples", "due_on": str(TOMORROW)},
+            "kind": "call", "lead": lead["id"], "summary": "Spoke to Mehta; wants samples", "due_on": str(self.tomorrow)},
             format="json")
         self.assertEqual(call.status_code, 201, call.content)
         self.assertEqual((call.json()["owner"], call.json()["about"]), (self.dana_party.pk, f"{lead['number']} Shree Cement"))
@@ -236,20 +238,20 @@ class ActivityTests(CrmTestCase):
             "kind": "note", "lead": lead["id"], "party": self.customer.pk, "summary": "x"}, format="json")
         self.assertEqual(two_things.status_code, 400)
         self.assertEqual(self.ravi.get("/api/sales/activities/").json(), [])
-        self.assertEqual((follow_ups_due(self.dana.user, TODAY), follow_ups_due(self.dana.user, TOMORROW),
-                          follow_ups_due(self.ravi.user, TOMORROW)), (0, 1, 0))
+        self.assertEqual((follow_ups_due(self.dana.user, self.today), follow_ups_due(self.dana.user, self.tomorrow),
+                          follow_ups_due(self.ravi.user, self.tomorrow)), (0, 1, 0))
         self.assertEqual(self.dana.get("/api/sales/activities/due/").json(), {"due": 0})
         done = self.dana.post(f"/api/sales/activities/{call.json()['id']}/done/", {}, format="json")
-        self.assertEqual((done.status_code, done.json()["done_on"]), (200, str(TODAY)))
+        self.assertEqual((done.status_code, done.json()["done_on"]), (200, str(self.today)))
         self.assertEqual(self.dana.post(f"/api/sales/activities/{call.json()['id']}/done/", {}, format="json").status_code, 400)
-        self.assertEqual(follow_ups_due(self.dana.user, TOMORROW), 0)
+        self.assertEqual(follow_ups_due(self.dana.user, self.tomorrow), 0)
 
     def test_in_the_morning_inbox_as_the_reps_own(self):
         from apps.web.checks import inbox
 
         lead = self.lead()
         Activity.objects.create(kind="follow_up", lead_id=lead["id"], owner=self.dana_party, summary="Send samples",
-                                due_on=TODAY - datetime.timedelta(days=1))
+                                due_on=self.today - datetime.timedelta(days=1))
         dana = {row["key"]: row["count"] for row in inbox(self.dana.user)}
         self.assertEqual(dana.get("follow_ups_due"), 1)
         self.assertNotIn("follow_ups_due", {row["key"] for row in inbox(self.ravi.user)})
