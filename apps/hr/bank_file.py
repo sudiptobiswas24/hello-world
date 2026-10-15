@@ -26,7 +26,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Company, DocumentSequence, lock_rows, serialised
+from apps.core.models import AuditModel, Company, DocumentSequence, lock_rows
 
 
 class SalaryTransferFile(AuditModel):
@@ -89,48 +89,49 @@ class SalaryTransferFile(AuditModel):
             row.save()
         return made
 
-    @serialised("payment")
     def mark_paid(self, payment):
-        from apps.accounting.models import PaymentDirection
+        with transaction.atomic():
+            from apps.accounting.models import PaymentDirection
 
-        from .payroll import _net_pay_account
+            from .payroll import _net_pay_account, hold_the_money_first
 
-        # One order for every path that pays a slip: the file, its run, the slips in key order, then
-        # the payment. Payslip.pay holds the slip before its payment; holding the payment first, one
-        # payment offered to both at once left each waiting on the other, and PostgreSQL ended one
-        # of them as a deadlock instead of a refusal in words.
-        rows = list(self.rows.select_related("payslip__employee").order_by("payslip_id"))
-        slips = [row.payslip for row in rows]
-        lock_rows(self.run)
-        lock_rows(*slips)
-        lock_rows(payment)
-        if self.payment_id is not None:
-            raise ValidationError(f"{self} has been paid, by {self.payment}.")
-        if self.run.is_voided():
-            raise ValidationError(f"{self.run} has been voided; it owes nobody.")
-        if not payment.posted or payment.is_voided():
-            raise ValidationError("That payment is not posted, or has been voided: nothing left the bank.")
-        if payment.direction != PaymentDirection.DISBURSEMENT:
-            raise ValidationError("Wages are settled by money paid out, not money received.")
-        if payment.counterpart_account_id != _net_pay_account().pk:
-            raise ValidationError(f"That payment was booked against {payment.counterpart_account}, not net pay "
-                                  "payable, so it does not clear what the run owes.")
-        if payment.currency_id not in (None, Company.get().base_currency_id):
-            raise ValidationError("Net pay is owed in the base currency.")
-        if payment.amount != self.total:
-            raise ValidationError(f"The payment is {payment.amount} and {self} totals {self.total}.")
-        if payment.payslips.exists() or SalaryTransferFile.objects.filter(payment=payment).exists():
-            raise ValidationError("That payment already settles other pay.")
-        paid = [slip.employee.employee_number for slip in slips if slip.is_paid()]
-        if paid:
-            raise ValidationError(f"{', '.join(paid)} have been paid since {self} was written. Delete it and "
-                                  "write it again.")
-        for slip in slips:
-            slip.payment = payment
-            super(type(slip), slip).save(update_fields=["payment", "updated_at"])
-        self.payment, self.paid_at = payment, timezone.now()
-        super().save(update_fields=["payment", "paid_at", "updated_at"])
-        return self
+            # One order for every path that pays a slip: the payment, the file, its run, then the slips in
+            # key order (hold_the_money_first). Payslip.pay holds the payment before its slip, and
+            # Payment.void the payment before this file: taken the other way round, one payment offered to
+            # two of them at once left each waiting on the other, and PostgreSQL ended one as a deadlock
+            # instead of a refusal in words (b8fa0b4; rereview 5).
+            hold_the_money_first(payment, self, "payment")
+            rows = list(self.rows.select_related("payslip__employee").order_by("payslip_id"))
+            slips = [row.payslip for row in rows]
+            lock_rows(self.run)
+            lock_rows(*slips)
+            if self.payment_id is not None:
+                raise ValidationError(f"{self} has been paid, by {self.payment}.")
+            if self.run.is_voided():
+                raise ValidationError(f"{self.run} has been voided; it owes nobody.")
+            if not payment.posted or payment.is_voided():
+                raise ValidationError("That payment is not posted, or has been voided: nothing left the bank.")
+            if payment.direction != PaymentDirection.DISBURSEMENT:
+                raise ValidationError("Wages are settled by money paid out, not money received.")
+            if payment.counterpart_account_id != _net_pay_account().pk:
+                raise ValidationError(f"That payment was booked against {payment.counterpart_account}, not net pay "
+                                      "payable, so it does not clear what the run owes.")
+            if payment.currency_id not in (None, Company.get().base_currency_id):
+                raise ValidationError("Net pay is owed in the base currency.")
+            if payment.amount != self.total:
+                raise ValidationError(f"The payment is {payment.amount} and {self} totals {self.total}.")
+            if payment.payslips.exists() or SalaryTransferFile.objects.filter(payment=payment).exists():
+                raise ValidationError("That payment already settles other pay.")
+            paid = [slip.employee.employee_number for slip in slips if slip.is_paid()]
+            if paid:
+                raise ValidationError(f"{', '.join(paid)} have been paid since {self} was written. Delete it and "
+                                      "write it again.")
+            for slip in slips:
+                slip.payment = payment
+                super(type(slip), slip).save(update_fields=["payment", "updated_at"])
+            self.payment, self.paid_at = payment, timezone.now()
+            super().save(update_fields=["payment", "paid_at", "updated_at"])
+            return self
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
@@ -163,43 +164,46 @@ class SalaryTransfer(AuditModel):
     def is_returned(self):
         return self.returned_by_id is not None and not self.returned_by.is_voided()
 
-    @serialised("returned_by")
     def return_transfer(self, receipt):
-        from apps.accounting.models import PaymentDirection
+        with transaction.atomic():
+            from apps.accounting.models import PaymentDirection
 
-        from .payroll import _net_pay_account
+            from .payroll import _net_pay_account, hold_the_money_first
 
-        # The file, the slip, then the money: the order mark_paid and Payslip.pay take them in.
-        slip = self.payslip
-        lock_rows(self.file)
-        lock_rows(slip)
-        lock_rows(receipt)
-        if self.file.payment_id is None:
-            raise ValidationError(f"{self.file} has not been paid; nothing was sent to return.")
-        if self.is_returned():
-            raise ValidationError(f"{self} has already been returned, by {self.returned_by}.")
-        if slip.payment_id != self.file.payment_id or not slip.is_paid():
-            raise ValidationError(f"{slip.employee} is not paid by {self.file} now; there is nothing of it to return.")
-        if not receipt.posted or receipt.is_voided():
-            raise ValidationError("That receipt is not posted, or has been voided: nothing came back.")
-        if receipt.direction != PaymentDirection.RECEIPT:
-            raise ValidationError("A transfer sent back is money received.")
-        if receipt.counterpart_account_id != _net_pay_account().pk:
-            raise ValidationError(f"That receipt was booked against {receipt.counterpart_account}, not net pay "
-                                  "payable, so the wages would not read as owed again.")
-        if receipt.currency_id not in (None, Company.get().base_currency_id):
-            raise ValidationError("Net pay is owed in the base currency.")
-        if receipt.amount != self.amount:
-            raise ValidationError(f"The receipt is {receipt.amount} and the transfer {self.amount}.")
-        if receipt.party_id != slip.employee.party_id:
-            # Review RP9: a receipt in E3's name returned E2's transfer.
-            raise ValidationError(f"That receipt is from {receipt.party}; the transfer that came back was "
-                                  f"{slip.employee}'s.")
-        if SalaryTransfer.objects.filter(returned_by=receipt).exclude(pk=self.pk).exists():
-            raise ValidationError("That receipt already returns another transfer.")
-        self.returned_by = receipt
-        super().save(update_fields=["returned_by", "updated_at"])
-        return self
+            # The money, the file, this transfer, then the slip: the order mark_paid, Payslip.pay and
+            # Payment.void take them in (rereview 6: the receipt's void held it and then the slip, as this
+            # held the slip and then the receipt).
+            slip = self.payslip
+            hold_the_money_first(receipt, self.file)
+            lock_rows(self, refresh=False)
+            self.refresh_from_db(fields=["returned_by"])
+            lock_rows(slip)
+            if self.file.payment_id is None:
+                raise ValidationError(f"{self.file} has not been paid; nothing was sent to return.")
+            if self.is_returned():
+                raise ValidationError(f"{self} has already been returned, by {self.returned_by}.")
+            if slip.payment_id != self.file.payment_id or not slip.is_paid():
+                raise ValidationError(f"{slip.employee} is not paid by {self.file} now; there is nothing of it to return.")
+            if not receipt.posted or receipt.is_voided():
+                raise ValidationError("That receipt is not posted, or has been voided: nothing came back.")
+            if receipt.direction != PaymentDirection.RECEIPT:
+                raise ValidationError("A transfer sent back is money received.")
+            if receipt.counterpart_account_id != _net_pay_account().pk:
+                raise ValidationError(f"That receipt was booked against {receipt.counterpart_account}, not net pay "
+                                      "payable, so the wages would not read as owed again.")
+            if receipt.currency_id not in (None, Company.get().base_currency_id):
+                raise ValidationError("Net pay is owed in the base currency.")
+            if receipt.amount != self.amount:
+                raise ValidationError(f"The receipt is {receipt.amount} and the transfer {self.amount}.")
+            if receipt.party_id != slip.employee.party_id:
+                # Review RP9: a receipt in E3's name returned E2's transfer.
+                raise ValidationError(f"That receipt is from {receipt.party}; the transfer that came back was "
+                                      f"{slip.employee}'s.")
+            if SalaryTransfer.objects.filter(returned_by=receipt).exclude(pk=self.pk).exists():
+                raise ValidationError("That receipt already returns another transfer.")
+            self.returned_by = receipt
+            super().save(update_fields=["returned_by", "updated_at"])
+            return self
 
 
 def refuse_void_under_a_returned_transfer(payment, on_date):

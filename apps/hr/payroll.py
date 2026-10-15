@@ -1774,7 +1774,6 @@ class Payslip(AuditModel):
             return Decimal("0")
         return row.amount if whole else self._part(row.amount, start, end)
 
-    @serialised("payment")
     def pay(self, payment):
         """
         Settle this slip's net against a payment, clearing the control
@@ -1784,45 +1783,65 @@ class Payslip(AuditModel):
         liability and never clears it leaves a balance that grows by a
         month's wages every month and that nobody can explain.
         """
-        # The payment too: another slip could be settling with it now.
-        lock_rows(payment)
-        if not self.run.posted:
-            raise ValidationError("A pay run must be posted before it can be paid.")
-        if self.is_paid():
-            raise ValidationError(f"{self.employee} has already been paid for this run.")
-        if payment.is_voided():
-            raise ValidationError("That payment has been voided; it settles nothing.")
-        # Each of these used to mark the slip paid while net pay payable
-        # went on saying the wages were owed: the slip and the control
-        # account have to be asked the same question.
-        if not payment.posted:
-            raise ValidationError("That payment has not been posted; nothing has left the bank.")
-        if payment.direction != PaymentDirection.DISBURSEMENT:
-            raise ValidationError("Wages are settled by money paid out, not money received.")
-        if payment.counterpart_account_id != _net_pay_account().pk:
-            raise ValidationError(
-                f"That payment was booked against {payment.counterpart_account}, not net pay "
-                "payable, so it does not clear what this slip owes."
-            )
-        if payment.party_id != self.employee.party_id:
-            raise ValidationError(
-                f"That payment was made to {payment.party}, not {self.employee}."
-            )
-        base = Company.get().base_currency_id
-        if payment.currency_id not in (None, base):
-            raise ValidationError("Net pay is owed in the base currency; pay it in that currency.")
-        other = payment.payslips.exclude(pk=self.pk).first()
-        if other is not None:
-            raise ValidationError(f"That payment already settles {other}.")
-        expected = self.net()
-        if round_money(payment.amount) != expected:
-            raise ValidationError(
-                f"This payment is {payment.amount} and {self.employee}'s net pay is "
-                f"{expected}. Pay the net, or split the payment."
-            )
-        self.payment = payment
-        super().save(update_fields=["payment", "updated_at"])
-        return self
+        with transaction.atomic():
+            # The money first, then the slip (rereview 5): the order hold_the_money_first gives
+            # mark_paid and return_transfer, and the order Payment.void takes them in.
+            lock_rows(payment)
+            lock_rows(self, refresh=False)
+            self.refresh_from_db(fields=["payment"])
+            if not self.run.posted:
+                raise ValidationError("A pay run must be posted before it can be paid.")
+            if self.is_paid():
+                raise ValidationError(f"{self.employee} has already been paid for this run.")
+            if payment.is_voided():
+                raise ValidationError("That payment has been voided; it settles nothing.")
+            # Each of these used to mark the slip paid while net pay payable
+            # went on saying the wages were owed: the slip and the control
+            # account have to be asked the same question.
+            if not payment.posted:
+                raise ValidationError("That payment has not been posted; nothing has left the bank.")
+            if payment.direction != PaymentDirection.DISBURSEMENT:
+                raise ValidationError("Wages are settled by money paid out, not money received.")
+            if payment.counterpart_account_id != _net_pay_account().pk:
+                raise ValidationError(
+                    f"That payment was booked against {payment.counterpart_account}, not net pay "
+                    "payable, so it does not clear what this slip owes."
+                )
+            if payment.party_id != self.employee.party_id:
+                raise ValidationError(
+                    f"That payment was made to {payment.party}, not {self.employee}."
+                )
+            base = Company.get().base_currency_id
+            if payment.currency_id not in (None, base):
+                raise ValidationError("Net pay is owed in the base currency; pay it in that currency.")
+            other = payment.payslips.exclude(pk=self.pk).first()
+            if other is not None:
+                raise ValidationError(f"That payment already settles {other}.")
+            expected = self.net()
+            if round_money(payment.amount) != expected:
+                raise ValidationError(
+                    f"This payment is {payment.amount} and {self.employee}'s net pay is "
+                    f"{expected}. Pay the net, or split the payment."
+                )
+            self.payment = payment
+            super().save(update_fields=["payment", "updated_at"])
+            return self
+
+
+def hold_the_money_first(payment, document, *state):
+    """
+    The payment, then the pay it settles, and `state` of `document` read again under its lock
+    (rereview 5 and 6). Payment.void holds the payment, and its follow-up the bank file or the slip
+    after it (bank_file.refuse_void_under_a_returned_transfer); a file marked paid, a transfer
+    returned or a slip paid with that same payment held the file, the transfer or the slip first and
+    waited on the payment, and PostgreSQL ended one of the two as a deadlock rather than a refusal
+    in words. Every path that pays or returns pay therefore takes the money first, as an allocation
+    does (apps/core/lock_order.py ranks the payment before the file, the transfer and the slip).
+    """
+    lock_rows(payment)
+    lock_rows(document, refresh=False)
+    if state:
+        document.refresh_from_db(fields=list(state))
 
 
 # What Payslip.is_paid() reads, for a list that asks it of every slip to prefetch with them.
