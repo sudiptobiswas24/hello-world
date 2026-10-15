@@ -85,25 +85,25 @@ Odoo 19 (notes in odoo19_research/); its last section is what the
 accountant or tax adviser must confirm before the statutory items are
 built.
 
-1. **g21, in flight (14 October, evening).** The tree is `$SP/g21tree`,
-   built on the branch tip by cherry-picking. A snapshot of it is on
+1. **g21, in flight (15 October).** The tree is `$SP/g21tree`, built on
+   the branch tip by cherry-picking. Its snapshot is
    `claude/erp-wip-g21tree`.
-   - In the tree:
-     - fix_race, with its review fixes (F1 to F9; F10 is O230). The 17
-       race rows are closed and O226 to O230 registered.
-     - fix_qrecall: decision 23 (O204 with lamination, print and coating;
-       O207 with production runs), O123 with its lock. O231 and O232
-       registered.
-     - The whole fast suite passed on the combined tree (6472 tests).
-       The race tests passed on PostgreSQL (108 tests).
-   - Running: fix_people (`$SP/fix_people`, from 8de3b19, brief
-     docs/handoff/g21_people.md) and fix_acct (`$SP/fix_acct`, from
-     6f568a6, brief g21_acct.md).
-   - Still to do:
-     - Review fix_qrecall (Sonnet), then fix_people and fix_acct when
-       they report.
-     - Cherry-pick their commits into the tree and close their rows.
-     - The six lanes, finalize, push.
+   - In the tree, each part reviewed by someone other than its author,
+     with the review's probes kept as tests:
+     - races (O16 to O184), with their review fixes;
+     - decision 23 and O123, with their review fixes (review_qrecall);
+     - the payroll go-live outputs and the tax work, before their
+       review fixes.
+     - The whole fast suite at d05ba67: 6593 tests OK; audit clean.
+   - Running:
+     - fix_people2 (`$SP/fix_people2`, from b0d8234): review_people's
+       five blockers, O236, O237, and the per-period rule for PT, LWF
+       and advance instalments. Brief: `$SP/briefs/fix_people_review.md`.
+     - fix_acct2 (`$SP/fix_acct2`, from d05ba67): review_acct's four
+       blockers and the rest. Brief: `$SP/briefs/fix_acct_review.md`.
+   - Left:
+     - cherry-pick both into the tree and register what they leave;
+     - six lanes on one tip, finalize, push.
    - The go-live build list from the gap analysis, the items that wait on
      nobody first: the tax invoice's Rule 46 content (O218), e-invoice
      cancellation (O220), the backup of attachments (O221), printed
