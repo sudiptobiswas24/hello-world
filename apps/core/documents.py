@@ -60,7 +60,7 @@ def money(amount, currency):
 def render_document(*, heading, document, party, address, meta, totals,
                      party_label="BILL TO", note=None, table=None, currency=None,
                      number="", qr=None, letterhead_text=None, party_text=None,
-                     subheading=None, blocks=(), signatory=None):
+                     subheading=None, blocks=(), signatory=None, footer=None):
     """
     `meta` is [[label, value]] for the details block; `totals` is
     [[label, Decimal]] with the last row emphasised as the bottom line.
@@ -73,7 +73,9 @@ def render_document(*, heading, document, party, address, meta, totals,
     and the party as they stand today (a tax invoice), passes
     `letterhead_text` and `party_text`. `subheading` prints under the
     heading (which copy this is); `blocks` are (label, text) printed after
-    the totals; `signatory` closes the page with who signs for whom.
+    the totals; `signatory` closes the page with who signs for whom; `footer`
+    is the bottom line's parts, when the company as it stands is not what
+    the document was issued by.
     """
     company = Company.get()
     currency = currency or getattr(document, "currency", None)
@@ -214,9 +216,9 @@ def render_document(*, heading, document, party, address, meta, totals,
         story.append(Spacer(1, 12 * mm))
         story.append(Paragraph("Authorised signatory", style["right"]))
 
-    footer = [company.legal_name or company.name]
-    if company.tax_id:
-        footer.append(f"Tax ID {company.tax_id}")
+    if footer is None:
+        footer = [company.legal_name or company.name] + ([f"Tax ID {company.tax_id}"] if company.tax_id else [])
+    footer = list(footer)
     if company.email:
         footer.append(company.email)
     if company.phone:
