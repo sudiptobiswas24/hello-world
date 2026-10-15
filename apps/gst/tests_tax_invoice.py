@@ -273,3 +273,28 @@ class ThroughTheApiTests(TaxInvoiceTestCase):
         refused = client.get(url, {"copy": "quadruplicate"})
         self.assertEqual(refused.status_code, 400)
         self.assertIn("is not a copy", str(refused.content))
+
+
+class LinesLockedInKeyOrderTests(TaxInvoiceTestCase):
+    """
+    record_taxes writes each line's kept HSN and net, and each write holds the row. Read in no order, the
+    lines came back as PostgreSQL keeps them, and a line updated earlier in the transaction is kept last:
+    "sales.invoiceline 83 locked after sales.invoiceline 95". Shows on PostgreSQL; SQLite keeps rowid order.
+    """
+
+    def test_a_line_written_before_posting_is_still_locked_in_its_turn(self):
+        from apps.sales.models import InvoiceLine
+
+        lines = [(self.sack, "7", "33.33", "0", self.pair), (self.sack, "3", "0.35", "0", self.pair)]
+        lines += [(self.sack, "1", "0.05", "0", self.pair)] * 11
+        invoice = self.invoice(self.mh, lines, post=False)
+        first = invoice.lines.order_by("pk").first()
+        # Changed and changed back on an indexed column: no HOT update, so the row and its index entry
+        # both move behind the other twelve, as a line edited before posting does.
+        from apps.inventory.models import Item
+
+        other = Item.objects.create(sku="SACK-B", name="Woven sack B", uom=self.sack.uom, hsn_code="63053300")
+        InvoiceLine.objects.filter(pk=first.pk).update(item=other)
+        InvoiceLine.objects.filter(pk=first.pk).update(item=self.sack, description="Woven sack, first line")
+        invoice.post()
+        self.assertEqual(invoice.lines.exclude(hsn_code="63053300").count(), 0)
