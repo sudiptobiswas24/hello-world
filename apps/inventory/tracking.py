@@ -19,6 +19,7 @@ allocation, expiry and traceability code is written once instead of
 twice with the second copy drifting.
 """
 
+import contextlib
 import datetime
 from decimal import Decimal
 
@@ -140,6 +141,25 @@ def register_lot_hold(ask):
         LOT_HOLDS.append(ask)
 
 
+# One question to whoever answers LOT_HOLDS, across several asks (quality
+# registers its per-question memory): a lot in five stores, or a page of
+# lots, reads each batch's verdict and lineage once.
+LOT_QUESTIONS = []
+
+
+def register_lot_question(context):
+    if context not in LOT_QUESTIONS:
+        LOT_QUESTIONS.append(context)
+
+
+@contextlib.contextmanager
+def one_question():
+    with contextlib.ExitStack() as stack:
+        for context in LOT_QUESTIONS:
+            stack.enter_context(context())
+        yield
+
+
 def lot_held(item, lot, warehouse, action="issue"):
     """
     Why this batch may not be drawn from `warehouse`, in words, or "".
@@ -164,10 +184,11 @@ def held_because(lot):
     # One query for where it is on hand, not one for the balances and another for the places.
     places = (Warehouse.objects.filter(movements__lot=lot).annotate(held=Sum("movements__quantity"))
               .filter(held__gt=0).order_by("pk"))
-    for warehouse in places:
-        words = lot_held(lot.item, lot, warehouse, action="go")
-        if words and words not in said:
-            said.append(words)
+    with one_question():
+        for warehouse in places:
+            words = lot_held(lot.item, lot, warehouse, action="go")
+            if words and words not in said:
+                said.append(words)
     return " ".join(said)
 
 

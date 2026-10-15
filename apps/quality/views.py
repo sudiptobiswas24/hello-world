@@ -161,15 +161,23 @@ class LotStatusViewSet(viewsets.ViewSet):
         lot = Lot.objects.filter(pk=pk).select_related("item").first()
         if lot is None:
             raise DRFValidationError([f"No batch with id {pk}."])
+        from .release import RELEASING, open_recall, still_held_words
+
         latest = latest_inspection(lot)
+        status = release_status(lot)
+        # Held by what is inside it while its own pass stands: the row is the recall that holds it
+        # (or none), never the pass beside "held" (review F5).
+        if status == "held" and latest is not None and latest.disposition in RELEASING:
+            latest = open_recall(lot)
         return Response({
             "lot": lot.code,
             "item": lot.item.sku,
-            "status": release_status(lot),
+            "status": status,
             "inspection": latest.number if latest else None,
             "inspected_on": latest.inspected_on if latest else None,
             "result": latest.result if latest else None,
             "disposition": latest.disposition if latest else None,
+            "held_because": still_held_words(lot),
         })
 
 

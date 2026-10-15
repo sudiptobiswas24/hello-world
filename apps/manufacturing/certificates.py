@@ -99,6 +99,15 @@ def _measured(lot):
     from .rebatch import sources
 
     inspection = latest_inspection(lot)
+    # Its own verdict passes it, and the gate holds it by what is inside it (a recall not yet
+    # decided): nothing made from it is certified as passed meanwhile (review F5). A verdict of its
+    # own that holds it is refused below, in its own words.
+    from apps.quality.release import RELEASING, still_held_words
+
+    held = still_held_words(lot, action="be certified") if (
+        inspection is not None and inspection.disposition in RELEASING) else ""
+    if held:
+        raise ValidationError(f"Batch {lot.code}: {held}")
     # Recalled and decided (O207): the recall measured nothing, so what is
     # certified is what was measured before it, and the recall's decision.
     recall = None
