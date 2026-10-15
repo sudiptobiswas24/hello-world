@@ -74,3 +74,34 @@ class TcsChallanRaces(RaceCase):
             (c.amount for c in TcsChallan.objects.filter(voided_entry__isnull=False)), D("0")) + sum(
             (c.amount for c in TcsChallan.objects.filter(voided_entry__isnull=False)), D("0")), outcomes)
         self.assertLessEqual(paid_over, D("1062.00"), outcomes)
+
+    def test_two_recordings_of_one_cancellation_reverse_the_invoice_once(self):
+        from django.utils import timezone
+
+        books = self.books
+        invoice = books.t1()
+        record = books.registered(invoice)
+        record.cancellation("2", "Wrong quantity")
+        from apps.gst.einvoice import EInvoice
+        from apps.sales.models import Invoice
+
+        outcomes = race(JournalEntry, *[
+            lambda: EInvoice.objects.get(pk=record.pk).record_cancellation(timezone.now())] * 2)
+        self.once(outcomes)
+        self.assertEqual(Invoice.objects.filter(credits=invoice).count(), 1, outcomes)
+        self.assertEqual((books.ledger("2290"), books.ledger("1100")), (D("0"), D("0")), outcomes)
+
+    def test_a_challan_and_the_cancellation_of_the_invoice_it_pays_over(self):
+        from django.utils import timezone
+
+        from apps.gst.einvoice import EInvoice
+
+        books = self.books
+        invoice = books.t1()
+        record = books.registered(invoice)
+        record.cancellation("2", "Wrong quantity")
+        outcomes = race(JournalEntry,
+                        lambda: TcsChallan.pay(books.section, "2026-09-01", OCT, books.bank, "00001", "0510308"),
+                        lambda: EInvoice.objects.get(pk=record.pk).record_cancellation(timezone.now()))
+        self.assertEqual(sorted(o == "done" for o in outcomes), [True, True], outcomes)
+        self.invariant(outcomes)
