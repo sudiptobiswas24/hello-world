@@ -15,6 +15,8 @@ from apps.e2e.tests_races import fixture, race
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TheLiftAgainstANewRejection(TransactionTestCase):
     def trial(self):
+        from django.contrib.auth.models import User
+
         from apps.manufacturing import tests_recall
         from apps.quality.models import Inspection, Reading, ReleaseStatus
         from apps.quality.release import release_status
@@ -29,7 +31,8 @@ class TheLiftAgainstANewRejection(TransactionTestCase):
             Reading.objects.create(inspection=draft, plan_line=line, value=Decimal(value),
                                    sample_reference=f"S{number}")
         outcomes = race(Inspection,
-                        lambda: Inspection.objects.get(pk=first.pk).void("typo"),
+                        # The Quality Manager's void: since rereview 3 a void naming nobody lifts no hold.
+                        lambda: Inspection.objects.get(pk=first.pk).void("typo", by=User.objects.get(username="asha")),
                         lambda: Inspection.objects.get(pk=draft.pk).post())
         self.assertEqual(outcomes, ["done", "done"], outcomes)
         held = [release_status(lot) for lot in (made.a, made.b)]

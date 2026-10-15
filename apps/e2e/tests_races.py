@@ -2176,7 +2176,11 @@ class PayrollOutputRaceTests(RaceCase):
                 thread.join(30)
         self.assertFalse(any("deadlock" in str(outcome) for outcome in outcomes), outcomes)
         self.assertEqual(outcomes[0], "done", outcomes)
-        self.assertIn("net pay is 8450.50", outcomes[1])
+        # Refused in words, as one serial order or the other words it. Since rereview 5 every path takes the
+        # payment first, so the slip now meets a file already paid; before, it met the amount.
+        self.assertTrue(outcomes[1].startswith("refused:") and any(
+            words in outcomes[1] for words in ("E2 has already been paid for this run", "net pay is 8450.50")),
+            outcomes)
 
 
 @tag("race")
