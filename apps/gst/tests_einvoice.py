@@ -25,6 +25,7 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from django.core import mail
 from django.core.exceptions import ValidationError
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -236,6 +237,18 @@ class WhatIsNotRegisteredTests(EInvoiceTestCase):
 
 
 class WhatThePortalAnsweredTests(EInvoiceTestCase):
+    @override_settings(TIME_ZONE="Asia/Kolkata")
+    def test_an_answer_just_after_midnight_at_the_plant_is_on_the_invoices_day(self):
+        # 00:30 in Kolkata on the invoice's day is still the day before in UTC; the plant's day decides.
+        invoice = self.s1()
+        just_after_midnight = datetime.datetime.combine(
+            invoice.invoice_date, datetime.time(0, 30), tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+        record = prepare(invoice)
+        record.record(IRN, "112610000000001", just_after_midnight.astimezone(datetime.timezone.utc), signed_qr(
+            Irn=IRN, DocNo=invoice.number, SellerGstin=self.settings.gstin,
+            BuyerGstin=record.payload["BuyerDtls"]["Gstin"], TotInvVal=record.payload["ValDtls"]["TotInvVal"]))
+        self.assertEqual(EInvoice.objects.get(pk=record.pk).irn, IRN)
+
     def test_kept_once_it_is_shown_to_be_this_invoices(self):
         record = self.registered(self.s1())
         self.assertEqual(record.irn, IRN)
