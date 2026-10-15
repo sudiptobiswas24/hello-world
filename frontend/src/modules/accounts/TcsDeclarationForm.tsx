@@ -15,6 +15,7 @@ export default function TcsDeclarationForm() {
         { key: "party", label: "Buyer", kind: "pick", pick: PARTY, show: (row) => String(row.party_name) },
         { key: "section", label: "Section", kind: "ref", ref: TCS_SECTION },
         { key: "form", label: "Form", initial: "127", hint: "127, or 27C before April 2026" },
+        { key: "pan", label: "Buyer's PAN", hint: "As the declaration gives it; without one it exempts nothing" },
         { key: "reference", label: "Reference" },
         { key: "received_on", label: "Received on", kind: "date" },
         { key: "valid_from", label: "Covers from", kind: "date" },

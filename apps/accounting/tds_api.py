@@ -69,7 +69,7 @@ class TcsDeclarationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TcsDeclaration
-        fields = ["id", "party", "party_name", "section", "form", "reference", "received_on", "valid_from",
+        fields = ["id", "party", "party_name", "section", "form", "pan", "reference", "received_on", "valid_from",
                   "valid_to"]
 
 
