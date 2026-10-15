@@ -35,7 +35,7 @@ class TcsInTheBrowserTests(BrowserMixin, TcsTestCase, StaticLiveServerTestCase):
 
     def test_the_accountant_confirms_the_rate_and_pays_the_month_over(self):
         page = self.sign_in(self.login_for("Controller"), "/app/settings/tcs-rates/new")
-        page.get_by_label("Section").select_option(label="206C(1) · Scrap")
+        page.get_by_label("Section", exact=True).select_option(label="206C(1) · Scrap")
         page.get_by_label("Applies from").fill("2026-04-01")
         page.get_by_label("Rate %").fill("1")
         page.get_by_label("Without PAN %").fill("5")
@@ -52,7 +52,7 @@ class TcsInTheBrowserTests(BrowserMixin, TcsTestCase, StaticLiveServerTestCase):
         expect(row).to_contain_text("Due")
 
         page.goto(f"{self.live_server_url}/app/accounts/tcs-challans/new")
-        page.get_by_label("Section").select_option(label="206C(1) · Scrap")
+        page.get_by_label("Section", exact=True).select_option(label="206C(1) · Scrap")
         page.get_by_label("Collected to").fill("2026-09-01")
         page.get_by_label("Paid on").fill("2026-10-05")
         page.get_by_role("combobox", name="From").fill("1010")
