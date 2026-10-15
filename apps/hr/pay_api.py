@@ -151,11 +151,20 @@ class TransferSerializer(serializers.ModelSerializer):
 
 class TransferFileSerializer(serializers.ModelSerializer):
     rows = TransferSerializer(many=True, read_only=True)
+    # Its real state (review RP6): a payment voided pays nobody, though the file still names it.
+    paid = serializers.SerializerMethodField()
+    payment_voided = serializers.SerializerMethodField()
 
     class Meta:
         model = SalaryTransferFile
-        fields = ["id", "run", "number", "narration", "total", "payment", "paid_at", "rows"]
+        fields = ["id", "run", "number", "narration", "total", "payment", "paid_at", "paid", "payment_voided", "rows"]
         read_only_fields = ["number", "narration", "total", "payment", "paid_at"]
+
+    def get_paid(self, obj):
+        return obj.payment_id is not None and not obj.payment.is_voided()
+
+    def get_payment_voided(self, obj):
+        return obj.payment_id is not None and obj.payment.is_voided()
 
     def create(self, validated_data):
         # Written by prepare(), never from a client's figures: the rows are the run's slips still owed.
@@ -164,7 +173,7 @@ class TransferFileSerializer(serializers.ModelSerializer):
 
 class TransferFileViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = SalaryTransferFile.objects.select_related("run", "payment").prefetch_related(
-        "rows__payslip__employee", "rows__returned_by")
+        "payment__journal_entry__reversed_by", "rows__payslip__employee", "rows__returned_by")
     serializer_class = TransferFileSerializer
     filter_fields = ["run"]
     http_method_names = ["get", "post", "delete", "head", "options"]
