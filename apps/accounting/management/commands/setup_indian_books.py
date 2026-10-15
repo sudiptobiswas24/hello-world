@@ -53,10 +53,23 @@ ACCOUNTS = [
     ("5000", "Purchases", X, False), ("5100", "Freight inward", X, False), ("5900", "Round off", X, False),
 ]
 SLABS = [Decimal("0"), Decimal("5"), Decimal("18"), Decimal("40")]
-# Seeded unconfirmed: the accountant confirms 1% or corrects it (O219).
-TCS_SCRAP = {"code": "206C(1)", "name": "Scrap", "form_code": "6CE", "rate": Decimal("1"),
-             "no_pan_rate": Decimal("5"), "from": datetime.date(2026, 4, 1),
-             "authority": "s.206C(1) Income-tax Act 1961; s.394 Income-tax Act 2025 from 1 April 2026"}
+# The goods TCS is collected on, named by the law of each day: section 206C(1) of the 1961 Act until 31 March
+# 2026, section 394(1) of the 2025 Act (Sl. 4, scrap) from 1 April 2026 (review F13). Both rates seeded
+# unconfirmed: nothing is collected at either until the accountant confirms it.
+TCS_SCRAP = {"code": "SCRAP", "name": "Scrap", "form_code": "6CE"}
+TCS_SCRAP_RATES = [
+    {"from": datetime.date(2025, 4, 1), "law": "206C(1)", "rate": Decimal("1"), "no_pan_rate": Decimal("5"),
+     "authority": "s.206C(1) Income-tax Act 1961",
+     "question": "1% under 206C(1) to 31 March 2026: confirm it, or correct it."},
+    {"from": datetime.date(2026, 4, 1), "law": "394(1)", "rate": Decimal("2"), "no_pan_rate": Decimal("5"),
+     "authority": "s.394(1) Sl. 4 Income-tax Act 2025, as amended by the Finance Act 2026",
+     "question": ("1% or 2% under 394(1) from 1 April 2026? Seeded at 2%, which the research notes weigh "
+                  "(Finance Act 2026; a Railway Board order of 17 June 2026); other sources say 1%. Decide the "
+                  "rate and the section before confirming.")},
+]
+# What each account a tax or section is wired into must be, by type and by what its name says (review F12).
+PURPOSES = {"1311": ("cgst",), "1312": ("sgst",), "1313": ("igst",), "2201": ("cgst",), "2202": ("sgst",),
+            "2203": ("igst",), "2250": ("tds",), "2260": ("tcs",)}
 
 
 def _plain(rate):
@@ -70,7 +83,7 @@ class Command(BaseCommand):
         parser.add_argument("--gstin", help="The company's GSTIN, for its GST settings if it has none yet.")
 
     def handle(self, *args, gstin=None, **options):
-        self.made, self.kept = [], []
+        self.made, self.kept, self.collisions = [], [], []
         with transaction.atomic():
             accounts = {code: self.account(code, name, kind, money) for code, name, kind, money in ACCOUNTS}
             intra, inter = {}, {}
@@ -99,18 +112,23 @@ class Command(BaseCommand):
                     self.mapping(position, sgst, None)
             section = self.one(TcsSection, TCS_SCRAP["code"], name=TCS_SCRAP["name"],
                                form_code=TCS_SCRAP["form_code"], payable_account=accounts["2260"])
-            if not section.rates.exists():
-                rate = TcsRate.objects.create(section=section, applies_from=TCS_SCRAP["from"],
-                                              rate_percent=TCS_SCRAP["rate"],
-                                              no_pan_rate_percent=TCS_SCRAP["no_pan_rate"],
-                                              authority=TCS_SCRAP["authority"])
-                self.seeded(rate, f"TCS rate {rate} (unconfirmed: nothing is collected at it until confirmed)")
+            for seeded in TCS_SCRAP_RATES:
+                if section.rates.filter(applies_from=seeded["from"]).exists():
+                    self.kept.append(f"TCS rate from {seeded['from']:%d %b %Y}")
+                    continue
+                rate = TcsRate.objects.create(section=section, applies_from=seeded["from"], section_code=seeded["law"],
+                                              rate_percent=seeded["rate"], no_pan_rate_percent=seeded["no_pan_rate"],
+                                              authority=seeded["authority"])
+                self.seeded(rate, f"TCS rate {seeded['law']} from {seeded['from']:%d %b %Y}, unconfirmed: "
+                                  f"{seeded['question']}")
             if gstin:
                 self.gst_settings(gstin, FiscalPosition.objects.get(code="INTER"))
         for line in self.made:
             self.stdout.write(f"seeded, to review: {line}")
         for line in self.kept:
             self.stdout.write(f"kept as it was: {line}")
+        for line in self.collisions:
+            self.stdout.write(f"collision, for the accountant: {line}")
         self.stdout.write(f"{len(self.made)} seeded for the accountant to review, {len(self.kept)} kept.")
 
     def seeded(self, instance, label):
@@ -127,7 +145,24 @@ class Command(BaseCommand):
         return made
 
     def account(self, code, name, kind, holds_money):
-        return self.one(Account, code, name=name, account_type=kind, holds_money=holds_money)
+        """
+        The account by `code`, made if free. Taken by one of another type or purpose, it is left as it is,
+        reported for the accountant, and nothing is wired into it: the account is seeded under a free code
+        beside it instead. CGST never collects into the plant's Rent payable (review F12).
+        """
+        found = Account.objects.filter(code=code).first()
+        if found is None:
+            return self.one(Account, code, name=name, account_type=kind, holds_money=holds_money)
+        words = PURPOSES.get(code, ())
+        if found.account_type == kind and (not words or any(word in found.name.lower() for word in words)):
+            self.kept.append(f"account {code}")
+            return found
+        spare = next(f"{code}-IN{n or ''}" for n in range(100)
+                     if not Account.objects.filter(code=f"{code}-IN{n or ''}").exists())
+        self.collisions.append(
+            f"account {code} is {found.name!r} ({found.get_account_type_display().lower()}), not {name}: left as it "
+            f"is and nothing wired into it; {name} seeded as {spare}")
+        return self.one(Account, spare, name=name, account_type=kind, holds_money=holds_money)
 
     def tax(self, code, name, rate, head, group, collected, paid):
         return self.one(Tax, code, name=name, rate=rate, gst_head=head, group=group, collected_account=collected,
