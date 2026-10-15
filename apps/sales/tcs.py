@@ -94,6 +94,20 @@ class TcsCollection(AuditModel):
     def delete(self, *args, **kwargs):
         raise ValidationError("What a posted invoice collected stays; a credit note gives it back.")
 
+    def law_section(self):
+        """
+        The section it was issued under, as the print and the return say it. Empty only on a row the
+        upgrade could not tell (sales 0072): it collected nothing, before each row kept its section,
+        and its section has been edited since. Refused in words rather than printed or filed blank.
+        """
+        if not self.section_code:
+            raise ValidationError(
+                f"TCS row {self.pk} on {self.invoice.number} of {self.date:%d %b %Y} does not say which section "
+                f"it was issued under: it was made before each row kept its section, and {self.section.code} "
+                "has been edited since, so the books cannot tell whether it was then called so; it is not "
+                "printed or filed under a guess.")
+        return self.section_code
+
     def signed(self):
         """As the challan nets it: collected adds, given back takes away."""
         return -self.amount if self.gives_back_id else self.amount
@@ -325,7 +339,7 @@ def tcs_return(start, end):
         sign = -1 if row.gives_back_id else 1
         paid = row.is_paid_over()
         rows.append({
-            "collection": row.pk, "date": row.date, "section": row.section_code,
+            "collection": row.pk, "date": row.date, "section": row.law_section(),
             "collection_code": row.section.form_code, "buyer": row.invoice.customer.name,
             "pan": row.pan or "PANNOTAVBL", "invoice": row.invoice.number, "base": sign * row.base,
             "rate_percent": row.rate_percent, "amount": sign * row.amount,

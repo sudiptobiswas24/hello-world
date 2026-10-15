@@ -221,7 +221,7 @@ def tax_invoice(invoice, copy="original"):
         "taxes": [(name, rate, amount) for (_, name, rate), amount in sorted(by_rate.items())],
         "export": export_words(invoice),
         "lut": issued.get("lut"),
-        "tcs": [{"section": row.section_code, "rate": row.rate_percent, "base": row.base, "amount": row.amount,
+        "tcs": [{"section": row.law_section(), "rate": row.rate_percent, "base": row.base, "amount": row.amount,
                  "declaration": (f"Form {row.declaration.form} {row.declaration.reference}".strip()
                                  + f" received {row.declaration.received_on:%d %b %Y}") if row.declaration_id else None,
                  "gives_back": row.gives_back.invoice.number if row.gives_back_id else None}

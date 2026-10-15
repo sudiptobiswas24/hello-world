@@ -23,6 +23,8 @@ from decimal import Decimal as D
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.db import connection
+from django.test import TransactionTestCase, tag
 from rest_framework.test import APIClient
 
 from apps.accounting.models import Account, AccountType, TcsDeclaration, TcsRate, TcsSection
@@ -331,3 +333,138 @@ class AnAdvanceOnAScrapOrderTests(TcsTestCase):
             code="2300", name="Customer deposits", account_type=AccountType.LIABILITY))
         with self.assertRaisesMessage(ValidationError, "TCS on an advance is owed as it is received"):
             order.create_down_payment_invoice(self.ar, percent=30).post()
+
+
+class ARowTheUpgradeCouldNotTellTests(TcsTestCase):
+    """sales 0072 leaves a row's section empty where the books cannot say it; it is never printed or filed blank."""
+
+    def test_is_neither_printed_nor_filed_under_a_guess(self):
+        invoice = self.t1()
+        row = invoice.tcs_collected.get()
+        TcsCollection.objects.filter(pk=row.pk).update(section_code="")
+        said = f"TCS row {row.pk} on {invoice.number} of 10 Sep 2026 does not say which section it was issued under"
+        with self.assertRaisesMessage(ValidationError, said):
+            tcs_return(DAY, DAY)
+        with self.assertRaisesMessage(ValidationError, said):
+            tax_invoice(type(invoice).objects.get(pk=invoice.pk))
+
+
+def _migrated_to_the_leaves():
+    from django.db.migrations.executor import MigrationExecutor
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+def _at(*when):
+    return datetime.datetime(*when, tzinfo=datetime.timezone.utc)
+
+
+class _SalesTakenBack(TransactionTestCase):
+    """Only sales is taken back; the accounts, sections and entries are made as they stand now, by id."""
+
+    def taken_back(self):
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        self.addCleanup(_migrated_to_the_leaves)
+        self.apps = executor.loader.project_state(self.before).apps
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        self.now = now
+        account = now.get_model("accounting", "Account")
+        self.receivable = account.objects.create(code="1200", name="Receivables", account_type="asset")
+        self.owed, self.moved = (account.objects.create(code=code, name=code, account_type="liability")
+                                 for code in ("2290", "2291"))
+        self.customer = now.get_model("core", "Party").objects.create(code="C-MH", name="Pune Recyclers")
+        self.sections = now.get_model("accounting", "TcsSection")
+
+    def entry(self, memo, *lines):
+        made = self.now.get_model("accounting", "JournalEntry").objects.create(date=DAY, memo=memo, posted=True)
+        for onto, debit, credit in lines:
+            self.now.get_model("accounting", "JournalLine").objects.create(
+                entry=made, account=onto, debit=D(debit), credit=D(credit))
+        return made
+
+    def collected(self, number, section, amount, day=DAY, memo=None, lines=(), **more):
+        invoice = self.apps.get_model("sales", "Invoice").objects.create(
+            customer_id=self.customer.pk, invoice_date=day, receivable_account_id=self.receivable.pk,
+            number=number, posted=True)
+        entry = self.entry(memo or f"TCS {section.code} on {number}", *lines) if (lines or memo) else None
+        return self.apps.get_model("sales", "TcsCollection").objects.create(
+            invoice=invoice, section_id=section.pk, base=D(amount) * 100, rate_percent=D("1"), amount=D(amount),
+            date=day, journal_entry_id=entry.pk if entry else None, **more)
+
+    def forward(self):
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.after)
+        return executor.loader.project_state(self.after).apps.get_model("sales", "TcsCollection")
+
+    def back(self):
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        return executor.loader.project_state(self.before).apps.get_model("sales", "TcsCollection")
+
+
+# Slow: each unwinds sales's latest migrations and replays them.
+@tag("migration")
+class SectionsAlreadyCollectedUnderMigrationTests(_SalesTakenBack):
+    """
+    sales 0072: a row collected before it kept its section keeps the code it was issued under, read off
+    its own entry's memo as it posted; never the section's code at the upgrade. SCRAP was made "206C(1)"
+    on 1 April 2025 and renamed "394(1)" on 1 April 2026 (calc_fix_mig/scenarios.py):
+
+      N1  INV-1, 10 Sep 2025, 1,062.00, memo "TCS 206C(1) on INV-1"          -> 206C(1)
+      N2  INV-3, 12 Sep 2025, collected nothing (no entry), made before the rename -> empty: nothing says
+      N6  INV-5, 15 Sep 2025, 1,062.00, a memo not in the code's shape, before the rename -> empty
+      N4  INV-2, 16 Apr 2026, 1,062.00, memo "TCS 394(1) on INV-2"          -> 394(1)
+      N5  INV-4, 17 Apr 2026, collected nothing, made after the rename      -> 394(1): unsaved since
+      N3  CN-1, 20 Apr 2026, gives 266.00 of INV-1 back, memo "TCS 394(1) given back ..." -> 206C(1),
+          its collection's
+      The old read gave all six 394(1): a 2025 invoice under the 2025 Act, reprinted and returned so.
+      Back: the column goes, and the six rows stay.
+    """
+
+    before = [("sales", "0071_posted_account")]
+    after = [("sales", "0072_tcs_section_by_date")]
+
+    def test_each_keeps_the_code_it_was_issued_under(self):
+        self.taken_back()
+        scrap = self.sections.objects.create(code="206C(1)", name="Scrap", payable_account_id=self.owed.pk)
+        self.sections.objects.filter(pk=scrap.pk).update(created_at=_at(2025, 4, 1, 10), updated_at=_at(2025, 4, 1, 10))
+        rows = self.apps.get_model("sales", "TcsCollection").objects
+
+        def made(row, when):
+            rows.filter(pk=row.pk).update(created_at=when, updated_at=when)
+            return row
+
+        def money(number, amount):
+            return [(self.receivable, amount, "0"), (self.owed, "0", amount)]
+
+        n1 = made(self.collected("INV-1", scrap, "1062", datetime.date(2025, 9, 10), lines=money("INV-1", "1062"),
+                                 posted_account_id=self.owed.pk), _at(2025, 9, 10, 10))
+        made(self.collected("INV-3", scrap, "0", datetime.date(2025, 9, 12)), _at(2025, 9, 12, 10))
+        made(self.collected("INV-5", scrap, "1062", datetime.date(2025, 9, 15), memo="Scrap TCS",
+                            lines=money("INV-5", "1062"), posted_account_id=self.owed.pk), _at(2025, 9, 15, 10))
+        self.sections.objects.filter(pk=scrap.pk).update(code="394(1)", updated_at=_at(2026, 4, 1, 10))
+        scrap.code = "394(1)"
+        made(self.collected("INV-2", scrap, "1062", datetime.date(2026, 4, 16), lines=money("INV-2", "1062"),
+                            posted_account_id=self.owed.pk), _at(2026, 4, 16, 10))
+        made(self.collected("INV-4", scrap, "0", datetime.date(2026, 4, 17)), _at(2026, 4, 17, 10))
+        made(self.collected("CN-1", scrap, "266", datetime.date(2026, 4, 20),
+                            memo="TCS 394(1) given back by CN-1 on INV-1",
+                            lines=[(self.owed, "266", "0"), (self.receivable, "0", "266")],
+                            posted_account_id=self.owed.pk, gives_back=n1), _at(2026, 4, 20, 10))
+
+        kept = self.forward()
+        self.assertEqual(sorted(kept.objects.values_list("invoice__number", "section_code")),
+                         [("CN-1", "206C(1)"), ("INV-1", "206C(1)"), ("INV-2", "394(1)"), ("INV-3", ""),
+                          ("INV-4", "394(1)"), ("INV-5", "")])
+
+        back = self.back()
+        self.assertNotIn("section_code", {field.name for field in back._meta.get_fields()})
+        self.assertEqual(back.objects.count(), 6)
