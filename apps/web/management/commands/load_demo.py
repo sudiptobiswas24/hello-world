@@ -234,7 +234,12 @@ class Command(BaseCommand):
 
             inter = position("INTER", "Inter-state supply", igst)
             lut = position("LUT", "Export under LUT", igst0)
-            M("accounting.GstSettings").objects.create(gstin=gstin("27AAECD4821K1Z"), interstate_position=inter)
+            registration = M("accounting.GstSettings").objects.create(
+                gstin=gstin("27AAECD4821K1Z"), interstate_position=inter)
+            # Exports go out under LUT, and posting one asks for the LUT in force on its day (O218).
+            M("accounting.LetterOfUndertaking").objects.create(
+                registration=registration, arn="AD270326000123X", financial_year="2026-27",
+                filed_on=on(2026, 3, 24), valid_from=on(2026, 4, 1), valid_to=on(2027, 3, 31))
 
         with step("Warehouses, bins, items and the opening stock"):
             Warehouse, Bin, Item = M("inventory.Warehouse"), M("inventory.StorageBin"), M("inventory.Item")
