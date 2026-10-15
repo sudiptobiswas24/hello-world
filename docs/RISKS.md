@@ -318,6 +318,7 @@ missing), **minor**.
 | O237 | hr | Employer EPF at 3.67% and EPS at 8.33% as two components round each on its own: 15,000 gives 551 + 1,250 = 1,801 posted, where the employer's 12% is 1,800 and the ECR files 1,250 and 550 (EPF is the difference). Total first, divide last (seen 2026-10-14, fix_people) | books | open |
 | O238 | sales, gst | An advance received for job work (GST is due on it, being a service) prints as an "Invoice", not as a receipt voucher with CGST Rule 50's content; its refund has no Rule 51 refund voucher (seen 2026-10-14, fix_acct) | statutory | open |
 | O239 | accounting, frontend | The Letter of Undertaking (ARN, year, valid from and to), which every export invoice under LUT now needs in force, is entered in the admin only: there is no office screen for it (seen 2026-10-14, fix_acct) | minor | open |
+| O240 | hr | A month's professional tax is taken once, on the month's wages, less what other runs of the month took (g21). If the earlier run of the month is voided after a later run took the month's figure and is never run again, the later run keeps what it took on wages that are now lower: 110 on 12,000 where the slab for the wages left may be less. Nothing gives the difference back (seen 2026-10-15, rereview) | rule | open; the accountant says whether a refund in the next month is the practice |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
