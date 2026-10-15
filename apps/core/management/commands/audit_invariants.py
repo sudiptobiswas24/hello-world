@@ -1692,7 +1692,46 @@ class Command(BaseCommand):
                                 f"{label}.{model.__name__} keeps its own {name}, but "
                                 f"`{code.splitlines()[line - 1].strip()[:90]}` reads its {relation}'s.",
                             ))
-        return findings
+        return findings + self._kept_read_through_a_name(labels, sources)
+
+    def _kept_read_through_a_name(self, labels, sources):
+        """
+        The same read, through a name for the relation rather than the record: `section.payable_account`.
+
+        A TCS collection credited 2290, its section was moved to 2291, and the challan and the credit
+        note's give-back both read `section.payable_account` as it stood: 2290 kept 1,062.00 for good
+        and 2291 went to -1,062.00 (review F3). The section reached them as a parameter, never as
+        `.section.`, so the read above did not see it. Read at the event is right, and the function
+        that records the keeping model is the event; any other function reading it is a finding.
+        """
+        keepers = [(model, relation, name) for label in labels
+                   for model in django_apps.get_app_config(label).get_models()
+                   for relation, names in (getattr(model, "KEPT_FROM", None) or {}).items() for name in names]
+        if not keepers:
+            return []
+        findings = set()
+        for label in OUR_APPS:
+            for path, text in sources[label].items():
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                for fn in ast.walk(ast.parse(text)):
+                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    body = self._code(fn)
+                    for model, relation, name in keepers:
+                        if not re.search(rf"(?<![\w.]){relation}\.{name}\b", body):
+                            continue
+                        # The event that records it, or a sibling keeping the same field: read once and kept.
+                        if any(re.search(rf"\b{other.__name__}(\.objects\.create)?\(", body)
+                               for other, kept_relation, kept_name in keepers
+                               if (kept_relation, kept_name) == (relation, name)):
+                            continue
+                        findings.add((
+                            "kept setting read live",
+                            f"{model._meta.label} keeps its own {name}, but {label}.{path.stem}.{fn.name} reads "
+                            f"`{relation}.{name}` as it stands.",
+                        ))
+        return sorted(findings)
 
     # -- shape 1: a correction dated before what it corrects, or ahead ------
     # Steps that reverse an entry on a day they are given and do not yet ask

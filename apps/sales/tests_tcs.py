@@ -253,3 +253,21 @@ class ThroughTheApiTests(TcsTestCase):
         self.assertEqual((paid.status_code, paid.json()["amount"]), (201, "1062.00"))
         quarter = client.get("/api/sales/tcs-collections/quarter/", {"from": "2026-07-01", "to": "2026-09-30"})
         self.assertEqual((quarter.status_code, quarter.json()[0]["amount"]), (200, "1062.00"))
+
+
+class TheAuditSeesAPayableAccountReadLiveTests(TcsTestCase):
+    """Review F3: a payable account a collection or deduction keeps, read again through its section."""
+
+    def test_a_challan_reading_the_sections_account_is_reported(self):
+        from apps.core.management.commands.audit_invariants import Command, app_sources
+
+        sources = app_sources()
+        self.assertEqual(Command().kept_settings_read_live(["sales", "purchasing"], sources), [])
+        sources["accounting"] = {
+            path: text.replace("account_id=account_id, debit=", "account=section.payable_account, debit=")
+            if path.name == "challans.py" else text for path, text in sources["accounting"].items()}
+        findings = [text for _, text in Command().kept_settings_read_live(["sales", "purchasing"], sources)]
+        self.assertIn("sales.TcsCollection keeps its own payable_account, but accounting.challans.pay_over reads "
+                      "`section.payable_account` as it stands.", findings)
+        self.assertIn("purchasing.TdsDeduction keeps its own payable_account, but accounting.challans.pay_over "
+                      "reads `section.payable_account` as it stands.", findings)

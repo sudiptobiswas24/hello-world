@@ -5,6 +5,7 @@ fix to either is a fix to both (mistake 5): the TDS challan's locks were
 found missing once (O64), and a second copy would have needed finding again.
 """
 
+from collections import defaultdict
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -19,9 +20,12 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
              signed=lambda row: row.amount):
     """
     Pay over the rows of `waiting` (a queryset of one model, each with an
-    `amount` and a `challan`) that `live` keeps, under `section` (with its
-    `payable_account`): Dr payable / Cr bank. `make_challan(amount, entry)`
-    creates the challan the rows are then marked paid by.
+    `amount`, a `challan` and the `posted_account` it was owed into) that
+    `live` keeps, under `section`: Dr each row's kept payable account / Cr
+    bank. Never the section's account as it stands: moved after a row
+    posted, the challan cleared an account that never held the tax (review
+    F3). `make_challan(amount, entry)` creates the challan the rows are then
+    marked paid by.
 
     The bank is held as money inside the transaction that moves it; the
     section is locked first, then the rows in key order, and they are read
@@ -39,15 +43,19 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
         owed = list(live(waiting))
         if not owed:
             raise ValidationError(f"Nothing {what} is waiting to be paid over.")
-        if section.payable_account_id is None:
-            raise ValidationError(f"{section} has no payable account.")
-        total = sum((signed(row) for row in owed), Decimal("0"))
+        by_account = defaultdict(Decimal)
+        for row in owed:
+            by_account[row.posted_account_id] += signed(row)
+        total = sum(by_account.values(), Decimal("0"))
         if total <= 0:
             raise ValidationError(
                 f"What is waiting under {section.code} nets to {total}: more was given back than collected, "
                 "and nothing is paid over. It is set against a later month's.")
         entry = JournalEntry.objects.create(date=to_date(date), reference=challan_number, memo=memo)
-        JournalLine.objects.create(entry=entry, account=section.payable_account, debit=total, description=memo)
+        for account_id, amount in sorted(by_account.items()):
+            if amount:
+                JournalLine.objects.create(entry=entry, account_id=account_id, debit=max(amount, Decimal("0")),
+                                           credit=max(-amount, Decimal("0")), description=memo)
         JournalLine.objects.create(entry=entry, account=bank_account, credit=total, description=memo)
         entry.post()
         challan = make_challan(total, entry)
