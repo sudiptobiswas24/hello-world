@@ -341,12 +341,14 @@ class TheMonthFootsToThePayableAccount(Base):
         with self.assertRaises(ValidationError):
             collection.delete()
 
-    def test_a_collection_cannot_be_moved_to_another_challan_by_hand(self):
+    def test_a_paid_collection_is_not_released_from_its_challan_by_hand(self):
+        """Review F16: refused in words; the row stays on its challan."""
         self.t1()
-        challan = TcsChallan.pay(self.section, "2026-09-01", OCT(5), self.bank, "00001", "0510308")
+        TcsChallan.pay(self.section, "2026-09-01", OCT(5), self.bank, "00001", "0510308")
         collection = TcsCollection.objects.get()
         collection.challan = None
-        collection.save()  # editable=False: the viewset cannot, but save() takes it
+        with self.assertRaisesMessage(ValidationError, "and so is the challan that paid it over"):
+            collection.save()  # editable=False: the viewset cannot, but save() would take it
         collection.refresh_from_db()
         self.assertIsNotNone(collection.challan_id, "a paid collection was released from its challan by a plain save()")
 

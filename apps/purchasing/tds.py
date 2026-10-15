@@ -76,6 +76,18 @@ class TdsDeduction(AuditModel):
     def is_paid_over(self):
         return bool(self.challan_id and self.challan.voided_entry_id is None)
 
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            # The mirror of TcsCollection.save (review F16): what was deducted, into which account, and the
+            # challan that paid it, are facts; reverse() takes a deduction back.
+            before = TdsDeduction.objects.get(pk=self.pk)
+            if any(getattr(before, name) != getattr(self, name)
+                   for name in ("bill_id", "section_id", "base", "rate_percent", "pan", "amount", "date",
+                                "journal_entry_id", "posted_account_id", "challan_id")):
+                raise ValidationError("What was deducted is a fact, and so is the challan that paid it over; "
+                                      "reverse the deduction instead.")
+        super().save(*args, **kwargs)
+
     @serialised("reversed_entry", "challan")
     def reverse(self, on_date=None):
         """
@@ -190,6 +202,10 @@ class TdsChallan(AuditModel):
                    for field in ("section_id", "month", "date", "bank_account_id", "amount")):
                 raise ValidationError("A challan is not changed once paid; void it.")
         super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        # As TcsChallan: a payment over to the government happened; a wrong one is voided (review F16).
+        raise ValidationError("A challan paid is a fact; void it.")
 
     @classmethod
     def pay(cls, section, month, date, bank_account, challan_number, bsr_code):
