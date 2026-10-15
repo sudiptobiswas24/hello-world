@@ -18,7 +18,9 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.db.models import Sum
+from django.test import TransactionTestCase, tag
 
 from apps.accounting.models import (
     Account, AccountType, JournalLine, PartyTaxProfile, Tax, TaxGroup, TaxScope, TdsSection,
@@ -523,3 +525,95 @@ class TheChallanPaysFromTheAccountTheDeductionWentToTests(TdsTestCase):
             return (rows["credit"] or Decimal("0")) - (rows["debit"] or Decimal("0"))
 
         self.assertEqual((balance(before), balance(self.contract.payable_account)), (Decimal("0"), Decimal("0")))
+
+
+def _migrated_to_the_leaves():
+    from django.db.migrations.executor import MigrationExecutor
+
+    executor = MigrationExecutor(connection)
+    executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+# Slow: it unwinds purchasing's latest migration and replays it.
+@tag("migration")
+class DeductionsAlreadyPostedMigrationTests(TransactionTestCase):
+    """
+    purchasing 0074: a deduction posted before it kept posted_account keeps the account its own entry
+    credited, never the one its section names at the upgrade. Every deduction has an entry (the column
+    is not nullable) and an amount over nothing, so there is no unposted or entry-less row to build.
+    From calc_fix_mig/scenarios.py:
+
+      D1  1,000.00 on B-1, Dr 2100 / Cr 2250, while 194C read 2250          -> 2250
+      D2    500.00 on B-2, Dr 2100 / Cr 2250, reversed Dr 2250 / Cr 2100    -> 2250, not the reversal's 2100
+      --  194C moved to 2251: D1 and D2 are the rows whose section moved after they posted
+      D3    700.00 on B-3, Dr 2100 / Cr 2251                                -> 2251
+      D4    300.00 on B-4 under 194J, wired to the bill's own 2100: Dr 2100 / Cr 2100 -> 2100
+          (the old read took a credit to anything but 2100, found none, and the constraint refused
+          the upgrade)
+      D5    250.00 on B-5, an entry no deduct() made: Cr 2250 200.00 and Cr 2251 50.00
+          -> the upgrade stops and names it (the old read took 2250, a guess); taken off, it runs.
+      Back: the column goes, and the four rows and their amounts stay.
+    """
+
+    before = [("purchasing", "0073_landing_keeps_where_it_went")]
+    after = [("purchasing", "0074_posted_account")]
+
+    def test_each_keeps_the_account_its_own_entry_credited(self):
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        self.addCleanup(_migrated_to_the_leaves)
+        apps = executor.loader.project_state(self.before).apps
+        # Only purchasing is taken back; the accounts, sections and entries are made as they stand now.
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        account = now.get_model("accounting", "Account")
+        payable, owed, moved = (account.objects.create(code=code, name=code, account_type="liability")
+                                for code in ("2100", "2250", "2251"))
+        vendor = now.get_model("core", "Party").objects.create(code="V-C", name="Loom Fitters")
+        section = now.get_model("accounting", "TdsSection")
+        contract = section.objects.create(code="194C", name="Contractors", rate_percent=Decimal("1"),
+                                          no_pan_rate_percent=Decimal("20"), payable_account_id=owed.pk)
+        fees = section.objects.create(code="194J", name="Fees", rate_percent=Decimal("10"),
+                                      no_pan_rate_percent=Decimal("20"), payable_account_id=payable.pk)
+        entry_model, line = now.get_model("accounting", "JournalEntry"), now.get_model("accounting", "JournalLine")
+        bill_model, deduction = apps.get_model("purchasing", "Bill"), apps.get_model("purchasing", "TdsDeduction")
+
+        def entry(memo, *lines):
+            made = entry_model.objects.create(date=DAY, memo=memo, posted=True)
+            for onto, debit, credit in lines:
+                line.objects.create(entry=made, account=onto, debit=Decimal(debit), credit=Decimal(credit))
+            return made
+
+        def deducted(number, under, amount, *lines):
+            bill = bill_model.objects.create(vendor_id=vendor.pk, bill_date=DAY, payable_account_id=payable.pk,
+                                             number=number, posted=True)
+            return deduction.objects.create(
+                bill=bill, section_id=under.pk, base=Decimal(amount) * 100, rate_percent=Decimal("1"),
+                amount=Decimal(amount), date=DAY, journal_entry_id=entry(f"TDS on {number}", *lines).pk)
+
+        deducted("B-1", contract, "1000", (payable, "1000", "0"), (owed, "0", "1000"))
+        d2 = deducted("B-2", contract, "500", (payable, "500", "0"), (owed, "0", "500"))
+        d2.reversed_entry_id = entry("Reversed", (owed, "500", "0"), (payable, "0", "500")).pk
+        d2.save()
+        section.objects.filter(pk=contract.pk).update(payable_account_id=moved.pk)
+        deducted("B-3", contract, "700", (payable, "700", "0"), (moved, "0", "700"))
+        deducted("B-4", fees, "300", (payable, "300", "0"), (payable, "0", "300"))
+        d5 = deducted("B-5", contract, "250", (payable, "250", "0"), (owed, "0", "200"), (moved, "0", "50"))
+
+        with self.assertRaisesMessage(RuntimeError, f"TDS deduction {d5.pk} of 250.00 on bill {d5.bill_id} "
+                                                    f"(2026-06-10): its entry {d5.journal_entry_id} credits 2 lines"):
+            MigrationExecutor(connection).migrate(self.after)
+        deduction.objects.filter(pk=d5.pk).delete()
+        MigrationExecutor(connection).migrate(self.after)
+        kept = executor.loader.project_state(self.after).apps.get_model("purchasing", "TdsDeduction")
+        self.assertEqual(sorted(kept.objects.values_list("amount", "posted_account_id")),
+                         [(Decimal("300.00"), payable.pk), (Decimal("500.00"), owed.pk),
+                          (Decimal("700.00"), moved.pk), (Decimal("1000.00"), owed.pk)])
+
+        MigrationExecutor(connection).migrate(self.before)
+        back = MigrationExecutor(connection).loader.project_state(self.before).apps.get_model(
+            "purchasing", "TdsDeduction")
+        self.assertNotIn("posted_account", {field.name for field in back._meta.get_fields()})
+        self.assertEqual(sorted(back.objects.values_list("amount", flat=True)),
+                         [Decimal("300.00"), Decimal("500.00"), Decimal("700.00"), Decimal("1000.00")])

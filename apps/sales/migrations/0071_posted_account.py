@@ -6,15 +6,38 @@ from django.db import migrations, models
 
 
 def keep_the_account_each_row_posted_to(apps, schema_editor):
-    """What each row's own entry booked to the payable side, read once: the section may have moved since."""
+    """
+    What each row's own entry booked to the payable side, read once: the section may have moved since.
+
+    Each collection that collected anything has an entry of its own, Dr Receivable / Cr TCS payable,
+    and each give-back the reverse, and nothing else: so the entry's one line on the payable side (the
+    credit, or the give-back's debit) is the account. Not "a line other than the invoice's receivable":
+    a section wired to the receivable itself posted Dr 1200 / Cr 1200, that read found nothing, and the
+    constraint below then refused the whole upgrade on the row with no word of which.
+
+    A row that collected nothing has no entry and owes nothing anywhere: it keeps none, as the
+    constraint allows. A row that collected something with no entry, or one whose entry has other than
+    one line on that side, was not made by this code and nothing says which account the tax went to;
+    left empty it would break the constraint every money row is held to, and a guess pays the challan
+    out of an account that may never have held it. So the upgrade stops and names it.
+    """
     JournalLine = apps.get_model("accounting", "JournalLine")
-    Model = apps.get_model('sales', 'TcsCollection')
-    for row in Model.objects.exclude(journal_entry=None).filter(posted_account=None):
-        lines = JournalLine.objects.filter(entry_id=row.journal_entry_id)
+    TcsCollection = apps.get_model("sales", "TcsCollection")
+    untold = []
+    for row in TcsCollection.objects.filter(posted_account=None).exclude(amount=0).order_by("pk"):
         side = {"debit__gt": 0} if row.gives_back_id else {"credit__gt": 0}
-        line = lines.filter(**side).exclude(account_id=apps.get_model("sales", "Invoice").objects.get(pk=row.invoice_id).receivable_account_id).first()
-        if line is not None:
-            Model.objects.filter(pk=row.pk).update(posted_account_id=line.account_id)
+        booked = list(JournalLine.objects.filter(entry_id=row.journal_entry_id, **side)
+                      .values_list("account_id", flat=True)) if row.journal_entry_id else []
+        if len(booked) == 1:
+            TcsCollection.objects.filter(pk=row.pk).update(posted_account_id=booked[0])
+        else:
+            untold.append(f"TCS collection {row.pk} of {row.amount} on invoice {row.invoice_id} ({row.date}): "
+                          + (f"its entry {row.journal_entry_id} has {len(booked)} lines on the payable side"
+                             if row.journal_entry_id else "it has no entry"))
+    if untold:
+        raise RuntimeError(
+            "These collections do not say which account the tax was owed into, so it is not guessed: "
+            + "; ".join(untold) + ".")
 
 
 class Migration(migrations.Migration):
