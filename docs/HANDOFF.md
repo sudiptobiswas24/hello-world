@@ -98,9 +98,9 @@ built.
    - Running:
      - fix_people2 (`$SP/fix_people2`, from b0d8234): review_people's
        five blockers, O236, O237, and the per-period rule for PT, LWF
-       and advance instalments. Brief: `$SP/briefs/fix_people_review.md`.
+       and advance instalments. Brief: docs/handoff/g21_fix_people_review.md.
      - fix_acct2 (`$SP/fix_acct2`, from d05ba67): review_acct's four
-       blockers and the rest. Brief: `$SP/briefs/fix_acct_review.md`.
+       blockers and the rest. Brief: docs/handoff/g21_fix_acct_review.md.
    - Left:
      - cherry-pick both into the tree and register what they leave;
      - six lanes on one tip, finalize, push.
