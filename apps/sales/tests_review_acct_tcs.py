@@ -217,6 +217,7 @@ class CollectedOnlyWhereTheLawSaysAndAsItStood(Base):
         for index, (name, (valid_from, received, valid_to, expected)) in enumerate(cases.items()):
             buyer = self.buyer(f"B{index}", pan_letter="DEFGH"[index])
             TcsDeclaration.objects.create(party=buyer, section=self.section, reference=f"F{index}",
+                                          pan=buyer.tax_profile.pan_on_file(),
                                           received_on=received, valid_from=valid_from, valid_to=valid_to)
             with self.subTest(case=name):
                 self.assertEqual(self.t1(buyer).tcs_amount, expected)
@@ -224,6 +225,7 @@ class CollectedOnlyWhereTheLawSaysAndAsItStood(Base):
     def test_another_buyers_declaration_exempts_nobody_else(self):
         other = self.buyer("OTHER", "J")
         TcsDeclaration.objects.create(party=other, section=self.section, received_on=SEP(1),
+                                      pan=other.tax_profile.pan_on_file(),
                                       valid_from=datetime.date(2026, 4, 1), valid_to=datetime.date(2027, 3, 31))
         self.assertEqual(self.t1().tcs_amount, D("1062.00"))
 
