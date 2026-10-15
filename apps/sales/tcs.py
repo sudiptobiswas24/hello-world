@@ -29,7 +29,8 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
-from apps.accounting.models import Account, JournalEntry, JournalLine, TcsDeclaration, TcsRate, TcsSection
+from apps.accounting.models import (Account, JournalEntry, JournalLine, TcsDeclaration, TcsRate, TcsSection,
+                                     round_money)
 from apps.accounting.tds import rupees
 from apps.core.models import AuditModel, Company, serialised, to_date
 
@@ -102,17 +103,33 @@ class TcsCollection(AuditModel):
 
 
 def _tcs_lines(invoice):
-    """{section: base} over the lines whose item names a TCS section."""
+    """
+    {section: base} over the lines whose item names a TCS section, and their share of the charges.
+
+    Freight or packing billed on the invoice is part of what the buyer pays for the goods, which is what
+    section 206C(1) collects on (review U2): on an invoice of scrap alone it all joins the base; beside
+    other goods, its share by the goods' value before tax. Total first, divided last.
+    """
     taxes = invoice.line_tax_amounts()
-    bases = defaultdict(Decimal)
-    for line in invoice.lines.select_related("item__tcs_section"):
+
+    def charged(line):
+        return sum((amount for tax, amount in taxes.get(line, ()) if not tax.reverse_charge), Decimal("0"))
+
+    bases, goods, charges = defaultdict(Decimal), defaultdict(Decimal), []
+    for line in invoice.lines.select_related("item__tcs_section", "charge"):
+        if line.is_charge():
+            charges.append(line)
+            continue
         section = getattr(line.item, "tcs_section", None) if line.item_id else None
+        goods[section] += line.net_amount()
         if section is None:
             continue
-        value = line.net_amount()
-        if section.base_includes_gst:
-            value += sum((amount for tax, amount in taxes.get(line, ()) if not tax.reverse_charge), Decimal("0"))
-        bases[section] += value
+        bases[section] += line.net_amount() + (charged(line) if section.base_includes_gst else Decimal("0"))
+    all_goods = sum(goods.values(), Decimal("0"))
+    for section in list(bases):
+        for line in charges:
+            value = line.net_amount() + (charged(line) if section.base_includes_gst else Decimal("0"))
+            bases[section] += round_money(value * goods[section] / all_goods) if all_goods else Decimal("0")
     return bases
 
 
