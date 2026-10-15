@@ -1050,6 +1050,10 @@ class Inspection(AuditModel):
                 "was withdrawn and nobody said why is a batch somebody will "
                 "release again."
             )
+        # Only the Quality Manager lifts a hold (decisions 22 and 23, review F2): a verdict that
+        # holds its batch (rejected, held for rework, awaiting, a recall) or one they decided is
+        # theirs to void. A pass may be voided by whoever may void: that leaves the batch not yet
+        # inspected, which holds it, and lifts nothing.
         if by is not None and not by.has_perm("quality.decide_inspection"):
             if self.disposition == Disposition.AWAITING:
                 raise ValidationError(
@@ -1060,6 +1064,11 @@ class Inspection(AuditModel):
                     f"{self} was decided by the Quality Manager "
                     f"({self.get_disposition_display().lower()}). Voided, their decision would be "
                     "undone: they void it, if it was taken wrong.")
+            if self.disposition in (Disposition.REJECT, Disposition.REWORK):
+                raise ValidationError(
+                    f"{self} holds {self.lot} ({self.get_disposition_display().lower()}), and with it "
+                    "whatever was made from it. Voided, the hold would lift with nobody deciding: the "
+                    "Quality Manager voids it, if it was taken wrong.")
         self.voided_at = timezone.now()
         self.voided_reason = reason
         super().save(update_fields=["voided_at", "voided_reason", "updated_at"])
