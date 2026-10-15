@@ -745,7 +745,7 @@ class PayRun(AuditModel):
                 # An advance recovered is a receivable cleared, not a sum owed over to anyone.
                 owed_into = None if ComponentKind.EARNING in (line.kind, line.component.kind) or line.advance_id else (
                     account if line.kind == ComponentKind.DEDUCTION
-                    else line.component.liability_account
+                    else _employer_owes_into(line, slip)
                 )
                 if (line.posted_account_id != getattr(account, "pk", None)
                         or line.posted_liability_account_id != getattr(owed_into, "pk", None)):
@@ -764,7 +764,7 @@ class PayRun(AuditModel):
                     add(credits, account, line.amount)
                 else:
                     add(debits, (account, centre), line.amount)
-                    add(credits, line.component.liability_account, line.amount)
+                    add(credits, owed_into, line.amount)
             net_total += slip.net()
             if slip.recoverable:
                 # What the final pay could not take back: owed by the former
@@ -927,6 +927,23 @@ class PayRun(AuditModel):
         super().save(*args, **kwargs)
         if moved:
             self.payslips.all().delete()
+
+
+def _employer_owes_into(line, slip):
+    """
+    What an employer contribution is owed into. A pension line marked provident fund past 58 (O236) is owed
+    where the slip's employer provident fund share is, not into pension payable: the EPFO is paid it as EPF,
+    and the books said EPS payable 1,250.00 for a member whose ECR filed no EPS.
+    """
+    if line.kept_statutory == Statutory.PF_EMPLOYER and line.component.statutory == Statutory.EPS:
+        share = next((other for other in slip.lines.all() if other.component.statutory == Statutory.PF_EMPLOYER
+                      and other.kind == ComponentKind.EMPLOYER_COST), None)
+        if share is None:
+            raise ValidationError(f"{slip.employee} is past 58 and their pension share goes to the provident fund, "
+                                  "but the slip has no employer provident fund share to say which account. Give "
+                                  "them one.")
+        return share.component.liability_account
+    return line.component.liability_account
 
 
 def _net_pay_account():
@@ -1247,6 +1264,7 @@ class Payslip(AuditModel):
                     so_far = component.round(max(unrounded - rebate, Decimal("0")))
                     owed.append((row, so_far - taken, None))
                     taken = so_far
+                self.__dict__.setdefault("_unrounded", {})[component.pk] = unrounded
             marked, label = component.statutory or "", component.name
             if component.statutory in PF_KINDS:
                 # The ECR files EPS wages at the pension ceiling of the month (O222), and none from the
@@ -1302,6 +1320,7 @@ class Payslip(AuditModel):
                 ))
                 if kind == ComponentKind.EARNING and component.is_taxable:
                     running_taxable += amount
+        lines = self._employer_share_total_first(lines)
         self.recoverable, self.recoverable_component = Decimal("0"), None
         if self.is_final():
             lines = self._within_the_deduction_cap(lines)
@@ -1457,6 +1476,26 @@ class Payslip(AuditModel):
                 kept_terms={"month_before": ["0.00", f"{month_taken:.2f}"]} if month_taken else None,
             ))
         return found
+
+    def _employer_share_total_first(self, lines):
+        """
+        O237: where the pension is a component of its own, the employer's provident fund share is the
+        employer's whole contribution, worked out first and rounded once, less the pension. 3.67% and 8.33%
+        of 15,000 rounded apart came to 551 + 1,250 = 1,801 for the 12%, which is 1,800; now 550 + 1,250.
+        The total is kept on the line (employer_total).
+        """
+        unrounded = self.__dict__.get("_unrounded", {})
+        employer = [line for line in lines if line.component.statutory == Statutory.PF_EMPLOYER
+                    and line.kind == ComponentKind.EMPLOYER_COST]
+        pension = [line for line in lines if line.component.statutory == Statutory.EPS
+                   and line.kind == ComponentKind.EMPLOYER_COST]
+        if len(employer) != 1 or len(pension) != 1 or not {
+                employer[0].component_id, pension[0].component_id} <= set(unrounded):
+            return lines
+        total = employer[0].component.round(unrounded[employer[0].component_id] + unrounded[pension[0].component_id])
+        employer[0].amount = total - pension[0].amount
+        employer[0].kept_terms = {**(employer[0].kept_terms or {}), "employer_total": f"{total:.2f}"}
+        return [line for line in lines if line.amount > 0]
 
     def _month_before(self, component):
         """

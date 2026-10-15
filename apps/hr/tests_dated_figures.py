@@ -197,7 +197,8 @@ class ThePensionShareStopsAfter58Tests(DatedFiguresTestCase):
                            ceiling="15000", rounding=Rounding.RUPEE)
         eps.statutory = Statutory.EPS
         eps.save()
-        # Employer EPF 3.67% and pension 8.33% of 15,000: 551 and 1,250 to the rupee.
+        # Employer EPF 3.67% and pension 8.33% of 15,000: the 12% is 1,800, rounded once; pension 1,250 to the
+        # rupee and the EPF share the 550 left (O237; rounded apart they were 551 + 1,250).
         member = self.worker("D", uan="100000000030")
         for component, rate in ((self.basic, "20000"), (self.pf, "12"), (self.pf_er, "3.67"), (eps, "8.33")):
             self.paid(member, component, rate)
@@ -205,12 +206,32 @@ class ThePensionShareStopsAfter58Tests(DatedFiguresTestCase):
             self.month_run(2026, 11, post=False, employees=[member])
         EmployeePayDetails.objects.create(employee=member, date_of_birth=D(1968, 10, 15))
         found = ecr_rows(self.month_run(2026, 10, employees=[member]))[0]
-        self.assertEqual((found["eps"], found["epf_diff"]), (1250, 551))
+        self.assertEqual((found["eps"], found["epf_diff"]), (1250, 550))
         november = self.month_run(2026, 11, employees=[member])
         line = self.line(november, member, eps)
         self.assertEqual((line.kept_statutory, line.description), (Statutory.PF_EMPLOYER, "EPS, to provident fund past 58"))
         found = ecr_rows(november)[0]
-        self.assertEqual((found["eps_wages"], found["eps"], found["epf_diff"]), (0, 0, 551 + 1250))
+        self.assertEqual((found["eps_wages"], found["eps"], found["epf_diff"]), (0, 0, 1800))
+
+    def test_past_58_the_pension_line_is_owed_where_the_employers_provident_fund_share_is(self):
+        """O236: November's 1,250 is credited to PF payable with the EPF share, not to EPS payable."""
+        from apps.accounting.models import Account, AccountType, JournalLine
+
+        eps_payable = Account.objects.create(code="2340", name="EPS payable", account_type=AccountType.LIABILITY)
+        eps = self.percent("EPS", 65, ComponentKind.EMPLOYER_COST, eps_payable, base=[self.basic, self.special],
+                           ceiling="15000", rounding=Rounding.RUPEE)
+        eps.statutory = Statutory.EPS
+        eps.save()
+        member = self.worker("D", uan="100000000030")
+        for component, rate in ((self.basic, "20000"), (self.pf, "12"), (self.pf_er, "3.67"), (eps, "8.33")):
+            self.paid(member, component, rate)
+        EmployeePayDetails.objects.create(employee=member, date_of_birth=D(1968, 10, 15))
+        credited = {}
+        for number in (10, 11):
+            run = self.month_run(2026, number, employees=[member])
+            credited[number] = [sum((l.credit for l in JournalLine.objects.filter(entry=run.journal_entry, account=a)),
+                                    Decimal("0")) for a in (self.pf_payable, eps_payable)]
+        self.assertEqual(credited, {10: [Decimal("2350.00"), Decimal("1250.00")], 11: [Decimal("3600.00"), Decimal("0")]})
 
 
 class ProfessionalTaxSchedulesTests(DatedFiguresTestCase):
