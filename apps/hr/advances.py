@@ -29,7 +29,7 @@ from django.db import models, transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from apps.core.models import AuditModel, Company, documents_it_answers_to, serialised, to_date
+from apps.core.models import AuditModel, Company, documents_it_answers_to, lock_rows, serialised, to_date
 
 from .models import Employee, hold_the_employee
 
@@ -143,7 +143,15 @@ class SalaryAdvance(AuditModel):
 
         return PayRun.objects.filter(status=PayRunStatus.POSTED, payslips__lines__advance=self).distinct()
 
-    @serialised("voided_at", held_first=True)
+    def held_for_void(self):
+        """
+        Its payment, then the person, then itself: the order a void of the payment on its own takes them in
+        (Payment.void holds the payment, then refuse_void_of_a_recovered_advance the person and the advance).
+        PayRun.post holds the person through its whole recovery, so a void decides only after it.
+        """
+        return [self.payment, *self.locked_before_it()]
+
+    @serialised("voided_at", held_first="held_for_void")
     def void(self, on_date=None, memo=""):
         """Take it back as never given: refused once a posted run recovered from it; its payment is voided with it."""
         if self.voided_at is not None:
@@ -167,10 +175,18 @@ def advances_to_recover(slip):
 
 
 def refuse_void_of_a_recovered_advance(payment, on_date):
-    """A void follow-up: the payment that gave an advance runs have recovered from is not voided under them."""
+    """
+    A void follow-up: the payment that gave an advance runs have recovered from is not voided under them.
+
+    Decided under the person's lock (review RP1), the one PayRun.post holds from re-working its slips to
+    its entry: read without it, a run that had checked the advance stood committed after this read, and
+    docked A1 2,000 of an advance whose payment was voided. Then the advance itself, read again.
+    """
     advance = SalaryAdvance.objects.filter(payment=payment).first()
     if advance is None:
         return
+    hold_the_employee(*advance.locked_before_it())
+    lock_rows(advance)
     run = advance.recovering_runs().first()
     if run is not None:
         raise ValidationError(f"This payment gave {advance}, and {run} has recovered {advance.recovered()} "

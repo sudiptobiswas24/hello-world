@@ -2177,3 +2177,64 @@ class PayrollOutputRaceTests(RaceCase):
         self.assertFalse(any("deadlock" in str(outcome) for outcome in outcomes), outcomes)
         self.assertEqual(outcomes[0], "done", outcomes)
         self.assertIn("net pay is 8450.50", outcomes[1])
+
+
+@tag("race")
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class AnAdvancesPaymentAndItsRecoveryRaceTests(RaceCase):
+    """Review RP1: the run is held after re-working its slips, before its entry; the advance's payment is voided."""
+
+    def test_an_advances_payment_is_not_voided_while_a_run_recovers_from_it(self):
+        import datetime
+        import threading
+        from unittest.mock import patch
+
+        from django.db import transaction
+
+        from apps.hr import tests_pay_outputs
+        from apps.hr.payroll import PayRunStatus, PayslipLine
+
+        made = fixture(self, tests_pay_outputs.AdvancesTests)
+        advance = made.give()
+        june = made.month(6, post=False)
+        reached, go, outcomes = threading.Event(), threading.Event(), {}
+        real = PayRun._check_not_already_paid
+
+        def paused(run):
+            result = real(run)
+            reached.set()
+            go.wait(5)
+            return result
+
+        def posting():
+            try:
+                with patch.object(PayRun, "_check_not_already_paid", paused), transaction.atomic():
+                    PayRun.objects.get(pk=june.pk).post()
+                outcomes["post"] = "done"
+            except Exception as exc:
+                outcomes["post"] = f"refused: {exc}"
+            finally:
+                connection.close()
+
+        def voiding():
+            try:
+                reached.wait(10)
+                with transaction.atomic():
+                    Payment.objects.get(pk=advance.payment_id).void(on_date=datetime.date(2026, 6, 2))
+                outcomes["void"] = "done"
+            except Exception as exc:
+                outcomes["void"] = f"refused: {exc}"
+            finally:
+                go.set()
+                connection.close()
+
+        threads = [threading.Thread(target=posting), threading.Thread(target=voiding)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        voided = Payment.objects.get(pk=advance.payment_id).is_voided()
+        recovered = PayslipLine.objects.filter(advance=advance, payslip__run__status=PayRunStatus.POSTED).exists()
+        self.assertEqual((voided, recovered), (False, True), outcomes)
+        self.assertIn("has recovered 2000.00", outcomes["void"])
+        self.assertEqual(made.balance(made.advances), advance.balance())
