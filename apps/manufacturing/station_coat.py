@@ -169,3 +169,7 @@ def void_coating(check, station, supervisor, operator, reason):
     check.report.void(f"Withdrawn at {station}: {reason}"[:255])
     check.voided_at = timezone.now()
     check.save(update_fields=["voided_at", "updated_at"])
+    from apps.quality.decisions import close_to_dos
+
+    # Withdrawn: the Quality Manager's to-do on it has nothing left to look at (review F8).
+    close_to_dos(check, None, f"The coating check at {station} was withdrawn: {reason}"[:255])

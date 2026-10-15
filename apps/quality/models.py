@@ -980,11 +980,12 @@ class Inspection(AuditModel):
         super().save(update_fields=["disposition", "decision_note", "decided_by", "decided_at",
                                     "decision_login", "updated_at"])
         from .decisions import close_to_dos
-
-        close_to_dos(self, by, f"{self} decided: {self.get_disposition_display().lower()}. {note}")
         from .release import lot_decided
 
+        # Those who hold something on the batch first (a receipt, an off roll's to-do), whose
+        # to-dos were given before this one's: to-dos are closed in the order they were given.
         lot_decided(self.lot, by)
+        close_to_dos(self, by, f"{self} decided: {self.get_disposition_display().lower()}. {note}")
         if disposition == Disposition.CONCESSION:
             from .recall import lift_when_committed
 
