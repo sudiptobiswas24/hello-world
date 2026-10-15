@@ -61,8 +61,7 @@ def made_into_by_runs(lot):
     lineage. At the run, as the genealogy is: every batch a run made is
     made from every batch it used.
     """
-    return [child for run, _quantity in runs_that_used(lot) for child in output_lots(run)
-            if child.pk != lot.pk]
+    return [child for run, _quantity in runs_that_used(lot) for child in output_lots(run)]
 
 
 def held_inputs(lot):
@@ -84,8 +83,7 @@ def held_inputs(lot):
     found = {}
     for run in runs_that_made(lot):
         for came_from, _item, _quantity in consumed_lots(run):
-            if came_from.pk != lot.pk and came_from.pk not in found and \
-                    release_status(came_from) == ReleaseStatus.HELD:
+            if came_from.pk not in found and release_status(came_from) == ReleaseStatus.HELD:
                 found[came_from.pk] = came_from
     return list(found.values())
 
@@ -106,34 +104,34 @@ def descendants(lot, depth=None, beyond=None):
     way, with the re-batch as what used it: the sacks are the same sacks
     under a new number.
     """
+    from apps.quality.release import LINEAGE_DEPTH, walk
+
     from .rebatch import remade_into
 
-    from apps.quality.release import LINEAGE_DEPTH
-
     depth = LINEAGE_DEPTH if depth is None else depth
-    seen = set()
+    uses = {}
 
-    def walk(batch, level):
-        if batch.pk in seen:
-            return []
-        if level > depth:
-            if beyond is not None and (runs_that_used(batch) or remade_into(batch)):
+    def used(batch):
+        if batch.pk not in uses:
+            uses[batch.pk] = ([(run, quantity, output_lots(run)) for run, quantity in runs_that_used(batch)]
+                              + remade_into(batch))
+        return uses[batch.pk]
+
+    def made(batch):
+        return [child for _used_by, _quantity, children in used(batch) for child in children]
+
+    # The gate's one walk (apps.quality.release.walk): each batch once, so a
+    # loop of any length ends, levels counted from 1 here.
+    rows = []
+    for batch, level in walk(lot, made, depth=depth):
+        if level >= depth:
+            if beyond is not None and used(batch):
                 beyond.append(batch)
-            return []
-        seen.add(batch.pk)
-        rows = []
-        uses = [(run, quantity, output_lots(run)) for run, quantity in runs_that_used(batch)]
-        uses += remade_into(batch)
-        for used_by, quantity, made in uses:
-            rows.append({
-                "level": level, "lot": batch, "used_by": used_by,
-                "quantity": quantity, "made": made,
-            })
-            for child in made:
-                rows.extend(walk(child, level + 1))
-        return rows
-
-    return walk(lot, 1)
+            continue
+        rows.extend({"level": level + 1, "lot": batch, "used_by": used_by,
+                     "quantity": quantity, "made": children}
+                    for used_by, quantity, children in used(batch))
+    return rows
 
 
 def held_by_customers(lots):
