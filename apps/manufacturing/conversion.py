@@ -259,6 +259,29 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
     )
 
 
+def floor_checks_decided(lot, by=None):
+    """
+    Registered with quality (`register_lot_decided`): a bundle was decided,
+    so the Quality Manager's to-dos on the off roll it was cut from and on
+    the off coating checks of its run close (review F8). They pointed at
+    the bundle as the thing to decide, and it is decided.
+    """
+    from apps.quality.decisions import close_to_dos
+
+    from .process_rolls import off_rolls
+    from .station_coat import CoatingCheck
+
+    count = BagCount.objects.filter(inspection__lot=lot).select_related("mount", "work_order").first()
+    if count is None:
+        return
+    said = f"{lot} cut from it was decided."
+    for roll in off_rolls(count.mount) if count.mount_id else []:
+        close_to_dos(roll, by, f"{roll.code}: {said}")
+    for check in CoatingCheck.objects.filter(report__operation__work_order=count.work_order, passed=False,
+                                             voided_at__isnull=True):
+        close_to_dos(check, by, f"The coating check on {count.work_order}: {said}")
+
+
 @transaction.atomic
 def void_bags(count, supervisor, reason):
     """Take a count back: its production and its inspection with it."""
