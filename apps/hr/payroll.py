@@ -633,6 +633,7 @@ class PayRun(AuditModel):
         if not people:
             raise ValidationError("Nobody is employed during this period.")
 
+        self._refuse_pension_members_without_a_birth_date(people)
         Payslip.objects.filter(run=self).delete()
         for person in people:
             slip = Payslip.objects.create(run=self, employee=person)
@@ -642,6 +643,25 @@ class PayRun(AuditModel):
             "period_start", "period_end", "pay_date", "status", "updated_at",
         ])
         return list(self.payslips.all())
+
+    def _refuse_pension_members_without_a_birth_date(self, people):
+        """
+        Every member on a pension component of their own with no date of birth, named in one refusal (review
+        RP11): the slip names one at a time, and a plant with 200 missing dates tried 200 times.
+        """
+        from .pay_details import EmployeePayDetails
+
+        members = set(EmployeeCompensation.objects.filter(
+            employee__in=people, component__statutory=Statutory.EPS, component__is_active=True,
+            effective_from__lte=self.period_end).filter(
+            Q(effective_to__isnull=True) | Q(effective_to__gte=self.period_start)).values_list("employee_id", flat=True))
+        dated = set(EmployeePayDetails.objects.filter(employee_id__in=members, date_of_birth__isnull=False)
+                    .values_list("employee_id", flat=True))
+        missing = sorted(person.employee_number for person in people if person.pk in members - dated)
+        if missing:
+            raise ValidationError(
+                f"No date of birth on {', '.join(missing)}: their pension share stops the month after 58, and this "
+                "run cannot tell. Enter it in their pay details.")
 
     def _leavers_owing(self, people, among=None):
         """
@@ -1570,6 +1590,10 @@ class Payslip(AuditModel):
             return Decimal("0")
         multiplier, term = figure_as_of(FigureKind.OVERTIME_MULTIPLIER, self.run.period_end, self.employee.work_state)
         hours_a_day = self.employee.hours_a_day
+        if not hours_a_day or hours_a_day <= 0:
+            # A row from before Employee.save refused it (review RP7): said, not a bare division by nothing.
+            raise ValidationError(f"{self.employee} has a working day of {hours_a_day} hours, and their overtime is "
+                                  "paid at a day's rate over it. Set their hours a day, then calculate the run.")
         kept = self._terms(row.component_id)
         kept["overtime_multiplier"], kept["hours_a_day"] = term, f"{hours_a_day.normalize():f}"
         ordinary = list(EmployeeCompensation.objects.filter(

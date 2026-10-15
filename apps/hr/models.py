@@ -250,6 +250,12 @@ class Employee(Extensible, AuditModel):
         _require_employee_role(self.party)
         if self.manager_id and self.manager_id == self.pk:
             raise ValidationError("An employee cannot be their own manager.")
+        hours = Decimal(str(self.hours_a_day)) if self.hours_a_day is not None else None
+        if hours is None or not Decimal("0") < hours <= Decimal("24"):
+            # Review RP7: overtime's hourly rate is a day's over these; 0 stopped every run holding overtime
+            # for the person with a bare DivisionByZero, and 0.01 would pay overtime 800 times over.
+            raise ValidationError({"hours_a_day": [
+                f"A working day of {self.hours_a_day} hours? It is more than none and at most 24."]})
         if self.termination_date and self.employment_status != EmploymentStatus.TERMINATED:
             raise ValidationError(
                 "employment_status must be 'terminated' when a termination_date is set."
