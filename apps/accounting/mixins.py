@@ -719,7 +719,10 @@ class PostedTaxDocumentMixin(models.Model):
             # The place its lines were taxed at: one rule for both.
             self.place_of_supply = (self.place_for(profile) or "") if profile else ""
 
-        for line, amounts in self.line_tax_amounts().items():
+        # In key order: each line's write below holds its row, and the lines come back in whatever order
+        # the database keeps them; one edited earlier in the transaction came last (sales.invoiceline 1
+        # locked after 13), against the lock order.
+        for line, amounts in sorted(self.line_tax_amounts().items(), key=lambda pair: pair[0].pk):
             for tax, amount in amounts:
                 if under_gst and not tax.gst_head:
                     raise ValidationError(
