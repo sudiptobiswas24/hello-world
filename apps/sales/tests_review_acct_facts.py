@@ -71,18 +71,17 @@ class KeptFacts(TcsTestCase):
 
 
 class OtherDocumentsWhoseIrnIsCancelled(TcsTestCase):
-    def test_cancelling_the_irn_of_a_credit_note_puts_the_invoice_back_in_the_books(self):
-        """A credit note registered, then its IRN cancelled within the day: the portal reinstates the invoice's value."""
+    def test_a_credit_notes_irn_is_not_cancelled_where_the_books_cannot_follow(self):
+        """Review F2: the books cannot take a credit note back, so its cancellation request is never built."""
         invoice = self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)])
         note = invoice.create_credit_note(quantities={invoice.lines.get(): D("10")})
         record = self.registered(note)
-        record.cancellation("2", "Wrong quantity")
-        try:
-            record.record_cancellation(timezone.now())
-        except Exception as refused:  # noqa: BLE001
-            self.fail(f"the portal can cancel it and the books cannot follow: {type(refused).__name__}: {refused}")
+        with self.assertRaisesMessage(ValidationError, "is a credit note. Its IRN is not cancelled from here"):
+            record.cancellation("2", "Wrong quantity")
+        record.refresh_from_db()
+        self.assertIsNone(record.cancel_payload)
         invoice.refresh_from_db()
-        self.assertEqual(invoice.amount_due(), D("17700.00"), "the credit note's IRN is cancelled but the invoice is still credited")
+        self.assertEqual(invoice.amount_due(), D("15930.00"))
 
     def test_cancelling_an_export_in_dollars_reverses_it_at_its_own_rate_and_keeps_its_lut(self):
         invoice = self.export([(self.sack, "1000", "1.37", "0", self.pair)])
