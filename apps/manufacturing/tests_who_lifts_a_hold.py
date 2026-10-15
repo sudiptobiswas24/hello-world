@@ -1,7 +1,7 @@
 """
 rereview (gate g21): the recall review fixes (8c5db57, d7242d8, a550ec6, d2d336c) asked what they broke or left.
 Each test states a fact about stock or state; PASS is the fact holding on the tip, a failure is a finding.
-Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.manufacturing.tests_probe_rereview --settings=fastsettings
+Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.manufacturing.tests_who_lifts_a_hold --settings=fastsettings
 """
 
 import json
@@ -35,7 +35,7 @@ class WhoLiftsAHold(Base):
                 content_type=ContentType.objects.get_for_model(Inspection), done_on__isnull=True).count(),
         }
 
-    def test_P1_an_inspector_posting_a_fresh_pass_of_the_rejected_batch_does_not_lift_the_recall(self):
+    def test_an_inspector_posting_a_fresh_pass_of_the_rejected_batch_does_not_lift_the_recall(self):
         """The F2 door by another way: B1 stands rejected (mandatory plan), meera posts a pass of B1 the same day."""
         rejection = self.reject_b1()
         before = self.states()
@@ -56,7 +56,7 @@ class WhoLiftsAHold(Base):
             self.inspect(self.b1, IN, who="asha")
         self.assertEqual([release_status(lot) for lot in (self.a, self.b)], [ReleaseStatus.RELEASED] * 2)
 
-    def test_P2_an_inspector_posting_a_failing_reading_as_a_concession_does_not_lift_the_recall(self):
+    def test_an_inspector_posting_a_failing_reading_as_a_concession_does_not_lift_the_recall(self):
         """The concession path: meera posts B1's off-weight readings with disposition=concession and a note."""
         self.reject_b1()
         plan = self.bag_spec.inspection_plan
@@ -70,7 +70,7 @@ class WhoLiftsAHold(Base):
         self.assertEqual(release_status(self.a), ReleaseStatus.HELD,
                          f"meera's concession answered {response.status_code}; now {self.states()}")
 
-    def test_P2b_a_concession_on_a_batch_nothing_holds_is_the_quality_managers_too(self):
+    def test_a_concession_on_a_batch_nothing_holds_is_the_quality_managers_too(self):
         """rereview 2: B2 stands passed; its failing readings posted as a concession need decide_inspection."""
         plan = self.bag_spec.inspection_plan
         line = plan.lines.get()
@@ -94,7 +94,7 @@ class WhoLiftsAHold(Base):
         taken.refresh_from_db()
         self.assertEqual((taken.disposition, taken.decided_by.name), (Disposition.CONCESSION, "Asha"))
 
-    def test_P3_the_admin_void_action_does_not_lift_a_rejection_for_a_staff_inspector(self):
+    def test_the_admin_void_action_does_not_lift_a_rejection_for_a_staff_inspector(self):
         """admin.py _act calls row.void(reason) with by=None, so void() never asks for decide_inspection."""
         rejection = self.reject_b1()
         staff = User.objects.create_user("adm", password="x", is_staff=True)
@@ -109,7 +109,7 @@ class WhoLiftsAHold(Base):
                           f"a staff Inspector voided {rejection.number} from the admin ({response.status_code}); "
                           f"now {self.states()}")
 
-    def test_P3b_code_naming_nobody_does_not_void_a_rejection_that_still_holds_stock(self):
+    def test_code_naming_nobody_does_not_void_a_rejection_that_still_holds_stock(self):
         """rereview 3: no path decides as nobody. B1 still holds 200 and RB-A, RB-B were made from it."""
         from django.core.exceptions import ValidationError
 
@@ -119,7 +119,7 @@ class WhoLiftsAHold(Base):
         rejection.refresh_from_db()
         self.assertIsNone(rejection.voided_at)
 
-    def test_P4_an_inspectors_fresh_pass_does_not_overturn_the_quality_managers_reject_of_a_recall(self):
+    def test_an_inspectors_fresh_pass_does_not_overturn_the_quality_managers_reject_of_a_recall(self):
         """QM rejects RB-A's recall; the source rejection is later voided by the QM; meera passes RB-A."""
         rejection = self.reject_b1()
         recall = self.recall_of(self.a)
@@ -139,7 +139,7 @@ class WhoLiftsAHold(Base):
                          f"RB-A was rejected by the Quality Manager's decision; meera's fresh pass answered "
                          f"{response.status_code} and it reads {release_status(self.a)}")
 
-    def test_P5_an_inspector_voiding_a_pass_that_lifted_the_hold_puts_the_hold_and_the_recall_back(self):
+    def test_an_inspector_voiding_a_pass_that_lifted_the_hold_puts_the_hold_and_the_recall_back(self):
         """Legitimate path 1 (regression check): the Inspector's correction of her own typed pass."""
         self.reject_b1()
         typed = self.inspect(self.b1, IN, who="asha")  # the Quality Manager lifts it (see P1) ...
@@ -151,20 +151,20 @@ class WhoLiftsAHold(Base):
                                                    voided_at__isnull=True).count(), 1,
                          "one recall waits for the Quality Manager again")
 
-    def test_P6_the_inspector_can_still_void_her_own_typed_pass_on_a_plain_lot(self):
+    def test_the_inspector_can_still_void_her_own_typed_pass_on_a_plain_lot(self):
         typed = self.inspect(self.b2, IN)
         response = self.api_void("meera", typed, reason="typo")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(release_status(self.b2), ReleaseStatus.RELEASED)
 
-    def test_P8_the_quality_manager_can_void_a_mistaken_reject_typed_by_an_inspector_and_lots_lift(self):
+    def test_the_quality_manager_can_void_a_mistaken_reject_typed_by_an_inspector_and_lots_lift(self):
         rejection = self.reject_b1()
         response = self.api_void("asha", rejection, reason="Scale out")
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual([release_status(lot) for lot in (self.a, self.b)], [ReleaseStatus.RELEASED] * 2)
         self.assertFalse(Inspection.objects.filter(recalled_by__isnull=False, voided_at__isnull=True).exists())
 
-    def test_P9_an_inspector_voiding_a_mistaken_reject_of_a_lot_nothing_was_made_from_is_refused(self):
+    def test_an_inspector_voiding_a_mistaken_reject_of_a_lot_nothing_was_made_from_is_refused(self):
         """The cost of the F2 rule on the plain case: meera's own typo reject of B2 (nothing made from it)
         needs the Quality Manager. Recorded: PASS if refused (rule as decided), FAIL if allowed."""
         typed = self.inspect(self.b2, OUT)
@@ -173,7 +173,7 @@ class WhoLiftsAHold(Base):
 
 
 class TheRecallsOwnWords(Base):
-    def test_P10_a_recall_voided_by_the_quality_manager_while_two_sources_hold_is_filed_again_naming_both(self):
+    def test_a_recall_voided_by_the_quality_manager_while_two_sources_hold_is_filed_again_naming_both(self):
         joined = self.new("RB-J")
         rebatch(self.bag, self.plant, [(self.b2, "100"), (self.b3, "100")], [(joined, "200")],
                 "Short ends", on_date=TODAY)
@@ -204,7 +204,7 @@ class TheGateOnALoopWithAHeldInput(Base):
         release.LOT_SOURCES.append(provider)
         return original
 
-    def test_P11_a_loop_with_a_rejected_input_reads_held_whichever_lot_is_asked_first_and_in_one_question(self):
+    def test_a_loop_with_a_rejected_input_reads_held_whichever_lot_is_asked_first_and_in_one_question(self):
         self.reject_b1()
         l1, l2, l3 = self.new("LP-1"), self.new("LP-2"), self.new("LP-3")
         graph = {l1.pk: [l2, self.b1], l2.pk: [l1], l3.pk: [l2]}
@@ -222,7 +222,7 @@ class TheGateOnALoopWithAHeldInput(Base):
         finally:
             release.LOT_SOURCES[:] = original
 
-    def test_P12_a_loop_of_never_inspected_lots_cannot_be_made_by_rebatch(self):
+    def test_a_loop_of_never_inspected_lots_cannot_be_made_by_rebatch(self):
         """
         The cut answers a lot met again as RELEASED, so a loop whose members have no verdict and no held input
         reads RELEASED (an injected provider shows it). Reachable only if a lot can be re-made from what it was
@@ -256,7 +256,7 @@ class TraceRecallShape(Base):
             "not_followed": sorted(lot.code for lot in found["not_followed"]),
         }
 
-    def test_P13_trace_recall_of_a_plain_tree_and_a_deep_chain(self):
+    def test_trace_recall_of_a_plain_tree_and_a_deep_chain(self):
         plain = self.snapshot(self.b1)
         chain, previous, taken = [], self.b1, "150"
         for code in ("C1", "C2", "C3", "C4", "C5"):
@@ -285,7 +285,7 @@ class TraceOnALoop(RunTestCase):
         entry.post()
         return order
 
-    def test_P14_trace_recall_ends_on_a_loop_and_lists_each_lot_once(self):
+    def test_trace_recall_ends_on_a_loop_and_lists_each_lot_once(self):
         from apps.inventory.models import Item, Lot
 
         from .trace import descendants, recall
