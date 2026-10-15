@@ -378,7 +378,8 @@ MATERIAL_CHECKERS = []
 # registration's number and code, and whether it may be sent without
 # them. Registered by the module that knows (gst), so sales imports
 # nothing of it. Each returns None or {"rows": [(label, value)], "qr":
-# text or None, "refuse_sending": reason or None}.
+# text or None, "refuse_sending": reason or None, "heading": what the paper is called instead,
+# or absent}.
 INVOICE_STAMPS = []
 
 
@@ -2073,15 +2074,25 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             return contact.email
         return self.customer.email or ""
 
+    def refused_sending(self):
+        """
+        Why this document is not sent to the buyer, or "": its IRN not yet registered or cancelled, or
+        it is the books' reversal of an invoice whose IRN was cancelled (invoice_stamps, from gst).
+        """
+        for stamp in invoice_stamps(self):
+            if stamp.get("refuse_sending"):
+                return stamp["refuse_sending"]
+        return ""
+
     def email_to_customer(self, to=None, subject=None, body=None):
         """Send the invoice as a PDF attachment. Returns the address used."""
         from django.core.mail import EmailMessage
 
         if not self.posted:
             raise ValidationError("Only a posted invoice can be sent.")
-        for stamp in invoice_stamps(self):
-            if stamp.get("refuse_sending"):
-                raise ValidationError(stamp["refuse_sending"])
+        refused = self.refused_sending()
+        if refused:
+            raise ValidationError(refused)
         recipient = to or self.recipient_email()
         if not recipient:
             raise ValidationError(

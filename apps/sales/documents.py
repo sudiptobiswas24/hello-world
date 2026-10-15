@@ -174,6 +174,11 @@ def tax_invoice(invoice, copy="original"):
         heading = "Tax Invoice"
     else:
         heading = "Invoice"
+    from .models import invoice_stamps
+
+    for stamp in invoice_stamps(invoice):
+        # A cancelled IRN, or the books' reversal of one: the paper says so, never "Tax Invoice" (review F4).
+        heading = stamp.get("heading") or heading
 
     lines, by_rate, reverse_charge = [], {}, False
     for line in sorted(invoice.lines.all(), key=lambda line: line.pk):

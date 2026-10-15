@@ -15,6 +15,7 @@ import { ErrorPanel } from "../../shell/ErrorPanel";
 import { CustomerPicker } from "./OrderForm";
 
 export interface Invoice {
+  not_sendable?: string;
   id: number;
   number: string;
   customer: number | null;
@@ -151,7 +152,7 @@ export default function InvoiceForm() {
         {invoice && (
           <a className="btn" href={`${ENDPOINT}${invoice.id}/pdf/`} target="_blank" rel="noopener">PDF</a>
         )}
-        {invoice?.posted && can("sales.change_invoice") && (
+        {invoice?.posted && !invoice.not_sendable && can("sales.change_invoice") && (
           <ActionButton pending={act.pending} onClick={() => void email()}>{invoice.sent_at ? "Email again" : "Email"}</ActionButton>
         )}
       </DocHeader>
