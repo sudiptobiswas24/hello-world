@@ -16,6 +16,12 @@ class TcsCollectionSerializer(serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     buyer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
     section_code = serializers.CharField(source="section.code", read_only=True)
+    # The challan that paid it over and still stands: a voided one paid nothing, and the screen read its
+    # id as "Paid over" (review F11).
+    challan = serializers.SerializerMethodField()
+
+    def get_challan(self, row):
+        return row.challan_id if row.is_paid_over() else None
 
     class Meta:
         model = TcsCollection
@@ -26,7 +32,7 @@ class TcsCollectionSerializer(serializers.ModelSerializer):
 
 class TcsCollectionViewSet(viewsets.ReadOnlyModelViewSet):
     # Made by posting an invoice or its credit note, never typed in.
-    queryset = TcsCollection.objects.select_related("invoice__customer", "section")
+    queryset = TcsCollection.objects.select_related("invoice__customer", "section", "challan")
     serializer_class = TcsCollectionSerializer
     filter_fields = ["invoice", "section", "challan"]
     search_fields = ["invoice__number", "invoice__customer__name", "pan"]
