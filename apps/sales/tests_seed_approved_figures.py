@@ -53,6 +53,10 @@ class AnOrderApprovedBefore0063KeepsItsApprovalTests(TransactionTestCase):
         executor.migrate([("sales", "0064_salesorder_approved_figures")])
         executor.loader.build_graph()
         executor.migrate([("sales", "0065_seed_approved_figures")])
+        # On to the latest before today's models read or save: they ask for every column added since (sales
+        # 0070's tcs_amount on an invoice a line's save reads), which a schema left at the seed lacks.
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
 
         self.assertEqual(SalesOrder.objects.get(pk=uncut.pk).approved_figures,
                          {"discounts": {str(uncut_line.pk): "20.00"}, "total": None, "margin": None})
@@ -125,6 +129,10 @@ class AChargeLineCutBeforeTheSeedKeepsItsApprovalTests(TransactionTestCase):
         executor.migrate([("sales", "0066_write_off_recovered_amount")])
         executor.loader.build_graph()
         executor.migrate([("sales", "0067_seed_charge_lines_by_name")])
+        # On to the latest before today's models read or save: they ask for every column added since (sales
+        # 0070's tcs_amount on an invoice a line's save reads), which a schema left at the seed lacks.
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
 
         self.assertEqual(SalesOrder.objects.get(pk=order.pk).approved_figures["discounts"],
                          {str(line.pk): "20.00"})
