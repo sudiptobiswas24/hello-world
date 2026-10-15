@@ -101,7 +101,9 @@ class QualityApiTests(QualityTestCase):
             self.plan(), [92, 92, 92], disposition=Disposition.CONCESSION,
             decided_by=self.inspector, decision_note="Taken at a discount.",
         )
-        inspection.post()
+        from .tests import quality_manager
+
+        inspection.post(quality_manager(self.inspector))
         response = self.client.get(
             f"/api/quality/inspections/{inspection.pk}/"
         )

@@ -264,7 +264,7 @@ class AFailureIsNotADispositionTests(QualityTestCase):
             decided_by=self.manager,
             decision_note="Customer accepts at a 3% discount, order 44812.",
         )
-        inspection.post()
+        inspection.post(quality_manager(self.manager))
         self.assertEqual(inspection.result, Result.FAIL)
         self.assertEqual(release_status(self.roll), ReleaseStatus.RELEASED)
 
@@ -326,6 +326,24 @@ class NotYetInspectedIsNotPassedTests(QualityTestCase):
         with self.assertRaises(ValidationError) as caught:
             check_released(self.fabric, None)
         self.assertIn("does not name one", str(caught.exception))
+
+
+def quality_manager(party):
+    """
+    A Quality Manager's login, signed as `party`: a concession is theirs to take, whoever posts the
+    readings (rereview 2), and is signed by the login's own person, never a name typed.
+    """
+    from django.contrib.auth.models import Permission
+
+    from apps.core.models import PartyRole, PartyRoleAssignment
+    from apps.hr.models import Employee
+
+    user = User.objects.create_user(f"qm-{party.code.lower()}")
+    user.user_permissions.add(Permission.objects.get(codename="decide_inspection", content_type__app_label="quality"))
+    PartyRoleAssignment.objects.get_or_create(party=party, role=PartyRole.EMPLOYEE)
+    Employee.objects.create(party=party, employee_number=f"E-{party.code}", hire_date=datetime.date(2020, 1, 1),
+                            user=user)
+    return user
 
 
 class VoidingHandsTheQuestionBackTests(QualityTestCase):
@@ -451,13 +469,13 @@ class WhoSignedItOffTests(QualityTestCase):
 
     def test_self_approval_is_recorded_rather_than_refused(self):
         inspection = self.concede(self.inspector)
-        inspection.post()
+        inspection.post(quality_manager(self.inspector))
         self.assertTrue(inspection.self_approved())
         self.assertEqual(release_status(self.roll), ReleaseStatus.RELEASED)
 
     def test_a_second_person_is_not_self_approval(self):
         inspection = self.concede(self.manager)
-        inspection.post()
+        inspection.post(quality_manager(self.manager))
         self.assertFalse(inspection.self_approved())
 
     def test_a_plant_that_asks_for_a_second_person_gets_one(self):
@@ -474,7 +492,7 @@ class WhoSignedItOffTests(QualityTestCase):
         settings.concessions_need_a_second_person = True
         settings.save()
         inspection = self.concede(self.manager)
-        inspection.post()
+        inspection.post(quality_manager(self.manager))
         self.assertEqual(release_status(self.roll), ReleaseStatus.RELEASED)
 
     def test_a_plain_pass_is_never_self_approval(self):

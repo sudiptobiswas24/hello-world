@@ -70,6 +70,30 @@ class WhoLiftsAHold(Base):
         self.assertEqual(release_status(self.a), ReleaseStatus.HELD,
                          f"meera's concession answered {response.status_code}; now {self.states()}")
 
+    def test_P2b_a_concession_on_a_batch_nothing_holds_is_the_quality_managers_too(self):
+        """rereview 2: B2 stands passed; its failing readings posted as a concession need decide_inspection."""
+        plan = self.bag_spec.inspection_plan
+        line = plan.lines.get()
+
+        def draft():
+            made = Inspection.objects.create(lot=self.b2, plan=plan, inspected_on=TODAY,
+                                             disposition=Disposition.CONCESSION, decision_note="Customer takes them")
+            for n, value in enumerate(OUT[:line.sample_size], start=1):
+                Reading.objects.create(inspection=made, plan_line=line, value=Decimal(value), sample_reference=f"S{n}")
+            return made
+
+        refused = draft()
+        response = self.clients["meera"].post(f"/api/quality/inspections/{refused.pk}/post/")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("that is the Quality Manager's decision", response.json()[0])
+        refused.refresh_from_db()
+        self.assertFalse(refused.posted)
+        taken = draft()
+        response = self.clients["asha"].post(f"/api/quality/inspections/{taken.pk}/post/")
+        self.assertEqual(response.status_code, 200, response.content)
+        taken.refresh_from_db()
+        self.assertEqual((taken.disposition, taken.decided_by.name), (Disposition.CONCESSION, "Asha"))
+
     def test_P3_the_admin_void_action_does_not_lift_a_rejection_for_a_staff_inspector(self):
         """admin.py _act calls row.void(reason) with by=None, so void() never asks for decide_inspection."""
         rejection = self.reject_b1()
