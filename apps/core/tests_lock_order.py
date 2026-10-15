@@ -113,7 +113,10 @@ class TheSentinelSeesEveryLockAStatementTakesTests(TestCase):
         with self.assertRaisesMessage(LockOrderViolation, "(joined)"):
             with transaction.atomic():
                 lock_rows(self.second)
-                list(Address.objects.select_related("party").select_for_update().filter(pk=address.pk))
+                # Filtered through the party, so the join is an inner one: PostgreSQL refuses FOR UPDATE on
+                # the nullable side of the outer join a bare select_related("party") would make.
+                list(Address.objects.select_related("party").select_for_update()
+                     .filter(pk=address.pk, party__code=self.first.code))
 
     def test_a_row_made_or_held_is_not_taken_again(self):
         with transaction.atomic():
