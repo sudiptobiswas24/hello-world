@@ -66,7 +66,12 @@ export function AttachmentsPanel({ model, id }: { model: string; id: number }) {
   return (
     <section className="related-list chatter" aria-label="Attachments">
       <h2>Attachments</h2>
-      {rows.data?.length ? (
+      {/* Said only once it is known, as RelatedList says it: "None yet." while the list was still being
+          read let a file be added under a list that then came back without it, and hid a list that
+          could not be read. */}
+      {rows.isPending ? <p className="muted">…</p>
+        : rows.isError ? <p className="muted">Could not read them: {rows.error.message}</p>
+        : rows.data.length ? (
         <table className="data">
           <tbody>
             {rows.data.map((row) => (
