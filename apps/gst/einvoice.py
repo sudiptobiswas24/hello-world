@@ -166,6 +166,14 @@ class EInvoice(AuditModel):
         invoice = self.invoice
         if not self.irn:
             raise ValidationError(f"{invoice.number} has no IRN to cancel; delete the unregistered payload instead.")
+        if invoice.is_credit_note():
+            # The portal would cancel it and the books could not follow: a credit note is never
+            # credited, so nothing here reverses one on its own date (review F2). Refused before
+            # anything goes to the portal, so the two never part.
+            raise ValidationError(
+                f"{invoice.number} is a credit note. Its IRN is not cancelled from here: the books cannot take a "
+                f"credit note back, and the portal and the books would part. To undo it, invoice the value again "
+                f"(against {invoice.credits.number if invoice.credits_id else 'the invoice'}).")
         if self.cancelled_at is not None:
             raise ValidationError(f"{invoice.number}'s IRN was cancelled on "
                                   f"{timezone.localtime(self.cancelled_at):%d %b %Y %H:%M}.")
