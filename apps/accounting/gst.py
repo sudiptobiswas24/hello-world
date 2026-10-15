@@ -411,6 +411,10 @@ def gst_taxes(profile, taxes, place=None):
     Inter-state when the place of supply (`place`, or the party's state) is
     not the company's; intra-state otherwise. Called only for a party with
     no fiscal position of its own, which outranks the state line.
+
+    A supply to an SEZ unit or developer is inter-state whatever the states
+    (IGST Act section 7(5)(b)): it bears IGST, or goes without it under the
+    LUT through a fiscal position, never CGST and SGST (review F7).
     """
     settings = GstSettings.active()
     if settings is None:
@@ -423,6 +427,6 @@ def gst_taxes(profile, taxes, place=None):
             "state line — and the two bear different taxes. Give it a GSTIN "
             "or, if unregistered, a state."
         )
-    if state != settings.state:
+    if state != settings.state or profile.gst_registration == GstRegistration.SEZ:
         return settings.interstate_position.map_taxes(taxes)
     return list(taxes)

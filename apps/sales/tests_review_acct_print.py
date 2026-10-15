@@ -253,10 +253,12 @@ class TheLetterOfUndertaking(Probe):
         invoice = self.invoice(sez, [(self.sack, "100", "150", "0", self.pair)])
         self.assertTrue(invoice.posted)
 
-    def test_the_words_on_an_invoice_that_charged_cgst_and_sgst_do_not_say_without_payment_of_tax(self):
+    def test_a_same_state_sez_supply_takes_igst_and_its_words_say_so(self):
+        """Review F7: inter-state whatever the states (IGST Act s.7(5)(b)), never CGST and SGST."""
         sez = self.party("SEZ4", gst_registration="sez", gstin=gstin("27AABCS5555S1Z"))
         self.address(sez, "SEZ Phase 5", "Pune", "Maharashtra", "411057")
         invoice = self.invoice(sez, [(self.sack, "100", "150", "0", self.pair)])
         printed = tax_invoice(invoice)
-        self.assertEqual([name for name, _, _ in printed["taxes"]], ["CGST", "SGST"])
+        self.assertEqual(printed["taxes"], [("IGST", D("18"), D("2700.00"))])
         self.assertNotIn("WITHOUT PAYMENT", printed["export"] or "")
+        self.assertIn("ON PAYMENT OF INTEGRATED TAX", printed["export"])
