@@ -667,7 +667,10 @@ class CancellingAnIrnTests(EInvoiceTestCase):
         self.assertIn("no longer a valid tax invoice", stamp["refuse_sending"])
         with self.assertRaisesMessage(ValidationError, "no longer a valid tax invoice"):
             invoice.email_to_customer(to="buyer@example.com")
-        self.assertIsNone(invoice_stamp(note))
+        reversal = invoice_stamp(note)
+        self.assertEqual(reversal["heading"], "Internal reversal: not a credit note")
+        self.assertIn("is not sent to the buyer", reversal["refuse_sending"])
+        self.assertEqual(stamp["heading"], "CANCELLED: not a tax invoice")
         with self.assertRaisesMessage(ValidationError, "no credit note to register"):
             build(note)
         with self.assertRaisesMessage(ValidationError, "IRN was cancelled on"):

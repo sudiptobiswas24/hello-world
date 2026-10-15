@@ -304,6 +304,13 @@ def _invoice_payload(invoice):
         )
     if invoice.is_down_payment:
         raise ValidationError(f"{invoice.number} is a down payment; no goods move on it.")
+    from .einvoice import EInvoice
+
+    cancelled = EInvoice.objects.filter(invoice=invoice, cancelled_at__isnull=False).first()
+    if cancelled is not None:
+        raise ValidationError(f"{invoice.number}'s IRN was cancelled on "
+                              f"{timezone.localtime(cancelled.cancelled_at):%d %b %Y %H:%M}: it is no tax invoice, "
+                              "and no goods move on it.")
     if not invoice.taxes_recorded:
         raise ValidationError(f"{invoice.number} posted before taxes were recorded.")
     registration = p.settings()

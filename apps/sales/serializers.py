@@ -122,6 +122,13 @@ class InvoiceSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
     amount_credited = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     amount_due = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
     settlement_status = serializers.CharField(read_only=True)
+    not_sendable = serializers.SerializerMethodField()
+
+    def get_not_sendable(self, invoice):
+        """Why the screen offers no Email (Invoice.refused_sending); on the record only, not in a list."""
+        if self.parent is not None or not invoice.posted:
+            return ""
+        return invoice.refused_sending()
 
     class Meta:
         model = Invoice
@@ -133,7 +140,7 @@ class InvoiceSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
             "is_down_payment", "is_opening_balance", "corrects_old_supply", "old_invoice_value",
-            "party_gstin", "extra",
+            "party_gstin", "not_sendable", "extra",
         ]
         read_only_fields = [
             "number", "due_date", "exchange_rate", "credits", "journal_entry",
