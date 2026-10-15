@@ -2126,10 +2126,13 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         return self.payment_terms.discount_due_date(to_date(self.invoice_date))
 
     def settlement_discount(self):
-        """What the customer saves by paying early, if the terms offer it."""
+        """
+        What the customer saves by paying early, if the terms offer it: on the supply and its GST, never on
+        the TCS collected with it, which is the government's (review F6).
+        """
         if not self.payment_terms_id:
             return Decimal("0")
-        return self.payment_terms.discount_amount(self.total())
+        return self.payment_terms.discount_amount(self.total() - self.tcs_amount)
 
     def discount_is_available(self, as_of=None):
         deadline = self.discount_due_date()
