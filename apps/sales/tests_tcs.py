@@ -290,3 +290,23 @@ class TheSectionTheLawNamesOnTheDayTests(TcsTestCase):
         self.section.save()
         self.assertEqual([row["section"] for row in tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))],
                          ["206C(1)", "394(1)"])
+
+
+class FreightOnAScrapInvoiceTests(TcsTestCase):
+    """
+    Review U2 (calc_fix_acct2/u2.py). Freight is part of what the buyer pays for the scrap:
+      U2a 2,000 kg at 45 and freight 3,000, all at 9% + 9%: base 106,200.00 + 3,540.00 = 109,740.00, TCS 1,097.
+      U2b the same with 100 kg of sacks at 150: the freight's share by the goods' value, 3,540.00 x
+          90,000 / 105,000 = 3,034.29; base 109,234.29, TCS 1,092.
+    """
+
+    def test_on_an_invoice_of_scrap_alone(self):
+        invoice = self.invoice(self.mh, [(self.scrap, "2000", "45", "0", self.pair),
+                                         (self.freight6, "1", "3000", "0", self.pair)])
+        self.assertEqual((invoice.tcs_collected.get().base, invoice.tcs_amount), (D("109740.00"), D("1097.00")))
+
+    def test_beside_other_goods_by_their_value(self):
+        invoice = self.invoice(self.mh, [(self.scrap, "2000", "45", "0", self.pair),
+                                         (self.sack, "100", "150", "0", self.pair),
+                                         (self.freight6, "1", "3000", "0", self.pair)])
+        self.assertEqual((invoice.tcs_collected.get().base, invoice.tcs_amount), (D("109234.29"), D("1092.00")))
