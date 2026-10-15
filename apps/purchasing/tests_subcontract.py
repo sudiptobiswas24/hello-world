@@ -387,12 +387,12 @@ class _SentBatches(SubcontractTestCase):
                                      occurred_at=timezone.now())
         return made
 
-    def inspect(self, lot, value, on):
+    def inspect(self, lot, value, on, by=None):
         from apps.quality.models import Inspection, Reading
 
         inspection = Inspection.objects.create(lot=lot, plan=self.plan, inspected_on=on)
         Reading.objects.create(inspection=inspection, plan_line=self.plan_line, value=Decimal(value))
-        inspection.post()
+        inspection.post(by)
         return inspection
 
     def mandatory_plan(self):
@@ -995,7 +995,8 @@ class TheQualityManagersToDoClosesWhenNothingIsHeldTests(_SentBatches):
         self.assertEqual(self.open(), 0)
 
     def test_the_source_batch_passed_again_closes_it(self):
-        self.inspect(self.sent, "0.5", datetime.date(2026, 2, 3))
+        # Over its rejection: the Quality Manager's to post (rereview 1).
+        self.inspect(self.sent, "0.5", datetime.date(2026, 2, 3), by=self.manager)
         self.assertEqual((self.receipt.held_assemblies(), self.open()), ([], 0))
 
     def test_the_assembly_lot_released_by_the_quality_manager_closes_it(self):

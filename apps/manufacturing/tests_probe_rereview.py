@@ -37,12 +37,24 @@ class WhoLiftsAHold(Base):
 
     def test_P1_an_inspector_posting_a_fresh_pass_of_the_rejected_batch_does_not_lift_the_recall(self):
         """The F2 door by another way: B1 stands rejected (mandatory plan), meera posts a pass of B1 the same day."""
-        self.reject_b1()
+        rejection = self.reject_b1()
         before = self.states()
+        plan = self.bag_spec.inspection_plan
+        line = plan.lines.get()
+        draft = Inspection.objects.create(lot=self.b1, plan=plan, inspected_on=TODAY)
+        for n, value in enumerate(IN[:line.sample_size], start=1):
+            Reading.objects.create(inspection=draft, plan_line=line, value=Decimal(value), sample_reference=f"S{n}")
         with self.captureOnCommitCallbacks(execute=True):
-            self.inspect(self.b1, IN)  # meera, Quality Inspector, through the API
-        self.assertEqual(release_status(self.a), ReleaseStatus.HELD,
-                         f"before {before}; an Inspector's fresh pass of B1 lifted the Quality Manager's recall: now {self.states()}")
+            response = self.clients["meera"].post(f"/api/quality/inspections/{draft.pk}/post/")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn(f"{rejection.number} holds {self.b1} (rejected)", response.json()[0])
+        self.assertIn("the Quality Manager posts the new verdict", response.json()[0])
+        self.assertEqual(self.states(), before,
+                         "an Inspector's fresh pass of B1 lifted the Quality Manager's recall")
+        # The Quality Manager's own pass of it lifts them.
+        with self.captureOnCommitCallbacks(execute=True):
+            self.inspect(self.b1, IN, who="asha")
+        self.assertEqual([release_status(lot) for lot in (self.a, self.b)], [ReleaseStatus.RELEASED] * 2)
 
     def test_P2_an_inspector_posting_a_failing_reading_as_a_concession_does_not_lift_the_recall(self):
         """The concession path: meera posts B1's off-weight readings with disposition=concession and a note."""
@@ -96,7 +108,7 @@ class WhoLiftsAHold(Base):
     def test_P5_an_inspector_voiding_a_pass_that_lifted_the_hold_puts_the_hold_and_the_recall_back(self):
         """Legitimate path 1 (regression check): the Inspector's correction of her own typed pass."""
         self.reject_b1()
-        typed = self.inspect(self.b1, IN)  # she lifts it (see P1) ...
+        typed = self.inspect(self.b1, IN, who="asha")  # the Quality Manager lifts it (see P1) ...
         with self.captureOnCommitCallbacks(execute=True):
             response = self.api_void("meera", typed, reason="typed against the wrong bundle")
         self.assertEqual(response.status_code, 200, response.content)
