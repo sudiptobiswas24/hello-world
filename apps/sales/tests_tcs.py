@@ -292,6 +292,13 @@ class TheSectionTheLawNamesOnTheDayTests(TcsTestCase):
         self.section.save()
         self.assertEqual([row["section"] for row in tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))],
                          ["206C(1)", "394(1)"])
+        call_command("setup_roles", verbosity=0)
+        controller = User.objects.create_user("controller")
+        controller.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(controller)
+        listed = client.get("/api/sales/tcs-collections/").json()
+        self.assertEqual(sorted(row["section_code"] for row in listed), ["206C(1)", "394(1)"])
 
 
 class FreightOnAScrapInvoiceTests(TcsTestCase):

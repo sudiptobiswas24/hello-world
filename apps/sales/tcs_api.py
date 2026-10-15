@@ -15,7 +15,8 @@ from .tcs import TcsChallan, TcsCollection, tcs_return
 class TcsCollectionSerializer(serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     buyer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
-    section_code = serializers.CharField(source="section.code", read_only=True)
+    # The section the row kept when it was issued (sales 0072), not its section as it reads today.
+    section_code = serializers.CharField(read_only=True)
     # The challan that paid it over and still stands: a voided one paid nothing, and the screen read its
     # id as "Paid over" (review F11).
     challan = serializers.SerializerMethodField()
