@@ -1,7 +1,7 @@
 """
 rereview, item 5: trace.recall on a plain tree, a chain past its depth, a diamond and a loop. Printed as
 JSON lines (TRACE_*) so that the same file run at the commit before a550ec6 and at the tip can be diffed.
-Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.manufacturing.tests_probe_rereview_trace --settings=fastsettings
+Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.manufacturing.tests_trace_recall_shapes --settings=fastsettings
 """
 
 import json

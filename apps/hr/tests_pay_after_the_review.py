@@ -1,7 +1,7 @@
 """
 rereview (gate g21): the payroll review fixes (2852756 .. 257c44e) asked what they broke or left.
 Each test states a fact about money; a failure is a finding.
-Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.hr.tests_probe_rereview --settings=fastsettings
+Run: PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.hr.tests_pay_after_the_review --settings=fastsettings
 """
 
 import datetime
@@ -42,7 +42,7 @@ class TheAdvancesAfterTheReview(OutputsTestCase):
         account = account or self.advances
         return self.balance(account), sum((a.balance() for a in advances), Decimal("0.00"))
 
-    def test_A1_a_leavers_final_run_after_a_regular_run_of_the_month_still_recovers_the_advance(self):
+    def test_a_leavers_final_run_after_a_regular_run_of_the_month_still_recovers_the_advance(self):
         advance = self.give()
         self.run_between(D(2026, 6, 1), D(2026, 6, 15))  # takes the month's 2,000
         self.person.termination_date, self.person.employment_status = D(2026, 6, 20), "terminated"
@@ -55,7 +55,7 @@ class TheAdvancesAfterTheReview(OutputsTestCase):
         self.assertEqual(ledger, derived)
         self.assertLess(derived, Decimal("3000.00"))
 
-    def test_A2_a_run_voided_after_the_later_run_of_its_month_and_run_again_foots_at_every_step(self):
+    def test_a_run_voided_after_the_later_run_of_its_month_and_run_again_foots_at_every_step(self):
         advance = self.give()
         first = self.run_between(D(2026, 6, 1), D(2026, 6, 15))
         second = self.run_between(D(2026, 6, 16), D(2026, 6, 30))
@@ -70,7 +70,7 @@ class TheAdvancesAfterTheReview(OutputsTestCase):
         self.assertEqual(self.foots(advance)[0], self.foots(advance)[1])
         self.assertEqual(self.foots(advance)[1], Decimal("1000.00"))
 
-    def test_A3_a_run_voided_and_posted_again_recovers_the_same_instalment(self):
+    def test_a_run_voided_and_posted_again_recovers_the_same_instalment(self):
         advance = self.give()
         june = self.month(6)
         june.void(on_date=D(2026, 7, 1))
@@ -78,7 +78,7 @@ class TheAdvancesAfterTheReview(OutputsTestCase):
         self.assertEqual(self.recovered_on(again), [Decimal("2000.00")])
         self.assertEqual(self.foots(advance), (Decimal("3000.00"), Decimal("3000.00")))
 
-    def test_A4_the_component_re_pointed_and_a_payment_voided_and_made_again_each_foot_to_its_own_account(self):
+    def test_the_component_re_pointed_and_a_payment_voided_and_made_again_each_foot_to_its_own_account(self):
         first = self.give()  # on 1300
         other = Account.objects.create(code="1301", name="Employee advances II", account_type=AccountType.ASSET)
         PayComponent.objects.filter(pk=self.recovery.pk).update(liability_account=other)
@@ -97,7 +97,7 @@ class TheAdvancesAfterTheReview(OutputsTestCase):
         self.assertEqual(self.foots(third, account=other), (Decimal("2000.00"), Decimal("2000.00")))
         self.assertEqual(second.balance(), ZERO)
 
-    def test_A5_the_bank_an_advance_was_paid_through_cannot_be_unmarked_as_money_afterwards(self):
+    def test_the_bank_an_advance_was_paid_through_cannot_be_unmarked_as_money_afterwards(self):
         self.give()
         self.bank.holds_money = False
         with self.assertRaises(ValidationError):
@@ -119,7 +119,7 @@ class TheMonthsFiguresAfterTheReview(tests_dated_figures.TheMonthsFiguresAreOwed
     def ledger(self):
         return abs(self.balance(self.pt_payable))
 
-    def test_M1_the_register_foots_to_the_ledger_after_every_void_and_run_again(self):
+    def test_the_register_foots_to_the_ledger_after_every_void_and_run_again(self):
         steps = []
         first, second = self.fortnight(1), self.fortnight(16)
         steps.append(("both posted", self.register_total(), self.ledger()))
@@ -137,7 +137,7 @@ class TheMonthsFiguresAfterTheReview(tests_dated_figures.TheMonthsFiguresAreOwed
         self.assertEqual(steps[0][1], (Decimal("18.00"), Decimal("110.00")))
         self.assertEqual(steps[-1][1], (Decimal("18.00"), Decimal("110.00")))
 
-    def test_M2_the_month_is_the_periods_last_day_not_the_pay_date(self):
+    def test_the_month_is_the_periods_last_day_not_the_pay_date(self):
         """A June run paid on 5 July is June's for the welfare fund; July's run is July's."""
         run = PayRun.objects.create(period_start=D(2026, 6, 1), period_end=D(2026, 6, 30), pay_date=D(2026, 7, 5))
         run.calculate(employees=[self.weaver])
@@ -149,7 +149,7 @@ class TheMonthsFiguresAfterTheReview(tests_dated_figures.TheMonthsFiguresAreOwed
         self.assertEqual(self.register_total(D(2026, 7, 1))[0], ZERO)
         self.assertEqual(self.taken(july).get("LWF"), None)
 
-    def test_M3_a_run_that_spans_the_month_end_and_the_run_before_it_do_not_take_the_fund_twice(self):
+    def test_a_run_that_spans_the_month_end_and_the_run_before_it_do_not_take_the_fund_twice(self):
         """1-24 June, then 25 June-10 July: the first is June's, the second July's (a non-fund month)."""
         a = PayRun.objects.create(period_start=D(2026, 6, 1), period_end=D(2026, 6, 24), pay_date=D(2026, 6, 24))
         a.calculate(employees=[self.weaver])
@@ -160,7 +160,7 @@ class TheMonthsFiguresAfterTheReview(tests_dated_figures.TheMonthsFiguresAreOwed
         self.assertEqual(self.register_total(D(2026, 6, 1))[0], Decimal("18.00"))
         self.assertEqual(self.register_total(D(2026, 7, 1))[0], ZERO)
 
-    def test_M4_a_draft_run_calculated_before_another_of_the_month_posted_is_refused_not_double_taking(self):
+    def test_a_draft_run_calculated_before_another_of_the_month_posted_is_refused_not_double_taking(self):
         first, second = self.fortnight(1, post=False), self.fortnight(16, post=False)
         first.post()
         with self.assertRaises(ValidationError):
@@ -183,7 +183,7 @@ class TheBankFileAfterTheReview(OutputsTestCase):
     def owed(self):
         return abs(self.balance(self.net_pay)), self.paid_run.unpaid_net()
 
-    def test_B1_a_returned_transfer_is_repaid_by_a_second_file_and_the_books_foot(self):
+    def test_a_returned_transfer_is_repaid_by_a_second_file_and_the_books_foot(self):
         first = SalaryTransferFile.prepare(self.paid_run)
         paid = self.money(self.people[0].party, "23825.50")
         first.mark_paid(paid)
@@ -204,7 +204,7 @@ class TheBankFileAfterTheReview(OutputsTestCase):
         receipt.void(on_date=D(2026, 7, 1))
         self.assertEqual(self.owed(), (Decimal("0.00"), Decimal("0")))
 
-    def test_B2_a_returned_transfer_repaid_by_a_payment_of_its_own_then_returned_again(self):
+    def test_a_returned_transfer_repaid_by_a_payment_of_its_own_then_returned_again(self):
         first = SalaryTransferFile.prepare(self.paid_run)
         first.mark_paid(self.money(self.people[0].party, "23825.50"))
         row = first.rows.get(payslip__employee=self.people[1])

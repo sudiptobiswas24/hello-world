@@ -1,7 +1,7 @@
 """
 rereview (gate g21), PostgreSQL only. Locks of the review fixes, asked by real threads.
 Run: DJANGO_TIME_ZONE=Asia/Kolkata DATABASE_URL=postgres://erp:erp@localhost:5432/rereview \
-  PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.e2e.tests_probe_rereview_races --settings=fastsettings --keepdb
+  PYTHONPATH=scripts/gate .venv/bin/python manage.py test apps.e2e.tests_races_recall_and_payroll_locks --settings=fastsettings --keepdb
 """
 
 import datetime
@@ -96,16 +96,16 @@ class TheRecallLocks(TransactionTestCase):
         self.assertTrue(held)
         self.assertEqual(len(recalls), 1, "held by B3, and one recall waits for the Quality Manager")
 
-    def test_L1_a_lift_and_a_verdict_on_another_source_of_the_lot_1(self):
+    def test_a_lift_and_a_verdict_on_another_source_of_the_lot_1(self):
         self._lift_against_a_verdict_on_another_source()
 
-    def test_L1_a_lift_and_a_verdict_on_another_source_of_the_lot_2(self):
+    def test_a_lift_and_a_verdict_on_another_source_of_the_lot_2(self):
         self._lift_against_a_verdict_on_another_source()
 
-    def test_L1_a_lift_and_a_verdict_on_another_source_of_the_lot_3(self):
+    def test_a_lift_and_a_verdict_on_another_source_of_the_lot_3(self):
         self._lift_against_a_verdict_on_another_source()
 
-    def test_L2_a_lift_and_the_quality_managers_decision_on_the_same_recall(self):
+    def test_a_lift_and_the_quality_managers_decision_on_the_same_recall(self):
         from django.contrib.auth.models import User
         from django.utils import timezone
 
@@ -123,7 +123,7 @@ class TheRecallLocks(TransactionTestCase):
         print(f"\nRACE lift / decide on the same recall: {outcomes}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
 
-    def test_L3_the_quality_manager_voiding_a_recall_as_a_second_source_is_rejected(self):
+    def test_the_quality_manager_voiding_a_recall_as_a_second_source_is_rejected(self):
         """void(R) files the recall again (refile) with no lot lock; a verdict on the other source tells R's to-do."""
         from django.contrib.auth.models import User
 
@@ -158,7 +158,7 @@ class ThePayrollLocks(TransactionTestCase):
         written.mark_paid(paid)
         return made, written, paid
 
-    def test_D1_the_file_payment_voided_while_the_file_is_marked_paid_again_with_it(self):
+    def test_the_file_payment_voided_while_the_file_is_marked_paid_again_with_it(self):
         from apps.accounting.models import Payment
         from apps.hr.bank_file import SalaryTransferFile
 
@@ -169,7 +169,7 @@ class ThePayrollLocks(TransactionTestCase):
         print(f"\nRACE void(file payment) / mark_paid(file, same payment): {outcomes}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
 
-    def test_D2_the_file_payment_voided_while_a_slip_on_it_is_offered_that_payment(self):
+    def test_the_file_payment_voided_while_a_slip_on_it_is_offered_that_payment(self):
         from apps.accounting.models import Payment
         from apps.hr.payroll import Payslip
 
@@ -181,7 +181,7 @@ class ThePayrollLocks(TransactionTestCase):
         print(f"\nRACE void(file payment) / Payslip.pay(slip, same payment): {outcomes}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
 
-    def test_D3_a_returns_receipt_voided_while_the_same_receipt_is_offered_to_return_it_again(self):
+    def test_a_returns_receipt_voided_while_the_same_receipt_is_offered_to_return_it_again(self):
         from apps.accounting.models import Payment, PaymentDirection
         from apps.hr.bank_file import SalaryTransfer
 
@@ -195,7 +195,7 @@ class ThePayrollLocks(TransactionTestCase):
         print(f"\nRACE void(receipt) / return_transfer(row, same receipt): {outcomes}")
         self.assertEqual(deadlocked(outcomes), [], outcomes)
 
-    def test_D4_a_receipt_voided_while_the_slip_is_paid_by_a_payment_of_its_own(self):
+    def test_a_receipt_voided_while_the_slip_is_paid_by_a_payment_of_its_own(self):
         """The receipt's void follow-up locks the slip; the slip's own pay locks slip then its payment."""
         from apps.accounting.models import Payment, PaymentDirection
         from apps.hr.payroll import Payslip
@@ -220,7 +220,7 @@ class ThePayrollLocks(TransactionTestCase):
 
 @unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 class TheMonthsFiguresAtOnce(TransactionTestCase):
-    def test_M1_two_fortnights_of_one_month_posted_at_once_take_the_welfare_fund_once(self):
+    def test_two_fortnights_of_one_month_posted_at_once_take_the_welfare_fund_once(self):
         from apps.hr import tests_dated_figures
         from apps.hr.payroll import PayRun, PayslipLine
         from apps.hr.statutory_files import lwf_register, pt_register
