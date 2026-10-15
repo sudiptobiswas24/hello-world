@@ -6,8 +6,8 @@ type Row = Record<string, unknown> & { id: number };
 const draft = (row: Row) => !row.posted;
 /** A failure under an advisory plan, posted, held for the Quality Manager. */
 const waits = (row: Row) => Boolean(row.posted) && !row.voided_at && row.disposition === "awaiting";
-/** Waiting for the Quality Manager or decided by them: theirs to void. */
-const theirs = (row: Row) => row.disposition === "awaiting" || Boolean(row.decided_at);
+/** Holding its batch (awaiting, rejected, held for rework) or decided by them: theirs to void (review F2). */
+const theirs = (row: Row) => ["awaiting", "reject", "rework"].includes(String(row.disposition)) || Boolean(row.decided_at);
 const WHY = [{ key: "note", label: "Why", kind: "text" as const, wide: true }];
 const decision = (label: string, disposition: string, done: string) => ({
   label, path: disposition, permission: "quality.decide_inspection", when: waits, done, fields: WHY,

@@ -134,3 +134,38 @@ class AnAdvisoryFailureInTheBrowserTests(BrowserMixin, QualityTestCase, StaticLi
         self.assertEqual(FollowUp.objects.filter(object_id=inspection.pk, done_on__isnull=True).count(), 0)
         expect(page.get_by_role("button", name="Reject", exact=True)).to_have_count(0)
         self.assertEqual(self.problems, [])
+
+
+class OnlyTheQualityManagerLiftsAHoldInTheBrowserTests(BrowserMixin, QualityTestCase, StaticLiveServerTestCase):
+    """
+    Review F2: R-001 rejected under its mandatory plan (readings of 92, 92, 92 against 83.125 to
+    91.875). The Inspector is offered no Void on it, and the server refuses her one; the Quality
+    Manager is offered it. A pass the Inspector may still void: that leaves the roll uninspected.
+    """
+
+    def test_void_of_a_rejection_is_offered_to_the_quality_manager_only(self):
+        from apps.quality.models import Disposition
+
+        plan = self.plan(mandatory=True)
+        rejection = self.inspect(plan, [92, 92, 92])
+        rejection.post()
+        self.assertEqual(rejection.disposition, Disposition.REJECT)
+        inspector = self.person("Quality Inspector")
+        manager = self.login_for("Quality Manager")
+        page = self.sign_in(inspector, f"/app/quality/inspections/{rejection.pk}")
+        expect(page.get_by_text(rejection.number).first).to_be_visible()
+        expect(page.get_by_role("button", name="Void")).to_have_count(0)
+        before = len(self.problems)
+        status = page.evaluate("""async (id) => {
+            const token = document.cookie.match(/(?:^|;\\s*)csrftoken=([^;]+)/)[1];
+            const reply = await fetch(`/api/quality/inspections/${id}/void/`, {method: "POST",
+                headers: {"Content-Type": "application/json", "X-CSRFToken": token},
+                body: JSON.stringify({reason: "typo"})});
+            return reply.status;
+        }""", rejection.pk)
+        self.assertEqual(status, 400)
+        page.wait_for_timeout(200)
+        del self.problems[before:]
+        page = self.sign_in(manager, f"/app/quality/inspections/{rejection.pk}", page=self.new_page())
+        expect(page.get_by_role("button", name="Void")).to_have_count(1)
+        self.assertEqual(self.problems, [])
