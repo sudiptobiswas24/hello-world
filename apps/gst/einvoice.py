@@ -63,7 +63,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import round_money
-from apps.core.models import AuditModel, lock_rows, serialised
+from apps.core.models import AuditModel, lock_rows, serialised, to_date
 
 from . import particulars as p
 
@@ -154,7 +154,8 @@ class EInvoice(AuditModel):
         ack_number = str(ack_number or "").strip()
         if not _ACK.match(ack_number):
             raise ValidationError("The acknowledgement number is a number.")
-        if ack_date is None or ack_date.date() < self.invoice.invoice_date:
+        # The plant's day: 00:30 in Kolkata is still the day before in UTC.
+        if ack_date is None or to_date(ack_date) < to_date(self.invoice.invoice_date):
             raise ValidationError(
                 f"The acknowledgement must be dated on or after the invoice, "
                 f"{self.invoice.invoice_date}."
