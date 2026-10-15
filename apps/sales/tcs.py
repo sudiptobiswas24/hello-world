@@ -136,7 +136,7 @@ def collect(invoice):
         declaration = TcsDeclaration.covering(invoice.customer, section, day)
         if declaration is not None:
             TcsCollection.objects.create(invoice=invoice, section=section, declaration=declaration, base=base,
-                                         rate_percent=Decimal("0"), pan=pan, amount=Decimal("0"), date=day)
+                                         rate_percent=Decimal("0"), pan=declaration.pan, amount=Decimal("0"), date=day)
             continue
         rate = section.rate_on(day)
         if section.payable_account_id is None:

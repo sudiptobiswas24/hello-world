@@ -83,7 +83,8 @@ class CollectedOnTheInvoiceTests(TcsTestCase):
 
     def test_a_declaration_exempts_and_is_kept(self):
         declaration = TcsDeclaration.objects.create(
-            party=self.mh, section=self.section, reference="F127/26-27/04", received_on=datetime.date(2026, 4, 2),
+            party=self.mh, section=self.section, pan=self.mh.tax_profile.pan_on_file(), reference="F127/26-27/04",
+            received_on=datetime.date(2026, 4, 2),
             valid_from=datetime.date(2026, 4, 1), valid_to=datetime.date(2027, 3, 31))
         invoice = self.t1()
         (row,) = invoice.tcs_collected.all()

@@ -131,6 +131,10 @@ class TcsDeclaration(AuditModel):
     party = models.ForeignKey("core.Party", on_delete=models.PROTECT, related_name="tcs_declarations")
     section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="declarations")
     form = models.CharField(max_length=8, default="127", help_text="127, or 27C before April 2026.")
+    pan = models.CharField(
+        max_length=10, blank=True,
+        help_text="The buyer's PAN as the declaration gives it. Without one it exempts nothing: the law has the "
+                  "seller collect from a buyer whose declaration carries no PAN.")
     reference = models.CharField(max_length=64, blank=True, help_text="Its number or the buyer's reference.")
     received_on = models.DateField()
     valid_from = models.DateField()
@@ -146,10 +150,19 @@ class TcsDeclaration(AuditModel):
         return f"Form {self.form} from {self.party} for {self.section.code}"
 
     def save(self, *args, **kwargs):
+        from .tds import validate_pan
+
+        try:
+            self.pan = validate_pan(self.pan)
+        except ValidationError:
+            raise ValidationError({"pan": [
+                f"A Form {self.form} declaration exempts a buyer only with its PAN on it, and {self.pan or 'none'} "
+                "is not one (five letters, four digits, a letter). Without it the plant collects, at the rate for "
+                "a buyer with no PAN."]}) from None
         if not self._state.adding and self.collections.exists():
             before = TcsDeclaration.objects.get(pk=self.pk)
             if any(getattr(before, name) != getattr(self, name)
-                   for name in ("party_id", "section_id", "valid_from", "received_on")):
+                   for name in ("party_id", "section_id", "valid_from", "received_on", "pan")):
                 raise ValidationError("Invoices were exempted under this declaration as it stood; record a new one.")
         super().save(*args, **kwargs)
 
@@ -160,8 +173,9 @@ class TcsDeclaration(AuditModel):
 
     @classmethod
     def covering(cls, party, section, day):
+        # One recorded without a PAN (before the PAN was asked) is not honoured: it exempts nothing.
         return cls.objects.filter(party=party, section=section, valid_from__lte=day, valid_to__gte=day,
-                                  received_on__lte=day).order_by("-valid_from", "-pk").first()
+                                  received_on__lte=day).exclude(pan="").order_by("-valid_from", "-pk").first()
 
 
 class SeededDefault(AuditModel):

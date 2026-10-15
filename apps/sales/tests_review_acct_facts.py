@@ -95,14 +95,20 @@ class OtherDocumentsWhoseIrnIsCancelled(TcsTestCase):
 
 
 class MoreOfTheLaw(TcsTestCase):
-    def test_form_127_from_a_buyer_with_no_pan_does_not_exempt_it(self):
-        """Research notes (Form 127 FAQs): 'PAN mandatory or the seller collects'."""
+    def test_form_127_without_the_buyers_pan_exempts_nothing(self):
+        """Research notes (Form 127 FAQs): 'PAN mandatory or the seller collects'. Review F1."""
         from apps.accounting.models import TcsDeclaration
 
         nopan = self.party("NOPAN3")
         self.address(nopan, "4 Station Road", "Nashik", "Maharashtra", "422001")
-        TcsDeclaration.objects.create(party=nopan, section=self.section, reference="F127/1", received_on=datetime.date(2026, 4, 2),
-                                      valid_from=datetime.date(2026, 4, 1), valid_to=datetime.date(2027, 3, 31))
+        terms = dict(party=nopan, section=self.section, reference="F127/1", received_on=datetime.date(2026, 4, 2),
+                     valid_from=datetime.date(2026, 4, 1), valid_to=datetime.date(2027, 3, 31))
+        with self.assertRaisesMessage(ValidationError, "exempts a buyer only with its PAN on it"):
+            TcsDeclaration.objects.create(**terms)
+        with self.assertRaisesMessage(ValidationError, "is not one"):
+            TcsDeclaration.objects.create(pan="AB12", **terms)
+        # One recorded before the PAN was asked for is not honoured as the invoice posts.
+        TcsDeclaration.objects.bulk_create([TcsDeclaration(**terms)])
         self.assertEqual(self.t1(nopan).tcs_amount, D("5310.00"), "a declaration with no PAN behind it exempted the sale")
 
     def test_the_collections_api_says_a_voided_challan_has_not_paid_a_row_over(self):
