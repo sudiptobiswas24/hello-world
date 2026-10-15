@@ -693,7 +693,15 @@ class CancellingAnIrnTests(EInvoiceTestCase):
         self.assertEqual((built.status_code, built.json()["cancel_payload"]),
                          (200, {"Irn": IRN, "CnlRsn": "1", "CnlRem": "Raised twice"}))
         moment = timezone.now().isoformat()
-        done = client.post(url + "record_cancellation/", {"cancelled_at": moment}, format="json")
+        # The officer books nothing: the portal's answer is recorded by whoever posts invoices (review F8).
+        self.assertEqual(client.post(url + "record_cancellation/", {"irn": IRN, "cancelled_at": moment},
+                                     format="json").status_code, 403)
+        receivables = User.objects.create_user("receivables")
+        receivables.groups.add(Group.objects.get(name="AR Manager"))
+        client.force_authenticate(receivables)
+        wrong = client.post(url + "record_cancellation/", {"irn": "c" * 64, "cancelled_at": moment}, format="json")
+        self.assertEqual(wrong.status_code, 400)
+        done = client.post(url + "record_cancellation/", {"irn": IRN, "cancelled_at": moment}, format="json")
         self.assertEqual(done.status_code, 200, done.content)
         self.assertIsNotNone(done.json()["cancelled_at"])
         self.assertIsNotNone(done.json()["cancellation_note"])

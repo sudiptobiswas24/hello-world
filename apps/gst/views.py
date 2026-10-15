@@ -1,7 +1,7 @@
 import datetime
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
@@ -146,8 +146,10 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
     serializer_class = EInvoiceSerializer
     filter_fields = ["invoice"]
     search_fields = ["invoice__number", "irn", "ack_number"]
+    # Recording the portal's cancellation posts a full credit note: whoever posts invoices does it,
+    # not the officer who files the return and books nothing (review F8).
     action_permission_map = {"record": "gst.change_einvoice", "cancel": "gst.change_einvoice",
-                             "record_cancellation": "gst.change_einvoice"}
+                             "record_cancellation": "sales.post_invoice"}
 
     def create(self, request):
         from apps.sales.models import Invoice
@@ -174,8 +176,18 @@ class EInvoiceViewSet(RowHeldViewSetMixin, mixins.ListModelMixin, mixins.Retriev
 
     @action(detail=True, methods=["post"])
     def record_cancellation(self, request, pk=None):
-        """{cancelled_at}: the portal cancelled the IRN; the books reverse the invoice by a full credit note."""
+        """
+        The portal's answer to the cancellation, {irn, cancelled_at} (its Irn and CancelDate): the books
+        reverse the invoice by a full credit note. Needs the right to post invoices and to read e-invoices.
+        """
+        if not request.user.has_perm("gst.view_einvoice"):
+            raise PermissionDenied("Recording a cancellation needs the e-invoices as well as the right to post.")
         record = self.get_object()
+        answered = str(request.data.get("irn") or "").strip().lower()
+        if answered != record.irn:
+            raise DRFValidationError({"irn": [
+                f"The portal's answer names IRN {answered or 'none'}; this e-invoice's is {record.irn}. Give the "
+                "IRN and the cancellation date the portal returned."]})
         record.record_cancellation(_moment(request.data.get("cancelled_at"), "The cancellation date"))
         return Response(EInvoiceSerializer(record).data)
 
