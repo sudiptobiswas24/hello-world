@@ -752,6 +752,10 @@ class PayRun(AuditModel):
             bucket[key] = bucket.get(key, Decimal("0")) + amount
 
         net_total, owed_by, recovered = Decimal("0"), [], []
+        # Lines whose accounts are kept below, written once the loop is done and in key order: slips come
+        # by employee and a slip's lines in no order at all, and the sentinel refused line 283 written
+        # after 284 on PostgreSQL (g21's pg-b lane).
+        to_keep = []
         for slip in slips:
             department = slip.employee.department
             centre = department.centre if department is not None else None
@@ -771,10 +775,7 @@ class PayRun(AuditModel):
                         or line.posted_liability_account_id != getattr(owed_into, "pk", None)):
                     line.posted_account = account
                     line.posted_liability_account = owed_into
-                    super(PayslipLine, line).save(
-                        update_fields=["posted_account", "posted_liability_account",
-                                       "updated_at"]
-                    )
+                    to_keep.append(line)
                 if line.kind == ComponentKind.EARNING:
                     add(debits, (account, centre), line.amount)
                 elif line.kind == ComponentKind.DEDUCTION and line.advance_id:
@@ -798,6 +799,9 @@ class PayRun(AuditModel):
                 probe = PayslipLine(payslip=slip, component=component, kind=ComponentKind.DEDUCTION)
                 add(credits, probe.resolve_account(), slip.recoverable)
                 owed_by.append((component.recoverable_account, slip.employee.party, slip.recoverable))
+
+        for line in sorted(to_keep, key=lambda kept: kept.pk):
+            super(PayslipLine, line).save(update_fields=["posted_account", "posted_liability_account", "updated_at"])
 
         add(credits, _net_pay_account(), net_total)
 
