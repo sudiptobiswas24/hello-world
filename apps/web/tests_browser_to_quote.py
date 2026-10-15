@@ -57,7 +57,10 @@ class ToQuoteInTheBrowserTests(BrowserTestCase):
         rfq = RequestForQuotation.objects.get()
         self.assertEqual([(line.requisition_line, line.quantity) for line in rfq.lines.all()], [(self.line, Decimal("10"))])
         self.assertEqual((rfq.response_due, [row.vendor for row in rfq.invited.all()]), (datetime.date(2026, 3, 15), [self.vendor]))
-        expect(page.get_by_text("Granule House")).to_be_visible()
+        # Asked once, in its own panel: the name by itself is also a cell elsewhere on the way here, and the
+        # bare text matched two cells in g21's pg-b lane (strict mode) while passing in every run before.
+        asked = page.locator("section.related", has=page.get_by_role("heading", name="Vendors asked"))
+        expect(asked.get_by_role("cell", name="Granule House")).to_have_count(1)
 
         page.goto(f"{self.live_server_url}/app/purchasing/vendor-scorecard")
         expect(page.get_by_role("heading", name="Vendor scorecard")).to_be_visible()
