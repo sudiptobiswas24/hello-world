@@ -17,6 +17,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
+from apps.quality.tests import quality_manager
 from apps.core.models import Party
 from apps.inventory.models import Lot, TrackingMode
 from apps.quality.models import (
@@ -131,14 +132,14 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
             upper_limit=Decimal("1050"), sample_size=1,
         )
 
-    def inspect(self, value, **kwargs):
+    def inspect(self, value, by=None, **kwargs):
         inspection = Inspection.objects.create(
             lot=self.drum, plan=self.plan, inspected_on=TODAY, **kwargs
         )
         Reading.objects.create(
             inspection=inspection, plan_line=self.line, value=Decimal(str(value))
         )
-        inspection.post()
+        inspection.post(by)
         return inspection
 
     def issue_the_drum(self):
@@ -171,6 +172,7 @@ class AHeldBatchGoesNowhereTests(RunTestCase):
         self.inspect(
             1200, disposition=Disposition.CONCESSION, decided_by=manager,
             decision_note="Heavy denier accepted for a woven liner.",
+            by=quality_manager(manager),
         )
         self.issue_the_drum().post()
         self.assertEqual(release_status(self.drum), "released")

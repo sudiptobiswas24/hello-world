@@ -13,6 +13,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
+from apps.quality.tests import quality_manager
 from apps.sales.models import Delivery
 
 from apps.core.models import Party, UnitOfMeasure, UnitOfMeasureCategory
@@ -50,13 +51,13 @@ class CertificateTestCase(TraceTestCase):
                                 evaluation=Evaluation.MEAN, line_number=1)
         return plan
 
-    def inspect(self, plan, lot, values, **extra):
+    def inspect(self, plan, lot, values, by=None, **extra):
         inspection = Inspection.objects.create(lot=lot, plan=plan, inspected_on=TODAY,
                                                inspected_by=self.inspector, **extra)
         for index, value in enumerate(values, start=1):
             Reading.objects.create(inspection=inspection, plan_line=plan.lines.get(),
                                    value=Decimal(value), sample_reference=f"S{index}")
-        inspection.post()
+        inspection.post(by)
         return inspection
 
     def shipped(self):
@@ -87,7 +88,7 @@ class WhatItSaysTests(CertificateTestCase):
     def test_a_batch_taken_by_concession_says_so(self):
         self.inspect(self.tape_plan, self.tape_lot, ["1100", "1100", "1100"],
                      disposition=Disposition.CONCESSION, decided_by=self.manager,
-                     decision_note="Customer agreed")
+                     decision_note="Customer agreed", by=quality_manager(self.manager))
         batch = self.batch(issue(self.shipped()))
         self.assertEqual(batch["status"], "accepted by concession")
         self.assertIs(batch["characteristics"][0]["passed"], False)

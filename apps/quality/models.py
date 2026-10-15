@@ -779,6 +779,15 @@ class Inspection(AuditModel):
                     "second person on a concession."
                 )
             check_not_raised_by(by, self.raised_by(), self)
+        # Asked last, so that each rule above still answers in its own words. A concession accepts a
+        # failure, so it is a decision, and the Quality Manager's, whoever asks
+        # (decisions 22 and 23; rereview 2): an Inspector posting the failing readings as a concession
+        # released the batch, and every recall of what was made from it, with nobody deciding.
+        if not self.decides(by):
+            raise ValidationError(
+                f"A concession takes {self.lot} as it is, out of specification: that is the Quality "
+                "Manager's decision, whoever posts the readings. Post them as they came out, and the "
+                "Quality Manager takes it by concession.")
 
     @staticmethod
     def decides(by):
