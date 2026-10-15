@@ -146,23 +146,26 @@ class BankFileTests(OutputsTestCase):
             self.paid_run.void(on_date=D(2026, 7, 1))
         # One transfer comes back: that slip alone is owed again.
         row = made.rows.get(payslip__employee=self.people[1])
-        short = self.money(bank, "8450.00", direction=PaymentDirection.RECEIPT)
+        short = self.money(self.people[1].party, "8450.00", direction=PaymentDirection.RECEIPT)
         with self.assertRaisesMessage(ValidationError, "The receipt is 8450.00"):
             row.return_transfer(short)
         short.void(on_date=D(2026, 7, 1))
-        receipt = self.money(bank, "8450.50", direction=PaymentDirection.RECEIPT)
+        receipt = self.money(self.people[1].party, "8450.50", direction=PaymentDirection.RECEIPT)
         row.return_transfer(receipt)
         self.assertEqual([slip.is_paid() for slip in self.paid_run.payslips.order_by("employee__employee_number")],
                          [True, False, True])
         self.assertEqual(self.paid_run.unpaid_net(), Decimal("8450.50"))
         self.assertEqual(self.balance(self.net_pay), Decimal("-8450.50"))
-        twice = self.money(bank, "8450.50", direction=PaymentDirection.RECEIPT)
+        twice = self.money(self.people[1].party, "8450.50", direction=PaymentDirection.RECEIPT)
         with self.assertRaisesMessage(ValidationError, "already been returned"):
             row.return_transfer(twice)
         twice.void(on_date=D(2026, 7, 1))
         # Written again, the file holds only what is still owed.
         again = SalaryTransferFile.prepare(self.paid_run)
         self.assertEqual([r.payslip.employee.employee_number for r in again.rows.all()], ["E2"])
+        # The file's payment is not voided under the return (review RP2).
+        with self.assertRaisesMessage(ValidationError, "Void those receipts first"):
+            paid.void(on_date=D(2026, 7, 1))
         # The receipt voided: the transfer went through after all.
         again.delete()
         receipt.void(on_date=D(2026, 7, 1))
@@ -199,6 +202,36 @@ class BankFileTests(OutputsTestCase):
         reads(july)  # The login's permissions are read once, on its first request.
         # Three slips or six, each paid by a file: the same reads.
         self.assertEqual(reads(july), reads(self.paid_run))
+
+    def owed_and_unpaid(self):
+        return -self.balance(self.net_pay), self.paid_run.unpaid_net()
+
+    def test_net_pay_payable_foots_to_the_slips_in_every_order_of_void_return_and_repay(self):
+        """Review RP2 and RP3: E2's 8,450.50 comes back; each way of undoing it leaves the books and slips agreed."""
+        for person in self.people:
+            self.banked(person)
+        made = SalaryTransferFile.prepare(self.paid_run)
+        paid = self.money(self.people[0].party, "23825.50")
+        made.mark_paid(paid)
+        row = made.rows.get(payslip__employee=self.people[1])
+        receipt = self.money(self.people[1].party, "8450.50", direction=PaymentDirection.RECEIPT)
+        row.return_transfer(receipt)
+        self.assertEqual(self.owed_and_unpaid(), (Decimal("8450.50"), Decimal("8450.50")))
+        # E2 paid by a payment of their own: the receipt is not voided under it.
+        own = self.money(self.people[1].party, "8450.50")
+        self.paid_run.payslips.get(employee=self.people[1]).pay(own)
+        self.assertEqual(self.owed_and_unpaid(), (Decimal("0.00"), Decimal("0")))
+        with self.assertRaisesMessage(ValidationError, "paid again since the transfer came back"):
+            receipt.void(on_date=D(2026, 7, 1))
+        # Their own payment voided, then the receipt: the slip is the file's again, paid once.
+        own.void(on_date=D(2026, 7, 1))
+        self.assertEqual(self.owed_and_unpaid(), (Decimal("8450.50"), Decimal("8450.50")))
+        receipt.void(on_date=D(2026, 7, 1))
+        self.assertEqual(self.owed_and_unpaid(), (Decimal("0.00"), Decimal("0")))
+        self.assertEqual(self.paid_run.payslips.get(employee=self.people[1]).payment_id, paid.pk)
+        # And now the file's payment can go: everyone is owed again, and the books say so.
+        paid.void(on_date=D(2026, 7, 1))
+        self.assertEqual(self.owed_and_unpaid(), (Decimal("23825.50"), Decimal("23825.50")))
 
     def test_written_by_payroll_and_paid_by_whoever_posts_payroll(self):
         for person in self.people:

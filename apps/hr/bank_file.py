@@ -191,6 +191,10 @@ class SalaryTransfer(AuditModel):
             raise ValidationError("Net pay is owed in the base currency.")
         if receipt.amount != self.amount:
             raise ValidationError(f"The receipt is {receipt.amount} and the transfer {self.amount}.")
+        if receipt.party_id != slip.employee.party_id:
+            # Review RP9: a receipt in E3's name returned E2's transfer.
+            raise ValidationError(f"That receipt is from {receipt.party}; the transfer that came back was "
+                                  f"{slip.employee}'s.")
         if SalaryTransfer.objects.filter(returned_by=receipt).exclude(pk=self.pk).exists():
             raise ValidationError("That receipt already returns another transfer.")
         self.returned_by = receipt
@@ -198,9 +202,48 @@ class SalaryTransfer(AuditModel):
         return self
 
 
+def refuse_void_under_a_returned_transfer(payment, on_date):
+    """
+    A void follow-up (review RP2, RP3): net pay payable foots to the slips whatever is voided, in any order.
+
+    A file's payment is not voided while a transfer on it stands returned: the receipt that brought the money
+    back would stand against nobody, and net pay payable owed 32,276.00 for 23,825.50 of slips. Void the
+    receipt first. A return's receipt voided says the transfer went through after all, so the slip is the
+    file's again: refused while another payment since pays it (E2 was paid twice), and where one since was
+    itself voided, the slip is put back on the file's payment, exactly what the return took from it.
+    Each decides holding what it reads: the file, or the slip.
+    """
+    made = SalaryTransferFile.objects.filter(payment=payment).first()
+    if made is not None:
+        lock_rows(made)
+        back = [row for row in made.rows.select_related("payslip__employee", "returned_by") if row.is_returned()]
+        if back:
+            raise ValidationError(
+                f"This payment paid {made}, and "
+                + ", ".join(f"{row.payslip.employee.employee_number}'s transfer came back by {row.returned_by}"
+                            for row in back)
+                + ". Void those receipts first: until then the money they brought back stands in the books.")
+    row = SalaryTransfer.objects.filter(returned_by=payment).select_related("file", "payslip").first()
+    if row is not None:
+        slip = row.payslip
+        lock_rows(slip)
+        if slip.payment_id != row.file.payment_id:
+            if slip.payment_id is not None and not slip.payment.is_voided():
+                raise ValidationError(
+                    f"{slip.employee} has been paid again since the transfer came back, by {slip.payment}. Void "
+                    "that payment first: with this receipt voided as well they would be paid twice.")
+            slip.payment_id = row.file.payment_id
+            super(type(slip), slip).save(update_fields=["payment", "updated_at"])
+
+
 def _bank_details(employee):
     details = getattr(employee, "pay_details", None)
     return details is not None and details.account_number and details.ifsc and details.account_holder
+
+
+def _cell(text):
+    """Text as data, never a spreadsheet formula (review RP10): the file is opened in a spreadsheet before upload."""
+    return f"'{text}" if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
 def _csv(rows, narration, total):
@@ -208,6 +251,6 @@ def _csv(rows, narration, total):
     writer = csv.writer(out, lineterminator="\r\n")
     writer.writerow(["Beneficiary name", "Account number", "IFSC", "Amount", "Narration"])
     for row in rows:
-        writer.writerow([row.holder, row.account_number, row.ifsc, f"{row.amount:.2f}", narration])
+        writer.writerow([_cell(row.holder), row.account_number, row.ifsc, f"{row.amount:.2f}", _cell(narration)])
     writer.writerow(["Total", "", "", f"{total:.2f}", f"{len(rows)} transfers"])
     return out.getvalue()

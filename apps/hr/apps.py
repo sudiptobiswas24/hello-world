@@ -24,3 +24,7 @@ class HrConfig(AppConfig):
         from .advances import refuse_void_of_a_recovered_advance
 
         register_void_follow_up(refuse_void_of_a_recovered_advance)
+
+        from .bank_file import refuse_void_under_a_returned_transfer
+
+        register_void_follow_up(refuse_void_under_a_returned_transfer)
