@@ -476,6 +476,17 @@ def invoice_stamp(invoice):
     """
     if not invoice.posted:
         return None
+    cancels = EInvoice.objects.filter(cancellation_note=invoice).select_related("invoice").first()
+    if cancels is not None:
+        # Not a credit note under section 34: never registered, never reported, never sent (review F4).
+        return {
+            "rows": [("Reverses", cancels.invoice.number), ("IRN cancelled",
+                     timezone.localtime(cancels.cancelled_at).strftime("%d %b %Y %H:%M"))],
+            "qr": None,
+            "heading": "Internal reversal: not a credit note",
+            "refuse_sending": (f"{invoice.number} is the books' reversal of {cancels.invoice.number}, whose IRN was "
+                               "cancelled; it is no credit note under section 34 and is not sent to the buyer."),
+        }
     try:
         required, _ = needs_irn(invoice)
     except ValidationError:
@@ -488,6 +499,7 @@ def invoice_stamp(invoice):
         return {
             "rows": [("IRN", registered.irn), ("IRN cancelled", when)],
             "qr": None,
+            "heading": "CANCELLED: not a tax invoice",
             "refuse_sending": (f"{invoice.number}'s IRN was cancelled on {when}; it is no longer a valid "
                                "tax invoice."),
         }
