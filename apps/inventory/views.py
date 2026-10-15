@@ -242,16 +242,21 @@ class LotViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         before = request.query_params.get("before")
         if not before:
             raise DRFValidationError("before is required, as a date.")
-        return Response([
-            {
-                "lot": row["lot"].code,
-                "item": row["item"].sku,
-                "quantity": row["quantity"],
-                "expires_on": row["expires_on"],
-                "expired": row["expired"],
-            }
-            for row in _run(expiring, before)
-        ])
+        from .tracking import held_because, one_question
+
+        # Held lots stay listed, each saying why in the gate's words (O207, review F7).
+        with one_question():
+            return Response([
+                {
+                    "lot": row["lot"].code,
+                    "item": row["item"].sku,
+                    "quantity": row["quantity"],
+                    "expires_on": row["expires_on"],
+                    "expired": row["expired"],
+                    "held_because": held_because(row["lot"]),
+                }
+                for row in _run(expiring, before)
+            ])
 
 
 class StorageBinViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
