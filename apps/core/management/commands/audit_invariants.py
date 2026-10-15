@@ -1709,6 +1709,10 @@ class Command(BaseCommand):
                    for relation, names in (getattr(model, "KEPT_FROM", None) or {}).items() for name in names]
         if not keepers:
             return []
+        # Every model keeping a field is an event that may read it, whatever labels are asked about.
+        every_keeper = [(model, relation, name) for label in OUR_APPS
+                        for model in django_apps.get_app_config(label).get_models()
+                        for relation, names in (getattr(model, "KEPT_FROM", None) or {}).items() for name in names]
         findings = set()
         for label in OUR_APPS:
             for path, text in sources[label].items():
@@ -1723,7 +1727,7 @@ class Command(BaseCommand):
                             continue
                         # The event that records it, or a sibling keeping the same field: read once and kept.
                         if any(re.search(rf"\b{other.__name__}(\.objects\.create)?\(", body)
-                               for other, kept_relation, kept_name in keepers
+                               for other, kept_relation, kept_name in every_keeper
                                if (kept_relation, kept_name) == (relation, name)):
                             continue
                         findings.add((
