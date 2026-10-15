@@ -433,3 +433,88 @@ class OvertimeAtTheOrdinaryRateTests(DatedFiguresTestCase):
         self.pf.is_ordinary_wages = True
         with self.assertRaisesMessage(ValidationError, "ordinary rate of wages is made of"):
             self.pf.save()
+
+
+class TheMonthsFiguresAreOwedOnceTests(DatedFiguresTestCase):
+    """
+    Review RP5, decided 15 October: professional tax per month and the welfare fund per its months are owed
+    once, on the month's wages, however many runs pay the month. June paid in two fortnights of 6,000: the
+    welfare fund 3 and 15 in the first, nothing in the second; PT nothing on 6,000, then 110 on the month's
+    12,000 in the second (the undated West Bengal-shaped bands, illustrative).
+    """
+
+    def setUp(self):
+        super().setUp()
+        made = {}
+        for code, kind, statutory, slabs in (
+                ("LWF", ComponentKind.DEDUCTION, Statutory.LWF, [(None, None, "3", 6), (None, None, "3", 12)]),
+                ("LWF-ER", ComponentKind.EMPLOYER_COST, Statutory.LWF_EMPLOYER,
+                 [(None, None, "15", 6), (None, None, "15", 12)]),
+                ("PTM", ComponentKind.DEDUCTION, Statutory.PT,
+                 [("0", "10000", "0", None), ("10000", "15000", "110", None), ("15000", None, "130", None)])):
+            component = PayComponent.objects.create(
+                code=code, name=code, kind=kind, basis=ComponentBasis.SLAB, liability_account=self.pt_payable,
+                expense_account=self.employer if kind == ComponentKind.EMPLOYER_COST else None,
+                sequence=97, statutory=statutory)
+            component.base_components.set([self.basic])
+            for above, up_to, amount, when in slabs:
+                PayComponentSlab.objects.create(component=component, state="WB", month=when, amount=Decimal(amount),
+                                                above=Decimal(above or "0"), up_to=Decimal(up_to) if up_to else None)
+            made[code] = component
+        self.lwf, self.lwf_er, self.ptm = made["LWF"], made["LWF-ER"], made["PTM"]
+        self.weaver = self.worker("W", work_state="WB")
+        self.paid(self.weaver, self.basic, "6000")
+        for component in made.values():
+            self.paid(self.weaver, component, "1")
+
+    def fortnight(self, first, post=True):
+        last = D(2026, 6, 15) if first == 1 else D(2026, 6, 30)
+        run = PayRun.objects.create(period_start=D(2026, 6, first), period_end=last, pay_date=last)
+        run.calculate(employees=[self.weaver])
+        if post:
+            run.post()
+        return run
+
+    def taken(self, run):
+        slip = run.payslips.get()
+        return {line.component.code: line.amount for line in slip.lines.all() if line.kind != ComponentKind.EARNING}
+
+    def june_register(self):
+        rows = lwf_register(D(2026, 6, 1))
+        return sum((r["employee_share"] for r in rows), Decimal("0")), sum((r["employer_share"] for r in rows), Decimal("0"))
+
+    def test_two_runs_in_june_take_the_months_figures_once(self):
+        first, second = self.fortnight(1), self.fortnight(16)
+        self.assertEqual(self.taken(first), {"LWF": Decimal("3.00"), "LWF-ER": Decimal("15.00")})
+        self.assertEqual(self.taken(second), {"PTM": Decimal("110.00")})
+        pt = second.payslips.get().lines.get(component=self.ptm)
+        self.assertEqual(pt.kept_terms["month_before"], ["6000.00", "0.00"])
+        self.assertEqual(self.june_register(), (Decimal("3.00"), Decimal("15.00")))
+        self.assertEqual([(r["wages"], r["tax"]) for r in pt_register(D(2026, 6, 1))], [(Decimal("12000.00"), Decimal("110.00"))])
+
+    def test_a_run_voided_between_them_reopens_the_month(self):
+        first = self.fortnight(1)
+        first.void(on_date=D(2026, 7, 1))
+        second = self.fortnight(16)
+        self.assertEqual(self.taken(second), {"LWF": Decimal("3.00"), "LWF-ER": Decimal("15.00")})
+        self.assertEqual(self.june_register(), (Decimal("3.00"), Decimal("15.00")))
+
+    def test_the_earlier_run_voided_after_the_later_one_leaves_the_month_to_the_next_run_of_it(self):
+        """The later run keeps what it took (nothing) and why; the month reads nothing until a run of June takes it."""
+        first, second = self.fortnight(1), self.fortnight(16)
+        first.void(on_date=D(2026, 7, 1))
+        self.assertEqual(self.june_register(), (Decimal("0"), Decimal("0")))
+        again = self.fortnight(1)
+        # PT is not taken again: the second run took the month's 110 on 12,000 (its 6,000 and the first's),
+        # and the first again reads the same month, 12,000, less the 110 taken. June's PT stays 110.
+        self.assertEqual(self.taken(again), {"LWF": Decimal("3.00"), "LWF-ER": Decimal("15.00")})
+        self.assertEqual(self.june_register(), (Decimal("3.00"), Decimal("15.00")))
+        self.assertEqual(sum((r["tax"] for r in pt_register(D(2026, 6, 1))), Decimal("0")), Decimal("110.00"))
+
+    def test_a_leavers_final_run_in_the_month_takes_only_what_is_left(self):
+        self.fortnight(1)
+        self.weaver.termination_date, self.weaver.employment_status = D(2026, 6, 20), "terminated"
+        self.weaver.save()
+        final = self.fortnight(16)
+        self.assertNotIn("LWF", self.taken(final))
+        self.assertEqual(self.june_register(), (Decimal("3.00"), Decimal("15.00")))
