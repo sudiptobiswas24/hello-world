@@ -412,6 +412,59 @@ class _SalesTakenBack(TransactionTestCase):
 
 # Slow: each unwinds sales's latest migrations and replays them.
 @tag("migration")
+class CollectionsAlreadyPostedMigrationTests(_SalesTakenBack):
+    """
+    sales 0071: a row posted before it kept posted_account keeps the account its own entry booked to the
+    payable side (a collection's credit, a give-back's debit), never the one its section names at the
+    upgrade. From calc_fix_mig/scenarios.py:
+
+      C1  1,062.00 on INV-1, Dr 1200 / Cr 2290, while SCRAP read 2290       -> 2290
+      G1    266.00 given back by CN-1, Dr 2290 / Cr 1200                    -> 2290 (its debit)
+      --  SCRAP moved to 2291: C1 and G1 are the rows whose section moved after they posted
+      C2  1,062.00 on INV-2, Dr 1200 / Cr 2291                              -> 2291
+      C3      0.00 on INV-3: collected nothing, no entry                    -> none, as the constraint allows
+      C4    100.00 on INV-4 under a section wired to the receivable: Dr 1200 / Cr 1200 -> 1200
+          (the old read took a line to anything but 1200, found none, and the constraint refused)
+      C5     50.00 on INV-5 with no entry: no code made it -> the upgrade stops and names it;
+          taken off, it runs.
+      Back: the column goes, and the five rows and their amounts stay.
+    """
+
+    before = [("sales", "0070_tcs")]
+    after = [("sales", "0071_posted_account")]
+
+    def test_each_keeps_the_account_its_own_entry_booked(self):
+        self.taken_back()
+        scrap = self.sections.objects.create(code="206C(1)", name="Scrap", payable_account_id=self.owed.pk)
+        wired = self.sections.objects.create(code="206C(1F)", name="Wired to the receivable",
+                                             payable_account_id=self.receivable.pk)
+        c1 = self.collected("INV-1", scrap, "1062", lines=[(self.receivable, "1062", "0"), (self.owed, "0", "1062")])
+        self.collected("CN-1", scrap, "266", gives_back=c1,
+                       lines=[(self.owed, "266", "0"), (self.receivable, "0", "266")])
+        self.sections.objects.filter(pk=scrap.pk).update(payable_account_id=self.moved.pk)
+        self.collected("INV-2", scrap, "1062", lines=[(self.receivable, "1062", "0"), (self.moved, "0", "1062")])
+        self.collected("INV-3", scrap, "0")
+        self.collected("INV-4", wired, "100", lines=[(self.receivable, "100", "0"), (self.receivable, "0", "100")])
+        c5 = self.collected("INV-5", scrap, "50")
+
+        with self.assertRaisesMessage(RuntimeError, f"TCS collection {c5.pk} of 50.00 on invoice {c5.invoice_id} "
+                                                    "(2026-09-10): it has no entry"):
+            self.forward()
+        self.apps.get_model("sales", "TcsCollection").objects.filter(pk=c5.pk).delete()
+        kept = self.forward()
+        self.assertEqual(sorted(kept.objects.values_list("invoice__number", "amount", "posted_account_id")),
+                         [("CN-1", D("266.00"), self.owed.pk), ("INV-1", D("1062.00"), self.owed.pk),
+                          ("INV-2", D("1062.00"), self.moved.pk), ("INV-3", D("0.00"), None),
+                          ("INV-4", D("100.00"), self.receivable.pk)])
+
+        back = self.back()
+        self.assertNotIn("posted_account", {field.name for field in back._meta.get_fields()})
+        self.assertEqual(sorted(back.objects.values_list("invoice__number", "amount")),
+                         [("CN-1", D("266.00")), ("INV-1", D("1062.00")), ("INV-2", D("1062.00")),
+                          ("INV-3", D("0.00")), ("INV-4", D("100.00"))])
+
+
+@tag("migration")
 class SectionsAlreadyCollectedUnderMigrationTests(_SalesTakenBack):
     """
     sales 0072: a row collected before it kept its section keeps the code it was issued under, read off
