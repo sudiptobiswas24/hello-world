@@ -82,8 +82,12 @@ class TcsCollection(AuditModel):
         if not self._state.adding:
             before = TcsCollection.objects.get(pk=self.pk)
             if any(getattr(before, name) != getattr(self, name)
-                   for name in ("invoice_id", "section_id", "base", "rate_percent", "amount", "date")):
-                raise ValidationError("What an invoice collected is a fact; a credit note gives it back.")
+                   for name in ("invoice_id", "section_id", "base", "rate_percent", "amount", "date", "pan",
+                                "declaration_id", "gives_back_id", "posted_account_id", "section_code",
+                                "challan_id")):
+                # The challan too: a plain save released a paid row from its challan (review F16).
+                raise ValidationError("What an invoice collected is a fact, and so is the challan that paid it "
+                                      "over; a credit note gives it back, and a void frees the challan's rows.")
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):

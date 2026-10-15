@@ -43,6 +43,11 @@ def pay_over(section, waiting, live, bank_account, date, challan_number, what, m
         owed = list(live(waiting))
         if not owed:
             raise ValidationError(f"Nothing {what} is waiting to be paid over.")
+        latest = max(to_date(row.date) for row in owed)
+        if to_date(date) < latest:
+            # Paid over before it was held: a challan dated 1 September for tax collected on the 10th (review F16).
+            raise ValidationError(f"A challan pays over tax already {what.split(' ', 1)[0]}: the last of it is dated "
+                                  f"{latest:%d %b %Y}, after {to_date(date):%d %b %Y}.")
         by_account = defaultdict(Decimal)
         for row in owed:
             by_account[row.posted_account_id] += signed(row)
