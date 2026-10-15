@@ -243,6 +243,8 @@ ROLES = {
         "sales.post_invoice",
         "sales.approve_order",
         "accounting.post_payment",
+        # Records the portal's cancellation of an IRN, which posts the full credit note (review F8).
+        *view("gst", "einvoice"),
     ],
     "Purchasing Clerk": [
         *REFERENCE,
