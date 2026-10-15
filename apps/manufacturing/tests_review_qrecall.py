@@ -1,9 +1,8 @@
 """
-review_qrecall: probes for gate g21 (decision 23: O204, O207, O123).
+The review of decision 23 (O204, O207, O123), kept as regression tests.
 
-Each test states a fact that SHOULD be true of stock or state. A test that
-fails on the tip is a finding (Qnn); one that passes is a check that held.
-Written against aa49719. Not product code.
+Each test states a fact that must stay true of stock or state; written as
+probes by the review of g21 (findings F1 to F8), all passing since the fixes.
 """
 
 import datetime
@@ -45,7 +44,7 @@ class Base(tests_recall.RecallTestCase):
 
 
 class WhoMay(Base):
-    def test_Q01_an_inspector_does_not_lift_a_recall_by_voiding_the_source_rejection(self):
+    def test_an_inspector_does_not_lift_a_recall_by_voiding_the_source_rejection(self):
         """Decision 22/23: the Quality Manager owns the hold. Meera voids B1's rejection: 200, A and B read released."""
         rejection = self.reject_b1()
         recalls = [self.recall_of(self.a), self.recall_of(self.b)]
@@ -57,14 +56,35 @@ class WhoMay(Base):
             f"recalls voided: {[Inspection.objects.get(pk=r.pk).voided_at is not None for r in recalls]}; "
             f"to-dos closed: {[self.to_dos(r, done_on__isnull=True).count() == 0 for r in recalls]}")
 
-    def test_Q02_an_inspector_does_not_void_an_open_recall(self):
+    def test_an_inspector_may_still_void_a_pass_which_leaves_the_lot_uninspected_and_held(self):
+        """Review F2: voiding a pass lifts nothing; RB-A's own pass voided, it reads as B1, not released."""
+        rejection = self.reject_b1()
+        response = self.api_void("meera", self.own_pass, reason="Wrong roll measured")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(release_status(self.a), ReleaseStatus.HELD)
+        # ...and the Quality Manager still has the hold before them: the recall stands or is filed again.
+        self.assertTrue(Inspection.objects.filter(lot=self.a, recalled_by__isnull=False,
+                                                  voided_at__isnull=True).exists(), rejection.number)
+
+    def test_the_quality_manager_voids_the_rejection_and_the_recalls_lift(self):
+        rejection = self.reject_b1()
+        self.assertEqual(self.api_void("asha", rejection, reason="Scale out").status_code, 200)
+        self.assertEqual([release_status(lot) for lot in (self.a, self.b)], [ReleaseStatus.RELEASED] * 2)
+
+    def test_a_supervisor_or_the_stores_do_not_void_the_rejection(self):
+        rejection = self.reject_b1()
+        for who in ("farid", "sunil"):
+            self.assertIn(self.api_void(who, rejection).status_code, (400, 403), who)
+        self.assertEqual(release_status(self.a), ReleaseStatus.HELD)
+
+    def test_an_inspector_does_not_void_an_open_recall(self):
         self.reject_b1()
         recall = self.recall_of(self.a)
         response = self.api_void("meera", recall)
         self.assertIn(response.status_code, (400, 403), response.content)
         self.assertIsNone(Inspection.objects.get(pk=recall.pk).voided_at)
 
-    def test_Q03_stores_manager_and_supervisor_cannot_decide_or_void_a_recall(self):
+    def test_stores_manager_and_supervisor_cannot_decide_or_void_a_recall(self):
         self.reject_b1()
         recall = self.recall_of(self.a)
         for who in ("sunil", "farid"):
@@ -74,7 +94,7 @@ class WhoMay(Base):
             self.assertIn(voided.status_code, (400, 403), (who, voided.content))
         self.assertEqual(release_status(self.a), ReleaseStatus.HELD)
 
-    def test_Q04_the_quality_manager_voiding_a_recall_while_the_source_stands_leaves_the_lot_held(self):
+    def test_the_quality_manager_voiding_a_recall_while_the_source_stands_leaves_the_lot_held(self):
         self.reject_b1()
         recall = self.recall_of(self.a)
         self.assertEqual(self.api_void("asha", recall).status_code, 200)
@@ -87,7 +107,7 @@ class WhoMay(Base):
 
 
 class Certificate(Base):
-    def test_Q05_a_certificate_does_not_read_passed_for_a_lot_the_gate_holds(self):
+    def test_a_certificate_does_not_read_passed_for_a_lot_the_gate_holds(self):
         delivery = DeliveryLine.objects.get(lot=self.a).delivery
         self.reject_b1()
         self.assertEqual(release_status(self.a), ReleaseStatus.HELD)
@@ -100,7 +120,7 @@ class Certificate(Base):
                       "certificate issued for a recalled lot (open recall, undecided) with no word of it: "
                       + json.dumps(certificate.content["lines"][0]["batches"][0].get("status")))
 
-    def test_Q05b_lot_status_names_the_inspection_that_holds_it(self):
+    def test_lot_status_names_the_inspection_that_holds_it(self):
         self.reject_b1()
         row = self.clients["meera"].get(f"/api/quality/lot-status/{self.a.pk}/").json()
         self.assertEqual(row["status"], "held")
@@ -110,7 +130,7 @@ class Certificate(Base):
 
 
 class AHoldThatArrivesWhileTheLotIsAlreadyHeld(Base):
-    def test_Q06_a_second_source_rejected_while_the_recall_is_open_is_named_before_the_lot_is_released(self):
+    def test_a_second_source_rejected_while_the_recall_is_open_is_named_before_the_lot_is_released(self):
         joined = self.new("RB-J")
         rebatch(self.bag, self.plant, [(self.b2, "100"), (self.b3, "100")], [(joined, "200")],
                 "Short ends", on_date=TODAY)
@@ -128,7 +148,7 @@ class AHoldThatArrivesWhileTheLotIsAlreadyHeld(Base):
             f"stands rejected ({second.number}, posted before the decision) and no to-do, recall or "
             f"note names it ({first.number} is the one they were told of)")
 
-    def test_Q07_a_lot_awaiting_its_own_decision_is_not_released_by_it_with_a_source_rejected_inside(self):
+    def test_a_lot_awaiting_its_own_decision_is_not_released_by_it_with_a_source_rejected_inside(self):
         InspectionPlan.objects.filter(pk=self.bag_spec.inspection_plan.pk).update(is_mandatory=False)
         own_fail = self.inspect(self.a, OUT)  # advisory: awaits the Quality Manager
         self.assertEqual(own_fail.disposition, Disposition.AWAITING)
@@ -142,7 +162,7 @@ class AHoldThatArrivesWhileTheLotIsAlreadyHeld(Base):
 
 
 class TheLiftRacingANewVerdict(Base):
-    def test_Q08_a_rejection_posted_between_the_lifts_check_and_its_void_is_still_recalled(self):
+    def test_a_rejection_posted_between_the_lifts_check_and_its_void_is_still_recalled(self):
         """
         The lift (on_commit after the first rejection's void) asks recall_stands() and then voids. A second
         rejection of B1 posted by another request in between finds the old recall open and tells no one;
@@ -177,7 +197,7 @@ class TheLiftRacingANewVerdict(Base):
 
 
 class PastTheDepth(Base):
-    def test_Q09_a_lot_held_past_the_walk_has_a_recall_to_decide(self):
+    def test_a_lot_held_past_the_walk_has_a_recall_to_decide(self):
         taken = "150"
         previous, chain = self.b1, []
         for level, code in enumerate(("C1", "C2", "C3", "C4", "C5")):
@@ -197,7 +217,7 @@ class PastTheDepth(Base):
 
 
 class TheColumn(Base):
-    def test_Q10_the_cost_of_the_column_does_not_multiply_by_the_places_a_lot_is_on_hand(self):
+    def test_the_cost_of_the_column_does_not_multiply_by_the_places_a_lot_is_on_hand(self):
         from apps.inventory.tracking import held_because
 
         self.reject_b1()
@@ -215,7 +235,7 @@ class TheColumn(Base):
         print(f"\nQ10 held_because(A): {len(one)} queries in 1 place, {len(five)} in 5")
         self.assertLessEqual(len(five), 2 * len(one), f"{len(one)} queries in one place, {len(five)} in five")
 
-    def test_Q11_the_other_lists_of_lots_on_hand_say_why_too(self):
+    def test_the_other_lists_of_lots_on_hand_say_why_too(self):
         self.reject_b1()
         Lot.objects.filter(pk=self.a.pk).update(expires_on=datetime.date(2027, 1, 1))
         rows = self.clients["sunil"].get("/api/inventory/lots/expiring/", {"before": "2030-01-01"}).json()
@@ -236,7 +256,7 @@ class ALoopThroughRuns(RunTestCase):
         entry.post()
         return order
 
-    def test_Q12_two_lots_that_feed_each_other_through_runs_do_not_crash_the_gate(self):
+    def test_two_lots_that_feed_each_other_through_runs_do_not_crash_the_gate(self):
         from apps.inventory.tracking import held_because
 
         from apps.inventory.models import Item
@@ -258,8 +278,33 @@ class ALoopThroughRuns(RunTestCase):
                           "the Batches list, every issue and every delivery that asks it crash")
 
 
+class ALoopOfThreeThroughRuns(ALoopThroughRuns):
+    """RG-1 into a run that makes RG-2, RG-2 into one that makes RG-3, RG-3 into one that makes RG-1."""
+
+    def test_three_lots_that_feed_each_other_through_three_runs_do_not_crash_the_gate(self):
+        from apps.inventory.models import Item
+        from apps.inventory.tracking import held_because
+
+        from .trace import descendants
+
+        Item.objects.filter(pk=self.regrind.pk).update(tracking="lot")
+        self.regrind.refresh_from_db()
+        lots = [Lot.objects.create(item=self.regrind, code=f"RG-{n}") for n in (1, 2, 3)]
+        for lot in lots:
+            self.stock(self.regrind, "50", "60", lot=lot)
+        for eats, makes in zip(lots, lots[1:] + lots[:1]):
+            self.run_of(eats=eats, makes=makes)
+        for lot in lots:
+            self.assertEqual(release_status(lot), ReleaseStatus.UNINSPECTED)
+            self.assertEqual(why_held(self.regrind, lot, warehouse=self.plant), "")
+            self.assertEqual(held_because(lot), "")
+            # The trace walks the same loop once round, by the same walk.
+            self.assertEqual(sorted({row["lot"].code for row in descendants(lot, depth=10)}),
+                             ["RG-1", "RG-2", "RG-3"])
+
+
 class Escalation(Base):
-    def test_Q13_a_recall_whose_source_no_longer_holds_is_voided_not_escalated(self):
+    def test_a_recall_whose_source_no_longer_holds_is_voided_not_escalated(self):
         rejection = self.reject_b1()
         recall = self.recall_of(self.a)
         rejection.void("Scale out")  # in code: the lift has not run
@@ -271,7 +316,7 @@ class Escalation(Base):
         self.assertIsNotNone(recall.voided_at)
         self.assertFalse(FollowUp.objects.filter(assigned_to=root).exists())
 
-    def test_Q14_a_recall_that_stands_is_escalated_once_to_the_administrator(self):
+    def test_a_recall_that_stands_is_escalated_once_to_the_administrator(self):
         from apps.quality.decisions import escalate_overdue
 
         self.reject_b1()
@@ -282,7 +327,7 @@ class Escalation(Base):
         self.assertEqual(sorted(first), sorted([self.a.code, self.b.code]))
         self.assertEqual(again, [])
 
-    def test_Q15_a_rejection_voided_and_posted_again_leaves_one_recall_and_one_open_to_do_a_lot(self):
+    def test_a_rejection_voided_and_posted_again_leaves_one_recall_and_one_open_to_do_a_lot(self):
         rejection = self.reject_b1()
         self.api_void("asha", rejection)
         self.reject_b1()
@@ -307,7 +352,7 @@ class AnOffRollOrCheckThatIsWithdrawn(tests_process_rolls.RollsTestCase):
         return FollowUp.objects.filter(content_type=ContentType.objects.get_for_model(type(record)),
                                        object_id=record.pk, done_on__isnull=True).count()
 
-    def test_Q16_the_to_do_for_a_roll_the_supervisor_withdrew_is_closed(self):
+    def test_the_to_do_for_a_roll_the_supervisor_withdrew_is_closed(self):
         self.mount()
         roll = self.laminated("132.78", supervisor=self.supervisor, reason="Die lip cleaned")
         self.assertEqual(self.open_to_dos(roll), 1)
@@ -315,7 +360,7 @@ class AnOffRollOrCheckThatIsWithdrawn(tests_process_rolls.RollsTestCase):
         self.assertEqual(self.open_to_dos(roll), 0,
                          "the Quality Manager is still asked to look at a roll record that was withdrawn")
 
-    def test_Q17_the_to_do_for_a_roll_is_closed_when_the_bundle_cut_from_it_is_decided(self):
+    def test_the_to_do_for_a_roll_is_closed_when_the_bundle_cut_from_it_is_decided(self):
         from .conversion import record_bags
         from .tests_station import at
 
@@ -327,7 +372,7 @@ class AnOffRollOrCheckThatIsWithdrawn(tests_process_rolls.RollsTestCase):
         count.inspection.decide(self.manager, Disposition.REJECT, "Sent for regrind")
         self.assertEqual(self.open_to_dos(roll), 0, "decided, and the roll's to-do still stands open")
 
-    def test_Q18_the_to_do_for_a_coating_check_the_supervisor_withdrew_is_closed(self):
+    def test_the_to_do_for_a_coating_check_the_supervisor_withdrew_is_closed(self):
         from .station_coat import void_coating
         from .tests_station_coat import OFF
 
