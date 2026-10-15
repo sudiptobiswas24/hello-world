@@ -271,3 +271,22 @@ class TheAuditSeesAPayableAccountReadLiveTests(TcsTestCase):
                       "`section.payable_account` as it stands.", findings)
         self.assertIn("purchasing.TdsDeduction keeps its own payable_account, but accounting.challans.pay_over "
                       "reads `section.payable_account` as it stands.", findings)
+
+
+class TheSectionTheLawNamesOnTheDayTests(TcsTestCase):
+    """Review F13: 206C(1) of the 1961 Act until 31 March 2026, 394(1) of the 2025 Act from 1 April 2026."""
+
+    def test_kept_on_each_collection_as_it_stood(self):
+        later = TcsRate.objects.create(section=self.section, applies_from=datetime.date(2026, 9, 15),
+                                       section_code="394(1)", rate_percent=D("1"), no_pan_rate_percent=D("5"))
+        later.confirm(self.accountant)
+        before, after = self.t1(), self.invoice(self.mh, [(self.scrap, "2000", "45", "0", self.pair)],
+                                                day=datetime.date(2026, 9, 16))
+        self.assertEqual([row.section_code for row in (before.tcs_collected.get(), after.tcs_collected.get())],
+                         ["206C(1)", "394(1)"])
+        text = " ".join(" ".join(printed_text(render_invoice_pdf, after)).split())
+        self.assertIn("TCS collected u/s 394(1) @ 1% on 106,200.00", text)
+        self.section.code = "RENAMED"
+        self.section.save()
+        self.assertEqual([row["section"] for row in tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))],
+                         ["206C(1)", "394(1)"])

@@ -49,6 +49,10 @@ class TcsCollection(AuditModel):
     pan = models.CharField(max_length=10, blank=True)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     date = models.DateField()
+    section_code = models.CharField(
+        max_length=16, blank=True, editable=False,
+        help_text="The section the law named on its day (TcsSection.code_on), as the print and the return say "
+                  "it: 206C(1) before April 2026, 394(1) after.")
     journal_entry = models.ForeignKey(JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
                                       related_name="+", editable=False)
     posted_account = models.ForeignKey(
@@ -145,7 +149,8 @@ def collect(invoice):
         declaration = TcsDeclaration.covering(invoice.customer, section, day)
         if declaration is not None:
             TcsCollection.objects.create(invoice=invoice, section=section, declaration=declaration, base=base,
-                                         rate_percent=Decimal("0"), pan=declaration.pan, amount=Decimal("0"), date=day)
+                                         rate_percent=Decimal("0"), pan=declaration.pan, amount=Decimal("0"), date=day,
+                                         section_code=section.code_on(day))
             continue
         rate = section.rate_on(day)
         if section.payable_account_id is None:
@@ -156,9 +161,11 @@ def collect(invoice):
         account = section.payable_account
         entry = None
         if amount:
-            entry = _entry(invoice, account, amount, f"TCS {section.code} on {invoice.number}", give_back=False)
+            entry = _entry(invoice, account, amount, f"TCS {rate.section_code or section.code} on {invoice.number}",
+                           give_back=False)
         TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base, rate_percent=percent,
-                                     pan=pan, amount=amount, date=day, journal_entry=entry, posted_account=account)
+                                     pan=pan, amount=amount, date=day, journal_entry=entry, posted_account=account,
+                                     section_code=rate.section_code or section.code)
         total += amount
     return total
 
@@ -183,12 +190,13 @@ def _give_back(note):
         if amount <= 0:
             continue
         entry = _entry(note, collected.posted_account, amount,
-                       f"TCS {collected.section.code} given back by {note.number} on {original.number}",
+                       f"TCS {collected.section_code} given back by {note.number} on {original.number}",
                        give_back=True)
         TcsCollection.objects.create(invoice=note, section=collected.section, rate=collected.rate,
                                      gives_back=collected, base=base, rate_percent=collected.rate_percent,
                                      pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
-                                     journal_entry=entry, posted_account=collected.posted_account)
+                                     journal_entry=entry, posted_account=collected.posted_account,
+                                     section_code=collected.section_code)
         total += amount
     return total
 
@@ -286,7 +294,7 @@ def tcs_return(start, end):
         sign = -1 if row.gives_back_id else 1
         paid = row.is_paid_over()
         rows.append({
-            "collection": row.pk, "date": row.date, "section": row.section.code,
+            "collection": row.pk, "date": row.date, "section": row.section_code,
             "collection_code": row.section.form_code, "buyer": row.invoice.customer.name,
             "pan": row.pan or "PANNOTAVBL", "invoice": row.invoice.number, "base": sign * row.base,
             "rate_percent": row.rate_percent, "amount": sign * row.amount,

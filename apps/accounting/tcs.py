@@ -55,6 +55,11 @@ class TcsSection(AuditModel):
         refuse_money_kept_as(self, *settings_fields(TcsSection))
         super().save(*args, **kwargs)
 
+    def code_on(self, day):
+        """The section the law names on `day` (TcsRate.section_code), whether or not its rate is confirmed."""
+        rate = self.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
+        return (rate.section_code if rate else "") or self.code
+
     def rate_on(self, day):
         """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""
         rate = self.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
@@ -80,6 +85,10 @@ class TcsRate(AuditModel):
                   "whichever is higher, as the law stands).")
     authority = models.CharField(max_length=128, blank=True,
                                  help_text="Where the rate comes from: the section, the notification.")
+    section_code = models.CharField(
+        max_length=16, blank=True,
+        help_text="The section the law names from this day, as the invoice prints it: 206C(1) of the 1961 Act "
+                  "until 31 March 2026, 394(1) of the 2025 Act from 1 April 2026. Empty: the section's code.")
     confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
                                      related_name="+", editable=False)
     confirmed_on = models.DateField(null=True, blank=True, editable=False,
@@ -103,7 +112,8 @@ class TcsRate(AuditModel):
         if not self._state.adding:
             before = TcsRate.objects.get(pk=self.pk)
             changed = any(getattr(before, name) != getattr(self, name)
-                          for name in ("section_id", "applies_from", "rate_percent", "no_pan_rate_percent"))
+                          for name in ("section_id", "applies_from", "rate_percent", "no_pan_rate_percent",
+                                       "section_code"))
             if changed and self.collections.exists():
                 raise ValidationError("Invoices collected at this rate; a new rate is a new row from the day "
                                       "it applies.")
