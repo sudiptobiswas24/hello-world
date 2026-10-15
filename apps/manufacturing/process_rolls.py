@@ -464,6 +464,10 @@ def void_roll(roll, station, supervisor, operator, reason):
     check_supervisor(station, supervisor, operator)
     roll.voided_at, roll.voided_reason = timezone.now(), reason[:255]
     roll.save(update_fields=["voided_at", "voided_reason", "updated_at"])
+    from apps.quality.decisions import close_to_dos
+
+    # Withdrawn: the Quality Manager's to-do on it has nothing left to look at (review F8).
+    close_to_dos(roll, None, f"{roll.code} was withdrawn at {station}: {reason}"[:255])
 
 
 def current_mount(machine):

@@ -10,11 +10,11 @@ class ManufacturingConfig(AppConfig):
         from apps.hr.attendance import register_shift_clock
         from apps.hr.payroll import register_piece_measure
         from apps.inventory.models import register_unit_provider
-        from apps.quality.release import register_lot_sources
+        from apps.quality.release import register_lot_decided, register_lot_sources
         from apps.sales.models import register_material_checker, register_ownership_checker
 
         from .compliance import material_problems
-        from .conversion import bags_converted, liners_sealed
+        from .conversion import bags_converted, floor_checks_decided, liners_sealed
         from .inward import ownership_problems
         from .piecework import kilograms_woven, metres_woven
         from .rebatch import made_into, sources
@@ -26,6 +26,8 @@ class ManufacturingConfig(AppConfig):
         register_lot_sources(sources, made_into)
         # Production is a lineage too: a recall follows the runs, as the trace does (O207).
         register_lot_sources(held_inputs, made_into_by_runs)
+        # A bundle decided closes the to-dos on the off roll and coating it came from (review F8).
+        register_lot_decided(floor_checks_decided)
         register_material_checker(material_problems)
         register_ownership_checker(ownership_problems)
         register_piece_measure("metres_woven", "Metres woven", metres_woven)
