@@ -150,6 +150,16 @@ def collect(invoice):
     What the invoice collects, or its credit note gives back, as it posts; the amount, kept on it.
     Called inside Invoice.post(), under its lock, after its number and taxes are settled.
     """
+    if invoice.is_down_payment and not invoice.is_credit_note():
+        order = invoice.sales_order
+        if order is not None and order.lines.filter(item__tcs_section__isnull=False).exists():
+            # Section 206C(1) collects at the debit or the receipt, whichever is earlier: an advance on a
+            # scrap order owes TCS as it is received. Collecting on it, and setting that against the
+            # invoice that draws it down, is not built; refused rather than collecting nothing (review U1).
+            raise ValidationError(
+                f"{order} sells goods TCS is collected on, and TCS on an advance is owed as it is received. "
+                "Collecting it on an advance is not built: invoice the scrap and take the money against the "
+                "invoice instead.")
     if invoice.is_down_payment or (invoice.credits_id and invoice.credits.is_down_payment):
         return Decimal("0")
     if invoice.is_credit_note():

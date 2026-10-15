@@ -310,3 +310,24 @@ class FreightOnAScrapInvoiceTests(TcsTestCase):
                                          (self.sack, "100", "150", "0", self.pair),
                                          (self.freight6, "1", "3000", "0", self.pair)])
         self.assertEqual((invoice.tcs_collected.get().base, invoice.tcs_amount), (D("109234.29"), D("1092.00")))
+
+
+class AnAdvanceOnAScrapOrderTests(TcsTestCase):
+    """
+    Review U1: 206C(1) collects at the debit or the receipt, whichever is earlier. TCS on an advance is not
+    built, so the advance is refused in words rather than taken with nothing collected.
+    """
+
+    def test_refused_rather_than_collected_on_at_nothing(self):
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        order = SalesOrder.objects.create(customer=self.mh, order_date=DAY, currency=self.inr)
+        SalesOrderLine.objects.create(order=order, item=self.scrap, uom=self.scrap.uom, quantity=D("2000"),
+                                      unit_price=D("45"), revenue_account=self.revenue)
+        order.confirm()
+        from apps.core.models import Company
+
+        Company.objects.update(customer_deposit_account=Account.objects.create(
+            code="2300", name="Customer deposits", account_type=AccountType.LIABILITY))
+        with self.assertRaisesMessage(ValidationError, "TCS on an advance is owed as it is received"):
+            order.create_down_payment_invoice(self.ar, percent=30).post()
