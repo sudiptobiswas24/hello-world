@@ -178,7 +178,12 @@ def refile(lot, by=None):
     plan = recall_plan(lot)
     if plan is None:
         return None
-    return _recall_one(holding[-1][1], lot, own, plan, by)
+    made = _recall_one(holding[-1][1], lot, own, plan, by)
+    # Filed under one source, it names every one that holds the lot (rereview 7): RB-J made from B2
+    # and B3, both rejected, was filed again naming B3 alone, on exactly the lot that has two.
+    for _source, verdict in holding[:-1]:
+        also_held(made, verdict, by)
+    return made
 
 
 def _where(lot):
