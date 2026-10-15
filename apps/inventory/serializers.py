@@ -53,6 +53,21 @@ class ItemUnitSerializer(serializers.ModelSerializer):
 
 
 class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
+    def validate_tcs_section(self, section):
+        """
+        Whether its sales collect TCS is the accountant's to say: cleared by whoever keeps the item, every
+        later scrap invoice collected nothing and nothing refused it (review F9).
+        """
+        before = getattr(self.instance, "tcs_section_id", None)
+        if (section.pk if section else None) == before:
+            return section
+        request = self.context.get("request")
+        if request is None or not request.user.has_perm("accounting.change_tcssection"):
+            raise serializers.ValidationError(
+                "Which TCS section an item's sales collect under is set by the accountant (who may change TCS "
+                "sections), not by whoever keeps the item.")
+        return section
+
     class Meta:
         model = Item
         fields = [
