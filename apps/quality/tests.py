@@ -12,7 +12,9 @@ disagree.
 import datetime
 from decimal import Decimal
 
+from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.test import TestCase
 
 from apps.core.models import Party, UnitOfMeasure, UnitOfMeasureCategory
@@ -343,6 +345,13 @@ class VoidingHandsTheQuestionBackTests(QualityTestCase):
             inspection.void()
         self.assertIn("nobody said why", str(caught.exception))
 
+    def quality_manager(self):
+        """Who posts a pass over a rejection: only the Quality Manager lifts a hold (rereview 1)."""
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("qm")
+        user.groups.add(Group.objects.get(name="Quality Manager"))
+        return user
+
     def test_the_latest_standing_inspection_speaks(self):
         plan = self.plan()
         first = self.inspect(plan, [92, 92, 92])
@@ -351,7 +360,7 @@ class VoidingHandsTheQuestionBackTests(QualityTestCase):
         second = self.inspect(plan, [87, 88, 89])
         second.inspected_on = TODAY + datetime.timedelta(days=1)
         second.save()
-        second.post()
+        second.post(self.quality_manager())
         self.assertEqual(release_status(self.roll), ReleaseStatus.RELEASED)
 
     def test_and_voiding_it_hands_back_to_the_one_before(self):
@@ -361,7 +370,7 @@ class VoidingHandsTheQuestionBackTests(QualityTestCase):
         second = self.inspect(plan, [87, 88, 89])
         second.inspected_on = TODAY + datetime.timedelta(days=1)
         second.save()
-        second.post()
+        second.post(self.quality_manager())
         second.void("Wrong roll.")
         self.assertEqual(release_status(self.roll), ReleaseStatus.HELD)
 

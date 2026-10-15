@@ -780,6 +780,42 @@ class Inspection(AuditModel):
                 )
             check_not_raised_by(by, self.raised_by(), self)
 
+    @staticmethod
+    def decides(by):
+        """Whether `by` is the Quality Manager's: who decides a failure, and the only one who lifts a hold."""
+        return by is not None and by.has_perm("quality.decide_inspection")
+
+    def check_lifted_by(self, by, ended="Voided", remedy="voids it, if it was taken wrong", reinspection=False):
+        """
+        Only the Quality Manager lifts a hold (decisions 22 and 23). The one rule asked by every door
+        that ends this verdict, so that the next one cannot be written without it: voiding it, and
+        posting over it a verdict that releases the batch (rereview 1). The review's F2 closed the
+        void alone, and an Inspector lifted the same recall by posting a pass of the rejected batch.
+
+        This verdict is the Quality Manager's to end when it waits for them, when they decided it,
+        or when it holds its batch (rejected, held for rework). `reinspection`: the verdict ending it
+        is a new reading of the batch, and a re-inspection after the rework the Quality Manager
+        decided is what they asked for, so anyone who may post one posts it. A rework nobody decided
+        (posted so outright) asked for nothing of theirs.
+        """
+        if self.decides(by):
+            return
+        shown = self.get_disposition_display().lower()
+        if self.disposition == Disposition.AWAITING:
+            raise ValidationError(
+                f"{self} waits for the Quality Manager's decision. {ended}, {self.lot} would go with "
+                f"nobody deciding: the Quality Manager {remedy}.")
+        if reinspection and self.disposition == Disposition.REWORK and self.decided_at is not None:
+            return
+        if self.decided_at is not None:
+            raise ValidationError(
+                f"{self} was decided by the Quality Manager ({shown}). {ended}, their decision would be "
+                f"undone: the Quality Manager {remedy}.")
+        if self.disposition in (Disposition.REJECT, Disposition.REWORK):
+            raise ValidationError(
+                f"{self} holds {self.lot} ({shown}), and with it whatever was made from it. {ended}, the "
+                f"hold would lift with nobody deciding: the Quality Manager {remedy}.")
+
     def waits_for_a_decision(self):
         """Posted, standing, and the Quality Manager's still to decide."""
         return self.posted and not self.is_voided() and self.disposition == Disposition.AWAITING
@@ -879,6 +915,14 @@ class Inspection(AuditModel):
                 "Take it by concession, naming who decided and why, or reject "
                 "it — the difference is the whole point of recording either."
             )
+        from .release import RELEASING, latest_inspection
+
+        # Released over a verdict that holds the batch, or over the Quality Manager's decision, the
+        # hold lifts: theirs, as voiding it is (rereview 1). Their rework asked for this reading.
+        overturned = latest_inspection(self.lot) if self.disposition in RELEASING else None
+        if overturned is not None:
+            overturned.check_lifted_by(by, ended="Released over it by a new verdict",
+                                       remedy="posts the new verdict", reinspection=True)
         if self.disposition == Disposition.CONCESSION:
             self._check_concession(by)
         from .calibration import check_readings
@@ -1062,25 +1106,11 @@ class Inspection(AuditModel):
                 "was withdrawn and nobody said why is a batch somebody will "
                 "release again."
             )
-        # Only the Quality Manager lifts a hold (decisions 22 and 23, review F2): a verdict that
-        # holds its batch (rejected, held for rework, awaiting, a recall) or one they decided is
-        # theirs to void. A pass may be voided by whoever may void: that leaves the batch not yet
-        # inspected, which holds it, and lifts nothing.
-        if by is not None and not by.has_perm("quality.decide_inspection"):
-            if self.disposition == Disposition.AWAITING:
-                raise ValidationError(
-                    f"{self} waits for the Quality Manager's decision. Voided, {self.lot} would go "
-                    "with nobody deciding: the Quality Manager voids it, if it was taken wrong.")
-            if self.decided_at is not None:
-                raise ValidationError(
-                    f"{self} was decided by the Quality Manager "
-                    f"({self.get_disposition_display().lower()}). Voided, their decision would be "
-                    "undone: they void it, if it was taken wrong.")
-            if self.disposition in (Disposition.REJECT, Disposition.REWORK):
-                raise ValidationError(
-                    f"{self} holds {self.lot} ({self.get_disposition_display().lower()}), and with it "
-                    "whatever was made from it. Voided, the hold would lift with nobody deciding: the "
-                    "Quality Manager voids it, if it was taken wrong.")
+        # Only the Quality Manager lifts a hold (decisions 22 and 23, review F2): the rule a verdict
+        # posted over this one asks too (check_lifted_by). A pass may be voided by whoever may void:
+        # that leaves the batch not yet inspected, which holds it, and lifts nothing.
+        if by is not None:
+            self.check_lifted_by(by)
         self.voided_at = timezone.now()
         self.voided_reason = reason
         super().save(update_fields=["voided_at", "voided_reason", "updated_at"])

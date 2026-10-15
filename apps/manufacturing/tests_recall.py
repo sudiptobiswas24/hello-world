@@ -189,7 +189,18 @@ class LiftedTests(RecallTestCase):
             self.assertEqual(self.to_dos(recall, done_on__isnull=True).count(), 0)
 
     def test_b1_passed_again_after_rework_the_same(self):
-        self.reject_b1()
+        """
+        The Quality Manager put B1 on rework, so its re-inspection is what they asked for: the
+        Inspector's pass of it lifts the recalls (rereview 1). Until rereview this test had the
+        Inspector pass B1 over a plain rejection, with no rework at all: the very door it closes.
+        """
+        from apps.quality.models import InspectionPlan
+
+        InspectionPlan.objects.filter(pk=self.bag_spec.inspection_plan.pk).update(is_mandatory=False)
+        failed = self.inspect(self.b1, OUT)
+        self.assertEqual(failed.disposition, Disposition.AWAITING)
+        self.assertEqual(self.decide(failed, "asha", Disposition.REWORK).status_code, 200)
+        self.assertEqual([release_status(lot) for lot in (self.a, self.b)], [ReleaseStatus.HELD] * 2)
         with self.captureOnCommitCallbacks(execute=True):
             self.inspect(self.b1, IN)
         self.assertEqual([release_status(lot) for lot in (self.a, self.b)], [ReleaseStatus.RELEASED] * 2)
