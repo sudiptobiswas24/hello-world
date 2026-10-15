@@ -17,6 +17,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from rest_framework.test import APIClient
 
+from apps.quality.tests import quality_manager
 from apps.inventory.models import Item, Lot, TrackingMode
 from apps.quality.models import Inspection, Reading
 
@@ -136,7 +137,7 @@ class WhatItWillNotPretendTests(StrengthTestCase):
 
     def test_only_the_standing_measurement_counts(self):
         self.history()
-        Inspection.objects.get(lot__code="TB-14").void("Wrong sample")
+        Inspection.objects.get(lot__code="TB-14").void("Wrong sample", by=quality_manager())
         self.assertEqual(self.row("tenacity")["batches"], 5)
 
     def test_a_batch_measured_twice_counts_once_at_its_latest(self):

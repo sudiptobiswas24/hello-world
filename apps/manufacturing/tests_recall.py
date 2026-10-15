@@ -109,7 +109,7 @@ class RefusedTests(RecallTestCase):
         recall = self.recall_of(self.a)
         # Voided in code, inside this test's transaction: the lift waits for a commit that never
         # comes here, so the recall is still open and its decision is asked.
-        rejection.void("Scale out")
+        rejection.void("Scale out", by=User.objects.get(username="asha"))
         response = self.decide(recall, "asha", Disposition.REJECT)
         self.assertEqual(response.status_code, 400)
         self.assertIn("nothing to decide", str(response.content))
@@ -162,7 +162,7 @@ class DecidedTests(RecallTestCase):
         self.assertEqual(self.to_dos(recall, done_on__isnull=True).count(), 0)
         # A recalled lot the Quality Manager released: a later hold of what is inside it holds it again.
         Inspection.objects.filter(lot=self.b1).exclude(recalled_by__isnull=False).filter(
-            disposition=Disposition.REJECT).get().void("Scale out")
+            disposition=Disposition.REJECT).get().void("Scale out", by=User.objects.get(username="asha"))
         self.reject_b1()
         self.assertEqual(release_status(self.a), ReleaseStatus.HELD)
         self.assertNotEqual(self.recall_of(self.a).pk, recall.pk)
@@ -170,7 +170,7 @@ class DecidedTests(RecallTestCase):
     def test_rejected_by_the_quality_manager_it_stays_held_whatever_b1_reads_after(self):
         rejection = self.reject_b1()
         self.assertEqual(self.decide(self.recall_of(self.a), "asha", Disposition.REJECT).status_code, 200)
-        rejection.void("Scale out")
+        rejection.void("Scale out", by=User.objects.get(username="asha"))
         self.assertEqual(release_status(self.a), ReleaseStatus.HELD)
 
 

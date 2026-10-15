@@ -825,6 +825,20 @@ class Inspection(AuditModel):
                 f"{self} holds {self.lot} ({shown}), and with it whatever was made from it. {ended}, the "
                 f"hold would lift with nobody deciding: the Quality Manager {remedy}.")
 
+    def nothing_left_to_hold(self):
+        """
+        Whether this verdict holds nothing any more, so code may end it naming nobody: a recall whose
+        source holds nothing now (the lift, the escalation), or a batch withdrawn with its output,
+        none of it in stock and nothing made from it (a station taking back a doff, a roll, a count).
+        Asked of the rows, never taken from the caller's word: no path decides as nobody.
+        """
+        from .recall import recall_stands
+        from .release import lots_made_from
+
+        if self.recalled_by_id is not None:
+            return not recall_stands(self)
+        return not self.lot.on_hand_at() and not lots_made_from(self.lot)
+
     def waits_for_a_decision(self):
         """Posted, standing, and the Quality Manager's still to decide."""
         return self.posted and not self.is_voided() and self.disposition == Disposition.AWAITING
@@ -1117,8 +1131,10 @@ class Inspection(AuditModel):
             )
         # Only the Quality Manager lifts a hold (decisions 22 and 23, review F2): the rule a verdict
         # posted over this one asks too (check_lifted_by). A pass may be voided by whoever may void:
-        # that leaves the batch not yet inspected, which holds it, and lifts nothing.
-        if by is not None:
+        # that leaves the batch not yet inspected, which holds it, and lifts nothing. Code naming
+        # nobody is asked the same (rereview 3: the admin's action named nobody, and void asked
+        # nothing), except where nothing is left for this verdict to hold.
+        if not (by is None and self.nothing_left_to_hold()):
             self.check_lifted_by(by)
         self.voided_at = timezone.now()
         self.voided_reason = reason

@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 
+from apps.quality.tests import quality_manager
 from apps.inventory.models import Lot, TrackingMode
 from apps.quality.models import (
     Characteristic,
@@ -291,7 +292,7 @@ class RaisingAReworkOrderTests(ReworkTestCase):
         """
         lot = self.failed_lot()
         inspection = Inspection.objects.filter(lot=lot).get()
-        inspection.void("Re-measured.")
+        inspection.void("Re-measured.", by=quality_manager())
         good = Inspection.objects.create(
             lot=lot, plan=self.plan, inspected_on=TODAY
         )
@@ -354,7 +355,7 @@ class AReworkRunIsTheQualityManagersToDecideTests(ReworkTestCase):
     def test_nor_released_once_its_batch_came_to_wait(self):
         lot = self.failed_lot()
         order = self.rework_order(lot)
-        Inspection.objects.get(lot=lot).void("Measured on the wrong gauge.")
+        Inspection.objects.get(lot=lot).void("Measured on the wrong gauge.", by=quality_manager())
         said = self.waits(lot)
         with self.assertRaisesMessage(ValidationError, said):
             order.release(TODAY)

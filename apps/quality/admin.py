@@ -29,8 +29,10 @@ def _act(label, method, description, needs_reason=False):
         done = 0
         for row in queryset:
             try:
+                # The person pressing it (rereview 3): void and post ask who lifts a hold, and an
+                # action naming nobody let a staff Inspector void a rejection and its recalls.
                 getattr(row, method)(
-                    *(["Voided from the admin."] if needs_reason else [])
+                    *(["Voided from the admin."] if needs_reason else []), by=request.user
                 )
                 done += 1
             except ValidationError as error:

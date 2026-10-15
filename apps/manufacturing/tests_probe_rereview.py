@@ -109,6 +109,16 @@ class WhoLiftsAHold(Base):
                           f"a staff Inspector voided {rejection.number} from the admin ({response.status_code}); "
                           f"now {self.states()}")
 
+    def test_P3b_code_naming_nobody_does_not_void_a_rejection_that_still_holds_stock(self):
+        """rereview 3: no path decides as nobody. B1 still holds 200 and RB-A, RB-B were made from it."""
+        from django.core.exceptions import ValidationError
+
+        rejection = self.reject_b1()
+        with self.assertRaisesMessage(ValidationError, "the Quality Manager voids it, if it was taken wrong"):
+            rejection.void("Scale out")
+        rejection.refresh_from_db()
+        self.assertIsNone(rejection.voided_at)
+
     def test_P4_an_inspectors_fresh_pass_does_not_overturn_the_quality_managers_reject_of_a_recall(self):
         """QM rejects RB-A's recall; the source rejection is later voided by the QM; meera passes RB-A."""
         rejection = self.reject_b1()
