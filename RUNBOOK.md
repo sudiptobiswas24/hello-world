@@ -286,6 +286,7 @@ two files with the same stamp, and deletes those older than
 |---|---|
 | `backups/erp_YYYY-MM-DD_HHMM.dump` | the whole database (PostgreSQL custom format) |
 | `backups/erp_YYYY-MM-DD_HHMM.media.tar.gz` | every attached file, from the `media` volume |
+| `backups/erp_YYYY-MM-DD_HHMM.media.sha256` | each attached file's sha256, as it was backed up |
 
 Neither is a backup without the other: the database says a file is
 attached, and only the archive holds it. Copy them together. The log
@@ -340,6 +341,16 @@ docker compose exec db psql -U erp -d erp_check -c "select count(*) from account
 docker compose exec db psql -U erp -d erp_check -c "select count(*) from core_attachment"
 docker compose exec db dropdb -U erp erp_check
 tar -tzf backups/<newest file>.media.tar.gz | grep -vc '/$'
+```
+
+The restore checks every attachment it unpacks against the `.sha256`
+manifest before it touches the database or the files, and refuses an
+archive that does not match. To check one file by hand against what was
+backed up:
+
+```sh
+tar -xzOf backups/<stamp>.media.tar.gz ./<path> | sha256sum
+grep ' ./<path>$' backups/<stamp>.media.sha256
 ```
 
 The two counts should agree in kind: as many files in the archive as the
