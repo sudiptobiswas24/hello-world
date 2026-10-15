@@ -90,6 +90,7 @@ def issued_particulars(invoice, posting=False):
             "address": _address_lines(company.address),
             "gstin": registration.gstin if registration else "",
             "state": registration.state if registration else _state_of(company.address),
+            "tax_id": company.tax_id,
         },
         "recipient": {
             "name": customer.legal_name or customer.name,
@@ -99,6 +100,8 @@ def issued_particulars(invoice, posting=False):
         },
         "delivery": None,
         "lut": _undertaking(invoice, posting),
+        # What each line was called and counted in: an item renamed later is not what was sold (review F5).
+        "lines": {str(line.pk): {"description": line.label(), "unit": _unit(line)} for line in invoice.lines.all()},
     }
     if shipped is not None and (billed is None or shipped.pk != billed.pk):
         particulars["delivery"] = {"address": _address_lines(shipped), "state": _state_of(shipped)}
@@ -181,7 +184,9 @@ def tax_invoice(invoice, copy="original"):
         heading = stamp.get("heading") or heading
 
     lines, by_rate, reverse_charge = [], {}, False
+    kept_lines = issued.get("lines") or {}
     for line in sorted(invoice.lines.all(), key=lambda line: line.pk):
+        kept = kept_lines.get(str(line.pk)) or {"description": line.label(), "unit": _unit(line)}
         taxes = _line_taxes(invoice, line)
         taxable = line.posted_net if line.posted_net is not None else line.net_amount()
         charged = []
@@ -192,9 +197,9 @@ def tax_invoice(invoice, copy="original"):
             key = (HEAD_ORDER.index(head) if head in HEAD_ORDER else 9, HEAD_NAMES.get(head, head), rate)
             by_rate[key] = by_rate.get(key, Decimal("0")) + amount
         lines.append({
-            "description": line.label(),
+            "description": kept["description"],
             "hsn": (line.hsn_code if invoice.taxes_recorded else line.current_hsn()) or "",
-            "quantity": line.quantity, "unit": _unit(line), "unit_price": line.unit_price,
+            "quantity": line.quantity, "unit": kept["unit"], "unit_price": line.unit_price,
             "discount_percent": line.discount_percent, "taxable": taxable, "taxes": charged,
             "amount": taxable + sum((amount for _, _, amount in charged), Decimal("0")),
         })
@@ -340,6 +345,8 @@ def render_invoice_pdf(invoice, copy="original"):
         party_text=_party_text(printed["recipient"]),
         meta=meta, totals=totals, note=note, qr=qr, table=table, currency=currency,
         blocks=blocks, signatory=printed["signatory"],
+        footer=[printed["supplier"]["name"]] + ([f"Tax ID {printed['supplier']['tax_id']}"]
+                                                if printed["supplier"].get("tax_id") else []),
     )
 
 
