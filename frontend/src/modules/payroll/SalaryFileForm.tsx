@@ -1,9 +1,10 @@
+import { money } from "../../lib/format";
 import { RecordScreen, type FieldDef } from "../../views/RecordScreen";
 
 type Row = Record<string, unknown>;
 type Transfer = { id: number; employee: string; holder: string; amount: string; returned: boolean };
 
-const PAYMENT: FieldDef["pick"] = { endpoint: "/api/accounting/payments/", permission: "accounting.view_payment", label: (row: Row) => `${String(row.number)} · ${String(row.amount)}` };
+const PAYMENT: FieldDef["pick"] = { endpoint: "/api/accounting/payments/", permission: "accounting.view_payment", label: (row: Row) => `${String(row.number)} · ${money(row.amount as string)}` };
 
 /**
  * One run's bank file: what was sent to the bank, the one payment out that paid it, and a transfer
@@ -18,23 +19,28 @@ export default function SalaryFileForm() {
       backLabel="Bank files"
       newTitle="Bank file"
       heading={(row) => `Bank file ${String(row.number ?? "")}`}
-      state={(row) => (row.payment ? { label: "Paid", tone: "good" } : { label: "Not paid", tone: "warn" })}
+      // Its real state, from the server (review RP6): a voided payment paid nobody, and this file is not paid again.
+      state={(row) => (row.paid ? { label: "Paid", tone: "good" }
+        : row.payment_voided ? { label: "Payment voided", tone: "bad" } : { label: "Not paid", tone: "warn" })}
+      note={(row) => (row?.payment_voided
+        ? "Not paid: the payment that paid this file was voided, so nobody on it is paid. Write the file again from the pay run."
+        : null)}
       permissions={{ delete: "hr.delete_salarytransferfile" }}
       editable={() => false}
       fields={[
         { key: "narration", label: "Narration" },
         { key: "total", label: "Total", kind: "money" },
-        { key: "paid_at", label: "Paid", kind: "date" },
+        { key: "paid_at", label: "Marked paid", kind: "date" },
       ]}
       links={[{ label: "CSV for the bank", href: (row) => `/api/hr/salary-files/${String(row.id)}/csv/`, same: true }]}
       actions={[
         { label: "Mark paid", path: "mark_paid", permission: "hr.post_payrun", primary: true, when: (row) => !row.payment,
           done: "Marked paid", fields: [{ key: "payment", label: "Paid by", kind: "pick", pick: PAYMENT }] },
         { label: "Return a transfer", path: "return_transfer", permission: "hr.post_payrun", danger: true,
-          when: (row) => Boolean(row.payment), done: "Returned",
+          when: (row) => Boolean(row.paid), done: "Returned",
           fields: (record) => [
             { key: "row", label: "Transfer", kind: "choice", choices: ((record.rows as Transfer[] | undefined) ?? [])
-              .filter((row) => !row.returned).map((row) => [String(row.id), `${row.employee} · ${row.holder} · ${row.amount}`]) },
+              .filter((row) => !row.returned).map((row) => [String(row.id), `${row.employee} · ${row.holder} · ${money(row.amount)}`]) },
             { key: "receipt", label: "Received back by", kind: "pick", pick: PAYMENT },
           ] },
       ]}

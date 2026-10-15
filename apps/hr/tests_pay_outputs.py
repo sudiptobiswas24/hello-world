@@ -233,6 +233,19 @@ class BankFileTests(OutputsTestCase):
         paid.void(on_date=D(2026, 7, 1))
         self.assertEqual(self.owed_and_unpaid(), (Decimal("23825.50"), Decimal("23825.50")))
 
+    def test_a_file_whose_payment_was_voided_reads_unpaid(self):
+        """Review RP6: the file still names its payment; the screen reads whether it pays anybody."""
+        for person in self.people:
+            self.banked(person)
+        made = SalaryTransferFile.prepare(self.paid_run)
+        paid = self.money(self.people[0].party, "23825.50")
+        made.mark_paid(paid)
+        controller = self.as_role("Controller")
+        read = lambda: controller.get(f"/api/hr/salary-files/{made.pk}/").json()
+        self.assertEqual((read()["paid"], read()["payment_voided"]), (True, False))
+        paid.void(on_date=D(2026, 7, 1))
+        self.assertEqual((read()["paid"], read()["payment_voided"]), (False, True))
+
     def test_written_by_payroll_and_paid_by_whoever_posts_payroll(self):
         for person in self.people:
             self.banked(person)
