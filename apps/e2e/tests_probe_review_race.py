@@ -409,8 +409,11 @@ class MoreBankProbe(RaceCase):
         print("VOIDALLOC", outcomes)
         self.assertFalse(any("deadlock" in o for o in outcomes), outcomes)
         receipt.refresh_from_db()
-        live = InvoicePayment.objects.filter(payment=receipt).exists()
-        self.assertFalse(receipt.is_voided() and live, f"{outcomes}: allocated a payment that was voided")
+        # Allocate, then void, is a serial order: the void keeps the allocation as history and every balance
+        # stops counting it (Payment.void). What must hold is the invoice owing what nothing settles.
+        owed = Invoice.objects.get(pk=invoice.pk).amount_due()
+        self.assertEqual(owed, Decimal("1000.00") if receipt.is_voided() else Decimal("0.00"),
+                         f"{outcomes}: the invoice reads {owed} owed")
 
 
 @tag("race")
