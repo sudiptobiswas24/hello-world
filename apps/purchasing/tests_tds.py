@@ -502,3 +502,24 @@ class ChallanOnTheStatementTests(TdsTestCase):
             self.line.match_entry(self.challan.journal_entry)
         self.line.unmatch()
         self.assertIsNone(self.line.booked_entry_id)
+
+
+class TheChallanPaysFromTheAccountTheDeductionWentToTests(TdsTestCase):
+    """Review F3, the TDS mirror: the section moved to another payable account after the deduction."""
+
+    def test_the_section_moved_after_the_deduction(self):
+        from apps.purchasing.tds import deduct
+
+        deduct(self.bill("35000", vendor=self.contractor(pan="AAAPL1234C")))
+        before = self.contract.payable_account
+        self.contract.payable_account = Account.objects.create(code="2251", name="TDS payable (new)",
+                                                               account_type=AccountType.LIABILITY)
+        self.contract.save()
+        TdsChallan.pay(self.contract, DAY, DAY, self.bank, "00042", "0510308")
+
+        def balance(account):
+            rows = JournalLine.objects.filter(account=account, entry__posted=True).aggregate(
+                debit=Sum("debit"), credit=Sum("credit"))
+            return (rows["credit"] or Decimal("0")) - (rows["debit"] or Decimal("0"))
+
+        self.assertEqual((balance(before), balance(self.contract.payable_account)), (Decimal("0"), Decimal("0")))

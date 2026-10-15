@@ -51,13 +51,21 @@ class TdsDeduction(AuditModel):
     journal_entry = models.ForeignKey(JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False)
     reversed_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
+    posted_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The TDS payable account it posted to, as the section named it that day: where the challan "
+                  "that pays it over goes, whatever the section says later.")
     challan = models.ForeignKey("purchasing.TdsChallan", null=True, blank=True, on_delete=models.PROTECT,
                                 related_name="deductions", editable=False)
+
+    # Read at the event, kept, and never through the section again (audit_invariants).
+    KEPT_FROM = {"section": ("payable_account",)}
 
     class Meta:
         ordering = ["-date", "-id"]
         constraints = [
             models.CheckConstraint(check=Q(amount__gt=0), name="tds_deduction_positive"),
+            models.CheckConstraint(check=Q(posted_account__isnull=False), name="tds_deduction_keeps_its_account"),
             models.UniqueConstraint(fields=["bill", "section"], condition=Q(reversed_entry__isnull=True),
                                     name="one_standing_tds_per_bill_and_section"),
         ]
@@ -140,12 +148,13 @@ def deduct(bill, section=None, on_date=None):
         entry = JournalEntry.objects.create(date=day, reference=bill.number, memo=memo)
         JournalLine.objects.create(entry=entry, account=bill.payable_account, party=bill.vendor,
                                    debit=amount, description=memo)
-        JournalLine.objects.create(entry=entry, account=section.payable_account, party=bill.vendor,
+        account = section.payable_account  # read once at the event, kept with the deduction
+        JournalLine.objects.create(entry=entry, account=account, party=bill.vendor,
                                    credit=amount, description=memo)
         entry.post()
         deduction = TdsDeduction.objects.create(
             bill=bill, section=section, base=base, rate_percent=rate, pan=pan, amount=amount,
-            date=day, journal_entry=entry)
+            date=day, journal_entry=entry, posted_account=account)
         # The earlier bills only when this deduction took them in: taxed alone
         # past the single limit, they stay untaxed for the year's limit to catch.
         deduction.covered_bills.set([bill, *untaxed] if caught_up else [bill])
