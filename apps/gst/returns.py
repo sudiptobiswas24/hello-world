@@ -148,7 +148,8 @@ def _document(source, date, state, is_note):
         gstin=source.party_gstin, registration=source.party_registration,
         # No place at all is reported as local and flagged: neither answer
         # is known, and inter-state would add a state to table 3.2.
-        place=place, inter=(place != state) if place else False,
+        # A supply to an SEZ is inter-state whatever the states (IGST Act s.7(5)(b)).
+        place=place, inter=((place != state) or source.party_registration == "sez") if place else False,
         value=base(source.total()),
     )
     # In entry order: the e-invoice numbers its items from these.
