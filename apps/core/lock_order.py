@@ -305,6 +305,16 @@ def _joined(compiler_, rows):
     return found
 
 
+def _historical(model):
+    """
+    A migration's own model (apps.get_model in a RunPython step). A data migration runs alone, on one
+    connection, at deploy: two of it never wait on each other, so the order it writes in decides nothing.
+    Checking it made every migration test that passes through manufacturing 0078 fail on an update
+    out of key order (g21's mig lane), a deadlock no one can meet.
+    """
+    return model.__module__ == "__fake__"
+
+
 def install():
     """Rank every row lock and forget at each transaction's end: tests only."""
     from django.db import connections, transaction
@@ -319,7 +329,8 @@ def install():
 
     def checked_execute_sql(self, result_type=MULTI, *args, **kwargs):
         result = execute_sql(self, result_type, *args, **kwargs)
-        if not self.query.select_for_update or result_type not in (MULTI, SINGLE):
+        if not self.query.select_for_update or result_type not in (MULTI, SINGLE) or \
+                _historical(self.query.model):
             return result
         pk_field, base = self.query.model._meta.pk, self.query.get_initial_alias()
         index = next((i for i, (expr, _sql, _alias) in enumerate(self.select or ())
@@ -350,7 +361,7 @@ def install():
         def checked(self, *args, **kwargs):
             connection = self.connection
             if connection.in_atomic_block and _in_a_transaction_of_its_own(connection) and \
-                    self.query.model._meta.label_lower not in UNSEEN:
+                    self.query.model._meta.label_lower not in UNSEEN and not _historical(self.query.model):
                 taken(connection, self.query.model._meta.label_lower, _keys_matched(self, self.query), how=how)
             return original(self, *args, **kwargs)
         return checked

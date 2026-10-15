@@ -106,6 +106,20 @@ class TheSentinelSeesEveryLockAStatementTakesTests(TestCase):
                 lock_rows(self.second)
                 Party.objects.filter(pk=self.first.pk).delete()
 
+    def test_a_migrations_own_models_are_not_held_to_the_order(self):
+        from django.db import connection
+        from django.db.migrations.loader import MigrationLoader
+
+        historical = MigrationLoader(connection).project_state().apps.get_model("core", "Party")
+        with transaction.atomic():
+            lock_rows(self.second)
+            historical.objects.filter(pk=self.first.pk).update(name="in a data migration")
+            list(historical.objects.select_for_update().filter(pk=self.first.pk))
+        with self.assertRaisesMessage(LockOrderViolation, "(update)"):
+            with transaction.atomic():
+                lock_rows(self.second)
+                Party.objects.filter(pk=self.first.pk).update(name="in the application")
+
     def test_a_joined_table_is_taken_with_the_row(self):
         from apps.core.models import Address
 
