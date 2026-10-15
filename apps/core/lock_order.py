@@ -348,6 +348,18 @@ def install():
             return original(self, *args, **kwargs)
         return checked
 
+    enter_atomic = transaction.Atomic.__enter__
+
+    def checked_enter(self):
+        connection = transaction.get_connection(self.using)
+        if not connection.in_atomic_block:
+            # A transaction of its own from its first block. A commit hook (recall.lift) runs once
+            # the transaction before it has committed but before Atomic.__exit__ returns, and so
+            # inherited every row that one had held: a lift after a void of a recall was refused for
+            # taking a lot below the one the void held, in a transaction it never shared (rereview 4).
+            forget(connection)
+        return enter_atomic(self)
+
     exit_atomic = transaction.Atomic.__exit__
 
     def checked_exit(self, exc_type, exc_value, tb):
@@ -375,4 +387,5 @@ def install():
     compiler.SQLDeleteCompiler.execute_sql = checked_writes(compiler.SQLDeleteCompiler.execute_sql, DELETED)
     QuerySet.bulk_create = checked_bulk_create
     compiler.SQLCompiler._lock_order_installed = True
+    transaction.Atomic.__enter__ = checked_enter
     transaction.Atomic.__exit__ = checked_exit

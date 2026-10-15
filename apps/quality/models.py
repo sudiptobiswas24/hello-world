@@ -1070,7 +1070,7 @@ class Inspection(AuditModel):
                                     body=f"Taken as is by {self.number}, and still held: {self.still_held}")
         return self
 
-    @serialised("posted", "voided_at", "disposition", "escalated_on")
+    @serialised("posted", "voided_at", "disposition", "escalated_on", held_first="held_for_void")
     def escalate(self, today=None):
         """
         Left undecided past the next working day: to the administrator,
@@ -1099,7 +1099,17 @@ class Inspection(AuditModel):
             super().save(update_fields=["escalated_on", "updated_at"])
         return told
 
-    @serialised("posted", "voided_at", "disposition")
+    def held_for_void(self):
+        """
+        The batch, before the verdict (rereview 4): what void and escalate hold first, as post and
+        recall.lift hold the batches before they write a verdict or a to-do on them. A void closes
+        the verdict's to-dos and files the batch's recall again; a rejection of another source of
+        that batch, posted at the same moment, held the batch and then wrote onto those same to-dos
+        (recall.also_held), and PostgreSQL ended one of the two as a deadlock on core_followup.
+        """
+        return [self.lot]
+
+    @serialised("posted", "voided_at", "disposition", held_first="held_for_void")
     def void(self, reason="", by=None):
         """
         Undo a posting.
