@@ -570,7 +570,10 @@ class TheLoginLinkAndTheOvertimeDay(base.OutputsTestCase):
         del run, before
 
     def test_W10_a_working_day_of_no_hours_does_not_crash_the_run(self):
-        person = self.employee("OT1", hours_a_day=Decimal("0"))
+        person = self.employee("OT1")
+        # Adapted (fix_people2): save() refuses 0 now (L5, W7); a row from before the check, put in by update().
+        type(person).objects.filter(pk=person.pk).update(hours_a_day=Decimal("0"))
+        person.refresh_from_db()
         self.pay(person, self.salary, "13500")
         self.salary.is_ordinary_wages = True
         self.salary.save()

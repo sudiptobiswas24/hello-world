@@ -444,6 +444,19 @@ class OvertimeAtTheOrdinaryRateTests(DatedFiguresTestCase):
         self.assertEqual(self.overtime_on(october, staff).amount, Decimal("750.00"))
         self.assertEqual(self.overtime_on(november, staff).amount, Decimal("1012.50"))
 
+    def test_a_working_day_of_no_hours_is_refused_and_a_run_says_so(self):
+        """Review RP7: 0 hours a day is refused at save; a row from before that is refused by the run in words."""
+        with self.assertRaisesMessage(ValidationError, "more than none and at most 24"):
+            self.worker("Z0", hours_a_day=Decimal("0"))
+        staff = self.worker("Z1", working_days="123456")
+        self.paid(staff, self.basic, "13500")
+        self.paid(staff, self.overtime, "1")
+        self.mark(staff, D(2026, 10, 8), "2")
+        type(staff).objects.filter(pk=staff.pk).update(hours_a_day=Decimal("0"))
+        staff.refresh_from_db()
+        with self.assertRaisesMessage(ValidationError, "has a working day of 0.00 hours"):
+            self.month_run(2026, 10, post=False, employees=[staff])
+
     def test_the_rate_is_not_typed_per_person(self):
         staff = self.worker("S4")
         with self.assertRaisesMessage(ValidationError, "not a rate typed for them"):
