@@ -575,6 +575,28 @@ class NobodyIsPaidTwiceTests(PayrollTestCase):
         self.assertEqual(run.payslips.get().gross(), Decimal("6000.00"))
 
 
+class ARunKeepsItsLinesAccountsInKeyOrderTests(PayrollTestCase):
+    """
+    Posting keeps each line's accounts. Slips are read by employee and a slip's lines in no order, so the
+    lines were written in whatever order the query gave: on PostgreSQL the lock-order sentinel refused
+    "hr.payslipline 283 locked after hr.payslipline 284 (update)" in g21's pg-b lane. Slips made in the
+    reverse of employee order show it on any database.
+    """
+
+    def test_slips_made_against_employee_order_post_and_keep_their_accounts(self):
+        from .models import PayslipLine
+
+        first, second = self.employee("K1"), self.employee("K2")
+        for person in (first, second):
+            self.pay(person, self.salary, "4400")
+        run = self.pay_run()
+        run.calculate(employees=[second, first])
+        run.post()
+        lines = PayslipLine.objects.filter(payslip__in=run.payslips.all(), component=self.salary)
+        self.assertEqual(sorted((line.payslip.employee_id, line.posted_account.code) for line in lines),
+                         [(first.pk, "6000"), (second.pk, "6000")])
+
+
 class ARateChangedInsideThePeriodTests(PayrollTestCase):
     """
     June 2026 has 22 working days, 11 to the 15th and 11 after. Every rate
