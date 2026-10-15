@@ -99,6 +99,9 @@ class EInvoice(AuditModel):
     cancel_remarks = models.CharField(max_length=100, blank=True, editable=False)
     cancel_payload = models.JSONField(null=True, blank=True, editable=False,
                                       help_text="The cancellation request, as built for the portal.")
+    cancel_requested_at = models.DateTimeField(
+        null=True, blank=True, editable=False,
+        help_text="When the cancellation request was built: the portal's answer cannot come before it.")
     cancelled_at = models.DateTimeField(
         null=True, blank=True, editable=False,
         help_text="When the portal cancelled the IRN, as it answered. From then the invoice is no "
@@ -191,6 +194,14 @@ class EInvoice(AuditModel):
             raise ValidationError(
                 f"{invoice.number} has {settled} settled against it (payments, a deposit, TDS, a credit note, a "
                 "write-off or a discount). Release them first: a cancelled invoice settles nothing.")
+        paid_over = invoice.tcs_collected.filter(challan__isnull=False, challan__voided_entry__isnull=True).select_related(
+            "challan").first()
+        if paid_over is not None:
+            # As a TDS deduction paid over is not reversed: a quarter filed on Form 143 would gain a
+            # row taking back tax already paid (review F10).
+            raise ValidationError(
+                f"TCS of {paid_over.amount} on {invoice.number} was paid over by challan {paid_over.challan}; void "
+                "the challan first, or correct the invoice with a credit note.")
         from .ewaybill import EwayBill
 
         standing = EwayBill.objects.filter(invoice=invoice, cancelled_at__isnull=True).exclude(number="").first()
@@ -214,7 +225,9 @@ class EInvoice(AuditModel):
             raise ValidationError(f"The remark is {len(remarks)} characters; the portal takes 100.")
         self.cancel_reason, self.cancel_remarks = reason, remarks
         self.cancel_payload = {"Irn": self.irn, "CnlRsn": reason, "CnlRem": remarks}
-        super().save(update_fields=["cancel_reason", "cancel_remarks", "cancel_payload", "updated_at"])
+        self.cancel_requested_at = now or timezone.now()
+        super().save(update_fields=["cancel_reason", "cancel_remarks", "cancel_payload", "cancel_requested_at",
+                                    "updated_at"])
         return self.cancel_payload
 
     @transaction.atomic
@@ -228,6 +241,10 @@ class EInvoice(AuditModel):
             raise ValidationError(f"No cancellation of {self.invoice.number} has been built; build one first.")
         if cancelled_at is None:
             raise ValidationError("Say when the portal cancelled it.")
+        if self.cancel_requested_at and cancelled_at < self.cancel_requested_at:
+            raise ValidationError(
+                f"The request was built at {timezone.localtime(self.cancel_requested_at):%d %b %Y %H:%M}; the portal "
+                "cannot have cancelled the IRN before it was asked to. Give the CancelDate it returned.")
         if cancelled_at > timezone.now():
             raise ValidationError(f"{timezone.localtime(cancelled_at):%d %b %Y %H:%M} has not come; the portal "
                                   "answers with when it cancelled the IRN.")
