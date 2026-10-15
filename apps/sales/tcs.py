@@ -51,14 +51,23 @@ class TcsCollection(AuditModel):
     date = models.DateField()
     journal_entry = models.ForeignKey(JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
                                       related_name="+", editable=False)
+    posted_account = models.ForeignKey(
+        Account, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
+        help_text="The TCS payable account it posted to, as the section named it that day: where its give-back "
+                  "and the challan that pays it over go, whatever the section says later.")
     challan = models.ForeignKey("sales.TcsChallan", null=True, blank=True, on_delete=models.PROTECT,
                                 related_name="collections", editable=False)
+
+    # Read at the event, kept, and never through the section again (audit_invariants).
+    KEPT_FROM = {"section": ("payable_account",)}
 
     class Meta:
         ordering = ["-date", "-id"]
         verbose_name = "TCS collection"
         constraints = [
             models.CheckConstraint(check=Q(amount__gte=0) & Q(base__gte=0), name="tcs_collection_not_negative"),
+            models.CheckConstraint(check=Q(amount=0) | Q(posted_account__isnull=False),
+                                   name="tcs_collection_keeps_its_account"),
             models.UniqueConstraint(fields=["invoice", "section"], name="one_tcs_collection_per_invoice_and_section"),
         ]
 
@@ -99,12 +108,12 @@ def _tcs_lines(invoice):
     return bases
 
 
-def _entry(invoice, section, amount, memo, give_back):
+def _entry(invoice, account, amount, memo, give_back):
     entry = JournalEntry.objects.create(date=invoice.invoice_date, reference=invoice.number, memo=memo)
     JournalLine.objects.create(entry=entry, account=invoice.receivable_account, party=invoice.customer,
                                debit=Decimal("0") if give_back else amount,
                                credit=amount if give_back else Decimal("0"), description=memo)
-    JournalLine.objects.create(entry=entry, account=section.payable_account, party=invoice.customer,
+    JournalLine.objects.create(entry=entry, account=account, party=invoice.customer,
                                debit=amount if give_back else Decimal("0"),
                                credit=Decimal("0") if give_back else amount, description=memo)
     entry.post()
@@ -143,11 +152,13 @@ def collect(invoice):
             raise ValidationError(f"{section} has no payable account to owe the tax collected into.")
         percent = rate.rate_percent if pan else rate.no_pan_rate_percent
         amount = rupees(base * percent / 100)
+        # The account the section names today, read once at the event and kept with the collection.
+        account = section.payable_account
         entry = None
         if amount:
-            entry = _entry(invoice, section, amount, f"TCS {section.code} on {invoice.number}", give_back=False)
+            entry = _entry(invoice, account, amount, f"TCS {section.code} on {invoice.number}", give_back=False)
         TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base, rate_percent=percent,
-                                     pan=pan, amount=amount, date=day, journal_entry=entry)
+                                     pan=pan, amount=amount, date=day, journal_entry=entry, posted_account=account)
         total += amount
     return total
 
@@ -171,13 +182,13 @@ def _give_back(note):
                   else min(rupees(base * collected.rate_percent / 100), collected.amount - given))
         if amount <= 0:
             continue
-        entry = _entry(note, collected.section, amount,
+        entry = _entry(note, collected.posted_account, amount,
                        f"TCS {collected.section.code} given back by {note.number} on {original.number}",
                        give_back=True)
         TcsCollection.objects.create(invoice=note, section=collected.section, rate=collected.rate,
                                      gives_back=collected, base=base, rate_percent=collected.rate_percent,
                                      pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
-                                     journal_entry=entry)
+                                     journal_entry=entry, posted_account=collected.posted_account)
         total += amount
     return total
 
