@@ -381,3 +381,26 @@ class SettlementDiscountOnTheReceiptTests(SalesTestCase):
         answer = self.take(receipt)
         self.assertEqual(answer.status_code, 400)
         self.assertIn("issue a credit note", str(answer.content))
+
+
+class TheDunningMailAsksForWhatIsLateTests(SalesTestCase):
+    """O81 (DunningProbe): the mail says what the notice records as overdue, and since when."""
+
+    def test_the_reminder_asks_for_what_is_late(self):
+        from django.core import mail
+
+        from apps.core.models import PaymentTermsLine
+        from .models import DunningLevel
+
+        split = PaymentTerms.objects.create(code="5050", name="50/50", net_days=30)
+        PaymentTermsLine.objects.create(terms=split, sequence=1, percent=Decimal("50"), days=0)
+        PaymentTermsLine.objects.create(terms=split, sequence=2, percent=Decimal("50"), days=30)
+        self.customer.payment_terms = split
+        self.customer.save()
+        DunningLevel.objects.create(name="First", days_overdue=7)
+        self.bill(self.make_order("10", "100"), on=datetime.date(2026, 3, 1))
+        notices = run_dunning(as_of=datetime.date(2026, 3, 15), send=True)
+        self.assertEqual([notice.amount_due for notice in notices], [Decimal("500.00")])
+        body = mail.outbox[0].body
+        self.assertTrue("500.00" in body and "01 Mar 2026" in body,
+                        f"notice records 500.00 overdue since 01 Mar 2026; the mail says: {body!r}")
