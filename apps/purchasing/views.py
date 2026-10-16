@@ -317,14 +317,16 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def supplier_note(self, request, pk=None):
         """
-        {supplier_note_number, supplier_note_date?}: the supplier's credit note
-        for this debit note, recorded when it arrives, posted or not (O159).
+        {supplier_note_number, supplier_note_date?, reason?}: the supplier's credit
+        note for this debit note, recorded when it arrives, posted or not (O159);
+        on a posted note recorded already, corrected only with a reason.
         Asked of whoever may issue debit notes.
         """
         note = self.get_object()
         try:
             note.record_supplier_note(request.data.get("supplier_note_number") or "",
-                                      request.data.get("supplier_note_date") or None)
+                                      request.data.get("supplier_note_date") or None, by=request.user,
+                                      reason=str(request.data.get("reason") or ""))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.message_dict if hasattr(exc, "error_dict") else exc.messages)
         return Response(self.get_serializer(Bill.objects.get(pk=note.pk)).data)

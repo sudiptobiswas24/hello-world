@@ -3419,7 +3419,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         refuse_correcting_a_note(self, "debits")
 
     @serialised("supplier_note_number", "supplier_note_date", "supplier_note_key")
-    def record_supplier_note(self, number, day=None):
+    def record_supplier_note(self, number, day=None, by=None, reason=""):
         """
         Record the supplier's credit note on this debit note, posted or not
         (O159). It usually arrives a week after the goods went back and the
@@ -3432,13 +3432,20 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not self.debits_id:
             raise ValidationError({"supplier_note_number": [
                 "Only a debit note records a supplier's credit note; a bill's own number is its reference."]})
-        # Given once after posting and never changed after (O154): what the supplier filed is what
-        # the company's GSTR-2B pairs, and a posted note's reference is a fact, not a draft.
-        if self.supplier_note_number and Bill._base_manager.filter(pk=self.pk, posted=True).exists():
+        # Given once after posting (O154): what the supplier filed is what the company's GSTR-2B pairs,
+        # and a posted note's reference is a fact, not a draft. Recorded wrongly (a typo, a date left
+        # off), it is corrected by whoever may post bills, with a reason the history keeps; never
+        # cleared (the integrator's decision, g22, review Q1).
+        correcting = self.supplier_note_number and Bill._base_manager.filter(pk=self.pk, posted=True).exists()
+        if correcting:
             dated = f" dated {self.supplier_note_date}" if self.supplier_note_date else ""
-            raise ValidationError({"supplier_note_number": [
-                f"{self} is posted and records {self.vendor}'s credit note {self.supplier_note_number}{dated}; "
-                "a supplier's credit note is recorded once and not changed after."]})
+            if not str(reason or "").strip():
+                raise ValidationError({"supplier_note_number": [
+                    f"{self} is posted and records {self.vendor}'s credit note {self.supplier_note_number}{dated}; "
+                    "a supplier's credit note is recorded once, and corrected only with a reason."]})
+            if by is None or not by.has_perm("purchasing.post_bill"):
+                raise PermissionDenied("Only whoever may post bills corrects a posted note's supplier credit note.")
+            was = f"{self.supplier_note_number}{dated}"
         if not isinstance(number, str):
             raise ValidationError({"supplier_note_number": ["The supplier's credit note number is text."]})
         number = number.strip()
@@ -3454,6 +3461,12 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         self.supplier_note_number, self.supplier_note_date = number, to_date(day)
         self._check_supplier_note()
         self.save(update_fields=sorted(self.SUPPLIER_NOTE_FIELDS))
+        if correcting:
+            from apps.core.history import EventKind, record
+
+            now = f"{number}" + (f" dated {self.supplier_note_date}" if self.supplier_note_date else "")
+            record(self, by, EventKind.ACTION, action="correct supplier note",
+                   summary=f"Supplier credit note {was} corrected to {now}: {str(reason).strip()}")
         return self
 
     def _check_supplier_note(self):
