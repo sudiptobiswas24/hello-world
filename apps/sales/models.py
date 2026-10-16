@@ -96,6 +96,7 @@ from apps.accounting.settlement import (
     booked_beside,
     settlement_discount_to_take,
     standing_on_account,
+    take_settlement_discount,
     withdraw_discount,
     undone_by_note,
     unapplied,
@@ -2099,46 +2100,27 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         return entry
 
     @serialised("settlement_discount_amount", "settlement_discount_entry")
-    def apply_settlement_discount(self, on_date=None, force=False):
+    def apply_settlement_discount(self, on_date=None, force=False, payment=None):
         """
-        Write off the early-settlement discount.
+        Write off the early-settlement discount, on the receipt that earned it
+        (`payment`) when one is named: settlement.take_settlement_discount.
 
         Without this the terms are decorative: a customer on 2/10 net 30
         who pays the discounted amount leaves a small balance outstanding
         forever, and dunning chases them for it.
         """
-        on_date = correction_date(on_date, self.invoice_date, f"{self.number} takes no settlement discount on",
-                                  "it was invoiced")
-        amount = settlement_discount_to_take(self, on_date, force)
-
-        account = Company.get().settlement_discount_account
-        if account is None:
-            raise ValidationError(
-                "The company has no settlement discount account configured."
-            )
-
-        rate = self.exchange_rate or Decimal("1")
-        base_amount = round_money(amount * rate)
-        entry = JournalEntry.objects.create(
-            date=on_date, reference=self.number,
-            memo=f"Settlement discount on {self.number}",
-        )
-        JournalLine.objects.create(
-            entry=entry, account=account, party=self.customer,
-            debit=base_amount, description=f"Settlement discount {self.number}",
-        )
-        JournalLine.objects.create(
-            entry=entry, account=self.receivable_account, party=self.customer,
-            credit=base_amount, description=f"Settlement discount {self.number}",
-        )
-        entry.post()
-
-        self.settlement_discount_amount = amount
-        self.settlement_discount_entry = entry
-        super(Invoice, self).save(
-            update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"]
-        )
+        if on_date is not None or payment is None:
+            on_date = correction_date(on_date, self.invoice_date, f"{self.number} takes no settlement discount on",
+                                      "it was invoiced")
+        entry = take_settlement_discount(
+            self, control_account=self.receivable_account, party=self.customer,
+            discount_account=Company.get().settlement_discount_account, account_label="settlement discount",
+            is_receivable=True, on_date=on_date, payment=payment, force=force)
+        super(Invoice, self).save(update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"])
         return entry
+
+    def date_for_discount(self):
+        return to_date(self.invoice_date)
 
     @serialised("posted", "written_off_amount")
     def write_off(self, amount=None, on_date=None, reason=""):

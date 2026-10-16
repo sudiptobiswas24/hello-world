@@ -337,6 +337,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         "credit_note": "sales.post_invoice",
         "credit_old_supply": "sales.post_invoice",
         "write_off": "sales.write_off_invoice",
+        "take_settlement_discount": "sales.add_invoicepayment",
         "claim": "sales.post_invoice",
         "claims": "sales.view_invoice",
         # Only a posted invoice is sent: a copy of what was decided, as the
@@ -371,6 +372,23 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         mine = set(scoped(Invoice.objects.filter(pk__in=[row["note"] for row in rows]), request.user, "customer")
                    .values_list("pk", flat=True))
         return Response([row for row in rows if row["note"] in mine])
+
+    @action(detail=True, methods=["post"])
+    def take_settlement_discount(self, request, pk=None):
+        """
+        The early-settlement discount on the receipt ({"payment"}) that came within the discount days:
+        a financial discount, GST unchanged (O109). {"date"} only to date it other than the receipt's day.
+        """
+        from apps.accounting.models import Payment
+
+        invoice = self.get_object()
+        payment = record_or_404(Payment, request.data.get("payment"), "payment")
+        try:
+            invoice.apply_settlement_discount(on_date=request.data.get("date") or None, payment=payment)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        invoice.refresh_from_db()
+        return Response(self.get_serializer(invoice).data)
 
     @action(detail=True, methods=["post"])
     def write_off(self, request, pk=None):

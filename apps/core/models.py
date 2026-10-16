@@ -1088,6 +1088,12 @@ class PaymentTerms(AuditModel):
     discount_days = models.PositiveSmallIntegerField(
         default=0, help_text="Days within which the discount applies, e.g. the '10' in 2/10 net 30."
     )
+    discount_reduces_gst = models.BooleanField(
+        default=False,
+        help_text="The discount was agreed before the supply and reduces its value, GST included "
+                  "(CGST section 15(3)(b)): given as a credit note. Off, it is a financial discount "
+                  "and GST is unchanged. The accountant's choice.",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

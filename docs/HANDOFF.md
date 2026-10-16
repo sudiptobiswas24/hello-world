@@ -223,7 +223,13 @@ built.
    - that TDS deducts nothing until each section's rate is confirmed on
      the TDS rates screen: go-live waits on that;
    - whether a lower-deduction certificate's validity should be kept
-     (today one undated rate on the party).
+     (today one undated rate on the party);
+   - (O109) whether an early-settlement discount agreed before the supply
+     should reduce the taxable value by a GST credit note (CGST section
+     15(3)(b)) rather than be a financial discount with GST unchanged. The
+     code takes it as a financial discount; the switch is "discount reduces
+     GST" on each payment term, off by default, and with it on the discount
+     step refuses and asks for a credit note.
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
