@@ -73,7 +73,12 @@ class TcsCollection(AuditModel):
             models.CheckConstraint(check=Q(amount__gte=0) & Q(base__gte=0), name="tcs_collection_not_negative"),
             models.CheckConstraint(check=Q(amount=0) | Q(posted_account__isnull=False),
                                    name="tcs_collection_keeps_its_account"),
-            models.UniqueConstraint(fields=["invoice", "section"], name="one_tcs_collection_per_invoice_and_section"),
+            models.UniqueConstraint(fields=["invoice", "section"], condition=Q(gives_back__isnull=True),
+                                    name="one_tcs_collection_per_invoice_and_section"),
+            # A credit note gives back what its invoice collected and, where the invoice drew down an
+            # advance, what the advance collected on that value (O243): once each.
+            models.UniqueConstraint(fields=["invoice", "gives_back"], condition=Q(gives_back__isnull=False),
+                                    name="one_give_back_per_note_and_collection"),
         ]
 
     def __str__(self):
@@ -164,21 +169,14 @@ def collect(invoice):
     What the invoice collects, or its credit note gives back, as it posts; the amount, kept on it.
     Called inside Invoice.post(), under its lock, after its number and taxes are settled.
     """
-    if invoice.is_down_payment and not invoice.is_credit_note():
-        order = invoice.sales_order
-        if order is not None and order.lines.filter(item__tcs_section__isnull=False).exists():
-            # Section 206C(1) collects at the debit or the receipt, whichever is earlier: an advance on a
-            # scrap order owes TCS as it is received. Collecting on it, and setting that against the
-            # invoice that draws it down, is not built; refused rather than collecting nothing (review U1).
-            raise ValidationError(
-                f"{order} sells goods TCS is collected on, and TCS on an advance is owed as it is received. "
-                "Collecting it on an advance is not built: invoice the scrap and take the money against the "
-                "invoice instead.")
-    if invoice.is_down_payment or (invoice.credits_id and invoice.credits.is_down_payment):
-        return Decimal("0")
+    if invoice.credits_id and invoice.credits.is_down_payment:
+        return _give_back_advance(invoice)
     if invoice.is_credit_note():
         return _give_back(invoice)
-    bases = _tcs_lines(invoice)
+    # Section 206C(1) (394 from April 2026) collects at the debit or the receipt, whichever is earlier: an
+    # advance on a scrap order is due TCS as it is billed to the buyer (O243). The invoice for the goods
+    # then collects only on what the advance did not (_count_advances).
+    bases = _advance_bases(invoice) if invoice.is_down_payment else _tcs_lines(invoice)
     if not bases:
         return Decimal("0")
     if invoice.currency_id not in (None, Company.get().base_currency_id):
@@ -201,6 +199,8 @@ def collect(invoice):
         if section.payable_account_id is None:
             raise ValidationError(f"{section} has no payable account to owe the tax collected into.")
         percent = rate.rate_percent if pan else rate.no_pan_rate_percent
+        counts = [] if invoice.is_down_payment else _count_advances(invoice, section, base)
+        base -= sum((counted for _, counted in counts), Decimal("0"))
         amount = rupees(base * percent / 100)
         # The account the section names today, read once at the event and kept with the collection.
         account = section.payable_account
@@ -208,16 +208,107 @@ def collect(invoice):
         if amount:
             entry = _entry(invoice, account, amount, f"TCS {rate.section_code or section.code} on {invoice.number}",
                            give_back=False)
-        TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base, rate_percent=percent,
-                                     pan=pan, amount=amount, date=day, journal_entry=entry, posted_account=account,
-                                     section_code=rate.section_code or section.code)
+        row = TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base,
+                                           rate_percent=percent, pan=pan, amount=amount, date=day,
+                                           journal_entry=entry, posted_account=account,
+                                           section_code=rate.section_code or section.code)
+        for advance, counted in counts:
+            TcsAdvanceCount.objects.create(collection=row, advance=advance, base=counted, date=day)
+        total += amount
+    return total
+
+
+def _advance_bases(deposit):
+    """
+    {section: base} of a down payment on an order of goods TCS applies to: its value, less TCS, in the
+    share of the order those goods are (their value with GST where the section counts it). A down
+    payment on no order, or on goods TCS does not apply to, collects nothing.
+    """
+    order = deposit.sales_order
+    if order is None:
+        return {}
+    lines = list(order.lines.select_related("item__tcs_section"))
+    whole = sum((line.total() for line in lines), Decimal("0"))
+    value = deposit.total() - deposit.tcs_amount
+    shares = defaultdict(Decimal)
+    for line in lines:
+        section = getattr(line.item, "tcs_section", None) if line.item_id else None
+        if section is not None:
+            shares[section] += line.total() if section.base_includes_gst else line.net_amount()
+    return {section: round_money(value * share / whole) for section, share in shares.items() if whole}
+
+
+def advance_left(advance):
+    """What of an advance's base no invoice counts and no refund gave back (TcsAdvanceCount, signed)."""
+    counted = advance.counted_by.aggregate(total=models.Sum("base"))["total"] or Decimal("0")
+    given = advance.given_back.aggregate(total=models.Sum("base"))["total"] or Decimal("0")
+    return advance.base - counted - given
+
+
+def _count_advances(invoice, section, base):
+    """
+    [(advance collection, base)]: the advances on this invoice's order that already collected under
+    `section`, oldest first, counted against its `base` as far as they go, so the value is never collected
+    on twice. An advance larger than one invoice is counted across the next (O243).
+    """
+    order = invoice.sales_order
+    if order is None or not base:
+        return []
+    advances = TcsCollection.objects.filter(
+        invoice__sales_order=order, invoice__is_down_payment=True, invoice__credits__isnull=True,
+        invoice__posted=True, section=section, gives_back__isnull=True, declaration__isnull=True,
+    ).order_by("date", "pk")
+    counts, wanted = [], base
+    for advance in advances:
+        left = advance_left(advance)
+        take = min(left, wanted)
+        if take > 0:
+            counts.append((advance, take))
+            wanted -= take
+        if not wanted:
+            break
+    return counts
+
+
+def _give_back_advance(note):
+    """
+    An advance credited back (refunded): the TCS on its part no invoice has counted, at the rate it was
+    collected at, the last of it taking what is left. Counted against an invoice, it was the invoice's
+    collection, and that invoice's credit note releases it first (_give_back).
+    """
+    deposit = note.credits
+    value = deposit.total() - deposit.tcs_amount
+    if not value:
+        return Decimal("0")
+    total = Decimal("0")
+    for collected in deposit.tcs_collected.filter(gives_back__isnull=True, amount__gt=0):
+        left = advance_left(collected)
+        base = min(round_money((note.total() - note.tcs_amount) * collected.base / value), left)
+        if base <= 0:
+            continue
+        given = sum((row.amount for row in TcsCollection.objects.filter(gives_back=collected)), Decimal("0"))
+        counted = collected.counted_by.aggregate(total=models.Sum("base"))["total"] or Decimal("0")
+        last = base >= left and not counted
+        amount = collected.amount - given if last else min(rupees(base * collected.rate_percent / 100),
+                                                            collected.amount - given)
+        if amount <= 0:
+            continue
+        entry = _entry(note, collected.posted_account, amount,
+                       f"TCS {collected.section_code} given back by {note.number} on {deposit.number}",
+                       give_back=True)
+        TcsCollection.objects.create(invoice=note, section=collected.section, rate=collected.rate,
+                                     gives_back=collected, base=base, rate_percent=collected.rate_percent,
+                                     pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
+                                     journal_entry=entry, posted_account=collected.posted_account,
+                                     section_code=collected.section_code)
         total += amount
     return total
 
 
 def _give_back(note):
     original = note.credits
-    collections = list(original.tcs_collected.filter(gives_back__isnull=True, amount__gt=0))
+    collections = [row for row in original.tcs_collected.filter(gives_back__isnull=True)
+                   if row.amount > 0 or row.counts.exists()]
     if not collections:
         return Decimal("0")
     bases = _tcs_lines(note)
@@ -228,9 +319,15 @@ def _give_back(note):
             continue
         before = list(TcsCollection.objects.filter(gives_back=collected))
         given = sum((row.amount for row in before), Decimal("0"))
-        credited = sum((row.base for row in before), Decimal("0")) + base
+        own_left = collected.base - sum((row.base for row in before), Decimal("0"))
+        # What it collected on itself first; past that, the value an advance collected on, which it
+        # releases back to the advance (O243): its refund gives that back, or another invoice counts it.
+        total += _release_counts(collected, note, base - max(min(base, own_left), Decimal("0")))
+        base = max(min(base, own_left), Decimal("0"))
+        if not base:
+            continue
         # The last of the invoice's value takes what is left: 266 then 797 would give back 1,063 of 1,062.
-        amount = (collected.amount - given if credited >= collected.base
+        amount = (collected.amount - given if base >= own_left
                   else min(rupees(base * collected.rate_percent / 100), collected.amount - given))
         if amount <= 0:
             continue
@@ -244,6 +341,78 @@ def _give_back(note):
                                      section_code=collected.section_code)
         total += amount
     return total
+
+
+def _release_counts(collected, note, excess):
+    """
+    Undo, newest first, `excess` of what `collected` counted against advances: a reversing row each. Where
+    the invoice drew that advance down, the money is now the note's to give back, and the advance can no
+    longer be refunded (deposits are credited through the invoice then): the note gives back the advance's
+    TCS on that value too. Returns what it gave back.
+    """
+    from .models import DepositApplication
+
+    given_back = Decimal("0")
+    for count in collected.counts.filter(base__gt=0).order_by("-date", "-pk"):
+        if excess <= 0:
+            break
+        standing = count.base + (count.released.aggregate(total=models.Sum("base"))["total"] or Decimal("0"))
+        take = min(standing, excess)
+        if take <= 0:
+            continue
+        TcsAdvanceCount.objects.create(collection=collected, advance=count.advance, base=-take,
+                                       date=to_date(note.invoice_date), releases=count, note=note)
+        excess -= take
+        advance = count.advance
+        if not DepositApplication.objects.filter(invoice=collected.invoice, deposit=advance.invoice).exists():
+            continue
+        given = sum((row.amount for row in TcsCollection.objects.filter(gives_back=advance)), Decimal("0"))
+        last = take >= advance_left(advance) and not advance.counted_by.aggregate(
+            total=models.Sum("base"))["total"]
+        amount = advance.amount - given if last else min(rupees(take * advance.rate_percent / 100),
+                                                         advance.amount - given)
+        if amount <= 0:
+            continue
+        entry = _entry(note, advance.posted_account, amount,
+                       f"TCS {advance.section_code} given back by {note.number} on {advance.invoice.number}",
+                       give_back=True)
+        TcsCollection.objects.create(invoice=note, section=advance.section, rate=advance.rate, gives_back=advance,
+                                     base=take, rate_percent=advance.rate_percent, pan=advance.pan, amount=amount,
+                                     date=to_date(note.invoice_date), journal_entry=entry,
+                                     posted_account=advance.posted_account, section_code=advance.section_code)
+        given_back += amount
+    return given_back
+
+
+class TcsAdvanceCount(AuditModel):
+    """
+    Part of an advance's TCS base counted against the invoice for its goods (O243): that much of the
+    invoice's value was collected on when the advance was billed, and is not collected on again. A
+    credit note on the invoice releases it with a row the other way (negative `base`), never an edit.
+    """
+
+    collection = models.ForeignKey(TcsCollection, on_delete=models.PROTECT, related_name="counts",
+                                   help_text="The invoice's collection it counts against.")
+    advance = models.ForeignKey(TcsCollection, on_delete=models.PROTECT, related_name="counted_by",
+                                help_text="The advance's collection it counts.")
+    base = models.DecimalField(max_digits=18, decimal_places=2,
+                               help_text="Counted; negative on a row that releases what another counted.")
+    date = models.DateField()
+    releases = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="released")
+    note = models.ForeignKey("sales.Invoice", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+                             help_text="The credit note that released it.")
+
+    class Meta:
+        ordering = ["date", "id"]
+        verbose_name = "TCS advance counted"
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("What an invoice counted of an advance is a fact; a credit note releases it.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("What an invoice counted of an advance is a fact; a credit note releases it.")
 
 
 def _live(queryset):

@@ -1136,9 +1136,9 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         return self.invoices.filter(is_down_payment=True, posted=True)
 
     def deposit_total(self):
-        """Taken up front and not since credited back."""
+        """Taken up front and not since credited back: the value, not the TCS it collected (O243)."""
         return sum(
-            (deposit.total() - deposit.amount_credited() for deposit in self.deposits()),
+            (deposit.deposit_unapplied() + deposit.deposit_applied() for deposit in self.deposits()),
             Decimal("0"),
         )
 
@@ -2308,7 +2308,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         """
         if not self.is_down_payment:
             return Decimal("0")
-        return self.total() - self.deposit_applied() - self.amount_credited()
+        # Less the TCS it collected and its notes gave back (O243): that is the government's, owed with
+        # the advance, and never drawn against the invoice for the goods.
+        notes_tcs = sum((note.tcs_amount for note in self.credit_notes.all() if note.posted), Decimal("0"))
+        return (self.total() - self.tcs_amount) - self.deposit_applied() - (self.amount_credited() - notes_tcs)
 
     def deposit_base_left(self, account):
         """What is still held, in base, as the deposit, its drawdowns and its notes booked it."""
@@ -2396,8 +2399,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             is_receivable=True,
             taxes=[(tax.collected_account, tax_amount) for tax, tax_amount in reversals if tax_amount],
             held_left=(left, deposit.deposit_base_left(account)),
-            document_slice=(booked_on(self.journal_entry, self.receivable_account), self.total(),
-                            self.total() - self.amount_due()),
+            # What it booked on the receivable includes the TCS it collected, its own entry at the base
+            # rate, as total() does (O243): sliced without it, 27,000 drawn on a scrap invoice of 106,992
+            # read 26,800.13 booked and 199.87 of exchange on a rupee invoice.
+            document_slice=(booked_on(self.journal_entry, self.receivable_account) + self.tcs_amount,
+                            self.total(), self.total() - self.amount_due()),
         )
         application = DepositApplication.objects.create(
             invoice=self, deposit=deposit, amount=amount, date=on_date,
@@ -6083,7 +6089,7 @@ from .price_variation import (  # noqa: E402,F401
 
 
 from .tds import CustomerTds  # noqa: E402,F401
-from .tcs import TcsChallan, TcsCollection  # noqa: E402,F401
+from .tcs import TcsAdvanceCount, TcsChallan, TcsCollection  # noqa: E402,F401
 
 
 def _settled_complaint(note):
