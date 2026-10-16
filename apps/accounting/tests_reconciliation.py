@@ -586,3 +586,28 @@ class AnAccountInAnotherCurrencyTests(ReconciliationTestCase):
             amount=Decimal("100"), currency=eur, bank_account=eefc, counterpart_account=self.ar)
         payment.post()
         self.assertEqual(payment.base_amount(), Decimal("110.00"))
+
+
+
+class AReturnBeforeItsLateVoidTests(ReconciliationTestCase):
+    """
+    Review F7: deposited 5 Jan and matched, returned by the bank 28 Jan (January closes at 0), voided in the
+    books on 2 Feb. January: ledger 1,000, bank 0, the return named as a reconciling item of 1,000 until the
+    void; February: the void books it and nothing is left.
+    """
+
+    def test_named_until_the_void_and_the_statements_foot(self):
+        cheque = self.receipt("1000")
+        january = self.statement(closing="0")
+        self.line(january, "1000").match(cheque)
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 2, 2))
+        self.line(january, "-1000", on=datetime.date(2026, 1, 28)).match(cheque)
+        report = january.reconciliation()
+        self.assertEqual((report["returned_unvoided"], report["unpresented_total"], report["difference"]),
+                         ([cheque], Decimal("1000"), Decimal("0")))
+        january.close()
+        february = BankStatement.objects.create(bank_account=self.bank, start_date=datetime.date(2026, 2, 1),
+                                                end_date=datetime.date(2026, 2, 28), opening_balance=Decimal("0"),
+                                                closing_balance=Decimal("0"))
+        report = february.reconciliation()
+        self.assertEqual((report["returned_unvoided"], report["difference"]), ([], Decimal("0")))

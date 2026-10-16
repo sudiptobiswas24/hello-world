@@ -112,6 +112,8 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "statement_balance": report["statement_balance"],
             "unpresented": [_payment_row(payment) for payment in report["unpresented"]]
             + [_return_row(payment) for payment in report["unreturned"]]
+            + [{**_payment_row(payment), "number": f"Returned by the bank, not yet voided: {payment.number}"}
+               for payment in report["returned_unvoided"]]
             + [_entry_row(entry, amount) for entry, amount in report["unpresented_entries"]],
             "unpresented_total": round_money(report["unpresented_total"]),
             "unresolved_lines": len(report["unresolved_lines"]),
