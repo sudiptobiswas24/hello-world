@@ -232,6 +232,18 @@ def _stock(day):
     return _finding(False if off else (None if unvalued else True), len(off), detail, rows, "/stores/value")
 
 
+def _fixed_assets(day):
+    from apps.assets.models import register_against_ledger
+
+    off = [row for row in register_against_ledger(day) if row["difference"]]
+    rows = [{"label": f"{row['account'].code} {row['account'].name}: register {_money(row['register'])}, "
+                      f"ledger {_money(row['ledger'])}, difference {_money(row['difference'])}",
+             "href": "/accounts/asset-register"} for row in off[:SHOW]]
+    detail = (f"{len(off)} fixed-asset account(s) differ from the register." if off
+              else "The fixed-asset register is the asset and depreciation accounts' balance.")
+    return _finding(not off, len(off), detail, rows, "/accounts/asset-register")
+
+
 def _negative_stock(day):
     from apps.inventory.reports import negative_stock
 
@@ -308,6 +320,7 @@ PROBES = [
     Probe("payables", "Payables agree with the bills", _payables),
     Probe("stock", "Stock agrees with the ledger", _stock),
     Probe("negative_stock", "No shelf below nothing", _negative_stock),
+    Probe("fixed_assets", "Fixed assets agree with the ledger", _fixed_assets),
     Probe("closed_periods", "Closed months stayed closed", _closed_periods),
     Probe("invoice_numbers", "Invoice numbers run without a gap", _invoice_numbers),
 ]

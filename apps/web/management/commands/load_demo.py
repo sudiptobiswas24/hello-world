@@ -815,6 +815,15 @@ class Command(BaseCommand):
                     ("Laptops for the office, four", office, on(2026, 6, 15), "260000", 36)):
                 asset = M("assets.FixedAsset").objects.create(name=name, category=category, acquisition_date=bought,
                                                               cost=D(cost), life_months=months)
+                # Typed in, not capitalised from a bill: the cost comes into the books as an
+                # opening balance, or the register stands on an asset account holding nothing
+                # (the daily footing, O34).
+                brought = M("accounting.JournalEntry").objects.create(date=bought, memo=f"Opening balance: {name}")
+                M("accounting.JournalLine").objects.create(entry=brought, account=category.asset_account,
+                                                           debit=D(cost), credit=D("0"))
+                M("accounting.JournalLine").objects.create(entry=brought, account=opening_eq, debit=D("0"),
+                                                           credit=D(cost))
+                brought.post()
                 asset.place_in_service(on_date=bought)
                 # Charged to the end of the last month the books step closes, before it closes them:
                 # a month left uncharged under a close holds up every asset's month-end run.

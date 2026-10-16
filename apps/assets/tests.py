@@ -472,3 +472,42 @@ class APeriodClosesWithItsDepreciationTests(AssetTestCase):
         self.january.close()
         self.assertTrue(AccountingPeriod.objects.get(pk=self.january.pk).closed)
 
+
+class TheRegisterFootsToTheLedgerTests(AssetTestCase):
+    """
+    O34: the daily health checks never footed the register against the
+    ledger. The lathe at 12,000 with three months charged (3,000): the
+    plant and accumulated accounts agree; 500 posted to plant by hand is
+    reported, account by account.
+    """
+
+    def journal(self, day, debit, credit, amount):
+        from apps.accounting.models import JournalEntry
+
+        entry = JournalEntry.objects.create(date=day, memo="By hand")
+        JournalLine.objects.create(entry=entry, account=debit, debit=Decimal(amount))
+        JournalLine.objects.create(entry=entry, account=credit, credit=Decimal(amount))
+        entry.post()
+
+    def test_agreeing_then_a_journal_by_hand(self):
+        from apps.assets.models import register_against_ledger
+        from apps.web.health import integrity
+
+        capital = Account.objects.create(code="3000", name="Capital", account_type=AccountType.EQUITY)
+        lathe = self.asset()
+        self.journal(datetime.date(2026, 1, 1), self.plant, capital, "12000")
+        lathe.depreciate(through=datetime.date(2026, 3, 31))
+        day = datetime.date(2026, 3, 31)
+        self.assertEqual([(row["account"].code, row["register"], row["ledger"], row["difference"])
+                          for row in register_against_ledger(day)],
+                         [("1500", Decimal("12000.00"), Decimal("12000.00"), Decimal("0.00")),
+                          ("1590", Decimal("-3000.00"), Decimal("-3000.00"), Decimal("0.00"))])
+        finding = lambda: next(row for row in integrity(day, fresh=True)["findings"]  # noqa: E731
+                               if row["key"] == "fixed_assets")
+        self.assertEqual((finding()["ok"], finding()["count"]), (True, 0))
+        self.journal(datetime.date(2026, 3, 15), self.plant, capital, "500")
+        found = finding()
+        self.assertEqual((found["ok"], found["count"]), (False, 1))
+        self.assertEqual([row["label"] for row in found["rows"]],
+                         ["1500 Plant: register 12,000.00, ledger 12,500.00, difference 500.00"])
+

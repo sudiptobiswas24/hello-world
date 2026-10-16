@@ -144,6 +144,7 @@ class Command(BaseCommand):
         "inventory.hours_by_account": "a report, for whatever asks",
         "planning.parse_month": "called by the CSV importer in apps/imports, which is not audited",
         "core.yes_no": "a CSV cell reader (csvrows.py) the importer in apps/imports uses; the punch file does not",
+        "assets.register_against_ledger": "the daily health check's footing (apps/web/health.py), which is not audited",
     }
 
     # -- shape 2: inert feature ------------------------------------------

@@ -768,3 +768,37 @@ def depreciation_owed(period):
     return [f"Depreciation is still to charge for {len(owed)} asset(s): {shown}. "
             f"Run the depreciation through {period.end_date} first."]
 
+
+def register_against_ledger(as_of=None):
+    """
+    [{account, register, ledger, difference}]: the fixed-asset register
+    footed against the ledger on `as_of`, account by account (O34). The
+    register's cost stands on each asset account and its depreciation on
+    each accumulated account, as the asset keeps them (its category's
+    while a draft); the ledger is what was posted there through the day.
+    A difference is something posted to an asset account that no asset
+    accounts for, or an asset on the register the books never took.
+    """
+    from apps.accounting.models import JournalLine
+
+    as_of = to_date(as_of) or timezone.localdate()
+    held = {}
+    for row in asset_register(as_of):
+        asset = row["asset"]
+        for name, value in (("asset_account", row["cost"]), ("accumulated_account", -row["accumulated"])):
+            account = asset.stands_on(name)
+            if account is not None:
+                held[account] = held.get(account, Decimal("0")) + value
+    # And every account a category would put an asset on, though none stands there
+    # yet: something posted to it is on no asset.
+    named = {pk for pair in AssetCategory.objects.values_list("asset_account_id", "accumulated_account_id")
+             for pk in pair if pk}
+    accounts = set(held) | set(Account.objects.filter(pk__in=named))
+    rows = []
+    for account in sorted(accounts, key=lambda account: account.code):
+        totals = JournalLine.objects.filter(entry__posted=True, entry__date__lte=as_of, account=account).aggregate(
+            debit=models.Sum("debit"), credit=models.Sum("credit"))
+        ledger = (totals["debit"] or Decimal("0")) - (totals["credit"] or Decimal("0"))
+        register = held.get(account, Decimal("0"))
+        rows.append({"account": account, "register": register, "ledger": ledger, "difference": ledger - register})
+    return rows
