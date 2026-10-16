@@ -203,7 +203,7 @@ def _specification(item, on_date):
 
 
 @transaction.atomic
-def issue(delivery, on_date=None):
+def issue(delivery, on_date=None, by=None):
     """Certify a posted shipment, frozen."""
     if not delivery.posted:
         raise ValidationError(f"{delivery} has not shipped; there is nothing to certify.")
@@ -248,7 +248,9 @@ def issue(delivery, on_date=None):
         "order": order.number, "customer_reference": order.reference,
         "lines": lines,
     }
-    certificate = TestCertificate(delivery=delivery, issued_on=on_date, content=content)
+    # Who issued it, stamped on the record as on any other (O202).
+    certificate = TestCertificate(delivery=delivery, issued_on=on_date, content=content,
+                                  created_by=by, updated_by=by)
     certificate.number = DocumentSequence.next_for(
         "manufacturing.test_certificate", on_date, name="Test Certificates", prefix="TC-",
     )

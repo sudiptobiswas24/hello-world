@@ -296,6 +296,10 @@ class QuotingApiTests(QuotingTestCase):
             "specification": self.sack.pk, "quantity": "50000", "costed_on": str(DAY),
         }, format="json")
         self.assertEqual(response.status_code, 201, response.content)
+        # O202: who costed it is on the record.
+        from apps.manufacturing.quoting import CostSheet
+
+        self.assertEqual(CostSheet.objects.get(pk=response.json()["id"]).created_by.username, "costing")
         self.assertEqual(response.json()["quoted_price"], "15.37")
         self.assertEqual(len(response.json()["lines"]), 10)
         url = f"/api/manufacturing/cost-sheets/{response.json()['id']}/"

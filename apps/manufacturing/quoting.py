@@ -531,13 +531,15 @@ def compute(specification, on_date):
 
 
 @transaction.atomic
-def cost(specification, quantity, on_date=None, margin_percent=None):
+def cost(specification, quantity, on_date=None, margin_percent=None, by=None):
     """Cost the sack and write the sheet down, frozen."""
     on_date = on_date or timezone.localdate()
     worked = compute(specification, on_date)
     margin = worked["policy"].margin_percent if margin_percent is None else Decimal(margin_percent)
     price = worked["cost"] * (1 + margin / HUNDRED)
     sheet = CostSheet(
+        # Who asked for it, stamped on the record as on any other (O202).
+        created_by=by, updated_by=by,
         specification=specification, quantity=quantity, costed_on=on_date,
         bag_grams=specification.bag_grams().quantize(Decimal("0.0001")),
         overhead_percent=worked["policy"].overhead_percent, margin_percent=margin,
