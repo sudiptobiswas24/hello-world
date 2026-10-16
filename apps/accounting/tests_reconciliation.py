@@ -435,6 +435,75 @@ class ReturnedPaymentTests(ReconciliationTestCase):
         self.assertEqual(cheque.voided_entry.date, datetime.date(2026, 1, 8))
 
 
+class VoidedWhileMatchedTests(ReconciliationTestCase):
+    """
+    O230: a cheque deposited, matched, bounced and voided. Its deposit line
+    stays matched to it (the deposit happened); the void's reversal is a
+    reconciling item until the bank's return line is matched to it; the
+    statement foots throughout.
+    """
+
+    february = ReturnedPaymentTests.february
+
+    def test_on_one_statement_the_void_is_named_until_its_return_is_matched(self):
+        cheque = self.receipt("1000")
+        statement = self.statement(closing="0")
+        self.line(statement, "1000").match(cheque)
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 8))
+        report = statement.reconciliation()
+        # Books 0, the bank's lines 1,000 so far: the return the bank has not shown is -1,000.
+        self.assertEqual((report["unreturned"], report["unpresented_total"]), ([cheque], Decimal("-1000")))
+        returned = self.line(statement, "-1000", on=datetime.date(2026, 1, 8))
+        returned.match(cheque)
+        report = statement.reconciliation()
+        self.assertEqual((report["unreturned"], report["difference"]), ([], Decimal("0")))
+        statement.close()
+        self.assertTrue(BankStatementLine.objects.filter(payment=cheque).exists())
+
+    def test_voided_in_january_with_the_bank_return_on_februarys_statement(self):
+        # Bounced on 29 January, voided that day; the bank's return line is dated 2 February.
+        cheque = self.receipt("1000")
+        january = self.statement(closing="1000")
+        self.line(january, "1000").match(cheque)
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 29))
+        report = january.reconciliation()
+        # Ledger 0, unpresented -1,000 (the return), bank 1,000: (0 - -1,000) - 1,000 = 0.
+        self.assertEqual((report["ledger_balance"], report["unpresented_total"], report["difference"]),
+                         (Decimal("0"), Decimal("-1000"), Decimal("0")))
+        january.close()
+        february = self.february("1000")
+        self.line(february, "-1000", on=datetime.date(2026, 2, 2)).match(cheque)
+        self.assertEqual(february.reconciliation()["unpresented_total"], Decimal("0"))
+        february.close()
+        # January as it stood: still the return unseen at its end.
+        self.assertEqual(january.reconciliation()["difference"], Decimal("0"))
+
+    def test_never_presented_and_voided_nets_to_nothing_and_is_not_listed(self):
+        mistake = self.receipt("1000")
+        mistake.void(memo="Keyed twice", on_date=datetime.date(2026, 1, 6))
+        report = self.statement(closing="0").reconciliation()
+        self.assertEqual((report["unpresented"], report["unreturned"], report["difference"]), ([], [], Decimal("0")))
+
+    def test_the_reconciliation_names_the_return_to_the_controller(self):
+        from django.core.management import call_command
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        cheque = self.receipt("1000")
+        statement = self.statement(closing="1000")
+        self.line(statement, "1000").match(cheque)
+        cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 29))
+        user = User.objects.create_user("controller")
+        user.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(user)
+        data = client.get(f"/api/accounting/bank-statements/{statement.pk}/reconciliation/").json()
+        self.assertEqual(data["difference"], "0.00")
+        self.assertEqual([(row["number"], row["amount"]) for row in data["unpresented"]],
+                         [(f"Return of {cheque.number}", "-1000.00")])
+
+
 class PastStatementAsItStoodTests(TestCase):
     """
     O52 (StatementProbe). September: +1,000 received on the 2nd (on the

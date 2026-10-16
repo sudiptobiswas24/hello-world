@@ -57,6 +57,12 @@ def _payment_row(payment):
             "date": payment.payment_date, "amount": payment.signed_base_amount()}
 
 
+def _return_row(payment):
+    """A voided payment's reversal the bank has not shown yet (O230): the payment's row, the other way."""
+    return {**_payment_row(payment), "number": f"Return of {payment.number}", "returned": True,
+            "date": payment.voided_entry.date, "amount": -payment.signed_base_amount()}
+
+
 def _entry_row(entry, amount):
     """Money a document booked through the bank (a TDS challan, a claim paid out), as a payment's row reads."""
     return {"entry": entry.pk, "number": entry.reference or f"JE-{entry.pk}", "party_name": entry.memo,
@@ -104,6 +110,7 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "ledger_balance": round_money(report["ledger_balance"]),
             "statement_balance": report["statement_balance"],
             "unpresented": [_payment_row(payment) for payment in report["unpresented"]]
+            + [_return_row(payment) for payment in report["unreturned"]]
             + [_entry_row(entry, amount) for entry, amount in report["unpresented_entries"]],
             "unpresented_total": round_money(report["unpresented_total"]),
             "unresolved_lines": len(report["unresolved_lines"]),

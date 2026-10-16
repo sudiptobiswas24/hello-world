@@ -1347,14 +1347,45 @@ class BankStatement(AuditModel):
         same; read from today's facts, September read nothing unpresented
         and differed by -400 for good.
         """
-        matched = BankStatementLine.objects.filter(
-            payment__isnull=False, date__lte=self.end_date,
-        ).values_list("payment_id", flat=True)
+        return self._unseen()[0]
+
+    def unreturned(self):
+        """
+        Payments voided by the statement's end whose money the bank showed
+        arriving (or leaving) and no line by then shows it taking back: a
+        cheque deposited, matched, bounced and voided, its return line still
+        to come. The void's reversal is a reconciling item the other way
+        until a line is matched to it (O230): left out, a void dated in one
+        month with the bank's return line in the next left the books 400
+        short of the bank with nothing named.
+        """
+        return self._unseen()[1]
+
+    def _unseen(self):
+        """
+        (payments, voided payments): each payment's own movement and its void's
+        reversal, as the bank had shown them by the statement's end. A payment
+        voided by then that the bank showed neither way never reached it: its
+        two movements net to nothing, and neither is listed.
+        """
+        presented = set(BankStatementLine.objects.filter(
+            payment__isnull=False, date__lte=self.end_date).values_list("payment_id", flat=True))
+        returned = set(BankStatementLine.objects.filter(
+            returned_payment__isnull=False, date__lte=self.end_date).values_list("returned_payment_id", flat=True))
         payments = Payment.objects.filter(
-            models.Q(voided_entry__isnull=True) | models.Q(voided_entry__date__gt=self.end_date),
             bank_account=self.bank_account, posted=True, payment_date__lte=self.end_date,
-        ).exclude(pk__in=matched)
-        return list(payments)
+        ).select_related("voided_entry").order_by("payment_date", "pk")
+        unpresented, unreturned = [], []
+        for payment in payments:
+            voided = payment.voided_entry_id is not None and payment.voided_entry.date <= self.end_date
+            seen, seen_back = payment.pk in presented, payment.pk in returned
+            if voided and not seen and not seen_back:
+                continue
+            if not seen:
+                unpresented.append(payment)
+            if voided and not seen_back:
+                unreturned.append(payment)
+        return unpresented, unreturned
 
     def unpresented_entries(self):
         """
@@ -1376,16 +1407,18 @@ class BankStatement(AuditModel):
         Reconciled when the ledger balance plus the payments the bank has
         not seen yet equals what the bank says it is holding.
         """
-        unpresented = self.unpresented()
+        unpresented, unreturned = self._unseen()
         unpresented_entries = self.unpresented_entries()
-        adjustment = sum((payment.signed_base_amount() for payment in unpresented), Decimal("0")) + sum(
-            (amount for _, amount in unpresented_entries), Decimal("0"))
+        adjustment = (sum((payment.signed_base_amount() for payment in unpresented), Decimal("0"))
+                      - sum((payment.signed_base_amount() for payment in unreturned), Decimal("0"))
+                      + sum((amount for _, amount in unpresented_entries), Decimal("0")))
         ledger = self.ledger_balance()
         return {
             "statement": self,
             "ledger_balance": ledger,
             "statement_balance": self.closing_balance,
             "unpresented": unpresented,
+            "unreturned": unreturned,
             "unpresented_entries": unpresented_entries,
             "unpresented_total": adjustment,
             "unresolved_lines": self.unresolved_lines(),
