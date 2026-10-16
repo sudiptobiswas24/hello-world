@@ -66,6 +66,7 @@ class ReviewPurchRaces(races.RaceCase):
     def test_03_a_rate_confirmed_as_a_bill_deducts_nothing_is_deducted_at_an_unconfirmed_row(self):
         made = races.fixture(self, TdsTestCase)
         party = made.contractor(pan="AAAPL1234C")
+        # Posted first: with the pending row in force a taxed bill no longer posts (g22 decision).
         bill = made.bill("50000", day=D(2026, 9, 30), vendor=party)
         pending = TdsRate.objects.create(section=made.contract, applies_from=D(2026, 9, 1), rate_percent=Z("3"),
                                          no_pan_rate_percent=Z("25"))

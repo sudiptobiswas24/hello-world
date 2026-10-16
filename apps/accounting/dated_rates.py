@@ -13,8 +13,29 @@ day it applies. What a document took is kept on it, with the row, as the
 rate stood (O233: TDS rates were a table of today's figures).
 """
 
+import datetime
+from decimal import Decimal, InvalidOperation
+
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_date
+
+from apps.core.models import lock_rows
+
+
+def _same(stored, given):
+    """Whether a figure as stored is the one a request read, given as text or as the value."""
+    if given is None or given == "":
+        return stored in (None, "")
+    if isinstance(stored, Decimal):
+        try:
+            return Decimal(str(given)) == stored
+        except InvalidOperation:
+            return False
+    if isinstance(stored, datetime.date):
+        return (given if isinstance(given, datetime.date) else parse_date(str(given))) == stored
+    return str(stored) == str(given)
 
 
 class DatedRate:
@@ -35,7 +56,12 @@ class DatedRate:
         return getattr(self, self.TAKEN_BY).exists()
 
     def save(self, *args, **kwargs):
-        if not self._state.adding:
+        if self._state.adding:
+            return super().save(*args, **kwargs)
+        # Under the row's lock, which a deduction or collection reading it holds too: edited as a bill
+        # deducted, the deduction kept 2% on a row that then said 5% (review F4).
+        with transaction.atomic():
+            lock_rows(self, refresh=False)
             before = type(self).objects.get(pk=self.pk)
             changed = any(getattr(before, name) != getattr(self, name) for name in self.FIGURES)
             if changed and self.taken():
@@ -44,17 +70,36 @@ class DatedRate:
             if changed:
                 # A changed figure is a new figure: the accountant confirms it again.
                 self.confirmed_by, self.confirmed_on = None, None
-        super().save(*args, **kwargs)
+            return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         if self.taken():
             raise ValidationError(f"{self.TAKEN_WORDS} at this rate; it stays.")
         return super().delete(*args, **kwargs)
 
-    def confirm(self, user):
-        """The accountant's word that the rate is the law's: from now it is taken at."""
-        self.confirmed_by, self.confirmed_on = user, timezone.localdate()
-        super().save(update_fields=["confirmed_by", "confirmed_on", "updated_at"])
+    def confirm(self, user, seen=None):
+        """
+        The accountant's word that the rate is the law's: from now it is taken
+        at. It vouches for the figures the accountant read (`seen`, as a request
+        gives them; by default this row as it was read), and is refused if the
+        row has changed since, or is confirmed already: a screen read at 2%,
+        edited to 20% by another, then confirmed, confirmed 20% (review F9).
+        """
+        read = seen if seen is not None else {name: getattr(self, name) for name in self.FIGURES}
+        with transaction.atomic():
+            lock_rows(self, refresh=False)
+            stored = type(self).objects.get(pk=self.pk)
+            if stored.confirmed_on is not None:
+                raise ValidationError(f"{stored} is already confirmed, on {stored.confirmed_on:%d %b %Y}.")
+            moved = [name.removesuffix("_id").replace("_", " ") for name in self.FIGURES
+                     if not _same(getattr(stored, name), read.get(name))]
+            if moved:
+                raise ValidationError(
+                    f"{stored} is not what was read: its {', '.join(moved)} differ. Read it again, and confirm "
+                    "what it says now.")
+            stored.confirmed_by, stored.confirmed_on = user, timezone.localdate()
+            super(DatedRate, stored).save(update_fields=["confirmed_by", "confirmed_on", "updated_at"])
+        self.confirmed_by, self.confirmed_on = stored.confirmed_by, stored.confirmed_on
 
     def percent_for(self, pan):
         """The rate on a party with `pan` on file, or the no-PAN rate."""

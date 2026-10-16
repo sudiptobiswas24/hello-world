@@ -686,8 +686,17 @@ class DatedRateTests(TdsTestCase):
         url = f"/api/accounting/tds-rates/{made.json()['id']}/confirm/"
         self.assertEqual(clients["AP Manager"].post(url, {}, format="json").status_code, 403)
         self.assertEqual(clients["AP Manager"].get("/api/accounting/tds-rates/").status_code, 200)
-        confirmed = clients["Controller"].post(url, {}, format="json")
+        read = {"section": self.contract.pk, "applies_from": "2026-04-01", "rate_percent": "1.0000",
+                "no_pan_rate_percent": "20"}
+        # Review F9: what the Controller confirms is what it read; a figure that moved is refused.
+        stale = clients["Controller"].post(url, {**read, "rate_percent": "2"}, format="json")
+        self.assertEqual(stale.status_code, 400, stale.content)
+        self.assertIn("its rate percent differ", str(stale.json()))
+        confirmed = clients["Controller"].post(url, read, format="json")
         self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        again = clients["Controller"].post(url, read, format="json")
+        self.assertEqual(again.status_code, 400, again.content)
+        self.assertIn("is already confirmed", str(again.json()))
         self.assertIsNotNone(TdsRate.objects.get(pk=made.json()["id"]).confirmed_on)
 
 
