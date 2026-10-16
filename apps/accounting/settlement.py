@@ -64,6 +64,33 @@ def booked_on(entry, control_account):
     return abs(sum((line.debit - line.credit for line in lines), Decimal("0")))
 
 
+def booked_on_together(entries, control_account):
+    """
+    What `entries` together put on the control account, as one figure: a drawdown is its own entry and
+    the exchange entry beside it, and only the two together say what it cleared (review F1).
+    """
+    lines = [line for entry in entries if entry is not None for line in entry.lines.all()
+             if line.account_id == control_account.pk]
+    if not lines:
+        return None
+    return abs(sum((line.debit - line.credit for line in lines), Decimal("0")))
+
+
+def entries_that_settled(notes, drawdowns):
+    """
+    [(amount, [entries])]: what settled a document other than a payment and booked its own base on the
+    control account, for an allocation to count at what it booked (O209). A note taken wholly against the
+    document (a credit note on an invoice, a debit note on a bill); a drawdown of money held, with the
+    exchange entry it posted beside it (review F1: counted without it, a euro advance drawn on posting
+    read 44.98 cleared where it netted 43.99, and the receipt after it left 0.99 on the receivable).
+    One rule for both sides: Invoice and Bill each name their notes and drawdowns.
+    """
+    rows = [(note.total(), [note.journal_entry]) for note in notes
+            if note.posted and note.journal_entry_id and note.amount_absorbed() == note.total()]
+    rows += [(drawn.amount, [drawn.journal_entry, drawn.fx_entry]) for drawn in drawdowns if drawn.journal_entry_id]
+    return rows
+
+
 def slice_of(booked, total, before, amount):
     """
     The base of `amount` of a document (or a payment) worth `total` and
@@ -241,8 +268,8 @@ class RealisedOnItsOwnDay:
         applied = sum((row.amount for row in others), Decimal("0"))
         # What else settled it and booked its own base on the control account (a credit note, a drawdown,
         # as the document lists them: settled_by_entries) counts at what it booked; the rest at its slice.
-        known = [(amount, booked_on(entry, control_account))
-                 for amount, entry in getattr(document, "settled_by_entries", lambda: [])()]
+        known = [(amount, booked_on_together(entries, control_account))
+                 for amount, entries in getattr(document, "settled_by_entries", lambda: [])()]
         if any(base is None for _, base in known):
             known = []
         known_amount = sum((amount for amount, _ in known), Decimal("0"))
