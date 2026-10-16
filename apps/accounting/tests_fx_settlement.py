@@ -703,6 +703,79 @@ class PartSettlementTakesWhatIsLeftTests(FxSettlementTestCase):
                          (D("0"), D("-7.65"), D("0")), "(AR, gain, loss)")
 
 
+class MiddleAllocationUndoneTests(FxSettlementTestCase):
+    """
+    O209: each allocation's base is what the document (or the payment) booked
+    for all of it settled so far, less what the others standing cleared, as
+    each recorded it. 100.09 EUR booked at 1.12345 (112.45), applied 30 + 30 +
+    40.09 from receipts at 1.09876 (calc_fix_money/g22/o209.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.12345"), valid_from=JAN5)
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.09876"), valid_from=datetime.date(2026, 2, 1))
+
+    invoice = PartSettlementTakesWhatIsLeftTests.invoice
+    bill = PartSettlementTakesWhatIsLeftTests.bill
+
+    def three_receipts(self, inv):
+        from apps.sales.models import InvoicePayment
+        rows = []
+        for amount in ("30", "30", "40.09"):
+            receipt = self.euro_payment(PaymentDirection.RECEIPT, amount)
+            rows.append(InvoicePayment.objects.create(invoice=inv, payment=receipt, amount=D(amount)))
+        return rows
+
+    def test_the_middle_deleted_and_applied_again_clears_the_receivable(self):
+        # Sliced against what settled before: 33.70 + 45.04 + 33.70 = 112.44, 0.01 left on AR.
+        from apps.sales.models import InvoicePayment
+        inv = self.invoice("100.09")
+        first, middle, last = self.three_receipts(inv)
+        payment = middle.payment
+        middle.delete()
+        again = InvoicePayment.objects.create(invoice=inv, payment=payment, amount=D("30"))
+        self.assertEqual((first.document_base, last.document_base, again.document_base),
+                         (D("33.70"), D("45.04"), D("33.71")))
+        self.assertEqual((inv.amount_due(), self.balance(self.ar)), (D("0"), D("0")), "(due, AR)")
+
+    def test_the_middle_re_pointed_away_and_another_applied_clears_both(self):
+        # The 30 moves to a 30 EUR invoice (33.70) and settles it; a fourth receipt of 30 settles the first.
+        from apps.sales.models import InvoicePayment
+        inv, other = self.invoice("100.09"), self.invoice("30")
+        _first, middle, _last = self.three_receipts(inv)
+        middle.invoice = other
+        middle.save()
+        fourth = self.euro_payment(PaymentDirection.RECEIPT, "30")
+        InvoicePayment.objects.create(invoice=inv, payment=fourth, amount=D("30"))
+        self.assertEqual((inv.amount_due(), other.amount_due(), self.balance(self.ar)),
+                         (D("0"), D("0"), D("0")), "(due, other due, AR)")
+
+    def test_a_payment_whose_middle_allocation_is_deleted_and_made_again_clears(self):
+        # One receipt of 100.09 at 1.09876 (109.97) over 0.01 + 1.57 + 98.51: sliced against what was
+        # applied before, the middle made again took 1.72 and 0.01 stayed on AR.
+        from apps.sales.models import InvoicePayment
+        invoices = [self.invoice(amount) for amount in ("0.01", "1.57", "98.51")]
+        receipt = self.euro_payment(PaymentDirection.RECEIPT, "100.09")
+        rows = [InvoicePayment.objects.create(invoice=inv, payment=receipt, amount=inv.total())
+                for inv in invoices]
+        rows[1].delete()
+        InvoicePayment.objects.create(invoice=invoices[1], payment=receipt, amount=D("1.57"))
+        self.assertEqual(self.balance(self.ar), D("0"))
+
+    def test_the_payable_mirror(self):
+        from apps.purchasing.models import BillPayment
+        bill = self.bill("100.09")
+        rows = []
+        for amount in ("30", "30", "40.09"):
+            pay = self.euro_payment(PaymentDirection.DISBURSEMENT, amount)
+            rows.append(BillPayment.objects.create(bill=bill, payment=pay, amount=D(amount)))
+        payment = rows[1].payment
+        rows[1].delete()
+        BillPayment.objects.create(bill=bill, payment=payment, amount=D("30"))
+        self.assertEqual((bill.amount_due(), self.balance(self.ap)), (D("0"), D("0")), "(due, AP)")
+
+
 class HeldMoneyLeavesAtTheBaseLeftTests(FxSettlementTestCase):
     """A deposit and a prepayment of 100 EUR held at 1.12345 (112.35), drawn in three, with a note."""
 

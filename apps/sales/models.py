@@ -3457,6 +3457,14 @@ class InvoicePayment(RealisedOnItsOwnDay, AuditModel):
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False,
         help_text="Its payment returned: the exchange difference it realised, reversed on that day.",
     )
+    document_base = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The base this allocation cleared off its document, as it was applied (O209).",
+    )
+    payment_base = models.DecimalField(
+        max_digits=18, decimal_places=2, null=True, blank=True, editable=False,
+        help_text="The base this allocation took of its payment, as it was applied (O209).",
+    )
 
     class Meta:
         ordering = ["-id"]
