@@ -3,8 +3,9 @@
 You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not fix anything else. Anything else you find goes into your report, not into code.
 
 ## Your worktree
-- Make your own worktree at ef7c0c3. The command is in your brief. Link the venv: `ln -s /home/user/hello-world/.venv <worktree>/.venv`.
-- Never edit /home/user/hello-world, another agent's worktree, or docs/.
+- Make your own worktree at the commit your brief names. The command is in your brief.
+- Link the venv and the frontend's modules: `ln -s /home/user/hello-world/.venv <worktree>/.venv` and `ln -s /home/user/hello-world/frontend/node_modules <worktree>/frontend/node_modules`.
+- Never edit /home/user/hello-world, another agent's worktree, or docs/ (except where your brief names a doc).
 - Keep your worktree when you finish.
 
 ## Before writing code
@@ -15,7 +16,7 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
 - Shared rules have ONE owner each; your brief says which ones are yours. If you need a rule another agent owns, do not build your own: write your fix against the smallest local check, and say so in the report.
 
 ## Budget
-- About 60 tool calls. Start from the file:line in your ids' rows; do not survey the codebase. Read ranges (grep -n, sed -n), never whole large files. At the budget, commit what is done and report what is left.
+- Your brief names it (about 60 tool calls unless it says otherwise). Start from the file:line in your ids' rows; do not survey the codebase. Read ranges (grep -n, sed -n), never whole large files. At the budget, commit what is done and report what is left.
 
 ## Proving each fix
 - Each fix has a test that fails without it. Revert the fix, watch the test fail, restore it. Report the failure line.
@@ -24,6 +25,11 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
   - then DATABASE_URL=postgres://erp:erp@localhost:5432/<db> nice -n 19 .venv/bin/python manage.py test apps.e2e.tests_races.<Class> --noinput
   - each race test must fail without its lock.
 - Run the touched modules' tests with: PYTHONPATH=scripts/gate nice -n 19 .venv/bin/python manage.py test <labels> --settings=fastsettings --exclude-tag migration --parallel 2. Never run the whole suite.
+  - A label is a whole app (`apps.web`, not `apps.web.tests`): the demo loader and the browser tests live there, and g21 broke the demo with a rule no agent's run reached.
+  - Browser tests need `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium` and a fresh `npm run build` in frontend/, or they skip and the count looks right.
+  - If you add or change a migration, or touch apps/core/lock_order.py, also run the touched apps with `--tag migration` (default settings, not fastsettings). In g21 a sentinel change failed 24 migration tests that only the gate's mig lane ran.
+  - A test that passes alone and fails in a run decided by order or speed is a defect: find what decides it. PostgreSQL returns rows in no order without ORDER BY; a write loop over such rows breaks the lock order.
+  - A day from a moment is `to_date(moment)`, never `.date()` of an aware datetime.
 - Before each commit, run `audit_invariants` (no findings) and `makemigrations --check` (no changes). After any makemigrations, redirect the output to a file and read it: every operation must name the model you meant (mistake 8).
 - Drive new or changed API behaviour through the API, as a person in the role (apps/core/tests_roles.py), not as a superuser.
 
@@ -37,7 +43,7 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
       Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
       Claude-Session: https://claude.ai/code/session_01XQiMmxK5wWbnQzkh2yM2yK
 
-- Never mention a model name anywhere else. Do not push.
+- Never mention a model name anywhere else, a reviewer's probe commit included. Do not push.
 
 ## Report
 - Write the full report to a file of your own in the scratchpad, reports/<your-agent-name>.md:

@@ -131,6 +131,17 @@ built.
    This replaces the reach plan's order. Breadth waits; what a sack plant
    does every day, done right in the modules it already has, comes first.
    - **g22, next: robust. The register to zero, then proof on a month.**
+     In flight from 16 October. Briefs in docs/handoff/, two agents at a time:
+     1. fix_purch (g22_purch.md) and fix_money (g22_money.md): books first.
+     2. fix_stores (g22_stores.md) and fix_core (g22_core.md).
+     3. fix_sec3 (g22_sec.md, L12 with O216 and O217).
+     Each is reviewed by someone other than its author before it joins.
+     Then `month` (g22_month.md) on the integrated tree. Its failures
+     become rows. Then the gate. The second audit per module follows in g23.
+     Not in g22, waiting on others:
+     - the tax adviser: O153, O166;
+     - the accountant: O214, O240;
+     - the OSH Code's forms: O224.
      - Every open row left after g21 (about 60: books first, then rule,
        statutory, minor), by module, one fix agent per module group. Each
        fix ships with its test, and its commit names the row.
