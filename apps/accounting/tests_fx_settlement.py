@@ -1000,3 +1000,16 @@ class NoteCountedAtWhatItBookedTests(FxSettlementTestCase):
         InvoicePayment.objects.create(invoice=inv, payment=receipt, amount=D("25.37"))
         self.assertEqual((note.total(), inv.amount_due(), self.balance(self.ar)), (D("30.79"), D("0"), D("0")),
                          "(note, due, AR)")
+
+    def test_the_payable_mirror_a_debit_note_on_two_of_three_lines(self):
+        # The same three amounts billed at 1.12345 (63.10), debited on two lines (34.60), the rest paid at 1.09876.
+        from apps.purchasing.models import Bill, BillLine, BillPayment
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=JAN5, payable_account=self.ap, currency=self.eur)
+        lines = [BillLine.objects.create(bill=bill, description="Parts", quantity=D("1"), unit_price=D(price),
+                                         expense_account=self.expense) for price in ("10.01", "20.78", "25.37")]
+        bill.post()
+        note = bill.create_debit_note(quantities={lines[0]: D("1"), lines[1]: D("1")})
+        pay = self.euro_payment(PaymentDirection.DISBURSEMENT, "25.37")
+        BillPayment.objects.create(bill=bill, payment=pay, amount=D("25.37"))
+        self.assertEqual((note.total(), bill.amount_due(), self.balance(self.ap)), (D("30.79"), D("0"), D("0")),
+                         "(note, due, AP)")
