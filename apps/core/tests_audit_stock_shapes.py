@@ -71,3 +71,23 @@ class MovementsWrittenAroundSaveTests(SimpleTestCase):
     def test_one_by_one_is_not(self):
         self.assertEqual(asked("movements_written_around_save",
                                "def f():\n    StockMovement.objects.create(item=item)\n"), [])
+
+
+class ArrivalsWithoutTheirDepartureTests(SimpleTestCase):
+    # O210: an arrival that does not name the leg it came from is not followed.
+    def test_a_transfer_in_naming_no_departure_is_reported(self):
+        (finding,) = asked("arrivals_without_their_departure",
+                           "def f():\n    StockMovement.objects.create(item=item,\n"
+                           "        movement_type=MovementType.TRANSFER_IN, quantity=q)\n")
+        self.assertEqual(finding[0], "arrival without its departure")
+        self.assertIn("sales/example.py:2", finding[1])
+
+    def test_one_naming_it_is_not(self):
+        self.assertEqual(asked("arrivals_without_their_departure",
+                               "def f():\n    StockMovement.objects.create(item=item, moved_from=out,\n"
+                               "        movement_type=MovementType.TRANSFER_IN, quantity=q)\n"), [])
+
+    def test_a_filter_on_arrivals_is_not(self):
+        self.assertEqual(asked("arrivals_without_their_departure",
+                               "def f():\n    StockMovement.objects.filter(movement_type=MovementType.TRANSFER_IN)\n"),
+                         [])

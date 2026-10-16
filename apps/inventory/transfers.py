@@ -58,7 +58,7 @@ def move_stock(item, source, destination, quantity, reference, occurred_at, note
     into = StockMovement.objects.create(
         item=item, warehouse=destination, movement_type=MovementType.TRANSFER_IN,
         uom=item.uom, lot=lot, bin=to_bin, quantity=quantity, unit_cost=rate,
-        value_adjustment=residue,
+        value_adjustment=residue, moved_from=out,
         reference=reference, occurred_at=occurred_at, notes=notes,
     )
     return out, into
@@ -601,7 +601,7 @@ class StockTransferStep(AuditModel):
             item=item, warehouse=self.source, movement_type=MovementType.TRANSFER_IN,
             uom=item.uom, lot=line.lot, bin=self.out_movement.bin,
             quantity=self.quantity, unit_cost=unit_cost,
-            value_adjustment=residue,
+            value_adjustment=residue, moved_from=out,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )
         return StockTransferStep.objects.create(

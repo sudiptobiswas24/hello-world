@@ -117,6 +117,7 @@ class Command(BaseCommand):
         findings += self.shelf_read_before_lock(labels, sources)
         findings += self.per_unit_withdrawal_rates(labels, sources)
         findings += self.movements_written_around_save(labels, sources)
+        findings += self.arrivals_without_their_departure(labels, sources)
         findings += self.release_past_the_gate(labels, sources)
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
@@ -966,6 +967,51 @@ class Command(BaseCommand):
                         f"{label}/{path.name}:{line} writes stock movements with {match.group(1)}(), "
                         "past the checks StockMovement.save() makes. Create them one by one.",
                     ))
+        return findings
+
+    # Arrivals written with no one leg they came from, with the reason.
+    ARRIVALS_POOLED = {
+        "manufacturing/rebatch.py": "several batches pooled into others on one shelf, not a move between shelves",
+    }
+
+    def arrivals_without_their_departure(self, labels, sources):
+        """
+        A transfer-in written without `moved_from`, the leg that took the
+        goods off the other shelf.
+
+        What is put on goods after they moved (landed freight, its release)
+        is followed along that link to wherever they went. Followed by
+        transfer steps alone, goods cleared out of inspection were gone at
+        the clearance: a release credited cost of sales 80 and the stock
+        room kept it (O210). move_stock() records it; anything else that
+        writes an arrival names its departure.
+        """
+        import ast
+
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                key = f"{label}/{path.name}"
+                if key in self.ARRIVALS_POOLED or "TRANSFER_IN" not in text:
+                    continue
+                try:
+                    tree = ast.parse(text)
+                except SyntaxError:
+                    continue
+                for node in ast.walk(tree):
+                    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "create"
+                            and ast.unparse(node.func.value) == "StockMovement.objects"):
+                        continue
+                    named = {keyword.arg: ast.unparse(keyword.value) for keyword in node.keywords}
+                    if "TRANSFER_IN" in named.get("movement_type", "") and "moved_from" not in named:
+                        findings.append((
+                            "arrival without its departure",
+                            f"{key}:{node.lineno} writes a transfer-in without moved_from, so what is "
+                            "put on the goods later is not followed to it. Move them with move_stock().",
+                        ))
         return findings
 
     # Files whose matches are not moments in UTC, with the reason.

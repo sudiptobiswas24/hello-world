@@ -784,6 +784,58 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
                          (Decimal("20.00"), Decimal("30.00"), Decimal("0")))
         self.assertEqual(run.material_cost(), Decimal("30.00"))
 
+    def via_inspection(self):
+        from apps.inventory.models import Warehouse
+
+        self.bay = Warehouse.objects.create(code="BAY", name="Receiving bay")
+        self.inspection = Warehouse.objects.create(code="QC", name="Inspection", is_quarantine=True)
+        self.warehouse.receipt_route = "inspect"
+        self.warehouse.input_warehouse = self.bay
+        self.warehouse.quality_warehouse = self.inspection
+        self.warehouse.save()
+
+    def inspected_and_cleared(self):
+        self.receipt.lines.get().advance()
+        self.assertEqual(self.item.on_hand_at(self.inspection), Decimal("10"))
+        self.receipt.accept(self.warehouse)
+
+    def test_released_after_the_goods_were_cleared_out_of_inspection_it_comes_off_the_stock_room(self):
+        # O210: landed on the goods in inspection, cleared, released. The
+        # clearance was not followed: cost of sales was credited 80 and the
+        # stock room kept 130 (calc_fix_stores/o210.py, A).
+        self.via_inspection()
+        self.received()
+        self.receipt.lines.get().advance()
+        application = self.landed()
+        self.assertEqual(self.item.stock_value_at(self.inspection), Decimal("130.00"))
+        self.receipt.accept(self.warehouse)
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+        application.release()
+        self.assertEqual((self.item.stock_value_at(self.warehouse), self.item.stock_value_at(self.inspection)),
+                         (Decimal("50.00"), Decimal("0.00")))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.freight_expense)),
+                         (Decimal("50"), Decimal("0"), Decimal("80")))
+
+    def test_freight_on_goods_cleared_out_of_inspection_and_issued_to_a_run_is_production_cost(self):
+        # O210: cleared, 6 of 10 issued (30 into WIP), then 80 of freight: 32
+        # on the 4 left, 48 to the run. Not followed past the clearance, the
+        # 48 went to cost of sales (calc_fix_stores/o210.py, B).
+        from apps.inventory.reports import reconcile_to_ledger
+
+        self.via_inspection()
+        self.received()
+        self.inspected_and_cleared()
+        run = self.issued_to_a_run("6")
+        application = self.landed()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.wip), self.balance(self.cogs)),
+                         (Decimal("52.00"), Decimal("78.00"), Decimal("0")))
+        self.assertEqual(run.material_cost(), Decimal("78.00"))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
+        application.release()
+        self.assertEqual((self.balance(self.inventory), self.balance(self.wip), self.balance(self.cogs)),
+                         (Decimal("20.00"), Decimal("30.00"), Decimal("0")))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
+
     def test_its_own_bills_freight_on_goods_issued_to_a_run_is_production_cost(self):
         self.received()
         self.issued_to_a_run("6")
