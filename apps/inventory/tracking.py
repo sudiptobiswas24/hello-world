@@ -160,6 +160,23 @@ def one_question():
         yield
 
 
+# What of a batch on a shelf is already promised to something that has not
+# drawn it yet, asked of whoever knows (manufacturing: tape on a backflushed
+# run's creels). Each answers `ask(lot, warehouse)` with a quantity in the
+# stocking unit; inventory cannot import them.
+LOT_COMMITMENTS = []
+
+
+def register_lot_commitment(ask):
+    if ask not in LOT_COMMITMENTS:
+        LOT_COMMITMENTS.append(ask)
+
+
+def committed_elsewhere(lot, warehouse):
+    """How much of `lot` on `warehouse` something has already taken without drawing it."""
+    return sum((ask(lot, warehouse) or Decimal("0") for ask in LOT_COMMITMENTS), Decimal("0"))
+
+
 def lot_held(item, lot, warehouse, action="issue"):
     """
     Why this batch may not be drawn from `warehouse`, in words, or "".
@@ -231,7 +248,15 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
     skipped = Decimal("0")
     held = Decimal("0")
     why = ""
-    found = lots_at(item, warehouse)
+    # Less what is already promised and not yet drawn: a doff on a
+    # backflushed run's creels stays on the shelf until the output draws
+    # it, and a pick naming no batch chose it all the same (O133).
+    found, promised = [], Decimal("0")
+    for lot, available in lots_at(item, warehouse):
+        on_creels = min(committed_elsewhere(lot, warehouse), available)
+        promised += on_creels
+        if available - on_creels > 0:
+            found.append((lot, available - on_creels))
     preferring = {pk: Decimal(share) for pk, share in (preferring or {}).items() if share > 0}
     first = [(lot, min(available, preferring[lot.pk])) for lot, available in found if lot.pk in preferring]
     shares = {lot.pk: share for lot, share in first}
@@ -265,6 +290,9 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
             message += f" {skipped} is on the shelf but expired."
         if held:
             message += f" {format(held.normalize(), 'f')} is on the shelf and held by quality: {why}"
+        if promised:
+            message += (f" {format(promised.normalize(), 'f')} is on the shelf and loaded on a run "
+                        "that has not drawn it yet.")
         raise ValidationError(message)
     return taken
 

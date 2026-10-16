@@ -10,6 +10,7 @@ class ManufacturingConfig(AppConfig):
         from apps.hr.attendance import register_shift_clock
         from apps.hr.payroll import register_piece_measure
         from apps.inventory.models import register_unit_provider
+        from apps.inventory.tracking import register_lot_commitment
         from apps.quality.release import register_lot_decided, register_lot_sources
         from apps.sales.models import register_material_checker, register_ownership_checker
 
@@ -19,10 +20,13 @@ class ManufacturingConfig(AppConfig):
         from .piecework import kilograms_woven, metres_woven
         from .rebatch import made_into, sources
         from .shifts import shift_starts
+        from .tape_loads import on_creels_undrawn
         from .trace import held_inputs, made_into_by_runs
         from .woven import sack_units
 
         register_unit_provider(sack_units)
+        # Tape on a backflushed run's creels is on the shelf and not free (O133).
+        register_lot_commitment(lambda lot, warehouse: on_creels_undrawn(lot, warehouse) if lot else None)
         register_lot_sources(sources, made_into)
         # Production is a lineage too: a recall follows the runs, as the trace does (O207).
         register_lot_sources(held_inputs, made_into_by_runs)

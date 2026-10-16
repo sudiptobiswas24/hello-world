@@ -193,7 +193,7 @@ def on_the_creels(run, item):
     return [(lot, kg) for lot, kg in rows if kg > 0]
 
 
-def on_creels_undrawn(lot):
+def on_creels_undrawn(lot, warehouse=None):
     """
     Kilos of a batch on the creels of backflushed runs still open that
     their output has not drawn yet.
@@ -210,7 +210,11 @@ def on_creels_undrawn(lot):
     runs = WorkOrder.objects.filter(
         backflush=True, status=WorkOrderStatus.RELEASED,
         tape_loads__lot=lot, tape_loads__voided_at__isnull=True,
-    ).distinct()
+    )
+    if warehouse is not None:
+        # Asked of one shelf (allocate, O133): the creels loaded from it.
+        runs = runs.filter(tape_loads__station__warehouse=warehouse)
+    runs = runs.distinct()
     return sum((max(loaded(run, lot) - drawn_by_output(run, lot), ZERO) for run in runs), ZERO)
 
 
