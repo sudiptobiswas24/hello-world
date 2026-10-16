@@ -67,13 +67,16 @@ def rate_standing(section, day, tax, taken, screen):
     accountant; refused in words otherwise. `tax` is "TCS" or "TDS", `taken`
     what is done at it ("collected", "deducted"), `screen` where it is kept.
     """
+    # The words name the tax, its section and the screen it is confirmed on: a supply the law taxes at source
+    # is never posted taking nothing (g22, integrator's decision), and the person refused must know where to go.
     rate = section.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
     if rate is None:
-        raise ValidationError(f"{tax} under {section.code} has no rate from {day:%d %b %Y} or before; the "
-                              "accountant enters the rate the law sets and the day it applies from.")
+        raise ValidationError(f"{tax} under {section.code} has no rate from {day:%d %b %Y} or before, so this "
+                              f"cannot be posted: the accountant enters the rate the law sets and the day it "
+                              f"applies from, under Settings > {screen}.")
     if rate.confirmed_on is None:
         raise ValidationError(
-            f"The {section.code} rate of {rate.rate_percent.normalize():f}% from {rate.applies_from:%d %b %Y} "
-            f"is not confirmed by the accountant, so nothing is {taken} at it yet. Confirm it, or correct "
-            f"it, under the {screen}.")
+            f"{tax} under {section.code} at {rate.rate_percent.normalize():f}% from {rate.applies_from:%d %b %Y} "
+            f"is not confirmed by the accountant, so this cannot be posted and nothing is {taken} at it yet: "
+            f"confirm it, or correct it, under Settings > {screen}.")
     return rate
