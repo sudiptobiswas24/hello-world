@@ -302,6 +302,9 @@ def _invoice_payload(invoice):
             f"{invoice.number} is a credit note. Goods coming back move on the sender's "
             "e-way bill, which is not built here."
         )
+    if invoice.is_debit_note():
+        # A supplementary invoice bills more for goods that moved on the invoice's own bill (review F5).
+        raise ValidationError(f"{invoice.number} is a debit note: no goods move on it, so it has no e-way bill.")
     if invoice.is_down_payment:
         raise ValidationError(f"{invoice.number} is a down payment; no goods move on it.")
     from .einvoice import EInvoice

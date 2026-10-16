@@ -133,6 +133,10 @@ class Document:
 
 def _uqc(line):
     """The code of the unit the line's quantity is in: its order's, else the item's."""
+    # A debit note's line bills more for its invoice's line, in that line's unit (review F6).
+    debited = getattr(line, "debits_line", None)
+    if debited is not None and getattr(line, "item", None) is None:
+        line = debited
     item = getattr(line, "item", None)
     if item is None:
         return "NA"
@@ -176,7 +180,8 @@ def _document(source, date, state, is_note):
         uqc = "NA" if hsn.startswith("99") else _uqc(line)
         recorded = Line(
             hsn=hsn, uqc=uqc,
-            quantity=ZERO if uqc == "NA" else line.quantity,
+            # A debit note adds value, not quantity: its goods line keeps the invoice's unit at nothing more.
+            quantity=ZERO if uqc == "NA" or getattr(line, "debits_line_id", None) else line.quantity,
             nature=nature,
             rate=sum((row.rate for row in gst if row.gst_head != "cess"), ZERO),
             taxable=base(line.net_amount()),
