@@ -1269,8 +1269,10 @@ class OneVendorInvoiceInItsYearTests(ProbeCase):
         self.first = self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference="INV-77")
         self.first.post()
 
-    def test_the_same_number_in_another_case_or_spacing_is_refused(self):
-        for written in ("inv-77", "INV 77", "inv/77", "I.N.V-77", " INV77 "):
+    def test_the_same_number_in_another_case_spacing_or_dash_is_refused(self):
+        # The g22 decision: case, whitespace, Unicode forms and dashes fold; separators do not.
+        for written in ("inv-77", " INV-77 ", "Inv\u2010" "77", "INV\u221277", "\uff29\uff2e\uff36-\uff17\uff17",
+                        ):
             with self.subTest(written=written):
                 with self.assertRaisesMessage(ValidationError, f"invoice '{written}' is already on file as 'INV-77' as "
                                                                f"{self.first}, dated 2026-01-10"):
@@ -1282,12 +1284,24 @@ class OneVendorInvoiceInItsYearTests(ProbeCase):
         other = self.other_vendor()
         Bill.objects.create(vendor=other, bill_date=JAN(10), payable_account=self.payable, currency=self.usd,
                             reference="INV-77")
-        self.assertEqual(Bill.objects.filter(reference_key="2025:INV77").count(), 2)
-        self.assertEqual(Bill.objects.filter(reference_key="2026:INV77").count(), 1)
+        self.assertEqual(Bill.objects.filter(reference_key="2025:INV-77").count(), 2)
+        self.assertEqual(Bill.objects.filter(reference_key="2026:INV-77").count(), 1)
 
     def test_a_distinct_number_stands(self):
         self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference="INV-771").post()
         self.assertEqual(self.balance(self.payable), Decimal("-20.00"))
+
+    def test_another_separator_is_another_invoice(self):
+        """"INV-77", "INV/77" and "INV77" are three invoices; "X/1/12" and "X/11/2" two (O178)."""
+        for written in ("INV/77", "INV77", "INV 77", "X/1/12", "X/11/2"):
+            self.hand_bill(self.po.lines.get(), "1", "5", order=self.po, reference=written).post()
+        self.assertEqual(self.balance(self.payable), Decimal("-35.00"))
+
+    def test_a_placeholder_or_an_overlong_number_is_refused_in_words(self):
+        for written, said in (("-", "has no letter or digit"), ("./-", "has no letter or digit"),
+                              ("\ufb03" * 30, "at most 64")):
+            with self.subTest(written=written), self.assertRaisesMessage(ValidationError, said):
+                self.hand_bill(self.po.lines.get(), "1", "5", order=self.po, reference=written)
 
 
 class AReturnsDebitNoteRecordsTheSuppliersCreditNoteTests(ProbeCase):
