@@ -1,0 +1,14 @@
+[Unit]
+Description=Scale bridge for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/scale-bridge/scale_bridge.py /etc/scale-bridge/%i.json
+Restart=always
+RestartSec=5
+User=scalebridge
+Group=dialout
+
+[Install]
+WantedBy=multi-user.target
