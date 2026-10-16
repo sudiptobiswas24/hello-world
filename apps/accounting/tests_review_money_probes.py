@@ -209,9 +209,10 @@ class SettlementDiscountOnAPartPayment(base.FxSettlementTestCase):
         except ValidationError as exc:
             taken = D("0")
             print("   refused:", exc.messages)
-        # 2% of the 100 that came within the days is 2.00; the customer still owes 900 - 2 = 898 at most.
-        say(taken <= D("2.00"), "O109 sales: discount on a 100 part payment of a 1,000 invoice is at most 2.00", f"taken {taken}")
-        self.assertLessEqual(taken, D("2.00"))
+        # Decided (integrator, review F2): 100 within 2/10 settles 100/0.98 and earns 100 x 0.02 / 0.98 = 2.04;
+        # the customer owes 1,000 - 100 - 2.04 = 897.96 (calc_fix_money/g22/f2.py).
+        say(taken == D("2.04"), "O109 sales: discount on a 100 part payment of a 1,000 invoice is 2.04", f"taken {taken}")
+        self.assertEqual((taken, inv.amount_due()), (D("2.04"), D("897.96")))
 
     def test_the_same_on_the_bill(self):
         from apps.purchasing.models import Bill, BillPayment
@@ -226,8 +227,8 @@ class SettlementDiscountOnAPartPayment(base.FxSettlementTestCase):
         except ValidationError as exc:
             taken = D("0")
             print("   refused:", exc.messages)
-        say(taken <= D("2.00"), "O109 purchasing: discount on a 100 part payment of a 1,000 bill is at most 2.00", f"taken {taken}")
-        self.assertLessEqual(taken, D("2.00"))
+        say(taken == D("2.04"), "O109 purchasing: discount on a 100 part payment of a 1,000 bill is 2.04", f"taken {taken}")
+        self.assertEqual((taken, bill.amount_due()), (D("2.04"), D("897.96")))
 
     def test_a_payment_outside_the_days_earns_nothing(self):
         from apps.sales.models import Invoice, InvoicePayment

@@ -637,6 +637,28 @@ def standing_on_account(payments):
     return received, paid_out
 
 
+def discount_earned_by(document, payment):
+    """
+    What `payment` earns of `document`'s early-settlement discount (review F2): applied within the
+    discount days at rate d, its P settles P/(1-d) of the document and earns P*d/(1-d), no more than is
+    still due after it, so that what it settles is never more than was outstanding. Paid after the
+    days, or a document whose discount is taken or that offers none: nothing. 980 on 1,000 at 2/10
+    earns 20.00; 100 earns 2.04, not the 20.00 the whole invoice's discount would be.
+    """
+    terms = document.payment_terms
+    if (terms is None or not terms.discount_percent or document.settlement_discount_amount
+            or document.settlement_discount_entry_id or not payment.posted or payment.is_voided()):
+        return Decimal("0")
+    deadline = document.discount_due_date()
+    if deadline is None or to_date(payment.payment_date) > deadline:
+        return Decimal("0")
+    applied = sum((row.amount for row in standing_allocations(document) if row.payment_id == payment.pk),
+                  Decimal("0"))
+    rate = terms.discount_percent / Decimal("100")
+    earned = round_money(applied * rate / (1 - rate))
+    return max(min(earned, document.amount_due()), Decimal("0"))
+
+
 def settlement_discount_to_take(document, on_date, force=False):
     """
     The early-settlement discount an invoice or a bill may take now: once,
@@ -693,7 +715,13 @@ def take_settlement_discount(document, *, control_account, party, discount_accou
             raise ValidationError(f"{payment.number} was made on {to_date(payment.payment_date)}, after the "
                                   f"discount days on {document.number} ended ({deadline}).")
         on_date = on_date or max(to_date(payment.payment_date), document.date_for_discount())
-    amount = settlement_discount_to_take(document, on_date, force)
+        amount = discount_earned_by(document, payment) if not force else settlement_discount_to_take(
+            document, on_date, force)
+        if amount <= 0:
+            raise ValidationError(f"{payment.number} earns no settlement discount on {document.number}: nothing "
+                                  "of it is left to settle, or its terms offer none.")
+    else:
+        amount = settlement_discount_to_take(document, on_date, force)
     if discount_account is None:
         raise ValidationError(f"The company has no {account_label} account configured.")
     base_amount = round_money(amount * (document.exchange_rate or Decimal("1")))
