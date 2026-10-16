@@ -88,6 +88,26 @@ def held_inputs(lot):
     return list(found.values())
 
 
+def _held_inputs_for_page(lots):
+    """
+    `held_inputs` for a page of batches (O231): asked only of those a run or
+    a re-batch put on a shelf, which two queries find; a batch received or
+    counted in has nothing upward to hold it.
+    """
+    from .orders import ProductionByproduct, ProductionEntry
+    from .rebatch import RebatchSide, _standing_lines
+
+    made = set(ProductionEntry.objects.filter(lot__in=lots, posted=True, voided_at__isnull=True)
+               .values_list("lot_id", flat=True))
+    made |= set(ProductionByproduct.objects.filter(lot__in=lots, entry__posted=True, entry__voided_at__isnull=True)
+                .values_list("lot_id", flat=True))
+    made |= set(_standing_lines(lot__in=lots, side=RebatchSide.OUT).values_list("lot_id", flat=True))
+    return {lot.pk: held_inputs(lot) for lot in lots if lot.pk in made}
+
+
+held_inputs.for_page = _held_inputs_for_page
+
+
 def descendants(lot, depth=None, beyond=None):
     """
     Every batch made, directly or at a remove, from this one.

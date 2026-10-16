@@ -155,6 +155,53 @@ def walk(lot, step, depth=None, beyond=None):
     return found
 
 
+def prefill_page(lots):
+    """
+    What the gate reads of each batch, read for a page of them at once
+    (inventory.tracking.held_because_page, O231): the standing verdict, the
+    plan of each item, and what each lineage says it was made from, a
+    provider with a page form (`provider.for_page(lots) -> {pk: [lot]}`)
+    asked once for the page. Called inside the page's one question.
+    """
+    asked = _ASKED.get()
+    if asked is None or not lots:
+        return
+    pks = [lot.pk for lot in lots]
+    standing = (Inspection.objects.filter(lot__in=pks, posted=True, voided_at__isnull=True)
+                .exclude(recalled_by__isnull=False, disposition=Disposition.AWAITING)
+                .order_by("lot_id", "-inspected_on", F("posted_at").desc(nulls_last=True), "-id"))
+    latest = {}
+    for inspection in standing:
+        latest.setdefault(inspection.lot_id, inspection)
+    for pk in pks:
+        asked.setdefault(("latest", pk, False), latest.get(pk))
+    recalls = {}
+    for recall in Inspection.objects.filter(lot__in=pks, posted=True, voided_at__isnull=True,
+                                            recalled_by__isnull=False,
+                                            disposition=Disposition.AWAITING).order_by("pk"):
+        recalls.setdefault(recall.lot_id, recall)
+    for pk in pks:
+        asked.setdefault(("open_recall", pk), recalls.get(pk))
+    today = timezone.localdate()
+    items = {lot.item_id: lot.item for lot in lots}
+    plans = {}
+    for plan in InspectionPlan.objects.filter(
+            Q(valid_from__isnull=True) | Q(valid_from__lte=today),
+            Q(valid_to__isnull=True) | Q(valid_to__gte=today),
+            item_id__in=list(items), is_active=True).order_by("pk"):
+        plans.setdefault(plan.item_id, plan)
+    for item_pk in items:
+        asked.setdefault(("plan", item_pk, today), plans.get(item_pk))
+    found = {pk: [] for pk in pks}
+    for provider in LOT_SOURCES:
+        page = getattr(provider, "for_page", None)
+        answers = page(lots) if page is not None else {lot.pk: provider(lot) for lot in lots}
+        for pk in pks:
+            found[pk].extend(answers.get(pk, []))
+    for pk in pks:
+        asked.setdefault(("sources", pk), found[pk])
+
+
 def lot_sources(lot):
     def work():
         found = []
@@ -212,6 +259,11 @@ def recall_plan(lot):
 
 def open_recall(lot):
     """The recall of `lot` waiting for the Quality Manager's decision, or None."""
+    # Read off the page when a page of batches was asked at once (prefill_page), and only
+    # then: a recall writes recalls inside its question, and must read them as they are.
+    asked = _ASKED.get()
+    if asked is not None and ("open_recall", lot.pk) in asked:
+        return asked[("open_recall", lot.pk)]
     return Inspection.objects.filter(
         lot=lot, posted=True, voided_at__isnull=True, recalled_by__isnull=False,
         disposition=Disposition.AWAITING).order_by("pk").first()
