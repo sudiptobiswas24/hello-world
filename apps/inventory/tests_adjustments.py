@@ -409,6 +409,8 @@ class WrittenDownAtWhatTheShelfGaveUpTests(AdjustmentTestCase):
         adjustment = self.adjust("-1000", reason=self.shrink, post=False)
         posted = client.post(f"/api/inventory/stock-adjustments/{adjustment.pk}/post/", {}, format="json")
         self.assertEqual(posted.status_code, 200, posted.content[:300])
+        # O23: the answer itself, not only a later read, says what it posted.
+        self.assertEqual((posted.json()["posted"], posted.json()["total_value"]), (True, "-3333.33"))
         read = client.get(f"/api/inventory/stock-adjustments/{adjustment.pk}/")
         self.assertEqual(read.json()["total_value"], "-3333.33")
         voided = client.post(f"/api/inventory/stock-adjustments/{adjustment.pk}/void/", {}, format="json")
