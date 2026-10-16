@@ -202,10 +202,8 @@ class SalesPathProbes(tests_guards.TradeRuleCase):
         self.assertTrue(response.status_code >= 400 or total <= Z("110"),
                         f"HTTP {response.status_code}: order confirmed at 100 under a 110 limit now totals {total}")
 
-    def test_02_the_same_as_a_superuser_over_the_api_and_at_the_model(self):
-        from django.contrib.auth.models import User
-        from rest_framework.test import APIClient
-
+    def test_02_the_ar_manager_who_may_patch_it_cannot_take_the_order_past_its_limit(self):
+        """The Sales Rep is refused the patch (403, test_01); the AR Manager may make it, and is asked the policy."""
         from apps.sales.models import ApprovalPolicy, SalesOrder
 
         ApprovalPolicy.objects.create(code="STD", name="Standard", max_order_value=Z("110"))
@@ -214,10 +212,10 @@ class SalesPathProbes(tests_guards.TradeRuleCase):
         out = Account.objects.create(code="2300", name="GST output", account_type=AccountType.LIABILITY)
         gst = Tax.objects.create(code="GST18", name="GST 18%", rate=Z("18"), group=group, scope=TaxScope.BOTH,
                                  collected_account=out, paid_account=out)
-        client = APIClient()
-        client.force_authenticate(User.objects.create_superuser("root2", "r@x.y", "x"))
-        response = client.patch(f"/api/sales/sales-order-lines/{order.lines.get().pk}/", {"taxes": [gst.pk]},
-                                format="json")
+        response = self.as_("AR Manager").patch(f"/api/sales/sales-order-lines/{order.lines.get().pk}/",
+                                                {"taxes": [gst.pk]}, format="json")
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("above the 110.00 limit", str(response.json()))
         total = SalesOrder.objects.get(pk=order.pk).total()
         self.assertTrue(response.status_code >= 400 or total <= Z("110"),
                         f"HTTP {response.status_code}: order confirmed at 100 under a 110 limit now totals {total}")
