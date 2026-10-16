@@ -1884,6 +1884,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_notes",
         help_text="Set when this invoice is a credit note correcting another invoice.",
     )
+    debits = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="debit_notes", editable=False,
+        help_text="Set when this is a debit note: a supplementary invoice for an amount short-billed on "
+                  "another invoice (CGST section 34(3)).",
+    )
     journal_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False
     )
@@ -1985,6 +1990,9 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
 
     def is_credit_note(self):
         return bool(self.credits_id)
+
+    def is_debit_note(self):
+        return bool(self.debits_id)
 
     def tax_party(self):
         return self.customer
@@ -2808,6 +2816,11 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 self.number = DocumentSequence.next_for(
                     "sales.credit_note", self.invoice_date, name="Credit Notes", prefix="CN-"
                 )
+            elif self.is_debit_note():
+                # Its own series, as Rule 53 asks of a debit note (O235).
+                self.number = DocumentSequence.next_for(
+                    "sales.debit_note", self.invoice_date, name="Debit Notes", prefix="DN-"
+                )
             else:
                 self.number = DocumentSequence.next_for(
                     "sales.invoice", self.invoice_date, name="Customer Invoices", prefix="INV-"
@@ -2984,6 +2997,57 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 )
                 claim_line.taxes.set(line.taxes.all())
             note.post(memo=memo or f"Claim on {self.number}: {reasons[reason]}")
+            return note
+
+    def debit(self, net, reason, memo="", on_date=None):
+        """
+        A debit note on this invoice (O235): the supplementary invoice CGST section 34(3) asks for an
+        amount short-billed, a rate agreed higher or a price rise after invoicing. `net` is before tax,
+        spread over the lines by their value, the last taking what rounding leaves, each line taxed as
+        its original was; it posts as an invoice does (Dr receivable / Cr revenue and output tax) under
+        its own series. Its reverse is a credit note on it. Dated neither before the invoice nor on a
+        day to come (correction_date).
+        """
+        reason = (reason or "").strip()
+        if not reason:
+            raise ValidationError({"reason": "Say what was short-billed."})
+        with transaction.atomic():
+            lock_rows(self)
+            if not self.posted:
+                raise ValidationError("Only a posted invoice takes a debit note.")
+            if self.is_credit_note() or self.is_debit_note():
+                raise ValidationError("A debit note is raised against the invoice, not against a note.")
+            if self.is_down_payment:
+                raise ValidationError("A down payment is no supply; a debit note is raised on the invoice for it.")
+            if self.is_opening_balance:
+                raise ValidationError(f"{self.number} came from the old system; a debit note on it is not built.")
+            net = round_money(Decimal(net))
+            if net <= 0:
+                raise ValidationError({"net": "A debit note asks for more than nothing."})
+            on_date = correction_date(on_date, self.invoice_date, f"A debit note on {self.number} is not dated",
+                                      "it was issued")
+            values = [(line, line.posted_net if line.posted_net is not None else line.net_amount())
+                      for line in self.lines.order_by("pk")]
+            values = [(line, value) for line, value in values if value > 0]
+            whole = sum((value for _, value in values), Decimal("0"))
+            if not whole:
+                raise ValidationError(f"{self.number} has no value to raise a debit note on.")
+            note = Invoice.objects.create(
+                customer=self.customer, invoice_date=on_date, reference=self.reference,
+                receivable_account=self.receivable_account, currency=self.currency,
+                payment_terms=self.payment_terms, billing_address=self.billing_address,
+                shipping_address=self.shipping_address, sales_rep=self.sales_rep, debits=self)
+            used = Decimal("0")
+            for index, (line, value) in enumerate(values):
+                share = net - used if index == len(values) - 1 else round_money(net * value / whole)
+                used += share
+                if share <= 0:
+                    continue
+                added = InvoiceLine.objects.create(
+                    invoice=note, debits_line=line, description=f"{reason}: {line.label()}",
+                    quantity=Decimal("1"), unit_price=share, revenue_account=line.revenue_account)
+                added.taxes.set(line.taxes.all())
+            note.post(memo=memo or f"Debit note on {self.number}: {reason}")
             return note
 
     def credit_old_supply(self, lines, memo="", on_date=None, old_value=None):
@@ -3230,6 +3294,10 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="credit_lines",
         help_text="On a credit note line, the invoice line being credited.",
     )
+    debits_line = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="debit_lines", editable=False,
+        help_text="On a debit note line, the invoice line it bills more for: its HSN and taxes (O235).",
+    )
     item = models.ForeignKey(Item, null=True, blank=True, on_delete=models.PROTECT, related_name="invoice_lines")
     charge = models.ForeignKey(
         ChargeType, null=True, blank=True, on_delete=models.PROTECT, related_name="%(class)ss",
@@ -3264,6 +3332,10 @@ class InvoiceLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         return super().fixed_tax_amounts()
 
     def current_hsn(self):
+        # A debit note's line bills more for its invoice's line, under the HSN that line froze (O235);
+        # not a correction of it: its tax is its own value at the rate, never a share of the line's.
+        if self.debits_line_id and self.debits_line.hsn_code:
+            return self.debits_line.hsn_code
         # A credit note keeps what its invoice line froze; only a fresh
         # line asks whether it is conversion.
         if self.corrected_line() is None:
