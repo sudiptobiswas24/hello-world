@@ -54,7 +54,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.core.models import to_date
-from apps.inventory.tracking import TrackingMode, lots_at
+from apps.inventory.tracking import TrackingMode, free_lots_at
 from apps.manufacturing.bom import default_bom_for, drawn
 from apps.manufacturing.orders import WorkOrder, WorkOrderStatus
 from apps.quality.release import may_be_drawn
@@ -138,13 +138,16 @@ def unusable_on_hand(item, warehouse, on_date):
     if item.tracking == TrackingMode.NONE:
         return ZERO
     total = ZERO
-    for lot, quantity in lots_at(item, warehouse):
-        if quantity <= 0:
+    for lot, quantity, promised in free_lots_at(item, warehouse):
+        if quantity + promised <= 0:
             continue
         # The release gate's answer, not one worked out here from today's
         # plan: a rejected drum counted as cover once its plan was retired.
         if lot.has_expired(on_date) or not may_be_drawn(item, lot, warehouse):
-            total += quantity
+            total += quantity + promised
+        else:
+            # On a backflushed run's creels and not yet drawn: the run's, not cover (O133's mirror).
+            total += promised
     return total
 
 
@@ -162,7 +165,7 @@ def expiring_unused(item, warehouse, on_date, demands):
     if item.tracking == TrackingMode.NONE:
         return []
     batches = sorted(
-        ((lot, quantity) for lot, quantity in lots_at(item, warehouse)
+        ((lot, quantity) for lot, quantity, _promised in free_lots_at(item, warehouse)
          if quantity > 0 and lot.expires_on is not None and not lot.has_expired(on_date)
          and may_be_drawn(item, lot, warehouse)),
         key=lambda row: (row[0].expires_on, row[0].pk),
