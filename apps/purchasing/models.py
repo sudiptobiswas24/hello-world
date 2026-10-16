@@ -1337,9 +1337,6 @@ class BlanketOrderLine(TaxedLineMixin, AuditModel):
     def quantity_remaining(self):
         return self.quantity - self.quantity_released()
 
-    def is_fully_released(self):
-        return self.quantity_released() >= self.quantity
-
 
 class PurchaseApprovalPolicy(AuditModel):
     """

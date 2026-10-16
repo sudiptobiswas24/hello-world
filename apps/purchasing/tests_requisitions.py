@@ -375,3 +375,25 @@ class WhoCallsARequestOffTests(RequisitionTestCase):
 
         with self.assertRaises(PermissionDenied):
             PurchaseRequisition.objects.get(pk=self.requisition_.pk).cancel(by=self.manager)
+
+
+
+class SuggestedVendorsThroughTheApiTests(RequisitionTestCase):
+    """O109: the suggestions are read from the requisition's screen, as the purchasing clerk."""
+
+    def test_the_clerk_reads_who_each_line_could_be_bought_from(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        VendorPrice.objects.create(vendor=self.vendor, item=self.item, currency=self.usd,
+                                   unit_price=Decimal("4"), is_preferred=True)
+        requisition = self.requisition()
+        user = User.objects.create_user("clerk")
+        user.groups.add(Group.objects.get(name="Purchasing Clerk"))
+        client = APIClient()
+        client.force_authenticate(user)
+        answer = client.get(f"/api/purchasing/requisitions/{requisition.pk}/suggested_vendors/")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.assertEqual([(row["line"], row["vendor"]) for row in answer.json()], [(self.line.pk, self.vendor.pk)])
