@@ -664,8 +664,12 @@ class ATdsAndATcsChallanForOneMonthOnOneBankTests(TcsTestCase):
         self.t1()
         tds_payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
         contract = TdsSection.objects.create(
-            code="194C", name="Contractors", rate_percent=D("2"), no_pan_rate_percent=D("20"), mode="whole",
+            code="194C", name="Contractors", mode="whole",
             single_threshold=D("30000"), annual_threshold=D("100000"), payable_account=tds_payable)
+        # Rates are dated rows the accountant confirms since O233 (fix_purch): 2%, 20% without a PAN.
+        from apps.purchasing.tests_tds import confirmed_rate
+
+        confirmed_rate(contract, "2", "20")
         fitter = Party.objects.create(code="V-FIT", name="Loom Fitters")
         PartyRoleAssignment.objects.create(party=fitter, role=PartyRole.VENDOR)
         PartyTaxProfile.objects.create(party=fitter, tds_section=contract, pan="AAAPL1234C")

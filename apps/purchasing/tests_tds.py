@@ -662,8 +662,9 @@ class DatedRateTests(TdsTestCase):
         TdsRate.objects.create(section=self.contract, applies_from=datetime.date(2026, 3, 1),
                                rate_percent=Decimal("1"), no_pan_rate_percent=Decimal("20"))
         bill = self.bill("40000", day=datetime.date(2026, 3, 10), vendor=self.party)
-        with self.assertRaisesMessage(ValidationError, "The 194C rate of 1% from 01 Mar 2026 is not confirmed by the "
-                                                       "accountant, so nothing is deducted at it yet."):
+        with self.assertRaisesMessage(ValidationError, "TDS under 194C at 1% from 01 Mar 2026 is not confirmed by the "
+                                                       "accountant, so this cannot be posted and nothing is deducted "
+                                                       "at it yet: confirm it, or correct it, under Settings > TDS rates."):
             bill.deduct_tds()
 
     def test_the_controller_confirms_a_rate_and_the_ap_manager_may_not(self):
