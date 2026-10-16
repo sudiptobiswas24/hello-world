@@ -223,6 +223,11 @@ class FixedAsset(Extensible, AuditModel):
     # to 15,000 against 12,000 posted, its disposal took 15,000 off the
     # plant account and left it at -3,000; moved to another category, it
     # came off that category's account and left 12,000 on the first.
+    # On a draft typed in by hand, what the go-live import alone sets.
+    FIXED_AT_GO_LIVE = ("depreciated_before", "opening_depreciation")
+    # Set by place_in_service, uncapitalise, dispose and reinstate as they save.
+    _status_by_method = False
+
     FIXED_ONCE_CAPITALISED = (
         "category_id", "acquisition_date", "cost", "asset_account_id",
         "depreciated_before", "opening_depreciation",
@@ -262,8 +267,22 @@ class FixedAsset(Extensible, AuditModel):
                 fixed = self.FIXED_ONCE_CAPITALISED
             else:
                 fixed = ()
+            # Its status is what has happened to it, said by the method that made it
+            # happen; the admin's status box put a draft in service with no
+            # number, no accounts kept and no check of a closed month (O14).
+            if previous is not None and previous.status != self.status and not self._status_by_method:
+                raise ValidationError(
+                    f"{self} is {previous.get_status_display().lower()}; its status changes by what "
+                    "happens to it: put it into service, dispose of it, reinstate it or un-capitalise it.")
+            # Set as the register is brought in at go-live, and never after (O13).
+            if previous is not None and not fixed:
+                fixed = self.FIXED_AT_GO_LIVE
             changed = [name for name in fixed if getattr(previous, name) != getattr(self, name)]
             names = ", ".join(n.replace("_id", "") for n in changed)
+            if changed and fixed is self.FIXED_AT_GO_LIVE:
+                raise ValidationError(
+                    f"{self}'s {names} say what the old system had depreciated when the register was "
+                    "brought in at go-live, and are not changed after. Register it again if they were wrong.")
             if changed and previous.status != AssetStatus.DRAFT:
                 raise ValidationError(
                     f"{self} is {previous.get_status_display().lower()}; "
@@ -277,6 +296,7 @@ class FixedAsset(Extensible, AuditModel):
                     "then capitalise the bill line again as it should be."
                 )
         super().save(*args, **kwargs)
+        self._status_by_method = False
 
     @serialised("capitalisation_entry", "status")
     def delete(self, *args, **kwargs):
@@ -300,8 +320,18 @@ class FixedAsset(Extensible, AuditModel):
             if self.in_service_date < self.acquisition_date:
                 raise ValidationError("An asset cannot be in service before it was acquired.")
         self.depreciated_before = to_date(self.depreciated_before)
-        if self.depreciated_before and self.in_service_date and self.depreciated_before < self.in_service_date:
+        # Brought in at go-live: in service under the old system by then, and
+        # by a day that has come. Asked of the date it will go into service
+        # from when none is typed, as place_in_service() takes it (O13): a
+        # draft typed in by hand skipped a year of charges by naming next
+        # March as the day the old system had depreciated it to.
+        started = self.in_service_date or self.acquisition_date
+        if self.depreciated_before and started and self.depreciated_before < started:
             raise ValidationError("Nothing was depreciated before the asset was in service.")
+        if self.depreciated_before and self.depreciated_before > timezone.localdate():
+            raise ValidationError(
+                f"The old system cannot have depreciated it to {self.depreciated_before}: that day "
+                "has not come. Depreciation taken before go-live is dated by the day it was taken to.")
         if self.opening_depreciation:
             if self.opening_depreciation < 0:
                 raise ValidationError("Opening depreciation cannot be below nothing.")
@@ -354,6 +384,9 @@ class FixedAsset(Extensible, AuditModel):
         # Checked by `save()`, which every path through here reaches —
         # a date before the asset arrived is refused there.
         in_service = to_date(on_date) or self.in_service_date or self.acquisition_date
+        # Not from a day still to come: charged from next month, its months stood in
+        # the books before anyone had used the machine (O12).
+        in_service = day_that_has_come(in_service, f"{self} is not put into service from")
         # Not before its cost is on the books: capitalised again after an undo, that is the day
         # it was capitalised, and months charged before it stood against a cost not yet there.
         if self.capitalisation_entry_id and in_service < to_date(self.capitalisation_entry.date):
@@ -380,6 +413,7 @@ class FixedAsset(Extensible, AuditModel):
                 name="Fixed Assets", prefix="FA-",
             )
         self.status = AssetStatus.IN_SERVICE
+        self._status_by_method = True
         self.save(update_fields=["number", "in_service_date", "status", "updated_at"])
 
     def periods_due(self, through):
@@ -528,6 +562,7 @@ class FixedAsset(Extensible, AuditModel):
         # capitalisation simply never stood — and the register, which
         # shows it only until the day it was undone, must not show it as a disposal.
         self.status = AssetStatus.CANCELLED
+        self._status_by_method = True
         self.save(update_fields=["status", "updated_at"])
 
     @serialised("status")
@@ -618,6 +653,7 @@ class FixedAsset(Extensible, AuditModel):
         entry.post()
 
         self.status = AssetStatus.DISPOSED
+        self._status_by_method = True
         self.disposed_on = on_date
         self.disposal_entry = entry
         self.save(update_fields=["status", "disposed_on", "disposal_entry", "updated_at"])
@@ -657,6 +693,7 @@ class FixedAsset(Extensible, AuditModel):
                 self._charge(month_end, taken_back.amount, posted_on=open_or_today(month_end))
                 standing.add(month_end)
         self.status, self.disposed_on = AssetStatus.IN_SERVICE, None
+        self._status_by_method = True
         self.save(update_fields=["status", "disposed_on", "reinstatement_entry", "updated_at"])
         return self.reinstatement_entry
 

@@ -31,5 +31,6 @@ class FixedAssetAdmin(AuditableAdminMixin, admin.ModelAdmin):
         "cost", "accumulated", "net_book_value", "status",
     )
     list_filter = ("status", "category")
-    readonly_fields = ("number", "disposed_on", "disposal_entry")
+    # Its status is what has happened to it, changed by the method that did it (O14).
+    readonly_fields = ("number", "status", "disposed_on", "disposal_entry")
     inlines = [DepreciationEntryInline]

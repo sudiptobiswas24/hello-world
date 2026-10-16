@@ -511,3 +511,78 @@ class TheRegisterFootsToTheLedgerTests(AssetTestCase):
         self.assertEqual([row["label"] for row in found["rows"]],
                          ["1500 Plant: register 12,000.00, ledger 12,500.00, difference 500.00"])
 
+
+class NotIntoServiceFromADayToComeTests(AssetTestCase):
+    # O12: put into service from tomorrow, its months were charged before anyone used it.
+    def test_refused(self):
+        from django.utils import timezone
+
+        lathe = self.asset(in_service=False)
+        tomorrow = timezone.localdate() + datetime.timedelta(days=1)
+        with self.assertRaisesMessage(ValidationError, f"is not put into service from {tomorrow}: "
+                                                       "that day has not come"):
+            lathe.place_in_service(on_date=tomorrow)
+        self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.DRAFT)
+        lathe.place_in_service(on_date=timezone.localdate())
+        self.assertEqual(lathe.status, AssetStatus.IN_SERVICE)
+
+
+class DepreciationBroughtInAtGoLiveTests(AssetTestCase):
+    """
+    O13: on a draft typed in by hand, what the old system had depreciated
+    was anybody's to type at any time: to a day still to come, before the
+    machine arrived, or moved after it was brought in.
+    """
+
+    def drafted(self, **kwargs):
+        return FixedAsset.objects.create(name="Loom 7", category=self.category, cost=Decimal("12000"),
+                                         life_months=12, acquisition_date=datetime.date(2026, 1, 1), **kwargs)
+
+    def test_not_to_a_day_still_to_come(self):
+        from django.utils import timezone
+
+        with self.assertRaisesMessage(ValidationError, "that day has not come"):
+            self.drafted(depreciated_before=timezone.localdate() + datetime.timedelta(days=1))
+
+    def test_not_before_it_arrived_though_no_in_service_date_is_typed(self):
+        with self.assertRaisesMessage(ValidationError, "Nothing was depreciated before the asset was in service"):
+            self.drafted(depreciated_before=datetime.date(2025, 12, 31))
+
+    def test_not_changed_after_it_was_brought_in(self):
+        loom = self.drafted(depreciated_before=datetime.date(2026, 3, 31), opening_depreciation=Decimal("3000"))
+        loom.depreciated_before = datetime.date(2026, 6, 30)
+        with self.assertRaisesMessage(ValidationError, "are not changed after"):
+            loom.save()
+        controller = self.as_role("Controller")
+        refused = controller.patch(f"/api/assets/assets/{loom.pk}/", {"opening_depreciation": "6000.00"},
+                                   format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertEqual(FixedAsset.objects.get(pk=loom.pk).opening_depreciation, Decimal("3000.00"))
+        renamed = controller.patch(f"/api/assets/assets/{loom.pk}/", {"name": "Loom 7A"}, format="json")
+        self.assertEqual(renamed.status_code, 200, renamed.content)
+        loom.refresh_from_db()
+        loom.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.assertEqual([row.period_end for row in loom.depreciate(through=datetime.date(2026, 4, 30))],
+                         [datetime.date(2026, 4, 30)])
+
+
+class ItsStatusIsWhatHappenedToItTests(AssetTestCase):
+    # O14: the admin's status box put a draft in service with no number and no accounts kept.
+    def test_a_status_set_by_hand_is_refused(self):
+        lathe = self.asset(in_service=False)
+        lathe.status = AssetStatus.IN_SERVICE
+        with self.assertRaisesMessage(ValidationError, "its status changes by what happens to it"):
+            lathe.save()
+        self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.DRAFT)
+
+    def test_the_admin_does_not_offer_it(self):
+        from django.contrib import admin
+
+        self.assertIn("status", admin.site._registry[FixedAsset].readonly_fields)
+
+    def test_each_method_still_moves_it(self):
+        lathe = self.asset()
+        lathe.depreciate(through=datetime.date(2026, 1, 31))
+        lathe.dispose(on_date=datetime.date(2026, 2, 15))
+        lathe.reinstate()
+        self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.IN_SERVICE)
