@@ -7769,7 +7769,7 @@ class GoodsReceipt(AuditModel):
         """
         The bill lines that paid for what a return line sends back, those
         that billed the returned receipt's own goods first (O94), then the
-        rest oldest first. Which bills hold a receipt's goods is replayed in
+        rest oldest first, as (bill line, what it holds of the receipt). Which bills hold a receipt's goods is replayed in
         posting order, net of what went back before each bill
         (receipts_billed_by): bills clear receipts in the order they were
         received, each bill after those posted before it. Oldest bill first,
@@ -7783,11 +7783,13 @@ class GoodsReceipt(AuditModel):
         ).select_related("bill").order_by("bill__posted_at", "bill_id", "id"))
         original = line.reverses_line
         if original is None:
-            return sorted(bill_lines, key=lambda row: (row.bill.bill_date, row.bill_id))
+            return [(row, None) for row in sorted(bill_lines, key=lambda row: (row.bill.bill_date, row.bill_id))]
+        # Only the bills that hold the receipt's goods, each for what it holds of them. Goods that no
+        # bill has billed go back off GRNI alone (the return's own entry): falling to the oldest bill,
+        # 4 returned unbilled were debited on a bill for other goods, and GRNI kept 20.00 for ever
+        # (review F2).
         holding = receipts_billed_by(line.order_line, excluding=self).get(original.pk, {})
-        paid = [row for row in bill_lines if holding.get(row.pk, Decimal("0")) > 0]
-        rest = [row for row in bill_lines if row not in paid]
-        return paid + sorted(rest, key=lambda row: (row.bill.bill_date, row.bill_id))
+        return [(row, holding[row.pk]) for row in bill_lines if holding.get(row.pk, Decimal("0")) > 0]
 
     def _debit_returned_goods(self):
         """
@@ -7810,10 +7812,12 @@ class GoodsReceipt(AuditModel):
         returned = defaultdict(dict)
         for line in self.lines.all():
             remaining = line.quantity_received
-            for bill_line in self._bill_lines_that_paid_for(line):
+            for bill_line, held in self._bill_lines_that_paid_for(line):
                 if remaining <= 0:
                     break
                 available = bill_line.quantity_debitable()
+                if held is not None:
+                    available = min(available, held)
                 if available <= 0:
                     continue
                 taken = min(available, remaining)

@@ -496,7 +496,9 @@ class ReturnsInPostingOrderProbes(ProbeCase):
         r2 = self.receive_on(order, "10", D(2026, 1, 3))
         self.hand_bill(line, "10", "5", order=order, reference="B-1").post()
         r2.create_return(quantities={r2.lines.get(): Z("4")}, debit_bills=True)
-        self.hand_bill(line, "10", "4.80", order=order, reference="B-2", day=D(2026, 1, 15)).post()
+        # R2's 4 went back before any bill held them: B-1 is not debited (review F2), so 6 are left to bill.
+        self.hand_bill(line, "6", "4.80", order=order, reference="B-2", day=D(2026, 1, 15)).post()
+        self.assertEqual(self.notes(), [])
         grni, payable = self.grni_and_payable()
         billed = sum((l.quantity for l in line.bill_lines.filter(bill__debits__isnull=True)), Z("0"))
         debited = sum((l.quantity for l in line.bill_lines.filter(bill__debits__isnull=False)), Z("0"))
