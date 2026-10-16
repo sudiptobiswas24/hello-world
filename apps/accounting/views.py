@@ -261,6 +261,7 @@ class JournalEntryViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def post_entry(self, request, pk=None):
         entry = self.get_object()
         try:
+            entry.refuse_accounts_in_another_currency()
             entry.post()
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
