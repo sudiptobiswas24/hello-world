@@ -33,7 +33,9 @@ from apps.accounting.models import (
     round_money,
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
-from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors, check_not_raised_by
+from apps.core.approvals import (
+    ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, authors, check_not_raised_by,
+)
 from apps.core.models import (
     BILLED,
     CONFIRMED,
@@ -1779,7 +1781,7 @@ class OrderStatus(models.TextChoices):
     CANCELLED = "cancelled", "Cancelled"
 
 
-class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
+class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     vendor = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="purchase_orders")
     order_date = models.DateField()
@@ -1813,6 +1815,12 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
     freight_terms = models.CharField(max_length=16, choices=FreightTerms.choices, blank=True)
     incoterm = models.CharField(max_length=3, choices=Incoterm.choices, blank=True)
     port_of_loading = models.CharField(max_length=64, blank=True)
+    approved_figures = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="What the approval covered, as the order stood when it was given: the total, each line's "
+                  "value and its price a unit. A confirmed order changes within it; past it, it is refused "
+                  "(apps.core.approvals.ChangesWithinItsApproval).",
+    )
 
     class Meta:
         ordering = ["-order_date", "-id"]
@@ -1899,22 +1907,9 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
         profile = vendor_profile(self.vendor_id)
         if profile and profile.standing == VendorStanding.TRIAL:
             reasons.append(f"{self.vendor} is on trial ({profile.standing_reason}): an order to them is approved first.")
-        policy = PurchaseApprovalPolicy.active()
-        if policy is None:
+        if PurchaseApprovalPolicy.active() is None:
             return reasons
-
-        total = self.total()
-        if policy.max_order_value is not None and total > policy.max_order_value:
-            reasons.append(
-                f"The order is {total}, above the {policy.max_order_value} limit."
-            )
-        if policy.max_line_value is not None:
-            for line in self.lines.all():
-                if line.total() > policy.max_line_value:
-                    reasons.append(
-                        f"'{line.label()}' is {line.total()}, above the "
-                        f"{policy.max_line_value} line limit."
-                    )
+        reasons += [words for _path, _value, _low, words in self.policy_breaches()]
         for line in self.lines.all():
             account = line.expense_account or (
                 line.charge.expense_account if line.is_charge() else None
@@ -1927,16 +1922,51 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel)
                     f"'{line.label()}' is {line.net_amount()} against {budget.available()} "
                     f"left on budget {budget.code}."
                 )
-
-        if policy.require_approval_without_vendor_price:
-            for line in self.lines.all():
-                if line.is_charge() or line.has_agreed_price():
-                    continue
-                reasons.append(
-                    f"'{line.label()}' was priced by hand, not from an agreed "
-                    "vendor price."
-                )
         return reasons
+
+    def policy_figures(self):
+        """What the policy weighs, as the order stands: the total, each line's value and its price a unit."""
+        lines = list(self.lines.all())
+        return {"total": self.total(), "lines": {line.pk: line.total() for line in lines},
+                "prices": {line.pk: net_unit_price(line) for line in lines}}
+
+    def policy_breaches(self):
+        """
+        Each figure past the policy, as confirming asks it and as a confirmed
+        order's change is weighed (ChangesWithinItsApproval). The budget is
+        asked on its own, under its lock (PurchaseOrderLine.save).
+        """
+        policy = PurchaseApprovalPolicy.active()
+        if policy is None:
+            return []
+        breaches = []
+        total = self.total()
+        if policy.max_order_value is not None and total > policy.max_order_value:
+            breaches.append((("total",), total, False,
+                             f"The order is {total}, above the {policy.max_order_value} limit."))
+        lines = list(self.lines.all())
+        if policy.max_line_value is not None:
+            for line in lines:
+                if line.total() > policy.max_line_value:
+                    breaches.append((("lines", line.pk), line.total(), False,
+                                     f"'{line.label()}' is {line.total()}, above the "
+                                     f"{policy.max_line_value} line limit."))
+        if policy.require_approval_without_vendor_price:
+            for line in lines:
+                if line.is_charge():
+                    continue
+                # An agreed price excuses only a line priced within it: agreed 5.00 and
+                # typed 50.00 was priced by hand all the same (O99).
+                over = line.price_against_agreement()
+                if over is None:
+                    words = f"'{line.label()}' was priced by hand, not from an agreed vendor price."
+                elif over > 0:
+                    words = (f"'{line.label()}' is priced at {priced(line)}, above the "
+                             f"{format(line.agreed_price().normalize(), 'f')} agreed with {self.vendor}.")
+                else:
+                    continue
+                breaches.append((("prices", line.pk), net_unit_price(line), False, words))
+        return breaches
 
     def can_be_approved(self):
         if self.status == OrderStatus.CANCELLED:
@@ -2609,9 +2639,22 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         if self.pk is not None:
             lock_rows(self, refresh=False)
 
+    def _policy_before(self):
+        """
+        A confirmed order's figures before this line changes, held as its
+        lines are (the order, then the line), or None for an order not
+        confirmed: what refuse_going_past_the_policy() weighs the change by.
+        """
+        if not self.order_id or not PurchaseOrder.objects.filter(
+                pk=self.order_id, status=OrderStatus.CONFIRMED).exists():
+            return None
+        self._hold_with_its_orders()
+        return PurchaseOrder.objects.get(pk=self.order_id).policy_figures()
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         refuse_changing_what_moved(self, self._hold_with_its_orders)
+        policy_before = self._policy_before()
         shrinking = self._worth_less_than_stored()
         if shrinking:
             self._hold_for_prepayments()
@@ -2666,15 +2709,18 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
                     or self.quantity != previous.quantity
                     or self.discount_percent != previous.discount_percent
                 )
-                if repriced and self.order.approved_at:
+                # An approval covers the order someone looked at: re-price a draft afterwards
+                # and it is for something else. A confirmed order keeps it: a change within what
+                # it covered stands, and one past it is refused below (O167).
+                if repriced and self.order.approved_at and policy_before is None:
                     self.order.withdraw_approval()
                 # Its price and discount once billed: rule A, asked first thing above. The agreed
                 # price is what the three-way match checks against, so moving it would
                 # retrospectively approve whatever was billed.
-        # A line added to an approved order changes the thing that was
+        # A line added to an approved draft changes the thing that was
         # approved just as surely as re-pricing one. Nothing caught this
         # because a new line has no previous version to compare against.
-        if self._state.adding and self.order_id and self.order.approved_at:
+        if self._state.adding and self.order_id and self.order.approved_at and policy_before is None:
             self.order.withdraw_approval()
         self._check_bom()
         self._check_drop_ship_quantity()
@@ -2693,6 +2739,8 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(
                 f"Budget {budget.code} would be {-budget.available()} over. A confirmed order is not "
                 "raised past it; order the rest separately, which asks for approval.")
+        if policy_before is not None:
+            PurchaseOrder.objects.get(pk=self.order_id).refuse_going_past_the_policy(policy_before)
         self._reconsider_requisitions(before)
         if shrinking:
             self.order.refuse_coming_to_less_than_its_prepayments()
@@ -2799,8 +2847,10 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
             raise ValidationError(
                 "This line has been received or billed and can no longer be removed."
             )
+        policy_before = self._policy_before()
         # Refused first: a refusal after it left the approval withdrawn for a line still there.
-        if self.order_id and self.order.approved_at:
+        # A confirmed order keeps its approval; what the removal leaves is weighed below.
+        if self.order_id and self.order.approved_at and policy_before is None:
             self.order.withdraw_approval()
         order = PurchaseOrder.objects.filter(pk=self.order_id, status=OrderStatus.CONFIRMED).first()
         if order is not None:
@@ -2811,6 +2861,7 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         self._reconsider_requisitions(asked)
         if order is not None:
             order.refuse_coming_to_less_than_its_prepayments()
+            PurchaseOrder.objects.get(pk=order.pk).refuse_going_past_the_policy(policy_before)
         if sales_line is not None:
             sales_line.reclaim_stock()
         return result
@@ -2907,7 +2958,8 @@ class PurchaseOrderLine(TaxedLineMixin, AuditModel):
         agreed = self.agreed_price()
         if agreed is None or self.unit_price is None:
             return None
-        return self.unit_price - agreed
+        # What a unit costs after the line's discount: 5.50 less 10% is within 5.00 agreed.
+        return net_unit_price(self) - agreed
 
     def quantity_received(self):
         """Net quantity received so far: posted receipts minus posted returns."""
