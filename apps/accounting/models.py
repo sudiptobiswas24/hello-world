@@ -1385,7 +1385,7 @@ class BankStatement(AuditModel):
         payments = Payment.objects.filter(
             bank_account=self.bank_account, posted=True, payment_date__lte=self.end_date,
         ).select_related("voided_entry").order_by("payment_date", "pk")
-        unpresented, unreturned = [], []
+        unpresented, unreturned, unvoided = [], [], []
         for payment in payments:
             voided = payment.voided_entry_id is not None and payment.voided_entry.date <= self.end_date
             seen, seen_back = payment.pk in presented, payment.pk in returned
@@ -1395,7 +1395,17 @@ class BankStatement(AuditModel):
                 unpresented.append(payment)
             if voided and not seen_back:
                 unreturned.append(payment)
+            if seen_back and not voided:
+                # The bank took it back by the statement's end and the books void it later (review F7): the
+                # return is a reconciling item until the void, the payment's own amount the books still hold.
+                unvoided.append(payment)
+        self._unvoided = unvoided
         return unpresented, unreturned
+
+    def returned_unvoided(self):
+        """Payments a line by the statement's end shows the bank took back, voided in the books only after it."""
+        self._unseen()
+        return self._unvoided
 
     def unpresented_entries(self):
         """
@@ -1418,9 +1428,11 @@ class BankStatement(AuditModel):
         not seen yet equals what the bank says it is holding.
         """
         unpresented, unreturned = self._unseen()
+        unvoided = self._unvoided
         unpresented_entries = self.unpresented_entries()
         adjustment = (sum((payment.signed_base_amount() for payment in unpresented), Decimal("0"))
                       - sum((payment.signed_base_amount() for payment in unreturned), Decimal("0"))
+                      + sum((payment.signed_base_amount() for payment in unvoided), Decimal("0"))
                       + sum((amount for _, amount in unpresented_entries), Decimal("0")))
         ledger = self.ledger_balance()
         return {
@@ -1429,6 +1441,7 @@ class BankStatement(AuditModel):
             "statement_balance": self.closing_balance,
             "unpresented": unpresented,
             "unreturned": unreturned,
+            "returned_unvoided": unvoided,
             "unpresented_entries": unpresented_entries,
             "unpresented_total": adjustment,
             "unresolved_lines": self.unresolved_lines(),
