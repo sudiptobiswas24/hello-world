@@ -18,7 +18,7 @@ from apps.accounting.models import (
         round_money,
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
-from apps.core.approvals import ApprovableMixin, ApprovalStatus, authors
+from apps.core.approvals import ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, authors
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 from apps.core.models import (
@@ -563,7 +563,8 @@ class PlacedWhereTheGoodsGo:
             raise ValidationError(problem)
 
 
-class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ApprovableMixin, AuditModel):
+class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesWithinItsApproval,
+                 ApprovableMixin, AuditModel):
     number = models.CharField(max_length=32, blank=True, editable=False)
     customer = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="sales_orders")
     order_date = models.DateField()
@@ -757,77 +758,6 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
         return {"discounts": {line.pk: line.discount_percent for line in self.lines.all()},
                 "total": self.total(), "margin": self.margin_percent()}
 
-    @serialised("approved_at")
-    def approve(self, by=None, note=""):
-        """Approve, and write down what the approval covered: a confirmed order changes within it."""
-        super().approve(by=by, note=note)
-        self.approved_figures = self.figures_as_kept()
-        SalesOrder.objects.filter(pk=self.pk).update(approved_figures=self.approved_figures)
-
-    def figures_as_kept(self):
-        """policy_figures() as approved_figures keeps them."""
-        figures = self.policy_figures()
-        return {
-            "discounts": {str(pk): str(value) for pk, value in figures["discounts"].items()},
-            "total": str(figures["total"]),
-            "margin": None if figures["margin"] is None else str(figures["margin"]),
-        }
-
-    def _covered(self):
-        """What the approval covered, or nothing when there is none standing."""
-        kept = self.approved_figures if self.approved_at else None
-        if not kept:
-            return {"discounts": {}, "total": None, "margin": None}
-        return {"discounts": {int(pk): Decimal(value) for pk, value in kept["discounts"].items()},
-                # None: sales 0064 found no total the approval was for (O186); held to the order before the change.
-                "total": None if kept["total"] is None else Decimal(kept["total"]),
-                "margin": None if kept["margin"] is None else Decimal(kept["margin"])}
-
-    def refuse_going_past_the_policy(self, before):
-        """
-        What confirming asks of the policy, asked again of a confirmed order on
-        every change to its lines, cuts and deletes included, and refused only
-        where the change goes past what was already standing: the order as it
-        was before the change (`before`, policy_figures()) or what an approval
-        covered, whichever reaches further.
-
-        Asked of nothing, a line raised to 60% against a 15% policy shipped
-        and invoiced (O72). Asked of everything, an order approved for one 20%
-        line could not take one more of an undiscounted line; and a cut that
-        took an order under the margin floor was never asked at all (O141).
-        """
-        policy = ApprovalPolicy.active()
-        if policy is None:
-            return
-        after, covered = self.policy_figures(), self._covered()
-
-        def furthest(values, low=False):
-            values = [value for value in values if value is not None]
-            return (min if low else max)(values) if values else None
-
-        reasons = []
-        if policy.max_discount_percent is not None:
-            for line in self.lines.all():
-                discount = line.discount_percent
-                allowed = furthest([before["discounts"].get(line.pk), covered["discounts"].get(line.pk)])
-                if discount > policy.max_discount_percent and (allowed is None or discount > allowed):
-                    reasons.append(f"'{line.label()}' is discounted {discount}%, above the "
-                                   f"{policy.max_discount_percent}% limit.")
-        if policy.max_order_value is not None and after["total"] > policy.max_order_value:
-            allowed = furthest([before["total"], covered["total"]])
-            if allowed is None or after["total"] > allowed:
-                reasons.append(f"The order is {after['total']}, above the {policy.max_order_value} limit.")
-        margin = after["margin"]
-        if policy.min_margin_percent is not None and margin is not None and margin < policy.min_margin_percent:
-            allowed = furthest([before["margin"], covered["margin"]], low=True)
-            if allowed is None or margin < allowed:
-                reasons.append(f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor.")
-        if reasons:
-            raise ValidationError(
-                f"{self} is confirmed, and this change needs approval beyond what it has: {' '.join(reasons)} A "
-                "confirmed order is not changed past the policy; take it as a new order, which "
-                "asks for approval.")
-
     def cost_total(self):
         """
         What this order's goods cost, at weighted average across warehouses.
@@ -889,29 +819,30 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, Approvab
         margin. The credit limit is the customer's, and asked on its own
         (refuse_going_over_the_credit_limit) when a confirmed order grows.
         """
-        reasons = []
+        return [words for _path, _value, _low, words in self.policy_breaches()]
+
+    def policy_breaches(self):
+        """Each figure past the policy, as ChangesWithinItsApproval weighs a confirmed order's change."""
         policy = ApprovalPolicy.active()
         if policy is None:
-            return reasons
-
+            return []
+        breaches = []
         if policy.max_discount_percent is not None:
             for line in self.lines.all():
                 if line.discount_percent > policy.max_discount_percent:
-                    reasons.append(
-                        f"'{line.label()}' is discounted {line.discount_percent}%, above the "
-                        f"{policy.max_discount_percent}% limit."
-                    )
-        if policy.max_order_value is not None and self.total() > policy.max_order_value:
-            reasons.append(
-                f"The order is {self.total()}, above the {policy.max_order_value} limit."
-            )
+                    breaches.append((("discounts", line.pk), line.discount_percent, False,
+                                     f"'{line.label()}' is discounted {line.discount_percent}%, above the "
+                                     f"{policy.max_discount_percent}% limit."))
+        total = self.total()
+        if policy.max_order_value is not None and total > policy.max_order_value:
+            breaches.append((("total",), total, False,
+                             f"The order is {total}, above the {policy.max_order_value} limit."))
         if policy.min_margin_percent is not None:
             margin = self.margin_percent()
             if margin is not None and margin < policy.min_margin_percent:
-                reasons.append(
-                    f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor."
-                )
-        return reasons
+                breaches.append((("margin",), margin, True,
+                                 f"Gross margin is {margin}%, below the {policy.min_margin_percent}% floor."))
+        return breaches
 
     def can_be_approved(self):
         if self.status == OrderStatus.CANCELLED:

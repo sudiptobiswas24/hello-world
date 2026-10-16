@@ -250,3 +250,79 @@ class SpendApprovalTests(VendorPriceTestCase):
         order.cancel()
         with self.assertRaisesMessage(ValidationError, "cancelled order cannot be approved"):
             order.approve(by=self.approver)
+
+
+class APriceTypedOverTheAgreedOneTests(VendorPriceTestCase):
+    """O99. Agreed 5.00; the policy asks approval for a price typed by hand."""
+
+    def setUp(self):
+        super().setUp()
+        self.agree("5.00")
+        PurchaseApprovalPolicy.objects.create(code="STD", name="Standard", require_approval_without_vendor_price=True)
+
+    def test_typed_at_fifty_it_needs_approval(self):
+        order = self.draft_line("10", price="50").order
+        self.assertEqual(order.approval_reasons(), [
+            f"'{order.lines.get().label()}' is priced at 50, above the 5 agreed with {self.vendor}."])
+        with self.assertRaisesMessage(ValidationError, "needs approval before it can be confirmed"):
+            order.confirm()
+
+    def test_at_or_under_the_agreed_price_it_does_not(self):
+        self.assertEqual(self.draft_line("10", price="5").order.approval_reasons(), [])
+        self.assertEqual(self.draft_line("10", price="4.50").order.approval_reasons(), [])
+
+
+class AConfirmedOrderChangesWithinItsApprovalTests(VendorPriceTestCase):
+    """
+    O167, the purchasing side of O72/O141, on the one rule
+    (apps.core.approvals.ChangesWithinItsApproval). Order limit 1,000; 1 unit
+    at 50 (no tax on this item).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.approver = get_user_model().objects.create_user(username="controller", password="x")
+        PurchaseApprovalPolicy.objects.create(code="STD", name="Standard", max_order_value=Decimal("1000"))
+
+    def confirmed(self, quantity, approve=False):
+        line = self.draft_line(quantity, price="50")
+        if approve:
+            line.order.approve(by=self.approver)
+        line.order.confirm()
+        return PurchaseOrderLine.objects.get(pk=line.pk)
+
+    def test_raised_past_the_limit_with_no_approval_it_is_refused(self):
+        line = self.confirmed("10")
+        line.quantity = Decimal("30")
+        with self.assertRaisesMessage(ValidationError, "The order is 1500.00, above the 1000.00 limit."):
+            line.save()
+        self.assertEqual(PurchaseOrderLine.objects.get(pk=line.pk).quantity, Decimal("10"))
+
+    def test_a_cut_within_its_approval_keeps_it_and_may_go_back_up_to_it(self):
+        line = self.confirmed("30", approve=True)
+        line.quantity = Decimal("25")
+        line.save()
+        self.assertIsNotNone(PurchaseOrder.objects.get(pk=line.order_id).approved_at)
+        line.quantity = Decimal("30")
+        line.save()
+        self.assertEqual(PurchaseOrder.objects.get(pk=line.order_id).total(), Decimal("1500.00"))
+
+    def test_raised_past_what_its_approval_covered_it_is_refused(self):
+        line = self.confirmed("30", approve=True)
+        line.quantity = Decimal("31")
+        with self.assertRaisesMessage(ValidationError, "The order is 1550.00, above the 1000.00 limit."):
+            line.save()
+
+    def test_a_line_added_past_the_limit_is_refused(self):
+        line = self.confirmed("10")
+        with self.assertRaisesMessage(ValidationError, "above the 1000.00 limit"):
+            PurchaseOrderLine.objects.create(order=line.order, item=self.item, uom=self.uom,
+                                             quantity=Decimal("20"), unit_price=Decimal("50"))
+
+    def test_re_priced_over_the_agreed_price_on_a_confirmed_order_it_is_refused(self):
+        PurchaseApprovalPolicy.objects.update(require_approval_without_vendor_price=True)
+        self.agree("50")
+        line = self.confirmed("10")
+        line.unit_price = Decimal("60")
+        with self.assertRaisesMessage(ValidationError, "is priced at 60, above the 50 agreed"):
+            line.save()

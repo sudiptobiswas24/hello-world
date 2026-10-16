@@ -174,3 +174,80 @@ class ApprovableMixin(models.Model):
         self.approved_at = None
         self.approval_note = ""
         self.save(update_fields=["approved_by", "approved_at", "approval_note", "updated_at"])
+
+
+def _kept(value):
+    """policy_figures() as a JSONField keeps them: Decimals as exact text, keys as text."""
+    if isinstance(value, dict):
+        return {str(key): _kept(part) for key, part in value.items()}
+    return None if value is None else str(value)
+
+
+def _read_back(value):
+    """_kept() read back: text to Decimal, a line's pk to int."""
+    from decimal import Decimal
+
+    if isinstance(value, dict):
+        return {int(key) if key.isdigit() else key: _read_back(part) for key, part in value.items()}
+    return None if value is None else Decimal(value)
+
+
+def _figure(figures, path):
+    for step in path:
+        if not isinstance(figures, dict):
+            return None
+        figures = figures.get(step)
+    return figures
+
+
+class ChangesWithinItsApproval:
+    """
+    A confirmed document asked its approval policy again on every change to
+    its lines, cuts and deletes included, and refused only where the change
+    goes past what was already standing: the document as it was before the
+    change (`before`, policy_figures()) or what an approval covered
+    (`approved_figures`, kept when it was given), whichever reaches further.
+
+    Asked of nothing, a sales line raised to 60% against a 15% policy
+    shipped and invoiced (O72). Asked of everything, an order approved for
+    one 20% line could not take one more of an undiscounted line; a cut
+    that took it under the margin floor was never asked at all (O141).
+    Purchasing withdrew a confirmed order's approval on any re-price and
+    asked only the budget again (O167): one rule now, for both sides.
+
+    The document supplies `policy_figures()`, each figure the policy weighs
+    by name, a line's under its pk ({"total": 1000, "lines": {7: 600}}),
+    and `policy_breaches()`, each figure past the policy as it stands now:
+    (path into the figures, value, whether lower is worse, words). It has
+    an `approved_figures` JSONField.
+    """
+
+    @serialised("approved_at")
+    def approve(self, by=None, note=""):
+        """Approve, and write down what the approval covered: a confirmed document changes within it."""
+        super().approve(by=by, note=note)
+        self.approved_figures = self.figures_as_kept()
+        type(self)._base_manager.filter(pk=self.pk).update(approved_figures=self.approved_figures)
+
+    def figures_as_kept(self):
+        """policy_figures() as approved_figures keeps them."""
+        return _kept(self.policy_figures())
+
+    def _covered(self):
+        """What the approval covered, or nothing when there is none standing."""
+        kept = self.approved_figures if self.approved_at else None
+        return _read_back(kept) if kept else {}
+
+    def refuse_going_past_the_policy(self, before):
+        covered = self._covered()
+        reasons = []
+        for path, value, low, words in self.policy_breaches():
+            standing = [figure for figure in (_figure(before, path), _figure(covered, path)) if figure is not None]
+            allowed = (min if low else max)(standing) if standing else None
+            if allowed is None or (value < allowed if low else value > allowed):
+                reasons.append(words)
+        if reasons:
+            raise ValidationError(
+                f"{self} is confirmed, and this change needs approval beyond what it has: {' '.join(reasons)} A "
+                "confirmed order is not changed past the policy; take it as a new order, which "
+                "asks for approval.")
