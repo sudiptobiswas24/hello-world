@@ -26,11 +26,14 @@ import datetime
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 
 from apps.core.models import AuditModel
+
+from .dated_rates import DatedRate, rate_standing
 
 PAN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
 
@@ -60,11 +63,7 @@ class ThresholdMode(models.TextChoices):
 class TdsSection(AuditModel):
     code = models.CharField(max_length=16, unique=True, help_text="194Q, 194C, 194J")
     name = models.CharField(max_length=128)
-    rate_percent = models.DecimalField(
-        max_digits=7, decimal_places=4, help_text="Deducted from a party whose PAN is on file.")
-    no_pan_rate_percent = models.DecimalField(
-        max_digits=7, decimal_places=4,
-        help_text="Deducted from a party with no PAN on file (section 206AA).")
+    # The rates are dated rows (TdsRate), confirmed by the accountant, as TCS's are (O233).
     mode = models.CharField(max_length=8, choices=ThresholdMode.choices, default=ThresholdMode.WHOLE)
     single_threshold = models.DecimalField(
         max_digits=18, decimal_places=2, null=True, blank=True,
@@ -83,8 +82,6 @@ class TdsSection(AuditModel):
     class Meta:
         ordering = ["code"]
         constraints = [
-            models.CheckConstraint(check=Q(rate_percent__gte=0) & Q(no_pan_rate_percent__gte=0),
-                                   name="tds_rates_not_negative"),
             models.CheckConstraint(
                 check=~Q(mode="excess") | Q(annual_threshold__isnull=False),
                 name="tds_excess_has_an_annual_threshold"),
@@ -98,6 +95,10 @@ class TdsSection(AuditModel):
 
         refuse_money_kept_as(self, *settings_fields(TdsSection))
         super().save(*args, **kwargs)
+
+    def rate_on(self, day):
+        """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""
+        return rate_standing(self, day, "TDS", "deducted", "TDS rates")
 
     def owed(self, rate, this, year_before, untaxed_before):
         """
@@ -125,11 +126,48 @@ class TdsSection(AuditModel):
         return base, rupees(base * Decimal(rate) / 100), caught_up
 
 
-def deduction_terms(party, section=None):
+class TdsRate(DatedRate, AuditModel):
+    """A TDS rate the law sets, from the day it applies; deducted at only once the accountant confirms it."""
+
+    section = models.ForeignKey(TdsSection, on_delete=models.PROTECT, related_name="rates")
+    applies_from = models.DateField(help_text="The first day the law sets this rate for.")
+    rate_percent = models.DecimalField(max_digits=7, decimal_places=4,
+                                       help_text="Deducted from a party whose PAN is on file.")
+    no_pan_rate_percent = models.DecimalField(
+        max_digits=7, decimal_places=4,
+        help_text="Deducted from a party with no PAN on file (section 206AA).")
+    authority = models.CharField(max_length=128, blank=True,
+                                 help_text="Where the rate comes from: the section, the notification.")
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+                                     related_name="+", editable=False)
+    confirmed_on = models.DateField(null=True, blank=True, editable=False,
+                                    help_text="When the accountant confirmed it. Until then nothing is "
+                                              "deducted at it.")
+
+    # The dated-rate rules, shared with TCS (accounting.dated_rates).
+    TAKEN_BY = "deductions"
+    TAKEN_WORDS = "Bills were deducted"
+
+    class Meta:
+        ordering = ["section", "-applies_from"]
+        verbose_name = "TDS rate"
+        permissions = [("confirm_tdsrate", "Can confirm a TDS rate as the law's")]
+        constraints = [
+            models.UniqueConstraint(fields=["section", "applies_from"], name="one_tds_rate_per_section_and_day"),
+            models.CheckConstraint(check=Q(rate_percent__gte=0) & Q(no_pan_rate_percent__gte=0),
+                                   name="tds_rate_rows_not_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.section.code} {self.rate_percent.normalize():f}% from {self.applies_from}"
+
+
+def deduction_terms(party, section=None, day=None):
     """
-    (section, rate, PAN) a party is deducted at: the section given, or the
-    one on its profile; the rate on its lower-deduction certificate, its
-    section's, or the no-PAN rate.
+    (section, rate, PAN, rate row) a party is deducted at on `day`: the
+    section given, or the one on its profile; the rate on its
+    lower-deduction certificate (no row), or the section's confirmed rate
+    standing that day (TdsRate), with a PAN or without.
     """
     profile = getattr(party, "tax_profile", None)
     section = section or (profile.tds_section if profile else None)
@@ -139,5 +177,6 @@ def deduction_terms(party, section=None):
         raise ValidationError(f"{section} is no longer in use.")
     pan = profile.pan_on_file() if profile else ""
     if profile and profile.tds_rate_percent is not None and profile.tds_section_id == section.pk:
-        return section, profile.tds_rate_percent, pan
-    return section, (section.rate_percent if pan else section.no_pan_rate_percent), pan
+        return section, profile.tds_rate_percent, pan, None
+    rate = section.rate_on(day)
+    return section, rate.percent_for(pan), pan, rate

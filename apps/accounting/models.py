@@ -1698,6 +1698,6 @@ from .gst import GstSettings  # noqa: E402,F401
 from .analytic import CostCentre  # noqa: E402,F401
 from .budgets import Budget, BudgetLine  # noqa: E402,F401
 from .recurring import RecurringJournal, RecurringJournalLine  # noqa: E402,F401
-from .tds import TdsSection  # noqa: E402,F401
+from .tds import TdsRate, TdsSection  # noqa: E402,F401
 from .gst import LetterOfUndertaking  # noqa: E402,F401
 from .tcs import SeededDefault, TcsDeclaration, TcsRate, TcsSection  # noqa: E402,F401

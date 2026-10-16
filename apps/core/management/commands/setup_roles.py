@@ -118,6 +118,8 @@ ROLES = {
         *crud("accounting", "taxgroup"),
         *crud("accounting", "chargetype"),
         *crud("accounting", "tdssection"),
+        *crud("accounting", "tdsrate"),
+        "accounting.confirm_tdsrate",
         *crud("accounting", "tcssection"),
         *crud("accounting", "tcsrate"),
         "accounting.confirm_tcsrate",
@@ -206,7 +208,7 @@ ROLES = {
         # What a customer's remittance says it deducted; confirming it in
         # Form 26AS is the Controller's.
         *crud("sales", "customertds", actions=("add", "view")),
-        *view("accounting", "tdssection"),
+        *view("accounting", "tdssection", "tdsrate"),
         *view("accounting", "tcssection", "tcsrate"),
         *crud("accounting", "tcsdeclaration", actions=("add", "change", "view")),
         *view("sales", "tcscollection"),
@@ -314,7 +316,7 @@ ROLES = {
         # Tax deducted from what vendors are paid, and paid over by challan.
         *crud("purchasing", "tdsdeduction", actions=("add", "view")),
         *crud("purchasing", "tdschallan", actions=("add", "view")),
-        *view("accounting", "tdssection"),
+        *view("accounting", "tdssection", "tdsrate"),
     ],
     "Warehouse Staff": [
         *REFERENCE,

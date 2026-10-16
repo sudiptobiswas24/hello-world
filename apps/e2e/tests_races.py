@@ -390,9 +390,10 @@ class PurchasingRaceTests(RaceCase):
 
         payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
         section = TdsSection.objects.create(
-            code="194C", name="Contractors", rate_percent=Decimal("2"), no_pan_rate_percent=Decimal("20"),
+            code="194C", name="Contractors",
             mode="whole", single_threshold=Decimal("30000"), annual_threshold=Decimal("100000"),
             payable_account=payable)
+        tds_fixture.confirmed_rate(section, "2", "20")
         party = Party.objects.create(code="V-C", name="Loom Fitters")
         PartyRoleAssignment.objects.create(party=party, role=PartyRole.VENDOR)
         PartyTaxProfile.objects.create(party=party, pan="AAAPL1234C", tds_section=section)

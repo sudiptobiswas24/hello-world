@@ -24,7 +24,7 @@ class CustomerTdsTests(SalesTestCase):
         self.tds_receivable = Account.objects.create(code="1450", name="TDS receivable",
                                                      account_type=AccountType.ASSET)
         self.goods = TdsSection.objects.create(
-            code="194Q", name="Purchase of goods", rate_percent=Decimal("0.1"), no_pan_rate_percent=Decimal("5"),
+            code="194Q", name="Purchase of goods",
             mode="excess", annual_threshold=Decimal("5000000"), receivable_account=self.tds_receivable)
         self.invoice = self.bill(self.make_order("1", "118000"))
 
