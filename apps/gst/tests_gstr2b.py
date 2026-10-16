@@ -417,8 +417,7 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
                 self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9", **given)
         with self.assertRaisesMessage(ValidationError, "Only a debit note records"):
             Bill.objects.create(vendor=self.ka, bill_date=DAY, payable_account=self.ap, supplier_note_number="CN-1")
-        from django.db import IntegrityError
-
-        self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9")
-        with self.assertRaises(IntegrityError):  # one debit note answers one credit note of a supplier
+        first = self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9")
+        # One debit note answers one credit note of a supplier, refused in words (O190).
+        with self.assertRaisesMessage(ValidationError, f"{first} already answers KA - KA's credit note CN-9"):
             self.bill.create_debit_note(quantities={line: D("0.1")}, supplier_note_number="CN-9")
