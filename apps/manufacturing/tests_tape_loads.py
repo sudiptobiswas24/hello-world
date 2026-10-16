@@ -164,6 +164,16 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
         with self.assertRaisesMessage(ValidationError, "260 is on the shelf and loaded on a run"):
             plan_issue(self.tape, self.plant, Decimal("50"))
 
+    def test_the_shortfall_is_said_in_figures(self):
+        # O134: the stock column's scale came through, "Only 40.000 of ...;
+        # 10.000 short" here and 300.0000 on PostgreSQL.
+        from apps.inventory.picking import plan_issue
+
+        with self.assertRaisesMessage(ValidationError, "Only 300 of"):
+            plan_issue(self.tape, self.plant, Decimal("300.5"))
+        with self.assertRaisesMessage(ValidationError, "; 0.5 short."):
+            plan_issue(self.tape, self.plant, Decimal("300.5"))
+
     def test_not_past_what_its_creels_hold(self):
         self.load("D-1", "30", CreelSide.WARP, 9)
         with self.assertRaisesMessage(ValidationError, "creels hold 30 kg of it not yet drawn"):

@@ -282,16 +282,19 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
     taken = [(lot, drawn) for lot, drawn in taken]
 
     if remaining > 0:
+        # As figures, not at the column's scale: PostgreSQL sums to four
+        # places, and the message said "Only 300.0000" (O134).
+        shown = lambda value: format(value.normalize(), "f")  # noqa: E731
         message = (
-            f"Only {quantity - remaining} of {item} can be allocated at {warehouse}; "
-            f"{remaining} short."
+            f"Only {shown(quantity - remaining)} of {item} can be allocated at {warehouse}; "
+            f"{shown(remaining)} short."
         )
         if skipped:
-            message += f" {skipped} is on the shelf but expired."
+            message += f" {shown(skipped)} is on the shelf but expired."
         if held:
-            message += f" {format(held.normalize(), 'f')} is on the shelf and held by quality: {why}"
+            message += f" {shown(held)} is on the shelf and held by quality: {why}"
         if promised:
-            message += (f" {format(promised.normalize(), 'f')} is on the shelf and loaded on a run "
+            message += (f" {shown(promised)} is on the shelf and loaded on a run "
                         "that has not drawn it yet.")
         raise ValidationError(message)
     return taken
