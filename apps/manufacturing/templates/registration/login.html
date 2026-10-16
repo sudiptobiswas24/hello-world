@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%277%27 fill=%27%231f5f8b%27/%3E%3Ctext x=%2716%27 y=%2721%27 font-family=%27sans-serif%27 font-size=%2713%27 font-weight=%27700%27 fill=%27white%27 text-anchor=%27middle%27%3EDP%3C/text%3E%3C/svg%3E">
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #EFECE4;
+    color: #16181A; font-family: "IBM Plex Sans", system-ui, sans-serif; }
+  form { background: #fff; border: 1px solid #D5D0C4; border-radius: 16px; padding: 32px; width: 360px;
+    max-width: 92vw; display: flex; flex-direction: column; gap: 12px; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  p { margin: 0; color: #4A4F55; }
+  label { font-weight: 600; }
+  input { font: inherit; font-size: 18px; padding: 10px 12px; border: 1px solid #D5D0C4; border-radius: 10px; }
+  button { font: inherit; font-size: 18px; font-weight: 700; padding: 12px; border: 0; border-radius: 12px;
+    background: #B8430F; color: #fff; cursor: pointer; }
+  .error { color: #991B1B; font-weight: 600; }
+</style>
+</head>
+<body>
+<form method="post">
+  {% csrf_token %}
+  <h1>Sign in</h1>
+  {% if next|slice:":9" == "/station/" %}
+  <p>The device's own account. People at a station sign in with their PIN on the next screen.</p>
+  {% else %}
+  <p>Deccan Polysacks. Use your own account; ask your administrator if you have none.</p>
+  {% endif %}
+  {% if form.errors %}<div class="error">That username and password did not match.</div>{% endif %}
+  <label for="id_username">Username</label>{{ form.username }}
+  <label for="id_password">Password</label>{{ form.password }}
+  <input type="hidden" name="next" value="{{ next }}">
+  <button type="submit">Sign in</button>
+</form>
+</body>
+</html>

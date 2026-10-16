@@ -1,0 +1,84 @@
+"""TDS and TCS sections: the rates and thresholds the plant deducts, collects and is deducted at, kept by the controller."""
+
+from rest_framework import serializers, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+
+from apps.core.audit import AuditableViewSetMixin
+
+from .tcs import TcsDeclaration, TcsRate, TcsSection
+from .tds import TdsSection
+
+
+class TdsSectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TdsSection
+        fields = ["id", "code", "name", "rate_percent", "no_pan_rate_percent", "mode", "single_threshold",
+                  "annual_threshold", "payable_account", "receivable_account", "is_active"]
+
+
+class TdsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = TdsSection.objects.all()
+    serializer_class = TdsSectionSerializer
+    filter_fields = ["is_active", "mode"]
+    search_fields = ["code", "name"]
+
+
+class TcsSectionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TcsSection
+        fields = ["id", "code", "name", "form_code", "base_includes_gst", "payable_account", "is_active"]
+
+
+class TcsSectionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    queryset = TcsSection.objects.all()
+    serializer_class = TcsSectionSerializer
+    filter_fields = ["is_active"]
+    search_fields = ["code", "name"]
+
+
+class TcsRateSerializer(serializers.ModelSerializer):
+    section_code = serializers.CharField(source="section.code", read_only=True)
+    law_section = serializers.CharField(source="section_code", required=False, allow_blank=True, max_length=16)
+
+    class Meta:
+        model = TcsRate
+        fields = ["id", "section", "section_code", "applies_from", "rate_percent", "no_pan_rate_percent",
+                  "authority", "law_section", "confirmed_by", "confirmed_on"]
+        read_only_fields = ["confirmed_by", "confirmed_on"]
+
+
+class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """A rate the law sets, from the day it applies; confirm/ is the accountant's word that it is the law's."""
+
+    queryset = TcsRate.objects.select_related("section")
+    serializer_class = TcsRateSerializer
+    filter_fields = ["section"]
+    search_fields = ["section__code", "authority"]
+    date_field = "applies_from"
+    action_permission_map = {"confirm": "accounting.confirm_tcsrate"}
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        rate = self.get_object()
+        rate.confirm(request.user)
+        return Response(self.get_serializer(rate).data)
+
+
+class TcsDeclarationSerializer(serializers.ModelSerializer):
+    party_name = serializers.CharField(source="party.name", read_only=True)
+
+    class Meta:
+        model = TcsDeclaration
+        fields = ["id", "party", "party_name", "section", "form", "pan", "reference", "received_on", "valid_from",
+                  "valid_to"]
+
+
+class TcsDeclarationViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """The buyer's declaration (Form 127, was 27C) that its purchases are for its own manufacture."""
+
+    queryset = TcsDeclaration.objects.select_related("party", "section")
+    serializer_class = TcsDeclarationSerializer
+    filter_fields = ["party", "section"]
+    search_fields = ["party__name", "reference"]
+    date_field = "valid_from"

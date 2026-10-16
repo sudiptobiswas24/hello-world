@@ -1,0 +1,651 @@
+from decimal import Decimal
+
+from django.contrib.auth.models import Group, Permission, User
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase
+from rest_framework.test import APIClient
+
+from apps.accounting.models import Account, AccountType, JournalEntry, JournalLine
+
+
+def grant(user, *permission_names):
+    for name in permission_names:
+        app_label, codename = name.split(".", 1)
+        user.user_permissions.add(
+            Permission.objects.get(content_type__app_label=app_label, codename=codename)
+        )
+
+
+class PostingPermissionTests(TestCase):
+    """
+    The point of these tests: being able to CREATE a journal entry must not
+    imply being able to POST it. That separation is the whole reason the
+    custom post_* permissions exist.
+    """
+
+    def setUp(self):
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
+        self.revenue = Account.objects.create(
+            code="4000", name="Revenue", account_type=AccountType.INCOME
+        )
+        self.client = APIClient()
+
+    def make_entry(self):
+        entry = JournalEntry.objects.create(date="2026-01-01", memo="Test")
+        JournalLine.objects.create(entry=entry, account=self.cash, debit=Decimal("100"))
+        JournalLine.objects.create(entry=entry, account=self.revenue, credit=Decimal("100"))
+        return entry
+
+    def test_anonymous_user_cannot_post(self):
+        entry = self.make_entry()
+        response = self.client.post(f"/api/accounting/journal-entries/{entry.pk}/post_entry/")
+        self.assertIn(response.status_code, (401, 403))
+        entry.refresh_from_db()
+        self.assertFalse(entry.posted)
+
+    def test_user_who_can_create_entries_cannot_post_them(self):
+        bookkeeper = User.objects.create_user("bookkeeper", password="x")
+        grant(bookkeeper, "accounting.add_journalentry", "accounting.change_journalentry")
+        self.client.force_authenticate(user=bookkeeper)
+
+        entry = self.make_entry()
+        response = self.client.post(f"/api/accounting/journal-entries/{entry.pk}/post_entry/")
+
+        self.assertEqual(response.status_code, 403)
+        entry.refresh_from_db()
+        self.assertFalse(entry.posted)
+
+    def test_user_with_post_permission_can_post(self):
+        controller = User.objects.create_user("controller", password="x")
+        grant(
+            controller,
+            "accounting.view_journalentry",
+            "accounting.add_journalentry",
+            "accounting.change_journalentry",
+            "accounting.post_journalentry",
+        )
+        self.client.force_authenticate(user=controller)
+
+        entry = self.make_entry()
+        response = self.client.post(f"/api/accounting/journal-entries/{entry.pk}/post_entry/")
+
+        self.assertEqual(response.status_code, 200)
+        entry.refresh_from_db()
+        self.assertTrue(entry.posted)
+
+    def test_posting_permission_does_not_leak_across_modules(self):
+        """Holding accounting.post_journalentry must not allow posting invoices."""
+        controller = User.objects.create_user("controller2", password="x")
+        grant(controller, "accounting.post_journalentry", "sales.add_invoice")
+        self.client.force_authenticate(user=controller)
+
+        response = self.client.post("/api/sales/invoices/1/post_invoice/")
+        self.assertIn(response.status_code, (403, 404))
+
+    def test_reversal_requires_the_same_posting_permission(self):
+        controller = User.objects.create_user("controller3", password="x")
+        grant(controller, "accounting.add_journalentry", "accounting.post_journalentry")
+        entry = self.make_entry()
+        entry.post()
+
+        bookkeeper = User.objects.create_user("bookkeeper2", password="x")
+        grant(bookkeeper, "accounting.add_journalentry", "accounting.change_journalentry")
+        self.client.force_authenticate(user=bookkeeper)
+
+        response = self.client.post(f"/api/accounting/journal-entries/{entry.pk}/reverse/")
+        self.assertEqual(response.status_code, 403)
+
+
+class LeaveApprovalPermissionTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_creating_leave_requests_does_not_imply_approving_them(self):
+        employee_user = User.objects.create_user("employee", password="x")
+        grant(employee_user, "hr.add_leaverequest", "hr.view_leaverequest")
+        self.client.force_authenticate(user=employee_user)
+
+        response = self.client.post("/api/hr/leave-requests/1/approve/", {"decided_by": 1})
+        self.assertIn(response.status_code, (403, 404))
+
+
+class SetupRolesCommandTests(TestCase):
+    def test_setup_roles_creates_groups_with_expected_separation(self):
+        call_command("setup_roles", verbosity=0)
+
+        bookkeeper = Group.objects.get(name="Bookkeeper")
+        controller = Group.objects.get(name="Controller")
+
+        bookkeeper_codenames = set(bookkeeper.permissions.values_list("codename", flat=True))
+        controller_codenames = set(controller.permissions.values_list("codename", flat=True))
+
+        self.assertIn("add_journalentry", bookkeeper_codenames)
+        self.assertNotIn("post_journalentry", bookkeeper_codenames)
+        self.assertIn("post_journalentry", controller_codenames)
+
+    def test_setup_roles_is_idempotent(self):
+        call_command("setup_roles", verbosity=0)
+        first = Group.objects.get(name="Controller").permissions.count()
+        call_command("setup_roles", verbosity=0)
+        second = Group.objects.get(name="Controller").permissions.count()
+        self.assertEqual(first, second)
+        self.assertEqual(Group.objects.filter(name="Controller").count(), 1)
+
+    def test_sales_rep_cannot_post_invoices_but_ar_manager_can(self):
+        call_command("setup_roles", verbosity=0)
+
+        rep_codenames = set(
+            Group.objects.get(name="Sales Rep").permissions.values_list("codename", flat=True)
+        )
+        manager_codenames = set(
+            Group.objects.get(name="AR Manager").permissions.values_list("codename", flat=True)
+        )
+
+        self.assertIn("add_invoice", rep_codenames)
+        self.assertNotIn("post_invoice", rep_codenames)
+        self.assertIn("post_invoice", manager_codenames)
+
+
+class AnActionTakesWhatItNamesTests(TestCase):
+    """
+    Posting took the right to add as well as the right to post: DRF maps
+    every POST to add_. A poster who may not prepare could not post, and
+    paying a payslip took add_payslip, which nobody can mean.
+    """
+
+    def setUp(self):
+        self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
+        self.revenue = Account.objects.create(
+            code="4000", name="Revenue", account_type=AccountType.INCOME)
+        entry = JournalEntry.objects.create(date="2026-01-01", memo="Test")
+        JournalLine.objects.create(entry=entry, account=self.cash, debit=Decimal("100"))
+        JournalLine.objects.create(entry=entry, account=self.revenue, credit=Decimal("100"))
+        self.entry = entry
+
+    def poster(self, *permissions):
+        user = User.objects.create_user(f"poster-{User.objects.count()}")
+        grant(user, *permissions)
+        client = APIClient()
+        client.force_authenticate(user)
+        return client.post(f"/api/accounting/journal-entries/{self.entry.pk}/post_entry/")
+
+    def test_seeing_it_and_posting_is_enough(self):
+        response = self.poster("accounting.view_journalentry", "accounting.post_journalentry")
+        self.assertEqual(response.status_code, 200, response.content[:200])
+
+    def test_posting_what_one_cannot_see_is_not(self):
+        response = self.poster("accounting.post_journalentry", "accounting.add_journalentry")
+        self.assertEqual(response.status_code, 403)
+
+    def test_seeing_it_alone_is_not(self):
+        response = self.poster("accounting.view_journalentry", "accounting.add_journalentry")
+        self.assertEqual(response.status_code, 403)
+
+
+class ModelPermissionsAloneTests(TestCase):
+    """Without ActionPermission beside it, the mapped right is still asked."""
+
+    def test_the_mapped_permission_is_required(self):
+        from types import SimpleNamespace
+
+        from apps.core.permissions import ModelPermissions
+
+        user = User.objects.create_user("viewer")
+        grant(user, "accounting.view_journalentry")
+        view = SimpleNamespace(action="post_entry", queryset=JournalEntry.objects.all(),
+                               action_permission_map={"post_entry": "accounting.post_journalentry"})
+        request = SimpleNamespace(user=user, method="POST")
+        self.assertFalse(ModelPermissions().has_permission(request, view))
+        grant(user, "accounting.post_journalentry")
+        user = User.objects.get(pk=user.pk)
+        self.assertTrue(ModelPermissions().has_permission(SimpleNamespace(user=user, method="POST"),
+                                                         view))
+
+
+def _routes():
+    """(url, method, action, view class) for every DRF route under /api/, a record's id as 999999."""
+    import re
+
+    from django.urls import URLResolver, get_resolver
+
+    group = re.compile(r"\(\?P<(\w+)>([^)]*)\)")
+
+    def walk(patterns, prefix=""):
+        for pattern in patterns:
+            if isinstance(pattern, URLResolver):
+                yield from walk(pattern.url_patterns, prefix + str(pattern.pattern))
+            else:
+                yield prefix + str(pattern.pattern), pattern
+
+    found = []
+    for route, pattern in walk(get_resolver().url_patterns):
+        cls, actions = getattr(pattern.callback, "cls", None), getattr(pattern.callback, "actions", None)
+        if "(?P<format>" in route or not route.startswith("api/") or cls is None or actions is None:
+            continue
+        url = "/" + group.sub("999999", route).replace("^", "").replace("$", "").replace("\\.", ".")
+        # Listed first: a request through the view adds "head" to its actions.
+        found += [(url, method, action, cls) for method, action in list(actions.items())]
+    return found
+
+
+class NoActionOnARecordTakesOnlyTheRightToAddTests(TestCase):
+    """
+    O83: DRF maps every POST to add_. Fifteen actions on one record named
+    no permission and so took only the right to add one: a calibration
+    voided, a schedule committed, a quote declined, anyone's leave
+    cancelled. Asked mechanically of every action that names nothing: a
+    login holding add_ and view_ of the model and nothing else gets none
+    of them past the gate. (What one names is its author's choice, which
+    the audit's "action without a declared permission" asks for.)
+    """
+
+    def test_no_action_on_a_record_takes_only_the_right_to_add(self):
+        from apps.core.permissions import ModelPermissions
+
+        through = []
+        for index, (url, method, action, cls) in enumerate(_routes()):
+            if method != "post" or action == "create" or "999999" not in url:
+                continue
+            if not any(issubclass(c, ModelPermissions) for c in cls.permission_classes):
+                continue
+            if action in getattr(cls, "action_permission_map", {}):
+                continue
+            meta = cls.queryset.model._meta
+            user = User.objects.create_user(f"adder-{index}")
+            grant(user, f"{meta.app_label}.add_{meta.model_name}", f"{meta.app_label}.view_{meta.model_name}")
+            client = APIClient()
+            client.force_authenticate(user)
+            response = client.post(url, {}, format="json")
+            if response.status_code not in (401, 403):
+                through.append(f"POST {url} [{cls.__name__}.{action}] -> {response.status_code}")
+        self.assertEqual(through, [], "\n" + "\n".join(through))
+
+
+class AnActionThatNamesNothingTakesChangeTests(TestCase):
+    """The floor under the audit's check: an unnamed action that writes asks change_, never add_."""
+
+    def view(self):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+
+        class Planted(viewsets.GenericViewSet):
+            queryset = JournalEntry.objects.all()
+
+            @action(detail=True, methods=["post"])
+            def poke(self, request, pk=None):
+                return None
+
+        view = Planted()
+        view.action = "poke"
+        return view
+
+    def asks(self, *permissions):
+        from types import SimpleNamespace
+
+        from apps.core.permissions import ModelPermissions
+
+        user = User.objects.create_user(f"u-{User.objects.count()}")
+        grant(user, "accounting.view_journalentry", *permissions)
+        user = User.objects.get(pk=user.pk)
+        return ModelPermissions().has_permission(SimpleNamespace(user=user, method="POST"), self.view())
+
+    def test_the_right_to_add_is_not_enough(self):
+        self.assertFalse(self.asks("accounting.add_journalentry"))
+
+    def test_the_right_to_change_is(self):
+        self.assertTrue(self.asks("accounting.change_journalentry"))
+
+
+class TheAuditAsksEveryActionThatWritesToNameItsRightTests(TestCase):
+    """O83's check: audit_invariants reports an action that writes and names no permission."""
+
+    def planted(self):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+
+        class Planted(viewsets.ModelViewSet):
+            queryset = JournalEntry.objects.all()
+            action_permission_map = {"post_it": "accounting.post_journalentry",
+                                     "both": {"GET": "accounting.view_journalentry"}}
+
+            @action(detail=True, methods=["post"])
+            def post_it(self, request, pk=None):
+                return None
+
+            @action(detail=True, methods=["post"])
+            def void_it(self, request, pk=None):
+                return None
+
+            @action(detail=True, methods=["get", "post"])
+            def both(self, request, pk=None):
+                return None
+
+            @action(detail=True, methods=["get"])
+            def report(self, request, pk=None):
+                return None
+
+        return Planted
+
+    def test_a_planted_unnamed_write_is_reported_and_named_ones_and_reads_are_not(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        found = Command().undeclared_actions(["accounting"], [self.planted()])
+        self.assertEqual([detail.split(" writes ")[0].rsplit(".", 1)[1] for _shape, detail in found],
+                         ["both", "void_it"])
+
+    def test_every_routed_viewset_names_its_writes(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command
+
+        self.assertEqual(Command().undeclared_actions(list(OUR_APPS)), [])
+
+
+class TheAuditAsksEveryPartyReadToKeepTheRepScopeTests(TestCase):
+    """O84's check: audit_invariants reports a viewset a rep reads, over a model naming a party, with no scope."""
+
+    def planted(self, scoped_too):
+        from rest_framework import viewsets
+
+        from apps.accounting.models import PartyTaxProfile
+        from apps.core.scoping import scoped
+
+        class Planted(viewsets.ReadOnlyModelViewSet):
+            queryset = PartyTaxProfile.objects.all()
+
+        class Kept(Planted):
+            def get_queryset(self):
+                return scoped(super().get_queryset(), self.request.user, "party")
+
+        return Kept if scoped_too else Planted
+
+    def found(self, view):
+        from apps.core.management.commands.audit_invariants import Command
+
+        return Command().unscoped_party_reads(["accounting"], [view], readers={"accounting.view_partytaxprofile"})
+
+    def test_a_planted_unscoped_read_is_reported(self):
+        self.assertEqual([shape for shape, _detail in self.found(self.planted(False))],
+                         ["party read past the rep scope"])
+
+    def test_a_scoped_one_is_not(self):
+        self.assertEqual(self.found(self.planted(True)), [])
+
+    def test_nor_one_the_rep_may_not_read(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        self.assertEqual(Command().unscoped_party_reads(["accounting"], [self.planted(False)], readers=set()), [])
+
+
+class ATaxPreviewIsAReadTests(TestCase):
+    """
+    Tax preview is a POST that works an amount out and keeps nothing, so it
+    takes view_tax, as bag-specifications/solve/ takes its view right. The
+    audit's "a login that may read everything writes nothing" probe lists it
+    for that reason (reviewed, on purpose).
+    """
+
+    def post(self, *permissions):
+        user = User.objects.create_user(f"u-{User.objects.count()}")
+        grant(user, *permissions)
+        client = APIClient()
+        client.force_authenticate(User.objects.get(pk=user.pk))
+        return client.post("/api/accounting/taxes/preview/", {"amount": "100.00", "tax_ids": []}, format="json")
+
+    def test_reading_taxes_is_enough(self):
+        self.assertEqual(self.post("accounting.view_tax").status_code, 200)
+
+    def test_nothing_is_kept(self):
+        from apps.accounting.models import Tax
+
+        before = Tax.objects.count()
+        self.post("accounting.view_tax")
+        self.assertEqual(Tax.objects.count(), before)
+
+    def test_not_reading_them_is_not(self):
+        self.assertEqual(self.post("accounting.add_tax").status_code, 403)
+
+
+class EveryWriteGoesThroughTheHistoryMixinTests(TestCase):
+    """audit_invariants writes_around_the_mixin, and the mixin's answer on a read-only viewset."""
+
+    @staticmethod
+    def planted():
+        from rest_framework import viewsets
+
+        from apps.core.audit import AuditableViewSetMixin
+
+        class Replaced(AuditableViewSetMixin, viewsets.ModelViewSet):
+            queryset = Account.objects.all()
+
+            def perform_create(self, serializer):
+                serializer.save()
+
+        class Extended(AuditableViewSetMixin, viewsets.ModelViewSet):
+            queryset = Account.objects.all()
+
+            def perform_create(self, serializer):
+                super().perform_create(serializer, name="set here")
+
+        return [Replaced, Extended]
+
+    def test_a_planted_write_that_skips_the_mixin_is_reported_and_one_calling_it_is_not(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        found = Command().writes_around_the_mixin(["accounting"], self.planted())
+        self.assertEqual([detail.split(" replaces ")[0] for _shape, detail in found],
+                         ["core.Replaced.perform_create"])
+
+    def test_every_routed_viewset_writes_through_the_mixin(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command
+
+        self.assertEqual(Command().writes_around_the_mixin(list(OUR_APPS)), [])
+
+    def test_a_read_only_viewset_answers_put_and_delete_with_405(self):
+        # The mixin's update() and destroy() give it the routes; they called
+        # a base with nothing to call, a 500.
+        client = APIClient()
+        client.force_authenticate(User.objects.create_superuser("keeper"))
+        for method in ("put", "delete"):
+            response = getattr(client, method)("/api/manufacturing/work-order-operations/1/")
+            self.assertEqual(response.status_code, 405, method)
+
+
+class ABodyIsAnObjectTests(TestCase):
+    """
+    O191: an action reading request.data.get answered 500 on a body that
+    was a list (supplier_note, objection; three hundred actions read their
+    body that way). The parser every view uses refuses a JSON body that is
+    not an object, in words; audit_invariants reports a view that parses
+    JSON past it.
+    """
+
+    def test_a_list_or_a_bare_value_is_refused_in_words_not_500(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        bookkeeper = User.objects.create_user("bk")
+        bookkeeper.groups.add(Group.objects.get(name="Bookkeeper"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(bookkeeper)
+        # The confirm reads its body ({"password"}) before it finds the proposal.
+        confirm = "/api/core/role-proposals/0/confirm/"
+        answers = [(body, (answer := client.post(confirm, body, content_type="application/json")).status_code,
+                    "as an object" in str(answer.content)) for body in ("[]", '[{"password": "x"}]', '"x"', "7", "null")]
+        self.assertEqual(answers, [(body, 400, True) for body in ("[]", '[{"password": "x"}]', '"x"', "7", "null")])
+        self.assertEqual(client.post(confirm, "{not json", content_type="application/json").status_code, 400)
+        # An object is read as before: no such proposal.
+        self.assertEqual(client.post(confirm, {}, format="json").status_code, 404)
+
+    def test_a_body_nested_past_the_parsers_depth_is_refused_in_words(self):
+        """Review F5: json.load raised RecursionError on "[" x 200000, past the parser's ValueError: a 500."""
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        bookkeeper = User.objects.create_user("bk")
+        bookkeeper.groups.add(Group.objects.get(name="Bookkeeper"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(bookkeeper)
+        got = [(answer := client.post("/api/core/role-proposals/0/confirm/", body, content_type="application/json"))
+               .status_code for body in ("[" * 200000 + "]" * 200000, '{"a":' * 200000 + "1" + "}" * 200000)]
+        self.assertEqual(got, [400, 400])
+        self.assertIn("nests deeper", answer.json()["detail"])
+
+    def planted(self, own_parser):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+        from rest_framework.parsers import JSONParser
+        from rest_framework.response import Response
+
+        from apps.core.api import ObjectJSONParser
+
+        class Planted(viewsets.ViewSet):
+            parser_classes = [JSONParser if own_parser else ObjectJSONParser]
+
+            @action(detail=True, methods=["post"])
+            def note(self, request, pk=None):
+                return Response({"note": request.data.get("note")})
+
+        Planted.__module__ = "apps.purchasing.views"
+        return Planted
+
+    def found(self, view):
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [shape for shape, _detail in Command().bodies_read_past_the_object_parser(["purchasing"], [view])]
+
+    def test_a_planted_view_parsing_json_past_it_is_reported(self):
+        self.assertEqual(self.found(self.planted(True)), ["body read past the object parser"])
+
+    def test_one_keeping_it_is_not(self):
+        self.assertEqual(self.found(self.planted(False)), [])
+
+
+class AMethodARouteDoesNotMapIsRefusedTests(TestCase):
+    """
+    Review F6: DRF finds a request's handler by its method's name, so on a
+    route mapping no POST an action named `post` answered it. POST to a
+    GET-only report (job-work still-out, the material register, inspections
+    awaiting) ran the post action with no document: a 500. POST to a
+    document's own address ran it on that document, asked only add_. Every
+    route of every such viewset is asked, as a login holding every right
+    but no superuser; and the Stores Manager's adjustment stays a draft.
+    """
+
+    def setUp(self):
+        from django.contrib.auth.models import Group, Permission, User
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        everything = Group.objects.create(name="Everything")
+        everything.permissions.set(Permission.objects.all())
+        self.user = User.objects.create_user("everything")
+        self.user.groups.add(everything)
+
+    def unmapped(self):
+        """[(method, path)] for every routed path of a viewset with an action named after a method it does not map."""
+        import re
+
+        from django.urls import get_resolver
+
+        found = []
+
+        def walk(patterns, prefix):
+            for entry in patterns:
+                here = prefix + str(entry.pattern)
+                if hasattr(entry, "url_patterns"):
+                    walk(entry.url_patterns, here)
+                    continue
+                cls, actions = getattr(entry.callback, "cls", None), getattr(entry.callback, "actions", None)
+                if cls is None or actions is None or "format" in here:
+                    continue
+                path = "/" + re.sub(r"\(\?P<\w+>[^)]*\)", "1", here).replace("^", "").replace("$", "")
+                for verb in ("post", "put", "patch", "delete"):
+                    if verb not in actions and hasattr(getattr(cls, verb, None), "mapping"):
+                        found.append((verb, path.replace("//", "/")))
+
+        walk(get_resolver().url_patterns, "")
+        return found
+
+    def test_every_route_answers_405_to_a_method_it_does_not_map(self):
+        from rest_framework.test import APIClient
+
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(self.user)
+        routes = self.unmapped()
+        self.assertIn(("post", "/api/manufacturing/job-work-challans/still-out/"), routes)
+        answers = {(verb, path): getattr(client, verb)(path, {}, format="json").status_code for verb, path in routes}
+        self.assertEqual({key: code for key, code in answers.items() if code != 405}, {})
+
+    def test_a_post_to_a_drafts_address_does_not_post_it(self):
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        from apps.inventory.tests_adjustments import AdjustmentTestCase
+
+        fixture = AdjustmentTestCase()
+        AdjustmentTestCase.setUp(fixture)
+        fixture.stock("100", "5")
+        draft = fixture.adjust("-4", reason=fixture.shrink, post=False)
+        manager = User.objects.create_user("stores")
+        manager.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient(raise_request_exception=False)
+        client.force_authenticate(manager)
+        got = client.post(f"/api/inventory/stock-adjustments/{draft.pk}/", {}, format="json")
+        draft.refresh_from_db()
+        self.assertEqual((got.status_code, draft.posted), (405, False))
+
+    def test_a_planted_verb_named_action_without_the_mixin_is_reported(self):
+        from rest_framework import viewsets
+        from rest_framework.decorators import action
+
+        from apps.core.audit import AuditableViewSetMixin
+        from apps.core.management.commands.audit_invariants import Command
+
+        class Planted(viewsets.ViewSet):
+            @action(detail=True, methods=["post"])
+            def post(self, request, pk=None):
+                return None
+
+        class Kept(AuditableViewSetMixin, Planted):
+            pass
+
+        for cls in (Planted, Kept):
+            cls.__module__ = "apps.purchasing.views"
+        found = [[shape for shape, _ in Command().actions_named_after_a_verb(["purchasing"], [cls])]
+                 for cls in (Planted, Kept)]
+        self.assertEqual(found, [["action named after a method"], []])
+
+
+class AViewSetRoutesOnlyWhatItCanDoTests(SimpleTestCase):
+    """
+    Review F6: RowHeldViewSetMixin and AuditableViewSetMixin defined update()
+    and destroy() outright, so the router mapped PUT and DELETE for a viewset
+    that could do neither, and its Allow header and OPTIONS advertised them.
+    """
+
+    def methods(self, viewset):
+        from rest_framework.routers import SimpleRouter
+
+        return set(SimpleRouter().get_method_map(viewset, {"put": "update", "patch": "partial_update",
+                                                           "delete": "destroy"}))
+
+    def test_a_viewset_that_only_deletes_routes_no_put(self):
+        from apps.gst.views import EwayBillViewSet, Gstr2bStatementViewSet
+
+        self.assertEqual(self.methods(Gstr2bStatementViewSet), {"delete"})
+        self.assertEqual(self.methods(EwayBillViewSet), {"delete"})
+
+    def test_a_read_only_viewset_routes_neither_and_a_model_viewset_both(self):
+        from rest_framework import viewsets
+
+        from apps.core.audit import AuditableViewSetMixin
+        from apps.core.views import CountryViewSet
+
+        class ReadOnly(AuditableViewSetMixin, viewsets.ReadOnlyModelViewSet):
+            pass
+
+        self.assertEqual(self.methods(ReadOnly), set())
+        self.assertEqual(self.methods(CountryViewSet), {"put", "patch", "delete"})
