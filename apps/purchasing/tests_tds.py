@@ -722,3 +722,77 @@ class TdsRatesByDateMigrationTests(TransactionTestCase):
                    for row in Rate.objects.all()),
             [(contract.pk, "2000-04-01", Decimal("2.0000"), Decimal("20.0000"), None),
              (goods.pk, "2000-04-01", Decimal("0.1000"), Decimal("5.0000"), None)])
+
+
+class TcsTheSupplierCollectedTests(TdsTestCase):
+    """
+    O234. A delivery van bought for 12,00,000; the dealer collects TCS of 1%
+    under 206C(1F): 12,000, and its invoice totals 12,12,000. The plant owes
+    the dealer 12,12,000 and claims the 12,000 in its own return. A quarter
+    given back takes back 3,000; the rest takes back the 9,000 left
+    (calc_fix_purch/o234.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tcs_receivable = Account.objects.create(code="1460", name="TCS receivable", account_type=AccountType.ASSET)
+
+    def van(self, **tcs):
+        bill = Bill.objects.create(vendor=self.vendor, bill_date=DAY, payable_account=self.payable, reference="INV-V1",
+                                   **tcs)
+        BillLine.objects.create(bill=bill, description="Delivery van", quantity=Decimal("1"),
+                                unit_price=Decimal("1200000"), expense_account=self.expense)
+        return bill
+
+    def test_the_bill_owes_what_the_supplier_invoiced_and_the_plant_claims_the_tcs(self):
+        bill = self.van(tcs_amount=Decimal("12000"), tcs_section="206C(1F)", tcs_account=self.tcs_receivable)
+        bill.post()
+        bill = Bill.objects.get(pk=bill.pk)
+        self.assertEqual((bill.total(), bill.amount_due()), (Decimal("1212000.00"), Decimal("1212000.00")))
+        self.assertEqual((self.balance(self.tcs_receivable), self.balance(self.payable)),
+                         (Decimal("12000.00"), Decimal("-1212000.00")))
+        quarter = bill.create_debit_note(quantities={bill.lines.get(): Decimal("0.25")})
+        self.assertEqual((quarter.tcs_amount, quarter.total(), self.balance(self.tcs_receivable)),
+                         (Decimal("3000.00"), Decimal("303000.00"), Decimal("9000.00")))
+        rest = bill.create_debit_note(quantities={bill.lines.get(): Decimal("0.75")})
+        self.assertEqual((rest.tcs_amount, self.balance(self.tcs_receivable), self.balance(self.payable)),
+                         (Decimal("9000.00"), Decimal("0.00"), Decimal("0.00")))
+        self.assertEqual(Bill.objects.get(pk=bill.pk).amount_due(), Decimal("0.00"))
+
+    def test_the_refusals(self):
+        for given, field, said in (
+                ({"tcs_amount": Decimal("12000")}, "tcs_account", "Name the TCS receivable account"),
+                ({"tcs_amount": Decimal("-1"), "tcs_account": self.tcs_receivable}, "tcs_amount", "is not negative"),
+                ({"tcs_amount": Decimal("12000"), "tcs_account": self.expense}, "tcs_account", "is not an asset account")):
+            with self.subTest(field=field), self.assertRaisesMessage(ValidationError, said):
+                self.van(**given)
+        bill = self.van(tcs_amount=Decimal("12000"), tcs_account=self.tcs_receivable)
+        bill.post()
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("0.25")})
+        with self.assertRaisesMessage(ValidationError, "a debit note does not take back"):
+            Bill.objects.create(vendor=self.vendor, bill_date=DAY, payable_account=self.payable, debits=bill,
+                                tcs_amount=Decimal("9000.01"))
+        self.assertEqual(note.tcs_account, self.tcs_receivable)
+
+    def test_the_ap_manager_books_it_through_the_api(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        ap = User.objects.create_user("ap")
+        ap.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(ap)
+        made = client.post("/api/purchasing/bills/", {
+            "vendor": self.vendor.pk, "bill_date": str(DAY), "reference": "INV-V2", "payable_account": self.payable.pk,
+            "tcs_amount": "12000", "tcs_section": "206C(1F)", "tcs_account": self.tcs_receivable.pk}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        line = client.post("/api/purchasing/bill-lines/", {
+            "bill": made.json()["id"], "description": "Delivery van", "quantity": "1", "unit_price": "1200000",
+            "expense_account": self.expense.pk}, format="json")
+        self.assertEqual(line.status_code, 201, line.content)
+        posted = client.post(f"/api/purchasing/bills/{made.json()['id']}/post_bill/", {}, format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        self.assertEqual((posted.json()["tcs_amount"], posted.json()["total"]), ("12000.00", "1212000.00"))
+        self.assertEqual(self.balance(self.tcs_receivable), Decimal("12000.00"))

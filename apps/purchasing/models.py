@@ -25,6 +25,7 @@ from apps.accounting.mixins import (
 )
 from apps.accounting.models import (
     Account,
+    AccountType,
     ChargeType,
     JournalEntry,
     JournalLine,
@@ -3236,6 +3237,18 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         help_text="The supplier's credit-note number as GSTR-2B pairs it, within the supplier's "
                   "financial year: what makes it one note.",
     )
+    # TCS the supplier collected from the plant (section 206C, e.g. a vehicle over ten lakh): owed to the
+    # supplier with the bill, and a credit the plant claims in its own return (O234).
+    tcs_amount = models.DecimalField(
+        max_digits=18, decimal_places=2, default=Decimal("0"),
+        help_text="Tax the supplier collected at source on this bill, as its invoice shows it. Part of what the "
+                  "supplier is owed; claimed by the plant in its own return.")
+    tcs_section = models.CharField(
+        max_length=16, blank=True, help_text="The section the supplier's invoice collects under: 206C(1F).")
+    tcs_account = models.ForeignKey(
+        "accounting.Account", null=True, blank=True, on_delete=models.PROTECT, related_name="+",
+        help_text="The TCS receivable account the collection waits in until the plant claims it. A debit note "
+                  "takes it back from its bill's.")
     currency = models.ForeignKey(
         Currency, null=True, blank=True, on_delete=models.PROTECT, related_name="+"
     )
@@ -3464,6 +3477,50 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if day is not None and day > timezone.localdate():
             raise ValidationError({"supplier_note_date": [f"The supplier's credit note is not dated {day}: "
                                                           "that day has not come."]})
+
+    def total(self):
+        """What the supplier is owed for it: its lines and their tax, and the TCS it collected (O234)."""
+        return super().total() + (self.tcs_amount or Decimal("0"))
+
+    def tcs_taken_back(self, excluding=None):
+        """TCS this bill's posted debit notes have taken back."""
+        notes = self.debit_notes.filter(posted=True)
+        if excluding is not None and excluding.pk:
+            notes = notes.exclude(pk=excluding.pk)
+        return sum((note.tcs_amount for note in notes), Decimal("0"))
+
+    def _check_tcs(self):
+        """
+        The TCS a supplier collected: never negative, in rupees, into a TCS
+        receivable account the bill names; a debit note's back out of its
+        bill's account, and no more than the bill collected and has not had
+        back. Not on money paid ahead, which is not built.
+        """
+        amount = self.tcs_amount or Decimal("0")
+        if amount < 0:
+            raise ValidationError({"tcs_amount": ["TCS collected is not negative; a debit note takes it back."]})
+        if self.debits_id and self.debits.tcs_account_id:
+            self.tcs_account_id = self.debits.tcs_account_id
+            self.tcs_section = self.tcs_section or self.debits.tcs_section
+        if not amount:
+            return
+        if self.is_prepayment:
+            raise ValidationError({"tcs_amount": ["TCS on money paid ahead is not built; record it on the bill."]})
+        if self.currency_id not in (None, Company.get().base_currency_id):
+            raise ValidationError({"tcs_amount": ["TCS is collected in rupees; this bill is in another currency."]})
+        if self.tcs_account_id is None:
+            raise ValidationError({"tcs_account": [
+                "Name the TCS receivable account the supplier's collection waits in until it is claimed."]})
+        refuse_money_kept_as(self, "tcs_account")
+        if self.tcs_account.account_type != AccountType.ASSET:
+            raise ValidationError({"tcs_account": [
+                f"{self.tcs_account} is not an asset account: TCS collected is a credit the plant claims."]})
+        if self.debits_id:
+            left = self.debits.tcs_amount - self.debits.tcs_taken_back(excluding=self)
+            if amount > left:
+                raise ValidationError({"tcs_amount": [
+                    f"{self.debits} collected {self.debits.tcs_amount} of TCS and {left} is not yet taken back; "
+                    f"a debit note does not take back {amount}."]})
 
     def amount_paid(self):
         # What still stands of the money applied to it (settlement.standing_paid).
@@ -3921,6 +3978,8 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if self._state.adding and not self.payable_account_id:
             self.payable_account = default_account("payable", "payable_account")
         refuse_money_kept_as(self, "payable_account")
+        if not (updating and updating <= self.SUPPLIER_NOTE_FIELDS):
+            self._check_tcs()
         self._key_the_reference(kwargs)
         super().save(*args, **kwargs)
 
@@ -4131,6 +4190,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     tax_totals[tax.reverse_charge_account] -= amount
         for account, amount in tax_totals.items():
             debits.append((account, round_money(amount * rate), "Tax", None))
+        if self.tcs_amount:
+            # What the supplier collected is owed to it with the bill and claimed back by the plant:
+            # Dr TCS receivable / Cr Payables, and a debit note the reverse (O234). In rupees (_check_tcs).
+            debits.append((self.tcs_account, round_money(self.tcs_amount * rate),
+                           f"TCS {self.tcs_section or ''} collected by {self.vendor}".replace("  ", " "), None))
 
         payable_total = sum(amount for _, amount, _, _ in debits)
         JournalLine.objects.create(
@@ -4713,8 +4777,27 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                     "accrued_doc", "accrued_base", "updated_at",
                 ])
             note_line.taxes.set(line.taxes.all())
+        self._take_back_tcs(debit_note)
         debit_note.post(memo=memo)
         return debit_note
+
+    def _take_back_tcs(self, note):
+        """
+        A debit note takes back the TCS its bill collected on what it gives
+        back, at the bill's share: all that is left when it gives back the
+        rest of the bill, else its subtotal's part, rounded (O234).
+        """
+        if not self.tcs_amount:
+            return
+        left = self.tcs_amount - self.tcs_taken_back()
+        whole = self.subtotal()
+        given = note.subtotal() + sum((other.subtotal() for other in self.debit_notes.filter(posted=True)),
+                                      Decimal("0"))
+        share = (left if (whole <= 0 or given >= whole)
+                 else min(left, round_money(self.tcs_amount * note.subtotal() / whole)))
+        if share > 0:
+            note.tcs_amount = share
+            note.save()
 
     def debit_old_supply(self, lines, memo="", on_date=None, old_value=None,
                          supplier_note_number="", supplier_note_date=None):
