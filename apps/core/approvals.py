@@ -251,3 +251,39 @@ class ChangesWithinItsApproval:
                 f"{self} is confirmed, and this change needs approval beyond what it has: {' '.join(reasons)} A "
                 "confirmed order is not changed past the policy; take it as a new order, which "
                 "asks for approval.")
+
+
+def asks_its_policy_when_taxes_change(line_model):
+    """
+    A confirmed order's line asked the policy again when its taxes change, as
+    when its price does (ChangesWithinItsApproval). A line's taxes are a
+    many-to-many the serializer writes after the save, so save() never saw
+    them: 900 confirmed under a 1,000 limit took GST to 1,062 on a clerk's
+    PATCH, on either side (review F3). Weighed after the change against the
+    order as it stood before it; refused in words, and the change goes with
+    the refusal: Django writes a many-to-many in a transaction of its own, so
+    the raise rolls it back. Called once for each line model whose order is a
+    ChangesWithinItsApproval and whose line has `_policy_before()`.
+    """
+    from django.db import transaction
+    from django.db.models.signals import m2m_changed
+
+    def changed(sender, instance, action, reverse, pk_set, **kwargs):
+        if reverse or not isinstance(instance, line_model):
+            return
+        if action in ("pre_add", "pre_remove", "pre_clear"):
+            order = type(instance.order).objects.filter(pk=instance.order_id).first() if instance.order_id else None
+            confirmed = order is not None and order.status == "confirmed"
+            instance._taxes_before = order.policy_figures() if confirmed else None
+            return
+        if action not in ("post_add", "post_remove", "post_clear"):
+            return
+        before, instance._taxes_before = getattr(instance, "_taxes_before", None), None
+        if before is None:
+            return
+        with transaction.atomic():
+            order = type(instance.order).objects.select_for_update().get(pk=instance.order_id)
+            order.refuse_going_past_the_policy(before)
+
+    m2m_changed.connect(changed, sender=line_model.taxes.through, weak=False,
+                        dispatch_uid=("asks-its-policy-when-taxes-change", line_model._meta.label))

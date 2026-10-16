@@ -36,7 +36,8 @@ from apps.accounting.models import (
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
 from apps.core.approvals import (
-    ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, authors, check_not_raised_by,
+    ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
+    check_not_raised_by,
 )
 from apps.core.models import (
     BILLED,
@@ -8834,3 +8835,7 @@ class ReceiptInspection(AuditModel):
 
 from .tds import TdsChallan, TdsDeduction  # noqa: E402,F401
 from .freight import FreightDelivery  # noqa: E402,F401
+
+
+# A tax added to or taken off a confirmed order's line asks the policy again (review F3).
+asks_its_policy_when_taxes_change(PurchaseOrderLine)

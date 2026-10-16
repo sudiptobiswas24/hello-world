@@ -18,7 +18,9 @@ from apps.accounting.models import (
         round_money,
 )
 from apps.accounting.trade_terms import FreightTerms, Incoterm
-from apps.core.approvals import ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, authors
+from apps.core.approvals import (
+    ApprovableMixin, ApprovalStatus, ChangesWithinItsApproval, asks_its_policy_when_taxes_change, authors,
+)
 from apps.core.history import EventKind, record
 from apps.core.recurrence import RecurrenceInterval, add_interval, still_to_take
 from apps.core.models import (
@@ -6070,3 +6072,7 @@ def claims(start, end):
 
 from .crm import Activity, Campaign, Lead, Opportunity  # noqa: E402,F401
 from .teams import SalesTarget, SalesTeam, rep_label  # noqa: E402,F401
+
+
+# A tax added to or taken off a confirmed order's line asks the policy again (review F3).
+asks_its_policy_when_taxes_change(SalesOrderLine)
