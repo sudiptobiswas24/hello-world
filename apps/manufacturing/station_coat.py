@@ -65,6 +65,13 @@ class CoatingCheck(AuditModel):
                                     on_delete=models.PROTECT, related_name="+")
     reason = models.CharField(max_length=255, blank=True)
     voided_at = models.DateTimeField(null=True, blank=True, editable=False)
+    mount = models.ForeignKey(
+        "manufacturing.RollMount", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="coating_checks", editable=False,
+        help_text="The roll on the coater when the discs were punched: off its weight, only the "
+                  "bundles cut from what was coated off it wait (O232). Blank when the station "
+                  "recorded no roll there; then every bundle of the run waits, as before.",
+    )
 
     class Meta:
         ordering = ["-checked_at"]
@@ -132,8 +139,12 @@ def record_coating(station, operator, machine, metres, samples, supervisor=None,
         raise ValidationError(f"{metres} m is less than one sack's cut length.")
     counted = report(step, sacks, on_date=shift_date, machine=machine,
                      memo=f"Coated {metres} m at {station}"[:255])
+    from .process_rolls import current_mount
+
     check = CoatingCheck.objects.create(
         station=station, machine=machine, specification=spec, report=counted,
+        # The roll the discs came off, as the station records it (O232).
+        mount=current_mount(machine),
         metres=metres, disc_sq_cm=disc,
         samples=[[str(coated), str(uncoated)] for coated, uncoated in pairs],
         target_gsm=spec.lamination_gsm, lower_gsm=lower, upper_gsm=upper,
@@ -146,12 +157,33 @@ def record_coating(station, operator, machine, metres, samples, supervisor=None,
         from .station_gauge import off_check
 
         # Work in progress: no lot and no plan to file an inspection under. The Quality Manager
-        # is told, and the bundles of this run counted while it stands wait for them.
+        # is told, and the bundles cut from what was coated off that roll wait for them
+        # (off_coatings).
         off_check(check, station, supervisor, reason, "its coating weight",
                   f"{run} coated off its weight ({check.mean_gsm} GSM against {lower}–{upper})",
                   f"/production/work-orders/{run.pk}")
     # As stored: the places each column keeps, not the arithmetic's.
     return CoatingCheck.objects.select_related("report").get(pk=check.pk)
+
+
+def off_coatings(order, mount):
+    """
+    The standing coating checks off their weight that a bundle of `order`
+    cut from `mount`'s roll was made under: those taken on a roll in its
+    chain (what it was coated from), and those tied to no roll. With no
+    roll recorded at the converter there is no telling, and every check of
+    the run holds, as every one did until a check knew its roll: 2,100 m
+    coated with one disc pair off held all twenty bundles of the run (O232).
+    """
+    checks = CoatingCheck.objects.filter(report__operation__work_order=order, passed=False,
+                                         voided_at__isnull=True)
+    if mount is None:
+        return checks
+    chain = set()
+    while mount is not None and mount.pk not in chain:
+        chain.add(mount.pk)
+        mount = mount.roll.mount if mount.roll_id else None
+    return checks.filter(models.Q(mount__isnull=True) | models.Q(mount__in=chain))
 
 
 @transaction.atomic

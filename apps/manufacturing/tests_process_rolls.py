@@ -223,6 +223,42 @@ class AnOffRollWaitsForTheQualityManagerTests(RollsTestCase):
         self.assertIn(f"was coated off its weight at {check.station}", count.inspection.notes)
 
 
+class ACoatingCheckHoldsItsOwnRollTests(RollsTestCase):
+    """
+    O232: one disc pair off its weight on the coater held every bundle of the
+    run counted while the check stood. Tied to the roll on the coater when it
+    was taken: fabric roll A mounted at 10:50, the check off at 10:55 (2,100 m), coated
+    roll LA off at 11:00; fabric roll B mounted at 11:10, coated roll LB off
+    at 11:20. A bundle cut from LB is released; one cut from LA waits.
+    """
+
+    def test_only_the_bundle_cut_from_the_checked_roll_waits(self):
+        from apps.quality.models import Disposition
+
+        from .conversion import record_bags
+        from .station_coat import record_coating
+        from .tests_station_coat import OFF
+
+        self.mount()
+        check = record_coating(self.kx, self.operator, self.k1, "2100", OFF, supervisor=self.supervisor,
+                               reason="Die lip cleaned", at=at(TODAY, 10, 55))
+        self.assertEqual(check.mount.lot, self.fabric_lot)
+        checked = weigh_roll(self.kx, self.operator, self.k1, "127.78", self.core, "1000", at=at(TODAY, 11))
+        other = self.weigh(when=at(TODAY, 10, 45))
+        self.mount(other.lot.code, when=at(TODAY, 11, 10))
+        clean = weigh_roll(self.kx, self.operator, self.k1, "127.78", self.core, "1000", at=at(TODAY, 11, 20))
+        grams = [str(self.lam_spec.bag_grams().quantize(Decimal("0.001")))] * 10
+        mount_roll(self.cv, self.operator, self.c2, clean.code, at=at(TODAY, 11, 30))
+        released = record_bags(self.cv, self.operator, self.c2, "500", grams, at=at(TODAY, 12))
+        mount_roll(self.cv, self.operator, self.c2, checked.code, at=at(TODAY, 12, 10))
+        held = record_bags(self.cv, self.operator, self.c2, "500", grams, at=at(TODAY, 12, 30))
+        self.assertEqual((released.passed, released.inspection.disposition),
+                         (True, Disposition.ACCEPT))
+        self.assertNotIn("coated off its weight", released.inspection.notes)
+        self.assertEqual(held.inspection.disposition, Disposition.AWAITING)
+        self.assertIn(f"was coated off its weight at {check.station}", held.inspection.notes)
+
+
 class WithdrawnTests(RollsTestCase):
     def test_a_mount_goes_back_while_nothing_was_made_from_it(self):
         mount = self.mount()
