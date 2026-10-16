@@ -23,6 +23,8 @@ export default function TdsReturn() {
         { key: "base", label: "Credited", kind: "money", width: "10rem" },
         { key: "amount", label: "Deducted", kind: "money", width: "9rem" },
         { key: "challan", label: "Challan", width: "10rem", render: (row) => String(row.challan || "Not paid over") },
+        // A reversal row gives back a deduction: the day of the one it reverses (O156).
+        { key: "reverses", label: "Reverses", kind: "date", width: "8rem" },
       ]}
       empty="Nothing was deducted in these dates."
     />
