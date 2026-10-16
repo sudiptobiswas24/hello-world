@@ -323,23 +323,76 @@ class FreightOnAScrapInvoiceTests(TcsTestCase):
 
 class AnAdvanceOnAScrapOrderTests(TcsTestCase):
     """
-    Review U1: 206C(1) collects at the debit or the receipt, whichever is earlier. TCS on an advance is not
-    built, so the advance is refused in words rather than taken with nothing collected.
+    O243 (review U1): 206C(1) (394 from April 2026) collects at the debit or the receipt, whichever is earlier.
+    An order of 2,000 kg of scrap at 45 (90,000) takes a 30% advance of 27,000, which collects 270. The
+    invoice for the goods, 106,200 with its GST, counts the advance and collects 792 on the 79,200 left:
+    1,062 in all, as the invoice alone would (calc_fix_money/g22/o243.py).
     """
 
-    def test_refused_rather_than_collected_on_at_nothing(self):
-        from apps.sales.models import SalesOrder, SalesOrderLine
-
-        order = SalesOrder.objects.create(customer=self.mh, order_date=DAY, currency=self.inr)
-        SalesOrderLine.objects.create(order=order, item=self.scrap, uom=self.scrap.uom, quantity=D("2000"),
-                                      unit_price=D("45"), revenue_account=self.revenue)
-        order.confirm()
+    def setUp(self):
+        super().setUp()
         from apps.core.models import Company
+        from apps.sales.models import SalesOrder, SalesOrderLine
 
         Company.objects.update(customer_deposit_account=Account.objects.create(
             code="2300", name="Customer deposits", account_type=AccountType.LIABILITY))
-        with self.assertRaisesMessage(ValidationError, "TCS on an advance is owed as it is received"):
-            order.create_down_payment_invoice(self.ar, percent=30).post()
+        self.order = SalesOrder.objects.create(customer=self.mh, order_date=DAY, currency=self.inr)
+        SalesOrderLine.objects.create(order=self.order, item=self.scrap, uom=self.scrap.uom, quantity=D("2000"),
+                                      unit_price=D("45"), revenue_account=self.revenue)
+        self.order.confirm()
+        self.advance = self.order.create_down_payment_invoice(self.ar, percent=30)
+        self.advance.post()
+
+    def goods(self, kg):
+        from apps.sales.models import Invoice, InvoiceLine
+
+        invoice = Invoice.objects.create(customer=self.mh, invoice_date=DAY, receivable_account=self.ar,
+                                         currency=self.inr, sales_order=self.order)
+        line = InvoiceLine.objects.create(invoice=invoice, item=self.scrap, quantity=D(kg), unit_price=D("45"),
+                                          revenue_account=self.revenue, order_line=self.order.lines.get())
+        line.taxes.set(self.pair)
+        invoice.post()
+        return invoice
+
+    def test_collected_on_the_advance_and_counted_against_the_invoice(self):
+        (row,) = self.advance.tcs_collected.all()
+        self.assertEqual((row.base, row.amount, self.advance.tcs_amount), (D("27000.00"), D("270"), D("270")))
+        invoice = self.goods("2000")
+        (row,) = invoice.tcs_collected.all()
+        self.assertEqual((row.base, row.amount), (D("79200.00"), D("792")))
+        self.assertEqual(self.ledger("2290"), D("1062.00"))
+        # The deposit holds its value, not the TCS: drawn whole as the invoice posts, the customer owes the
+        # rest with the invoice's TCS, 107,262 in all with the advance and its 270.
+        self.assertEqual((self.advance.deposit_unapplied(), invoice.amount_due()), (D("0.00"), D("79992.00")))
+
+    def test_the_rest_of_the_order_can_still_be_taken_ahead(self):
+        # 27,000 taken (270 TCS beside it): the other 63,000 is not refused as 27,270 + 63,000 > 90,000.
+        rest = self.order.create_down_payment_invoice(self.ar, amount="63000")
+        rest.post()
+        self.assertEqual((self.order.deposit_total(), rest.tcs_amount), (D("90000.00"), D("630")))
+
+    def test_drawn_down_across_two_invoices(self):
+        first, second = self.goods("500"), self.goods("1500")
+        self.assertEqual([(row.base, row.amount) for inv in (first, second) for row in inv.tcs_collected.all()],
+                         [(D("0.00"), D("0")), (D("79200.00"), D("792"))])
+        self.assertEqual(self.ledger("2290"), D("1062.00"))
+
+    def test_the_advance_refunded_gives_its_tcs_back(self):
+        note = self.advance.create_credit_note(on_date=datetime.date(2026, 9, 20))
+        self.assertEqual(note.tcs_amount, D("270"))
+        self.assertEqual(self.ledger("2290"), D("0"))
+
+    def test_the_invoice_that_drew_the_advance_credited_gives_both_back(self):
+        # The advance drawn into the invoice is refunded through the invoice's note: 792 and 270.
+        invoice = self.goods("2000")
+        note = self.credit(invoice, "2000", datetime.date(2026, 9, 20))
+        self.assertEqual((note.tcs_amount, self.ledger("2290")), (D("1062"), D("0")))
+
+    def test_part_credited_gives_back_its_own_first(self):
+        invoice = self.goods("2000")
+        note = self.credit(invoice, "500", datetime.date(2026, 9, 20))
+        # 26,550 of the invoice's own 79,200 at 1%: 265.50, 266.
+        self.assertEqual((note.tcs_amount, self.ledger("2290")), (D("266"), D("796.00")))
 
 
 class ARowTheUpgradeCouldNotTellTests(TcsTestCase):
