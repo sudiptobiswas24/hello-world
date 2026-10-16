@@ -244,8 +244,17 @@ class AccountingPeriod(AuditModel):
 
     @serialised("closed")
     def close(self, by=None, note=""):
+        """
+        Lock the period. Refused while a module that posts into it says
+        something it owes the period is not in yet (CLOSE_CHECKS): closed
+        with its depreciation uncharged, January could never be charged,
+        and every asset's month-end run stopped on it (O29).
+        """
         if self.closed:
             raise ValidationError("This period is already closed.")
+        owed = [said for ask in CLOSE_CHECKS for said in ask(self)]
+        if owed:
+            raise ValidationError(f"{self} cannot close yet. " + " ".join(owed))
         self.closed = True
         self.closed_at = timezone.now()
         self.closed_by = by
@@ -268,6 +277,18 @@ class AccountingPeriod(AuditModel):
         self.closed_by = by
         self.note = note[:255] or self.note
         self.save(update_fields=["closed", "closed_at", "closed_by", "note", "updated_at"])
+
+
+# What a period's close asks of the modules that post into it: each
+# `ask(period)` answers [sentence, ...] for what it still owes the period,
+# [] for nothing. Registered by the module (assets: depreciation), since
+# accounting may not import it.
+CLOSE_CHECKS = []
+
+
+def register_close_check(ask):
+    if ask not in CLOSE_CHECKS:
+        CLOSE_CHECKS.append(ask)
 
 
 class JournalEntry(AuditModel):
