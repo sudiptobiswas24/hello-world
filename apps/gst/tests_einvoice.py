@@ -778,3 +778,57 @@ class DebitNoteTests(EInvoiceTestCase):
                              {"net": "1000", "reason": "Rate agreed at 126", "date": str(DAY)}, format="json")
         self.assertEqual(answer.status_code, 201, answer.content)
         self.assertEqual((answer.json()["debits"], answer.json()["number"][:3]), (invoice.pk, "DN-"))
+
+
+class TaxPathsTheReviewDidNotDriveTests(EInvoiceTestCase):
+    """
+    O244, each path probed: S2 (17,700.00 to a Maharashtra buyer) registered now, its IRN cancellation asked
+    and answered around other events. Each holds; the test says why.
+    """
+
+    def s2(self):
+        return self.invoice(self.mh, [(self.sack, "100", "150", "0", self.pair)])
+
+    def test_a_payment_landing_between_the_request_and_the_answer(self):
+        # Holds: the answer is asked again what settles the invoice, under its lock (_refuse_cancelling), so
+        # the books never reverse an invoice money still settles; released, the answer is kept and the
+        # money stands on account.
+        from apps.accounting.models import Account, AccountType, Payment, PaymentDirection
+        from apps.sales.models import InvoicePayment
+
+        invoice = self.s2()
+        record = self.registered(invoice)
+        record.cancellation("2", "Wrong rate")
+        bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        receipt = Payment.objects.create(party=self.mh, direction=PaymentDirection.RECEIPT, payment_date=DAY,
+                                         amount=D("17700"), currency=self.inr, bank_account=bank,
+                                         counterpart_account=self.ar)
+        receipt.post()
+        allocation = InvoicePayment.objects.create(invoice=invoice, payment=receipt, amount=D("17700"))
+        with self.assertRaisesMessage(ValidationError, "has 17700.00 settled against it"):
+            record.record_cancellation(timezone.now())
+        record.refresh_from_db()
+        self.assertIsNone(record.cancelled_at)
+        allocation.delete()
+        note = record.record_cancellation(timezone.now())
+        self.assertEqual((note.total(), Payment.objects.get(pk=receipt.pk).posted), (D("17700.00"), True))
+
+    def test_an_irn_cancelled_in_a_closed_period(self):
+        # Holds: the reversing note is dated on the invoice's day, and a closed month refuses it in words;
+        # nothing is kept half-done (the answer and the note are one transaction), so reopening September
+        # and recording the answer again reverses it.
+        from apps.accounting.models import AccountingPeriod
+
+        invoice = self.s2()
+        record = self.registered(invoice)
+        record.cancellation("2", "Wrong rate")
+        september = AccountingPeriod.objects.create(name="Sep 2026", start_date=datetime.date(2026, 9, 1),
+                                                    end_date=datetime.date(2026, 9, 30))
+        september.close()
+        with self.assertRaises(ValidationError) as refused:
+            record.record_cancellation(timezone.now())
+        self.assertIn("closed", " ".join(refused.exception.messages))
+        record.refresh_from_db()
+        self.assertEqual((record.cancelled_at, invoice.credit_notes.count()), (None, 0))
+        september.reopen()
+        self.assertEqual(record.record_cancellation(timezone.now()).total(), D("17700.00"))
