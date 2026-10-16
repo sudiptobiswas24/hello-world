@@ -621,3 +621,36 @@ class VendorInvoiceKeyMigrationTests(_MigrationTestCase):
         self.assertEqual(printed.count("purchasing 0076"), 2)
         with self.assertRaises(IntegrityError), transaction.atomic():
             Bill.objects.filter(pk=rows["other_case"].pk).update(reference_key="2025:INV77")
+
+
+@_tag("migration")
+class OneRuleForDocumentNumbersMigrationTests(VendorInvoiceKeyMigrationTests):
+    """
+    purchasing 0079 keys every vendor invoice and supplier credit note again by
+    the one rule (accounting.gst.document_number, the g22 decision): separators
+    kept, case, whitespace, Unicode forms and dashes folded.
+    """
+
+    P75 = [("purchasing", "0078_a_bill_keeps_the_tcs_its_supplier_collected")]
+    P76 = [("purchasing", "0079_document_numbers_keyed_by_one_rule")]
+
+    def test_keys_each_invoice_in_its_year_and_reports_what_it_makes_one(self):
+        from django.db import IntegrityError, transaction
+
+        D = datetime.date
+        rows = {
+            "first": self.bill(self.v1, D(2026, 1, 10), "INV-77"),
+            "slash": self.bill(self.v1, D(2026, 1, 11), "INV/77"),
+            "case": self.bill(self.v1, D(2026, 1, 12), "inv-77"),
+            "dash": self.bill(self.v1, D(2026, 1, 13), "INV\u201377"),
+            "spaced": self.bill(self.v1, D(2026, 1, 14), "  X  1/12 "),
+            "x": self.bill(self.v1, D(2026, 1, 15), "X/11/2"),
+        }
+        Bill, printed = self.forward()
+        got = {name: Bill.objects.get(pk=row.pk).reference_key for name, row in rows.items()}
+        self.assertEqual(got, {"first": "2025:INV-77", "slash": "2025:INV/77", "case": "", "dash": "",
+                               "spaced": "2025:X 1/12", "x": "2025:X/11/2"})
+        self.assertIn("B3 bills vendor invoice 'inv-77', which is 'INV-77' on B1", printed)
+        self.assertEqual(printed.count("purchasing 0079"), 2)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Bill.objects.filter(pk=rows["case"].pk).update(reference_key="2025:INV-77")

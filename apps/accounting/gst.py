@@ -329,6 +329,26 @@ def _anything_recorded():
     )
 
 
+def document_number(number):
+    """
+    A document number as one is told from another, the one rule for the
+    plant's vendor invoices and supplier credit notes, and the ground
+    GSTR-2B's hint folds further (document_number_key). Unicode compatibility
+    forms folded (NFKC: full-width letters, digits and solidus), format
+    characters dropped (zero-width space, BOM, soft hyphen), every dash and
+    minus one "-", whitespace trimmed and each run one space, upper case.
+    Separators stay as written: "X/1/12" and "X/11/2" are two (O178), and
+    "INV-77", "INV/77" and "INV77" three; "INV-77", "inv-77" and "INV‐77"
+    (a Unicode hyphen) are one (g22 decision, review F5).
+    """
+    import unicodedata
+
+    text = unicodedata.normalize("NFKC", number or "")
+    text = "".join("-" if unicodedata.category(ch) == "Pd" or ch == "\u2212" else ch
+                   for ch in text if unicodedata.category(ch) != "Cf")
+    return " ".join(text.split()).upper()
+
+
 def document_number_key(number):
     """
     INV/2026-27/0012 and INV-2026-27-12 are one number to a clerk: the
@@ -336,7 +356,7 @@ def document_number_key(number):
     GSTR-2B pairs by it, as a hint; it is no uniqueness rule, since "X/1/12"
     and "X/11/2" come out the same (purchasing.supplier_note_key is the rule).
     """
-    parts = re.findall(r"[A-Z]+|\d+", (number or "").upper())
+    parts = re.findall(r"[A-Z]+|\d+", document_number(number))
     return "".join(part.lstrip("0") or "0" if part.isdigit() else part for part in parts)
 
 

@@ -277,31 +277,36 @@ class InvoiceNumberProbes(ProbeCase):
             made.delete()
         return out
 
-    def test_01_ascii_and_whitespace_variants_are_one_invoice(self):
+    def test_01_case_and_whitespace_variants_are_one_invoice_and_other_separators_are_others(self):
+        """The g22 decision: case and whitespace fold, separators do not."""
         self.draft("INV-77")
-        variants = ["inv-77", "INV 77", "INV/77", "I.N.V.77", " INV77 ", "INV\t77", "INV 77", "INV 77",
-                    "INV　77", "Inv - 77", "INV--77", "INV/-.77"]
-        self.assertEqual(self.accepted(variants), [])
+        self.assertEqual(self.accepted(["inv-77", " INV-77 ", "Inv-77", "INV-77\t"]), [])
+        self.draft("INV 77")
+        self.assertEqual(self.accepted(["INV\t77", "INV\u00a077", "INV\u202f77", "INV\u300077", "INV  77"]), [])
+        others = ["INV/77", "I.N.V.77", "INV77", "Inv - 77", "INV--77", "INV/-.77"]
+        self.assertEqual(self.accepted(others), others)
 
     def test_02_unicode_look_alikes_of_one_invoice_number_are_one_invoice(self):
-        """Pasted from a PDF or a spreadsheet: zero-width and non-ASCII dashes, full-width forms."""
+        """Pasted from a PDF or a spreadsheet: format characters, non-ASCII dashes, full-width forms (review F5)."""
         self.draft("INV-77")
-        variants = {"zero-width space": "INV​77", "BOM": "INV﻿77", "soft hyphen": "INV­77",
-                    "hyphen U+2010": "INV‐77", "non-breaking hyphen": "INV‑77", "en dash": "INV–77",
-                    "em dash": "INV—77", "minus sign": "INV−77", "full-width hyphen": "INV－77",
-                    "full-width letters and digits": "ＩＮＶ-７７",
-                    "full-width solidus": "INV／77", "division slash": "INV∕77"}
+        variants = {"zero-width space": "INV-\u200b77", "BOM": "\ufeffINV-77", "soft hyphen": "INV-\u00ad77",
+                    "hyphen U+2010": "INV\u201077", "non-breaking hyphen": "INV\u201177", "en dash": "INV\u201377",
+                    "em dash": "INV\u201477", "minus sign": "INV\u221277", "full-width hyphen": "INV\uff0d77",
+                    "full-width letters and digits": "\uff29\uff2e\uff36-\uff17\uff17"}
         got = self.accepted(variants.values())
         self.assertEqual([name for name, text in variants.items() if text in got], [])
+        # A slash is a slash in any form, and another invoice than a dash's.
+        self.draft("INV/77")
+        self.assertEqual(self.accepted(["INV\uff0f77"]), [])
 
     def test_03_the_financial_year_boundary(self):
         self.draft("INV-77", D(2026, 3, 31))
-        self.assertEqual(self.accepted(["inv 77"], D(2026, 3, 31)), [])
+        self.assertEqual(self.accepted(["inv-77"], D(2026, 3, 31)), [])
         self.assertEqual(self.accepted(["INV-77"], D(2026, 4, 1)), ["INV-77"])  # a new supplier year
         self.draft("INV-77", D(2026, 4, 1))
-        self.assertEqual(self.accepted(["inv/77"], D(2026, 4, 2)), [])
-        self.assertEqual(self.accepted(["inv/77"], D(2027, 3, 31)), [])
-        self.assertEqual(self.accepted(["inv/77"], D(2027, 4, 1)), ["inv/77"])
+        self.assertEqual(self.accepted(["inv-77"], D(2026, 4, 2)), [])
+        self.assertEqual(self.accepted(["inv-77"], D(2027, 3, 31)), [])
+        self.assertEqual(self.accepted(["inv-77"], D(2027, 4, 1)), ["inv-77"])
 
     def test_04_redating_a_draft_across_the_boundary_into_a_collision_is_refused(self):
         self.draft("INV-77", D(2026, 3, 31))
@@ -316,22 +321,27 @@ class InvoiceNumberProbes(ProbeCase):
         other = self.other_vendor()
         self.draft("INV-77", vendor=other)
 
-    def test_06_a_bill_fully_debited_frees_its_number_for_the_vendors_corrected_invoice(self):
-        """Carried over from the exact constraint, not new: a cancelled invoice still holds its number."""
+    def test_06_a_bill_fully_debited_still_holds_its_number(self):
+        """
+        Q2, for the accountant: a cancelled invoice still holds its number (carried over, not new). A GST
+        invoice number is unique per supplier per year, so the corrected invoice is expected under a new
+        number; this records the rule as it stands until the accountant says otherwise.
+        """
         bill = self.draft("INV-77")
         BillLine.objects.create(bill=bill, description="x", quantity=Z("1"), unit_price=Z("100"),
                                 expense_account=self.expense)
         bill.post()
         Bill.objects.get(pk=bill.pk).create_debit_note()
-        self.assertEqual(self.accepted(["INV-77"]), ["INV-77"])
+        self.assertEqual(self.accepted(["INV-77"]), [])
 
-    def test_07_a_separator_only_reference_is_not_a_free_pass(self):
-        """'-' and '/' and '.' as a placeholder: two bills with the same placeholder were refused before; now both stand."""
-        self.draft("-")
-        self.assertEqual(self.accepted(["-"]), [])
+    def test_07_a_reference_with_no_letter_or_digit_is_refused(self):
+        """'-' and '/' and '.' as a placeholder: refused in words, so no two stand side by side (review F7)."""
+        for placeholder in ("-", "/", ".", " - "):
+            with self.assertRaisesMessage(ValidationError, "has no letter or digit"):
+                self.draft(placeholder)
 
     def test_08_the_migrations_frozen_key_is_the_models(self):
-        migration = importlib.import_module("apps.purchasing.migrations.0076_a_vendor_invoice_is_one_in_its_year")
+        migration = importlib.import_module("apps.purchasing.migrations.0079_document_numbers_keyed_by_one_rule")
         samples = ["INV-77", "inv 77", "X/1/12", "", None, " a.b-c/d ", "ß-1", "INV 77", "ﬃ"]
         days = [D(2026, 3, 31), D(2026, 4, 1), D(2027, 1, 1), None]
         differing = [(s, d) for s in samples for d in days
@@ -349,14 +359,12 @@ class InvoiceNumberProbes(ProbeCase):
         except DataError as exc:
             self.fail(f"the column refused it, not the form: {exc}")
 
-    def test_09_the_key_fits_its_column_for_any_64_character_reference(self):
-        """reference is 64 characters; upper() can lengthen it (ﬃ -> FFI). The key column holds 80."""
-        key = vendor_invoice_key("ﬃ" * 64, D(2026, 6, 1))
-        self.assertLessEqual(len(key), 80)
+    def test_09_a_reference_that_folds_past_the_column_is_refused_in_words(self):
+        """reference is 64 characters; folding can lengthen it (ﬃ -> FFI). Past 64 compared, refused, never a 500."""
+        with self.assertRaisesMessage(ValidationError, "at most 64"):
+            self.draft("\ufb03" * 64)
+        self.assertLessEqual(len(vendor_invoice_key("x" * 64, D(2026, 6, 1))), 80)
 
-
-# ---------------------------------------------------------------- O154, O190: the supplier's credit-note number
-class SupplierNoteProbes(ProbeCase):
     def note(self):
         bill = self.hand_bill(None, "10", "100", link=False)
         bill.post()
