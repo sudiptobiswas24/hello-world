@@ -1122,10 +1122,20 @@ class Payment(AuditModel):
     def post(self):
         if self.posted:
             raise ValidationError("This payment is already posted.")
+        from apps.core.models import Company
+
         from .money import refuse_as_money_account
 
         # Asked again as the money moves: a draft outlives the account it named being closed.
-        refuse_as_money_account(Account.objects.get(pk=self.bank_account_id))
+        bank = Account.objects.get(pk=self.bank_account_id)
+        refuse_as_money_account(bank)
+        # An account kept in a currency other than the base (an EEFC account) moves only that currency
+        # (O24): a dollar receipt booked through a euro account read as euros the bank never held.
+        base = Company.get().base_currency_id
+        if bank.currency_id and bank.currency_id != base and (self.currency_id or base) != bank.currency_id:
+            raise ValidationError(
+                f"{bank} is kept in {bank.currency.code}; a payment through it is in {bank.currency.code}, "
+                f"not {self.currency.code if self.currency_id else 'the base currency'}.")
         for check in PAYMENT_CHECKS:
             said = check(self)
             if said:

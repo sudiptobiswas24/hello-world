@@ -567,3 +567,22 @@ class PastStatementAsItStoodTests(TestCase):
         statement = self.september()
         report = statement.reconciliation()
         self.assertEqual((report["unpresented_total"], report["difference"]), (Decimal("0"), Decimal("0")))
+
+
+class AnAccountInAnotherCurrencyTests(ReconciliationTestCase):
+    """O24: a bank account kept in a currency other than the base (an EEFC account) moves only that currency."""
+
+    def test_a_payment_in_another_currency_is_refused_in_words(self):
+        from apps.core.models import ExchangeRate
+
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("1.1"), valid_from=datetime.date(2026, 1, 1))
+        eefc = Account.objects.create(code="1020", name="EEFC EUR", account_type=AccountType.ASSET,
+                                      holds_money=True, currency=eur)
+        with self.assertRaisesMessage(ValidationError, "is kept in EUR; a payment through it is in EUR, not USD"):
+            self.receipt("100", account=eefc)
+        payment = Payment.objects.create(
+            party=self.customer, direction=PaymentDirection.RECEIPT, payment_date=datetime.date(2026, 1, 5),
+            amount=Decimal("100"), currency=eur, bank_account=eefc, counterpart_account=self.ar)
+        payment.post()
+        self.assertEqual(payment.base_amount(), Decimal("110.00"))
