@@ -387,9 +387,9 @@ class RefusalTests(GstReturnTestCase):
         result = gstr1(*SEPTEMBER)
         self.assertEqual(result["nil"], {})
         # Neither is a supply, but each took a number in its series, and table 13
-        # accounts for every number given out (O59).
+        # accounts for every number given out (O59): since review F3, as the Rule 50 and 51 vouchers they are.
         self.assertEqual([(row["kind"], row["total"]) for row in result["documents"]],
-                         [("invoices", 1), ("credit_notes", 1)])
+                         [("receipt_vouchers", 1), ("refund_vouchers", 1)])
         self.assertEqual(gstr3b(*SEPTEMBER)["3.1c"]["taxable"], D("0"))
 
     def test_the_registration_cannot_move_under_recorded_documents(self):
@@ -663,5 +663,9 @@ class DocumentsIssuedTests(GstReturnTestCase):
         last = self.sell(buyer, "2000")
         issued = gstr1(datetime.date(2026, 9, 1), datetime.date(2026, 9, 30))["documents"]
         row = next(row for row in issued if row["kind"] == "invoices")
-        self.assertEqual((row["from"], row["to"], row["total"], row["cancelled"]), (first.number, last.number, 3, 0))
-        self.assertEqual(deposit.number, "INV-2026-00002")
+        # Since review F3 the down payment is a receipt voucher in its own series and nature (6): the invoice
+        # series runs INV-1 to INV-2 with nothing between.
+        self.assertEqual((row["from"], row["to"], row["total"], row["cancelled"]), (first.number, last.number, 2, 0))
+        self.assertEqual(deposit.number, "RV-2026-00001")
+        vouchers = next(row for row in issued if row["kind"] == "receipt_vouchers")
+        self.assertEqual((vouchers["from"], vouchers["total"]), ("RV-2026-00001", 1))

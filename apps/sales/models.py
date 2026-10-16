@@ -2817,14 +2817,24 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                     "cannot be invoiced."
                 )
         if not self.number:
-            if self.is_credit_note():
+            if self.is_credit_note() and self.credits.is_down_payment:
+                # An advance given back is a refund voucher (Rule 51), in its own series (review F3).
+                self.number = DocumentSequence.next_for(
+                    "sales.refund_voucher", self.invoice_date, name="Refund Vouchers", prefix="RF-"
+                )
+            elif self.is_credit_note():
                 self.number = DocumentSequence.next_for(
                     "sales.credit_note", self.invoice_date, name="Credit Notes", prefix="CN-"
                 )
             elif self.is_debit_note():
-                # Its own series, as Rule 53 asks of a debit note (O235).
+                # Its own series, as Rule 53 asks of a debit note (O235), and not purchasing's DN- (review U2).
                 self.number = DocumentSequence.next_for(
-                    "sales.debit_note", self.invoice_date, name="Debit Notes", prefix="DN-"
+                    "sales.debit_note", self.invoice_date, name="Sales Debit Notes", prefix="SDN-"
+                )
+            elif self.is_down_payment:
+                # An advance received is a receipt voucher (Rule 50), in its own series (review F3).
+                self.number = DocumentSequence.next_for(
+                    "sales.receipt_voucher", self.invoice_date, name="Receipt Vouchers", prefix="RV-"
                 )
             else:
                 self.number = DocumentSequence.next_for(
