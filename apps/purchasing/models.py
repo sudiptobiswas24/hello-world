@@ -8770,6 +8770,19 @@ class LandedCostApplication(AuditModel):
         return entry
 
 
+class StandingRouteMoves(models.Manager):
+    """
+    The hops whose transfer still stands. A put-away cancelled from the
+    transfers screen put the goods back in the bay, and its hop went on
+    saying they had left: the bay read nothing, and they could never be
+    put away again (O11). The hop stays as the record it is; it stops
+    counting when its transfer is undone, for every reader at once.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().exclude(transfer__status="cancelled")
+
+
 class ReceiptRouteMove(AuditModel):
     """
     One hop a receipt line made on its way in.
@@ -8777,8 +8790,13 @@ class ReceiptRouteMove(AuditModel):
     Recorded rather than recomputed, so a line half put away can say how
     much is still in the bay. It holds the transfer it produced rather
     than describing it — a second record that merely describes the first
-    is a record that can disagree with it.
+    is a record that can disagree with it. Counted while that transfer
+    stands (StandingRouteMoves): cancelled, the goods are back where the
+    hop took them from.
     """
+
+    objects = StandingRouteMoves()
+    every_move = models.Manager()
 
     receipt_line = models.ForeignKey(
         GoodsReceiptLine, on_delete=models.CASCADE, related_name="route_moves"
