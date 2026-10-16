@@ -8,6 +8,7 @@ import { ActionButton, DocHeader, Sheet, Totals } from "../../forms/Document";
 import { Field, today } from "../../forms/fields";
 import { Lines, type TradeLine } from "../../forms/Lines";
 import { PartyPicker } from "../../forms/PartyPicker";
+import { RecordPicker } from "../../forms/RecordPicker";
 import { OldSupplyNote } from "../../forms/OldSupplyNote";
 import { useDraft } from "../../forms/useDraft";
 import { minus, positive } from "../../lib/decimal";
@@ -60,6 +61,7 @@ interface Bill {
   /** TCS the supplier collected (section 206C), part of the total and claimed back by the plant. */
   tcs_amount: string;
   tcs_section: string;
+  tcs_account: number | null;
   total: string;
   amount_paid: string;
   amount_debited: string;
@@ -107,6 +109,8 @@ export default function BillForm() {
     if (isNew) {
       const outcome = await act.run("POST", ENDPOINT, {
         vendor: value.vendor, bill_date: value.bill_date, reference: value.reference,
+        // The supplier's TCS (section 206C), as its invoice shows it (O234, review F10).
+        ...(value.tcs_amount ? { tcs_amount: value.tcs_amount, tcs_section: value.tcs_section ?? "", tcs_account: value.tcs_account ?? null } : {}),
       }, { done: "Bill created" });
       if (outcome.ok) {
         draft.reset();
@@ -182,6 +186,26 @@ export default function BillForm() {
               ? <input id={fid} aria-describedby={described} value={String(value.reference ?? "")} onChange={(e) => draft.set("reference", e.target.value as never)} />
               : <output id={fid}>{bill?.reference || "—"}</output>}
           </Field>
+          {(editable || (bill && bill.tcs_section)) && (
+            <Field label="TCS collected" hint="Tax the supplier collected at source on this bill (206C), as its invoice shows it" errors={draft.errors.tcs_amount}>
+              {(fid, described) => editable
+                ? <input id={fid} aria-describedby={described} inputMode="decimal" value={String(value.tcs_amount ?? "")} onChange={(e) => draft.set("tcs_amount", e.target.value as never)} />
+                : <output id={fid}>{money(bill?.tcs_amount)}</output>}
+            </Field>
+          )}
+          {editable && (
+            <Field label="TCS section" hint="As the supplier's invoice names it: 206C(1F)" errors={draft.errors.tcs_section}>
+              {(fid) => <input id={fid} value={String(value.tcs_section ?? "")} onChange={(e) => draft.set("tcs_section", e.target.value as never)} />}
+            </Field>
+          )}
+          {editable && (
+            <Field label="TCS receivable account" hint="Where the collection waits until the plant claims it" errors={draft.errors.tcs_account}>
+              {(fid) => <RecordPicker<{ id: number; code: string; name: string }> id={fid} ariaLabel="TCS receivable account"
+                endpoint="/api/accounting/accounts/" fixed={{ holds_money: "false" }} value={(value.tcs_account as number | null) ?? null}
+                label={(row) => `${row.code} ${row.name}`} invalid={!!draft.errors.tcs_account}
+                onChange={(next) => draft.set("tcs_account", next as never)} />}
+            </Field>
+          )}
           {bill?.purchase_order && (
             <Field label="From order">{(fid) => <output id={fid}><Link to={`/purchasing/orders/${bill.purchase_order}`}>Open the order</Link></output>}</Field>
           )}
