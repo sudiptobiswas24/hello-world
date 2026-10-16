@@ -208,7 +208,12 @@ class UserSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(refused.messages)
         return value
 
+    # A login keeps no stamps of its own: the history mixin's are dropped (O197).
+    STAMPS = ("created_by", "updated_by")
+
     def create(self, validated_data):
+        for stamp in self.STAMPS:
+            validated_data.pop(stamp, None)
         groups = validated_data.pop("roles", [])
         password = validated_data.pop("password", "")
         if not password:
@@ -224,6 +229,8 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
     def update(self, instance, validated_data):
+        for stamp in self.STAMPS:
+            validated_data.pop(stamp, None)
         if validated_data.pop("password", ""):
             raise serializers.ValidationError({"password": ["A password is set with 'Set a password', not saved with the rest."]})
         groups = validated_data.pop("roles", None)
@@ -263,13 +270,9 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "reactivate": "auth.change_user",
     }
 
-    # A login has no created_by of its own; the history line is still written.
-    def perform_create(self, serializer):
-        serializer.save()
-
-    def perform_update(self, serializer):
-        serializer.save()
-
+    # The mixin's writes, and so its transaction (O197): a create refused while giving its roles
+    # answered 400 and left the login made with none. A login has no created_by of its own; the
+    # serializer drops the stamps, and the history line is still written.
     def perform_destroy(self, instance):
         raise DRFValidationError({"non_field_errors": [
             "A login is deactivated, not deleted: what it did stays signed by it."]})
