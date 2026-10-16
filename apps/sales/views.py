@@ -727,9 +727,11 @@ class CustomerProfileViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewset
 
     @action(detail=True, methods=["get"])
     def exposure(self, request, pk=None):
-        """What this customer owes right now, against their limit."""
+        """What this customer owes right now, in the base currency as the limit is (O77), against their limit."""
+        from .models import outstanding_in_base
+
         profile = self.get_object()
-        owed = outstanding_balance(profile.party)
+        owed = outstanding_in_base(profile.party)
         return Response({
             "customer": str(profile.party),
             "outstanding": owed,

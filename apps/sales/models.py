@@ -731,11 +731,13 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
         limit = profile.credit_limit if profile else None
         if limit is None:
             return None
-        # committed_balance already counts this order once it is confirmed;
-        # at confirmation time it isn't yet, so add it explicitly.
-        exposure = committed_balance(self.customer)
+        # committed_in_base already counts this order once it is confirmed;
+        # at confirmation time it isn't yet, so add it explicitly. In the base
+        # currency, as the limit is (O77): 600 USD and 380 EUR read 980
+        # against 1,000, and 380 EUR is 418 USD.
+        exposure = committed_in_base(self.customer)
         if self.status != OrderStatus.CONFIRMED:
-            exposure += self.total()
+            exposure += round_money(self.total() * (self.currency.rate_on() if self.currency_id else Decimal("1")))
         return (exposure, limit) if exposure > limit else None
 
     def refuse_going_over_the_credit_limit(self):
@@ -3796,6 +3798,63 @@ def committed_balance(customer):
         (deposit.deposit_unapplied() for deposit in deposits), Decimal("0")
     )
     return outstanding_balance(customer) + uninvoiced - outstanding_deposits
+
+
+def outstanding_in_base(customer):
+    """
+    outstanding_balance in the base currency: each invoice, note and payment
+    on account at the rate it was booked at, which is what the receivable
+    holds. Added at face value, dollars and euros made one figure that was
+    neither (O77).
+    """
+    def base(amount, rate):
+        return round_money(amount * (rate or Decimal("1")))
+
+    invoices = not_paid_in_full(Invoice.objects.filter(
+        customer=customer, posted=True, credits__isnull=True
+    )).prefetch_related(*INVOICE_FIGURES)
+    owed = sum((base(invoice.amount_due(), invoice.exchange_rate) for invoice in invoices), Decimal("0"))
+    notes = Invoice.objects.filter(
+        customer=customer, posted=True, credits__isnull=False
+    ).prefetch_related(*INVOICE_FIGURES, *(f"credits__{f}" for f in INVOICE_FIGURES))
+    refunds = sum((base(note.refund_due(), note.exchange_rate) for note in notes), Decimal("0"))
+    on_account = Decimal("0")
+    for payment in unapplied(Payment.objects.filter(
+            party=customer, counterpart_account__in=receivable_accounts(), posted=True,
+            voided_entry__isnull=True)):
+        sign = 1 if payment.direction == PaymentDirection.RECEIPT else -1
+        on_account += sign * base(payment.unallocated, payment.exchange_rate)
+    return owed - refunds - on_account
+
+
+def committed_in_base(customer, on_date=None):
+    """
+    committed_balance in the base currency, as the credit limit is: what is
+    owed as booked (outstanding_in_base), and what confirmed orders have
+    still to bill at the rate of the day, less deposits not yet drawn as
+    each was booked.
+    """
+    on_date = on_date or timezone.localdate()
+    uninvoiced = Decimal("0")
+    orders = SalesOrder.objects.filter(
+        customer=customer, status=OrderStatus.CONFIRMED
+    ).select_related("currency").prefetch_related(models.Prefetch("lines", queryset=SalesOrderLine.objects.prefetch_related(
+        "taxes", models.Prefetch("invoice_lines",
+                                 queryset=InvoiceLine.objects.select_related("invoice")))))
+    for order in orders:
+        rate = order.currency.rate_on(on_date) if order.currency_id else Decimal("1")
+        for line in order.lines.all():
+            remaining = line.quantity_uninvoiced()
+            if remaining <= 0:
+                continue
+            share = remaining / line.quantity if line.quantity else Decimal("0")
+            uninvoiced += round_money(round_money(line.total() * share) * rate)
+    deposits = Invoice.objects.filter(
+        customer=customer, posted=True, is_down_payment=True
+    ).prefetch_related(*INVOICE_FIGURES)
+    held = sum((round_money(deposit.deposit_unapplied() * (deposit.exchange_rate or Decimal("1")))
+                for deposit in deposits), Decimal("0"))
+    return outstanding_in_base(customer) + uninvoiced - held
 
 
 class StatementEntry:
