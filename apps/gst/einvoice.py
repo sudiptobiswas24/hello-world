@@ -400,7 +400,7 @@ def build(invoice):
         )
     registration = p.settings()
     document = _document(invoice, invoice.invoice_date, registration.state,
-                         invoice.is_credit_note())
+                         invoice.is_credit_note() or invoice.is_debit_note())
     rate = invoice.exchange_rate or Decimal("1")
     seller = p.seller()
     overseas = document.registration == "overseas"
@@ -423,7 +423,9 @@ def build(invoice):
         "Version": "1.1",
         "TranDtls": {"TaxSch": "GST", "SupTyp": _supply_type(document), "RegRev": "N",
                      "IgstOnIntra": "N"},
-        "DocDtls": {"Typ": "CRN" if document.is_note else "INV", "No": invoice.number,
+        # A debit note is DBN and names its invoice, as a credit note is CRN (O235).
+        "DocDtls": {"Typ": "DBN" if invoice.is_debit_note() else "CRN" if document.is_note else "INV",
+                    "No": invoice.number,
                     "Dt": p.portal_date(invoice.invoice_date)},
         "SellerDtls": _block(seller, seller["gstin"], seller["legal_name"], seller["trade_name"]),
         "BuyerDtls": buyer_block,
@@ -457,8 +459,8 @@ def build(invoice):
         "RndOffAmt": _money(document.value - running - other),
         "TotInvVal": _money(document.value),
     }
-    if document.is_note and invoice.credits_id:
-        original = invoice.credits
+    if document.is_note and (invoice.credits_id or invoice.debits_id):
+        original = invoice.credits or invoice.debits
         payload["RefDtls"] = {"PrecDocDtls": [{
             "InvNo": original.reference if original.is_opening_balance else original.number,
             "InvDt": p.portal_date(original.invoice_date),

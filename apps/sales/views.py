@@ -335,6 +335,7 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
     action_permission_map = {
         "post_invoice": "sales.post_invoice",
         "credit_note": "sales.post_invoice",
+        "debit_note": "sales.post_invoice",
         "credit_old_supply": "sales.post_invoice",
         "write_off": "sales.write_off_invoice",
         "take_settlement_discount": "sales.add_invoicepayment",
@@ -372,6 +373,17 @@ class InvoiceViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.ModelV
         mine = set(scoped(Invoice.objects.filter(pk__in=[row["note"] for row in rows]), request.user, "customer")
                    .values_list("pk", flat=True))
         return Response([row for row in rows if row["note"] in mine])
+
+    @action(detail=True, methods=["post"])
+    def debit_note(self, request, pk=None):
+        """A debit note for what was short-billed ({"net"} before tax, {"reason"}, {"date"}): O235."""
+        invoice = self.get_object()
+        try:
+            note = invoice.debit(money_amount(request.data, "net"), request.data.get("reason") or "",
+                                 on_date=request.data.get("date") or None)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.message_dict if hasattr(exc, "message_dict") else exc.messages)
+        return Response(self.get_serializer(note).data, status=201)
 
     @action(detail=True, methods=["post"])
     def take_settlement_discount(self, request, pk=None):

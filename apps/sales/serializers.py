@@ -136,14 +136,14 @@ class InvoiceSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
             "id", "number", "customer", "customer_name", "invoice_date", "due_date", "reference",
             "sales_order", "receivable_account", "currency", "exchange_rate",
             "payment_terms", "billing_address", "shipping_address", "sales_rep",
-            "credits", "journal_entry", "posted", "posted_at",
+            "credits", "debits", "journal_entry", "posted", "posted_at",
             "lines", "subtotal", "tax_total", "total",
             "amount_paid", "amount_credited", "amount_due", "settlement_status", "sent_at",
             "is_down_payment", "is_opening_balance", "corrects_old_supply", "old_invoice_value",
             "party_gstin", "not_sendable", "extra",
         ]
         read_only_fields = [
-            "number", "due_date", "exchange_rate", "credits", "journal_entry",
+            "number", "due_date", "exchange_rate", "credits", "debits", "journal_entry",
             "posted", "posted_at", "sent_at", "is_down_payment", "is_opening_balance",
             "corrects_old_supply", "old_invoice_value", "party_gstin",
         ]

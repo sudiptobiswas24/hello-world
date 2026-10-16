@@ -718,3 +718,63 @@ class CancellingAnIrnTests(EInvoiceTestCase):
         self.assertEqual(done.status_code, 200, done.content)
         self.assertIsNotNone(done.json()["cancelled_at"])
         self.assertIsNotNone(done.json()["cancellation_note"])
+
+
+class DebitNoteTests(EInvoiceTestCase):
+    """
+    O235: the sales debit note (CGST section 34(3)). 1,000 short-billed on s1 (sacks 122,500, freight 3,000) to
+    Karnataka: 976.10 + 23.90 with IGST 175.70 + 4.30, 1,180.00 (calc_fix_money/g22/o235.py).
+    """
+
+    def test_posted_printed_reported_and_registered(self):
+        from apps.sales.documents import tax_invoice
+
+        from .returns import gstr1_json
+
+        invoice = self.s1()
+        before = -self.ledger("1100")
+        note = invoice.debit("1000", "Rate agreed at 126", on_date=DAY)
+        self.assertEqual((note.number[:3], note.total(), -self.ledger("1100") - before),
+                         ("DN-", D("1180.00"), D("1180.00")))
+        printed = tax_invoice(note)
+        self.assertEqual((printed["heading"], printed["credits"]["number"]), ("Debit Note", invoice.number))
+        result = gstr1(*SEPTEMBER)
+        (row,) = result["cdnr"]
+        self.assertEqual((row["number"], row["note_type"], row["original"], row["value"]),
+                         (note.number, "D", invoice.number, D("1180.00")))
+        self.assertEqual([entry["ntty"] for ctin in gstr1_json(result)["cdnr"] for entry in ctin["nt"]], ["D"])
+        self.assertEqual([row["kind"] for row in result["documents"]], ["invoices", "debit_notes"])
+        payload = build(note)
+        self.assertEqual((payload["DocDtls"]["Typ"], payload["RefDtls"]["PrecDocDtls"][0]["InvNo"],
+                          payload["ValDtls"]["TotInvVal"]), ("DBN", invoice.number, 1180.0))
+
+    def test_its_reverse_is_a_credit_note_on_it(self):
+        invoice = self.s1()
+        before = -self.ledger("1100")
+        note = invoice.debit("1000", "Rate agreed at 126", on_date=DAY)
+        back = note.create_credit_note(on_date=DAY)
+        self.assertEqual((back.total(), -self.ledger("1100") - before), (D("1180.00"), D("0.00")))
+        self.assertEqual(sorted(row["note_type"] for row in gstr1(*SEPTEMBER)["cdnr"]), ["C", "D"])
+
+    def test_refused_on_a_note_and_for_nothing(self):
+        invoice = self.s1()
+        with self.assertRaisesMessage(ValidationError, "more than nothing"):
+            invoice.debit("0", "Rate", on_date=DAY)
+        note = invoice.debit("10", "Rate", on_date=DAY)
+        with self.assertRaisesMessage(ValidationError, "not against a note"):
+            note.debit("10", "Rate", on_date=DAY)
+
+    def test_through_the_api_as_the_ar_manager(self):
+        from django.contrib.auth.models import Group
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ar-manager")
+        user.groups.add(Group.objects.get(name="AR Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        invoice = self.s1()
+        answer = client.post(f"/api/sales/invoices/{invoice.pk}/debit_note/",
+                             {"net": "1000", "reason": "Rate agreed at 126", "date": str(DAY)}, format="json")
+        self.assertEqual(answer.status_code, 201, answer.content)
+        self.assertEqual((answer.json()["debits"], answer.json()["number"][:3]), (invoice.pk, "DN-"))
