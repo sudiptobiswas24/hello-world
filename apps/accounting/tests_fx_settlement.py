@@ -970,3 +970,33 @@ class BillSettlementDiscountTests(FxSettlementTestCase):
         bill.take_settlement_discount(payment=pay)
         self.assertEqual((bill.amount_due(), self.balance(self.ap), self.balance(received)),
                          (D("0.00"), D("0"), D("-2.25")), "(due, AP, discount received)")
+
+
+
+class NoteCountedAtWhatItBookedTests(FxSettlementTestCase):
+    """
+    O209, second half: 10.01 + 20.78 + 25.37 EUR invoiced at 1.12345 (11.25 + 23.35 + 28.50 = 63.10); a
+    credit note of the first two lines books 34.60, where its slice of the invoice reads 34.59; the receipt
+    for the rest (25.37 at 1.09876) takes what is left of the base, 28.50 (calc_fix_money/g22/o209b.py).
+    """
+
+    def setUp(self):
+        super().setUp()
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.12345"), valid_from=JAN5)
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.09876"), valid_from=datetime.date(2026, 2, 1))
+
+    def test_a_receipt_after_a_note_on_two_of_three_lines_clears_the_receivable(self):
+        from apps.sales.models import InvoicePayment, SalesOrder, SalesOrderLine
+        order = SalesOrder.objects.create(customer=self.customer, order_date=JAN5, currency=self.eur)
+        for price in ("10.01", "20.78", "25.37"):
+            SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=D("1"),
+                                          unit_price=D(price), revenue_account=self.revenue)
+        order.confirm()
+        inv = order.create_invoice(self.ar, invoice_date=JAN5)
+        inv.post()
+        first, second, _ = inv.lines.order_by("pk")
+        note = inv.create_credit_note(quantities={first: D("1"), second: D("1")}, on_date=JAN5)
+        receipt = self.euro_payment(PaymentDirection.RECEIPT, "25.37")
+        InvoicePayment.objects.create(invoice=inv, payment=receipt, amount=D("25.37"))
+        self.assertEqual((note.total(), inv.amount_due(), self.balance(self.ar)), (D("30.79"), D("0"), D("0")),
+                         "(note, due, AR)")

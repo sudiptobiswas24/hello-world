@@ -2516,6 +2516,19 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
         offset = min(self.amount_credited() - self.credit_spent_undoing(), max(self.total() - settled, Decimal("0")))
         return self.total() - settled - offset
 
+    def settled_by_entries(self):
+        """
+        [(amount, entry)]: what settled this invoice other than a payment and booked its own base on the
+        receivable: a posted credit note wholly taken against it, a down payment drawn down (O209). An
+        allocation counts these at what they booked, not at their slice of the invoice's base: a note on
+        two of three lines booked 34.60 where the slice read 34.59, and a receipt for the rest left 0.01.
+        """
+        rows = [(note.total(), note.journal_entry) for note in self.credit_notes.all()
+                if note.posted and note.journal_entry_id and note.amount_absorbed() == note.total()]
+        rows += [(application.amount, application.journal_entry)
+                 for application in self.deposit_applications.all() if application.journal_entry_id]
+        return rows
+
     def credit_spent_undoing(self):
         """
         What its posted credit notes spent undoing a write-off or a discount, as

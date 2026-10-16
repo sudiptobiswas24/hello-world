@@ -239,8 +239,16 @@ class RealisedOnItsOwnDay:
             # Made before the base was kept: the slice, as it was then.
             return slice_of(booked, total, after - self.amount, self.amount)
         applied = sum((row.amount for row in others), Decimal("0"))
+        # What else settled it and booked its own base on the control account (a credit note, a drawdown,
+        # as the document lists them: settled_by_entries) counts at what it booked; the rest at its slice.
+        known = [(amount, booked_on(entry, control_account))
+                 for amount, entry in getattr(document, "settled_by_entries", lambda: [])()]
+        if any(base is None for _, base in known):
+            known = []
+        known_amount = sum((amount for amount, _ in known), Decimal("0"))
         cleared = (sum((row.document_base for row in others), Decimal("0"))
-                   + slice_of(booked, total, applied, after - self.amount - applied))
+                   + sum((base for _, base in known), Decimal("0"))
+                   + slice_of(booked, total, applied + known_amount, after - self.amount - applied - known_amount))
         return round_money(booked * min(after, total) / total) - cleared if total else Decimal("0")
 
     def payment_slice(self, control_account):
