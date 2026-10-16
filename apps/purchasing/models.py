@@ -4704,7 +4704,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     @serialised("posted", held_first=True)
     def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None,
-                          supplier_note_number="", supplier_note_date=None, post=True):
+                          supplier_note_number="", supplier_note_date=None, on_date=None, post=True):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
@@ -4747,9 +4747,14 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not selected:
             raise ValidationError("Nothing to debit.")
 
+        # Dated on `on_date` (a return's day), never before the bill it debits nor on a day to come;
+        # a note made by hand, today. A January return's note fell in October, in the wrong period
+        # and GST month.
+        day = (correction_date(on_date, self.bill_date, f"{self.number} is not debited on", "it is dated")
+               if on_date is not None else timezone.localdate())
         debit_note = Bill.objects.create(
             vendor=self.vendor,
-            bill_date=timezone.localdate(),
+            bill_date=day,
             reference=self.reference,
             currency=self.currency,
             payment_terms=self.payment_terms,
@@ -7424,7 +7429,7 @@ class GoodsReceipt(AuditModel):
         return close_to_dos(self, by, outcome)
 
     @serialised("posted", held_first=True)
-    def reject(self, quantities=None, note="", debit_bills=True, post_notes=True):
+    def reject(self, quantities=None, note="", debit_bills=True, post_notes=True, on_date=None):
         """
         Send failed goods back to the vendor.
 
@@ -7442,7 +7447,7 @@ class GoodsReceipt(AuditModel):
             )
         return self.create_return(
             quantities={line: quantity for line, quantity in selected},
-            debit_bills=debit_bills, from_inspection=True, post_notes=post_notes,
+            debit_bills=debit_bills, from_inspection=True, post_notes=post_notes, on_date=on_date,
         )
 
     def _inspection_selection(self, quantities):
@@ -7841,7 +7846,9 @@ class GoodsReceipt(AuditModel):
         return [
             bill.create_debit_note(
                 memo=f"Goods returned on {self.number}", quantities=quantities,
-                accruals=returned.get(bill, {}), post=post,
+                accruals=returned.get(bill, {}),
+                # On the day the goods went back, or the bill's when it is dated after them.
+                on_date=max(to_date(self.receipt_date), to_date(bill.bill_date)), post=post,
             )
             for bill, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
         ]
@@ -7904,7 +7911,8 @@ class GoodsReceipt(AuditModel):
         return orders + [SalesOrder(pk=pk) for pk in sold]
 
     @serialised("posted", held_first="locked_before_returning")
-    def create_return(self, quantities=None, debit_bills=True, from_inspection=False, post_notes=True):
+    def create_return(self, quantities=None, debit_bills=True, from_inspection=False, post_notes=True,
+                      on_date=None):
         """
         Send goods back. By default all of them; pass `quantities` as
         {receipt_line: quantity} to send back part, which is what a
@@ -7943,7 +7951,10 @@ class GoodsReceipt(AuditModel):
 
         return_receipt = GoodsReceipt.objects.create(
             purchase_order=self.purchase_order,
-            receipt_date=timezone.localdate(),
+            # The day the goods went back (`on_date`), never before they came nor on a day to come; its
+            # debit notes are dated on it too (_debit_returned_goods).
+            receipt_date=correction_date(on_date, self.receipt_date, f"{self.number} is not returned on",
+                                         "the goods came in"),
             reference=self.reference,
             reverses=self,
         )

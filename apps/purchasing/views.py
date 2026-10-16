@@ -481,7 +481,8 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """
         Send goods back. Debits the bills that charged for them unless
         {"debit_bills": false} (a replacement is coming, not a refund);
-        {"quantities": {"<receipt_line_id>": "20"}} sends back part.
+        {"quantities": {"<receipt_line_id>": "20"}} sends back part; {"date"} the day
+        they went back, which its debit notes are dated on too.
         """
         receipt = self.get_object()
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
@@ -489,7 +490,8 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         try:
             # Its debit notes post only for whoever may post bills; anyone else's wait as drafts (review F8).
             return_receipt = receipt.create_return(quantities=quantities, debit_bills=debit,
-                                                   post_notes=request.user.has_perm("purchasing.post_bill"))
+                                                   post_notes=request.user.has_perm("purchasing.post_bill"),
+                                                   on_date=request.data.get("date") or None)
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(return_receipt).data)
