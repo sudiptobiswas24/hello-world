@@ -878,6 +878,17 @@ class PayRun(AuditModel):
                 f"{paid.employee} has already been paid from this run. Reverse the "
                 "payment before voiding the payroll that owed it."
             )
+        # What a leaver was left owing is settled against this run's entry (O215): voided under a receipt
+        # or a write-off, the receivable would read below nothing. Decided under the run's lock, which a
+        # settlement takes first too.
+        from .shortfalls import ShortfallSettlement
+
+        settled = next((settlement for settlement in ShortfallSettlement.objects.filter(
+            payslip__run=self).select_related("payment", "payslip__employee") if settlement.stands()), None)
+        if settled is not None:
+            raise ValidationError(
+                f"{settled} settles what this run left {settled.payslip.employee} owing. Void it before "
+                "voiding the run that made the shortfall.")
         # The month's dues paid over stand on what its runs deducted, as a slip's pay stands on
         # the slip. Voided under them, June's run left 7,200 paid to the EPFO against nothing
         # owed, and June gone from the report. Each account held as a remittance holds it.

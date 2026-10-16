@@ -1097,4 +1097,5 @@ from .recruitment import Applicant, JobOpening, OpeningStatus, Source, Stage  # 
 from .statutory import StatutoryFigure  # noqa: E402,F401
 from .pay_details import EmployeePayDetails  # noqa: E402,F401
 from .advances import SalaryAdvance  # noqa: E402,F401
+from .shortfalls import ShortfallSettlement  # noqa: E402,F401
 from .bank_file import SalaryTransfer, SalaryTransferFile  # noqa: E402,F401
