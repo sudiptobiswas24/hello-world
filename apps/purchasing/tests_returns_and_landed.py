@@ -1327,3 +1327,35 @@ class AReturnsDebitNoteRecordsTheSuppliersCreditNoteTests(ProbeCase):
         note = Bill.objects.get(pk=note.pk)
         self.assertEqual((note.supplier_note_number, note.supplier_note_date, note.total()),
                          ("CN-41", JAN(17), Decimal("20.00")))
+
+
+class AnUnkeyedNoteEditedAsADraftTests(ProbeCase):
+    """
+    O190. DN-1 answers V-1's CN-9; a draft note recording "cn-9", left
+    unkeyed by migration 0063 (a collision), is edited over the API: refused
+    in words naming DN-1, not by the constraint.
+    """
+
+    def test_refused_naming_the_note_that_answers_it(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        order = self.order()
+        self.receive(order, "10")
+        bill = self.hand_bill(order.lines.get(), "10", "5", order=order, reference="INV-1")
+        bill.post()
+        first = bill.create_debit_note(quantities={bill.lines.get(): Decimal("1")}, supplier_note_number="CN-9",
+                                       supplier_note_date=JAN(12))
+        draft = Bill.objects.create(vendor=self.vendor, bill_date=JAN(13), payable_account=self.payable,
+                                    currency=self.usd, debits=bill)
+        Bill.objects.filter(pk=draft.pk).update(supplier_note_number="cn-9", supplier_note_key="")  # as 0063 left it
+        call_command("setup_roles", verbosity=0)
+        ap = User.objects.create_user("ap")
+        ap.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(ap)
+        answer = client.patch(f"/api/purchasing/bills/{draft.pk}/", {"supplier_note_date": str(JAN(14))}, format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertIn(f"{first} already answers V-1 - Supplier's credit note CN-9; one credit note is answered by one "
+                      "debit note.", str(answer.json()["supplier_note_number"]))
