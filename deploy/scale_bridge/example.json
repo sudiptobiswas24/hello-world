@@ -1,0 +1,11 @@
+{
+  "server": "https://erp.plant.local",
+  "scale": "SC-1",
+  "username": "bridge-sc1",
+  "password_file": "/etc/scale-bridge/SC-1.password",
+  "port": "/dev/ttyUSB0",
+  "baud": 9600,
+  "pattern": "status_gross",
+  "repeat": 3,
+  "retry_seconds": 5
+}
