@@ -661,10 +661,9 @@ class DatedRateTests(TdsTestCase):
 
         TdsRate.objects.create(section=self.contract, applies_from=datetime.date(2026, 3, 1),
                                rate_percent=Decimal("1"), no_pan_rate_percent=Decimal("20"))
-        bill = self.bill("40000", day=datetime.date(2026, 3, 10), vendor=self.party)
-        with self.assertRaisesMessage(ValidationError, "The 194C rate of 1% from 01 Mar 2026 is not confirmed by the "
-                                                       "accountant, so nothing is deducted at it yet."):
-            bill.deduct_tds()
+        # Refused as the bill posts (the integrator's decision, g22), and so never deducted at nothing.
+        with self.assertRaisesMessage(ValidationError, "no confirmed 194C rate stands on 10 Mar 2026"):
+            self.bill("40000", day=datetime.date(2026, 3, 10), vendor=self.party)
 
     def test_the_controller_confirms_a_rate_and_the_ap_manager_may_not(self):
         from django.contrib.auth.models import Group, User
@@ -796,3 +795,31 @@ class TcsTheSupplierCollectedTests(TdsTestCase):
         self.assertEqual(posted.status_code, 200, posted.content)
         self.assertEqual((posted.json()["tcs_amount"], posted.json()["total"]), ("12000.00", "1212000.00"))
         self.assertEqual(self.balance(self.tcs_receivable), Decimal("12000.00"))
+
+
+class NoConfirmedRateRefusesThePostingTests(TdsTestCase):
+    """
+    Integrator's decision (g22): a bill its vendor's section taxes, with no
+    confirmed rate on its day, is refused at posting, not deducted at nothing
+    (section 40(a)(ia)). 194C: one bill over 30,000 is taxed; 20,000 is not.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import TdsRate
+
+        self.party = self.contractor(pan="AAAPL1234C")
+        TdsRate.objects.create(section=self.contract, applies_from=datetime.date(2026, 3, 1),
+                               rate_percent=Decimal("1"), no_pan_rate_percent=Decimal("20"))
+
+    def test_a_taxed_bill_waits_for_the_accountant_and_an_untaxed_one_posts(self):
+        with self.assertRaisesMessage(ValidationError, "no confirmed 194C rate stands on 10 Mar 2026: nothing would "
+                                                       "be deducted. The accountant confirms it under TDS rates"):
+            self.bill("40000", day=datetime.date(2026, 3, 10), vendor=self.party)
+        self.assertEqual(self.bill("20000", day=datetime.date(2026, 3, 10), vendor=self.party).posted, True)
+
+    def test_a_deduction_is_not_dated_before_its_bill(self):
+        bill = self.bill("40000", day=datetime.date(2026, 2, 10), vendor=self.party)
+        with self.assertRaisesMessage(ValidationError, "is not deducted from"):
+            bill.deduct_tds(on_date=datetime.date(2026, 2, 9))
+        self.assertEqual(bill.deduct_tds(on_date=datetime.date(2026, 2, 12)).date, datetime.date(2026, 2, 12))

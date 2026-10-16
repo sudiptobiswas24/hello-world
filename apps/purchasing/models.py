@@ -4251,6 +4251,9 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             )
         if not self.is_debit_note():
             self._check_against_order()
+            from .tds import refuse_posting_without_a_rate
+
+            refuse_posting_without_a_rate(self)
         if not self.number:
             if self.is_debit_note():
                 self.number = DocumentSequence.next_for(
