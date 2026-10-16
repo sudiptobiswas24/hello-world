@@ -163,7 +163,11 @@ class AClosedMonthTests(DatedTestCase):
     def test_a_month_closed_since_names_the_machine_holding_up_the_run(self):
         AccountingPeriod.objects.get(name="Q1 2026").reopen()
         self.lathe.place_in_service(on_date=datetime.date(2026, 1, 15))
-        AccountingPeriod.objects.get(name="Q1 2026").close()
+        # A close now waits for the quarter's depreciation (O29); a quarter
+        # closed before that rule, with January uncharged, still names the machine.
+        with self.assertRaisesMessage(ValidationError, "Depreciation is still to charge for 1 asset(s)"):
+            AccountingPeriod.objects.get(name="Q1 2026").close()
+        AccountingPeriod.objects.filter(name="Q1 2026").update(closed=True)
         run = self.controller.post("/api/assets/assets/depreciate-all/", {"through": "2026-04-30"}, format="json")
         self.assertEqual(run.status_code, 400)
         self.assertIn(f"{self.lathe.number} Machine's depreciation for January 2026 falls in Q1 2026", str(run.json()))

@@ -423,3 +423,52 @@ class CapitalisationTests(CapitalisationFixture):
         line = self.bill_line("1", "12000")
         asset = line.capitalise_as_asset(self.category)[0]
         self.assertEqual(asset.life_months, 12)
+
+
+class APeriodClosesWithItsDepreciationTests(AssetTestCase):
+    """
+    O29: January closed with the lathe's January uncharged, and every
+    asset's month-end run stopped on it. The close is refused until the
+    month is charged (1,000 a month: 12,000 over twelve).
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import AccountingPeriod
+
+        self.lathe = self.asset()
+        self.january = AccountingPeriod.objects.create(
+            name="January 2026", start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31))
+
+    def test_refused_while_a_month_in_it_is_uncharged(self):
+        with self.assertRaisesMessage(ValidationError, f"Depreciation is still to charge for 1 asset(s): "
+                                                       f"{self.lathe} (January 2026)"):
+            self.january.close()
+        self.january.refresh_from_db()
+        self.assertFalse(self.january.closed)
+
+    def test_through_the_api_as_the_controller(self):
+        controller = self.as_role("Controller")
+        url = f"/api/accounting/periods/{self.january.pk}/close/"
+        refused = controller.post(url, {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("Run the depreciation through 2026-01-31 first", refused.content.decode())
+        self.lathe.depreciate(through=datetime.date(2026, 1, 31))
+        self.assertEqual(self.balance(self.accumulated), Decimal("-1000.00"))
+        closed = controller.post(url, {}, format="json")
+        self.assertEqual(closed.status_code, 200, closed.content)
+        self.assertTrue(closed.json()["closed"])
+
+    def test_an_asset_with_nothing_to_charge_does_not_hold_it(self):
+        from apps.accounting.models import AccountingPeriod
+
+        self.lathe.depreciate(through=datetime.date(2026, 1, 31))
+        land = AssetCategory.objects.create(
+            code="LAND", name="Land", asset_account=self.plant, accumulated_account=self.accumulated,
+            expense_account=self.depreciation, disposal_account=self.disposal, method="none")
+        plot = FixedAsset.objects.create(name="Plot", category=land, acquisition_date=datetime.date(2026, 1, 1),
+                                         cost=Decimal("50000"), salvage_value=Decimal("0"), life_months=12)
+        plot.place_in_service(on_date=datetime.date(2026, 1, 1))
+        self.january.close()
+        self.assertTrue(AccountingPeriod.objects.get(pk=self.january.pk).closed)
+
