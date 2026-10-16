@@ -5175,13 +5175,20 @@ class DunningLevel(AuditModel):
     def __str__(self):
         return f"{self.name} (day {self.days_overdue})"
 
-    def render(self, invoice, days_overdue):
+    def render(self, invoice, days_overdue, amount=None, due_date=None):
+        """
+        The mail for a notice: `amount` and `due_date` are what the notice records as overdue and since
+        when (O81). Asked without them, the whole balance and the last due date, which on a 50/50 term
+        asked for 1,000 by 31 March of a notice that recorded 500 overdue since 1 March.
+        """
+        amount = invoice.amount_due() if amount is None else amount
+        due_date = invoice.due_date if due_date is None else due_date
         context = {
             "number": invoice.number,
             "customer": invoice.customer.name,
             "days": days_overdue,
-            "amount": f"{invoice.amount_due():,.2f}",
-            "due_date": invoice.due_date.strftime("%d %b %Y") if invoice.due_date else "",
+            "amount": f"{amount:,.2f}",
+            "due_date": due_date.strftime("%d %b %Y") if due_date else "",
         }
         return self.subject.format(**context), self.body.format(**context)
 
@@ -5260,7 +5267,10 @@ def run_dunning(as_of=None, send=True):
             if send:
                 from django.core.mail import EmailMessage
 
-                subject, body = due_level.render(invoice, days)
+                from datetime import timedelta
+
+                subject, body = due_level.render(invoice, days, amount=notice.amount_due,
+                                                 due_date=to_date(as_of) - timedelta(days=days))
                 EmailMessage(subject=subject, body=body, to=[recipient]).send()
                 notice.sent_to = recipient
                 notice.sent_at = timezone.now()
