@@ -30,6 +30,23 @@ class UsersApiTests(TestCase):
         client.user = user
         return client
 
+    def test_a_login_refused_its_roles_is_not_made(self):
+        # O197: someone who makes logins (auth.add_user) but neither holds Bookkeeper nor may propose it
+        # (auth.change_user) is refused the role after the login was made, outside any transaction: 400,
+        # and asha stood with no roles.
+        from django.contrib.auth.models import Permission
+
+        maker = User.objects.create_user("maker", password="pw-for-tests-77")
+        maker.user_permissions.add(*Permission.objects.filter(content_type__app_label="auth",
+                                                              codename__in=["add_user", "view_user"]))
+        client = APIClient()
+        client.force_authenticate(maker)
+        refused = client.post(USERS, {"username": "asha", "first_name": "Asha", "password": "loom-shed-2026",
+                                      "roles": ["Bookkeeper"]}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("given by someone who holds it", str(refused.content))
+        self.assertFalse(User.objects.filter(username="asha").exists())
+
     def test_made_signed_in_given_roles_and_let_go(self):
         hr = self.as_("HR Admin")
         # O142, the owner's two-person rule: the HR Admin does not hold Bookkeeper, so making the new

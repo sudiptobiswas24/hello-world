@@ -587,6 +587,7 @@ class Command(BaseCommand):
     WRITES_AROUND_THE_MIXIN_ON_PURPOSE = {
         "core.NewPartyViewSet.create": "a party and its sections in one transaction of its own, each stamped",
         "core.PartyViewSet.perform_create": "make_party() is its own transaction and stamps the party and its role",
+        "core.UserViewSet.perform_destroy": "refuses every delete and writes nothing: a login is deactivated",
         "manufacturing.BomChangeOrderViewSet.create": "raise_change() is its own transaction and stamps created_by",
         "sales.PriceVariationBillViewSet.create": "bill_variation() is its own transaction; created_by blank (O202)",
         "manufacturing.CostSheetViewSet.create": "quoting.cost() is its own transaction; created_by blank (O202)",
@@ -612,7 +613,14 @@ class Command(BaseCommand):
         findings, seen = [], set()
         for view in self._routed_viewsets() if viewsets is None else viewsets:
             queryset = getattr(view, "queryset", None)
-            if queryset is None or queryset.model._meta.app_label not in labels:
+            if queryset is None:
+                continue
+            # A viewset of a model that is not ours (auth.User's logins) is ours by its module: read by the
+            # model's app alone, UserViewSet wrote around the mixin unseen (O197).
+            app = queryset.model._meta.app_label
+            if app not in labels and view.__module__.startswith("apps."):
+                app = view.__module__.split(".")[1]
+            if app not in labels:
                 continue
             if not issubclass(view, AuditableViewSetMixin):
                 continue

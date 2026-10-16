@@ -427,6 +427,24 @@ class EveryWriteGoesThroughTheHistoryMixinTests(TestCase):
 
         return [Replaced, Extended]
 
+    def test_a_viewset_of_a_model_not_ours_is_read_by_its_module(self):
+        # O197: UserViewSet (auth.User) replaced perform_create unseen, the model's app being auth.
+        from django.contrib.auth.models import User
+        from rest_framework import viewsets
+
+        from apps.core.audit import AuditableViewSetMixin
+        from apps.core.management.commands.audit_invariants import Command
+
+        class Logins(AuditableViewSetMixin, viewsets.ModelViewSet):
+            queryset = User.objects.all()
+
+            def perform_create(self, serializer):
+                serializer.save()
+
+        Logins.__module__ = "apps.core.users_api"
+        found = Command().writes_around_the_mixin(["core"], [Logins])
+        self.assertEqual([detail.split(" replaces ")[0] for _shape, detail in found], ["core.Logins.perform_create"])
+
     def test_a_planted_write_that_skips_the_mixin_is_reported_and_one_calling_it_is_not(self):
         from apps.core.management.commands.audit_invariants import Command
 
