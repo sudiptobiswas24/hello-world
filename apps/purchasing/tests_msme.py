@@ -451,3 +451,54 @@ class AcceptedOnDeliveryTests(MsmeTestCase):
         self.assertEqual(Bill.objects.get(pk=bill.pk).pay_by(), datetime.date(2026, 8, 14))
         self.assertEqual(client.delete(url).status_code, 200)
         self.assertEqual(Bill.objects.get(pk=bill.pk).pay_by(), datetime.date(2026, 7, 25))
+
+
+class PaidOnTheDayOfWhatSettledItTests(MsmeTestCase):
+    """
+    O188. 1,000 billed 1 June, net 60, micro: due 16 July (45 days). Debited
+    in full on 10 June, as of 31 December: paid on 10 June, 0 days late,
+    nothing unpaid (calc_fix_purch/o188_o189.py). It read 168 days late.
+    """
+
+    def test_a_part_settled_wholly_by_a_debit_note_is_paid_on_the_notes_day(self):
+        bill = self.bill("1000", terms=self.net60)
+        note = bill.create_debit_note()
+        # The note is dated the day it is made; the scenario's is 10 June.
+        Bill.objects.filter(pk=note.pk).update(bill_date=datetime.date(2026, 6, 10))
+        row = self.row(bill, datetime.date(2026, 12, 31))
+        self.assertEqual((row["due"], row["paid_on"], row["days_late"], row["unpaid"], row["at_risk"]),
+                         (datetime.date(2026, 7, 16), datetime.date(2026, 6, 10), 0, Decimal("0"), Decimal("0")))
+
+    def test_a_part_debited_and_the_rest_paid_late_is_paid_on_the_later_day(self):
+        bill = self.bill("1000", terms=self.net60)
+        note = bill.create_debit_note(quantities={bill.lines.get(): Decimal("0.4")})
+        Bill.objects.filter(pk=note.pk).update(bill_date=datetime.date(2026, 6, 10))
+        self.pay(bill, "600", datetime.date(2026, 7, 20))
+        row = self.row(bill, datetime.date(2026, 12, 31))
+        self.assertEqual((row["paid_on"], row["days_late"], row["unpaid"]), (datetime.date(2026, 7, 20), 4, Decimal("0")))
+
+
+class DueDeliveryByDeliveryTests(MsmeTestCase):
+    """
+    O189. 6 received 1 June, 4 on 20 June objected to in writing on 25 June
+    (standing); one bill of 1,000 on 25 June, net 60 (24 Aug): 600 due 16 July
+    by the Act, 400 by the terms while the objection stands. The payment run
+    to 16 July lists 600 beside 16 July, not beside 24 Aug.
+    """
+
+    order, receive, bill_for = AcceptedOnDeliveryTests.order, AcceptedOnDeliveryTests.receive, AcceptedOnDeliveryTests.bill_for
+
+    def test_the_run_and_the_bill_read_one_schedule(self):
+        from .models import payment_run
+
+        order, line = self.order()
+        self.receive(order, line, JUNE, "6")
+        second, _ = self.receive(order, line, datetime.date(2026, 6, 20), "4")
+        second.record_objection(datetime.date(2026, 6, 25), "Letter PUR/15: bags 2 g under the agreed GSM")
+        bill = self.bill_for(order, line, datetime.date(2026, 6, 25), "10")
+        self.assertEqual([(row["due_date"], row["amount"]) for row in bill.installments()],
+                         [(datetime.date(2026, 7, 16), Decimal("600.00")), (datetime.date(2026, 8, 24), Decimal("400.00"))])
+        (entry,) = [entry for run in payment_run(due_by=datetime.date(2026, 7, 16)) for entry in run["bills"]]
+        self.assertEqual((entry["due_date"], entry["amount_due"]), (datetime.date(2026, 7, 16), Decimal("600.00")))
+        self.assertEqual((bill.pay_by(), bill.pay_by(by=datetime.date(2026, 7, 16))),
+                         (datetime.date(2026, 8, 24), datetime.date(2026, 7, 16)))
