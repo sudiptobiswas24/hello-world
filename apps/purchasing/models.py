@@ -1,4 +1,5 @@
 import datetime
+import re
 from collections import defaultdict
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
@@ -3179,6 +3180,23 @@ def supplier_note_key(number, day):
     return f"{start.year if start else ''}:{key}"
 
 
+def vendor_invoice_key(number, day):
+    """
+    One vendor invoice: its number in any case and without spaces or the
+    separators "-", "/" and ".", within the vendor's financial year, since a
+    GST invoice number is unique per supplier per year and a supplier begins
+    again each April. "INV-77", "inv 77" and "INV/77" are one invoice (O95).
+    Migration 0076 keeps a frozen copy.
+    """
+    from apps.accounting.tds import financial_year
+
+    key = re.sub(r"[\s\-/.]", "", number or "").upper()
+    if not key:
+        return ""
+    start = financial_year(to_date(day))[0] if day else None
+    return f"{start.year if start else ''}:{key}"
+
+
 class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     """
     Vendor bill — the Purchasing mirror of Sales' Invoice. Posting builds
@@ -3197,6 +3215,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
     reference = models.CharField(
         max_length=64, blank=True,
         help_text="The vendor's own invoice number — what they will quote when chasing payment.",
+    )
+    reference_key = models.CharField(
+        max_length=80, blank=True, editable=False,
+        help_text="The vendor's invoice number as one invoice is told from another, within the vendor's "
+                  "financial year (vendor_invoice_key): what makes it one invoice.",
     )
     supplier_note_number = models.CharField(
         max_length=64, blank=True,
@@ -3315,10 +3338,11 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             # accident, and nothing else here would have caught it. Debit
             # notes are excluded: they deliberately carry their bill's
             # reference.
+            # One vendor invoice is billed once: its number in any case and spacing, within its year (O95).
             models.UniqueConstraint(
-                fields=["vendor", "reference"],
-                condition=Q(debits__isnull=True) & ~Q(reference=""),
-                name="one_bill_per_vendor_reference",
+                fields=["vendor", "reference_key"],
+                condition=Q(debits__isnull=True) & ~Q(reference_key=""),
+                name="one_bill_per_vendor_invoice_in_its_year",
             ),
             # A supplier's credit note is answered by one debit note: two would
             # each take the credit back.
@@ -3873,28 +3897,39 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if self._state.adding and not self.payable_account_id:
             self.payable_account = default_account("payable", "payable_account")
         refuse_money_kept_as(self, "payable_account")
-        self._check_duplicate_reference()
+        self._key_the_reference(kwargs)
         super().save(*args, **kwargs)
 
-    def _check_duplicate_reference(self):
-        """
-        A readable error in front of the database constraint.
+    # What the vendor-invoice key is made of: a save naming none of them leaves it as stored.
+    REFERENCE_KEYED_BY = {"reference", "bill_date", "vendor", "debits"}
 
-        The constraint is the real control — it holds whatever route the
-        row arrives by — but an IntegrityError tells an AP clerk nothing,
-        and this is the one they will hit most.
+    def _key_the_reference(self, kwargs):
         """
-        if self.is_debit_note() or not self.reference or not self.vendor_id:
+        Key the vendor's invoice number (vendor_invoice_key) as it is written,
+        and refuse in words one already on file, in front of the database
+        constraint. The constraint is the real control, whatever route the
+        row arrives by, but an IntegrityError tells an AP clerk nothing.
+        A save naming its fields and none of the key's leaves the key as
+        stored: a bill migration 0076 left unkeyed still posts and pays.
+        """
+        fields = kwargs.get("update_fields")
+        if fields is not None and not (self.REFERENCE_KEYED_BY & set(fields)):
+            return
+        self.reference_key = "" if self.debits_id else vendor_invoice_key(self.reference, self.bill_date)
+        if fields is not None:
+            kwargs["update_fields"] = sorted(set(fields) | {"reference_key"})
+        if not self.reference_key or not self.vendor_id:
             return
         clash = Bill.objects.filter(
-            vendor_id=self.vendor_id, reference=self.reference, debits__isnull=True
+            vendor_id=self.vendor_id, reference_key=self.reference_key, debits__isnull=True
         ).exclude(pk=self.pk).first()
         if clash is not None:
-            raise ValidationError(
-                f"{self.vendor} invoice '{self.reference}' is already on file as "
-                f"{clash}. Paying the same invoice twice is what this prevents; if it "
-                "really is a second invoice, give it the vendor's own distinct number."
-            )
+            same = "" if clash.reference == self.reference else f" as '{clash.reference}'"
+            raise ValidationError({"reference": [
+                f"{self.vendor} invoice '{self.reference}' is already on file{same} as "
+                f"{clash}, dated {to_date(clash.bill_date)}: one invoice number in one financial year. "
+                "Paying the same invoice twice is what this prevents; if it really is a second invoice, "
+                "give it the vendor's own distinct number."]})
 
     @serialised("posted", held_first=True)
     def delete(self, *args, **kwargs):
