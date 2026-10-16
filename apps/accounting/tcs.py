@@ -62,16 +62,25 @@ class TcsSection(AuditModel):
 
     def rate_on(self, day):
         """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""
-        rate = self.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
-        if rate is None:
-            raise ValidationError(f"TCS under {self.code} has no rate from {day:%d %b %Y} or before; the "
-                                  "accountant enters the rate the law sets and the day it applies from.")
-        if rate.confirmed_on is None:
-            raise ValidationError(
-                f"The {self.code} rate of {rate.rate_percent.normalize():f}% from {rate.applies_from:%d %b %Y} "
-                "is not confirmed by the accountant, so nothing is collected at it yet. Confirm it, or correct "
-                "it, under the TCS rates.")
-        return rate
+        return confirmed_rate_on(self.rates, day, f"TCS under {self.code}", "Settings > TCS rates")
+
+
+def confirmed_rate_on(rates, day, what, where):
+    """
+    The dated rate row in force on `day`, refused in words when there is none or the accountant has not
+    confirmed it: a supply the law taxes at source is never posted collecting nothing (g22, integrator's
+    decision). `what` names the tax and section, `where` the screen the accountant confirms it on. Shared:
+    any dated rate the accountant confirms (TCS here; TDS may call it) asks this.
+    """
+    rate = rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
+    if rate is None:
+        raise ValidationError(f"{what} has no rate from {day:%d %b %Y} or before, so this cannot be posted: the "
+                              f"accountant enters the rate the law sets and the day it applies from, under {where}.")
+    if rate.confirmed_on is None:
+        raise ValidationError(
+            f"{what} at {rate.rate_percent.normalize():f}% from {rate.applies_from:%d %b %Y} is not confirmed by "
+            f"the accountant, so this cannot be posted: confirm it, or correct it, under {where}.")
+    return rate
 
 
 class TcsRate(AuditModel):
