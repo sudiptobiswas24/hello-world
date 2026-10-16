@@ -10,7 +10,7 @@ from apps.accounting.models import (BankStatement, BankStatementLine, JournalEnt
 from apps.core.models import PaymentTerms
 from apps.e2e import tests_races as r
 from apps.sales import tests_base as sales_fixture
-from apps.sales import tests_review_money_probes as probes
+from apps.sales import tests_tcs_credit_and_access_facts as probes
 from apps.sales.models import Invoice, InvoiceLine, InvoicePayment
 
 D = Decimal
