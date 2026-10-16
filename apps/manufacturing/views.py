@@ -694,7 +694,7 @@ class CostSheetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         data = request_data.validated_data
         sheet = quoting.cost(
             data["specification"], data["quantity"], data.get("costed_on"),
-            data.get("margin_percent"),
+            data.get("margin_percent"), by=request.user,
         )
         return Response(CostSheetSerializer(sheet).data, status=201)
 
@@ -727,7 +727,7 @@ class TestCertificateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         from apps.sales.models import Delivery
 
         delivery = get_object_or_404(Delivery, pk=request.data.get("delivery"))
-        certificate = certificates.issue(delivery)
+        certificate = certificates.issue(delivery, by=request.user)
         return Response(TestCertificateSerializer(certificate).data, status=201)
 
     @action(detail=True, methods=["post"])

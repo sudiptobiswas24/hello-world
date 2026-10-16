@@ -146,7 +146,7 @@ class PriceVariationBillViewSet(CustomerScopedMixin, AuditableViewSetMixin, view
         account = get_object_or_404(Account, pk=data.get("receivable_account"))
         start, end = _dates(data)
         bill = _run(bill_variation, order, start, end, account,
-                    invoice_date=parse_date(str(data.get("invoice_date") or "")))
+                    invoice_date=parse_date(str(data.get("invoice_date") or "")), by=request.user)
         return Response(_bill(bill), status=201)
 
     @action(detail=False, methods=["get"])

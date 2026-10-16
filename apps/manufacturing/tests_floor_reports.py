@@ -29,6 +29,11 @@ class CertificateListTests(CertificateTestCase):
         inspector = as_("Quality Inspector")
         made = inspector.post("/api/manufacturing/test-certificates/", {"delivery": delivery.pk}, format="json")
         self.assertEqual(made.status_code, 201, made.content)
+        # O202: who issued it is on the record, not only in its history.
+        from apps.manufacturing.certificates import TestCertificate
+
+        issuer = TestCertificate.objects.get(pk=made.json()["id"]).created_by
+        self.assertTrue(issuer is not None and issuer.groups.filter(name="Quality Inspector").exists(), issuer)
         [row] = inspector.get("/api/manufacturing/test-certificates/", {"delivery": delivery.pk}).json()
         self.assertEqual((row["delivery_number"], row["customer_name"]),
                          (delivery.number, delivery.sales_order.customer.name))

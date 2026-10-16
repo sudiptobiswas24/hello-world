@@ -590,9 +590,9 @@ class Command(BaseCommand):
         "core.NewPartyViewSet.create": "a party and its sections in one transaction of its own, each stamped",
         "core.PartyViewSet.perform_create": "make_party() is its own transaction and stamps the party and its role",
         "manufacturing.BomChangeOrderViewSet.create": "raise_change() is its own transaction and stamps created_by",
-        "sales.PriceVariationBillViewSet.create": "bill_variation() is its own transaction; created_by blank (O202)",
-        "manufacturing.CostSheetViewSet.create": "quoting.cost() is its own transaction; created_by blank (O202)",
-        "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction; created_by blank (O202)",
+        "sales.PriceVariationBillViewSet.create": "bill_variation() is its own transaction; it stamps created_by from by= (O202)",
+        "manufacturing.CostSheetViewSet.create": "quoting.cost() is its own transaction; it stamps created_by from by= (O202)",
+        "manufacturing.TestCertificateViewSet.create": "certificates.issue() is its own transaction; it stamps created_by from by= (O202)",
     }
     MIXIN_WRITES = ("create", "update", "destroy", "perform_create", "perform_update", "perform_destroy")
 

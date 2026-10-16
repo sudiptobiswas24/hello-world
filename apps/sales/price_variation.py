@@ -261,7 +261,7 @@ def rows_for(order, start, end):
 
 
 @transaction.atomic
-def bill_variation(order, start, end, receivable_account, invoice_date=None):
+def bill_variation(order, start, end, receivable_account, invoice_date=None, by=None):
     """Write a bill for the window, and draft its invoice and credit note."""
     from .models import Invoice, InvoiceLine, SalesOrder
 
@@ -271,7 +271,9 @@ def bill_variation(order, start, end, receivable_account, invoice_date=None):
         raise ValidationError(f"Nothing dispatched on {order} between {start} and {end} "
                               "under a price clause is left to vary.")
     invoice_date = to_date(invoice_date) or timezone.localdate()
+    # Who billed it, stamped on the bill and its invoice as on any other record (O202).
     bill = PriceVariationBill.objects.create(
+        created_by=by, updated_by=by,
         order=order, start=to_date(start), end=to_date(end),
         number=DocumentSequence.next_for("sales.price_variation", invoice_date,
                                          name="Price variation bills", prefix="PV-"))
@@ -282,6 +284,7 @@ def bill_variation(order, start, end, receivable_account, invoice_date=None):
 
     def draft(credits=None):
         return Invoice.objects.create(
+            created_by=by, updated_by=by,
             customer=order.customer, invoice_date=invoice_date,
             reference=f"{bill.number} {order.number}"[:64], sales_order=order,
             receivable_account=receivable_account, currency=order.currency,
