@@ -34,17 +34,31 @@ class ReviewPurchInTheBrowser(BrowserMixin, TdsTestCase, StaticLiveServerTestCas
         self.assertIsNotNone(pending.confirmed_on)
         self.assertEqual(self.problems, [])
 
-    def test_02_a_bill_with_tcs_shows_it_in_the_totals_but_the_new_bill_screen_has_no_place_to_key_it(self):
+    def test_02_the_ap_manager_keys_the_suppliers_tcs_on_a_new_bill_and_the_totals_carry_it(self):
+        """Review F10: the supplier's TCS is keyed on the new-bill screen, and the posted bill shows it."""
+        import re
+
+        from apps.core.models import Company
+
         tcs = Account.objects.create(code="1461", name="TCS receivable", account_type=AccountType.ASSET)
-        bill = Bill.objects.create(vendor=self.vendor, bill_date=D(2026, 6, 30), payable_account=self.payable,
-                                   tcs_amount=Decimal("1000"), tcs_account=tcs, tcs_section="206C(1F)")
+        Company.objects.filter(pk=Company.get().pk).update(default_payable_account=self.payable)
+        page = self.sign_in(self.login_for("AP Manager"), "/app/purchasing/bills/new")
+        page.get_by_role("combobox", name="Vendor").fill("Supplier")
+        page.get_by_role("option", name=re.compile("Supplier")).first.click()
+        page.get_by_label("Date").fill("2026-06-30")
+        page.get_by_label("Their invoice number").fill("TRK-9")
+        page.get_by_label("TCS collected").fill("1000")
+        page.get_by_label("TCS section").fill("206C(1F)")
+        page.get_by_role("combobox", name="TCS receivable account").fill("1461")
+        page.get_by_role("option", name=re.compile("1461 TCS receivable")).click()
+        page.get_by_role("button", name="Create", exact=True).click()
+        page.wait_for_url(re.compile(r"/purchasing/bills/\d+$"))
+        bill = Bill.objects.get(reference="TRK-9")
+        self.assertEqual((bill.tcs_amount, bill.tcs_section, bill.tcs_account_id), (Decimal("1000.00"), "206C(1F)", tcs.pk))
         BillLine.objects.create(bill=bill, description="Truck", quantity=Decimal("1"), unit_price=Decimal("100000"),
                                 expense_account=self.expense)
         bill.post()
-        page = self.sign_in(self.login_for("AP Manager"), f"/app/purchasing/bills/{bill.pk}")
+        page.goto(f"{self.live_server_url}/app/purchasing/bills/{bill.pk}")
         expect(page.locator("main")).to_contain_text("TCS collected (206C(1F))")
         expect(page.locator("main")).to_contain_text("1,01,000.00")
-        page.goto(f"{self.live_server_url}/app/purchasing/bills/new")
-        expect(page.get_by_label("Vendor").first).to_be_visible()
-        self.assertEqual(page.get_by_label("TCS").count(), 0, "TCS can be keyed on the screen")
         self.assertEqual(self.problems, [])
