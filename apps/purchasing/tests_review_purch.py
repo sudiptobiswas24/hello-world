@@ -137,8 +137,9 @@ class TdsDatedRateProbes(TdsTestCase):
         row = TdsRate.objects.get(pk=self.contract_rate.pk)
         row.rate_percent = Z("2.5")
         row.save()
-        with self.assertRaisesMessage(ValidationError, "not confirmed"):
-            self.bill("50000", day=D(2026, 6, 30), vendor=self.party).deduct_tds()
+        # Refused as the bill posts, before anything could be deducted at the unconfirmed figure (g22 decision).
+        with self.assertRaisesMessage(ValidationError, "no confirmed 194C rate stands on 30 Jun 2026"):
+            self.bill("50000", day=D(2026, 6, 30), vendor=self.party)
 
     def test_09_confirming_vouches_for_the_figures_the_accountant_looked_at(self):
         """A screen loaded at 2%; somebody edits the row to 20%; the confirm click must not confirm 20%."""
