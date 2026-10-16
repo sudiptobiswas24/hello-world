@@ -84,6 +84,26 @@ class InspectionSerializer(serializers.ModelSerializer):
     decision_login_name = serializers.CharField(source="decision_login.username", read_only=True,
                                                 default="")
     decision_due_on = serializers.SerializerMethodField()
+    # Whether posting this draft as a release would lift a verdict only the Quality Manager may
+    # end, so the screen offers a release to them alone (O241). The server asks it again.
+    releasing_is_theirs = serializers.SerializerMethodField()
+
+    def get_releasing_is_theirs(self, inspection):
+        from django.contrib.auth.models import AnonymousUser
+        from django.core.exceptions import ValidationError
+
+        from .release import latest_inspection
+
+        if inspection.posted:
+            return False
+        standing = latest_inspection(inspection.lot)
+        if standing is None:
+            return False
+        try:
+            standing.check_lifted_by(AnonymousUser(), reinspection=True)
+        except ValidationError:
+            return True
+        return False
 
     class Meta:
         model = Inspection
@@ -93,7 +113,7 @@ class InspectionSerializer(serializers.ModelSerializer):
                   "readings", "self_approved", "lot_status", "lot_size", "sampling",
                   "lot_code", "item_label", "plan_name", "inspected_by_name",
                   "disposition_label", "decided_by_name", "decided_at", "decision_login",
-                  "decision_login_name", "told", "escalated_on", "decision_due_on"]
+                  "decision_login_name", "told", "escalated_on", "decision_due_on", "releasing_is_theirs"]
         # decided_by is the login that posts a concession (Inspection.post), never typed;
         # the rest of the decision is the Quality Manager's, taken by decide/.
         read_only_fields = ["number", "result", "posted", "posted_at",
