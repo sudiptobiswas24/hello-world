@@ -169,3 +169,34 @@ class OnlyTheQualityManagerLiftsAHoldInTheBrowserTests(BrowserMixin, QualityTest
         page = self.sign_in(manager, f"/app/quality/inspections/{rejection.pk}", page=self.new_page())
         expect(page.get_by_role("button", name="Void")).to_have_count(1)
         self.assertEqual(self.problems, [])
+
+
+class TheDecisionOfferedIsTheServersTests(BrowserMixin, QualityTestCase, StaticLiveServerTestCase):
+    """
+    O241: the inspection screen offered a Quality Inspector a concession, and a
+    re-inspection of a rejected batch posted as a release, both of which the server
+    refuses to anyone without quality.decide_inspection. R-001 rejected under its
+    mandatory plan (92, 92, 92); a second draft reads 87, 87, 87.
+    """
+
+    def decisions(self, person, inspection):
+        page = self.sign_in(person, f"/app/quality/inspections/{inspection.pk}", page=self.new_page())
+        box = page.get_by_label("Decision", exact=True)
+        expect(box).to_be_visible()
+        return [text.strip() for text in box.locator("option").all_inner_texts()]
+
+    def test_each_is_offered_what_the_server_allows(self):
+        plan = self.plan(mandatory=True)
+        first = self.inspect(plan, [87, 87, 87])
+        inspector = self.person("Quality Inspector")
+        manager = self.login_for("Quality Manager")
+        self.assertEqual(self.decisions(inspector, first),
+                         ["Not decided", "Accepted", "Held for rework", "Rejected"])
+        Inspection.objects.filter(pk=first.pk).delete()
+        rejection = self.inspect(plan, [92, 92, 92])
+        rejection.post()
+        again = self.inspect(plan, [87, 87, 87])
+        self.assertEqual(self.decisions(inspector, again), ["Held for rework", "Rejected"])
+        self.assertEqual(self.decisions(manager, again),
+                         ["Not decided", "Accepted", "Accepted by concession", "Held for rework", "Rejected"])
+        self.assertEqual(self.problems, [])

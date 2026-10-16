@@ -1,3 +1,4 @@
+import { useAccess } from "../../auth/me";
 import { dateTime } from "../../lib/format";
 import { RecordScreen } from "../../views/RecordScreen";
 import { DISPOSITIONS, INSTRUMENT, LOT, PERSON, PLAN } from "./refs";
@@ -21,6 +22,12 @@ const decision = (label: string, disposition: string, done: string) => ({
  * wrong one is voided, never edited.
  */
 export default function InspectionForm() {
+  const { can } = useAccess();
+  // Offered only what the server allows (O241): a concession, and a release over a verdict
+  // holding the batch, are the Quality Manager's (quality.decide_inspection).
+  const decides = can("quality.decide_inspection");
+  const offered = (row: Row) => DISPOSITIONS.filter(([key]) => decides
+    || (key !== "concession" && !(row.releasing_is_theirs && ["", "accept"].includes(key))));
   return (
     <RecordScreen
       endpoint="/api/quality/inspections/"
@@ -37,13 +44,13 @@ export default function InspectionForm() {
         : null)}
       permissions={{ add: "quality.add_inspection", change: "quality.change_inspection" }}
       editable={draft}
-      fields={[
+      fields={(record: Row) => [
         { key: "lot", label: "Batch", kind: "pick", pick: LOT, createOnly: true, show: (row) => String(row.lot_code) },
         { key: "plan", label: "Plan", kind: "ref", ref: PLAN, createOnly: true },
         { key: "inspected_on", label: "Inspected on", kind: "date" },
         { key: "inspected_by", label: "By", kind: "pick", pick: PERSON, show: (row) => String(row.inspected_by_name || "—") },
         { key: "lot_size", label: "Batch size", kind: "integer", hint: "Sets the sample under an AQL plan" },
-        { key: "disposition", label: "Decision", kind: "choice", choices: DISPOSITIONS,
+        { key: "disposition", label: "Decision", kind: "choice", choices: offered(record),
           show: (row) => String(row.disposition_label || "—") },
         { key: "decision_note", label: "Why", kind: "text", wide: true },
         { key: "decision_login_name", label: "Decided by", readOnly: true, existingOnly: true,
