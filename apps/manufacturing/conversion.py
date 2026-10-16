@@ -223,17 +223,19 @@ def record_bags(station, operator, machine, bags, sample_grams, supervisor=None,
     # Off weight, the Quality Manager's to decide whatever the plan (decisions 22 and 23), and
     # so is a bundle cut from a roll, or a run coated, off its limits further up the line.
     from .process_rolls import current_mount, off_rolls
-    from .station_coat import CoatingCheck
+    from .station_coat import off_coatings
     from .station_gauge import floor_inspection
 
     mounted = current_mount(machine)
     made_from = [f"Cut from {roll.code}, booked off its limits at {roll.station}: {roll.reason}."
                  for roll in (off_rolls(mounted) if mounted is not None else [])]
+    # Only the checks taken on the roll this bundle was cut from, or on no roll the station
+    # recorded (O232).
     made_from += [f"{order} was coated off its weight at {check.station} on {check.shift_date} "
                   f"({check.mean_gsm} GSM): {check.reason}."
-                  for check in CoatingCheck.objects.filter(
-                      report__operation__work_order=order, passed=False,
-                      voided_at__isnull=True).select_related("station").order_by("pk")]
+                  for check in off_coatings(order, mounted if mounted is not None
+                                            and mounted.operation.work_order_id == order.pk else None)
+                  .select_related("station").order_by("pk")]
     inspection = floor_inspection(lot, plan, operator, shift_date, passed, station, supervisor,
                                   reason, "off weight", made_from=made_from)
     for number, value in enumerate(values, start=1):
