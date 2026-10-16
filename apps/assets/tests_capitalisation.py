@@ -140,3 +140,36 @@ class ADebitNoteOnALineCapitalisedTests(CapitalisationFixture):
         self.assertEqual((refused.status_code, "cannot be debited for it" in said, "dispose of them" in said,
                           self.balance(self.expense)),
                          (400, True, False, Decimal("0")))
+
+
+class CapitalisedThroughTheApiTests(WithVehicles):
+    """
+    O26: capitalising a bill line had no API action; the office could not
+    do it at all. The controller does it: the 12,000 lathe moves off
+    purchases (5000) onto plant (1500), a draft until put into service.
+    The stores manager may not, and a line already capitalised is refused.
+    """
+
+    def test_the_controller_capitalises_a_posted_line(self):
+        line = self.bill_line("1", "12000")
+        url = f"/api/purchasing/bills/{line.bill_id}/capitalise/"
+        storekeeper = self.as_role("Stores Manager").post(url, {"line": line.pk, "category": self.category.pk},
+                                                          format="json")
+        self.assertEqual(storekeeper.status_code, 403, storekeeper.content)
+        controller = self.as_role("Controller")
+        made = controller.post(url, {"line": line.pk, "category": self.category.pk, "name": "Lathe",
+                                     "life_months": "24"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        (asset,) = made.json()
+        self.assertEqual((asset["name"], asset["cost"], asset["status"], asset["life_months"]),
+                         ("Lathe", "12000.00", AssetStatus.DRAFT, 24))
+        self.assertEqual((self.balance(self.plant), self.balance(self.expense)), (Decimal("12000.00"), Decimal("0")))
+        again = controller.post(url, {"line": line.pk, "category": self.vehicles.pk}, format="json")
+        self.assertEqual(again.status_code, 400, again.content)
+        self.assertIn("already been capitalised", again.content.decode())
+        typo = controller.post(url, {"line": line.pk, "category": self.category.pk, "on_date": "31-03-2026"},
+                               format="json")
+        self.assertEqual(typo.status_code, 400, typo.content)
+        elsewhere = controller.post(f"/api/purchasing/bills/{self.bill_line().bill_id}/capitalise/",
+                                    {"line": line.pk, "category": self.category.pk}, format="json")
+        self.assertEqual(elsewhere.status_code, 404, elsewhere.content)
