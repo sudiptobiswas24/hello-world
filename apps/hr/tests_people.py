@@ -93,7 +93,7 @@ class ClaimTests(PeopleTestCase):
             self.approved().pay(receivable)
 
     def test_not_paid_before_it_was_claimed(self):
-        # O163: ExpenseClaim.pay took any day. Claimed 1 June. A day ahead stands (the test below).
+        # O163: ExpenseClaim.pay took any day. Claimed 1 June. A day ahead is refused too (O176, below).
         card = Account.objects.create(code="2300", name="Company card", account_type=AccountType.LIABILITY,
                                       holds_money=True)
         claim = self.approved()
@@ -137,23 +137,21 @@ class ClaimTests(PeopleTestCase):
         self.assertIn("that day has not come", str(refused.content))
         self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
 
-    def test_a_payment_dated_ahead_is_reversed_on_its_own_day_and_no_other(self):
-        # Paid with a date three days ahead, it could be reversed neither before that day nor
-        # on it, which had not come; it now cancels on that day, the only one it stands on.
+    def test_a_payment_is_not_dated_on_a_day_still_to_come(self):
+        # O176: paid with a date three days ahead, it stood, and the books said the cash had gone
+        # before it went. This test paid ahead and reversed it on that day until then. Refused now,
+        # over the API too, the plant's day being today; paid today it stands.
         claim = self.approved()
         ahead = timezone.localdate() + datetime.timedelta(days=3)
-        claim.pay(self.cash, on_date=ahead)
-        with self.assertRaisesMessage(ValidationError, f"it was paid on {ahead}"):
-            claim.unpay("Wrong drawer", on_date=timezone.localdate())
-        later = ahead + datetime.timedelta(days=1)
-        with self.assertRaisesMessage(ValidationError, f"is not unpaid on {later}: that day has not come"):
-            claim.unpay("Wrong drawer", on_date=later)
-        self.assertEqual(ExpenseClaim.objects.get(pk=claim.pk).status, ClaimStatus.PAID)
-        claim.unpay("Wrong drawer")
-        claim.refresh_from_db()
-        self.assertEqual((claim.status, claim.voided_entry.date), (ClaimStatus.APPROVED, ahead))
-        self.assertEqual(sum((line.debit - line.credit for line in JournalLine.objects.filter(account=self.cash)),
-                             Decimal("0")), Decimal("0"))
+        with self.assertRaisesMessage(ValidationError, f"is not paid on {ahead}: that day has not come"):
+            claim.pay(self.cash, on_date=ahead)
+        refused = self.as_(self.books).post(f"/api/hr/expense-claims/{claim.pk}/pay/",
+                                            {"paid_from": self.cash.pk, "on_date": ahead.isoformat()}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertEqual((ExpenseClaim.objects.get(pk=claim.pk).status,
+                          JournalLine.objects.filter(account=self.cash).exists()), (ClaimStatus.APPROVED, False))
+        claim.pay(self.cash)
+        self.assertEqual((claim.status, claim.paid_on), (ClaimStatus.PAID, timezone.localdate()))
 
     def test_submitted_decided_by_the_manager_and_paid_as_one_journal(self):
         claim = self.claim()

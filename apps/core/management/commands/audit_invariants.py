@@ -1745,8 +1745,6 @@ class Command(BaseCommand):
     DATED_ELSEWHERE = {
         "accounting.Payment.void": "refuses a day before the payment and a day to come in its own words, "
                                    "written before the rule",
-        "hr.ExpenseClaim.pay": "refuses a day before its claim in its own words; a day ahead stands, a cheque "
-                               "for a day to come, which unpay() cancels on that day (O163)",
         "accounting.RecurringJournal.generate_one": "a schedule's run, posted forward on its own day; it "
                                                     "corrects nothing",
         "sales.RecurringInvoice.generate_one": "a schedule's run, posted forward on its own day; it corrects "
