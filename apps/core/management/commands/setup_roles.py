@@ -153,6 +153,11 @@ ROLES = {
         *crud("hr", "salaryadvance", actions=("add", "change", "view")),
         *crud("hr", "salarytransferfile", actions=("add", "delete", "view")),
         "hr.void_salaryadvance",
+        # What a leaver was left owing (O215): the money paid back, recorded against its payment as an
+        # advance is, and giving up on the rest, an expense decision like any receivable written off.
+        *crud("hr", "shortfallsettlement", actions=("add", "view")),
+        "hr.write_off_shortfall",
+        "hr.void_shortfallsettlement",
         *crud("assets", "assetcategory"),
         *crud("assets", "fixedasset"),
         *crud("assets", "depreciationentry", actions=("view",)),

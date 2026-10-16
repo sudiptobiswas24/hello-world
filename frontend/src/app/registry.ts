@@ -996,6 +996,12 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/payroll/AdvanceForm"),
       },
       {
+        path: "owed-back", label: "Owed back by former employees", permission: "hr.view_shortfallsettlement",
+        create: "hr.add_shortfallsettlement",
+        keywords: "leaver shortfall receivable paid back write off", load: () => import("../modules/payroll/ShortfallSettlements"),
+        detail: () => import("../modules/payroll/ShortfallSettlementForm"),
+      },
+      {
         path: "registers", label: "Statutory registers", permission: "hr.view_payslip",
         keywords: "professional tax pt labour welfare fund lwf register", load: () => import("../modules/payroll/StatutoryRegisters"),
       },

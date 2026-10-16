@@ -15,6 +15,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -24,6 +25,7 @@ from apps.core.models import to_date
 from apps.core.permissions import RequiredPermission
 
 from .advances import SalaryAdvance
+from .shortfalls import SettlementKind, ShortfallSettlement, owed_back
 from .bank_file import SalaryTransfer, SalaryTransferFile
 from .pay_details import EmployeePayDetails
 from .payroll import SLIP_PAYMENT_READS, PayRunStatus, Payslip
@@ -134,6 +136,49 @@ class AdvanceViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         advance = self.get_object()
         _run(advance.void, on_date=to_date(request.data.get("on_date")))
         return Response(self.get_serializer(SalaryAdvance.objects.get(pk=advance.pk)).data)
+
+
+class ShortfallSettlementSerializer(serializers.ModelSerializer):
+    employee = serializers.CharField(source="payslip.employee.employee_number", read_only=True)
+    stands = serializers.SerializerMethodField()
+    owed_back = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ShortfallSettlement
+        fields = ["id", "payslip", "employee", "kind", "amount", "payment", "date", "reason", "posted_account",
+                  "journal_entry", "voided_at", "voided_entry", "stands", "owed_back"]
+
+    def get_stands(self, obj):
+        return obj.stands()
+
+    def get_owed_back(self, obj):
+        return owed_back(obj.payslip)
+
+
+class ShortfallSettlementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
+    """
+    What a former employee paid back or the Controller wrote off, against a final slip's shortfall (O215).
+    Posted as made: voided, never changed or deleted.
+    """
+
+    queryset = ShortfallSettlement.objects.select_related("payslip__employee", "payment")
+    serializer_class = ShortfallSettlementSerializer
+    filter_fields = ["payslip", "kind"]
+    date_field = "date"
+    http_method_names = ["get", "post", "head", "options"]
+    action_permission_map = {"void": "hr.void_shortfallsettlement"}
+
+    def perform_create(self, serializer):
+        if (serializer.validated_data.get("kind") == SettlementKind.WRITE_OFF
+                and not self.request.user.has_perm("hr.write_off_shortfall")):
+            raise PermissionDenied("Writing off what a former employee owes is the Controller's decision.")
+        _run(super().perform_create, serializer)
+
+    @action(detail=True, methods=["post"])
+    def void(self, request, pk=None):
+        settlement = self.get_object()
+        _run(settlement.void, on_date=to_date(request.data.get("on_date")))
+        return Response(self.get_serializer(ShortfallSettlement.objects.get(pk=settlement.pk)).data)
 
 
 class TransferSerializer(serializers.ModelSerializer):

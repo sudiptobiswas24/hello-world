@@ -447,3 +447,128 @@ class ATakeBackOutsideAFinalRunTests(PieceworkTestCase):
         self.woven("1000", datetime.date(2026, 10, 20))
         slip, lines = self.slip_of(self.pay(datetime.date(2026, 10, 16), datetime.date(2026, 10, 31)))
         self.assertEqual(lines, [(ComponentKind.EARNING, Decimal("1000"), Decimal("450.00"))])
+
+
+class AFormerEmployeesShortfallIsSettledTests(PieceworkTestCase):
+    """
+    O215. 400.00 paid for 1,000 m, the roll voided, and the weaver gone on
+    20 September with no wages to take it from: all 400.00 is owed back, a
+    receivable from the former employee (O28). 150.00 is paid back and the
+    Controller writes off the other 250.00. Figures: calc_fix_core/o215.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.core.management import call_command
+
+        call_command("setup_roles", verbosity=0)
+        self.receivable = Account.objects.create(code="1390", name="Owed by former employees",
+                                                 account_type=AccountType.ASSET)
+        self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
+        self.loss = Account.objects.create(code="6900", name="Bad debts", account_type=AccountType.EXPENSE)
+        Company.objects.update(bad_debt_account=self.loss)
+        self.per_metre.recoverable_account = self.receivable
+        self.per_metre.save()
+        roll = self.woven("1000", SEP(3))
+        self.pay(SEP(1), SEP(15))
+        roll.entry.void()
+        self.weaver.terminate(on_date=SEP(20))
+        self.final = self.pay(SEP(16), SEP(30))
+        (self.slip,) = self.final.payslips.all()
+
+    def balance(self, account):
+        from apps.accounting.models import JournalLine
+
+        return sum((line.debit - line.credit for line in JournalLine.objects.filter(account=account, entry__posted=True)),
+                   Decimal("0"))
+
+    def paid_back(self, amount, counterpart=None, day=SEP(30)):
+        from apps.accounting.models import Payment, PaymentDirection
+
+        payment = Payment.objects.create(party=self.weaver.party, direction=PaymentDirection.RECEIPT,
+                                         payment_date=day, amount=Decimal(amount), bank_account=self.bank,
+                                         counterpart_account=counterpart or self.receivable)
+        payment.post()
+        return payment
+
+    def as_(self, role):
+        from django.contrib.auth.models import Group, User
+        from rest_framework.test import APIClient
+
+        user = User.objects.create_user(role.replace(" ", "_"))
+        user.groups.add(Group.objects.get(name=role))
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def owed(self):
+        from apps.hr.shortfalls import owed_back
+
+        return owed_back(self.slip)
+
+    def test_paid_back_then_written_off_through_the_api_as_the_controller(self):
+        controller = self.as_("Controller")
+        payment = self.paid_back("150.00")
+        answer = controller.post("/api/hr/shortfall-settlements/", {
+            "payslip": self.slip.pk, "kind": "receipt", "amount": "150.00", "payment": payment.pk}, format="json")
+        self.assertEqual(answer.status_code, 201, answer.content)
+        self.assertEqual((answer.json()["owed_back"], self.owed(), self.balance(self.receivable)),
+                         ("250.00", Decimal("250.00"), Decimal("250.00")))
+        # The Payroll Officer works the pay out; giving up on money owed is not theirs.
+        refused = self.as_("Payroll Officer").post("/api/hr/shortfall-settlements/", {
+            "payslip": self.slip.pk, "kind": "write_off", "amount": "250.00", "reason": "Left the state"},
+            format="json")
+        self.assertEqual(refused.status_code, 403)
+        answer = controller.post("/api/hr/shortfall-settlements/", {
+            "payslip": self.slip.pk, "kind": "write_off", "amount": "250.00", "reason": "Left the state"},
+            format="json")
+        self.assertEqual(answer.status_code, 201, answer.content)
+        self.assertEqual((self.owed(), self.balance(self.receivable), self.balance(self.loss)),
+                         (Decimal("0.00"), Decimal("0.00"), Decimal("250.00")))
+        # Reversed: the write-off's entry, then the receipt and its payment. Owed again, in full.
+        voided = controller.post(f"/api/hr/shortfall-settlements/{answer.json()['id']}/void/", {}, format="json")
+        self.assertEqual(voided.status_code, 200, voided.content)
+        self.assertEqual((self.owed(), self.balance(self.loss)), (Decimal("250.00"), Decimal("0.00")))
+        receipt = self.slip.settlements.get(kind="receipt")
+        self.assertEqual(controller.post(f"/api/hr/shortfall-settlements/{receipt.pk}/void/", {},
+                                         format="json").status_code, 200)
+        payment.refresh_from_db()
+        self.assertEqual((payment.is_voided(), self.owed(), self.balance(self.receivable), self.balance(self.bank)),
+                         (True, Decimal("400.00"), Decimal("400.00"), Decimal("0.00")))
+
+    def test_what_it_is_settled_with_is_checked(self):
+        from apps.hr.shortfalls import SettlementKind, ShortfallSettlement
+
+        def receipt(payment, amount=None):
+            return ShortfallSettlement.objects.create(payslip=self.slip, kind=SettlementKind.RECEIPT,
+                                                      amount=Decimal(amount or payment.amount), payment=payment)
+
+        with self.assertRaisesMessage(ValidationError, "owes 400.00 back on that slip, not 500.00"):
+            receipt(self.paid_back("500.00"))
+        elsewhere = Account.objects.create(code="1391", name="Owed by contractors", account_type=AccountType.ASSET)
+        with self.assertRaisesMessage(ValidationError, "so the two would never meet"):
+            receipt(self.paid_back("100.00", counterpart=elsewhere))
+        with self.assertRaisesMessage(ValidationError, "The payment is 100.00 and the receipt 90.00"):
+            receipt(self.paid_back("100.00"), amount="90.00")
+        with self.assertRaisesMessage(ValidationError, "did not pay back on 2026-09-29"):
+            receipt(self.paid_back("100.00", day=SEP(29)))
+        with self.assertRaisesMessage(ValidationError, "says why"):
+            ShortfallSettlement.objects.create(payslip=self.slip, kind=SettlementKind.WRITE_OFF,
+                                               amount=Decimal("100.00"), reason=" ")
+        self.assertEqual(self.owed(), Decimal("400.00"))
+
+    def test_a_bounced_receipt_is_owed_again_and_the_run_stands_while_a_settlement_does(self):
+        from apps.hr.shortfalls import SettlementKind, ShortfallSettlement
+
+        payment = self.paid_back("150.00")
+        settled = ShortfallSettlement.objects.create(payslip=self.slip, kind=SettlementKind.RECEIPT,
+                                                     amount=Decimal("150.00"), payment=payment)
+        with self.assertRaisesMessage(ValidationError, "Void it before voiding the run"):
+            self.final.void()
+        with self.assertRaisesMessage(ValidationError, "void it instead"):
+            settled.delete()
+        payment.void()
+        self.assertEqual(self.owed(), Decimal("400.00"))
+        # The payment voided on its own leaves the receipt standing for nothing: the run may go.
+        self.final.void()
+        self.assertEqual((self.owed(), self.balance(self.receivable)), (Decimal("0.00"), Decimal("0.00")))

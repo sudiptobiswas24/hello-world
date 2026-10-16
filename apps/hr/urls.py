@@ -2,7 +2,8 @@
 from rest_framework.routers import DefaultRouter
 
 from .attendance_api import AttendanceDayViewSet
-from .pay_api import AdvanceViewSet, FigureViewSet, MyPayslipsView, PayDetailsViewSet, RegisterView, TransferFileViewSet
+from .pay_api import (AdvanceViewSet, FigureViewSet, MyPayslipsView, PayDetailsViewSet, RegisterView,
+                      ShortfallSettlementViewSet, TransferFileViewSet)
 from .contract_labour_api import ContractWorkerViewSet, LabourContractorViewSet
 from .people_api import ApplicantViewSet, AppraisalViewSet, ExpenseClaimViewSet, ExpenseLineViewSet, JobOpeningViewSet
 
@@ -35,6 +36,7 @@ router.register("pay-details", PayDetailsViewSet)
 router.register("statutory-figures", FigureViewSet)
 router.register("statutory-registers", RegisterView, basename="statutory-registers")
 router.register("salary-advances", AdvanceViewSet)
+router.register("shortfall-settlements", ShortfallSettlementViewSet)
 router.register("salary-files", TransferFileViewSet)
 router.register("my-payslips", MyPayslipsView, basename="my-payslips")
 router.register("labour-contractors", LabourContractorViewSet)
