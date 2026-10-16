@@ -1267,11 +1267,17 @@ class Payslip(AuditModel):
                 # however many rows it has.
                 amount, quantity, row, here, made_here = self.piece_work(component, split=True)
                 owed = [(row, amount, quantity)]
-                if self.is_final() and amount < here:
-                    # A leaver's own last weeks are wages, and what is taken
-                    # back for earlier runs is a deduction beside them: netted,
-                    # the recovery came off their PF and ESI wages (O28).
-                    owed = [(row, here, made_here), (row, amount - here, quantity - made_here)]
+                if amount < here:
+                    # The period's own work is wages, and what is taken back for
+                    # earlier runs is a deduction beside them, on every run:
+                    # netted, the recovery came off their PF and ESI wages, which
+                    # read what was earned in the period (O28 for a leaver, O213).
+                    back = (amount - here, quantity - made_here)
+                    if not self.is_final() and amount < 0:
+                        # Outside a final run it comes off the period's piece
+                        # work only, and the rest waits for the next run.
+                        back = (-here, -made_here)
+                    owed = [(row, here, made_here), (row, *back)]
             else:
                 # Each rate is taken of the gross before the component, not
                 # of what its own earlier rate added to it.
@@ -1313,11 +1319,11 @@ class Payslip(AuditModel):
                 if component.basis == ComponentBasis.OVERTIME_ORDINARY and amount > 0:
                     quantity = self._hours.get(row.pk)
                     rate = (amount / quantity).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-                if amount < 0 and component.basis == ComponentBasis.PER_UNIT and self.is_final():
-                    # More taken back than earned waits for the next run, and
-                    # somebody leaving has none: a roll voided after it was paid
-                    # comes off the rest of their final pay, taken back from the
-                    # wages it was charged to.
+                if amount < 0 and component.basis == ComponentBasis.PER_UNIT:
+                    # A roll voided after it was paid is taken back from the
+                    # wages it was charged to, within the deduction cap
+                    # (_within_the_deduction_cap); what the cap leaves waits
+                    # for the next run, and somebody leaving has none.
                     amount, quantity, kind = -amount, -quantity, ComponentKind.DEDUCTION
                 if amount <= 0:
                     continue
@@ -1346,8 +1352,7 @@ class Payslip(AuditModel):
                     running_taxable += amount
         lines = self._employer_share_total_first(lines)
         self.recoverable, self.recoverable_component = Decimal("0"), None
-        if self.is_final():
-            lines = self._within_the_deduction_cap(lines)
+        lines = self._within_the_deduction_cap(lines)
         lines += self._advance_recoveries(lines)
         earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0.00"))
         deducted = sum((line.amount for line in lines if line.kind == ComponentKind.DEDUCTION), Decimal("0.00"))
@@ -1387,9 +1392,10 @@ class Payslip(AuditModel):
         posted runs have already paid them for it. So a roll voided after
         payday is taken back from the next run, and one entered late is
         paid in it, and nothing needs remembering which run paid which
-        roll. More taken back than earned leaves nothing on this slip and
-        the rest to the next; on the slip of somebody leaving, which has no
-        next, the rest comes off their other pay (work_out()).
+        roll. What is taken back is a deduction beside the period's own
+        earning, within the deduction cap, and what the cap leaves waits
+        for the next run; on the slip of somebody leaving, which has no
+        next, it is owed back (work_out()).
 
         Output on a day no rate covers was not piece work, and is not
         paid. Runs are worked in order: once a later period has paid
@@ -1439,10 +1445,12 @@ class Payslip(AuditModel):
 
     def _within_the_deduction_cap(self, lines):
         """
-        A leaver's final pay takes back no more than the legal limit on what
-        one wage payment may lose: deductions together at most
-        DEDUCTION_CAP of the wages. What is taken back beyond it is owed by
-        the former employee (`recoverable`), posted as a receivable (O28).
+        A wage payment takes back no more than the legal limit on what it
+        may lose: deductions together at most DEDUCTION_CAP of the wages,
+        the same limit advances are recovered within. What the cap leaves
+        waits for the next run, which pays by difference (piece_work()); a
+        leaver has no next run, so on a final slip it is owed by the former
+        employee (`recoverable`), posted as a receivable (O28, O213).
         """
         earned = sum((line.amount for line in lines if line.kind == ComponentKind.EARNING), Decimal("0"))
         taken = [line for line in lines
@@ -1457,7 +1465,7 @@ class Payslip(AuditModel):
             if line in taken:
                 take = min(line.amount, allowed)
                 allowed -= take
-                if take < line.amount:
+                if take < line.amount and self.is_final():
                     self.recoverable += line.amount - take
                     self.recoverable_component = line.component
                 line.amount = take

@@ -98,10 +98,22 @@ class PaidByTheMetreTests(PieceworkTestCase):
         second = self.pay(SEP(16), SEP(30), post=False)
         self.assertIsNone(self.line(second))
         second.delete()
-        # 3,000 m at 0.45 = 1,350.00, less 880.00 = 470.00, for 3,000 - 2,200 m.
+        # 3,000 m at 0.45 = 1,350.00 is October's wages, and the 880.00 is taken back beside it, not netted
+        # (O213; this test asserted one line of 470.00 for 800 m until then): within half the wages, 675.00 now
+        # and the other 205.00 from the next run.
         self.woven("3000", datetime.date(2026, 10, 5))
         third = self.pay(datetime.date(2026, 10, 1), datetime.date(2026, 10, 15))
-        self.assertEqual(self.line(third)[:2], (Decimal("800"), Decimal("470.00")))
+        (slip,) = third.payslips.all()
+        lines = sorted((line.kind, line.quantity, line.amount) for line in slip.lines.filter(component=self.per_metre))
+        self.assertEqual((lines, slip.net(), slip.recoverable),
+                         ([(ComponentKind.DEDUCTION, Decimal("2200"), Decimal("675.00")),
+                           (ComponentKind.EARNING, Decimal("3000"), Decimal("1350.00"))],
+                          Decimal("675.00"), Decimal("0")))
+        self.woven("1000", datetime.date(2026, 10, 20))
+        fourth = self.pay(datetime.date(2026, 10, 16), datetime.date(2026, 10, 31))
+        (slip,) = fourth.payslips.all()
+        self.assertEqual((slip.gross(), slip.deductions(), slip.net()),
+                         (Decimal("450.00"), Decimal("205.00"), Decimal("245.00")))
 
     def test_a_voided_run_is_paid_again_by_the_next(self):
         self.woven("1000", SEP(3))
@@ -351,3 +363,87 @@ class WeaverAtTheStationTests(StationApiTestCase):
         self.assertEqual(response.json()["woven_by"]["number"], "EMP-0300")
         response = self.roll(loom="L-30", declared_m="1000", weaver_pin="999999")
         self.assertEqual(response.status_code, 400)
+
+
+class ATakeBackOutsideAFinalRunTests(PieceworkTestCase):
+    """
+    O213. A loom weaver paid 400.00 for 1,000 m on 3 September, the roll
+    voided after payday, and the second fortnight a run like any other.
+    PF 12% of piece work; ESI 0.75% of gross, up to the rupee. What is
+    taken back is a deduction beside the fortnight's own earning, and
+    each statutory base reads that earning. Figures worked in
+    scratchpad/calc_fix_core/o213.py.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.hr.pay_details import EmployeePayDetails
+        from apps.hr.payroll import Rounding, Statutory
+
+        owed = Account.objects.create(code="2310", name="PF and ESI payable", account_type=AccountType.LIABILITY)
+        self.pf = PayComponent.objects.create(
+            code="PF", name="PF", kind=ComponentKind.DEDUCTION, basis=ComponentBasis.PERCENT_OF_GROSS,
+            liability_account=owed, sequence=500, statutory=Statutory.PF)
+        self.pf.base_components.set([self.per_metre])
+        self.esi = PayComponent.objects.create(
+            code="ESI", name="ESI", kind=ComponentKind.DEDUCTION, basis=ComponentBasis.PERCENT_OF_GROSS,
+            liability_account=owed, sequence=510, statutory=Statutory.ESI, rounding=Rounding.RUPEE_UP)
+        self.rate(self.pf, "12", SEP(1))
+        self.rate(self.esi, "0.75", SEP(1))
+        self.weaver.uan, self.weaver.esi_number = "100200300499", "3100200399"
+        self.weaver.save()
+        EmployeePayDetails.objects.create(employee=self.weaver, date_of_birth=datetime.date(1990, 1, 1))
+        roll = self.woven("1000", SEP(3))
+        self.pay(SEP(1), SEP(15))
+        roll.entry.void()
+
+    def slip_of(self, run):
+        (slip,) = run.payslips.all()
+        lines = sorted((line.kind, line.quantity, line.amount) for line in slip.lines.filter(component=self.per_metre))
+        return slip, lines
+
+    def amount(self, slip, component):
+        return slip.lines.get(component=component).amount
+
+    def wages(self):
+        from apps.accounting.models import JournalLine
+
+        account = self.per_metre.expense_account
+        return sum((line.debit - line.credit for line in JournalLine.objects.filter(account=account)), Decimal("0"))
+
+    def test_pf_and_esi_wages_read_what_was_earned_in_the_period(self):
+        # 4,000 m at 0.45 = 1,800.00 earned; 400.00 taken back. PF 216.00, ESI 13.50 up to 14. Net 1,170.00.
+        # Netted, it was one line of 1,400.00: PF 168.00, ESI 11, and both files filed 1,400.
+        from apps.hr.statutory_files import ecr_rows, esi_rows
+
+        self.woven("4000", SEP(21))
+        run = self.pay(SEP(16), SEP(30))
+        slip, lines = self.slip_of(run)
+        self.assertEqual(lines, [(ComponentKind.DEDUCTION, Decimal("1000"), Decimal("400.00")),
+                                 (ComponentKind.EARNING, Decimal("4000"), Decimal("1800.00"))])
+        self.assertEqual((self.amount(slip, self.pf), self.amount(slip, self.esi), slip.gross(), slip.net(),
+                          slip.recoverable),
+                         (Decimal("216.00"), Decimal("14"), Decimal("1800.00"), Decimal("1170.00"), Decimal("0")))
+        self.assertEqual((ecr_rows(run)[0]["epf_wages"], esi_rows(run)[0]["wages"]), (1800, 1800))
+        # Taken back from the wages it was charged to: 400 + 1,800 - 400.
+        self.assertEqual(self.wages(), Decimal("1800.00"))
+
+    def test_what_the_cap_leaves_waits_for_the_next_run(self):
+        # 1,500 m at 0.45 = 675.00. Half is 337.50, less PF 81.00 and ESI 6: 250.50 taken back, 149.50 waits.
+        # October's 2,000 m, 900.00, takes back the 149.50 within its own cap of 335.00. Nobody leaves, so
+        # nothing is owed as a receivable; the wages end at what was woven and kept, 675 + 900.
+        self.woven("1500", SEP(21))
+        slip, lines = self.slip_of(self.pay(SEP(16), SEP(30)))
+        self.assertEqual(lines, [(ComponentKind.DEDUCTION, Decimal("1000"), Decimal("250.50")),
+                                 (ComponentKind.EARNING, Decimal("1500"), Decimal("675.00"))])
+        self.assertEqual((self.amount(slip, self.pf), self.amount(slip, self.esi), slip.net(), slip.recoverable),
+                         (Decimal("81.00"), Decimal("6"), Decimal("337.50"), Decimal("0")))
+        self.woven("2000", datetime.date(2026, 10, 5))
+        slip, lines = self.slip_of(self.pay(datetime.date(2026, 10, 1), datetime.date(2026, 10, 15)))
+        self.assertEqual([line[2] for line in lines], [Decimal("149.50"), Decimal("900.00")])
+        self.assertEqual((self.amount(slip, self.pf), self.amount(slip, self.esi), slip.net()),
+                         (Decimal("108.00"), Decimal("7"), Decimal("635.50")))
+        self.assertEqual(self.wages(), Decimal("1575.00"))
+        self.woven("1000", datetime.date(2026, 10, 20))
+        slip, lines = self.slip_of(self.pay(datetime.date(2026, 10, 16), datetime.date(2026, 10, 31)))
+        self.assertEqual(lines, [(ComponentKind.EARNING, Decimal("1000"), Decimal("450.00"))])
