@@ -121,7 +121,8 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "request_date"
     ordering_fields = ["request_date", "number"]
     action_permission_map = {
-        "suggested_vendors": "purchasing.view_purchaserequisition",
+        # The buyer's, who turns it into an order: not every requester's (review U3).
+        "suggested_vendors": "purchasing.add_purchaseorder",
         "submit": "purchasing.change_purchaserequisition",
         # The requester's own, or the decider's: which, the requisition says (check_canceller).
         "cancel": ("purchasing.decide_purchaserequisition", "purchasing.change_purchaserequisition"),
