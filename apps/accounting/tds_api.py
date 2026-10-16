@@ -7,13 +7,13 @@ from rest_framework.response import Response
 from apps.core.audit import AuditableViewSetMixin
 
 from .tcs import TcsDeclaration, TcsRate, TcsSection
-from .tds import TdsSection
+from .tds import TdsRate, TdsSection
 
 
 class TdsSectionSerializer(serializers.ModelSerializer):
     class Meta:
         model = TdsSection
-        fields = ["id", "code", "name", "rate_percent", "no_pan_rate_percent", "mode", "single_threshold",
+        fields = ["id", "code", "name", "mode", "single_threshold",
                   "annual_threshold", "payable_account", "receivable_account", "is_active"]
 
 
@@ -63,6 +63,24 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         rate = self.get_object()
         rate.confirm(request.user)
         return Response(self.get_serializer(rate).data)
+
+
+class TdsRateSerializer(serializers.ModelSerializer):
+    section_code = serializers.CharField(source="section.code", read_only=True)
+
+    class Meta:
+        model = TdsRate
+        fields = ["id", "section", "section_code", "applies_from", "rate_percent", "no_pan_rate_percent",
+                  "authority", "confirmed_by", "confirmed_on"]
+        read_only_fields = ["confirmed_by", "confirmed_on"]
+
+
+class TdsRateViewSet(TcsRateViewSet):
+    """A TDS rate the law sets, from the day it applies: the TCS rate's screen and rules (accounting.dated_rates)."""
+
+    queryset = TdsRate.objects.select_related("section")
+    serializer_class = TdsRateSerializer
+    action_permission_map = {"confirm": "accounting.confirm_tdsrate"}
 
 
 class TcsDeclarationSerializer(serializers.ModelSerializer):

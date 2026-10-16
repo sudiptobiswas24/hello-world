@@ -225,8 +225,7 @@ class WhatIsOwedIsNotWhereTheMoneyIsTests(MoneyTestCase):
 
     def test_a_tds_section_owes_nothing_in_the_bank(self):
         with self.assertRaisesMessage(ValidationError, "the payable account is an account of its own"):
-            TdsSection.objects.create(code="194C", name="Contractors", rate_percent=Decimal("1"),
-                                      no_pan_rate_percent=Decimal("20"), payable_account=self.bank)
+            TdsSection.objects.create(code="194C", name="Contractors", payable_account=self.bank)
 
     def test_a_tax_is_not_collected_into_the_bank(self):
         with self.assertRaisesMessage(ValidationError, "the collected account is an account of its own"):

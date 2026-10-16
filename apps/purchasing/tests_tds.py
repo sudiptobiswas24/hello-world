@@ -33,18 +33,28 @@ from .tests_lifecycle import PurchasingLifecycleTestCase
 DAY = datetime.date(2026, 6, 10)
 
 
+def confirmed_rate(section, rate, no_pan, day=datetime.date(2000, 4, 1)):
+    """A section's rate from `day`, confirmed by the accountant (O233: nothing is deducted at one unconfirmed)."""
+    from apps.accounting.models import TdsRate
+
+    return TdsRate.objects.create(section=section, applies_from=day, rate_percent=Decimal(rate),
+                                  no_pan_rate_percent=Decimal(no_pan), confirmed_on=day)
+
+
 class TdsTestCase(PurchasingLifecycleTestCase):
     def setUp(self):
         super().setUp()
         self.tds_payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
         self.bank = Account.objects.create(code="1010", name="Bank", account_type=AccountType.ASSET, holds_money=True)
         self.goods = TdsSection.objects.create(
-            code="194Q", name="Purchase of goods", rate_percent=Decimal("0.1"), no_pan_rate_percent=Decimal("5"),
+            code="194Q", name="Purchase of goods",
             mode="excess", annual_threshold=Decimal("5000000"), payable_account=self.tds_payable)
         self.contract = TdsSection.objects.create(
-            code="194C", name="Contractors", rate_percent=Decimal("2"), no_pan_rate_percent=Decimal("20"),
+            code="194C", name="Contractors",
             mode="whole", single_threshold=Decimal("30000"), annual_threshold=Decimal("100000"),
             payable_account=self.tds_payable)
+        self.goods_rate = confirmed_rate(self.goods, "0.1", "5")
+        self.contract_rate = confirmed_rate(self.contract, "2", "20")
         PartyTaxProfile.objects.create(party=self.vendor, pan="AAACG1234F", tds_section=self.goods)
 
     def bill(self, amount, day=DAY, vendor=None, gst=None):
@@ -572,10 +582,8 @@ class DeductionsAlreadyPostedMigrationTests(TransactionTestCase):
                                 for code in ("2100", "2250", "2251"))
         vendor = now.get_model("core", "Party").objects.create(code="V-C", name="Loom Fitters")
         section = now.get_model("accounting", "TdsSection")
-        contract = section.objects.create(code="194C", name="Contractors", rate_percent=Decimal("1"),
-                                          no_pan_rate_percent=Decimal("20"), payable_account_id=owed.pk)
-        fees = section.objects.create(code="194J", name="Fees", rate_percent=Decimal("10"),
-                                      no_pan_rate_percent=Decimal("20"), payable_account_id=payable.pk)
+        contract = section.objects.create(code="194C", name="Contractors", payable_account_id=owed.pk)
+        fees = section.objects.create(code="194J", name="Fees", payable_account_id=payable.pk)
         entry_model, line = now.get_model("accounting", "JournalEntry"), now.get_model("accounting", "JournalLine")
         bill_model, deduction = apps.get_model("purchasing", "Bill"), apps.get_model("purchasing", "TdsDeduction")
 
@@ -617,3 +625,100 @@ class DeductionsAlreadyPostedMigrationTests(TransactionTestCase):
         self.assertNotIn("posted_account", {field.name for field in back._meta.get_fields()})
         self.assertEqual(sorted(back.objects.values_list("amount", flat=True)),
                          [Decimal("300.00"), Decimal("500.00"), Decimal("700.00"), Decimal("1000.00")])
+
+
+class DatedRateTests(TdsTestCase):
+    """
+    O233. 194C at 2% from 1 April 2000; the law makes it 1.5% from 1 February
+    2026. Bills of 40,000 (past the 30,000 single limit, taxed alone): dated
+    15 January, 800 at 2%; dated 10 February, 600 at 1.5% (calc_fix_purch/o233.py).
+    Each deduction keeps the row it was taken at; a rate taken at is a fact.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.accounting.models import TdsRate
+
+        self.party = self.contractor(pan="AAAPL1234C")
+        self.february = TdsRate.objects.create(section=self.contract, applies_from=datetime.date(2026, 2, 1),
+                                               rate_percent=Decimal("1.5"), no_pan_rate_percent=Decimal("20"),
+                                               confirmed_on=datetime.date(2026, 1, 20))
+
+    def test_each_deduction_takes_the_rate_standing_on_its_day_and_keeps_it(self):
+        january = self.bill("40000", day=datetime.date(2026, 1, 15), vendor=self.party).deduct_tds()
+        february = self.bill("40000", day=datetime.date(2026, 2, 10), vendor=self.party).deduct_tds()
+        self.assertEqual([(row.amount, row.rate_percent, row.rate) for row in (january, february)],
+                         [(Decimal("800.00"), Decimal("2.0000"), self.contract_rate),
+                          (Decimal("600.00"), Decimal("1.5000"), self.february)])
+        self.february.rate_percent = Decimal("1")
+        with self.assertRaisesMessage(ValidationError, "Bills were deducted at this rate; a new rate is a new row"):
+            self.february.save()
+        with self.assertRaisesMessage(ValidationError, "Bills were deducted at this rate; it stays."):
+            self.contract_rate.delete()
+
+    def test_a_rate_not_confirmed_deducts_nothing(self):
+        from apps.accounting.models import TdsRate
+
+        TdsRate.objects.create(section=self.contract, applies_from=datetime.date(2026, 3, 1),
+                               rate_percent=Decimal("1"), no_pan_rate_percent=Decimal("20"))
+        bill = self.bill("40000", day=datetime.date(2026, 3, 10), vendor=self.party)
+        with self.assertRaisesMessage(ValidationError, "The 194C rate of 1% from 01 Mar 2026 is not confirmed by the "
+                                                       "accountant, so nothing is deducted at it yet."):
+            bill.deduct_tds()
+
+    def test_the_controller_confirms_a_rate_and_the_ap_manager_may_not(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from apps.accounting.models import TdsRate
+
+        call_command("setup_roles", verbosity=0)
+        clients = {}
+        for role in ("Controller", "AP Manager"):
+            user = User.objects.create_user(role.replace(" ", "").lower())
+            user.groups.add(Group.objects.get(name=role))
+            clients[role] = APIClient()
+            clients[role].force_authenticate(user)
+        made = clients["Controller"].post("/api/accounting/tds-rates/", {
+            "section": self.contract.pk, "applies_from": "2026-04-01", "rate_percent": "1",
+            "no_pan_rate_percent": "20", "authority": "Finance Act 2026"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        url = f"/api/accounting/tds-rates/{made.json()['id']}/confirm/"
+        self.assertEqual(clients["AP Manager"].post(url, {}, format="json").status_code, 403)
+        self.assertEqual(clients["AP Manager"].get("/api/accounting/tds-rates/").status_code, 200)
+        confirmed = clients["Controller"].post(url, {}, format="json")
+        self.assertEqual(confirmed.status_code, 200, confirmed.content)
+        self.assertIsNotNone(TdsRate.objects.get(pk=made.json()["id"]).confirmed_on)
+
+
+
+@tag("migration")
+class TdsRatesByDateMigrationTests(TransactionTestCase):
+    """accounting 0030 makes each section's rate a dated row, from 1 April 2000, not confirmed (O233)."""
+
+    BEFORE = [("accounting", "0029_tcs_section_by_date")]
+    AFTER = [("accounting", "0030_tds_rates_by_date")]
+
+    def migrate(self, target):
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(target)
+        return executor
+
+    def test_each_sections_rate_is_kept_as_a_row_to_confirm(self):
+        self.addCleanup(lambda: self.migrate(self.migrate([]).loader.graph.leaf_nodes()))
+        executor = self.migrate(self.BEFORE)
+        old = executor.loader.project_state(self.BEFORE).apps.get_model("accounting", "TdsSection")
+        contract = old.objects.create(code="194C", name="Contractors", rate_percent=Decimal("2"),
+                                      no_pan_rate_percent=Decimal("20"))
+        goods = old.objects.create(code="194Q", name="Goods", rate_percent=Decimal("0.1"),
+                                   no_pan_rate_percent=Decimal("5"), mode="excess", annual_threshold=Decimal("5000000"))
+        executor = self.migrate(self.AFTER)
+        Rate = executor.loader.project_state(self.AFTER).apps.get_model("accounting", "TdsRate")
+        self.assertEqual(
+            sorted((row.section_id, str(row.applies_from), row.rate_percent, row.no_pan_rate_percent, row.confirmed_on)
+                   for row in Rate.objects.all()),
+            [(contract.pk, "2000-04-01", Decimal("2.0000"), Decimal("20.0000"), None),
+             (goods.pk, "2000-04-01", Decimal("0.1000"), Decimal("5.0000"), None)])
