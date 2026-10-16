@@ -77,6 +77,7 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "end_date"
     action_permission_map = {
         "reconciliation": "accounting.view_bankstatement",
+        "unmatched_entries": "accounting.view_bankstatement",
         "auto_match": "accounting.change_bankstatementline",
         "match": "accounting.change_bankstatementline",
         "post_line": "accounting.post_journalentry",
@@ -117,6 +118,13 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             "statement_difference": round_money(report["statement_difference"]),
             "difference": round_money(report["difference"]),
         })
+
+    @action(detail=True, methods=["get"])
+    def unmatched_entries(self, request, pk=None):
+        """What a document booked through this account by the statement's end that no line is matched to (O230)."""
+        statement = self.get_object()
+        return Response([{"id": entry.pk, "number": entry.reference or f"JE-{entry.pk}", "date": entry.date,
+                          "memo": entry.memo, "amount": amount} for entry, amount in statement.unpresented_entries()])
 
     @action(detail=True, methods=["post"])
     def auto_match(self, request, pk=None):
@@ -173,7 +181,8 @@ class BankStatementViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 class BankStatementLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     queryset = BankStatementLine.objects.select_related("statement", "payment", "returned_payment")
     serializer_class = BankStatementLineSerializer
-    filter_fields = ["statement", "payment__isnull", "journal_entry__isnull", "returned_payment__isnull"]
+    filter_fields = ["statement", "payment__isnull", "journal_entry__isnull", "returned_payment__isnull",
+                     "booked_entry__isnull"]
     search_fields = ["description", "reference"]
     # Matched and posted through the statement, which asks which line;
     # undone here, where the line is all there is to say.
