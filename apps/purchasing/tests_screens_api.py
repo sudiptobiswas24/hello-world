@@ -233,7 +233,11 @@ class PartialCorrectionsTests(ScreensTestCase):
             f"/api/purchasing/goods-receipts/{receipt.pk}/return_receipt/",
             {"quantities": {str(receipt.lines.get().pk): "2"}}, format="json")
         self.assertEqual(response.status_code, 200, response.content)
-        bill.refresh_from_db()
+        # Warehouse Staff may not post bills: the note waits as a draft for the AP side (review F8).
+        note = Bill.objects.get(debits=bill)
+        self.assertEqual((note.posted, note.total(), bill.amount_debited()), (False, Decimal("10.00"), Decimal("0")))
+        posted = self.as_("AP Manager").post(f"/api/purchasing/bills/{note.pk}/post_bill/", {}, format="json")
+        self.assertEqual(posted.status_code, 200, posted.content)
         self.assertEqual(bill.amount_debited(), Decimal("10.00"))  # 2 at 5
 
     def test_part_of_a_bill_is_debited(self):
