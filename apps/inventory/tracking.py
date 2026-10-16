@@ -30,7 +30,7 @@ from django.utils import timezone
 
 from apps.core.models import AuditModel, to_date
 
-from .models import Item, Warehouse
+from .models import Item, StockMovement, Warehouse
 
 
 class TrackingMode(models.TextChoices):
@@ -190,6 +190,48 @@ def lot_held(item, lot, warehouse, action="issue"):
                                    for ask in LOT_HOLDS) if said), "")
 
 
+# Asked once for a page of batches by whoever answers LOT_HOLDS, before the
+# page is answered batch by batch inside one question: `prefill(lots)` reads
+# what each batch's answer needs for all of them at once (O231).
+LOT_PAGE_QUESTIONS = []
+
+
+def register_lot_page_question(prefill):
+    if prefill not in LOT_PAGE_QUESTIONS:
+        LOT_PAGE_QUESTIONS.append(prefill)
+
+
+def held_because_page(lots):
+    """
+    {lot pk: held_because(lot)} for a page of batches, the page-wide form
+    of the gate: where each is on hand in one query, each provider asked
+    once for the page, then every batch answered in one question. Asked row
+    by row, a page of 25 batches took 248 queries (O231).
+    """
+    lots = list(lots)
+    if not lots:
+        return {}
+    places = {}
+    rows = (StockMovement.objects.filter(lot__in=lots).values("lot_id", "warehouse_id")
+            .annotate(held=Sum("quantity")).filter(held__gt=0).order_by("warehouse_id"))
+    warehouses = Warehouse.objects.in_bulk({row["warehouse_id"] for row in rows})
+    for row in rows:
+        places.setdefault(row["lot_id"], []).append(warehouses[row["warehouse_id"]])
+    with one_question():
+        for prefill in LOT_PAGE_QUESTIONS:
+            prefill(lots)
+        return {lot.pk: _said_from(lot, places.get(lot.pk, [])) for lot in lots}
+
+
+def _said_from(lot, places):
+    said = []
+    for warehouse in places:
+        words = lot_held(lot.item, lot, warehouse, action="go")
+        if words and words not in said:
+            said.append(words)
+    return " ".join(said)
+
+
 def held_because(lot):
     """
     Why this batch may not go, in the gate's own words, from each place it
@@ -197,16 +239,11 @@ def held_because(lot):
     shows beside the batch (O207): held lots stay listed, and say why.
     Worked out from the gate when asked, never stored.
     """
-    said = []
     # One query for where it is on hand, not one for the balances and another for the places.
     places = (Warehouse.objects.filter(movements__lot=lot).annotate(held=Sum("movements__quantity"))
               .filter(held__gt=0).order_by("pk"))
     with one_question():
-        for warehouse in places:
-            words = lot_held(lot.item, lot, warehouse, action="go")
-            if words and words not in said:
-                said.append(words)
-    return " ".join(said)
+        return _said_from(lot, places)
 
 
 def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds_let_through=None,

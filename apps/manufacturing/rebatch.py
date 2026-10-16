@@ -304,6 +304,21 @@ def sources(lot):
         rebatch__in=rebatches, side=RebatchSide.IN).select_related("lot").order_by("id")]
 
 
+def _sources_for_page(lots):
+    """`sources` for a page of batches in two queries (O231): {lot pk: [batch, ...]}."""
+    made = {}
+    for rebatch_id, lot_id in _standing_lines(lot__in=lots, side=RebatchSide.OUT).values_list("rebatch_id", "lot_id"):
+        made.setdefault(rebatch_id, []).append(lot_id)
+    found = {}
+    for line in _standing_lines(rebatch__in=list(made), side=RebatchSide.IN).select_related("lot").order_by("id"):
+        for lot_id in made[line.rebatch_id]:
+            found.setdefault(lot_id, []).append(line.lot)
+    return found
+
+
+sources.for_page = _sources_for_page
+
+
 def made_into(lot):
     """The batches re-made from this one, directly: `sources` the other way, for a recall (O207)."""
     rebatches = _standing_lines(lot=lot, side=RebatchSide.IN).values("rebatch")

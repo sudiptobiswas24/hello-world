@@ -235,6 +235,40 @@ class TheColumn(Base):
         print(f"\nQ10 held_because(A): {len(one)} queries in 1 place, {len(five)} in 5")
         self.assertLessEqual(len(five), 2 * len(one), f"{len(one)} queries in one place, {len(five)} in five")
 
+    def test_a_page_of_batches_asks_the_gate_once_for_the_page(self):
+        # O231: "Held because" asked the gate row by row, about ten queries a
+        # batch, 248 for a page of 25. The page asks each provider once.
+        from apps.inventory.models import Lot as Batch
+
+        def stocked(count, start):
+            for number in range(start, start + count):
+                lot = Batch.objects.create(item=self.bag, code=f"P-{number:02d}")
+                StockMovement.objects.create(
+                    item=self.bag, warehouse=self.plant, movement_type=MovementType.RECEIPT, uom=self.bag.uom,
+                    quantity=Decimal("5"), unit_cost=Decimal("12"), lot=lot,
+                    occurred_at=datetime.datetime(2026, 6, 1, 8, 0, tzinfo=datetime.timezone.utc))
+                if number % 2:
+                    self.inspect(lot, IN)
+
+        def page():
+            with CaptureQueriesContext(connection) as asked:
+                rows = self.clients["sunil"].get("/api/inventory/lots/", {"item": self.bag.pk, "page_size": 50}).json()
+            return rows, len(asked)
+
+        self.reject_b1()
+        stocked(5, 0)
+        few_rows, few = page()
+        stocked(20, 5)
+        rows, many = page()
+        said = {row["code"]: row["held_because"] for row in rows}
+        print(f"\nO231 the lots page: {few} queries for {len(few_rows)} batches, {many} for {len(rows)}")
+        self.assertIn("has not been inspected", said["P-00"])
+        self.assertEqual(said["P-01"], "")
+        self.assertTrue(said[self.a.code])
+        # Measured: 117 queries for 10 batches and 305 for 30 before; 43 and 41 after.
+        self.assertLessEqual(many, few + 2, f"{few} queries for {len(few_rows)} batches, {many} for {len(rows)}")
+        self.assertLessEqual(many, 45)
+
     def test_the_other_lists_of_lots_on_hand_say_why_too(self):
         self.reject_b1()
         Lot.objects.filter(pk=self.a.pk).update(expires_on=datetime.date(2027, 1, 1))
