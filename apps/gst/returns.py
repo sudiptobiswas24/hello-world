@@ -468,6 +468,8 @@ DOCUMENT_NATURES = {
     "invoices": (1, "Invoices for outward supply"),
     "debit_notes": (4, "Debit Note"),
     "credit_notes": (5, "Credit Note"),
+    "receipt_vouchers": (6, "Receipt Voucher"),
+    "refund_vouchers": (8, "Refund Voucher"),
     "job_work_challans": (9, "Delivery Challan for job work"),
 }
 
@@ -495,10 +497,15 @@ def _documents_issued(start, end):
     # (number, when withdrawn): an invoice is withdrawn only by its IRN's cancellation, which
     # withdraws the note the books reverse it by as well; any other correction is a credit note.
     kinds = (
-        ("invoices", numbered.filter(credits__isnull=True, debits__isnull=True).values_list(
+        ("invoices", numbered.filter(credits__isnull=True, debits__isnull=True, is_down_payment=False).values_list(
             "number", "einvoice__cancelled_at")),
         ("debit_notes", numbered.filter(debits__isnull=False).values_list("number", "einvoice__cancelled_at")),
-        ("credit_notes", numbered.filter(credits__isnull=False).values_list(
+        ("credit_notes", numbered.filter(credits__isnull=False, credits__is_down_payment=False).values_list(
+            "number", "cancels_irn_of__cancelled_at")),
+        # Rule 50 and 51 vouchers, each its own nature and series (review F3).
+        ("receipt_vouchers", numbered.filter(is_down_payment=True, credits__isnull=True).values_list(
+            "number", "einvoice__cancelled_at")),
+        ("refund_vouchers", numbered.filter(credits__is_down_payment=True).values_list(
             "number", "cancels_irn_of__cancelled_at")),
         ("job_work_challans", JobWorkChallan.objects.filter(
             posted=True, challan_date__gte=start, challan_date__lte=end).exclude(number="").values_list(
