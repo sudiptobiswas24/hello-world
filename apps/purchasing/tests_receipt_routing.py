@@ -257,6 +257,21 @@ class GoodsLandInTheBayTests(RoutingTestCase):
             line.advance()
         self.assertIn("Only a posted receipt", str(caught.exception))
 
+    def test_a_put_away_cancelled_puts_them_back_in_the_bay(self):
+        # O11: cancelled from the transfers screen, the forty went back to
+        # the bay and the hop still said they had left: the bay read 0 and
+        # they could not be put away again.
+        self.two_step()
+        _receipt, line = self.receive("40")
+        move = line.advance()
+        move.transfer.cancel()
+        self.assertEqual((self.item.on_hand_at(self.bay), self.item.on_hand_at(self.stock_room)),
+                         (Decimal("40"), Decimal("0")))
+        self.assertEqual(line.quantity_at(self.bay), Decimal("40"))
+        again = line.advance()
+        self.assertEqual((again.quantity, self.item.on_hand_at(self.stock_room)), (Decimal("40"), Decimal("40")))
+        self.assertEqual(line.quantity_at(self.bay), Decimal("0"))
+
     def test_each_hop_is_a_transfer(self):
         # Reusing StockTransfer means the reverse path, the batch and bin
         # handling and the value arithmetic are the ones already tested.
