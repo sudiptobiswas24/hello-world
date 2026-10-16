@@ -292,7 +292,7 @@ class StockAdjustmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     def post(self, request, pk=None):
         adjustment = self.get_object()
         _run(adjustment.post, memo=request.data.get("memo", ""))
-        return Response(self.get_serializer(adjustment).data)
+        return self._as_it_now_stands()
 
     @action(detail=True, methods=["post"])
     def void(self, request, pk=None):
@@ -301,7 +301,13 @@ class StockAdjustmentViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
             adjustment.void,
             on_date=request.data.get("on_date"), memo=request.data.get("memo", ""),
         )
-        return Response(self.get_serializer(adjustment).data)
+        return self._as_it_now_stands()
+
+    def _as_it_now_stands(self):
+        # Read again: its lines were prefetched before posting froze each
+        # one's value, and the answer showed the total as it was on the way
+        # in, 0.00 for a write-off of 3,333.33 (O23).
+        return Response(self.get_serializer(self.get_object()).data)
 
 
 class StockAdjustmentLineViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
