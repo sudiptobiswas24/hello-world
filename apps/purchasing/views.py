@@ -253,7 +253,39 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "carried": "purchasing.change_bill",
         "take_settlement_discount": "purchasing.add_billpayment",
         "match_report": "purchasing.view_bill",
+        # Capitalising posts the entry that moves the cost onto the asset account, as
+        # un-capitalising takes it back: the right to post, not merely to add an asset.
+        "capitalise": "accounting.post_journalentry",
     }
+
+    @action(detail=True, methods=["post"])
+    def capitalise(self, request, pk=None):
+        """
+        Make one of this posted bill's lines fixed assets, one a unit (O26):
+        {"line", "category", "name", "in_service_date", "life_months",
+        "salvage_value", "on_date"}; `line` and `category` are needed.
+        `on_date` is for capitalising again after an undo. Answers with the
+        assets made, drafts until each is put into service. On the bill,
+        whose reader the controller is, rather than on its line.
+        """
+        from decimal import Decimal
+
+        from apps.assets.models import AssetCategory
+        from apps.assets.serializers import FixedAssetSerializer
+        from apps.core.api import whole_number
+
+        bill = self.get_object()
+        line = record_or_404(BillLine.objects.filter(bill=bill), request.data.get("line"), "line")
+        category = record_or_404(AssetCategory, request.data.get("category"), "category")
+        made = _run(
+            line.capitalise_as_asset, category, name=str(request.data.get("name") or "").strip(),
+            in_service_date=_run(to_date, request.data.get("in_service_date")),
+            life_months=whole_number(request.data, "life_months", least=1),
+            salvage_value=money_amount(request.data, "salvage_value") or Decimal("0"),
+            on_date=_run(to_date, request.data.get("on_date")),
+        )
+        return Response(FixedAssetSerializer(made, many=True, context=self.get_serializer_context()).data,
+                        status=201)
 
     @action(detail=True, methods=["get"])
     def match_report(self, request, pk=None):
