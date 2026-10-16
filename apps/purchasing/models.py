@@ -121,6 +121,20 @@ def _names_another(row, field):
     return not type(row)._base_manager.filter(pk=row.pk, **{f"{field}_id": getattr(row, f"{field}_id")}).exists()
 
 
+def net_unit_price(line):
+    """What one unit costs on an order or bill line after its discount, unrounded."""
+    return (line.unit_price or Decimal("0")) * (1 - (line.discount_percent or 0) / Decimal("100"))
+
+
+def priced(line):
+    """A line's price in words, its discount with it: "100 less 10% (90 a unit)"."""
+    price = format((line.unit_price or Decimal("0")).normalize(), "f")
+    if not line.discount_percent:
+        return price
+    return (f"{price} less {format(line.discount_percent.normalize(), 'f')}% "
+            f"({format(round_money(net_unit_price(line)).normalize(), 'f')} a unit)")
+
+
 def _while(document, statuses, change):
     """
     Refuse `change` unless the document stands in one of `statuses`, said
@@ -4433,15 +4447,18 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                         f"{already} is already billed; this order is billed on receipt, "
                         f"so {going[order_line.pk]} cannot be billed yet."
                     )
-            ordered_price = order_line.unit_price or Decimal("0")
-            if line.unit_price > ordered_price:
-                allowed = round_money(ordered_price * (Decimal("100") + tolerance) / Decimal("100"))
-                if line.unit_price > allowed:
-                    raise ValidationError(
-                        f"{order_line.item} was ordered at {ordered_price} but billed at "
-                        f"{line.unit_price}, beyond the {tolerance}% tolerance. Agree a "
-                        "revised price on the order, or query the bill."
-                    )
+            # The price leg compares what each side charges a unit after its
+            # discount: agreed 100 less 10% is 90 a unit, so a bill at 100
+            # with no discount is 10 a unit over, not on the price (O91).
+            ordered_net = net_unit_price(order_line)
+            billed_net = net_unit_price(line)
+            allowed = round_money(ordered_net * (Decimal("100") + tolerance) / Decimal("100"))
+            if billed_net > ordered_net and billed_net > allowed:
+                raise ValidationError(
+                    f"{order_line.item} was ordered at {priced(order_line)} but billed at "
+                    f"{priced(line)}, beyond the {tolerance}% tolerance. Agree a "
+                    "revised price on the order, or query the bill."
+                )
 
     def _refuse_paying_for_goods_on_order(self, line):
         """
@@ -4482,7 +4499,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 "price_ordered": order_line.unit_price if order_line else None,
                 "price_billed": line.unit_price,
                 "price_variance": (
-                    line.unit_price - order_line.unit_price if order_line else None
+                    net_unit_price(line) - net_unit_price(order_line) if order_line else None
                 ),
                 "matched": bool(order_line),
                 "billed_not_held": (
