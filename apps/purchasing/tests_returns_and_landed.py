@@ -1237,3 +1237,23 @@ class ADebitNoteKeepsTheCostCentreTests(ProbeCase):
         bill.create_debit_note(quantities={bill.lines.get(): Decimal("3")})
         rows = {row["code"] or "unallocated": row["amount"] for row in costs_by_centre()["rows"]}
         self.assertEqual(rows, {"LOOM": Decimal("700.00")})
+
+
+class ThePriceLegReadsTheDiscountTests(ProbeCase):
+    """O91. Agreed 10 @ 100 less 10% (900); tolerance 0."""
+
+    def test_a_bill_at_the_gross_price_without_the_agreed_discount_is_refused(self):
+        order = self.order("10", "100", discount="10")
+        self.receive(order, "10")
+        bill = self.hand_bill(order.lines.get(), "10", "100", order=order)
+        with self.assertRaisesMessage(ValidationError, "ordered at 100 less 10% (90 a unit) but billed at 100"):
+            bill.post()
+        self.assertEqual(self.balance(self.ppv), Decimal("0"))
+
+    def test_a_bill_at_the_agreed_net_posts_with_no_variance_however_it_is_written(self):
+        order = self.order("10", "100", discount="10")
+        self.receive(order, "10")
+        self.hand_bill(order.lines.get(), "5", "100", discount="10", order=order).post()
+        self.hand_bill(order.lines.get(), "5", "90", order=order).post()
+        self.assertEqual(self.balance(self.ppv), Decimal("0"))
+        self.assertEqual(self.balance(self.payable), Decimal("-900.00"))
