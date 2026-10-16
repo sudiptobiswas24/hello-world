@@ -169,6 +169,34 @@ def _standing(bill, day):
             if to_date(row.payment.payment_date) <= day]
 
 
+def _settled_without_money(bill, other):
+    """
+    [(day, amount)]: what settled the bill other than money paid out, each
+    on the day of its own document: a debit note on its date, tax deducted
+    on the deduction's, a prepayment drawn down on the drawdown's, a
+    settlement discount on its entry's. Oldest first, and no more than
+    `other` in all, as amount_due() counts them (a note past what the bill
+    still owed is cash owed back, not settlement). A part settled wholly by
+    a debit note was paid on the note's day (O188), not never.
+    """
+    dated = [(to_date(note.bill_date), note.total()) for note in bill.debit_notes.all() if note.posted]
+    dated += [(to_date(row.date), row.amount) for row in bill.tds_deductions.all() if row.reversed_entry_id is None]
+    dated += [(to_date(row.date), row.amount) for row in bill.prepayment_applications.all()]
+    discount = (bill.settlement_discount_amount or Decimal("0")) - bill.settlement_discount_withdrawn
+    if discount > 0:
+        entry = bill.settlement_discount_entry
+        dated.append((to_date(entry.date) if entry else to_date(bill.bill_date), discount))
+    out, left = [], other
+    for day, amount in sorted(dated, key=lambda row: row[0]):
+        take = min(amount, left)
+        if take > 0:
+            out.append((day, take))
+            left -= take
+    if left > 0:
+        out.append((to_date(bill.bill_date), left))
+    return out
+
+
 def msme_bills(start, end, as_of=None):
     """
     Bills dated `start` to `end` from micro and small vendors, a row for
@@ -196,14 +224,15 @@ def msme_bills(start, end, as_of=None):
         # One row per delivery's part, each late from its own day (O180), the
         # oldest settled first: 600 due 16 Jul and 400 due 4 Aug, paid together
         # on 10 Aug, are 25 and 6 days late, not one bill 6 days late.
-        money = ([(None, other)] if other > 0 else []) + sorted(_standing(bill, as_of), key=lambda row: row[0])
+        money = sorted((_settled_without_money(bill, other) if other > 0 else []) + _standing(bill, as_of),
+                       key=lambda row: row[0])
         for due, amount in msme_schedule(bill):
             left, paid_on = amount, None
             while left > 0 and money:
                 day, held = money[0]
                 take = min(left, held)
                 left -= take
-                if day is not None and take > 0:
+                if take > 0:
                     paid_on = max(paid_on or day, day)
                 if held - take > 0:
                     money[0] = (day, held - take)
