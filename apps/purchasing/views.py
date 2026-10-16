@@ -251,7 +251,22 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "debit_old_supply": "purchasing.post_bill",
         "deduct_tds": "purchasing.add_tdsdeduction",
         "carried": "purchasing.change_bill",
+        "take_settlement_discount": "purchasing.add_billpayment",
     }
+
+    @action(detail=True, methods=["post"])
+    def take_settlement_discount(self, request, pk=None):
+        """The vendor's early-payment discount on the payment ({"payment"}) made within its days (O109)."""
+        from apps.accounting.models import Payment
+
+        bill = self.get_object()
+        payment = record_or_404(Payment, request.data.get("payment"), "payment")
+        try:
+            bill.take_settlement_discount(on_date=request.data.get("date") or None, payment=payment)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        bill.refresh_from_db()
+        return Response(self.get_serializer(bill).data)
 
     @action(detail=True, methods=["post", "delete"])
     def carried(self, request, pk=None):

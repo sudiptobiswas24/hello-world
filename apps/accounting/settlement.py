@@ -22,7 +22,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from apps.core.models import Company
+from apps.core.models import Company, to_date
 
 from .models import JournalEntry, JournalLine, PaymentDirection, round_money
 
@@ -626,6 +626,52 @@ def settlement_discount_to_take(document, on_date, force=False):
             "below zero. Settle it without the discount."
         )
     return amount
+
+
+def take_settlement_discount(document, *, control_account, party, discount_account, account_label,
+                             is_receivable, on_date, payment=None, force=False):
+    """
+    Book the early-settlement discount on an invoice or a bill as a financial
+    discount, with no change to GST (O109): Dr discount allowed / Cr receivable
+    on an invoice, Dr payable / Cr discount received on a bill, at the
+    document's rate. The one function both sides call; each kept its own
+    posting and neither was ever called.
+
+    Taken on a payment (`payment`): standing, applied to the document, made
+    within the discount days unless `force`, and the discount is dated that
+    day when no other is given. The caller saves the two fields it sets. Terms that reduce the GST value instead
+    (section 15(3)(b): agreed before the supply, the accountant's choice) are
+    refused here: that discount is a credit note, not this entry.
+    """
+    terms = document.payment_terms
+    if terms is not None and terms.discount_reduces_gst:
+        raise ValidationError(
+            f"{terms} gives its discount as a reduction of the value, GST included (section 15(3)(b)): "
+            f"issue a credit note for it rather than a settlement discount.")
+    if payment is not None:
+        if not payment.posted or payment.is_voided():
+            raise ValidationError(f"{payment.number} does not stand: a discount is earned by money that arrived.")
+        if not any(row.payment_id == payment.pk for row in standing_allocations(document)):
+            raise ValidationError(f"{payment.number} is not applied to {document.number}: apply it first.")
+        deadline = document.discount_due_date()
+        if not force and (deadline is None or to_date(payment.payment_date) > deadline):
+            raise ValidationError(f"{payment.number} was made on {to_date(payment.payment_date)}, after the "
+                                  f"discount days on {document.number} ended ({deadline}).")
+        on_date = on_date or max(to_date(payment.payment_date), document.date_for_discount())
+    amount = settlement_discount_to_take(document, on_date, force)
+    if discount_account is None:
+        raise ValidationError(f"The company has no {account_label} account configured.")
+    base_amount = round_money(amount * (document.exchange_rate or Decimal("1")))
+    memo = f"Settlement discount on {document.number}"
+    entry = JournalEntry.objects.create(date=on_date, reference=document.number, memo=memo)
+    JournalLine.objects.create(entry=entry, account=discount_account if is_receivable else control_account,
+                               party=party, debit=base_amount, description=memo)
+    JournalLine.objects.create(entry=entry, account=control_account if is_receivable else discount_account,
+                               party=party, credit=base_amount, description=memo)
+    entry.post()
+    document.settlement_discount_amount = amount
+    document.settlement_discount_entry = entry
+    return entry
 
 
 def undone_by_note(note_total, absorbed, write_off, discount, discount_taken, document_total, whole):

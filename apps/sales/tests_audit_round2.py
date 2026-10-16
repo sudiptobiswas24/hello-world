@@ -320,3 +320,64 @@ class DraftQuotationRevisionTests(SalesTestCase):
         quotation.refresh_from_db()
         self.assertEqual(quotation.number, "")  # no sequence number burned
         self.assertEqual(quotation.status, "draft")
+
+
+class SettlementDiscountOnTheReceiptTests(SalesTestCase):
+    """
+    O109: the discount for paying early is taken on the receipt that earned
+    it, through the API, as a financial discount with GST unchanged. 1,000 on
+    2/10 net 30 invoiced 1 March: 980 received on 8 March, 20 discount.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("ar-manager")
+        user.groups.add(Group.objects.get(name="AR Manager"))
+        self.client = APIClient()
+        self.client.force_authenticate(user)
+        self.invoice = self.bill(self.make_order("10", "100"))
+
+    def take(self, payment):
+        return self.client.post(f"/api/sales/invoices/{self.invoice.pk}/take_settlement_discount/",
+                                {"payment": payment.pk}, format="json")
+
+    def test_on_a_receipt_within_the_days_it_clears_the_invoice(self):
+        receipt = self.receipt("980", on=datetime.date(2026, 3, 8))
+        self.allocate(receipt, self.invoice, "980")
+        answer = self.take(receipt)
+        self.assertEqual(answer.status_code, 200, answer.content)
+        self.invoice.refresh_from_db()
+        entry = self.invoice.settlement_discount_entry
+        self.assertEqual((self.invoice.amount_due(), self.balance(self.ar), entry.date),
+                         (Decimal("0.00"), Decimal("0.00"), datetime.date(2026, 3, 8)))
+        # A financial discount: the discount account and the receivable, no tax line.
+        self.assertEqual(sorted((line.account_id, line.debit, line.credit) for line in entry.lines.all()),
+                         sorted([(self.discount_account.pk, Decimal("20.00"), Decimal("0")),
+                                 (self.ar.pk, Decimal("0"), Decimal("20.00"))]))
+
+    def test_a_receipt_after_the_days_earns_none(self):
+        receipt = self.receipt("980", on=datetime.date(2026, 3, 12))
+        self.allocate(receipt, self.invoice, "980")
+        answer = self.take(receipt)
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("after the discount days", str(answer.content))
+
+    def test_a_receipt_not_applied_to_it_earns_none(self):
+        receipt = self.receipt("980", on=datetime.date(2026, 3, 8))
+        answer = self.take(receipt)
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("is not applied to", str(answer.content))
+
+    def test_terms_that_reduce_the_gst_value_give_it_as_a_credit_note(self):
+        self.terms.discount_reduces_gst = True
+        self.terms.save()
+        receipt = self.receipt("980", on=datetime.date(2026, 3, 8))
+        self.allocate(receipt, self.invoice, "980")
+        answer = self.take(receipt)
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("issue a credit note", str(answer.content))

@@ -88,7 +88,8 @@ class PaymentTermsSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentTerms
         fields = [
-            "id", "code", "name", "net_days", "discount_percent", "discount_days", "is_active",
+            "id", "code", "name", "net_days", "discount_percent", "discount_days", "discount_reduces_gst",
+            "is_active",
         ]
 
 
