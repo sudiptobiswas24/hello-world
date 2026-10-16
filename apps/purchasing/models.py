@@ -1,5 +1,4 @@
 import datetime
-import re
 from collections import defaultdict
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
@@ -3166,32 +3165,42 @@ def register_supplier_note_guard(guard):
 
 def supplier_note_key(number, day):
     """
-    One supplier credit note: its number as written, trimmed, in any case
-    ("CN-9" and "cn-9" are one), within the supplier's financial year, since
-    a supplier may begin its numbering again each April (O159). Nothing more
-    is folded (O178): joining digit runs made "X/1/12" and "X/11/2", two
-    notes, one, and refused the second. Migration 0063 keeps a frozen copy.
+    One supplier credit note: its number as accounting.gst.document_number
+    writes it (case, whitespace, Unicode forms and dashes folded; "CN-9" and
+    "cn-9" are one), within the supplier's financial year, since a supplier
+    may begin its numbering again each April (O159). Separators are not
+    folded (O178): joining digit runs made "X/1/12" and "X/11/2", two notes,
+    one, and refused the second. Migration 0079 keeps a frozen copy.
     """
     from apps.accounting.tds import financial_year
 
-    key = (number or "").strip().upper()
+    from apps.accounting.gst import document_number
+
+    key = document_number(number)
     if not key:
         return ""
     start = financial_year(to_date(day))[0] if day else None
     return f"{start.year if start else ''}:{key}"
 
 
+# The longest vendor invoice number compared, as document_number() writes it: the key's column holds it with
+# its year, and a longer one is refused in words (review F6).
+INVOICE_NUMBER_LONGEST = 64
+
+
 def vendor_invoice_key(number, day):
     """
-    One vendor invoice: its number in any case and without spaces or the
-    separators "-", "/" and ".", within the vendor's financial year, since a
-    GST invoice number is unique per supplier per year and a supplier begins
-    again each April. "INV-77", "inv 77" and "INV/77" are one invoice (O95).
-    Migration 0076 keeps a frozen copy.
+    One vendor invoice: its number as accounting.gst.document_number writes
+    it (case, whitespace, Unicode forms and dashes folded; separators kept as
+    written), within the vendor's financial year, since a GST invoice number
+    is unique per supplier per year and a supplier begins again each April.
+    "INV-77", "inv-77" and "INV‐77" are one invoice; "INV-77", "INV/77" and
+    "INV77" three (O95, the g22 decision). Migration 0079 keeps a frozen copy.
     """
+    from apps.accounting.gst import document_number
     from apps.accounting.tds import financial_year
 
-    key = re.sub(r"[\s\-/.]", "", number or "").upper()
+    key = document_number(number)
     if not key:
         return ""
     start = financial_year(to_date(day))[0] if day else None
@@ -3980,6 +3989,19 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if fields is not None and not (self.REFERENCE_KEYED_BY & set(fields)):
             return
         self.reference_key = "" if self.debits_id else vendor_invoice_key(self.reference, self.bill_date)
+        if self.reference_key:
+            from apps.accounting.gst import document_number
+
+            compared = document_number(self.reference)
+            if not any(ch.isalnum() for ch in compared):
+                # A placeholder is no number: two "-" of one vendor stood side by side (review F7).
+                raise ValidationError({"reference": [
+                    f"'{self.reference}' has no letter or digit: it is not the vendor's invoice number. Give the "
+                    "number on the invoice, or leave it blank if the vendor gave none."]})
+            if len(compared) > INVOICE_NUMBER_LONGEST:
+                raise ValidationError({"reference": [
+                    f"The vendor's invoice number is {len(compared)} characters as compared; at most "
+                    f"{INVOICE_NUMBER_LONGEST}. Give it as the vendor's invoice prints it."]})
         if fields is not None:
             kwargs["update_fields"] = sorted(set(fields) | {"reference_key"})
         if not self.reference_key or not self.vendor_id:
