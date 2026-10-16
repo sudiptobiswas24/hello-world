@@ -3105,6 +3105,15 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                 raise ValidationError("A down payment is no supply; a debit note is raised on the invoice for it.")
             if self.is_opening_balance:
                 raise ValidationError(f"{self.number} came from the old system; a debit note on it is not built.")
+            # What the books reversed is not billed more for (review F4).
+            cancelled = getattr(self, "einvoice", None)
+            if cancelled is not None and cancelled.cancelled_at is not None:
+                raise ValidationError(f"{self.number}'s IRN was cancelled and the books reversed it; a debit note "
+                                      "is raised on an invoice that stands. Invoice the supply afresh.")
+            credited = sum((note.subtotal() for note in self.credit_notes.filter(posted=True)), Decimal("0"))
+            if credited >= self.subtotal():
+                raise ValidationError(f"{self.number} is credited in full; a debit note is raised on an invoice "
+                                      "that stands. Invoice the supply afresh.")
             net = round_money(Decimal(net))
             if net <= 0:
                 raise ValidationError({"net": "A debit note asks for more than nothing."})
