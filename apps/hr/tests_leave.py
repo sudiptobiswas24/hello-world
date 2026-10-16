@@ -12,6 +12,7 @@ One test per hole, named after the fact it protects.
 
 import datetime
 from decimal import Decimal
+from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -295,7 +296,9 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         person = self.employee("W6")
         booking = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
         booking.approve(by=self.boss)
-        booking.cancel(by=booking.employee, on_date=datetime.date(2027, 7, 8))
+        # Back on the Thursday, cancelled that day: a day still to come is refused (O32).
+        with mock.patch("django.utils.timezone.localdate", return_value=datetime.date(2027, 7, 8)):
+            booking.cancel(by=booking.employee, on_date=datetime.date(2027, 7, 8))
         booking.refresh_from_db()
         self.assertEqual((booking.status, booking.end_date, booking.days_taken),
                          (LeaveStatus.APPROVED, datetime.date(2027, 7, 7), Decimal("3.00")))
@@ -305,6 +308,22 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         unstarted.cancel(by=unstarted.employee, on_date=datetime.date(2027, 7, 12))
         self.assertEqual((unstarted.status, leave_taken(person, self.policy, 2027)),
                          (LeaveStatus.CANCELLED, Decimal("3.00")))
+
+    def test_a_cancel_dated_before_the_leave_gives_back_nothing_already_taken(self):
+        # O32: Monday 2 to Friday 6 February, taken. Called in code with a day before it, cancel() read the
+        # leave as not begun and gave back all five days. A day still to come is refused as well.
+        person = self.employee("W7")
+        booking = self.request(person, datetime.date(2026, 2, 2), datetime.date(2026, 2, 6))
+        booking.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "is not cancelled on 2026-01-30: it began on 2026-02-02"):
+            booking.cancel(by=booking.employee, on_date=datetime.date(2026, 1, 30))
+        ahead = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        ahead.approve(by=self.boss)
+        with self.assertRaisesMessage(ValidationError, "is not cancelled on 2027-07-06: that day has not come"):
+            ahead.cancel(by=ahead.employee, on_date=datetime.date(2027, 7, 6))
+        booking.refresh_from_db()
+        self.assertEqual((booking.status, booking.days_taken, leave_taken(person, self.policy, 2026)),
+                         (LeaveStatus.APPROVED, Decimal("5.00"), Decimal("5.00")))
 
     def test_leave_already_taken_cannot_be_given_back(self):
         person = self.employee("W4")
