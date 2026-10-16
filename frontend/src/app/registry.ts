@@ -1273,6 +1273,21 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/settings/TdsSectionForm"),
       },
       {
+        // The LUT exports are posted under, kept from the office (O239).
+        path: "luts", label: "Letters of undertaking", permission: "accounting.view_letterofundertaking",
+        keep: "accounting.change_letterofundertaking",
+        create: "accounting.add_letterofundertaking",
+        keywords: "lut letter of undertaking export igst arn rule 96a", load: () => import("../modules/settings/Luts"),
+        detail: () => import("../modules/settings/LutForm"),
+      },
+      {
+        // What setup_indian_books seeded, for the accountant to review (O239).
+        path: "seeded-defaults", label: "Seeded defaults", permission: "accounting.view_seededdefault",
+        keep: "accounting.change_seededdefault",
+        keywords: "seeded defaults setup review indian books", load: () => import("../modules/settings/SeededDefaults"),
+        detail: () => import("../modules/settings/SeededDefaultForm"),
+      },
+      {
         path: "tcs-sections", label: "TCS sections", permission: "accounting.view_tcssection",
         keep: "accounting.change_tcssection",
         create: "accounting.add_tcssection",

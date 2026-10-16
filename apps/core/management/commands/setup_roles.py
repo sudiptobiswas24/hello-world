@@ -73,6 +73,9 @@ ROLES = {
         # deliberately NOT accounting.post_journalentry
     ],
     "Controller": [
+        # The LUT exports are posted under, and what setup seeded for review (O239).
+        *full("accounting", "letterofundertaking"),
+        *crud("accounting", "seededdefault", actions=("view", "change")),
         *view("hr", "expenseclaim", "expenseline"),
         "hr.view_every_expenseclaim", "hr.pay_expenseclaim",
         # Reads whether the books agree with themselves and the server is
@@ -517,6 +520,7 @@ ROLES = {
         # officer who files GSTR-1 by GSTIN is the one who finds it wrong.
         *crud("accounting", "partytaxprofile", actions=("add", "change", "view")),
         *view("accounting", "gstsettings", "journalentry", "journalline"),
+        *full("accounting", "letterofundertaking"),
         *view("sales", "invoice", "invoiceline", "invoicelinetax", "delivery"),
         *view("purchasing", "bill", "billline", "billlinetax"),
         *view("manufacturing", "jobworkchallan", "jobworkline", "jobworkloss"),
