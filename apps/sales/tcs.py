@@ -139,11 +139,13 @@ def _tcs_lines(invoice):
         return sum((amount for tax, amount in taxes.get(line, ()) if not tax.reverse_charge), Decimal("0"))
 
     bases, goods, charges = defaultdict(Decimal), defaultdict(Decimal), []
-    for line in invoice.lines.select_related("item__tcs_section", "charge"):
+    for line in invoice.lines.select_related("item__tcs_section", "charge", "debits_line__item__tcs_section",
+                                             "credits_line__debits_line__item__tcs_section"):
         if line.is_charge():
             charges.append(line)
             continue
-        section = getattr(line.item, "tcs_section", None) if line.item_id else None
+        item = _goods_of(line)
+        section = getattr(item, "tcs_section", None) if item is not None else None
         goods[section] += line.net_amount()
         if section is None:
             continue
@@ -154,6 +156,17 @@ def _tcs_lines(invoice):
             value = line.net_amount() + (charged(line) if section.base_includes_gst else Decimal("0"))
             bases[section] += round_money(value * goods[section] / all_goods) if all_goods else Decimal("0")
     return bases
+
+
+def _goods_of(line):
+    """
+    The item a line sells: its own, or on a debit note's line (and a credit note's line on one) the
+    invoice line it bills more for. A price rise billed on scrap is TCS's as the scrap was.
+    """
+    if line.item_id:
+        return line.item
+    debited = line.debits_line or (line.credits_line.debits_line if line.credits_line_id else None)
+    return debited.item if debited is not None and debited.item_id else None
 
 
 def _entry(invoice, account, amount, memo, give_back):
