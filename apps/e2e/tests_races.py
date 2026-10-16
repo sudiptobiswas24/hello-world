@@ -2242,3 +2242,41 @@ class AnAdvancesPaymentAndItsRecoveryRaceTests(RaceCase):
         self.assertEqual((voided, recovered), (False, True), outcomes)
         self.assertIn("has recovered 2000.00", outcomes["void"])
         self.assertEqual(made.balance(made.advances), advance.balance())
+
+
+@unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
+class BlanketCallOffRaceTests(RaceCase):
+    """
+    O227, refuted. A release line raised takes its order, the line, then the
+    agreement; release() takes the agreement, then only the order it makes,
+    which nobody else can hold. No cycle, so no deadlock; and the agreement's
+    lock makes the second wait and re-read. 100 agreed, 40 released on PO-1:
+    raising it to 70 and releasing 40 more at once, one is refused.
+    """
+
+    def setUp(self):
+        purchase_fixture.PurchasingLifecycleTestCase.setUp(self)
+
+    def test_a_raise_and_a_release_at_once_call_off_no_more_than_agreed(self):
+        from apps.purchasing.models import BlanketOrder, BlanketOrderLine, PurchaseOrderLine
+
+        blanket = BlanketOrder.objects.create(vendor=self.vendor, start_date=datetime.date(2026, 1, 1),
+                                              end_date=datetime.date(2026, 12, 31), currency=self.usd)
+        agreed = BlanketOrderLine.objects.create(blanket=blanket, item=self.item, uom=self.uom,
+                                                 quantity=Decimal("100"), unit_price=Decimal("5"))
+        blanket.confirm()
+        first = blanket.release({agreed: Decimal("40")}, order_date=datetime.date(2026, 2, 1))
+        line_pk = first.lines.get().pk
+
+        def raise_it():
+            line = PurchaseOrderLine.objects.get(pk=line_pk)
+            line.quantity = Decimal("70")
+            line.save()
+
+        def release_more():
+            BlanketOrder.objects.get(pk=blanket.pk).release(
+                {BlanketOrderLine.objects.get(pk=agreed.pk): Decimal("40")}, order_date=datetime.date(2026, 2, 2))
+
+        outcomes = race((PurchaseOrderLine, PurchaseOrder), raise_it, release_more)
+        self.assertEqual(sum(outcome == "done" for outcome in outcomes), 1, outcomes)
+        self.assertLessEqual(BlanketOrderLine.objects.get(pk=agreed.pk).quantity_released(), Decimal("100"))
