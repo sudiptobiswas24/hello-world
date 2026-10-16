@@ -71,6 +71,11 @@ def holidays_between(start, end, region=""):
     return {row.date for row in rows}
 
 
+def plant_works_on(day):
+    """False on a public holiday kept for everyone: what core's working-day registry asks (O203)."""
+    return not PublicHoliday.objects.filter(date=day, region="").exists()
+
+
 def parse_working_days(pattern):
     """
     "12345" to {1, 2, 3, 4, 5}.
