@@ -397,3 +397,9 @@ class SuggestedVendorsThroughTheApiTests(RequisitionTestCase):
         answer = client.get(f"/api/purchasing/requisitions/{requisition.pk}/suggested_vendors/")
         self.assertEqual(answer.status_code, 200, answer.content)
         self.assertEqual([(row["line"], row["vendor"]) for row in answer.json()], [(self.line.pk, self.vendor.pk)])
+        # Review U3: a requester (Employee Self Service) reads their requisition, not whom the buyer buys from.
+        requester = User.objects.create_user("requester")
+        requester.groups.add(Group.objects.get(name="Employee Self Service"))
+        client.force_authenticate(requester)
+        self.assertEqual(client.get(f"/api/purchasing/requisitions/{requisition.pk}/suggested_vendors/").status_code,
+                         403)
