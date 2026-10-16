@@ -646,3 +646,50 @@ class ADebitNoteOnScrapCollectsTcsTests(TcsTestCase):
                          (D("1180.00"), D("12"), D("1192.00"), D("1074.00")))
         back = note.create_credit_note(on_date=DAY)
         self.assertEqual((back.tcs_amount, self.ledger("2290")), (D("12"), D("1062.00")))
+
+
+class ATdsAndATcsChallanForOneMonthOnOneBankTests(TcsTestCase):
+    """
+    O244: September's TCS (1,062 on T1) and September's TDS (700, 2% of a 35,000 contract bill) paid over on
+    5 October from one bank: each challan its own entry under its own section, each statement line matched
+    to its own entry, and the statement foots at -1,762.
+    """
+
+    def test_each_is_matched_to_its_own_entry_and_the_statement_foots(self):
+        from apps.accounting.models import BankStatement, BankStatementLine, PartyTaxProfile, TdsSection
+        from apps.core.models import Party, PartyRole, PartyRoleAssignment
+        from apps.purchasing.models import Bill, BillLine, TdsChallan
+        from apps.sales.tcs import TcsChallan
+
+        self.t1()
+        tds_payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
+        contract = TdsSection.objects.create(
+            code="194C", name="Contractors", rate_percent=D("2"), no_pan_rate_percent=D("20"), mode="whole",
+            single_threshold=D("30000"), annual_threshold=D("100000"), payable_account=tds_payable)
+        fitter = Party.objects.create(code="V-FIT", name="Loom Fitters")
+        PartyRoleAssignment.objects.create(party=fitter, role=PartyRole.VENDOR)
+        PartyTaxProfile.objects.create(party=fitter, tds_section=contract, pan="AAAPL1234C")
+        payable = Account.objects.create(code="2001", name="Payables", account_type=AccountType.LIABILITY)
+        expense = Account.objects.create(code="5101", name="Repairs", account_type=AccountType.EXPENSE)
+        bill = Bill.objects.create(vendor=fitter, bill_date=DAY, payable_account=payable)
+        BillLine.objects.create(bill=bill, description="Loom repair", quantity=D("1"), unit_price=D("35000"),
+                                expense_account=expense)
+        bill.post()
+        Bill.objects.get(pk=bill.pk).deduct_tds()
+        month, paid = datetime.date(2026, 9, 1), datetime.date(2026, 10, 5)
+        tcs = TcsChallan.pay(self.section, month, paid, self.bank, "00042", "0510308")
+        tds = TdsChallan.pay(contract, month, paid, self.bank, "00043", "0510308")
+        self.assertEqual((tcs.amount, tds.amount), (D("1062.00"), D("700.00")))
+        statement = BankStatement.objects.create(bank_account=self.bank, start_date=datetime.date(2026, 10, 1),
+                                                 end_date=datetime.date(2026, 10, 31), opening_balance=D("0"),
+                                                 closing_balance=D("-1762"))
+        lines = {amount: BankStatementLine.objects.create(statement=statement, date=paid, amount=D(amount),
+                                                          description="Challan") for amount in ("-1062", "-700")}
+        with self.assertRaisesMessage(ValidationError, "match this line to it"):
+            lines["-700"].post_to(expense)
+        with self.assertRaisesMessage(ValidationError, "moved -1062.00"):
+            lines["-700"].match_entry(tcs.journal_entry)
+        lines["-1062"].match_entry(tcs.journal_entry)
+        lines["-700"].match_entry(tds.journal_entry)
+        report = statement.reconciliation()
+        self.assertEqual((report["difference"], report["unpresented_entries"]), (D("0"), []))
