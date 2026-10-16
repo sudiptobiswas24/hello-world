@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("purchasing", "0074_posted_account"),
+        ("purchasing", "0078_a_bill_keeps_the_tcs_its_supplier_collected"),
     ]
 
     operations = [
