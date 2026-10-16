@@ -3400,14 +3400,22 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         """
         Record the supplier's credit note on this debit note, posted or not
         (O159). It usually arrives a week after the goods went back and the
-        note posted; until now it could be given only in the call that made
-        the note. A reference, not money: nothing is re-posted. Given once;
-        a typo is put right by giving it again, until a GSTR-2B line of the
+        note posted, and a receipt return's note posts as the goods go (O154).
+        A reference, not money: nothing is re-posted. On a posted note it is
+        given once, by whoever may post bills, and never changed after; on a
+        draft it is put right by giving it again, until a GSTR-2B line of the
         supplier carries the number standing (the guards registered here).
         """
         if not self.debits_id:
             raise ValidationError({"supplier_note_number": [
                 "Only a debit note records a supplier's credit note; a bill's own number is its reference."]})
+        # Given once after posting and never changed after (O154): what the supplier filed is what
+        # the company's GSTR-2B pairs, and a posted note's reference is a fact, not a draft.
+        if self.supplier_note_number and Bill._base_manager.filter(pk=self.pk, posted=True).exists():
+            dated = f" dated {self.supplier_note_date}" if self.supplier_note_date else ""
+            raise ValidationError({"supplier_note_number": [
+                f"{self} is posted and records {self.vendor}'s credit note {self.supplier_note_number}{dated}; "
+                "a supplier's credit note is recorded once and not changed after."]})
         if not isinstance(number, str):
             raise ValidationError({"supplier_note_number": ["The supplier's credit note number is text."]})
         number = number.strip()
