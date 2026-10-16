@@ -1359,3 +1359,25 @@ class AnUnkeyedNoteEditedAsADraftTests(ProbeCase):
         self.assertEqual(answer.status_code, 400, answer.content)
         self.assertIn(f"{first} already answers V-1 - Supplier's credit note CN-9; one credit note is answered by one "
                       "debit note.", str(answer.json()["supplier_note_number"]))
+
+
+class AReturnBeforeTheBillsTests(ProbeCase):
+    """
+    O211 (calc_fix_purch/o211.py). 15 ordered at 5. R1 brings 10 and 6 of them
+    go back before anything is billed; R2 brings 5. B1 bills R1's 4 at 5.00,
+    B2 bills R2's 5 at 4.80. Two of R2 then go back: B2 paid for them, so B2
+    is debited, 2 x 4.80 = 9.60, not B1 at 10.00.
+    """
+
+    def test_a_later_return_finds_the_bill_that_paid_for_its_receipt(self):
+        order = self.order("15", "5")
+        first = self.receive_on(order, "10", JAN(2))
+        first.create_return(quantities={first.lines.get(): Decimal("6")}, debit_bills=True)
+        second = self.receive_on(order, "5", JAN(3))
+        b1 = self.hand_bill(order.lines.get(), "4", "5", order=order, reference="B-1")
+        b1.post()
+        b2 = self.hand_bill(order.lines.get(), "5", "4.80", order=order, reference="B-2")
+        b2.post()
+        second.create_return(quantities={second.lines.get(): Decimal("2")}, debit_bills=True)
+        notes = [(note.debits_id, note.total()) for note in Bill.objects.filter(debits__isnull=False)]
+        self.assertEqual(notes, [(b2.pk, Decimal("9.60"))])
