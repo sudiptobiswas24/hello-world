@@ -365,6 +365,22 @@ class TheQualityManagerDecidesTests(AwaitingTestCase):
         self.assertEqual([row["id"] for row in listed], [newer.pk])
 
 
+class APlantHolidayIsNotAWorkingDayTests(AwaitingTestCase):
+    # O203: the escalation counted Monday to Friday and never saw a plant holiday. A failure
+    # posted on Monday 1 June with Tuesday 2 June a holiday falls due on Wednesday 3 June.
+    def test_it_falls_due_on_the_next_day_the_plant_works(self):
+        from apps.hr.calendars import PublicHoliday
+
+        PublicHoliday.objects.create(name="Rath Yatra", date=MONDAY + datetime.timedelta(days=1))
+        PublicHoliday.objects.create(name="A Bengal office's own", date=MONDAY + datetime.timedelta(days=2),
+                                     region="WB-KOL")
+        waiting = self.awaiting()
+        Inspection.objects.filter(pk=waiting.pk).update(
+            posted_at=timezone.make_aware(datetime.datetime.combine(MONDAY, datetime.time(10))))
+        rows = self.clients["asha"].get("/api/quality/inspections/awaiting/").json()
+        self.assertEqual([(row["number"], row["due_on"]) for row in rows], [(waiting.number, "2026-06-03")])
+
+
 class TheReversePathsTests(AwaitingTestCase):
     def test_voiding_one_that_waits_closes_the_to_dos_and_hands_back(self):
         passed = self.inspect(self.advisory, [87, 88, 89])

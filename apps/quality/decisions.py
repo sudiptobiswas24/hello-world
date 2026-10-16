@@ -22,7 +22,6 @@ to-do posted the day before one falls due on it, and is escalated the day
 after it rather than a working day later.
 """
 
-import datetime
 from dataclasses import dataclass, field
 
 from django.contrib.auth import get_user_model
@@ -33,20 +32,14 @@ from django.db.models import F
 from django.utils import timezone
 
 from apps.core.chatter import FollowUp, FollowUpKind, Note
-from apps.core.models import lock_rows
+from apps.core.models import lock_rows, next_working_day
 
 QUALITY_MANAGER = "Quality Manager"
 # Told that a batch is held for the Quality Manager, for their own planning.
 FOR_INFORMATION = ("Production Supervisor", "Stores Manager")
-WORKING_DAYS = {1, 2, 3, 4, 5}  # ISO weekdays: hr's DEFAULT_WORKING_DAYS, "12345"
-
-
-def next_working_day(day):
-    """The first working day after `day`."""
-    day += datetime.timedelta(days=1)
-    while day.isoweekday() not in WORKING_DAYS:
-        day += datetime.timedelta(days=1)
-    return day
+# next_working_day is core's: the plant's working days, holidays included, as hr's calendar keeps
+# them, asked through core's registry since quality may not import hr. Counted Monday to Friday
+# alone, a failure posted the day before Diwali fell due on Diwali (O203).
 
 
 @dataclass
