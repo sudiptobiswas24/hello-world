@@ -95,9 +95,17 @@ class BillPaymentSerializer(serializers.ModelSerializer):
     bill_number = serializers.CharField(source="bill.number", read_only=True)
     payment_number = serializers.CharField(source="payment.number", read_only=True)
 
+    discount_earned = serializers.SerializerMethodField(
+        help_text="What its payment earns of the document's early-settlement discount (settlement.discount_earned_by).")
+
+    def get_discount_earned(self, row):
+        from apps.accounting.settlement import discount_earned_by
+
+        return discount_earned_by(row.bill, row.payment)
+
     class Meta:
         model = BillPayment
-        fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount", "date"]
+        fields = ["id", "bill", "bill_number", "payment", "payment_number", "amount", "date", "discount_earned"]
 
 
 class BillSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
