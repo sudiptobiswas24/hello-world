@@ -299,8 +299,8 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         O159 (review_stat #2): the debit note posts the day the goods go back,
         with no number; KA's CN-9 arrives later. The AP Manager records it on
         the posted note and the reconciliation pairs the two. A reader of bills
-        may not. A typo (CN-8) is put right until a GSTR-2B line carries the
-        number standing; after that it stands. No money moves: 1,180 still.
+        may not. Given on a posted note, it stands (O154). No money moves:
+        1,180 still.
         """
         import datetime
 
@@ -321,14 +321,14 @@ class SuppliersCreditNoteTests(GstReturnTestCase):
         url = f"/api/purchasing/bills/{note.pk}/supplier_note/"
         given = {"supplier_note_number": "CN-8", "supplier_note_date": "2026-09-20"}
         self.assertEqual(reading.post(url, given, format="json").status_code, 403)
-        typo = client.post(url, given, format="json")
-        self.assertEqual(typo.status_code, 200, typo.content)
-        fixed = client.post(url, {**given, "supplier_note_number": "CN-9"}, format="json")
-        self.assertEqual(fixed.status_code, 200, fixed.content)
+        # O154: on a posted note it is given once and not changed after.
+        recorded = client.post(url, {**given, "supplier_note_number": "CN-9"}, format="json")
+        self.assertEqual(recorded.status_code, 200, recorded.content)
         self.assertEqual(self.report(Bill.objects.get(pk=note.pk)), (["INV-27-12", "CN-9"], [], []))
         late = client.post(url, {**given, "supplier_note_number": "CN-10"}, format="json")
         self.assertEqual(late.status_code, 400, late.content)
-        self.assertIn("carries CN-9", str(late.json()))
+        self.assertIn("records KA - KA's credit note CN-9 dated 2026-09-20; a supplier's credit note is recorded once",
+                      str(late.json()))
         note = Bill.objects.get(pk=note.pk)
         self.assertEqual((note.supplier_note_number, note.supplier_note_date, note.posted, note.total()),
                          ("CN-9", datetime.date(2026, 9, 20), True, D("1180.00")))

@@ -1288,3 +1288,42 @@ class OneVendorInvoiceInItsYearTests(ProbeCase):
     def test_a_distinct_number_stands(self):
         self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference="INV-771").post()
         self.assertEqual(self.balance(self.payable), Decimal("-20.00"))
+
+
+class AReturnsDebitNoteRecordsTheSuppliersCreditNoteTests(ProbeCase):
+    """
+    O154. 10 @ 5 received and billed (50); 4 go back with debit_bills=True,
+    which posts the debit note (20) at once. The supplier's CN-41 arrives a
+    week later: the AP Manager records it once; it is not changed after.
+    """
+
+    def test_recorded_once_after_posting_by_whoever_posts_bills(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        order = self.order()
+        receipt = self.receive(order, "10")
+        self.hand_bill(order.lines.get(), "10", "5", order=order, reference="INV-1").post()
+        receipt.create_return(quantities={receipt.lines.get(): Decimal("4")}, debit_bills=True)
+        note = Bill.objects.get(debits__isnull=False)
+        self.assertEqual((note.posted, note.total(), note.supplier_note_number), (True, Decimal("20.00"), ""))
+
+        call_command("setup_roles", verbosity=0)
+        ap, clerk = User.objects.create_user("ap"), User.objects.create_user("clerk")
+        ap.groups.add(Group.objects.get(name="AP Manager"))
+        clerk.groups.add(Group.objects.get(name="Purchasing Clerk"))
+        url = f"/api/purchasing/bills/{note.pk}/supplier_note/"
+        given = {"supplier_note_number": "CN-41", "supplier_note_date": str(JAN(17))}
+        as_clerk, as_ap = APIClient(), APIClient()
+        as_clerk.force_authenticate(clerk)
+        as_ap.force_authenticate(ap)
+        self.assertEqual(as_clerk.post(url, given, format="json").status_code, 403)
+        recorded = as_ap.post(url, given, format="json")
+        self.assertEqual(recorded.status_code, 200, recorded.content)
+        again = as_ap.post(url, {**given, "supplier_note_number": "CN-42"}, format="json")
+        self.assertEqual(again.status_code, 400, again.content)
+        self.assertIn("records V-1 - Supplier's credit note CN-41 dated 2026-01-17", str(again.json()))
+        note = Bill.objects.get(pk=note.pk)
+        self.assertEqual((note.supplier_note_number, note.supplier_note_date, note.total()),
+                         ("CN-41", JAN(17), Decimal("20.00")))
