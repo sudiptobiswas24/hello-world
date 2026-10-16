@@ -107,8 +107,7 @@ class RefusedTests(TcsTestCase):
         TcsRate.objects.create(section=self.section, applies_from=datetime.date(2026, 9, 1), rate_percent=D("2"),
                                no_pan_rate_percent=D("5"))
         invoice = self.t1(post=False)
-        with self.assertRaisesMessage(ValidationError, "The 206C(1) rate of 2% from 01 Sep 2026 is not confirmed "
-                                                       "by the accountant"):
+        with self.assertRaisesMessage(ValidationError, "TCS under 206C(1) at 2% from 01 Sep 2026 is not confirmed by the accountant, so this cannot be posted"):
             invoice.post()
         invoice.refresh_from_db()
         self.assertFalse(invoice.posted)
@@ -597,3 +596,36 @@ class TheReturnAndTheChallanKeepTheirCodesTests(TcsTestCase):
         rows = tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))
         challan.refresh_from_db()
         self.assertEqual(([row["collection_code"] for row in rows], challan.section_code), (["6CE"], "206C(1)"))
+
+
+
+class NoConfirmedRateIsARefusalTests(TcsTestCase):
+    """
+    Integrator's decision (g22 review): a scrap invoice or a scrap advance with no confirmed rate in force on
+    its day is refused at posting, naming the section and where the accountant confirms it; never posted
+    collecting nothing.
+    """
+
+    def setUp(self):
+        super().setUp()
+        TcsRate.objects.create(section=self.section, applies_from=datetime.date(2026, 9, 1), rate_percent=D("2"),
+                               no_pan_rate_percent=D("5"))
+
+    def test_the_invoice_is_refused(self):
+        with self.assertRaisesMessage(ValidationError, "TCS under 206C(1) at 2% from 01 Sep 2026 is not confirmed"):
+            self.t1()
+        self.assertEqual(self.ledger("2290"), D("0"))
+
+    def test_the_advance_is_refused_naming_where(self):
+        from apps.core.models import Company
+        from apps.sales.models import SalesOrder, SalesOrderLine
+
+        Company.objects.update(customer_deposit_account=Account.objects.create(
+            code="2300", name="Customer deposits", account_type=AccountType.LIABILITY))
+        order = SalesOrder.objects.create(customer=self.mh, order_date=DAY, currency=self.inr)
+        SalesOrderLine.objects.create(order=order, item=self.scrap, uom=self.scrap.uom, quantity=D("100"),
+                                      unit_price=D("45"), revenue_account=self.revenue)
+        order.confirm()
+        advance = order.create_down_payment_invoice(self.ar, percent=30)
+        with self.assertRaisesMessage(ValidationError, "under Settings > TCS rates"):
+            advance.post()
