@@ -58,11 +58,22 @@ class TcsRateViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "applies_from"
     action_permission_map = {"confirm": "accounting.confirm_tcsrate"}
 
+    # The request's names for the figures a confirmation vouches for (DatedRate.FIGURES).
+    READ_AS = {"section_id": "section", "section_code": "law_section"}
+
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
+        """{section, applies_from, rate_percent, no_pan_rate_percent[, law_section]}: the figures read."""
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
         rate = self.get_object()
-        rate.confirm(request.user)
-        return Response(self.get_serializer(rate).data)
+        seen = {name: request.data.get(self.READ_AS.get(name, name)) for name in rate.FIGURES}
+        try:
+            rate.confirm(request.user, seen=seen)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages)
+        return Response(self.get_serializer(type(rate).objects.get(pk=rate.pk)).data)
 
 
 class TdsRateSerializer(serializers.ModelSerializer):

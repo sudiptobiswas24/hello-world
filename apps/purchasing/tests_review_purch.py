@@ -150,7 +150,8 @@ class TdsDatedRateProbes(TdsTestCase):
         other.rate_percent = Z("20")
         other.save()
         from django.contrib.auth.models import User
-        screen.confirm(User.objects.create_user("accountant"))
+        with self.assertRaisesMessage(ValidationError, "is not what was read: its rate percent differ"):
+            screen.confirm(User.objects.create_user("accountant"))
         stored = TdsRate.objects.get(pk=pending.pk)
         self.assertFalse(stored.confirmed_on is not None and stored.rate_percent == Z("20"),
                          "the rate the accountant never saw (20%) is now confirmed and will be deducted")

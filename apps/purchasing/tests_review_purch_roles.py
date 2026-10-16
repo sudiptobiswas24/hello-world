@@ -53,7 +53,11 @@ class RoleProbes(Who, RolesTestCase, ProbeCase):
             made = client.post("/api/accounting/tds-rates/", {
                 "section": self.section.pk, "applies_from": "2026-10-01", "rate_percent": "2",
                 "no_pan_rate_percent": "20"}, format="json").status_code
-            confirmed = client.post(f"/api/accounting/tds-rates/{pending.pk}/confirm/").status_code
+            # The figures read go with it (review F9).
+            confirmed = client.post(f"/api/accounting/tds-rates/{pending.pk}/confirm/", {
+                "section": pending.section_id, "applies_from": str(pending.applies_from),
+                "rate_percent": str(pending.rate_percent), "no_pan_rate_percent": str(pending.no_pan_rate_percent)},
+                format="json").status_code
             seen[role] = (read, made, confirmed)
             TdsRate.objects.filter(pk=pending.pk).update(confirmed_on=None, confirmed_by=None)
             TdsRate.objects.filter(applies_from=D(2026, 10, 1)).delete()
@@ -139,7 +143,8 @@ class RoleProbes(Who, RolesTestCase, ProbeCase):
                                       no_pan_rate_percent=Z("20"))
         first, second = User.objects.create_user("first"), User.objects.create_user("second")
         TdsRate.objects.get(pk=rate.pk).confirm(first)
-        TdsRate.objects.get(pk=rate.pk).confirm(second)
+        with self.assertRaisesMessage(ValidationError, "is already confirmed"):
+            TdsRate.objects.get(pk=rate.pk).confirm(second)
         self.assertEqual(TdsRate.objects.get(pk=rate.pk).confirmed_by_id, first.pk)
 
 

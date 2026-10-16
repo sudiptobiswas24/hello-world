@@ -242,7 +242,9 @@ class ThroughTheApiTests(TcsTestCase):
                                       rate_percent=D("1"), no_pan_rate_percent=D("5"))
         url = f"/api/accounting/tcs-rates/{rate.pk}/confirm/"
         self.assertEqual(self.client_as("AR Manager", "ar").post(url).status_code, 403)
-        confirmed = self.client_as("Controller", "controller").post(url)
+        # The figures the Controller read go with the confirmation (review F9, the shared dated-rate rule).
+        read = {"section": self.section.pk, "applies_from": "2027-04-01", "rate_percent": "1", "no_pan_rate_percent": "5"}
+        confirmed = self.client_as("Controller", "controller").post(url, read, format="json")
         self.assertEqual((confirmed.status_code, confirmed.json()["confirmed_by"]), (200, User.objects.get(
             username="controller").pk))
         self.t1()

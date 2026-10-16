@@ -194,6 +194,14 @@ def deduct(bill, section=None, on_date=None):
         # it picked the rate before a change and landed in the quarter before (review F1).
         day = due_on(bill, on_date)
         section, rate, pan, rate_row = deduction_terms(bill.vendor, section, day)
+        if rate_row is not None:
+            # Read again under its lock, which an edit of the row takes too (review F4): changed as this
+            # deducted, the row waits for the accountant again and nothing is taken at it.
+            lock_rows(rate_row)
+            if rate_row.confirmed_on is None:
+                raise ValidationError(f"The {section.code} rate from {rate_row.applies_from:%d %b %Y} was changed "
+                                      "as this deducted; it waits for the accountant's confirmation again.")
+            rate = rate_row.percent_for(pan)
         if section.payable_account_id is None:
             raise ValidationError(f"{section} has no payable account to owe the tax into.")
         if _live(bill.tds_deductions.filter(section=section)).exists() or _live(
