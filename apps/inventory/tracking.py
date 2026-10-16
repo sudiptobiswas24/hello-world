@@ -177,6 +177,21 @@ def committed_elsewhere(lot, warehouse):
     return sum((ask(lot, warehouse) or Decimal("0") for ask in LOT_COMMITMENTS), Decimal("0"))
 
 
+def free_lots_at(item, warehouse):
+    """
+    [(lot, free, promised)]: `lots_at`, each batch less what is promised and
+    not drawn (committed_elsewhere). The one reading of it for a pick that
+    chooses batches (allocate, O133) and for planning's cover (O133's
+    mirror): a doff on a backflushed run's creels is on the shelf and
+    covers nothing else.
+    """
+    rows = []
+    for lot, available in lots_at(item, warehouse):
+        promised = min(committed_elsewhere(lot, warehouse), available) if available > 0 else Decimal("0")
+        rows.append((lot, available - promised, promised))
+    return rows
+
+
 def lot_held(item, lot, warehouse, action="issue"):
     """
     Why this batch may not be drawn from `warehouse`, in words, or "".
@@ -289,11 +304,10 @@ def allocate(item, warehouse, quantity, on_date=None, allow_expired=False, holds
     # backflushed run's creels stays on the shelf until the output draws
     # it, and a pick naming no batch chose it all the same (O133).
     found, promised = [], Decimal("0")
-    for lot, available in lots_at(item, warehouse):
-        on_creels = min(committed_elsewhere(lot, warehouse), available)
+    for lot, free, on_creels in free_lots_at(item, warehouse):
         promised += on_creels
-        if available - on_creels > 0:
-            found.append((lot, available - on_creels))
+        if free > 0:
+            found.append((lot, free))
     preferring = {pk: Decimal(share) for pk, share in (preferring or {}).items() if share > 0}
     first = [(lot, min(available, preferring[lot.pk])) for lot, available in found if lot.pk in preferring]
     shares = {lot.pk: share for lot, share in first}

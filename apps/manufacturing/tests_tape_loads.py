@@ -164,6 +164,17 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
         with self.assertRaisesMessage(ValidationError, "260 is on the shelf and loaded on a run"):
             plan_issue(self.tape, self.plant, Decimal("50"))
 
+    def test_planning_does_not_count_a_doff_on_a_creel_as_cover(self):
+        # O133's mirror: MRP counted D-1's 100 kg on the warp creel as cover for
+        # anything else, the 100 the pick no longer chooses. The one reading,
+        # free_lots_at, serves both.
+        from apps.planning.mrp import unusable_on_hand
+
+        self.assertEqual(unusable_on_hand(self.tape, self.plant, TODAY), Decimal("0"))
+        self.load("D-1", "100", CreelSide.WARP, 9)
+        self.load("D-2", "40", CreelSide.WEFT, 9, 5)
+        self.assertEqual(unusable_on_hand(self.tape, self.plant, TODAY), Decimal("140"))
+
     def test_the_shortfall_is_said_in_figures(self):
         # O134: the stock column's scale came through, "Only 40.000 of ...;
         # 10.000 short" here and 300.0000 on PostgreSQL.
