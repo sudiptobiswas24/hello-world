@@ -6324,6 +6324,91 @@ def ap_aging(as_of=None):
     }
 
 
+def receipts_billed_by(order_line, excluding=None):
+    """
+    {receipt line pk: {bill line pk: quantity}}: which bills hold each
+    receipt's goods, replayed in posting order (O211). A receipt adds its
+    goods, unbilled; a bill takes the oldest unbilled goods in the order
+    they were received, and what it bills ahead of its goods waits for the
+    next receipt; a return takes back the receipt's billed goods first, bill
+    by bill, as its debit notes do (_bill_lines_that_paid_for), then its
+    unbilled; a debit note line takes back first what its return already
+    took of that bill, and frees the rest, its latest goods first, to be
+    billed again. `excluding`: a return being debited now, not yet counted.
+    """
+    events = []
+    for row in order_line.receipt_lines.filter(receipt__posted=True).select_related("receipt"):
+        if excluding is not None and row.receipt_id == excluding.pk:
+            continue
+        kind = "in" if row.receipt.reverses_id is None else "back"
+        events.append((row.receipt.posted_at, 0 if kind == "in" else 2, row.receipt_id, row.pk, kind, row))
+    for row in BillLine.objects.filter(order_line=order_line, bill__posted=True,
+                                       bill__is_prepayment=False).select_related("bill"):
+        if row.bill.debits_id is None:
+            events.append((row.bill.posted_at, 1, row.bill_id, row.pk, "bill", row))
+        elif row.debits_line_id:
+            events.append((row.bill.posted_at, 3, row.bill_id, row.pk, "note", row))
+    events.sort(key=lambda event: (event[0] is not None, event[0].timestamp() if event[0] else 0, *event[1:4]))
+
+    slots, ahead, taken = {}, {}, defaultdict(Decimal)
+
+    def in_receipt_order():
+        return sorted(slots.values(), key=lambda slot: slot["order"])
+
+    def move(slot, bill_line, quantity):
+        slot["billed"][bill_line] = slot["billed"].get(bill_line, Decimal("0")) + quantity
+        slot["unbilled"] -= quantity
+
+    for _, _, _, _, kind, row in events:
+        if kind == "in":
+            slot = slots[row.pk] = {"order": (to_date(row.receipt.receipt_date), row.receipt_id, row.pk),
+                                    "unbilled": row.quantity_received, "billed": {}}
+            for bill_line in list(ahead):
+                quantity = min(ahead[bill_line], slot["unbilled"])
+                if quantity > 0:
+                    move(slot, bill_line, quantity)
+                    ahead[bill_line] -= quantity
+                if ahead[bill_line] <= 0:
+                    del ahead[bill_line]
+        elif kind == "bill":
+            left = row.quantity
+            for slot in in_receipt_order():
+                quantity = min(left, slot["unbilled"])
+                if quantity > 0:
+                    move(slot, row.pk, quantity)
+                    left -= quantity
+            if left > 0:
+                ahead[row.pk] = ahead.get(row.pk, Decimal("0")) + left
+        elif kind == "back":
+            slot = slots.get(row.reverses_line_id)
+            if slot is None:
+                continue
+            left = row.quantity_received
+            for bill_line in list(slot["billed"]):
+                quantity = min(left, slot["billed"][bill_line])
+                slot["billed"][bill_line] -= quantity
+                taken[bill_line] += quantity
+                left -= quantity
+            slot["unbilled"] -= min(left, slot["unbilled"])
+        else:
+            bill_line, left = row.debits_line_id, row.quantity
+            already = min(left, taken[bill_line])
+            taken[bill_line] -= already
+            left -= already
+            if left > 0 and ahead.get(bill_line):
+                quantity = min(left, ahead[bill_line])
+                ahead[bill_line] -= quantity
+                left -= quantity
+            for slot in reversed(in_receipt_order()):
+                quantity = min(left, slot["billed"].get(bill_line, Decimal("0")))
+                if quantity > 0:
+                    slot["billed"][bill_line] -= quantity
+                    slot["unbilled"] += quantity
+                    left -= quantity
+    return {pk: {line: quantity for line, quantity in slot["billed"].items() if quantity > 0}
+            for pk, slot in slots.items()}
+
+
 def payment_run(due_by=None, vendor=None):
     """
     What is payable by a date, grouped by vendor.
@@ -7681,11 +7766,14 @@ class GoodsReceipt(AuditModel):
         """
         The bill lines that paid for what a return line sends back, those
         that billed the returned receipt's own goods first (O94), then the
-        rest oldest first. Bills clear receipts in the order they were
-        received, each bill after those posted before it, so the receipt's
-        place among the line's receipts says which bills paid for it.
-        Oldest bill first, three sent back from a second receipt billed
-        dearer were debited at the first bill's price: 15.00 for 16.20.
+        rest oldest first. Which bills hold a receipt's goods is replayed in
+        posting order, net of what went back before each bill
+        (receipts_billed_by): bills clear receipts in the order they were
+        received, each bill after those posted before it. Oldest bill first,
+        three sent back from a second receipt billed dearer were debited at
+        the first bill's price: 15.00 for 16.20. Counted gross, a return
+        posted before the bills shifted every later range, and a return of
+        the second receipt found the first bill (O211).
         """
         bill_lines = list(BillLine.objects.filter(
             order_line=line.order_line, bill__posted=True, bill__debits__isnull=True,
@@ -7693,17 +7781,9 @@ class GoodsReceipt(AuditModel):
         original = line.reverses_line
         if original is None:
             return sorted(bill_lines, key=lambda row: (row.bill.bill_date, row.bill_id))
-        start = Decimal("0")
-        for receipt_line in line.order_line.receipt_lines.filter(
-                receipt__posted=True, receipt__reverses__isnull=True,
-        ).order_by("receipt__receipt_date", "receipt_id", "id"):
-            if receipt_line.pk == original.pk:
-                break
-            start += receipt_line.quantity_received
-        end, at, paid, rest = start + original.quantity_received, Decimal("0"), [], []
-        for bill_line in bill_lines:
-            low, at = at, at + bill_line.quantity
-            (paid if low < end and at > start else rest).append(bill_line)
+        holding = receipts_billed_by(line.order_line, excluding=self).get(original.pk, {})
+        paid = [row for row in bill_lines if holding.get(row.pk, Decimal("0")) > 0]
+        rest = [row for row in bill_lines if row not in paid]
         return paid + sorted(rest, key=lambda row: (row.bill.bill_date, row.bill_id))
 
     def _debit_returned_goods(self):
