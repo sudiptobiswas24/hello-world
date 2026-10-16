@@ -109,6 +109,12 @@ class Document:
     inter: bool
     value: Decimal
     lines: list = field(default_factory=list)
+    is_debit: bool = False
+
+    @property
+    def sign(self):
+        """A credit note takes away; an invoice and a debit note (O235) add."""
+        return -1 if self.is_note and not self.is_debit else 1
 
     @property
     def registered(self):
@@ -220,13 +226,20 @@ def _invoices(start, end, state):
         # reverse it by was never issued (einvoice.record_cancellation): neither is reported here.
         einvoice__cancelled_at__isnull=False).exclude(cancels_irn_of__isnull=False)
     _refuse_unrecorded(queryset, "invoices and credit notes")
-    queryset = queryset.select_related("credits").prefetch_related(
+    queryset = queryset.select_related("credits", "debits").prefetch_related(
         "lines__recorded_taxes__tax", "lines__item__uom__gst_uqc",
     ).order_by("invoice_date", "number")
     return [
-        _document(invoice, invoice.invoice_date, state, invoice.is_credit_note())
+        _note_or_invoice(invoice, state)
         for invoice in queryset
     ]
+
+
+def _note_or_invoice(invoice, state):
+    """An invoice, or a note on one: a credit note, or a debit note (O235), reported in CDNR/CDNUR."""
+    document = _document(invoice, invoice.invoice_date, state, invoice.is_credit_note() or invoice.is_debit_note())
+    document.is_debit = invoice.is_debit_note()
+    return document
 
 
 def _bills(start, end, state):
@@ -295,8 +308,8 @@ def gstr1(start, end):
            "hsn_b2c": defaultdict(lambda: _money() | {"quantity": ZERO})}
 
     for document in documents:
-        sign = -1 if document.is_note else 1
-        original = document.source.credits if document.is_note else None
+        sign = document.sign
+        original = (document.source.debits if document.is_debit else document.source.credits) if document.is_note else None
         if original is not None and original.is_opening_balance:
             # The old invoice is here only as what was owed on it: the note
             # froze the same buyer, and says what the old one was for.
@@ -331,6 +344,7 @@ def gstr1(start, end):
                 "original": original.reference if original.is_opening_balance else original.number,
                 "original_date": original.invoice_date,
                 "items": _items(document),
+                "note_type": "D" if document.is_debit else "C",
             }
             if section == "b2b":
                 result["cdnr"].append(entry | {"gstin": document.gstin})
@@ -452,6 +466,7 @@ def _advances(start, end, state):
 # Table 13's natures of document, as the portal numbers them (doc_num).
 DOCUMENT_NATURES = {
     "invoices": (1, "Invoices for outward supply"),
+    "debit_notes": (4, "Debit Note"),
     "credit_notes": (5, "Credit Note"),
     "job_work_challans": (9, "Delivery Challan for job work"),
 }
@@ -480,7 +495,9 @@ def _documents_issued(start, end):
     # (number, when withdrawn): an invoice is withdrawn only by its IRN's cancellation, which
     # withdraws the note the books reverse it by as well; any other correction is a credit note.
     kinds = (
-        ("invoices", numbered.filter(credits__isnull=True).values_list("number", "einvoice__cancelled_at")),
+        ("invoices", numbered.filter(credits__isnull=True, debits__isnull=True).values_list(
+            "number", "einvoice__cancelled_at")),
+        ("debit_notes", numbered.filter(debits__isnull=False).values_list("number", "einvoice__cancelled_at")),
         ("credit_notes", numbered.filter(credits__isnull=False).values_list(
             "number", "cancels_irn_of__cancelled_at")),
         ("job_work_challans", JobWorkChallan.objects.filter(
@@ -521,7 +538,7 @@ def gstr3b(start, end):
              "non_gst": "3.1e"}
     unregistered = defaultdict(_money)
     for document in _invoices(start, end, settings.state):
-        sign = -1 if document.is_note else 1
+        sign = document.sign
         for line in document.lines:
             _add(result[table[line.nature]], line, sign)
             if (line.nature == "taxed" and document.inter
@@ -540,7 +557,7 @@ def gstr3b(start, end):
                 result["3.1a"][column] += sign * money[column]
 
     for document in _bills(start, end, settings.state):
-        sign = -1 if document.is_note else 1
+        sign = document.sign
         # A supply from an SEZ unit is an import in substance: its IGST is
         # paid on the bill of entry, not claimed off the unit's invoice.
         claimable = document.registered and document.registration == "regular"
@@ -631,7 +648,7 @@ def gstr1_json(result):
     cdnr = defaultdict(list)
     for entry in result["cdnr"]:
         cdnr[entry["gstin"]].append({
-            "ntty": "C", "nt_num": entry["number"], "nt_dt": _gstn_date(entry["date"]),
+            "ntty": entry["note_type"], "nt_num": entry["number"], "nt_dt": _gstn_date(entry["date"]),
             "val": float(entry["value"]), "pos": entry["place_of_supply"],
             "rchrg": "N", "inv_typ": "R", "itms": _gstn_items(entry["items"]),
         })
@@ -654,7 +671,7 @@ def gstr1_json(result):
         "cdnur": [
             {"typ": {"b2cl": "B2CL", "exp_with_payment": "EXPWP",
                      "exp_without_payment": "EXPWOP"}[entry["type"]],
-             "ntty": "C", "nt_num": entry["number"], "nt_dt": _gstn_date(entry["date"]),
+             "ntty": entry["note_type"], "nt_num": entry["number"], "nt_dt": _gstn_date(entry["date"]),
              "val": float(entry["value"]), "pos": entry["place_of_supply"],
              "itms": _gstn_items(entry["items"], heads=("iamt", "csamt"))}
             for entry in result["cdnur"]

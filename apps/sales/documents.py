@@ -173,6 +173,8 @@ def tax_invoice(invoice, copy="original"):
     note = invoice.is_credit_note()
     if note:
         heading = "Credit Note"
+    elif invoice.is_debit_note():
+        heading = "Debit Note"
     elif supplier["gstin"] and not invoice.is_down_payment:
         heading = "Tax Invoice"
     else:
@@ -215,7 +217,10 @@ def tax_invoice(invoice, copy="original"):
         "place_of_supply": _state_name(invoice.place_of_supply) if invoice.taxes_recorded else "",
         "reverse_charge": "Yes" if reverse_charge else "No",
         "credits": ({"number": invoice.credits.number, "date": invoice.credits.invoice_date}
-                    if note and invoice.credits_id else None),
+                    if note and invoice.credits_id else None)
+        # Rule 53: a debit note names the invoice it supplements, as a credit note does.
+        or ({"number": invoice.debits.number, "date": invoice.debits.invoice_date}
+            if invoice.debits_id else None),
         "lines": lines,
         "taxable": sum((line["taxable"] for line in lines), Decimal("0")),
         "taxes": [(name, rate, amount) for (_, name, rate), amount in sorted(by_rate.items())],
