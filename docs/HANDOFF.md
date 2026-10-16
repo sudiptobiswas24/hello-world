@@ -85,25 +85,36 @@ Odoo 19 (notes in odoo19_research/); its last section is what the
 accountant or tax adviser must confirm before the statutory items are
 built.
 
-1. **g21, in flight (15 October).** The tree is `$SP/g21tree`, built on
-   the branch tip by cherry-picking. Its snapshot is
-   `claude/erp-wip-g21tree`.
-   - In the tree, each part reviewed by someone other than its author,
-     with the review's probes kept as tests:
-     - races (O16 to O184), with their review fixes;
-     - decision 23 and O123, with their review fixes (review_qrecall);
-     - the payroll go-live outputs and the tax work, before their
-       review fixes.
-     - The whole fast suite at d05ba67: 6593 tests OK; audit clean.
-   - Running:
-     - fix_people2 (`$SP/fix_people2`, from b0d8234): review_people's
-       five blockers, O236, O237, and the per-period rule for PT, LWF
-       and advance instalments. Brief: docs/handoff/g21_fix_people_review.md.
-     - fix_acct2 (`$SP/fix_acct2`, from d05ba67): review_acct's four
-       blockers and the rest. Brief: docs/handoff/g21_fix_acct_review.md.
-   - Left:
-     - cherry-pick both into the tree and register what they leave;
-     - six lanes on one tip, finalize, push.
+1. **g21 is pushed (a681c87, 16 October), all six lanes green on one tip:**
+   - SQLite 6797; PostgreSQL 6797; Asia/Kolkata 6797; migration-tagged 21;
+     vitest 42.
+   - It holds:
+     - the 17 race rows;
+     - decision 23 (O204, O207, the "Held because" column) and O123;
+     - the payroll go-live outputs (bank file, payslips, advances,
+       overtime, PT, LWF, EPF ceiling, EPS past 58);
+     - the tax go-live work: the Rule 46 invoice and LUT, e-invoice
+       cancellation, TCS on scrap, backups with attachments,
+       setup_indian_books.
+   - Each part was reviewed by someone other than its author, and the
+     review fixes were reviewed again.
+   - What the gate itself found, each fixed with a test that fails
+     without it:
+     - the lock-order sentinel checking migrations' own models (24
+       migration-test errors);
+     - PayRun.post writing slip lines in the database's order;
+     - an e-invoice acknowledgement dated by its UTC day (seen only in
+       the Kolkata lane after 18:30 UTC);
+     - the attachments panel saying "None yet." before it knew;
+     - four race tests and two browser tests that a later rule or the
+       machine's speed decided.
+   - Lessons for the next gate:
+     - On this machine (4 CPUs) run lanes two at a time: four at once
+       timed pg-b and mig out at 6900 s.
+     - Anyone who changes the lock-order sentinel runs the migration tag
+       too. Every agent here ran the suite without it.
+     - Review agents sign their probe commits with the Opus trailer and
+       the placeholder, or the integrator replays them.
    - The go-live build list from the gap analysis, the items that wait on
      nobody first: the tax invoice's Rule 46 content (O218), e-invoice
      cancellation (O220), the backup of attachments (O221), printed
@@ -119,7 +130,7 @@ built.
    the existing modules' depth and a robust ERP for a woven sacks plant").**
    This replaces the reach plan's order. Breadth waits; what a sack plant
    does every day, done right in the modules it already has, comes first.
-   - **g22, robust: the register to zero, then proof on a month.**
+   - **g22, next: robust. The register to zero, then proof on a month.**
      - Every open row left after g21 (about 60: books first, then rule,
        statutory, minor), by module, one fix agent per module group. Each
        fix ships with its test, and its commit names the row.
