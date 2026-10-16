@@ -54,6 +54,10 @@ class TcsCollection(AuditModel):
         max_length=16, blank=True, editable=False,
         help_text="The section the law named on its day (TcsSection.code_on), as the print and the return say "
                   "it: 206C(1) before April 2026, 394(1) after.")
+    collection_code = models.CharField(
+        max_length=16, blank=True, editable=False,
+        help_text="The return's collection code (the section's form code) as it stood when collected (O245): "
+                  "an edit to the section later does not re-code a quarter already filed.")
     journal_entry = models.ForeignKey(JournalEntry, null=True, blank=True, on_delete=models.PROTECT,
                                       related_name="+", editable=False)
     posted_account = models.ForeignKey(
@@ -64,7 +68,7 @@ class TcsCollection(AuditModel):
                                 related_name="collections", editable=False)
 
     # Read at the event, kept, and never through the section again (audit_invariants).
-    KEPT_FROM = {"section": ("payable_account",)}
+    KEPT_FROM = {"section": ("payable_account", "form_code")}
 
     class Meta:
         ordering = ["-date", "-id"]
@@ -90,7 +94,7 @@ class TcsCollection(AuditModel):
             if any(getattr(before, name) != getattr(self, name)
                    for name in ("invoice_id", "section_id", "base", "rate_percent", "amount", "date", "pan",
                                 "declaration_id", "gives_back_id", "posted_account_id", "section_code",
-                                "challan_id")):
+                                "collection_code", "challan_id")):
                 # The challan too: a plain save released a paid row from its challan (review F16).
                 raise ValidationError("What an invoice collected is a fact, and so is the challan that paid it "
                                       "over; a credit note gives it back, and a void frees the challan's rows.")
@@ -193,7 +197,8 @@ def collect(invoice):
         if declaration is not None:
             TcsCollection.objects.create(invoice=invoice, section=section, declaration=declaration, base=base,
                                          rate_percent=Decimal("0"), pan=declaration.pan, amount=Decimal("0"), date=day,
-                                         section_code=section.code_on(day))
+                                         section_code=section.code_on(day),
+                                         collection_code=section.form_code)
             continue
         rate = section.rate_on(day)
         if section.payable_account_id is None:
@@ -211,7 +216,9 @@ def collect(invoice):
         row = TcsCollection.objects.create(invoice=invoice, section=section, rate=rate, base=base,
                                            rate_percent=percent, pan=pan, amount=amount, date=day,
                                            journal_entry=entry, posted_account=account,
-                                           section_code=rate.section_code or section.code)
+                                           section_code=rate.section_code or section.code,
+                                           # Read once at the event, as the account is (O245).
+                                           collection_code=section.form_code)
         for advance, counted in counts:
             TcsAdvanceCount.objects.create(collection=row, advance=advance, base=counted, date=day)
         total += amount
@@ -300,7 +307,8 @@ def _give_back_advance(note):
                                      gives_back=collected, base=base, rate_percent=collected.rate_percent,
                                      pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
                                      journal_entry=entry, posted_account=collected.posted_account,
-                                     section_code=collected.section_code)
+                                     section_code=collected.section_code,
+                                     collection_code=collected.collection_code)
         total += amount
     return total
 
@@ -338,7 +346,8 @@ def _give_back(note):
                                      gives_back=collected, base=base, rate_percent=collected.rate_percent,
                                      pan=collected.pan, amount=amount, date=to_date(note.invoice_date),
                                      journal_entry=entry, posted_account=collected.posted_account,
-                                     section_code=collected.section_code)
+                                     section_code=collected.section_code,
+                                     collection_code=collected.collection_code)
         total += amount
     return total
 
@@ -379,7 +388,8 @@ def _release_counts(collected, note, excess):
         TcsCollection.objects.create(invoice=note, section=advance.section, rate=advance.rate, gives_back=advance,
                                      base=take, rate_percent=advance.rate_percent, pan=advance.pan, amount=amount,
                                      date=to_date(note.invoice_date), journal_entry=entry,
-                                     posted_account=advance.posted_account, section_code=advance.section_code)
+                                     posted_account=advance.posted_account, section_code=advance.section_code,
+                                     collection_code=advance.collection_code)
         given_back += amount
     return given_back
 
@@ -429,6 +439,9 @@ class TcsChallan(AuditModel):
     challan_number = models.CharField(max_length=16, help_text="The challan serial number.")
     bsr_code = models.CharField(max_length=7, help_text="The bank branch's BSR code.")
     amount = models.DecimalField(max_digits=18, decimal_places=2, editable=False)
+    section_code = models.CharField(
+        max_length=16, blank=True, editable=False,
+        help_text="The section it was paid under, as the law named it on the day (O245), kept.")
     journal_entry = models.ForeignKey(JournalEntry, on_delete=models.PROTECT, related_name="+", editable=False)
     voided_entry = models.ForeignKey(
         JournalEntry, null=True, blank=True, on_delete=models.PROTECT, related_name="+", editable=False)
@@ -439,7 +452,7 @@ class TcsChallan(AuditModel):
         constraints = [models.CheckConstraint(check=Q(amount__gt=0), name="tcs_challan_positive")]
 
     def __str__(self):
-        return f"{self.bsr_code}/{self.challan_number} {self.section.code}"
+        return f"{self.bsr_code}/{self.challan_number} {self.section_code}"
 
     def save(self, *args, **kwargs):
         if not self._state.adding:
@@ -471,7 +484,8 @@ class TcsChallan(AuditModel):
             memo=f"TCS {section.code} for {month:%B %Y}, challan {challan_number}",
             make_challan=lambda total, entry: cls.objects.create(
                 section=section, month=month, date=to_date(date), bank_account=bank_account,
-                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry),
+                challan_number=challan_number, bsr_code=bsr_code, amount=total, journal_entry=entry,
+                section_code=section.code_on(to_date(date))),
             signed=TcsCollection.signed)
 
     @serialised("voided_entry")
@@ -509,7 +523,7 @@ def tcs_return(start, end):
         paid = row.is_paid_over()
         rows.append({
             "collection": row.pk, "date": row.date, "section": row.law_section(),
-            "collection_code": row.section.form_code, "buyer": row.invoice.customer.name,
+            "collection_code": row.collection_code, "buyer": row.invoice.customer.name,
             "pan": row.pan or "PANNOTAVBL", "invoice": row.invoice.number, "base": sign * row.base,
             "rate_percent": row.rate_percent, "amount": sign * row.amount,
             "challan": f"{row.challan.bsr_code}/{row.challan.challan_number}" if paid else "",
