@@ -734,8 +734,8 @@ class DebitNoteTests(EInvoiceTestCase):
         invoice = self.s1()
         before = -self.ledger("1100")
         note = invoice.debit("1000", "Rate agreed at 126", on_date=DAY)
-        self.assertEqual((note.number[:3], note.total(), -self.ledger("1100") - before),
-                         ("DN-", D("1180.00"), D("1180.00")))
+        self.assertEqual((note.number[:4], note.total(), -self.ledger("1100") - before),
+                         ("SDN-", D("1180.00"), D("1180.00")))
         printed = tax_invoice(note)
         self.assertEqual((printed["heading"], printed["credits"]["number"]), ("Debit Note", invoice.number))
         result = gstr1(*SEPTEMBER)
@@ -777,7 +777,7 @@ class DebitNoteTests(EInvoiceTestCase):
         answer = client.post(f"/api/sales/invoices/{invoice.pk}/debit_note/",
                              {"net": "1000", "reason": "Rate agreed at 126", "date": str(DAY)}, format="json")
         self.assertEqual(answer.status_code, 201, answer.content)
-        self.assertEqual((answer.json()["debits"], answer.json()["number"][:3]), (invoice.pk, "DN-"))
+        self.assertEqual((answer.json()["debits"], answer.json()["number"][:4]), (invoice.pk, "SDN-"))
 
 
 class TaxPathsTheReviewDidNotDriveTests(EInvoiceTestCase):
