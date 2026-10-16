@@ -274,6 +274,10 @@ class PriceVariationApiTests(PriceVariationTestCase):
         body = response.json()
         self.assertEqual((body["total"], body["lines"][0]["index_value"]),
                          ("264.00", "106.0000"))
+        # O202: who billed it is on the bill.
+        from apps.sales.price_variation import PriceVariationBill
+
+        self.assertIsNotNone(PriceVariationBill.objects.get(pk=body["id"]).created_by)
         again = self.client.post("/api/sales/price-variation-bills/", {
             "order": self.order.pk, "start": str(before(30)), "end": str(before(1)),
             "receivable_account": self.ar.pk}, format="json")
