@@ -712,6 +712,14 @@ class StockMovement(AuditModel):
     reference = models.CharField(max_length=64, blank=True, help_text="e.g. PO number, SO number")
     occurred_at = models.DateTimeField()
     notes = models.TextField(blank=True)
+    moved_from = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="arrivals",
+        editable=False,
+        help_text="On an arrival from another of the company's shelves, the movement that took "
+                  "the goods off it: a transfer's hop, a clearance out of inspection, components "
+                  "sent to a subcontractor. Recorded by move_stock() as the goods move, so what "
+                  "was put on them is followed to where they went (O210).",
+    )
 
     class Meta:
         ordering = ["-occurred_at", "-id"]

@@ -351,10 +351,12 @@ def where_value_is(movement):
     back whole, 80 came off two units worth 26 and priced them at minus
     27. Under FIFO it is what is left of the layer it raised; under the
     average, and within a batch, each withdrawal since took its share of
-    the shelf's value, this included, as the replays take it. A transfer
-    out is not a withdrawal: what it took arrived on the next shelf and is
-    followed there (O42: landed on the bay and put away, the bay gave up
-    nothing, cost of sales was credited 80 and the stock room kept it).
+    the shelf's value, this included, as the replays take it. A move
+    between shelves is not a withdrawal: what it took arrived on the next
+    shelf and is followed there, whatever moved it (O42: landed on the bay
+    and put away, the bay gave up nothing, cost of sales was credited 80
+    and the stock room kept it; O210, the same for a clearance out of
+    inspection).
 
     Walked from the start, not from a fold: the movement may be older
     than the fold, which keeps no trace of it.
@@ -373,16 +375,21 @@ def follow_value(start, amount, layer_id=None, depth=0):
     movement (an arrival), asked what share of a cost incurred on what it
     brought would have gone where.
     """
-    from .transfers import StockTransferStep
+    from .models import StockMovement
 
     item, warehouse = start.item, start.warehouse
     method = item.costing_method
     history = _movements(item, warehouse)
+    # Every move between the company's shelves, whoever made it: a
+    # transfer's hop, a clearance out of inspection, components sent to a
+    # subcontractor. Followed by transfer steps alone, goods cleared out of
+    # inspection were "gone" at the clearance, and a release took the
+    # freight out of cost of sales while the stock room kept it (O210).
     hops = {
-        step.out_movement_id: step.in_movement
-        for step in StockTransferStep.objects.filter(
-            out_movement__item=item, out_movement__warehouse=warehouse,
-        ).select_related("in_movement__warehouse", "in_movement__item")
+        arrival.moved_from_id: arrival
+        for arrival in StockMovement.objects.filter(
+            moved_from__item=item, moved_from__warehouse=warehouse,
+        ).select_related("warehouse", "item")
     }
     found = []
 
