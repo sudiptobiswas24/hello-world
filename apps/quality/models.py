@@ -850,7 +850,19 @@ class Inspection(AuditModel):
         posted = timezone.localdate(self.posted_at) if self.posted_at else to_date(self.inspected_on)
         return next_working_day(posted)
 
-    @serialised("posted")
+    def held_for_post(self):
+        """
+        The batch, what it was made from and everything made from it, before the verdict: the
+        order void and escalate hold them in (held_for_void). Locked after the draft, a void of
+        the draft racing its own post held each what the other wanted next (O242).
+        """
+        from .release import lot_and_sources, lots_made_from
+
+        # In key order, as rows of one model are taken.
+        batches = {lot.pk: lot for lot in (*lot_and_sources(self.lot), *lots_made_from(self.lot))}
+        return [batches[pk] for pk in sorted(batches)]
+
+    @serialised("posted", held_first="held_for_post")
     def post(self, by=None):
         """
         Judge it and release or hold the batch. `by` is the login posting

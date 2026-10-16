@@ -1179,6 +1179,42 @@ class OneDecisionAtATimeRaceTests(RaceCase):
 class QualityDecisionRaceTests(RaceCase):
     """RISKS.md, decision 22: the first decision on a failure that waits stands."""
 
+    def test_a_draft_posted_as_it_is_voided_is_not_a_deadlock(self):
+        """
+        O242: the post held the draft, then its batch; the void held the batch, then the
+        inspection. Each is held here just after its first lock, so both have it: posting
+        held the batch second, and PostgreSQL ended one of the two. Both take the batch
+        first now: one waits for the other, the post goes through and the void finds a
+        posted verdict or a draft it may not void.
+        """
+        from unittest import mock
+
+        from apps.core import models as core_models
+        from apps.quality import tests_decisions as decisions_fixture
+        from apps.quality.models import Inspection
+
+        made = fixture(self, decisions_fixture.AwaitingTestCase)
+        draft = made.failed()
+        barrier, local = threading.Barrier(2, timeout=3), threading.local()
+        lock = core_models.lock_rows
+
+        def first_then_wait(*rows, **kwargs):
+            held = lock(*rows, **kwargs)
+            if not getattr(local, "held", False):
+                local.held = True
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    pass  # The other waits on a lock this one has.
+            return held
+
+        with mock.patch.object(core_models, "lock_rows", first_then_wait):
+            outcomes = race(None, lambda: Inspection.objects.get(pk=draft.pk).post(),
+                            lambda: Inspection.objects.get(pk=draft.pk).void("Wrong batch"))
+        self.assertFalse([outcome for outcome in outcomes if "deadlock" in outcome], outcomes)
+        self.assertEqual(outcomes[0], "done", outcomes)
+        self.assertTrue(Inspection.objects.get(pk=draft.pk).posted)
+
     def test_two_quality_managers_deciding_at_once_one_wins(self):
         from django.contrib.auth.models import Group, User
 
