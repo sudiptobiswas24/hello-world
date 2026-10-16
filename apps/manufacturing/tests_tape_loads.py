@@ -150,6 +150,20 @@ class ABackflushedLoomDrawsByTheDoffTests(TapeLoadTestCase):
         made = [lot for row in recall(self.doffs["D-1"])["descendants"] for lot in row["made"]]
         self.assertIn(roll.lot, made)
 
+    def test_a_pick_naming_no_doff_does_not_choose_one_on_a_creel(self):
+        # O133: D-1's 100 kg all on the warp creel, a pick of 50 naming no
+        # batch chose D-1, soonest first; and with every doff loaded, 300 was
+        # offered where none was free.
+        from apps.inventory.picking import plan_issue
+
+        self.load("D-1", "100", CreelSide.WARP, 9)
+        self.assertEqual([(lot.code, kg) for lot, _bin, kg in plan_issue(self.tape, self.plant, Decimal("50"))],
+                         [("D-2", Decimal("50"))])
+        self.load("D-2", "100", CreelSide.WEFT, 9, 5)
+        self.load("D-3", "60", CreelSide.WEFT, 9, 10)
+        with self.assertRaisesMessage(ValidationError, "260 is on the shelf and loaded on a run"):
+            plan_issue(self.tape, self.plant, Decimal("50"))
+
     def test_not_past_what_its_creels_hold(self):
         self.load("D-1", "30", CreelSide.WARP, 9)
         with self.assertRaisesMessage(ValidationError, "creels hold 30 kg of it not yet drawn"):
