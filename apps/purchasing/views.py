@@ -252,7 +252,24 @@ class BillViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "deduct_tds": "purchasing.add_tdsdeduction",
         "carried": "purchasing.change_bill",
         "take_settlement_discount": "purchasing.add_billpayment",
+        "match_report": "purchasing.view_bill",
     }
+
+    @action(detail=True, methods=["get"])
+    def match_report(self, request, pk=None):
+        """Ordered, received and billed per line, for anyone checking a bill (O109: built and never reached)."""
+        from decimal import Decimal
+
+        def places(key, value):
+            # A sum comes back bare on SQLite and at the column's scale on PostgreSQL: quantities at four.
+            if isinstance(value, Decimal) and (key.startswith("quantity") or key == "billed_not_held"):
+                return value.quantize(Decimal("0.0001"))
+            return value
+
+        bill = self.get_object()
+        return Response([{**{key: places(key, value) for key, value in row.items() if key not in ("line", "item")},
+                          "line": row["line"].pk, "item": row["item"].pk if row["item"] else None}
+                         for row in bill.match_report()])
 
     @action(detail=True, methods=["post"])
     def take_settlement_discount(self, request, pk=None):

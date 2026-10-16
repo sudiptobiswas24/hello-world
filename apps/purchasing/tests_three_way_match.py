@@ -272,3 +272,27 @@ class BillCarryOverTests(MatchTestCase):
         self.assertEqual(bill.subtotal(), Decimal("45"))
         self.assertEqual(bill.tax_total(), Decimal("9"))
         self.assertEqual(bill.currency, order.currency)
+
+
+
+class MatchReportThroughTheApiTests(MatchTestCase):
+    """O109: the match report is read from the bill, as the AP manager: ordered 10, received 6, billed 6."""
+
+    def test_the_ap_manager_reads_it(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        order = self.make_order("10", "5")
+        self.receive(order, "6")
+        bill = order.create_bill(self.payable)
+        user = User.objects.create_user("ap-manager")
+        user.groups.add(Group.objects.get(name="AP Manager"))
+        client = APIClient()
+        client.force_authenticate(user)
+        answer = client.get(f"/api/purchasing/bills/{bill.pk}/match_report/")
+        self.assertEqual(answer.status_code, 200, answer.content)
+        (row,) = answer.json()
+        self.assertEqual((row["quantity_ordered"], row["quantity_received"], row["quantity_billed"], row["matched"]),
+                         ("10.0000", "6.0000", "6.0000", True))
