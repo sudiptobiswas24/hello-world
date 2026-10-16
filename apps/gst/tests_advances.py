@@ -182,3 +182,27 @@ class TheAdvanceCarriesItsTaxTests(AdvanceTestCase):
         # Left on each GST account: the four units invoiced, and not a paisa more.
         self.assertEqual((self.ledger("2201"), self.ledger("2202"), self.ledger("2400")),
                          (D("444.45"), D("444.45"), D("0.00")))
+
+
+class VouchersTests(AdvanceTestCase):
+    """
+    O238: a job-work advance (30% of 11,800: 3,000 and 540 GST) prints as CGST Rule 50's receipt voucher, and
+    1,180 of it given back as Rule 51's refund voucher naming it.
+    """
+
+    def test_the_advance_is_a_receipt_voucher_and_its_refund_a_refund_voucher(self):
+        from apps.sales.documents import render_invoice_pdf, tax_invoice
+
+        from .tests_tax_invoice import printed_text
+
+        deposit = self.advance(self.job_work())
+        printed = tax_invoice(deposit)
+        self.assertEqual((printed["heading"], printed["taxable"], [amount for _, _, amount in printed["taxes"]]),
+                         ("Receipt Voucher", D("3000.00"), [D("270.00"), D("270.00")]))
+        note = deposit.create_credit_note(amount=D("1180"))
+        printed = tax_invoice(note)
+        self.assertEqual((printed["heading"], printed["credits"]["number"], printed["taxable"]),
+                         ("Refund Voucher", deposit.number, D("1000.00")))
+        text = " ".join(" ".join(printed_text(render_invoice_pdf, note)).split())
+        self.assertIn("Refund Voucher", text)
+        self.assertIn(f"Against {deposit.number}", text)
