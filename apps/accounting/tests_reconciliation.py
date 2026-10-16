@@ -427,7 +427,7 @@ class ReturnedPaymentTests(ReconciliationTestCase):
 
     def test_a_void_is_dated_the_day_the_bank_returned_it(self):
         cheque = self.receipt("1000")
-        with self.assertRaisesMessage(ValidationError, "not voided before the day it was made"):
+        with self.assertRaisesMessage(ValidationError, "is not voided on 2026-01-04: it was made on"):
             cheque.void(memo="Returned unpaid", on_date=datetime.date(2026, 1, 4))
         with self.assertRaisesMessage(ValidationError, "that day has not come"):
             cheque.void(memo="Returned unpaid", on_date=timezone.localdate() + datetime.timedelta(days=1))

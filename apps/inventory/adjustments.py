@@ -27,7 +27,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
 
 from .locking import lock_position, lock_positions
 from .models import Item, MovementType, StockMovement, Warehouse
@@ -321,7 +321,8 @@ class StockAdjustment(AuditModel):
                 "standard back instead; that posts its own revaluation."
             )
 
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, getattr(self.journal_entry, "date", None),
+                                  f"{self} is not voided on", "it was posted")
         occurred_at = timezone.now()
         label = memo or f"Void of stock adjustment {self.number}"
         lock_positions(
