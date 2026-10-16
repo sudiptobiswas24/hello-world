@@ -1,6 +1,6 @@
 """
-g22 review_purch: probes of fix_purch (e73428e..674ac8a). Each test states a fact about money or a
-document that SHOULD be true; a failure is a finding. Nothing here edits product code.
+g22 review_purch: the review of fix_purch (e73428e..674ac8a), kept as regression tests: each states a
+fact about money or a document that is true, named by what it protects.
 """
 
 import datetime
@@ -27,7 +27,7 @@ Z = Decimal
 
 
 # ---------------------------------------------------------------- O233: dated TDS rates
-class TdsDatedRateProbes(TdsTestCase):
+class TdsRateOfTheDayItFallsDueTests(TdsTestCase):
     def setUp(self):
         super().setUp()
         self.party = self.contractor(pan="AAAPL1234C")
@@ -169,7 +169,7 @@ class TdsDatedRateProbes(TdsTestCase):
 
 
 # ---------------------------------------------------------------- O234: TCS collected by a supplier
-class TcsProbes(ProbeCase):
+class TcsTheSupplierCollectedFootsTests(ProbeCase):
     def setUp(self):
         super().setUp()
         self.tcs = Account.objects.create(code="1460", name="TCS receivable", account_type=AccountType.ASSET)
@@ -261,7 +261,7 @@ class TcsProbes(ProbeCase):
 
 
 # ---------------------------------------------------------------- O95: vendor invoice numbers
-class InvoiceNumberProbes(ProbeCase):
+class OneVendorInvoiceNumberTests(ProbeCase):
     def draft(self, ref, day=D(2026, 6, 10), vendor=None):
         return Bill.objects.create(vendor=vendor or self.vendor, bill_date=day, payable_account=self.payable,
                                    reference=ref)
@@ -367,7 +367,7 @@ class InvoiceNumberProbes(ProbeCase):
 
 
 # ---------------------------------------------------------------- O154, O190: the supplier's credit-note number
-class SupplierNoteProbes(ProbeCase):
+class SupplierCreditNoteNumberTests(ProbeCase):
     def note(self):
         bill = self.hand_bill(None, "10", "100", link=False)
         bill.post()
@@ -444,7 +444,7 @@ class SupplierNoteProbes(ProbeCase):
 
 
 # ---------------------------------------------------------------- O188, O189: MSME and due dates
-class MsmeProbes(tests_msme.MsmeTestCase):
+class MsmePaidOnAndDueDeliveryByDeliveryTests(tests_msme.MsmeTestCase):
     def setUp(self):
         super().setUp()
         self.tds_payable = Account.objects.create(code="2250", name="TDS payable", account_type=AccountType.LIABILITY)
@@ -513,7 +513,7 @@ class MsmeProbes(tests_msme.MsmeTestCase):
 
 
 # ---------------------------------------------------------------- O211: returns in posting order
-class ReturnsInPostingOrderProbes(ProbeCase):
+class ReturnsDebitTheBillsHoldingTheirGoodsTests(ProbeCase):
     def grni_and_payable(self):
         return self.balance(self.grni), -self.balance(self.payable)
 
@@ -575,7 +575,7 @@ class ReturnsInPostingOrderProbes(ProbeCase):
 
 
 # ---------------------------------------------------------------- O91, O99, O167: the match and the approval
-class MatchProbes(ProbeCase):
+class TheMatchWeighsNetPricesTests(ProbeCase):
     def test_01_the_match_compares_net_prices_with_a_tolerance_on_the_net(self):
         from apps.core.models import Company
         company = Company.get()
@@ -597,7 +597,7 @@ class MatchProbes(ProbeCase):
                                ("94.51", "0", "refused"), ("100", "0", "refused"), ("99.45", "5", "accepted")])
 
 
-class PolicyProbes(tests_vendor_prices.VendorPriceTestCase):
+class APolicyAskedOfConfirmedOrderChangesTests(tests_vendor_prices.VendorPriceTestCase):
     def setUp(self):
         super().setUp()
         PurchaseApprovalPolicy.objects.create(code="STD", name="Standard", max_order_value=Z("1000"))
@@ -639,7 +639,7 @@ class PolicyProbes(tests_vendor_prices.VendorPriceTestCase):
         line.save()
 
 
-class UnbilledReturnProbes(ProbeCase):
+class UnbilledGoodsReturnedDebitNoBillTests(ProbeCase):
     def test_01_goods_returned_unbilled_raise_no_debit_note_against_a_bill_that_paid_for_other_goods(self):
         """
         20 ordered at 5; R1 10 and R2 10 in; B1 bills 10 at 5.00 (R1's goods); R2's 4 go back before anything

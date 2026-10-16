@@ -1,5 +1,5 @@
 """
-g22 review_purch: races on PostgreSQL (SQLite serialises writers and proves nothing). Probes of fix_purch.
+g22 review_purch: races on PostgreSQL (SQLite serialises writers and proves nothing), kept as regression tests.
 """
 
 import datetime
@@ -21,7 +21,7 @@ Z = Decimal
 
 
 @tag("race")
-class ReviewPurchRaces(races.RaceCase):
+class PurchasingReviewRaceTests(races.RaceCase):
     def setUp(self):
         if connection.vendor != "postgresql":
             self.skipTest("PostgreSQL only")

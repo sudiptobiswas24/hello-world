@@ -19,7 +19,7 @@ from .tests_browser import BrowserMixin
 D = datetime.date
 
 
-class ReviewPurchInTheBrowser(BrowserMixin, TdsTestCase, StaticLiveServerTestCase):
+class RatesAndTcsInTheBrowserTests(BrowserMixin, TdsTestCase, StaticLiveServerTestCase):
     def test_01_the_ap_manager_reads_a_pending_rate_and_cannot_confirm_the_controller_can(self):
         pending = TdsRate.objects.create(section=self.contract, applies_from=D(2026, 9, 1),
                                          rate_percent=Decimal("3"), no_pan_rate_percent=Decimal("25"))
