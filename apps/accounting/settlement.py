@@ -192,40 +192,73 @@ class RealisedOnItsOwnDay:
         document, _, party, control_account, is_receivable = self.settles()
         if previous is not None:
             previous.create_reversal(entry_date=self.date, memo=f"Re-stating exchange difference on {self}")
+        payment_base = self.payment_slice(control_account)
         difference = settlement_difference(
             self.amount, document.exchange_rate, self.payment.exchange_rate,
             document_base=self.document_slice(document, control_account),
-            payment_base=self.payment_slice(control_account))
+            payment_base=payment_base)
         entry = _post_exchange_difference(
             party=party, control_account=control_account, difference=difference,
             date=self.date, reference=document.number,
             memo=f"Exchange difference settling {document.number}", is_receivable=is_receivable,
         )
+        # What this allocation cleared off each side, kept as the fact the
+        # next allocation of either reads (O209): the document's side is what
+        # the payment put on the control account plus the difference posted.
+        self.document_base = payment_base + difference
+        self.payment_base = payment_base
+        fields = ["document_base", "payment_base", "updated_at"]
         if entry is not None:
             self.fx_entry = entry
-            super(RealisedOnItsOwnDay, self).save(update_fields=["fx_entry", "updated_at"])
+            fields.append("fx_entry")
+        super(RealisedOnItsOwnDay, self).save(update_fields=fields)
 
     def document_slice(self, document, control_account):
         """
-        The base this allocation clears off its document: its slice of what the
-        document booked, after what settled it before (slice_of). Asked once
-        this allocation is saved, so amount_due() already counts it.
+        The base this allocation clears off its document: what the document
+        booked for all of it settled so far, less what the others still
+        standing cleared, as each recorded it (O209). Asked once this
+        allocation is saved, so amount_due() already counts it.
+
+        Measured as a slice against the amount settled before it
+        (slice_of), a middle allocation deleted or re-pointed took its own
+        slice back and left the later ones' slices cut against a total that
+        no longer held: 100.09 EUR booked at 112.45, applied 30 + 30 + 40.09,
+        the middle 30 deleted and applied again, cleared 33.70 + 45.04 +
+        33.70 = 112.44 and left a paisa on the receivable. What settled it
+        other than an allocation (a credit note, a drawdown, a write-off) is
+        still counted at its slice of the base.
         """
         booked = booked_on(document.journal_entry, control_account)
         if booked is None:
             return round_money(self.amount * (document.exchange_rate or Decimal("1")))
         total = document.total()
         after = total - document.amount_due()
-        return slice_of(booked, total, after - self.amount, self.amount)
+        others = [row for row in standing_allocations(document) if row.pk != self.pk]
+        if any(row.document_base is None for row in others):
+            # Made before the base was kept: the slice, as it was then.
+            return slice_of(booked, total, after - self.amount, self.amount)
+        applied = sum((row.amount for row in others), Decimal("0"))
+        cleared = (sum((row.document_base for row in others), Decimal("0"))
+                   + slice_of(booked, total, applied, after - self.amount - applied))
+        return round_money(booked * min(after, total) / total) - cleared if total else Decimal("0")
 
     def payment_slice(self, control_account):
-        """The base this allocation takes of its payment: its slice of what the payment booked."""
+        """
+        The base this allocation takes of its payment: what the payment
+        booked for all of it applied so far, less what its other allocations
+        took, as each recorded it (O209, as document_slice).
+        """
         payment = self.payment
         booked = booked_on(payment.journal_entry, control_account) if payment.journal_entry_id else None
         if booked is None:
             return round_money(self.amount * (payment.exchange_rate or Decimal("1")))
         after = allocated_on(payment)
-        return slice_of(booked, payment.amount, after - self.amount, self.amount)
+        others = allocations_of(payment, excluding=self)
+        if not payment.amount or any(row.payment_base is None for row in others):
+            return slice_of(booked, payment.amount, after - self.amount, self.amount)
+        taken = sum((row.payment_base for row in others), Decimal("0"))
+        return round_money(booked * min(after, payment.amount) / payment.amount) - taken
 
     @transaction.atomic
     def delete(self, *args, **kwargs):
@@ -505,6 +538,17 @@ ALLOCATION_MODELS = []
 def register_allocation_model(model):
     if model not in ALLOCATION_MODELS:
         ALLOCATION_MODELS.append(model)
+
+
+def allocations_of(payment, excluding=None):
+    """Every allocation of `payment`, on either side, less `excluding`."""
+    rows = []
+    for model in ALLOCATION_MODELS:
+        found = model.objects.filter(payment=payment)
+        if isinstance(excluding, model) and excluding.pk:
+            found = found.exclude(pk=excluding.pk)
+        rows.extend(found)
+    return rows
 
 
 def allocated_on(payment, excluding=None):
