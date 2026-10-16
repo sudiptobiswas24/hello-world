@@ -365,6 +365,9 @@ class InvoiceNumberProbes(ProbeCase):
             self.draft("\ufb03" * 64)
         self.assertLessEqual(len(vendor_invoice_key("x" * 64, D(2026, 6, 1))), 80)
 
+
+# ---------------------------------------------------------------- O154, O190: the supplier's credit-note number
+class SupplierNoteProbes(ProbeCase):
     def note(self):
         bill = self.hand_bill(None, "10", "100", link=False)
         bill.post()
@@ -398,18 +401,37 @@ class InvoiceNumberProbes(ProbeCase):
         kept = Bill.objects.get(pk=note.pk)
         self.assertTrue(kept.supplier_note_key.endswith("CN-9") or "CN9" in kept.supplier_note_key.upper())
 
-    def test_05_a_number_given_without_its_date_can_still_be_completed(self):
-        """Never changed after: but a date left off the first time must not freeze the note out of GSTR-2B pairing."""
+    def test_05_a_number_given_without_its_date_is_completed_with_a_reason_by_whoever_posts_bills(self):
+        """
+        Q1, decided: corrected by the role that posts bills, with a reason the history keeps; never cleared.
+        In setup_roles that is the AP Manager (purchasing.post_bill); the Controller does not post bills.
+        """
+        from django.contrib.auth.models import Group, User
+        from django.core.exceptions import PermissionDenied
+        from django.core.management import call_command
+
+        from apps.core.history import RecordEvent
+
+        call_command("setup_roles", verbosity=0)
+        controller, clerk = User.objects.create_user("ap"), User.objects.create_user("clerk")
+        controller.groups.add(Group.objects.get(name="AP Manager"))
+        clerk.groups.add(Group.objects.get(name="Purchasing Clerk"))
         note = self.note()
         note.record_supplier_note("CN-9")
+        with self.assertRaisesMessage(ValidationError, "corrected only with a reason"):
+            Bill.objects.get(pk=note.pk).record_supplier_note("CN-9", D(2026, 1, 20), by=controller)
+        with self.assertRaises(PermissionDenied):
+            Bill.objects.get(pk=note.pk).record_supplier_note("CN-9", D(2026, 1, 20), by=clerk, reason="date")
+        with self.assertRaisesMessage(ValidationError, "Give the number"):
+            Bill.objects.get(pk=note.pk).record_supplier_note("", by=controller, reason="clear it")
+        Bill.objects.get(pk=note.pk).record_supplier_note("CN-9", D(2026, 1, 20), by=controller,
+                                                          reason="Date left off the first time")
         kept = Bill.objects.get(pk=note.pk)
-        try:
-            kept.record_supplier_note("CN-9", D(2026, 1, 20))
-        except ValidationError:
-            pass
-        self.assertIsNotNone(Bill.objects.get(pk=note.pk).supplier_note_date,
-                             f"posted note key {Bill.objects.get(pk=note.pk).supplier_note_key!r} has no year and "
-                             "the date can never be added")
+        self.assertEqual((kept.supplier_note_number, kept.supplier_note_date), ("CN-9", D(2026, 1, 20)))
+        self.assertTrue(RecordEvent.objects.filter(
+            object_id=note.pk, action="correct supplier note",
+            summary="Supplier credit note CN-9 corrected to CN-9 dated 2026-01-20: Date left off the first time",
+            who=controller).exists())
 
     def test_04_two_notes_cannot_answer_one_credit_note(self):
         first, second = self.note(), None
@@ -563,6 +585,7 @@ class MatchProbes(ProbeCase):
         line = order.lines.get()
         self.receive_on(order, "10", D(2026, 1, 5))
         bad = []
+        # 99.45 less 5% is 94.4775 a unit, inside 94.50: the reviewer's expectation was the arithmetic (mistake 7).
         for price, discount in (("100", "10"), ("90", "0"), ("94.50", "0"), ("94.51", "0"), ("100", "0"), ("99.45", "5")):
             try:
                 self.hand_bill(line, "1", price, discount=discount, order=order,
@@ -571,7 +594,7 @@ class MatchProbes(ProbeCase):
             except ValidationError:
                 bad.append((price, discount, "refused"))
         self.assertEqual(bad, [("100", "10", "accepted"), ("90", "0", "accepted"), ("94.50", "0", "accepted"),
-                               ("94.51", "0", "refused"), ("100", "0", "refused"), ("99.45", "5", "refused")])
+                               ("94.51", "0", "refused"), ("100", "0", "refused"), ("99.45", "5", "accepted")])
 
 
 class PolicyProbes(tests_vendor_prices.VendorPriceTestCase):
