@@ -388,6 +388,23 @@ class JournalEntry(AuditModel):
         self.posted_at = timezone.now()
         super(JournalEntry, self).save(update_fields=["posted", "posted_at", "updated_at"])
 
+    def refuse_accounts_in_another_currency(self):
+        """
+        Asked of an entry keyed by hand (review F8): a journal line carries base money only, so it is not
+        posted to an account kept in another currency (an EEFC account), whose movements are payments in
+        that currency (O24). Documents that move money through such an account post in its currency.
+        """
+        from apps.core.models import Company
+
+        base = Company.get().base_currency_id
+        for line in self.lines.select_related("account__currency"):
+            account = line.account
+            if account.currency_id and account.currency_id != base:
+                raise ValidationError(
+                    f"{account.code} {account.name} is kept in {account.currency.code}; an entry keyed by hand "
+                    f"carries base money only, so it is not posted to it. Record the movement as a payment in "
+                    f"{account.currency.code}.")
+
     @serialised("posted")
     def create_reversal(self, entry_date=None, memo=""):
         if not self.posted:
@@ -1707,6 +1724,12 @@ class BankStatementLine(AuditModel):
                     f"JE-{entry.pk} ({entry.reference or entry.memo}) already moved {self.amount} through {bank} on "
                     f"{entry.date} and no line is matched to it: match this line to it rather than post it again.")
         memo = memo or self.description or f"Bank statement {self.statement}"
+        from apps.core.models import Company
+
+        base = Company.get().base_currency_id
+        if bank.currency_id and bank.currency_id != base:
+            raise ValidationError(f"{bank} is kept in {bank.currency.code}; a line posted from its statement would "
+                                  "carry base money (review F8). Record it as a payment in its currency.")
         entry = JournalEntry.objects.create(
             date=to_date(self.date), reference=self.reference, memo=memo
         )

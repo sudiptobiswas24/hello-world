@@ -587,6 +587,36 @@ class AnAccountInAnotherCurrencyTests(ReconciliationTestCase):
         payment.post()
         self.assertEqual(payment.base_amount(), Decimal("110.00"))
 
+    def test_an_entry_keyed_by_hand_or_a_statement_line_posted_to_it_is_refused(self):
+        # Review F8: the other doors into an account kept in euros carry base money, and are refused in words.
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from .models import JournalEntry, JournalLine
+
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        eefc = Account.objects.create(code="1020", name="EEFC EUR", account_type=AccountType.ASSET,
+                                      holds_money=True, currency=eur)
+        entry = JournalEntry.objects.create(date=datetime.date(2026, 1, 5), memo="Keyed by hand")
+        JournalLine.objects.create(entry=entry, account=eefc, debit=Decimal("100"))
+        JournalLine.objects.create(entry=entry, account=self.charges, credit=Decimal("100"))
+        call_command("setup_roles", verbosity=0)
+        user = User.objects.create_user("controller")
+        user.groups.add(Group.objects.get(name="Controller"))
+        client = APIClient()
+        client.force_authenticate(user)
+        answer = client.post(f"/api/accounting/journal-entries/{entry.pk}/post_entry/", {}, format="json")
+        self.assertEqual(answer.status_code, 400, answer.content)
+        self.assertIn("is kept in EUR; an entry keyed by hand carries base money only", answer.content.decode())
+        entry.refresh_from_db()
+        self.assertFalse(entry.posted)
+        statement = BankStatement.objects.create(bank_account=eefc, start_date=datetime.date(2026, 1, 1),
+                                                 end_date=datetime.date(2026, 1, 31), opening_balance=Decimal("0"),
+                                                 closing_balance=Decimal("-5"))
+        line = self.line(statement, "-5")
+        with self.assertRaisesMessage(ValidationError, "is kept in EUR; a line posted from its statement"):
+            line.post_to(self.charges)
 
 
 class AReturnBeforeItsLateVoidTests(ReconciliationTestCase):
