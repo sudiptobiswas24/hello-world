@@ -4684,7 +4684,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     @serialised("posted", held_first=True)
     def create_debit_note(self, memo="", quantities=None, accruals=None, amount=None,
-                          supplier_note_number="", supplier_note_date=None):
+                          supplier_note_number="", supplier_note_date=None, post=True):
         """
         Debit this bill. By default the whole thing; pass `quantities` as
         {bill_line: quantity} to give back part of it, which is what a
@@ -4761,7 +4761,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 ])
             note_line.taxes.set(line.taxes.all())
         self._take_back_tcs(debit_note)
-        debit_note.post(memo=memo)
+        # `post=False`: raised by someone who may not post bills (a goods return), it waits as a draft,
+        # its TCS with it, for the AP side to post (review F8).
+        if post:
+            debit_note.post(memo=memo)
         return debit_note
 
     def _take_back_tcs(self, note):
@@ -7409,7 +7412,7 @@ class GoodsReceipt(AuditModel):
         return close_to_dos(self, by, outcome)
 
     @serialised("posted", held_first=True)
-    def reject(self, quantities=None, note="", debit_bills=True):
+    def reject(self, quantities=None, note="", debit_bills=True, post_notes=True):
         """
         Send failed goods back to the vendor.
 
@@ -7427,7 +7430,7 @@ class GoodsReceipt(AuditModel):
             )
         return self.create_return(
             quantities={line: quantity for line, quantity in selected},
-            debit_bills=debit_bills, from_inspection=True,
+            debit_bills=debit_bills, from_inspection=True, post_notes=post_notes,
         )
 
     def _inspection_selection(self, quantities):
@@ -7779,7 +7782,7 @@ class GoodsReceipt(AuditModel):
         holding = receipts_billed_by(line.order_line, excluding=self).get(original.pk, {})
         return [(row, holding[row.pk]) for row in bill_lines if holding.get(row.pk, Decimal("0")) > 0]
 
-    def _debit_returned_goods(self):
+    def _debit_returned_goods(self, post=True):
         """
         Debit the bills that paid for the returned goods.
 
@@ -7826,7 +7829,7 @@ class GoodsReceipt(AuditModel):
         return [
             bill.create_debit_note(
                 memo=f"Goods returned on {self.number}", quantities=quantities,
-                accruals=returned.get(bill, {}),
+                accruals=returned.get(bill, {}), post=post,
             )
             for bill, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
         ]
@@ -7889,7 +7892,7 @@ class GoodsReceipt(AuditModel):
         return orders + [SalesOrder(pk=pk) for pk in sold]
 
     @serialised("posted", held_first="locked_before_returning")
-    def create_return(self, quantities=None, debit_bills=True, from_inspection=False):
+    def create_return(self, quantities=None, debit_bills=True, from_inspection=False, post_notes=True):
         """
         Send goods back. By default all of them; pass `quantities` as
         {receipt_line: quantity} to send back part, which is what a
@@ -7964,7 +7967,7 @@ class GoodsReceipt(AuditModel):
                       .order_by("pk"), refresh=False)
         return_receipt.post()
         return_receipt.debit_notes_created = (
-            return_receipt._debit_returned_goods() if debit_bills else []
+            return_receipt._debit_returned_goods(post=post_notes) if debit_bills else []
         )
         self.close_when_nothing_is_held(
             None, f"Sent back to {self.purchase_order.vendor} with {return_receipt.number}: nothing on "

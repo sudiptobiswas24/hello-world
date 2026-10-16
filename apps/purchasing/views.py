@@ -487,8 +487,10 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
         if not str(request.data.get("note", "")).strip():
             raise DRFValidationError({"note": ["Say why they failed: it is the vendor's record."]})
+        # Its debit notes post only for whoever may post bills; anyone else's wait as drafts (review F8).
         returned = receipt.reject(quantities=quantities, note=str(request.data["note"]),
-                                  debit_bills=flag(request.data, "debit_bills", True))
+                                  debit_bills=flag(request.data, "debit_bills", True),
+                                  post_notes=request.user.has_perm("purchasing.post_bill"))
         return Response({"return": returned.pk, "number": returned.number}, status=201)
 
     @action(detail=True, methods=["post"])
@@ -517,7 +519,9 @@ class GoodsReceiptViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         quantities = quantities_by_line(request.data.get("quantities"), receipt.lines.all(), "receipt")
         debit = flag(request.data, "debit_bills", True)
         try:
-            return_receipt = receipt.create_return(quantities=quantities, debit_bills=debit)
+            # Its debit notes post only for whoever may post bills; anyone else's wait as drafts (review F8).
+            return_receipt = receipt.create_return(quantities=quantities, debit_bills=debit,
+                                                   post_notes=request.user.has_perm("purchasing.post_bill"))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         return Response(self.get_serializer(return_receipt).data)
