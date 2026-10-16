@@ -217,6 +217,13 @@ built.
    Also: freight billed on a scrap invoice counted in the TCS base (the
    code counts it, shared by goods value on a mixed invoice); the TCS rate
    on scrap under section 394 (1% or 2%).
+   Added by g22:
+   - whether a supplier's GST invoice value, and so GSTR-2B's comparison,
+     includes income-tax TCS (the code includes it);
+   - that TDS deducts nothing until each section's rate is confirmed on
+     the TDS rates screen: go-live waits on that;
+   - whether a lower-deduction certificate's validity should be kept
+     (today one undated rate on the party).
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
