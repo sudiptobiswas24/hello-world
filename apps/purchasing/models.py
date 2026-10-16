@@ -3430,12 +3430,6 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 guard(self, self.supplier_note_number)
         self.supplier_note_number, self.supplier_note_date = number, to_date(day)
         self._check_supplier_note()
-        clash = (Bill.objects.filter(vendor_id=self.vendor_id, debits__isnull=False,
-                                     supplier_note_key=self.supplier_note_key).exclude(pk=self.pk).first())
-        if clash is not None:
-            raise ValidationError({"supplier_note_number": [
-                f"{clash} already answers {self.vendor}'s credit note {clash.supplier_note_number}; one "
-                "credit note is answered by one debit note."]})
         self.save(update_fields=sorted(self.SUPPLIER_NOTE_FIELDS))
         return self
 
@@ -3453,6 +3447,15 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         if not self.debits_id:
             raise ValidationError({"supplier_note_number": [
                 "Only a debit note records a supplier's credit note; a bill's own number is its reference."]})
+        # Asked wherever the key is made, clean() included: a note migration 0063 left unkeyed,
+        # edited as a draft, was re-keyed here and refused by the constraint in no words (O190).
+        clash = (Bill.objects.filter(vendor_id=self.vendor_id, debits__isnull=False,
+                                     supplier_note_key=self.supplier_note_key).exclude(pk=self.pk).first()
+                 if self.supplier_note_key else None)
+        if clash is not None:
+            raise ValidationError({"supplier_note_number": [
+                f"{clash} already answers {self.vendor}'s credit note {clash.supplier_note_number}; one "
+                "credit note is answered by one debit note."]})
         day = self.supplier_note_date
         if day is not None and day < to_date(self.debits.bill_date):
             raise ValidationError({"supplier_note_date": [
