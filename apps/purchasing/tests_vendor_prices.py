@@ -326,3 +326,21 @@ class AConfirmedOrderChangesWithinItsApprovalTests(VendorPriceTestCase):
         line.unit_price = Decimal("60")
         with self.assertRaisesMessage(ValidationError, "is priced at 60, above the 50 agreed"):
             line.save()
+
+    def test_a_tax_added_to_a_confirmed_line_is_asked_and_undone_when_refused(self):
+        """Review F3: 18 x 50 = 900 confirmed under 1,000; GST 18% would make it 1,062."""
+        from apps.accounting.models import Account, AccountType, Tax, TaxGroup, TaxScope
+
+        group = TaxGroup.objects.create(code="GST", name="GST")
+        itc = Account.objects.create(code="1300", name="GST input", account_type=AccountType.ASSET)
+        gst = Tax.objects.create(code="GST18", name="GST 18%", rate=Decimal("18"), group=group, scope=TaxScope.BOTH,
+                                 collected_account=itc, paid_account=itc)
+        line = self.confirmed("18")
+        from django.db import transaction
+
+        # In a transaction of its own, as a request's write is: the refusal takes the tax with it.
+        with self.assertRaisesMessage(ValidationError, "The order is 1062.00, above the 1000.00 limit."), \
+                transaction.atomic():
+            line.taxes.set([gst])
+        self.assertEqual((list(line.taxes.all()), PurchaseOrder.objects.get(pk=line.order_id).total()),
+                         ([], Decimal("900.00")))
