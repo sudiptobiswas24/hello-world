@@ -14,7 +14,7 @@ Z = Decimal
 
 
 @tag("migration")
-class FixPurchMigrationProbes(TransactionTestCase):
+class KeyedAndDatedMigrationTests(TransactionTestCase):
     def migrate(self, *targets):
         executor = MigrationExecutor(connection)
         executor.migrate(list(targets))
