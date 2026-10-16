@@ -29,7 +29,7 @@ class Who:
         return self._clients[role]
 
 
-class RoleProbes(Who, RolesTestCase, ProbeCase):
+class WhoMayKeepRatesNotesAndReturnsTests(Who, RolesTestCase, ProbeCase):
     def setUp(self):
         ProbeCase.setUp(self)
         RolesTestCase.setUp(self)
@@ -148,7 +148,7 @@ class RoleProbes(Who, RolesTestCase, ProbeCase):
         self.assertEqual(TdsRate.objects.get(pk=rate.pk).confirmed_by_id, first.pk)
 
 
-class ConfirmedOrderPathProbes(Who, RolesTestCase, ProbeCase):
+class ConfirmedPurchaseOrderPathsTests(Who, RolesTestCase, ProbeCase):
     def setUp(self):
         ProbeCase.setUp(self)
         RolesTestCase.setUp(self)
@@ -191,7 +191,7 @@ class ConfirmedOrderPathProbes(Who, RolesTestCase, ProbeCase):
         self.assertTrue(PurchaseOrderLine.objects.filter(pk=line.pk).exists(), "a line received 10 is gone")
 
 
-class SalesPathProbes(tests_guards.TradeRuleCase):
+class ConfirmedSalesOrderPathsTests(tests_guards.TradeRuleCase):
     def test_01_tax_patched_onto_a_confirmed_sales_line_cannot_take_the_order_past_its_limit(self):
         from apps.sales.models import ApprovalPolicy, SalesOrder
 
