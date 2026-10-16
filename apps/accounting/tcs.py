@@ -27,6 +27,8 @@ from django.db.models import Q
 
 from apps.core.models import AuditModel
 
+from .dated_rates import DatedRate, rate_standing
+
 
 class TcsSection(AuditModel):
     code = models.CharField(max_length=16, unique=True, help_text="206C(1), or 394 from April 2026")
@@ -62,19 +64,10 @@ class TcsSection(AuditModel):
 
     def rate_on(self, day):
         """The rate row that applies on `day`, confirmed by the accountant; refused in words otherwise."""
-        rate = self.rates.filter(applies_from__lte=day).order_by("-applies_from", "-pk").first()
-        if rate is None:
-            raise ValidationError(f"TCS under {self.code} has no rate from {day:%d %b %Y} or before; the "
-                                  "accountant enters the rate the law sets and the day it applies from.")
-        if rate.confirmed_on is None:
-            raise ValidationError(
-                f"The {self.code} rate of {rate.rate_percent.normalize():f}% from {rate.applies_from:%d %b %Y} "
-                "is not confirmed by the accountant, so nothing is collected at it yet. Confirm it, or correct "
-                "it, under the TCS rates.")
-        return rate
+        return rate_standing(self, day, "TCS", "collected", "TCS rates")
 
 
-class TcsRate(AuditModel):
+class TcsRate(DatedRate, AuditModel):
     section = models.ForeignKey(TcsSection, on_delete=models.PROTECT, related_name="rates")
     applies_from = models.DateField(help_text="The first day the law sets this rate for.")
     rate_percent = models.DecimalField(max_digits=7, decimal_places=4,
@@ -108,31 +101,10 @@ class TcsRate(AuditModel):
     def __str__(self):
         return f"{self.section.code} {self.rate_percent.normalize():f}% from {self.applies_from}"
 
-    def save(self, *args, **kwargs):
-        if not self._state.adding:
-            before = TcsRate.objects.get(pk=self.pk)
-            changed = any(getattr(before, name) != getattr(self, name)
-                          for name in ("section_id", "applies_from", "rate_percent", "no_pan_rate_percent",
-                                       "section_code"))
-            if changed and self.collections.exists():
-                raise ValidationError("Invoices collected at this rate; a new rate is a new row from the day "
-                                      "it applies.")
-            if changed:
-                # A changed figure is a new figure: the accountant confirms it again.
-                self.confirmed_by, self.confirmed_on = None, None
-        super().save(*args, **kwargs)
-
-    def delete(self, *args, **kwargs):
-        if self.collections.exists():
-            raise ValidationError("Invoices collected at this rate; it stays.")
-        return super().delete(*args, **kwargs)
-
-    def confirm(self, user):
-        """The accountant's word that the rate is the law's: from now it is collected at."""
-        from django.utils import timezone
-
-        self.confirmed_by, self.confirmed_on = user, timezone.localdate()
-        super().save(update_fields=["confirmed_by", "confirmed_on", "updated_at"])
+    # The dated-rate rules, shared with TDS (accounting.dated_rates).
+    FIGURES = ("section_id", "applies_from", "rate_percent", "no_pan_rate_percent", "section_code")
+    TAKEN_BY = "collections"
+    TAKEN_WORDS = "Invoices collected"
 
 
 class TcsDeclaration(AuditModel):

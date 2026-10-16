@@ -1273,6 +1273,13 @@ export const MODULES: Module[] = [
         detail: () => import("../modules/settings/TdsSectionForm"),
       },
       {
+        path: "tds-rates", label: "TDS rates", permission: "accounting.view_tdsrate",
+        keep: "accounting.change_tdsrate",
+        create: "accounting.add_tdsrate",
+        keywords: "tds rate confirm 194q 194c 194j", load: () => import("../modules/settings/TdsRates"),
+        detail: () => import("../modules/settings/TdsRateForm"),
+      },
+      {
         path: "tcs-sections", label: "TCS sections", permission: "accounting.view_tcssection",
         keep: "accounting.change_tcssection",
         create: "accounting.add_tcssection",

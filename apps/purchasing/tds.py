@@ -41,6 +41,11 @@ class TdsDeduction(AuditModel):
     # vendor later does not change what was deducted.
     base = models.DecimalField(max_digits=18, decimal_places=2)
     rate_percent = models.DecimalField(max_digits=7, decimal_places=4)
+    rate = models.ForeignKey(
+        "accounting.TdsRate", null=True, blank=True, on_delete=models.PROTECT, related_name="deductions",
+        editable=False,
+        help_text="The section's rate row it was deducted at, as it stood on its day (O233); empty for a "
+                  "lower-deduction certificate's rate, and for deductions made before rates were dated.")
     pan = models.CharField(max_length=10, blank=True)
     amount = models.DecimalField(max_digits=18, decimal_places=2)
     date = models.DateField()
@@ -82,7 +87,7 @@ class TdsDeduction(AuditModel):
             # challan that paid it, are facts; reverse() takes a deduction back.
             before = TdsDeduction.objects.get(pk=self.pk)
             if any(getattr(before, name) != getattr(self, name)
-                   for name in ("bill_id", "section_id", "base", "rate_percent", "pan", "amount", "date",
+                   for name in ("bill_id", "section_id", "base", "rate_percent", "rate_id", "pan", "amount", "date",
                                 "journal_entry_id", "posted_account_id", "challan_id")):
                 raise ValidationError("What was deducted is a fact, and so is the challan that paid it over; "
                                       "reverse the deduction instead.")
@@ -123,7 +128,10 @@ def deduct(bill, section=None, on_date=None):
             raise ValidationError("Deduct on the bill the prepayment is drawn against.")
         if bill.currency_id not in (None, Company.get().base_currency_id):
             raise ValidationError("Tax on a payment abroad is section 195, which is not built.")
-        section, rate, pan = deduction_terms(bill.vendor, section)
+        # The day it is deducted on, which is the day its rate is read for (O233): a rate changed
+        # since is a new row from its own day and moves nothing taken before it.
+        day = to_date(on_date) or to_date(bill.bill_date)
+        section, rate, pan, rate_row = deduction_terms(bill.vendor, section, day)
         if section.payable_account_id is None:
             raise ValidationError(f"{section} has no payable account to owe the tax into.")
         if _live(bill.tds_deductions.filter(section=section)).exists() or _live(
@@ -155,7 +163,6 @@ def deduct(bill, section=None, on_date=None):
         # Deducted when the bill is booked, which is when the law says it is
         # owed (on credit or payment, whichever is first): the challan for
         # the bill's month is the one that pays it.
-        day = to_date(on_date) or to_date(bill.bill_date)
         memo = f"TDS {section.code} on {bill.number}"
         entry = JournalEntry.objects.create(date=day, reference=bill.number, memo=memo)
         JournalLine.objects.create(entry=entry, account=bill.payable_account, party=bill.vendor,
@@ -165,7 +172,7 @@ def deduct(bill, section=None, on_date=None):
                                    credit=amount, description=memo)
         entry.post()
         deduction = TdsDeduction.objects.create(
-            bill=bill, section=section, base=base, rate_percent=rate, pan=pan, amount=amount,
+            bill=bill, section=section, base=base, rate_percent=rate, rate=rate_row, pan=pan, amount=amount,
             date=day, journal_entry=entry, posted_account=account)
         # The earlier bills only when this deduction took them in: taxed alone
         # past the single limit, they stay untaxed for the year's limit to catch.

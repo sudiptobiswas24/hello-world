@@ -383,7 +383,7 @@ class StillOwedAgreesWithAmountDueTests(ScreensTestCase):
         from apps.accounting.models import Account, AccountType, TdsSection
 
         goods = TdsSection.objects.create(
-            code="194Q", name="Purchase of goods", rate_percent=Decimal("0.1"), no_pan_rate_percent=Decimal("5"),
+            code="194Q", name="Purchase of goods",
             mode="excess", annual_threshold=Decimal("5000000"), receivable_account=Account.objects.create(
                 code="1450", name="TDS receivable", account_type=AccountType.ASSET))
         settled["paid less tax withheld"] = invoice()
