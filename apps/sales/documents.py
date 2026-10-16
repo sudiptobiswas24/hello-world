@@ -171,11 +171,18 @@ def tax_invoice(invoice, copy="original"):
     issued = invoice.issued_as or issued_particulars(invoice)
     supplier, recipient = issued["supplier"], issued["recipient"]
     note = invoice.is_credit_note()
-    if note:
+    if note and invoice.credits.is_down_payment:
+        # CGST Rule 51: an advance given back is a refund voucher, naming the receipt voucher (O238).
+        heading = "Refund Voucher"
+    elif note:
         heading = "Credit Note"
     elif invoice.is_debit_note():
         heading = "Debit Note"
-    elif supplier["gstin"] and not invoice.is_down_payment:
+    elif invoice.is_down_payment:
+        # CGST Rule 50: an advance received is a receipt voucher, not an invoice; for job work, a service,
+        # it carries the tax due on it (O238).
+        heading = "Receipt Voucher"
+    elif supplier["gstin"]:
         heading = "Tax Invoice"
     else:
         heading = "Invoice"
