@@ -1257,3 +1257,34 @@ class ThePriceLegReadsTheDiscountTests(ProbeCase):
         self.hand_bill(order.lines.get(), "5", "90", order=order).post()
         self.assertEqual(self.balance(self.ppv), Decimal("0"))
         self.assertEqual(self.balance(self.payable), Decimal("-900.00"))
+
+
+class OneVendorInvoiceInItsYearTests(ProbeCase):
+    """O95. INV-77 on file for V-1, billed 10 January 2026 (the year from 1 April 2025)."""
+
+    def setUp(self):
+        super().setUp()
+        self.po = self.order()
+        self.receive(self.po, "10")
+        self.first = self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference="INV-77")
+        self.first.post()
+
+    def test_the_same_number_in_another_case_or_spacing_is_refused(self):
+        for written in ("inv-77", "INV 77", "inv/77", "I.N.V-77", " INV77 "):
+            with self.subTest(written=written):
+                with self.assertRaisesMessage(ValidationError, f"invoice '{written}' is already on file as 'INV-77' as "
+                                                               f"{self.first}, dated 2026-01-10"):
+                    self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference=written)
+        self.assertEqual(self.balance(self.payable), Decimal("-10.00"))
+
+    def test_the_number_again_in_the_next_year_or_from_another_vendor_stands(self):
+        self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference="INV-77", day=datetime.date(2026, 4, 1)).post()
+        other = self.other_vendor()
+        Bill.objects.create(vendor=other, bill_date=JAN(10), payable_account=self.payable, currency=self.usd,
+                            reference="INV-77")
+        self.assertEqual(Bill.objects.filter(reference_key="2025:INV77").count(), 2)
+        self.assertEqual(Bill.objects.filter(reference_key="2026:INV77").count(), 1)
+
+    def test_a_distinct_number_stands(self):
+        self.hand_bill(self.po.lines.get(), "2", "5", order=self.po, reference="INV-771").post()
+        self.assertEqual(self.balance(self.payable), Decimal("-20.00"))

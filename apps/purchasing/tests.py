@@ -550,3 +550,74 @@ class SupplierNoteKeyMigrationTests(_MigrationTestCase):
         # The note that kept the key is still one: a further CN-9 of that vendor and year is refused.
         with self.assertRaises(IntegrityError), transaction.atomic():
             Bill.objects.filter(pk=spare.pk).update(supplier_note_key="2026:CN-9")
+
+
+@_tag("migration")
+class VendorInvoiceKeyMigrationTests(_MigrationTestCase):
+    """
+    purchasing 0076 keys each bill's vendor invoice number within its year
+    (O95). The old exact constraint let "INV-77" and "inv-77" of one vendor
+    stand side by side; the new one would have crashed over them.
+    """
+
+    P75 = [("purchasing", "0075_order_approved_figures")]
+    P76 = [("purchasing", "0076_a_vendor_invoice_is_one_in_its_year")]
+
+    def migrate(self, target):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(target)
+        return executor
+
+    def setUp(self):
+        self.addCleanup(lambda: self.migrate(self.migrate([]).loader.graph.leaf_nodes()))
+        executor = self.migrate(self.P75)
+        self.old = executor.loader.project_state(self.P75).apps
+        now = executor.loader.project_state(executor.loader.graph.leaf_nodes()).apps
+        self.v1 = now.get_model("core", "Party").objects.create(code="V1", name="V1")
+        self.v2 = now.get_model("core", "Party").objects.create(code="V2", name="V2")
+        self.pay = now.get_model("accounting", "Account").objects.create(code="2000", name="AP",
+                                                                         account_type="liability")
+        self.made = 0
+
+    def bill(self, vendor, day, reference="", debits=None):
+        self.made += 1
+        return self.old.get_model("purchasing", "Bill").objects.create(
+            vendor_id=vendor.pk, bill_date=day, payable_account_id=self.pay.pk, number=f"B{self.made}",
+            debits_id=debits.pk if debits else None, reference=reference)
+
+    def forward(self):
+        import contextlib
+        import io
+
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            executor = self.migrate(self.P76)
+        Bill = executor.loader.project_state(self.P76).apps.get_model("purchasing", "Bill")
+        return Bill, printed.getvalue()
+
+    def test_keys_each_invoice_in_its_year_and_reports_what_it_makes_one(self):
+        from django.db import IntegrityError, transaction
+
+        D = datetime.date
+        rows = {
+            "first": self.bill(self.v1, D(2026, 1, 10), "INV-77"),
+            "other_case": self.bill(self.v1, D(2026, 1, 11), "inv-77"),
+            "spaced": self.bill(self.v1, D(2026, 2, 1), "INV / 77"),
+            "next_year": self.bill(self.v1, D(2026, 4, 1), "INV-77 "),
+            "31mar": self.bill(self.v1, D(2026, 3, 31), "X.5"),
+            "other_vendor": self.bill(self.v2, D(2026, 1, 10), "INV-77"),
+            "none": self.bill(self.v1, D(2026, 1, 12), ""),
+        }
+        rows["note"] = self.bill(self.v1, D(2026, 1, 20), "INV-77", debits=rows["first"])
+        Bill, printed = self.forward()
+        got = {name: Bill.objects.get(pk=row.pk).reference_key for name, row in rows.items()}
+        self.assertEqual(got, {"first": "2025:INV77", "other_case": "", "spaced": "", "next_year": "2026:INV77",
+                               "31mar": "2025:X5", "other_vendor": "2025:INV77", "none": "", "note": ""})
+        self.assertIn("B2 bills vendor invoice 'inv-77', which is 'INV-77' on B1", printed)
+        self.assertIn("B3 bills vendor invoice 'INV / 77', which is 'INV-77' on B1", printed)
+        self.assertEqual(printed.count("purchasing 0076"), 2)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Bill.objects.filter(pk=rows["other_case"].pk).update(reference_key="2025:INV77")
