@@ -121,6 +121,7 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
     date_field = "request_date"
     ordering_fields = ["request_date", "number"]
     action_permission_map = {
+        "suggested_vendors": "purchasing.view_purchaserequisition",
         "submit": "purchasing.change_purchaserequisition",
         # The requester's own, or the decider's: which, the requisition says (check_canceller).
         "cancel": ("purchasing.decide_purchaserequisition", "purchasing.change_purchaserequisition"),
@@ -129,6 +130,14 @@ class PurchaseRequisitionViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "order": "purchasing.add_purchaseorder",
         "rfq": "purchasing.add_requestforquotation",
     }
+
+    @action(detail=True, methods=["get"])
+    def suggested_vendors(self, request, pk=None):
+        """Who each line could be bought from, from the agreed prices (O109: built and never reached)."""
+        requisition = self.get_object()
+        return Response([{"line": line.pk, "item": line.item_id, "vendor": vendor.pk if vendor else None,
+                          "vendor_name": vendor.name if vendor else None}
+                         for line, vendor in requisition.suggested_vendors().items()])
 
     def _answer(self, requisition):
         requisition.refresh_from_db()
