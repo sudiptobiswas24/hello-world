@@ -6539,6 +6539,17 @@ def assembled_from(lot):
     return [source for line in lines for source in held_sources(line)]
 
 
+def _assembled_from_for_page(lots):
+    """`assembled_from` for a page of batches (O231): asked only of those a subcontractor's receipt brought in."""
+    received = set(GoodsReceiptLine.objects.filter(
+        lot__in=lots, receipt__posted=True, receipt__reverses__isnull=True,
+        order_line__components__isnull=False).values_list("lot_id", flat=True))
+    return {lot.pk: assembled_from(lot) for lot in lots if lot.pk in received}
+
+
+assembled_from.for_page = _assembled_from_for_page
+
+
 def assemblies_made_from(lot):
     """
     `assembled_from` the other way (O207): the assemblies a subcontractor

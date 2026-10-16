@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from django.db.models import Sum
 from rest_framework import serializers
 
 from .models import (
@@ -121,7 +124,15 @@ class LotSerializer(serializers.ModelSerializer):
     def get_held_because(self, lot):
         from .tracking import held_because
 
+        page = self.context.get("held_because")
+        if page is not None and lot.pk in page:
+            return page[lot.pk]
         return held_because(lot)
+
+    @classmethod
+    def many_init(cls, *args, **kwargs):
+        kwargs["child"] = cls(*args[1:], **{k: v for k, v in kwargs.items() if k != "many"})
+        return LotListSerializer(*args, **kwargs)
 
     def get_item_label(self, lot):
         return f"{lot.item.sku} · {lot.item.name}"
@@ -135,10 +146,28 @@ class LotSerializer(serializers.ModelSerializer):
         ]
 
     def get_on_hand(self, lot):
+        page = self.context.get("on_hand")
+        if page is not None and lot.pk in page:
+            return page[lot.pk]
         return lot.on_hand_at()
 
     def get_has_expired(self, lot):
         return lot.has_expired()
+
+
+class LotListSerializer(serializers.ListSerializer):
+    """A page of batches: the gate asked once for the page, not once a row (O231)."""
+
+    def to_representation(self, data):
+        from .tracking import held_because_page
+
+        lots = list(data.all() if hasattr(data, "all") else data)
+        self.child.context["held_because"] = held_because_page(lots)
+        # And what each has on hand, in one sum for the page rather than one a row.
+        totals = dict(StockMovement.objects.filter(lot__in=lots).values("lot_id")
+                      .annotate(total=Sum("quantity")).values_list("lot_id", "total"))
+        self.child.context["on_hand"] = {lot.pk: totals.get(lot.pk) or Decimal("0") for lot in lots}
+        return super().to_representation(lots)
 
 
 class StorageBinSerializer(serializers.ModelSerializer):
