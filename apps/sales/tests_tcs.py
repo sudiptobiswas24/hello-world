@@ -629,3 +629,20 @@ class NoConfirmedRateIsARefusalTests(TcsTestCase):
         advance = order.create_down_payment_invoice(self.ar, percent=30)
         with self.assertRaisesMessage(ValidationError, "under Settings > TCS rates"):
             advance.post()
+
+
+
+class ADebitNoteOnScrapCollectsTcsTests(TcsTestCase):
+    """
+    A debit note of 1,000 on T1 (2,000 kg of scrap, 106,200 with GST, 1,062 collected): its 1,000 and 180 GST
+    are 1,180 of value TCS collects on, 12 at 1%; the credit note reversing it gives the 12 back.
+    """
+
+    def test_collected_on_the_debit_note_and_given_back_by_its_reverse(self):
+        invoice = self.t1()
+        note = invoice.debit("1000", "Rate agreed at 45.50", on_date=DAY)
+        (row,) = note.tcs_collected.all()
+        self.assertEqual((row.base, row.amount, note.total(), self.ledger("2290")),
+                         (D("1180.00"), D("12"), D("1192.00"), D("1074.00")))
+        back = note.create_credit_note(on_date=DAY)
+        self.assertEqual((back.tcs_amount, self.ledger("2290")), (D("12"), D("1062.00")))
