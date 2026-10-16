@@ -78,6 +78,7 @@ from apps.accounting.settlement import (
     held_base_left,
     last_of_held,
     slice_of,
+    take_settlement_discount as settle_discount,
     spent_undoing,
     booked_on,
     post_drawdown,
@@ -3538,50 +3539,27 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
         return entry
 
     @serialised("settlement_discount_amount", "settlement_discount_entry")
-    def take_settlement_discount(self, on_date=None, force=False):
+    def take_settlement_discount(self, on_date=None, force=False, payment=None):
         """
-        Take the early-payment discount the vendor's terms offer.
-
-        The mirror of Invoice.apply_settlement_discount, and inert for
-        exactly as long: PaymentTerms has modelled 2/10 net 30 since the
-        kernel, Sales learned to honour it, and the purchase side never
-        did — so discounts the company was entitled to simply went
-        unclaimed, which is money left on the table every month.
+        Take the early-payment discount the vendor's terms offer, on the
+        payment that earned it (`payment`) when one is named. The mirror of
+        Invoice.apply_settlement_discount through the one function both call
+        (settlement.take_settlement_discount, O109).
 
         Dr Accounts payable / Cr settlement discount received.
         """
-        on_date = correction_date(on_date, self.bill_date, f"{self.number} takes no settlement discount on",
-                                  "it was billed")
-        amount = settlement_discount_to_take(self, on_date, force)
-
-        account = Company.get().settlement_discount_received_account
-        if account is None:
-            raise ValidationError(
-                "The company has no settlement discount received account configured."
-            )
-
-        rate = self.exchange_rate or Decimal("1")
-        base_amount = round_money(amount * rate)
-        memo = f"Settlement discount on {self.number}"
-        entry = JournalEntry.objects.create(
-            date=on_date, reference=self.number, memo=memo
-        )
-        JournalLine.objects.create(
-            entry=entry, account=self.payable_account, party=self.vendor,
-            debit=base_amount, description=memo,
-        )
-        JournalLine.objects.create(
-            entry=entry, account=account, party=self.vendor,
-            credit=base_amount, description=memo,
-        )
-        entry.post()
-
-        self.settlement_discount_amount = amount
-        self.settlement_discount_entry = entry
-        super(Bill, self).save(update_fields=[
-            "settlement_discount_amount", "settlement_discount_entry", "updated_at",
-        ])
+        if on_date is not None or payment is None:
+            on_date = correction_date(on_date, self.bill_date, f"{self.number} takes no settlement discount on",
+                                      "it was billed")
+        entry = settle_discount(
+            self, control_account=self.payable_account, party=self.vendor,
+            discount_account=Company.get().settlement_discount_received_account,
+            account_label="settlement discount received", is_receivable=False, on_date=on_date, payment=payment, force=force)
+        super(Bill, self).save(update_fields=["settlement_discount_amount", "settlement_discount_entry", "updated_at"])
         return entry
+
+    def date_for_discount(self):
+        return to_date(self.bill_date)
 
     def amount_absorbed(self):
         """

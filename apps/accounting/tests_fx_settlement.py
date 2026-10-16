@@ -939,3 +939,34 @@ class OnePaymentOverTwoDocumentsTests(PartSettlementTakesWhatIsLeftTests):
         InvoicePayment.objects.create(invoice=second, payment=receipt, amount=Decimal("50.09"))
         self.assertEqual((self.balance(self.ar), self.balance(self.loss)), (Decimal("0"), Decimal("2.47")),
                          "(AR, FX loss)")
+
+
+class BillSettlementDiscountTests(FxSettlementTestCase):
+    """
+    O109, the payable mirror through the same function: 100 EUR billed 5 January
+    at 1.12345 (112.35) on 2/10 net 30, 98 EUR paid 10 January (110.10), 2 EUR
+    discount at the bill's rate (2.25): the payable clears.
+    """
+
+    def setUp(self):
+        super().setUp()
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.12345"), valid_from=JAN5)
+        ExchangeRate.objects.create(currency=self.eur, rate=D("1.09876"), valid_from=datetime.date(2026, 2, 1))
+
+    bill = PartSettlementTakesWhatIsLeftTests.bill
+
+    def test_the_discount_on_the_payment_that_earned_it_clears_the_payable(self):
+        from apps.core.models import PaymentTerms
+        from apps.purchasing.models import Bill, BillPayment
+        received = Account.objects.create(code="4991", name="Discount received", account_type=AccountType.INCOME)
+        Company.objects.update(settlement_discount_received_account=received)
+        terms = PaymentTerms.objects.create(code="2-10", name="2/10 net 30", net_days=30,
+                                            discount_percent=D("2"), discount_days=10)
+        bill = self.bill("100")
+        Bill.objects.filter(pk=bill.pk).update(payment_terms=terms)
+        bill.refresh_from_db()
+        pay = self.euro_payment(PaymentDirection.DISBURSEMENT, "98", on=datetime.date(2026, 1, 10))
+        BillPayment.objects.create(bill=bill, payment=pay, amount=D("98"))
+        bill.take_settlement_discount(payment=pay)
+        self.assertEqual((bill.amount_due(), self.balance(self.ap), self.balance(received)),
+                         (D("0.00"), D("0"), D("-2.25")), "(due, AP, discount received)")
