@@ -963,3 +963,22 @@ class ACutIsAskedTheMarginFloorTests(TradeRuleCase):
             widgets.save()
         order = SalesOrder.objects.get(pk=order.pk)
         self.assertEqual((order.margin_percent(), order.approved_at is not None), (Decimal("38.67"), True))
+
+
+class CreditLimitInTheBaseCurrencyTests(_AuditCase):
+    """O77 (CreditLimitProbe): exposure in two currencies is weighed in one, the base."""
+
+    def test_exposure_in_two_currencies_is_weighed_in_one(self):
+        import datetime
+        from apps.core.models import Currency, ExchangeRate
+
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("1.1"), valid_from=datetime.date(2026, 1, 1))
+        CustomerProfile.objects.create(party=self.customer, credit_limit=Decimal("1000"))
+        self.make_order("6", "100")  # 600 USD, confirmed
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1), currency=eur)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("1"),
+                                      unit_price=Decimal("380"), revenue_account=self.revenue)
+        # 600 USD + 380 EUR at 1.1 (418.00) = 1,018.00 against 1,000; at face value 980 read as within it.
+        self.assertEqual(order.credit_limit_breach(), (Decimal("1018.00"), Decimal("1000")))
+        self.assertTrue(order.approval_reasons())
