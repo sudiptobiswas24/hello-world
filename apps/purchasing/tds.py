@@ -21,7 +21,7 @@ from django.db.models import Q
 
 from apps.accounting.models import Account, JournalEntry, JournalLine, TdsSection
 from apps.accounting.tds import deduction_terms, financial_year
-from apps.core.models import AuditModel, Company, lock_rows, serialised, to_date
+from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
 
 def taxable_net(bill):
@@ -110,6 +110,67 @@ class TdsDeduction(AuditModel):
         return self.reversed_entry
 
 
+def due_on(bill, on_date=None):
+    """
+    The day tax on `bill` falls due, and is deducted at the rate standing
+    on: the bill's own day (the credit), or a later one given (the
+    payment's). Never before the bill, nor a day still to come.
+    """
+    if on_date is None:
+        return to_date(bill.bill_date)
+    return correction_date(on_date, bill.bill_date, f"TDS is not deducted from {bill.number or bill} on",
+                           "it falls due on the bill's own day, or on its payment after it, and the bill is dated")
+
+
+def _owed(bill, section, rate):
+    """(base, tax, caught up, the earlier bills it takes in) on `bill` under `section` at `rate`."""
+    from .models import Bill
+
+    start, end = financial_year(to_date(bill.bill_date))
+    year = Bill.objects.filter(
+        vendor=bill.vendor, posted=True, debits__isnull=True, bill_date__gte=start, bill_date__lte=end,
+    ).exclude(is_prepayment=True).prefetch_related("lines__taxes", "debit_notes__lines__taxes")
+    earlier = [other for other in year
+               if (to_date(other.bill_date), other.pk) < (to_date(bill.bill_date), bill.pk or 0)]
+    covered = set(_live(TdsDeduction.objects.filter(section=section, covered_bills__in=earlier))
+                  .values_list("covered_bills", flat=True))
+    untaxed = [other for other in earlier if other.pk not in covered]
+    nets = {other.pk: taxable_net(other) for other in earlier}
+    base, amount, caught_up = section.owed(
+        rate, taxable_net(bill), sum(nets.values(), Decimal("0")),
+        sum((nets[other.pk] for other in untaxed), Decimal("0")))
+    return base, amount, caught_up, untaxed
+
+
+def refuse_posting_without_a_rate(bill):
+    """
+    A bill its vendor's section taxes, posted with no confirmed rate standing
+    on its day, is refused in words: deducted at nothing, the plant loses the
+    expense under section 40(a)(ia) (integrator's decision, g22). Asked of
+    the vendor's own section; a lower-deduction certificate's rate needs no
+    row; a bill under the section's thresholds needs none either.
+    """
+    profile = getattr(bill.vendor, "tax_profile", None)
+    section = profile.tds_section if profile else None
+    if section is None or not section.is_active or bill.is_debit_note() or bill.is_prepayment:
+        return
+    if bill.currency_id not in (None, Company.get().base_currency_id):
+        return
+    if profile.tds_rate_percent is not None:
+        return
+    base, _, _, _ = _owed(bill, section, Decimal("0"))
+    if base <= 0:
+        return
+    day = to_date(bill.bill_date)
+    try:
+        section.rate_on(day)
+    except ValidationError:
+        raise ValidationError(
+            f"{bill.vendor} is deducted under {section.code} and this bill is taxed under it, but no confirmed "
+            f"{section.code} rate stands on {day:%d %b %Y}: nothing would be deducted. The accountant confirms it "
+            "under Settings > TDS rates, then the bill posts.") from None
+
+
 def deduct(bill, section=None, on_date=None):
     """
     Deduct tax from a posted bill under `section`, or its vendor's.
@@ -128,9 +189,10 @@ def deduct(bill, section=None, on_date=None):
             raise ValidationError("Deduct on the bill the prepayment is drawn against.")
         if bill.currency_id not in (None, Company.get().base_currency_id):
             raise ValidationError("Tax on a payment abroad is section 195, which is not built.")
-        # The day it is deducted on, which is the day its rate is read for (O233): a rate changed
-        # since is a new row from its own day and moves nothing taken before it.
-        day = to_date(on_date) or to_date(bill.bill_date)
+        # The day it falls due, which is the day its rate is read for (O233): the bill's own day,
+        # or its payment's when deducted as it is paid. Never a day before the bill: dated earlier,
+        # it picked the rate before a change and landed in the quarter before (review F1).
+        day = due_on(bill, on_date)
         section, rate, pan, rate_row = deduction_terms(bill.vendor, section, day)
         if section.payable_account_id is None:
             raise ValidationError(f"{section} has no payable account to owe the tax into.")
@@ -138,19 +200,7 @@ def deduct(bill, section=None, on_date=None):
                 TdsDeduction.objects.filter(section=section, covered_bills=bill)).exists():
             raise ValidationError(f"Tax under {section.code} has already been deducted on {bill}.")
 
-        start, end = financial_year(to_date(bill.bill_date))
-        year = Bill.objects.filter(
-            vendor=bill.vendor, posted=True, debits__isnull=True, bill_date__gte=start, bill_date__lte=end,
-        ).exclude(is_prepayment=True).prefetch_related("lines__taxes", "debit_notes__lines__taxes")
-        earlier = [other for other in year
-                   if (to_date(other.bill_date), other.pk) < (to_date(bill.bill_date), bill.pk)]
-        covered = set(_live(TdsDeduction.objects.filter(section=section, covered_bills__in=earlier))
-                      .values_list("covered_bills", flat=True))
-        untaxed = [other for other in earlier if other.pk not in covered]
-        nets = {other.pk: taxable_net(other) for other in earlier}
-        base, amount, caught_up = section.owed(
-            rate, taxable_net(bill), sum(nets.values(), Decimal("0")),
-            sum((nets[other.pk] for other in untaxed), Decimal("0")))
+        base, amount, caught_up, untaxed = _owed(bill, section, rate)
         if amount <= 0:
             raise ValidationError(
                 f"Nothing to deduct under {section.code}: {bill.vendor}'s bills this year have not "
