@@ -26,7 +26,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core.models import (
-    Extensible, AuditModel, Party, PartyRole, documents_it_answers_to, lock_rows, serialised, to_date,
+    Extensible, AuditModel, correction_date, Party, PartyRole, documents_it_answers_to, lock_rows, serialised, to_date,
 )
 
 from .calendars import (  # noqa: F401
@@ -991,11 +991,17 @@ class LeaveRequest(AuditModel):
         whose plans fall through, had no way to return the days and the
         balance stayed spent. Leave already taken is a different matter —
         those days are gone — so only the future can be given back.
+
+        `on_date` is the day they are back, and is a dated correction
+        (correction_date): never before the leave began, which would give
+        back days already taken (O32), and never a day still to come but
+        the first day of a leave not yet begun, which cancels it whole and
+        is its default.
         """
         self.check_canceller(by, as_hr, may_decide)
         if self.status in (LeaveStatus.CANCELLED, LeaveStatus.REJECTED):
             raise ValidationError("This leave request is already closed.")
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, self.start_date, f"{self} is not cancelled on", "it began")
         if self.status == LeaveStatus.APPROVED and self.end_date < on_date:
             raise ValidationError(
                 f"This leave ended on {self.end_date}; it has been taken and cannot be "
