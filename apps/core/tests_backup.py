@@ -105,3 +105,28 @@ class ABackupRestoresItsAttachmentsTests(SimpleTestCase):
         self.assertEqual((self.scan.read_bytes(), self.psql(self.url, "SELECT count(*) FROM attached")),
                          (b"after the backup", "0"))
         self.assertEqual(sorted(path.name for path in self.media.iterdir()), ["attachments"])
+
+
+    def test_an_attachment_added_while_the_backup_runs_leaves_it_restorable(self):
+        """
+        O244: a scan uploaded as the archive is written (its file, then its record) is in neither the dump
+        nor the archive, or in both: the night's backup restores, and every record it holds has its file.
+        """
+        tools = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tools, True)
+        real_tar = shutil.which("tar")
+        (tools / "tar").write_text(
+            "#!/bin/sh\n"
+            f'"{real_tar}" "$@" || exit $?\n'
+            'case "$*" in *-czf*)\n'
+            f'  printf during > "{self.media}/attached-during.pdf"\n'
+            f"  psql --no-psqlrc -q '{self.url}' -c \"INSERT INTO attached VALUES (2, 'attached-during.pdf')\" ;;\n"
+            "esac\n")
+        (tools / "tar").chmod(0o755)
+        taken = self.run_script(str(DEPLOY / "backup.sh"), "now", env=self.env | {"PATH": f"{tools}:{os.environ['PATH']}"})
+        self.assertEqual(taken.returncode, 0, taken.stderr)
+        (dump,) = self.backups.glob("erp_*.dump")
+        restored = self.run_script(str(DEPLOY / "restore.sh"), str(dump))
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        for path in self.psql(self.url, "SELECT path FROM attached ORDER BY id").splitlines():
+            self.assertTrue((self.media / path).exists(), f"{path} is recorded and has no file")

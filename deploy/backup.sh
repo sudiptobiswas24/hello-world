@@ -27,13 +27,18 @@ dump() {
     target="${BACKUP_DIR}/erp_${stamp}.dump"
     media="${BACKUP_DIR}/erp_${stamp}.media.tar.gz"
     [ -d "$MEDIA_DIR" ] || { echo "no attachments directory at $MEDIA_DIR: mount the media volume" >&2; exit 1; }
-    # The attachments first: a dump with no archive beside it is the backup
-    # that loses every attached file, so it is never left looking complete.
     manifest="${BACKUP_DIR}/erp_${stamp}.media.sha256"
-    tar -C "$MEDIA_DIR" -czf "${media}.partial" .
-    # What each attached file was, byte for byte: the restore checks every file it puts back against it.
-    (cd "$MEDIA_DIR" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum) > "${manifest}.partial"
+    # The database first, then the files (O244): an attachment's file is written before its record is
+    # committed, so every record the dump holds has its file by then, and the archive taken after it holds
+    # them all. Each part stays .partial until all three are written, so a dump with no archive beside it is
+    # never left looking complete.
     pg_dump --format=custom --no-owner --file="${target}.partial" "$DATABASE_URL"
+    tar -C "$MEDIA_DIR" -czf "${media}.partial" .
+    # What each archived file is, byte for byte, read from the archive itself: read from the live
+    # directory, a scan uploaded between the two was listed and not archived, and the night's backup
+    # could not be restored at all. The restore checks every file it puts back against it.
+    tar -xzf "${media}.partial" --to-command='printf "%s  %s\n" "$(sha256sum | cut -d" " -f1)" "$TAR_FILENAME"' \
+        | sort -k2 > "${manifest}.partial"
     # Renamed only once complete, so a half-written file is never taken
     # for a backup.
     mv "${manifest}.partial" "$manifest"
