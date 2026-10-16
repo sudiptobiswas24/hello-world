@@ -478,6 +478,34 @@ def register_booked_in_base(ask):
         _BOOKED_IN_BASE.append(ask)
 
 
+# Whether the plant works on a day, asked of whoever keeps its calendar: hr
+# registers its public holidays. Core keeps the question and imports none of
+# them, so quality counts a Quality Manager's day without importing hr (O203).
+_WORKING_DAY = []
+WORKING_WEEKDAYS = frozenset({1, 2, 3, 4, 5})  # ISO weekdays: hr's DEFAULT_WORKING_DAYS, "12345"
+
+
+def register_working_day(ask):
+    """ask(day) -> False for a day the plant does not work (a holiday); anything else leaves it to the week."""
+    if ask not in _WORKING_DAY:
+        _WORKING_DAY.append(ask)
+
+
+def is_working_day(day, weekdays=WORKING_WEEKDAYS):
+    """Whether `day` is worked: a weekday of the week, and no registered calendar says otherwise."""
+    return day.isoweekday() in weekdays and all(ask(day) is not False for ask in _WORKING_DAY)
+
+
+def next_working_day(day, weekdays=WORKING_WEEKDAYS):
+    """The first working day after `day`: Diwali, a Saturday or a Sunday is not one."""
+    day += datetime.timedelta(days=1)
+    for _ in range(366):
+        if is_working_day(day, weekdays):
+            return day
+        day += datetime.timedelta(days=1)
+    raise ValidationError(f"No working day in the year after {day}: the calendar keeps none.")
+
+
 # What the modules that read the company's settings refuse of them
 # (accounting, the bank a payment goes through), asked as it is saved;
 # core imports none of them.
