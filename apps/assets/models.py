@@ -747,3 +747,24 @@ def asset_register(as_of=None, category=None):
             "monthly_charge": asset.monthly_charge() if in_service else Decimal("0"),
         })
     return sorted(rows, key=lambda row: -row["net_book_value"])
+
+
+def depreciation_owed(period):
+    """
+    [sentence]: the assets whose depreciation for a month ending in
+    `period` is still to charge, for the period's close to refuse on
+    (O29). Closed first, a machine's January could never be charged.
+    """
+    owed = []
+    for asset in FixedAsset.objects.filter(status=AssetStatus.IN_SERVICE,
+                                           in_service_date__lte=period.end_date).order_by("number", "pk"):
+        months = [month for month, amount in asset._charges(asset.periods_due(period.end_date))
+                  if month >= period.start_date and amount > 0]
+        if months:
+            owed.append(f"{asset} ({', '.join(f'{month:%B %Y}' for month in months)})")
+    if not owed:
+        return []
+    shown = ", ".join(owed[:5]) + (f" and {len(owed) - 5} more" if len(owed) > 5 else "")
+    return [f"Depreciation is still to charge for {len(owed)} asset(s): {shown}. "
+            f"Run the depreciation through {period.end_date} first."]
+
