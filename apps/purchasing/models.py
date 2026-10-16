@@ -81,6 +81,7 @@ from apps.accounting.settlement import (
     owed_beyond,
     held_base_left,
     last_of_held,
+    entries_that_settled,
     slice_of,
     take_settlement_discount as settle_discount,
     spent_undoing,
@@ -3715,6 +3716,10 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
 
     def date_for_discount(self):
         return to_date(self.bill_date)
+
+    def settled_by_entries(self):
+        """Its debit notes and prepayment drawdowns, for a payment to count at what they booked (O209, review F1)."""
+        return entries_that_settled(self.debit_notes.all(), self.prepayment_applications.all())
 
     def amount_absorbed(self):
         """
