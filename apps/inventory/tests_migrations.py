@@ -47,7 +47,34 @@ class MigrationCase(TransactionTestCase):
             boundary_at=timezone.now(), boundary_id=1, quantity=Decimal("10"), value=Decimal("50"), state={})
 
 
-# Slow: it unwinds the later migrations and replays them.
+# Slow: each unwinds the later migrations and replays them.
+@tag("migration")
+class CompanyWideSnapshotsDroppedTests(MigrationCase):
+    before = [("inventory", "0029_warehouse_held_for")]
+    after = [("inventory", "0030_refold_company_wide_valuation")]
+
+    def test_only_the_company_wide_fold_goes(self):
+        item = self.goods()
+        store = self.shelf("STORE")
+        self.snapshot(item, None, "average")
+        kept = self.snapshot(item, store, "average")
+        snapshots = self.migrated().get_model("inventory", "StockValuationSnapshot")
+        self.assertEqual(list(snapshots.objects.values_list("pk", "warehouse_id")), [(kept.pk, store.pk)])
+
+
+@tag("migration")
+class BelowZeroFifoAndSpecificSnapshotsDroppedTests(MigrationCase):
+    before = [("inventory", "0036_adjustment_line_keeps_its_value")]
+    after = [("inventory", "0037_refold_below_zero_fifo_and_specific")]
+
+    def test_the_average_fold_is_kept(self):
+        store = self.shelf("STORE")
+        for sku, method in (("FIFO", "fifo"), ("LOT", "specific"), ("AVG", "average"), ("STD", "standard")):
+            self.snapshot(self.goods(sku), store, method)
+        snapshots = self.migrated().get_model("inventory", "StockValuationSnapshot")
+        self.assertEqual(sorted(snapshots.objects.values_list("method", flat=True)), ["average", "standard"])
+
+
 @tag("migration")
 class EachArrivalNamesItsDepartureTests(MigrationCase):
     before = [("inventory", "0038_tcs")]
