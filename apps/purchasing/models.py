@@ -3839,12 +3839,25 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
             return None
         return msme_schedule(self)
 
-    def pay_by(self):
-        """The day it is due in full: its terms', or the MSME Act's when that comes first."""
-        due, act = to_date(self.due_date), self.act_pay_by()
-        if act is None:
-            return due
-        return min(due, act) if due else act
+    def pay_by(self, by=None):
+        """
+        The day it is due in full: its terms', or the MSME Act's when that
+        comes first, delivery by delivery. Given `by`, the earliest day of
+        what is still owed and falls due by then: the date beside the amount
+        the payment run lists.
+
+        Both read installments(), the one schedule the payment run pays
+        from. Read from the whole bill instead, one delivery objected to
+        left the run showing 24 Aug beside 600 due on 16 Jul (O189).
+        """
+        if not self.posted:
+            return to_date(self.due_date)
+        rows = [row for row in self.installments() if row["due_date"] is not None]
+        if by is not None:
+            days = [row["due_date"] for row in rows if row["outstanding"] > 0 and row["due_date"] <= to_date(by)]
+            return min(days) if days else None
+        days = [row["due_date"] for row in rows]
+        return max(days) if days else to_date(self.due_date)
 
     def amount_overdue(self, as_of=None):
         """
@@ -6264,7 +6277,7 @@ def payment_run(due_by=None, vendor=None):
         })
         row["total"] += due
         row["bills"].append({
-            "bill": bill, "due_date": bill.pay_by(), "amount_due": due,
+            "bill": bill, "due_date": bill.pay_by(by=due_by), "amount_due": due,
             "days_overdue": bill.days_overdue(due_by),
         })
     return sorted(rows.values(), key=lambda row: -row["total"])
