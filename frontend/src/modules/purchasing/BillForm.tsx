@@ -57,6 +57,9 @@ interface Bill {
   lines: TradeLine[];
   subtotal: string;
   tax_total: string;
+  /** TCS the supplier collected (section 206C), part of the total and claimed back by the plant. */
+  tcs_amount: string;
+  tcs_section: string;
   total: string;
   amount_paid: string;
   amount_debited: string;
@@ -196,7 +199,11 @@ export default function BillForm() {
             <Lines lines={bill.lines} endpoint="/api/purchasing/bill-lines/" parent="bill" parentId={bill.id} side="purchase"
               editable={!bill.posted && can("purchasing.change_bill")} centres={can("accounting.view_costcentre")} />
             <Totals rows={[
-              ["Untaxed", bill.subtotal], ["Tax", bill.tax_total], ["Total", bill.total, true],
+              ["Untaxed", bill.subtotal], ["Tax", bill.tax_total],
+              ...(bill.tcs_amount && !/^-?0(\.0+)?$/.test(bill.tcs_amount) ? [
+                [`TCS collected${bill.tcs_section ? ` (${bill.tcs_section})` : ""}`, bill.tcs_amount] as [string, string],
+              ] : []),
+              ["Total", bill.total, true],
               ...(bill.posted && !bill.debits ? [
                 ["Paid", bill.amount_paid] as [string, string],
                 ["Debited", bill.amount_debited] as [string, string],
