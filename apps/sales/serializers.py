@@ -155,9 +155,17 @@ class InvoicePaymentSerializer(serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     payment_number = serializers.CharField(source="payment.number", read_only=True)
 
+    discount_earned = serializers.SerializerMethodField(
+        help_text="What its payment earns of the document's early-settlement discount (settlement.discount_earned_by).")
+
+    def get_discount_earned(self, row):
+        from apps.accounting.settlement import discount_earned_by
+
+        return discount_earned_by(row.invoice, row.payment)
+
     class Meta:
         model = InvoicePayment
-        fields = ["id", "invoice", "invoice_number", "payment", "payment_number", "amount", "date"]
+        fields = ["id", "invoice", "invoice_number", "payment", "payment_number", "amount", "date", "discount_earned"]
 
 
 class DeliveryLineSerializer(serializers.ModelSerializer):

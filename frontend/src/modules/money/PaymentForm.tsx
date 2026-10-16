@@ -34,6 +34,8 @@ interface Payment {
 
 interface Allocation {
   id: number;
+  /** What this row's payment earns of the document's early-settlement discount; offered only when some. */
+  discount_earned?: string;
   invoice?: number;
   invoice_number?: string;
   bill?: number;
@@ -236,11 +238,11 @@ function Apply({ config, payment, highlight }: { config: MoneyConfig; payment: P
                 <tr key={row.id}>
                   <td><Link to={config.documentHref(row[kind] as number)}>{number}</Link></td>
                   <td className="k-money">{money(row.amount)}</td>
-                  <td>{payment.posted && !payment.voided && can(`${config.app}.add_${kind}payment`) && (
+                  <td>{payment.posted && !payment.voided && positive(row.discount_earned ?? "0") && can(`${config.app}.add_${kind}payment`) && (
                     // The early-settlement discount this money earned, if it came within the days (O109).
                     <button type="button" className="btn" disabled={act.pending}
                       onClick={() => void act.run("POST", `${config.documents}${String(row[kind])}/take_settlement_discount/`,
-                        { payment: payment.id }, { done: `Settlement discount taken on ${number}` })}>Take the discount</button>
+                        { payment: payment.id }, { done: `Settlement discount taken on ${number}` })}>Take the discount ({money(row.discount_earned ?? "0")})</button>
                   )}</td>
                   <td>{can(`${config.app}.delete_${kind}payment`) && (
                     <button type="button" className="icon-btn" aria-label={`Take ${number} off this ${config.noun}`} disabled={act.pending}
