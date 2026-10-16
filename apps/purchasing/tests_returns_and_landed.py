@@ -1381,3 +1381,23 @@ class AReturnBeforeTheBillsTests(ProbeCase):
         second.create_return(quantities={second.lines.get(): Decimal("2")}, debit_bills=True)
         notes = [(note.debits_id, note.total()) for note in Bill.objects.filter(debits__isnull=False)]
         self.assertEqual(notes, [(b2.pk, Decimal("9.60"))])
+
+
+class AReturnsNoteIsDatedOnTheReturnsDayTests(ProbeCase):
+    """
+    Integrator's item B (g22): 10 received 2 January, billed 3 January; 4 go
+    back on 20 January, recorded later. The return and its debit note are
+    dated 20 January, in January's period and GST month, not on the day
+    the clerk keys it.
+    """
+
+    def test_the_note_takes_the_returns_day_and_never_one_before_the_bill(self):
+        order = self.order()
+        receipt = self.receive_on(order, "10", JAN(2))
+        self.hand_bill(order.lines.get(), "10", "5", order=order, reference="B-1", day=JAN(3)).post()
+        with self.assertRaisesMessage(ValidationError, "is not returned on 2026-01-01: the goods came in on 2026-01-02"):
+            receipt.create_return(quantities={receipt.lines.get(): Decimal("4")}, on_date=JAN(1))
+        back = receipt.create_return(quantities={receipt.lines.get(): Decimal("4")}, on_date=JAN(20))
+        note = Bill.objects.get(debits__isnull=False)
+        self.assertEqual((back.receipt_date, note.bill_date, note.journal_entry.date, note.total()),
+                         (JAN(20), JAN(20), JAN(20), Decimal("20.00")))
