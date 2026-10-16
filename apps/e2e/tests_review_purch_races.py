@@ -35,7 +35,8 @@ class PurchasingReviewRaceTests(races.RaceCase):
                                     reference=reference)
             return go
 
-        outcomes = races.race(Bill, entering("INV-77"), entering("inv 77"))
+        # One invoice under the g22 decision: case folds, a space for a dash does not.
+        outcomes = races.race(Bill, entering("INV-77"), entering("inv-77"))
         self.once(outcomes)
         self.assertEqual(Bill.objects.filter(vendor=made.vendor).count(), 1, outcomes)
         self.assertTrue(any("already" in o or "unique" in o or "duplicate" in o for o in outcomes), outcomes)
