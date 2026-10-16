@@ -50,7 +50,6 @@ class TcsCollectionViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class TcsChallanSerializer(serializers.ModelSerializer):
-    section_code = serializers.CharField(source="section.code", read_only=True)
     voided = serializers.BooleanField(source="voided_entry_id", read_only=True)
 
     class Meta:

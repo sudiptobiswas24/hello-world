@@ -581,3 +581,19 @@ class SectionsAlreadyCollectedUnderMigrationTests(_SalesTakenBack):
         back = self.back()
         self.assertNotIn("section_code", {field.name for field in back._meta.get_fields()})
         self.assertEqual(back.objects.count(), 6)
+
+
+class TheReturnAndTheChallanKeepTheirCodesTests(TcsTestCase):
+    """O245: the collection code and the challan's section are kept at the event, not read from the section."""
+
+    def test_an_edited_section_does_not_re_code_a_filed_quarter_or_a_paid_challan(self):
+        from apps.sales.tcs import TcsChallan, tcs_return
+
+        self.t1()
+        challan = TcsChallan.pay(self.section, datetime.date(2026, 9, 1), datetime.date(2026, 10, 5), self.bank,
+                                 "00042", "0510308")
+        self.section.form_code, self.section.code = "6CF", "206C(1H)"
+        self.section.save()
+        rows = tcs_return(datetime.date(2026, 7, 1), datetime.date(2026, 9, 30))
+        challan.refresh_from_db()
+        self.assertEqual(([row["collection_code"] for row in rows], challan.section_code), (["6CE"], "206C(1)"))
