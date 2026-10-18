@@ -366,9 +366,12 @@ class Command(BaseCommand):
                 and self.RUN_OR_ORDER.search(ast.unparse(node.func.value))):
             return ast.unparse(node.func.value)
         if isinstance(node, ast.Compare) and "RELEASED" in ast.unparse(node):
+            # A run's own status (WorkOrderStatus) through any receiver, `wo` or `job` as well as `order`
+            # (O46 review F3); a RELEASED of no named kind only of something called an order or a run.
+            any_receiver = "WorkOrderStatus.RELEASED" in ast.unparse(node)
             for side in (node.left, *node.comparators):
                 if (isinstance(side, ast.Attribute) and side.attr == "status"
-                        and self.RUN_OR_ORDER.search(ast.unparse(side.value))):
+                        and (any_receiver or self.RUN_OR_ORDER.search(ast.unparse(side.value)))):
                     return ast.unparse(side.value)
         return None
 
@@ -400,9 +403,13 @@ class Command(BaseCommand):
                     if "lock_rows(" in body or "_lock(" in body or "select_for_update" in body:
                         continue
                     key = f"{label}/{path.name}:{qualified[fn]}"
+                    # A method holds its own row when it is @serialised; is_open() is the question itself,
+                    # asked of whoever calls it.
+                    holds_self = fn.name == "is_open" or any(
+                        ast.unparse(decorator).startswith("serialised(") for decorator in fn.decorator_list)
                     for node in ast.walk(fn):
                         asked = self._asks_if_open(node)
-                        if asked is None:
+                        if asked is None or (asked == "self" and holds_self):
                             continue
                         if key in self.OPEN_RUN_READ_ELSEWHERE:
                             used.add(key)

@@ -131,3 +131,25 @@ class TheAuditReadsCodeNotWordsTests(SimpleTestCase):
         used = "def tally(roll):\n    return roll.made\n"
         self.assertEqual(self.findings(said), [])
         self.assertTrue(any("ProcessRoll" in detail for detail in self.findings(used)), self.findings(used))
+
+
+class TheAuditSeesARunUnderAnyNameTests(SimpleTestCase):
+    """O46 review F3: a run's status against WorkOrderStatus.RELEASED is asked of any receiver; a lot's release
+    status and a run's own serialised method are not."""
+
+    def findings(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail.split(" ")[0] for _shape, detail in Command().unlocked_open_runs(
+            ["manufacturing"], {"manufacturing": {Path("apps/manufacturing/example.py"): text}})]
+
+    def test_wo_is_reported_and_a_lots_release_or_a_serialised_close_is_not(self):
+        self.assertEqual(self.findings("def f(wo):\n    return wo.status == WorkOrderStatus.RELEASED\n"),
+                         ["manufacturing/example.py:2"])
+        for near_miss in ("def f(lot):\n    return lot.status == ReleaseStatus.RELEASED\n",
+                          "class WorkOrder:\n    @serialised('status')\n    def close(self):\n"
+                          "        return self.status != WorkOrderStatus.RELEASED\n",
+                          "def f(wo):\n    lock_rows(wo)\n    return wo.status == WorkOrderStatus.RELEASED\n"):
+            self.assertEqual(self.findings(near_miss), [], near_miss)
