@@ -86,3 +86,14 @@ If the screen keeps saying there is no reading: the log says whether the
 port opened ("Scale port lost ...") and whether posts were refused
 ("Posting ... failed (HTTP Error 403...)": the user lacks the permission;
 401: the password file is wrong).
+
+## Gross, net, and a reading posted once
+
+- A GS (gross) frame is posted as `gross_kg`; an NT (net) frame, the indicator tared on the core, as
+  `net_kg`. The station takes either, and does not take the core off a net weight again. The reading
+  says which it was.
+- Each settled weight carries a key: the scale, this run of the bridge, the weight's number in it, and
+  the weight. Posted again because the answer was lost, the server answers with the first reading and
+  keeps no second one.
+- `server` must be `https://`. Only `http://localhost` (the station PC itself) is taken without TLS:
+  the password goes with every post.

@@ -110,7 +110,8 @@ def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier
     machine = Machine.objects.select_for_update().get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,
-                                 typed_reason, typed_note)
+                                 typed_reason, typed_note,
+                                 tare_kg=lambda: core_type.tare_kg * int(bobbins))
     try:
         bobbins = int(bobbins)
     except (TypeError, ValueError):

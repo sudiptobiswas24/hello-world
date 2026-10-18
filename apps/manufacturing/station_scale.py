@@ -46,7 +46,15 @@ TYPED_REASONS = [
 
 class ScaleReading(AuditModel):
     scale_code = models.CharField(max_length=32, db_index=True)
-    gross_kg = models.DecimalField(max_digits=12, decimal_places=3)
+    gross_kg = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True,
+                                   help_text="What a gross frame (GS) read; blank for a net one.")
+    net_kg = models.DecimalField(
+        max_digits=12, decimal_places=3, null=True, blank=True,
+        help_text="What a net frame (NT) read, the indicator tared on the core: not tared again (review F7).")
+    key = models.CharField(
+        max_length=96, null=True, blank=True, unique=True,
+        help_text="The bridge's key for one settled weight: posted again because its answer was lost, it is "
+                  "the same reading, answered as the first time (review F8).")
     stable = models.BooleanField()
     read_at = models.DateTimeField(help_text="When the server received it.")
 
@@ -54,7 +62,13 @@ class ScaleReading(AuditModel):
         ordering = ["-read_at", "-id"]
 
     def __str__(self):
-        return f"{self.scale_code} {self.gross_kg} kg at {timezone.localtime(self.read_at):%H:%M:%S}"
+        return f"{self.scale_code} {self.kg()} kg {self.weighed_as()} at {timezone.localtime(self.read_at):%H:%M:%S}"
+
+    def kg(self):
+        return self.net_kg if self.net_kg is not None else self.gross_kg
+
+    def weighed_as(self):
+        return "net" if self.net_kg is not None else "gross"
 
     def used_by(self):
         """The roll or doff this reading weighed, if any."""
@@ -66,20 +80,47 @@ class ScaleReading(AuditModel):
         return None
 
 
-def post_reading(scale_code, gross_kg, stable, at=None):
+def post_reading(scale_code, gross_kg, stable, at=None, net_kg=None, key=None):
+    """
+    Keep what a scale's bridge says: a gross weight or a net one (exactly one), and whether it has
+    settled. A key posted before is the same reading: the first one is answered again, and no second
+    row is made (review F8: a reading whose answer was lost was posted twice, a fresh one).
+    """
+    from django.db import IntegrityError, transaction
+
     code = (scale_code or "").strip()
     if not code:
         raise ValidationError("Say which scale this is.")
+    if (gross_kg in (None, "")) == (net_kg in (None, "")):
+        raise ValidationError("Send the weight once: gross_kg for a gross frame, net_kg for a net one.")
     try:
-        gross = Decimal(str(gross_kg))
+        weight = Decimal(str(gross_kg if net_kg in (None, "") else net_kg))
     except (InvalidOperation, TypeError, ValueError):
         raise ValidationError("A reading is a number of kilogrammes.")
-    if not gross.is_finite():
+    if not weight.is_finite():
         raise ValidationError("A reading is a number of kilogrammes.")
     if not isinstance(stable, bool):
         raise ValidationError("Say whether the reading has settled: true or false.")
-    return ScaleReading.objects.create(scale_code=code, gross_kg=gross, stable=stable,
-                                       read_at=at or timezone.now())
+    key = (str(key).strip() or None) if key is not None else None
+    if key is not None:
+        if len(key) > ScaleReading._meta.get_field("key").max_length:
+            raise ValidationError("A reading's key is 96 characters or fewer.")
+        kept = ScaleReading.objects.filter(key=key).first()
+        if kept is not None:
+            kept.kept_again = True
+            return kept
+    fields = {"gross_kg": weight} if net_kg in (None, "") else {"net_kg": weight}
+    try:
+        with transaction.atomic():
+            return ScaleReading.objects.create(scale_code=code, stable=stable, key=key,
+                                               read_at=at or timezone.now(), **fields)
+    except IntegrityError:
+        # The same key posted twice at once: the other one kept it.
+        kept = ScaleReading.objects.filter(key=key).first() if key else None
+        if kept is None:
+            raise
+        kept.kept_again = True
+        return kept
 
 
 def latest(station, at=None):
@@ -101,8 +142,8 @@ def take_reading(station, at):
             "Put the load on it again, or type the weight with a supervisor's PIN.")
     if not reading.stable:
         raise ValidationError(f"Scale {scale} has not settled. Wait for it.")
-    if reading.gross_kg <= 0:
-        raise ValidationError(f"Scale {scale} reads {reading.gross_kg} kg: nothing is on it.")
+    if reading.kg() <= 0:
+        raise ValidationError(f"Scale {scale} reads {reading.kg()} kg: nothing is on it.")
     used = reading.used_by()
     if used is not None:
         raise ValidationError(f"This reading already weighed {used.lot.code}. Take it off and put "
@@ -120,18 +161,29 @@ def _kg(value):
     return number
 
 
-def gross_weight(station, gross_kg, source, at):
+def gross_weight(station, gross_kg, source, at, tare_kg=None):
     """
     (gross, reading) for a weight the station calls a scale weight.
 
     A bridged station's comes from its scale; a typed figure sent with
-    it must agree. Elsewhere it is the figure the screen sent.
+    it must agree. Elsewhere it is the figure the screen sent. A net
+    reading (the indicator tared on the core) is its weight plus the
+    `tare_kg` the caller takes off again, so it is not tared twice
+    (review F7); `tare_kg` may be a function, asked only then.
     """
     if source != "scale" or not station.scale_bridged:
         if gross_kg in (None, ""):
             raise ValidationError("Enter the gross weight.")
         return _kg(gross_kg), None
     reading = take_reading(station, at)
+    if reading.net_kg is not None:
+        if tare_kg is None:
+            raise ValidationError(f"Scale {station.scale_code} sends net weights, and {station} weighs "
+                                  "gross: set the indicator to gross, or type the weight.")
+        tare = tare_kg() if callable(tare_kg) else tare_kg
+        if gross_kg not in (None, "") and _kg(gross_kg) != reading.net_kg + tare:
+            raise ValidationError(f"Scale {station.scale_code} reads {reading.net_kg} kg net, not {gross_kg} gross.")
+        return reading.net_kg + tare, reading
     if gross_kg not in (None, "") and _kg(gross_kg) != reading.gross_kg:
         raise ValidationError(f"Scale {station.scale_code} reads {reading.gross_kg} kg, "
                               f"not {gross_kg}.")

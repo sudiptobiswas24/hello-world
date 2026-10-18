@@ -73,7 +73,7 @@ def off_check(record, station, supervisor, reason, off, what, link, by=None):
 
 
 def weigh_gross(station, operator, supervisor, gross_kg, source, at, typed_reason="",
-                typed_note=""):
+                typed_note="", tare_kg=None):
     """(gross, scale reading): the scale's weight, or a typed one somebody approved."""
     from .station_floor import _number
     from .station_scale import check_typed_weight, gross_weight
@@ -82,7 +82,7 @@ def weigh_gross(station, operator, supervisor, gross_kg, source, at, typed_reaso
         check_typed_weight(station, operator, supervisor, typed_reason, typed_note)
     elif source != "scale":
         raise ValidationError(f"{source!r} is not a weight source.")
-    gross, reading = gross_weight(station, gross_kg, source, at)
+    gross, reading = gross_weight(station, gross_kg, source, at, tare_kg=tare_kg)
     return _number(gross, "The gross weight"), reading
 
 

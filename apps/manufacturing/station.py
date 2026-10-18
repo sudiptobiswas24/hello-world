@@ -381,7 +381,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
     declared_m = Decimal(declared_m)
     if declared_m <= 0:
         raise ValidationError("Enter the metres the loom counter shows.")
-    gross_kg, reading = gross_weight(station, gross_kg, source, at)
+    gross_kg, reading = gross_weight(station, gross_kg, source, at, tare_kg=core_type.tare_kg)
     net_kg = gross_kg - core_type.tare_kg
     if net_kg <= 0:
         raise ValidationError(

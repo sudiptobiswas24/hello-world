@@ -76,7 +76,7 @@ class BridgeCase(SimpleTestCase):
                                   **({"clock": clock} if clock else {}))
 
     def weights(self):
-        return [row["gross_kg"] for row in self.sent]
+        return [row["gross_kg"] for row in self.sent if "gross_kg" in row]
 
     def ran(self, bridge):
         with self.assertRaises(Finished):
@@ -87,7 +87,10 @@ class RecordedFramesTests(BridgeCase):
     def test_each_settled_weight_once(self):
         self.ran(self.bridge([Port(recorded("status_gross.txt"))]))
         self.assertEqual(self.weights(), ["106.8", "0", "106.8"])
-        self.assertEqual(self.sent[0], {"scale": "SC-1", "gross_kg": "106.8", "stable": True})
+        self.assertEqual({name: value for name, value in self.sent[0].items() if name != "key"},
+                         {"scale": "SC-1", "gross_kg": "106.8", "stable": True})
+        # One key a settled weight, the next roll of the same weight another (review F8).
+        self.assertEqual(len({row["key"] for row in self.sent}), 3)
 
     def test_an_unstable_frame_is_never_sent(self):
         moving = b"".join(f"US,GS,+00{w}kg\r\n".encode() for w in ("106.8",) * 10)
@@ -108,9 +111,10 @@ class RecordedFramesTests(BridgeCase):
         self.ran(self.bridge([Port(b"W:12.5 M\nW:12.5 S\nW:12.5 S\nW:12.5 S\n")], pattern=own))
         self.assertEqual(self.weights(), ["12.5"])
 
-    def test_grammes_are_sent_as_kilogrammes(self):
-        self.ran(self.bridge([Port(b"ST,NT,+01250.0g\r\n" * 3)]))
+    def test_grammes_are_sent_as_kilogrammes_and_a_net_frame_as_net(self):
+        self.ran(self.bridge([Port(b"ST,GS,+01250.0g\r\n" * 3 + b"ST,NT,+00100.0kg\r\n" * 3)]))
         self.assertEqual(self.weights(), ["1.25"])
+        self.assertEqual([row.get("net_kg") for row in self.sent], [None, "100"])
 
 
 class ADroppedConnectionTests(BridgeCase):
