@@ -414,7 +414,7 @@ class AReleasedRunsFrozenFactsStayTests(ReworkTestCase):
         job = self.order()
         job.release(TODAY)
         job.sales_order_line = line
-        with self.assertRaisesMessage(ValidationError, "frozen at release"):
+        with self.assertRaisesMessage(ValidationError, "has been released: raise another run for that"):
             job.save()
 
     def test_a_draft_still_changes_and_a_released_run_still_moves(self):
