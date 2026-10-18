@@ -343,6 +343,10 @@ class Opportunity(AuditModel):
             models.CheckConstraint(check=Q(value__gte=0), name="opportunity_value_not_negative"),
             models.CheckConstraint(check=Q(probability__isnull=True) | Q(probability__lte=100),
                                    name="opportunity_chance_is_a_percent"),
+            # One order, one opportunity won into it, in the database too: the lock in win() kept it only
+            # for the paths that go through win() (O136).
+            models.UniqueConstraint(fields=["sales_order"], condition=Q(sales_order__isnull=False),
+                                    name="one_opportunity_won_into_an_order"),
         ]
 
     def __str__(self):
