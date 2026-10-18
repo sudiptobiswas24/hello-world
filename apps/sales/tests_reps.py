@@ -433,3 +433,44 @@ class EveryoneKeepsSeeingEveryCustomerMigrationTests(TransactionTestCase):
             username="clerk", user_permissions=every).exists())
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class ThePlantsOwnRecordsAreKeptByWhoKeepsThemTests(RepTestCase):
+    """
+    O130 review F1, the integrator's rule: a row that names no party (the plant's own address) is read by a
+    rep where the screen offers it, and never made, changed or reached by moving a customer's row to no party
+    by one. The roles nothing limits, the AR Manager here, keep it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.core.models import Address, Country
+
+        self.india = Country.objects.create(code="IN", name="India")
+        self.plant = Address.objects.create(party=None, line1="Plot 4, Uluberia", city="Howrah", country=self.india)
+        self.acme_address = Address.objects.create(party=self.acme, line1="1 Mill Road", city="Howrah",
+                                                   country=self.india)
+
+    def three(self, client):
+        from apps.core.models import Address
+
+        made = client.post(ADDRESSES, {"party": None, "line1": "Godown 2", "city": "Howrah",
+                                       "country": self.india.pk}, format="json")
+        changed = client.patch(f"{ADDRESSES}{self.plant.pk}/", {"line1": "Plot 5"}, format="json")
+        moved = client.patch(f"{ADDRESSES}{self.acme_address.pk}/", {"party": None}, format="json")
+        self.plant.refresh_from_db()
+        self.acme_address.refresh_from_db()
+        return ((made.status_code, changed.status_code, moved.status_code),
+                (Address.objects.filter(line1="Godown 2").exists(), self.plant.line1, self.acme_address.party_id))
+
+    def test_the_rep_reads_it_and_writes_none_of_the_three(self):
+        rep = self.as_user(self.rep_a)
+        self.assertEqual(rep.get(f"{ADDRESSES}{self.plant.pk}/").status_code, 200)
+        codes, state = self.three(rep)
+        self.assertEqual(state, (False, "Plot 4, Uluberia", self.acme.pk), codes)
+        self.assertEqual((codes[0], codes[2]), (400, 400))
+        self.assertIn(codes[1], (403, 404))
+
+    def test_the_ar_manager_keeps_it(self):
+        codes, state = self.three(self.as_role("AR Manager"))
+        self.assertEqual((codes, state), ((201, 200, 200), (True, "Plot 5", None)))

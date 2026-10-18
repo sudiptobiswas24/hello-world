@@ -67,13 +67,17 @@ def visible_parties(user):
     return limit
 
 
-def scoped(queryset, user, path=None):
+def scoped(queryset, user, path=None, write=False):
     """
-    `queryset` narrowed to rows whose party (at `path`) the login may see.
+    `queryset` narrowed to rows whose party (at `path`) the login may see,
+    or, with `write`, may write.
 
-    A row that names no party at `path` is nobody's to narrow by, and stays:
-    filtered by `path__in` alone, the plant's own addresses, which belong to
-    no party, dropped out of a rep's view (O130).
+    Read: a row that names no party at `path` is nobody's to narrow by, and
+    stays: filtered by `path__in` alone, the plant's own addresses, which
+    belong to no party, dropped out of a rep's view (O130). Write: a login
+    the scope limits reaches only its own parties' rows; a row naming no
+    party is the plant's own, kept by the roles nothing limits. Read in
+    sight, a rep changed the plant's address (O130 review F1).
     """
     limit = visible_parties(user)
     if limit is None:
@@ -84,7 +88,28 @@ def scoped(queryset, user, path=None):
 
     from .models import Party
 
-    return queryset.filter(Q(**{f"{path}__in": Party.objects.filter(limit)}) | Q(**{f"{path}__isnull": True}))
+    theirs = Q(**{f"{path}__in": Party.objects.filter(limit)})
+    return queryset.filter(theirs if write else theirs | Q(**{f"{path}__isnull": True}))
+
+
+def refuse_write(user, party):
+    """
+    Why this login may not write a row that names `party`, or None: the one
+    rule for every write of a party-scoped record, made, changed, moved or
+    deleted. `party` None is the plant's own record (its address, a shared
+    contact): written only by a login the scope does not limit.
+    """
+    limit = visible_parties(user)
+    if party is None:
+        if limit is None:
+            return None
+        return ("A record that names no party is the plant's own: it is kept by whoever keeps the plant's "
+                "records, not from here. Name the party it belongs to.")
+    from .models import Party
+
+    if limit is not None and not Party.objects.filter(limit, pk=party.pk).exists():
+        return "Not one of the parties you can see."
+    return refuse_change(user, party)
 
 
 def refuse_create(user, role):
