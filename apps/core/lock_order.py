@@ -31,6 +31,7 @@ them: a select_for_update() of any model is checked as it always was.
 """
 import json
 import os
+import re
 import threading
 import traceback
 
@@ -173,6 +174,12 @@ UNSEEN = {
 # How a statement took its rows: a select_for_update() names them; the rest
 # are what O184 found the sentinel could not see.
 SELECTED, JOINED, UPDATED, DELETED = "select_for_update", "joined", "update", "delete"
+# And raw SQL taking rows FOR SHARE, which no statement the ORM compiles does (O228:
+# accounting.money.hold_money_account holds a bank account so).
+SHARED = "for_share"
+_RAW_SHARE = re.compile(r"\bFOR\s+(KEY\s+)?SHARE\b", re.I)
+_RAW_FROM = re.compile(r'\bFROM\s+"?(\w+)"?', re.I)
+_RAW_KEYS = re.compile(r'\bWHERE\s+(?:"?\w+"?\.)?"?id"?\s*(?:=\s*%s|IN\s*\(((?:\s*%s\s*,?)+)\))', re.I)
 
 
 def taken(connection, label, pks, how=SELECTED):
@@ -201,9 +208,10 @@ def taken(connection, label, pks, how=SELECTED):
             state["held"].add((label, pk))
         state["taken"].append(label)
         if rank is None:
-            # Ranked against nothing, but its own rows in key order (O182).
+            # Ranked against nothing, but its own rows in key order (O182). Shared rows wait for no
+            # other share, so a share is not held to key order (a transfer from bank 5 to bank 3).
             last = state["keys"].get(label)
-            if pk is not None and last is not None and pk < last:
+            if pk is not None and last is not None and pk < last and how != SHARED:
                 message = (f"{label} {pk} locked after {label} {last} ({how}): rows of one model are "
                            f"taken in key order (apps.core.lock_order)")
                 if _SURVEY:
@@ -215,7 +223,8 @@ def taken(connection, label, pks, how=SELECTED):
             continue
         top = state["top"]
         mine = (rank, pk if pk is not None else 0)
-        if top is not None and (rank < top[0] or (pk is not None and rank == top[0] and pk < top[1])):
+        if top is not None and (rank < top[0] or (pk is not None and rank == top[0] and pk < top[1]
+                                                   and how != SHARED)):
             message = (f"{label} {pk} locked after {LOCK_ORDER[top[0]]} {top[1]} ({how}): "
                        f"against the lock order in apps.core.lock_order")
             if _SURVEY:
@@ -224,6 +233,42 @@ def taken(connection, label, pks, how=SELECTED):
             raise LockOrderViolation(message)
         if top is None or mine > top:
             state["top"] = mine
+
+
+def raw_shared_lock(execute, sql, params, many, context):
+    """
+    An execute wrapper: a raw statement that takes rows FOR SHARE, ranked as
+    it is taken (O228). The ORM compiles no FOR SHARE, so nothing it sends is
+    counted twice; the keys are read off `WHERE id = %s` or `id IN (...)`,
+    and are not known otherwise.
+    """
+    result = execute(sql, params, many, context)
+    if not many and isinstance(sql, str) and _RAW_SHARE.search(sql):
+        table = _RAW_FROM.search(sql)
+        label = _tables().get(table.group(1)) if table else None
+        if label is not None:
+            keys = _RAW_KEYS.search(sql)
+            count = 1 if keys and keys.group(1) is None else (keys.group(1).count("%s") if keys else 0)
+            pks = sorted(list(params or [])[:count]) if count else None
+            taken(context["connection"], label, pks, how=SHARED)
+    return result
+
+
+_TABLES = {}
+
+
+def _tables():
+    if not _TABLES:
+        from django.apps import apps
+
+        _TABLES.update({model._meta.db_table: model._meta.label_lower for model in apps.get_models()})
+    return _TABLES
+
+
+def _snapshot(connection):
+    state = _state(connection)
+    return {"held": set(state["held"]), "top": state["top"], "taken": list(state["taken"]),
+            "keys": dict(state["keys"])}
 
 
 def made(connection, label, pks):
@@ -370,21 +415,33 @@ def install():
 
     def checked_enter(self):
         connection = transaction.get_connection(self.using)
-        if not connection.in_atomic_block:
+        nested = connection.in_atomic_block
+        if not nested:
             # A transaction of its own from its first block. A commit hook (recall.lift) runs once
             # the transaction before it has committed but before Atomic.__exit__ returns, and so
             # inherited every row that one had held: a lift after a void of a recall was refused for
             # taking a lot below the one the void held, in a transaction it never shared (rereview 4).
             forget(connection)
-        return enter_atomic(self)
+        result = enter_atomic(self)
+        # A savepoint's start, kept: rolled back to, the database lets go of every row taken after it,
+        # and the sentinel kept them held and refused an earlier rank taken next (O228).
+        started = nested and connection.savepoint_ids and connection.savepoint_ids[-1] is not None
+        connection.__dict__.setdefault("_lock_order_savepoints", []).append(
+            _snapshot(connection) if started else None)
+        return result
 
     exit_atomic = transaction.Atomic.__exit__
 
     def checked_exit(self, exc_type, exc_value, tb):
+        connection = transaction.get_connection(self.using)
+        savepoints = connection.__dict__.get("_lock_order_savepoints") or [None]
+        before = savepoints.pop()
+        rolled_back = exc_type is not None or connection.needs_rollback
         try:
             return exit_atomic(self, exc_type, exc_value, tb)
         finally:
-            connection = transaction.get_connection(self.using)
+            if before is not None and rolled_back:
+                connection._lock_order_state = before
             if not _in_a_transaction_of_its_own(connection):
                 forget(connection)
 
@@ -399,6 +456,15 @@ def install():
         made(connections[self.db], self.model._meta.label_lower, [obj.pk for obj in objs])
         return objs
 
+    def watch_raw_sql(sender, connection, **kwargs):
+        if raw_shared_lock not in connection.execute_wrappers:
+            connection.execute_wrappers.append(raw_shared_lock)
+
+    from django.db.backends.signals import connection_created
+
+    connection_created.connect(watch_raw_sql, weak=False, dispatch_uid="apps.core.lock_order.raw")
+    for open_connection in connections.all(initialized_only=True):
+        watch_raw_sql(None, open_connection)
     post_save.connect(on_save, weak=False, dispatch_uid="apps.core.lock_order.made")
     compiler.SQLCompiler.execute_sql = checked_execute_sql
     compiler.SQLUpdateCompiler.execute_sql = checked_writes(compiler.SQLUpdateCompiler.execute_sql, UPDATED)
