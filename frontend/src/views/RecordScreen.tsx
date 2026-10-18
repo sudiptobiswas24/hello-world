@@ -153,7 +153,7 @@ export interface RecordScreenProps {
   permissions: { add?: string; change?: string; delete?: string };
   /** Whether the record may still be edited in its present state. */
   editable?: (record: Row) => boolean;
-  /** Where to go after a delete, and after a create (default: the new record). */
+  /** Where to go after a create (default: the new record). A delete always goes back to the list. */
   afterCreate?: (record: Row) => string;
   /** Where a new one is posted, when an action makes it rather than the collection. */
   createUrl?: string;
