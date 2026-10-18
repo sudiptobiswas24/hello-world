@@ -51,10 +51,12 @@ from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import (
+    CONFIRMED,
     AuditModel,
     DocumentSequence,
     UnitOfMeasure,
     lock_rows,
+    refuse_changing_what_moved,
     serialised,
     to_date,
 )
@@ -1561,8 +1563,17 @@ class WorkOrder(AuditModel):
     # What release decides on and freezes the cost against. Changed after,
     # a tape run booked its output as masterbatch at tape's cost, and a
     # rework run pointed at a batch that had passed drew it as salvage.
-    FROZEN_AT_RELEASE = ("item", "bom", "uom", "rework_of", "sales_order_line")
+    # Shared rule A (refuse_changing_what_moved), as an order's lines keep theirs: one rule for
+    # every record frozen once something has moved against it, not a copy of it here (O127).
+    FROZEN_ONCE_MOVED = {name: CONFIRMED for name in ("item", "bom", "uom", "rework_of", "sales_order_line")}
 
+    def what_moved_against_it(self, kind):
+        stored = WorkOrder.objects.filter(pk=self.pk).values_list("status", flat=True).first()
+        if stored in (None, WorkOrderStatus.DRAFT):
+            return ""
+        return "been released: raise another run for that, and close or cancel this one"
+
+    @transaction.atomic
     def save(self, *args, **kwargs):
         if self.pk and not self._state.adding:
             previous = WorkOrder.objects.filter(pk=self.pk).first()
@@ -1573,19 +1584,7 @@ class WorkOrder(AuditModel):
                     f"{self} is {previous.get_status_display().lower()} and "
                     "cannot be changed. Reopen it, or raise another."
                 )
-            if previous is not None and previous.status != WorkOrderStatus.DRAFT:
-                moved = [
-                    name for name in self.FROZEN_AT_RELEASE
-                    if getattr(previous, f"{name}_id") != getattr(self, f"{name}_id")
-                ]
-                if moved:
-                    raise ValidationError({
-                        name: f"{self} is released, and its "
-                              f"{self._meta.get_field(name).verbose_name} was frozen at "
-                              "release. Raise another run for that, and close or "
-                              "cancel this one."
-                        for name in moved
-                    })
+            refuse_changing_what_moved(self, lambda: lock_rows(self, refresh=False))
         self._check_not_reworking_a_decision()
         super().save(*args, **kwargs)
 
