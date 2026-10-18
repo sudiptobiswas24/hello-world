@@ -53,6 +53,30 @@ class RebatchTestCase(BaleTestCase):
         inspection.post()
 
 
+class AValueOnARebatchedBatchIsFollowedTests(RebatchTestCase):
+    """
+    Seen #9: 90 of freight on B1, then B1's 300 split into RB-A 200 and RB-B 100.
+    follow_value stopped at the split's take-out and called the share it took
+    gone, so a release credited cost of sales while RB-A and RB-B kept it.
+    Followed, all 90 is still held: on B1's shelf, or on RB-A and RB-B at 2:1.
+    """
+
+    def test_it_is_held_on_the_batches_made(self):
+        from apps.inventory.costing import where_value_is
+
+        receipt = self.b1.movements.filter(quantity__gt=0).order_by("pk").first()
+        landed = StockMovement.objects.create(
+            item=self.bag, warehouse=self.plant, movement_type=MovementType.ADJUSTMENT, uom=self.bag.uom,
+            lot=self.b1, quantity=Decimal("0"), value_adjustment=Decimal("90"), adjusts=receipt,
+            reference="LC-1", occurred_at=receipt.occurred_at)
+        _document, (a, b) = self.split()
+        where = where_value_is(landed)
+        self.assertEqual([kind for kind, _row, _value in where if kind == "gone"], [])
+        held = {row.lot.code: value for kind, row, value in where if kind == "held"}
+        self.assertEqual(sum(held.values()).quantize(Decimal("0.01")), Decimal("90.00"))
+        self.assertEqual((held[a.code] / held[b.code]).quantize(Decimal("0.0001")), Decimal("2.0000"))
+
+
 class SplitTests(RebatchTestCase):
     def test_the_sacks_move_and_the_shelf_is_worth_the_same(self):
         before = self.value()
