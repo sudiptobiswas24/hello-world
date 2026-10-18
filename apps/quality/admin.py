@@ -11,6 +11,7 @@ asking "how close was it", which a pass or a fail does not say.
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 
+from apps.core.admin_mixins import PostedImmutableInlineMixin
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
@@ -96,24 +97,12 @@ class InspectionPlanAdmin(AuditableAdminMixin, admin.ModelAdmin):
         return ()
 
 
-class ReadingInline(admin.TabularInline):
+class ReadingInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = Reading
     extra = 1
     fields = ("plan_line", "value", "present", "sample_reference",
               "lower_limit", "upper_limit", "passed")
     readonly_fields = ("lower_limit", "upper_limit", "passed")
-
-    def _posted(self, obj):
-        return obj is not None and obj.posted
-
-    def has_add_permission(self, request, obj=None):
-        return not self._posted(obj)
-
-    def has_change_permission(self, request, obj=None):
-        return not self._posted(obj)
-
-    def has_delete_permission(self, request, obj=None):
-        return not self._posted(obj)
 
 
 @admin.register(Inspection)

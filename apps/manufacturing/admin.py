@@ -15,6 +15,7 @@ answer than one that does not let you type.
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 
+from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
 from apps.core.audit import AuditableAdminMixin
 
 from .bom import BillOfMaterials, BomByproduct, BomComponent
@@ -651,36 +652,7 @@ class WorkOrderAdmin(AuditableAdminMixin, admin.ModelAdmin):
         return "; ".join(rows) or "-"
 
 
-class PostedInlineMixin:
-    """A posted document's lines refuse to be edited, so do not offer it."""
-
-    def _posted(self, obj):
-        return obj is not None and obj.posted
-
-    def has_add_permission(self, request, obj=None):
-        return not self._posted(obj)
-
-    def has_change_permission(self, request, obj=None):
-        return not self._posted(obj)
-
-    def has_delete_permission(self, request, obj=None):
-        return not self._posted(obj)
-
-
-class PostedNotDeletedMixin:
-    """
-    A posted document is voided, not deleted, and the model refuses. The
-    admin's bulk delete never calls the model's delete(), but it does ask
-    this of every row it would take.
-    """
-
-    def has_delete_permission(self, request, obj=None):
-        if obj is not None and obj.posted:
-            return False
-        return super().has_delete_permission(request, obj)
-
-
-class MaterialIssueLineInline(PostedInlineMixin, admin.TabularInline):
+class MaterialIssueLineInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = MaterialIssueLine
     fk_name = "issue"
     extra = 1
@@ -689,7 +661,7 @@ class MaterialIssueLineInline(PostedInlineMixin, admin.TabularInline):
 
 
 @admin.register(MaterialIssue)
-class MaterialIssueAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.ModelAdmin):
+class MaterialIssueAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "direction", "issue_date", "warehouse",
                     "posted", "posted_value", "voided_at")
     list_filter = ("direction", "posted", "warehouse")
@@ -709,7 +681,7 @@ class MaterialIssueAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.Model
     ]
 
 
-class ProductionByproductInline(PostedInlineMixin, admin.TabularInline):
+class ProductionByproductInline(PostedImmutableInlineMixin, admin.TabularInline):
     model = ProductionByproduct
     extra = 0
     autocomplete_fields = ("item", "lot")
@@ -717,7 +689,7 @@ class ProductionByproductInline(PostedInlineMixin, admin.TabularInline):
 
 
 @admin.register(ProductionEntry)
-class ProductionEntryAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.ModelAdmin):
+class ProductionEntryAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "entry_date", "quantity_produced",
                     "quantity_scrapped", "uom", "work_centre", "posted",
                     "unit_cost", "posted_value")
@@ -739,7 +711,7 @@ class ProductionEntryAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.Mod
 
 
 @admin.register(TimeBooking)
-class TimeBookingAdmin(PostedNotDeletedMixin, AuditableAdminMixin, admin.ModelAdmin):
+class TimeBookingAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("number", "work_order", "operation", "booking_date",
                     "shift", "shown_crew", "minutes", "shown_hours",
                     "quantity_completed", "hourly_rate", "posted",

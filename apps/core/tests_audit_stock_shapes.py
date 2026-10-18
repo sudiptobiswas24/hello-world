@@ -91,3 +91,39 @@ class ArrivalsWithoutTheirDepartureTests(SimpleTestCase):
         self.assertEqual(asked("arrivals_without_their_departure",
                                "def f():\n    StockMovement.objects.filter(movement_type=MovementType.TRANSFER_IN)\n"),
                          [])
+
+
+class OnePostedDocumentAdminRuleTests(SimpleTestCase):
+    # O45: three admin mixins refused the same thing, one of them answering yes unasked.
+    COPY = "class A:\n    def has_delete_permission(self, request, obj=None):\n        return not obj.posted\n"
+
+    def test_a_copy_is_reported(self):
+        (finding,) = asked("posted_admin_rule_copied", self.COPY, name="admin.py")
+        self.assertIn("sales/admin.py:2", finding[1])
+
+    def test_the_rule_itself_is_not(self):
+        self.assertEqual(asked("posted_admin_rule_copied", self.COPY, name="admin_mixins.py"), [])
+
+    def test_every_admin_of_a_posted_document_keeps_it_read_only(self):
+        from django.contrib import admin
+        from django.contrib.auth.models import AnonymousUser
+        from django.test import RequestFactory
+
+        from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
+
+        request = RequestFactory().get("/")
+        request.user = type("Root", (AnonymousUser,), {"is_active": True, "is_staff": True, "is_superuser": True,
+                                                        "has_perm": lambda self, perm, obj=None: True})()
+        posted = type("Posted", (), {"posted": True})()
+        kept = []
+        for model, model_admin in admin.site._registry.items():
+            if isinstance(model_admin, PostedImmutableAdminMixin):
+                kept.append(model.__name__)
+                self.assertFalse(model_admin.has_change_permission(request, posted), model)
+                self.assertFalse(model_admin.has_delete_permission(request, posted), model)
+                for inline in model_admin.get_inline_instances(request):
+                    if isinstance(inline, PostedImmutableInlineMixin):
+                        self.assertFalse(inline.has_add_permission(request, posted), inline)
+        for name in ("MaterialIssue", "ProductionEntry", "TimeBooking", "StockAdjustment", "StockCount",
+                     "Invoice", "Bill", "JournalEntry"):
+            self.assertIn(name, kept)
