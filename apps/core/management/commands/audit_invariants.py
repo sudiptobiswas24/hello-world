@@ -995,7 +995,8 @@ class Command(BaseCommand):
 
     # Arrivals written with no one leg they came from, with the reason.
     ARRIVALS_POOLED = {
-        "manufacturing/rebatch.py": "several batches pooled into others on one shelf, not a move between shelves",
+        "manufacturing/rebatch.py": "several batches pooled into others on one shelf, followed by its share "
+                                    "(rebatch.pooled_into, registered with inventory.costing)",
     }
 
     def arrivals_without_their_departure(self, labels, sources):

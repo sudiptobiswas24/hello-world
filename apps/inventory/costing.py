@@ -368,6 +368,26 @@ def where_value_is(movement):
     return follow_value(movement, amount)
 
 
+# Moves that pool several batches into others on one shelf (a rebatch), asked
+# of the module that makes them: `ask(movement) -> [(arrival, share)]` for a
+# departure it wrote, shares summing to one; [] for any other. Inventory
+# cannot import manufacturing.
+POOLED_MOVES = []
+
+
+def register_pooled_move(ask):
+    if ask not in POOLED_MOVES:
+        POOLED_MOVES.append(ask)
+
+
+def _pooled_into(row):
+    from .models import MovementType
+
+    if row.movement_type != MovementType.TRANSFER_OUT:
+        return []
+    return next((found for found in (ask(row) for ask in POOLED_MOVES) if found), [])
+
+
 def follow_value(start, amount, layer_id=None, depth=0):
     """
     Where `amount`, put on the goods on `start`'s shelf at `start`, went:
@@ -397,8 +417,14 @@ def follow_value(start, amount, layer_id=None, depth=0):
         if value <= 0:
             return
         arrived = hops.get(row.pk)
+        pooled = _pooled_into(row) if arrived is None and depth < 32 else []
         if arrived is not None and depth < 32:
             found.extend(follow_value(arrived, value, layer_id=arrived.pk, depth=depth + 1))
+        elif pooled:
+            # Re-batched: what the batch took went into the batches made, each its share of
+            # the value the rebatch put on them; stopped here, it read as sold (seen #9).
+            for arrival, share in pooled:
+                found.extend(follow_value(arrival, value * share, layer_id=arrival.pk, depth=depth + 1))
         else:
             found.append(("gone", row, value))
 
