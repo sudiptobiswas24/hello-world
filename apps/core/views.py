@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from . import second_factor, session_limits
 from .api import refused_by_database
 from .audit import AuditableViewSetMixin, RowHeldViewSetMixin
-from .scoping import created, refuse_change, refuse_create, scoped, visible_parties
+from .scoping import created, refuse_change, refuse_create, refuse_write, scoped
 from .models import (
     Address,
     Company,
@@ -273,19 +273,26 @@ class PartyScopedMixin:
     be changed.
     """
 
+    # Reads keep the rows that name no party in sight; anything else is a write, and reaches only rows the
+    # login may write (scoped(write=True), O130 review F1).
+    READS = ("list", "retrieve", "metadata")
+
     def get_queryset(self):
-        return scoped(super().get_queryset(), self.request.user, "party")
+        return scoped(super().get_queryset(), self.request.user, "party",
+                      write=getattr(self, "action", None) not in self.READS)
 
     def _check_party(self, serializer):
-        party = serializer.validated_data.get("party") or getattr(serializer.instance, "party", None)
-        if party is None:
-            return
-        limit = visible_parties(self.request.user)
-        if limit is not None and not Party.objects.filter(limit, pk=party.pk).exists():
-            raise DRFValidationError({"party": ["Not one of the parties you can see."]})
-        said = refuse_change(self.request.user, party)
-        if said:
-            raise DRFValidationError({"party": [said]})
+        """
+        The row as it stands and the party it is given, each asked refuse_write(): a limited login makes no
+        row that names no party, changes none, and moves none of its customer's rows to no party.
+        """
+        parties = [serializer.instance.party] if serializer.instance is not None else []
+        if serializer.instance is None or "party" in serializer.validated_data:
+            parties.append(serializer.validated_data.get("party"))
+        for party in parties:
+            said = refuse_write(self.request.user, party)
+            if said:
+                raise DRFValidationError({"party": [said]})
 
     def perform_create(self, serializer):
         self._check_party(serializer)
@@ -296,7 +303,7 @@ class PartyScopedMixin:
         super().perform_update(serializer)
 
     def perform_destroy(self, instance):
-        said = refuse_change(self.request.user, instance.party)
+        said = refuse_write(self.request.user, instance.party)
         if said:
             raise DRFValidationError([said])
         super().perform_destroy(instance)
