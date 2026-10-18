@@ -165,7 +165,6 @@ UNSEEN = {
     "assets.fixedasset": "depreciate_all() holds each asset in the order it charges them, not key order",
     "inventory.item": "publishing a cost writes each item's standard in the order rolled up (costing.publish)",
     "manufacturing.billofmaterials": "a woven bag's save rebuilds its components' BOMs in the order built",
-    "manufacturing.workorderoperation": "a dispatch commit writes the operations in the order dispatched",
     "manufacturing.materialissue": "a roll mount's void voids its issues in the order mounted",
     "manufacturing.standardcost": "roll_up() holds each component's cost in the order the tree is walked",
     "manufacturing.timebooking": "a station clock's void voids its bookings in the order booked",

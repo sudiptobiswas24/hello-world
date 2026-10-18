@@ -720,6 +720,30 @@ class StockAndPlantRaceTests(RaceCase):
             self.assertIn("Stock moved after this sheet was written", outcomes[0])
         self.assertEqual(outcomes[1], "done", outcomes)
 
+    def test_two_dispatch_commits_of_the_same_runs_in_opposite_orders_both_go_through(self):
+        # O226 (dispatch commit's operations) and O254: each commit wrote its operations in the order it
+        # dispatched them, and each operation's save now holds its run: two commits of runs A and B, one
+        # A then B and one B then A, each held one and waited for the other. Both held in key order first.
+        from apps.manufacturing import tests_dispatch as dispatch_fixture
+        from apps.manufacturing.dispatch import commit
+        from apps.manufacturing.orders import WorkOrderOperation
+
+        # Its setUp asks super(): built on an instance of its own, committed here for both threads to read.
+        plant = dispatch_fixture.DispatchTestCase(methodName="setUp")
+        plant.setUp()
+        a = plant.run_of("600", dispatch_fixture.D2).operations.get()
+        b = plant.run_of("600", dispatch_fixture.D3).operations.get()
+        from django.utils import timezone
+
+        start = timezone.now()
+
+        def rows(*operations):
+            return [{"held": None, "operation": WorkOrderOperation.objects.get(pk=operation.pk), "start": start,
+                     "finish": start, "machine": None} for operation in operations]
+
+        outcomes = race(WorkOrderOperation, lambda: commit(rows(a, b)), lambda: commit(rows(b, a)))
+        self.assertEqual(outcomes, ["done", "done"])
+
     def test_an_asset_is_disposed_of_once(self):
         assets_fixture.AssetTestCase.setUp(self)
         asset = assets_fixture.AssetTestCase.asset(self)

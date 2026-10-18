@@ -280,21 +280,41 @@ def build(start_at=None):
 
 @transaction.atomic
 def commit(rows):
-    """Write the schedule onto the operations: the dispatcher's decision."""
+    """
+    Write the schedule onto the operations: the dispatcher's decision.
+
+    Every run, then every operation, held first in key order (lock_rows), then written in the order
+    dispatched: each operation's save holds its run (O254), and taken as the schedule ran, two runs and
+    their operations were taken in no fixed order (O226).
+    """
+    from django.db import transaction
+
+    from apps.core.models import lock_rows
+
     written = 0
-    for row in rows:
-        if row["held"]:
-            continue
-        operation = row["operation"]
-        operation.planned_start = row["start"]
-        operation.planned_finish = row["finish"]
-        fields = ["planned_start", "planned_finish", "updated_at"]
-        if row["machine"] is not None and operation.machine_id != row["machine"].pk:
-            operation.machine = row["machine"]
-            fields.append("machine")
-        operation.save(update_fields=fields)
-        written += 1
+    writing = [row["operation"] for row in rows if not row["held"]]
+    with transaction.atomic():
+        if writing:
+            lock_rows(*{operation.work_order_id: operation.work_order for operation in writing}.values())
+            lock_rows(*writing)
+        for row in rows:
+            written += _commit_row(row)
     return written
+
+
+def _commit_row(row):
+    """One row of the schedule onto its operation: 1 written, 0 for a row held off the board."""
+    if row["held"]:
+        return 0
+    operation = row["operation"]
+    operation.planned_start = row["start"]
+    operation.planned_finish = row["finish"]
+    fields = ["planned_start", "planned_finish", "updated_at"]
+    if row["machine"] is not None and operation.machine_id != row["machine"].pk:
+        operation.machine = row["machine"]
+        fields.append("machine")
+    operation.save(update_fields=fields)
+    return 1
 
 
 def dispatch_list(rows):

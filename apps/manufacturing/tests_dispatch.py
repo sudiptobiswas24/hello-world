@@ -317,3 +317,25 @@ class DispatchApiTests(DispatchTestCase):
         client = APIClient()
         client.force_authenticate(User.objects.create_user("viewer"))
         self.assertEqual(client.post("/api/manufacturing/dispatch/commit/").status_code, 403)
+
+
+class AnOperationHoldsItsRunTests(DispatchTestCase):
+    """
+    O254: an operation's save decided on its run's status as the object in hand had it. A run closed by another
+    transaction meanwhile still read released, and a loom change landed on a closed run. Held and read again,
+    it is refused.
+    """
+
+    def test_a_loom_change_on_a_run_closed_meanwhile_is_refused(self):
+        from django.core.exceptions import ValidationError
+
+        from .orders import WorkOrder, WorkOrderStatus
+
+        b = self.run_of("600", D2)
+        operation = b.operations.select_related("work_order").get()
+        WorkOrder.objects.filter(pk=b.pk).update(status=WorkOrderStatus.CLOSED)
+        operation.machine = self.l2
+        with self.assertRaisesMessage(ValidationError, "its routing was frozen when it was released"):
+            operation.save()
+        operation.refresh_from_db()
+        self.assertNotEqual(operation.machine_id, self.l2.pk)
