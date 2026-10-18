@@ -153,3 +153,23 @@ class TheAuditSeesARunUnderAnyNameTests(SimpleTestCase):
                           "        return self.status != WorkOrderStatus.RELEASED\n",
                           "def f(wo):\n    lock_rows(wo)\n    return wo.status == WorkOrderStatus.RELEASED\n"):
             self.assertEqual(self.findings(near_miss), [], near_miss)
+
+
+class AnAwarenessQuestionExcusesOnlyItsOwnMomentTests(SimpleTestCase):
+    """O246 review F4: is_aware(a) excuses a.date() and what is worked from a, never b.date()."""
+
+    def findings(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail.split(" ")[0] for _shape, detail in Command().greenwich_dates(
+            ["gst"], {"gst": {Path("apps/gst/example.py"): text}})]
+
+    def test_the_other_moment_is_reported_and_the_one_asked_is_not(self):
+        text = ("def f(a, b):\n    if timezone.is_aware(a):\n        a = timezone.localtime(a)\n"
+                "    return a.date(), b.date()\n")
+        self.assertEqual(self.findings(text), ["gst/example.py:4"])
+        worked_from = ("def f(moment):\n    if timezone.is_aware(moment):\n        moment = timezone.localtime(moment)\n"
+                       "    return (moment - datetime.timedelta(days=1)).date()\n")
+        self.assertEqual(self.findings(worked_from), [])

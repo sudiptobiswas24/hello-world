@@ -1188,7 +1188,16 @@ class Command(BaseCommand):
                     continue
             around = [fn for fn in functions if fn.lineno <= node.lineno <= fn.end_lineno]
             inner = max(around, key=lambda fn: fn.lineno, default=None)
-            if inner is not None and "is_aware(" in cls._code(inner):
+            # is_aware(x) excuses only a .date() taken of something that names x: one question about one
+            # moment let every .date() of the function through (O246 review F4).
+            asked = set()
+            for call in ast.walk(inner) if inner is not None else ():
+                called = getattr(call, "func", None)
+                if isinstance(call, ast.Call) and call.args and getattr(
+                        called, "attr", getattr(called, "id", "")) == "is_aware":
+                    asked.add(ast.unparse(call.args[0]))
+            named = {ast.unparse(part) for part in ast.walk(taken_of) if isinstance(part, (ast.Name, ast.Attribute))}
+            if asked & named:
                 continue
             lines.add(node.lineno)
         return sorted(lines)
