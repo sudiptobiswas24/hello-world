@@ -274,8 +274,9 @@ class FixedAsset(Extensible, AuditModel):
                 raise ValidationError(
                     f"{self} is {previous.get_status_display().lower()}; its status changes by what "
                     "happens to it: put it into service, dispose of it, reinstate it or un-capitalise it.")
-            # Set as the register is brought in at go-live, and never after (O13).
-            if previous is not None and not fixed:
+            # Set as the register is brought in at go-live, and never after (O13); by going into
+            # service itself, which carries the months before the books opened into them (review F4).
+            if previous is not None and not fixed and not self._status_by_method:
                 fixed = self.FIXED_AT_GO_LIVE
             changed = [name for name in fixed if getattr(previous, name) != getattr(self, name)]
             names = ", ".join(n.replace("_id", "") for n in changed)
@@ -417,7 +418,8 @@ class FixedAsset(Extensible, AuditModel):
         self._status_by_method = True
         if opened is not None:
             self.capitalisation_entry = opened
-        self.save(update_fields=["number", "in_service_date", "status", "capitalisation_entry", "updated_at"])
+        self.save(update_fields=["number", "in_service_date", "status", "capitalisation_entry",
+                                 "depreciated_before", "opening_depreciation", "updated_at"])
 
     def _bring_in_as_an_opening_balance(self):
         """
@@ -440,6 +442,17 @@ class FixedAsset(Extensible, AuditModel):
                 f"{self} was acquired on {to_date(self.acquisition_date)}, after the books opened on "
                 f"{books.opened_on}: typed in, it would be an opening balance it never was. Capitalise it "
                 "from its bill (the bill's Capitalise, POST /api/purchasing/bills/<id>/capitalise/).")
+        # Depreciation before the books opened is never charged here: what the schedule owed for the
+        # months up to the opening day goes into the opening balance as accumulated depreciation to
+        # date, and the schedule starts after it (review F4). Charged instead, nine months of 2025
+        # were posted into books that opened in 2026.
+        since = to_date(self.in_service_date) or to_date(self.acquisition_date)
+        if since <= books.opened_on and (not self.depreciated_before
+                                         or to_date(self.depreciated_before) < books.opened_on):
+            owed = sum((amount for _month, amount in self._charges(
+                self._month_ends(books.opened_on, since=since), since=since)), Decimal("0"))
+            self.opening_depreciation = (self.opening_depreciation or Decimal("0")) + owed
+            self.depreciated_before = books.opened_on
         asset_account = self.stands_on("asset_account")
         accumulated = self.stands_on("accumulated_account")
         entry = JournalEntry.objects.create(date=books.opened_on, reference=(self.number or "")[:64],
