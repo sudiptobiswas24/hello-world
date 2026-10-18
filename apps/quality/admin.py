@@ -11,7 +11,7 @@ asking "how close was it", which a pass or a fail does not say.
 from django.contrib import admin, messages
 from django.core.exceptions import ValidationError
 
-from apps.core.admin_mixins import PostedImmutableInlineMixin
+from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInlineMixin
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
@@ -106,7 +106,8 @@ class ReadingInline(PostedImmutableInlineMixin, admin.TabularInline):
 
 
 @admin.register(Inspection)
-class InspectionAdmin(AuditableAdminMixin, admin.ModelAdmin):
+class InspectionAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
+    # Posted, a verdict is voided or decided, never edited or deleted here (the one rule, O45).
     list_display = ("number", "lot", "inspected_on", "inspected_by", "result",
                     "disposition", "shown_self_approved", "posted", "voided_at")
     list_filter = ("result", "disposition", "posted", "inspected_on")
