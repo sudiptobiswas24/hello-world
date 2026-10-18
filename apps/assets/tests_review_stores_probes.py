@@ -92,7 +92,7 @@ class StoresReviewAssetProbes(base.AssetTestCase):
             jan.close()
 
     # ---- O34 and BooksOpening
-    def test_a6_depreciation_never_posts_before_the_day_the_books_opened(self):
+    def test_depreciation_before_the_books_opened_is_in_the_opening_balance_not_charged(self):
         loom = self.loom()   # in service Apr 2025, nothing declared as depreciated by the old system
         loom.place_in_service(on_date=DAY(2025, 4, 1))
         loom.depreciate(through=DAY(2026, 1, 31))
@@ -110,7 +110,10 @@ class StoresReviewAssetProbes(base.AssetTestCase):
             after.place_in_service(on_date=DAY(2026, 1, 2))
         self.foots(DAY(2026, 1, 31))
         self.assertEqual(self.balance(self.plant), D("24000.00"))
-        self.assertEqual(self.balance(self.opening), D("-24000.00"))
+        # Review F4, the integrator's decision: the one in service on 31 December owed December's
+        # charge (12,000 / 48 = 250) before the books opened, so it is in the opening balance as
+        # accumulated depreciation to date, not charged: opening 24,000 less 250.
+        self.assertEqual((self.balance(self.opening), self.balance(self.accumulated)), (D("-23750.00"), D("-250.00")))
 
     def test_a8_the_opening_day_cannot_move_once_an_asset_stands_on_it_and_not_after_a_later_posting(self):
         self.loom().place_in_service(on_date=DAY(2025, 4, 1))
@@ -126,7 +129,7 @@ class StoresReviewAssetProbes(base.AssetTestCase):
         with self.assertRaises(ValidationError):
             self.books_opened.save()
 
-    def test_a9_the_books_cannot_be_opened_on_a_day_after_things_were_already_posted(self):
+    def test_the_books_do_not_open_on_or_after_a_day_something_is_already_posted(self):
         BooksOpening.objects.all().delete()
         entry = JournalEntry.objects.create(date=DAY(2025, 11, 1), memo="Posted before the books were said to open")
         JournalLine.objects.create(entry=entry, account=self.plant, debit=D("5"))
