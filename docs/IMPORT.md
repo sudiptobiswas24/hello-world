@@ -7,7 +7,7 @@ in this order, because each needs the ones before:
 | Order | Kind | What it makes |
 |---|---|---|
 | 1 | `parties` | Customers, vendors, with GST details, credit limit, billing address |
-| 2 | `employees` | Employees with department and manager, and their logins and roles |
+| 2 | `employees` | Employees with department and manager, and their logins |
 | 3 | `customer_reps` | Which rep each customer belongs to |
 | 4 | `items` | Items with their unit, HSN and costing |
 | 5 | `tape_specs`, `fabric_specs`, `bag_specs` | What the plant makes, each building its bill of materials and inspection plan (`film_specs`, `liner_specs` likewise) |
@@ -89,11 +89,14 @@ employee number; a party that exists is given the employee role),
 `department` (code, made beforehand in the admin), `manager` (the
 manager's employee number, in this file or already in), `job_title`,
 `email`, `username` (the login: made if new, linked if it exists and
-is no one else's), `roles` (role names separated by `;`, such as
-`Line Manager;Employee Self Service`; needs `username`), `sales_rep`
+is no one else's), `sales_rep`
 (`yes` makes them a sales rep, who can then carry customers), `uan`
 (provident fund, twelve digits) and `esi_number` (the ESI IP number,
 ten digits): the monthly PF and ESI files name each person by these.
+
+No roles column: a login's roles are given on the Logins screen, by
+someone who holds them, and a file with a `roles` cell filled is refused
+on that row.
 
 With `--commit`, `--passwords-out <file>` is required: each new login's
 first password is written there, readable only by whoever ran the
