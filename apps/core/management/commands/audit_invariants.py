@@ -979,10 +979,9 @@ class Command(BaseCommand):
     # Files whose matches are not moments in UTC, with the reason.
     LOCAL_ALREADY = {
         "manufacturing/dispatch.py": "build() turns start_at into naive plant time first",
-        "core/audit_invariants.py": "the check's own description",
     }
-
-    GREENWICH = re.compile(r"\bnow\(\)\.date\(\)|\b\w+_at\.date\(\)")
+    # What a .date() may be taken of: a moment already at the plant, or a naive one parsed from text.
+    NAIVE_OR_LOCAL = {"localtime", "strptime", "make_naive"}
 
     def greenwich_dates(self, labels, sources):
         """
@@ -993,6 +992,14 @@ class Command(BaseCommand):
         on the day before. A test suite running on UTC cannot see it, so
         it is checked here. The plant's day is `timezone.localdate()`, or
         `to_date()` of the moment.
+
+        Any `.date()` is asked, not only those two spellings (O246): an
+        aware moment handed in (a portal's acknowledgement, an API's
+        datetime) is the UTC day too, and gst/einvoice.py took one from 28
+        September until a Kolkata run met it. Read off the code, not its
+        text: a `.date()` of `localtime(...)`, of a naive `strptime(...)`
+        or of `make_naive(...)` passes, and so does one in a function that
+        asks `is_aware()` itself (to_date(), a shift's day).
         """
         findings = []
         for label in labels:
@@ -1001,14 +1008,35 @@ class Command(BaseCommand):
                     continue
                 if f"{label}/{path.name}" in self.LOCAL_ALREADY:
                     continue
-                for number, line in enumerate(text.splitlines(), 1):
-                    if self.GREENWICH.search(line):
-                        findings.append((
-                            "greenwich date",
-                            f"{label}/{path.name}:{number} takes the UTC day of a moment; "
-                            "use timezone.localdate() or to_date().",
-                        ))
+                for number in self._utc_days(ast.parse(text)):
+                    findings.append((
+                        "greenwich date",
+                        f"{label}/{path.name}:{number} takes the UTC day of a moment; "
+                        "use timezone.localdate() or to_date().",
+                    ))
         return findings
+
+    @classmethod
+    def _utc_days(cls, tree):
+        """The lines of `tree` that take .date() of what may be an aware moment."""
+        functions = [node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        lines = set()
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "date"
+                    and not node.args and not node.keywords):
+                continue
+            taken_of = node.func.value
+            if isinstance(taken_of, ast.Call):
+                called = taken_of.func
+                name = called.attr if isinstance(called, ast.Attribute) else getattr(called, "id", "")
+                if name in cls.NAIVE_OR_LOCAL:
+                    continue
+            around = [fn for fn in functions if fn.lineno <= node.lineno <= fn.end_lineno]
+            inner = max(around, key=lambda fn: fn.lineno, default=None)
+            if inner is not None and "is_aware(" in cls._code(inner):
+                continue
+            lines.add(node.lineno)
+        return sorted(lines)
 
     def dead_class_attributes(self, labels, sources):
         """
