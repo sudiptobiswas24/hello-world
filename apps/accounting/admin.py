@@ -4,6 +4,7 @@ from apps.core.admin_mixins import PostedImmutableAdminMixin, PostedImmutableInl
 from apps.core.audit import AuditableAdminMixin
 
 from .models import (
+    BooksOpening,
     LetterOfUndertaking,
     SeededDefault,
     Account,
@@ -117,6 +118,13 @@ class SeededDefaultAdmin(admin.ModelAdmin):
     list_filter = ["reviewed_on", "model"]
     fields = ["label", "model", "object_id", "reviewed_by", "reviewed_on"]
     readonly_fields = ["label", "model", "object_id"]
+
+
+class BooksOpeningAdmin(AuditableAdminMixin, admin.ModelAdmin):
+    list_display = ["opened_on", "opening_account"]
+
+
+admin.site.register(BooksOpening, BooksOpeningAdmin)
 
 
 @admin.register(LetterOfUndertaking)

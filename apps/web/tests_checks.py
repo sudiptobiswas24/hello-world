@@ -218,6 +218,11 @@ class IncompleteTests(ChecksTestCase):
                                                 disposal_account=plant, default_life_months=120)
         lathe = FixedAsset.objects.create(name="Lathe", category=category, acquisition_date=datetime.date(2026, 1, 1),
                                           cost=Decimal("120000"), salvage_value=Decimal("0"), life_months=120)
+        # Typed in, it is an opening balance: the books opened on 1 January.
+        from apps.accounting.models import BooksOpening
+
+        BooksOpening.objects.create(opened_on=datetime.date(2026, 1, 1), opening_account=Account.objects.get_or_create(
+            code="3900", defaults={"name": "Opening balances", "account_type": AccountType.EQUITY})[0])
         self.assertNotIn("depreciation_not_run", self.keys(self.person("Controller")))
         lathe.place_in_service(on_date=datetime.date(2026, 1, 1))
         controller = User.objects.get(username="controller")

@@ -172,7 +172,23 @@ class OpenDocumentsTests(ImportTestCase):
 
 
 class OpeningBalancesTests(ImportTestCase):
+    def test_they_wait_for_the_books_to_open_and_keep_to_the_day(self):
+        from apps.accounting.models import BooksOpening
+
+        report = run("opening_balances", "account,debit,credit\n1010,5,\n3900,,5\n", commit=True)
+        self.assertEqual(report.errors[0][:2], (0, "--date"))
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
+        report = run("opening_balances", "account,debit,credit\n1010,5,\n3900,,5\n", commit=True,
+                     date=GO_LIVE + datetime.timedelta(days=1))
+        self.assertFalse(report.committed)
+        self.assertIn("is not the day the books opened", str(report.errors))
+        report = run("opening_balances", "account,debit,credit\n1010,5,\n3900,,5\n", commit=True)
+        self.assertTrue(report.committed, report.errors)
+
     def test_they_must_balance_and_leave_documented_accounts_to_documents(self):
+        from apps.accounting.models import BooksOpening
+
+        BooksOpening.objects.create(opened_on=GO_LIVE, opening_account=self.opening)
         report = run("opening_balances", "account,debit,credit\n1010,250000,\n3900,,240000\n",
                      commit=True, date=GO_LIVE)
         self.assertEqual(report.errors[0][:2], (0, ""))

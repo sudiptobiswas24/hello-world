@@ -130,6 +130,12 @@ class AssetRegisterTests(ImportTestCase):
             accumulated_account=acc("1590", "Accumulated depreciation", AccountType.ASSET),
             expense_account=acc("6100", "Depreciation", AccountType.EXPENSE),
             disposal_account=acc("6200", "Disposal", AccountType.EXPENSE), default_life_months=60)
+        # The books opened on 30 September 2026, the go-live the register is brought in at.
+        from apps.accounting.models import BooksOpening
+
+        opening = Account.objects.get_or_create(code="3900", defaults={
+            "name": "Opening balances", "account_type": AccountType.EQUITY})[0]
+        BooksOpening.objects.create(opened_on=datetime.date(2026, 9, 30), opening_account=opening)
 
     LOOM = ("name,category,acquisition_date,in_service_date,cost,salvage_value,life_months,depreciated_to_date\n"
             "Loom 7,PLANT,2024-10-01,2024-10-01,120000,0,60,48000\n")
@@ -151,7 +157,16 @@ class AssetRegisterTests(ImportTestCase):
         self.assertEqual(loom.periods_due(datetime.date(2026, 12, 31)), [datetime.date(2026, 11, 30), datetime.date(2026, 12, 31)])
 
     def test_refusals(self):
+        from apps.accounting.models import BooksOpening
+
+        opened = BooksOpening.get()
+        BooksOpening.objects.all().delete()
+        # The books not opened yet: the register has no day to stand at.
         self.assertEqual([(row, column) for row, column, _ in run("fixed_assets", self.LOOM, commit=True).errors], [(2, "--date")])
+        BooksOpening.objects.create(opened_on=opened.opened_on, opening_account=opened.opening_account)
+        # A --date that is not the day the books opened is refused, not followed.
+        self.assertEqual([(row, column) for row, column, _ in run(
+            "fixed_assets", self.LOOM, commit=True, date=datetime.date(2026, 10, 1)).errors], [(2, "--date")])
         bad = ("name,category,acquisition_date,in_service_date,cost,salvage_value,life_months,depreciated_to_date\n"
                "Loom 8,PLANT,2024-10-01,,120000,0,60,130000\n"
                "Loom 9,PLANT,2026-10-05,,120000,0,60,0\n"

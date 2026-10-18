@@ -1801,3 +1801,54 @@ from .recurring import RecurringJournal, RecurringJournalLine  # noqa: E402,F401
 from .tds import TdsRate, TdsSection  # noqa: E402,F401
 from .gst import LetterOfUndertaking  # noqa: E402,F401
 from .tcs import SeededDefault, TcsDeclaration, TcsRate, TcsSection  # noqa: E402,F401
+
+
+class BooksOpening(AuditModel):
+    """
+    The day the books opened, and the equity account opening balances stand
+    against: one row, set once. What the old system left is brought in on
+    that day against that account (the opening-balance import, an asset
+    typed in by hand), so changing either is refused once anything is
+    posted on or before the day, the old one or the new: those entries
+    were written against it.
+    """
+
+    opened_on = models.DateField(help_text="The day the books opened: opening balances are dated it.")
+    opening_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="+",
+        help_text="The equity account opening balances stand against.")
+
+    class Meta:
+        verbose_name = "books opening"
+
+    def __str__(self):
+        return f"Books opened on {self.opened_on} against {self.opening_account}"
+
+    @classmethod
+    def get(cls):
+        return cls.objects.select_related("opening_account").order_by("pk").first()
+
+    @transaction.atomic
+    def save(self, *args, **kwargs):
+        self.opened_on = to_date(self.opened_on)
+        account = Account.objects.get(pk=self.opening_account_id)
+        if account.account_type != AccountType.EQUITY:
+            raise ValidationError(f"{account} is not an equity account; opening balances stand against equity.")
+        if self.pk is None and BooksOpening.objects.exists():
+            raise ValidationError("The books opened once: change the day they opened, not a second one.")
+        if self.pk is not None:
+            before = BooksOpening.objects.select_for_update().get(pk=self.pk)
+            if (before.opened_on, before.opening_account_id) != (self.opened_on, self.opening_account_id):
+                last = max(before.opened_on, self.opened_on)
+                posted = JournalEntry.objects.filter(posted=True, date__lte=last).order_by("date", "pk").first()
+                if posted is not None:
+                    raise ValidationError(
+                        f"The books opened on {before.opened_on} against {before.opening_account}, and "
+                        f"{posted.reference or posted.memo or posted} is posted on {posted.date}, on or before that "
+                        "day: opening balances were written against it. Reverse what was posted first.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if JournalEntry.objects.filter(posted=True, date__lte=self.opened_on).exists():
+            raise ValidationError(f"Something is posted on or before {self.opened_on}, against the books' opening.")
+        return super().delete(*args, **kwargs)

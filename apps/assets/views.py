@@ -82,6 +82,7 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         "depreciate_all": "accounting.post_journalentry",
         "place_in_service": "accounting.post_journalentry",
         "uncapitalise": "accounting.post_journalentry",
+        "remove_opening": "accounting.post_journalentry",
     }
 
     @action(detail=True, methods=["post"], url_path="place-in-service")
@@ -125,6 +126,13 @@ class FixedAssetViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         """A disposal recorded in error, taken back: `on_date` only matters where its month has closed."""
         asset = self.get_object()
         _run(asset.reinstate, on_date=_date(request, "on_date"), memo=request.data.get("memo", ""))
+        return Response(self.get_serializer(asset).data)
+
+    @action(detail=True, methods=["post"], url_path="remove-opening")
+    def remove_opening(self, request, pk=None):
+        """An asset typed in by hand, taken off the books while nothing else is posted against it."""
+        asset = self.get_object()
+        _run(asset.remove_opening, on_date=_date(request, "on_date"), memo=request.data.get("memo", ""))
         return Response(self.get_serializer(asset).data)
 
     @action(detail=True, methods=["post"])
