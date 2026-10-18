@@ -39,7 +39,10 @@ class LutAndSeededDefaultsInTheBrowserTests(BrowserTestCase):
         expect(page.locator("main")).to_contain_text("To review")
         page.goto(f"{self.live_server_url}/app/settings/seeded-defaults/{seeded.pk}")
         page.get_by_role("button", name="Mark reviewed").click()
-        expect(page.locator("main")).to_contain_text("Reviewed")
+        # "Reviewed" alone was met at once by the field labels "Reviewed by" and "Reviewed on", before the review
+        # landed: the database read below was then decided by speed. The button shows only while it is not
+        # reviewed, and it was there to be pressed, so its going is the review saved.
+        expect(page.get_by_role("button", name="Mark reviewed")).to_have_count(0)
         seeded.refresh_from_db()
         self.assertEqual((seeded.reviewed_by, seeded.reviewed_on is not None), (controller, True))
         self.assertEqual(self.problems, [])
