@@ -68,15 +68,23 @@ def visible_parties(user):
 
 
 def scoped(queryset, user, path=None):
-    """`queryset` narrowed to rows whose party (at `path`) the login may see."""
+    """
+    `queryset` narrowed to rows whose party (at `path`) the login may see.
+
+    A row that names no party at `path` is nobody's to narrow by, and stays:
+    filtered by `path__in` alone, the plant's own addresses, which belong to
+    no party, dropped out of a rep's view (O130).
+    """
     limit = visible_parties(user)
     if limit is None:
         return queryset
     if path is None:
         return queryset.filter(limit).distinct()
+    from django.db.models import Q
+
     from .models import Party
 
-    return queryset.filter(**{f"{path}__in": Party.objects.filter(limit)})
+    return queryset.filter(Q(**{f"{path}__in": Party.objects.filter(limit)}) | Q(**{f"{path}__isnull": True}))
 
 
 def refuse_create(user, role):
