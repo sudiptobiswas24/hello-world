@@ -125,5 +125,5 @@ class OnePostedDocumentAdminRuleTests(SimpleTestCase):
                     if isinstance(inline, PostedImmutableInlineMixin):
                         self.assertFalse(inline.has_add_permission(request, posted), inline)
         for name in ("MaterialIssue", "ProductionEntry", "TimeBooking", "StockAdjustment", "StockCount",
-                     "Invoice", "Bill", "JournalEntry"):
+                     "Invoice", "Bill", "JournalEntry", "Inspection"):
             self.assertIn(name, kept)
