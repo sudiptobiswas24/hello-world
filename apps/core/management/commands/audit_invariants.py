@@ -790,7 +790,12 @@ class Command(BaseCommand):
     SHELF_READS = {"on_hand_at", "available_at", "reserved_at", "check_available", "cost_of_removing"}
     SHELF_LOCKS = {"lock_position", "lock_positions"}
     # Reads made before the lock on purpose, with the reason.
-    READ_BEFORE_LOCK_ON_PURPOSE = {}
+    READ_BEFORE_LOCK_ON_PURPOSE = {
+        "inventory/adjustments.py:StockCount.post":
+            "not on purpose: it asks each line's system quantity, then adjustment.post() holds the shelves, so a "
+            "movement in between passes the stale check. Seen when the check followed calls (O40); reported to "
+            "the register by fix_core (g22), inventory's to fix",
+    }
 
     def shelf_read_before_lock(self, labels, sources):
         """
@@ -802,25 +807,43 @@ class Command(BaseCommand):
         and free and only then held the shelf, its comment saying it held
         it before anything read: two orders each shipped the last ten.
         Asked of each function that takes the lock, by where its first
-        read and its first lock are.
+        read and its first lock are. A call to a function of the same module
+        that reads or locks the shelf counts as a read or a lock where it is
+        called, however deep (O40): split in two, a function that read the
+        shelf and then called its own helper to hold it went unreported.
         """
         findings = []
         for label in labels:
             for path, text in sorted(sources[label].items()):
                 if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
                     continue
-                for fn in ast.walk(ast.parse(text)):
-                    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        continue
+                tree = ast.parse(text)
+                qualified = self._qualified(tree)
+                functions = [fn for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                calls = {fn: [(getattr(node.func, "attr", getattr(node.func, "id", "")), node.lineno)
+                              for node in ast.walk(fn) if isinstance(node, ast.Call)] for fn in functions}
+                # Which names of this module read, and which lock, the shelf: directly, or through another.
+                reading, locking = set(self.SHELF_READS), set(self.SHELF_LOCKS)
+                grew = True
+                while grew:
+                    grew = False
+                    for fn in functions:
+                        named = {name for name, _line in calls[fn]}
+                        if fn.name not in reading and named & reading:
+                            reading.add(fn.name)
+                            grew = True
+                        if fn.name not in locking and named & locking:
+                            locking.add(fn.name)
+                            grew = True
+                for fn in functions:
                     reads, locks = [], []
-                    for node in ast.walk(fn):
-                        if isinstance(node, ast.Call):
-                            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
-                            if name in self.SHELF_READS:
-                                reads.append(node.lineno)
-                            elif name in self.SHELF_LOCKS:
-                                locks.append(node.lineno)
-                    key = f"{label}/{path.name}:{fn.name}"
+                    for name, line in calls[fn]:
+                        # Its own lock first where a callee does both: the callee is asked on its own.
+                        if name in locking:
+                            locks.append(line)
+                        elif name in reading:
+                            reads.append(line)
+                    key = f"{label}/{path.name}:{qualified[fn]}"
                     if reads and locks and min(reads) < min(locks) and key not in self.READ_BEFORE_LOCK_ON_PURPOSE:
                         findings.append((
                             "shelf read before its lock",
@@ -919,12 +942,21 @@ class Command(BaseCommand):
                         ))
         return findings
 
-    # Who may still ask for a withdrawal's cost per unit, and why.
+    # Who may still ask for a cost per unit, and why: a whole file, or "file:function" (O40: the whole of
+    # inventory/models.py was allowed for the one Item method that hands the rate on).
     PER_UNIT_RATE_ALLOWED = {
         "inventory/costing.py": "where the rate is defined",
-        "inventory/models.py": "the Item method that hands the rate on",
+        "inventory/models.py:Item.removal_unit_cost": "the Item method that hands the rate on",
+        "inventory/models.py:Item.average_cost": "the average across warehouses, for a margin check: nothing is booked",
         "manufacturing/bom.py": "a planned cost: nothing is booked or moved at it",
+        "manufacturing/costing.py:against_actual": "a report of standard against actual: nothing is booked",
+        "inventory/adjustments.py:StockAdjustmentLine.post": "a gain priced at the shelf's average: stock coming in, not a withdrawal",
+        "purchasing/models.py:PurchaseOrderLine.component_cost": "called by nothing; reported (fix_core, g22)",
+        "purchasing/models.py:GoodsReceipt._restore_components": "the pre-consumption branch books a component back at the "
+                                                    "four-place average times the quantity; reported to the "
+                                                    "register (fix_core, g22), purchasing's to fix",
     }
+    PER_UNIT_RATES = ("removal_unit_cost", "unit_cost_for", "average_cost_at")
 
     def per_unit_withdrawal_rates(self, labels, sources):
         """
@@ -946,11 +978,22 @@ class Command(BaseCommand):
                 key = f"{label}/{path.name}"
                 if key in self.PER_UNIT_RATE_ALLOWED:
                     continue
-                for match in re.finditer(r"\b(removal_unit_cost|unit_cost_for)\(", text):
-                    line = text.count("\n", 0, match.start()) + 1
+                tree = ast.parse(text)
+                qualified = self._qualified(tree)
+                functions = [fn for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                for node in ast.walk(tree):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+                    if name not in self.PER_UNIT_RATES:
+                        continue
+                    inner = max((fn for fn in functions if fn.lineno <= node.lineno <= fn.end_lineno),
+                                key=lambda fn: fn.lineno, default=None)
+                    if inner is not None and f"{key}:{qualified[inner]}" in self.PER_UNIT_RATE_ALLOWED:
+                        continue
                     findings.append((
                         "per-unit withdrawal rate",
-                        f"{key}:{line} asks {match.group(1)}(); book what cost_of_removing() "
+                        f"{key}:{node.lineno} asks {name}(); book what cost_of_removing() "
                         "says leaving takes, the total, or move it with move_stock().",
                     ))
         return findings
@@ -1864,6 +1907,20 @@ class Command(BaseCommand):
     # Or posts one afresh: a write-off, a claim credited, a discount taken, money held drawn
     # down. Nothing is taken back, and it is dated anywhere all the same.
     POSTS = re.compile(r"\bJournalEntry\.objects\.create\(|\bpost_drawdown\(|\bpost_settlement_fx\(|\.post\(")
+
+    @staticmethod
+    def _qualified(tree):
+        """Each function of `tree` by its name with its class's ("Class.method"), so two posts of one file differ."""
+        names = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for member in node.body:
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        names[member] = f"{node.name}.{member.name}"
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node not in names:
+                names[node] = node.name
+        return names
 
     @staticmethod
     def _code(fn):
