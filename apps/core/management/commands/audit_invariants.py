@@ -2110,7 +2110,12 @@ class Command(BaseCommand):
             bodies = [body for stem, body in defined.get((label, name), []) if module is None or stem == module]
             if len(bodies) != 1:
                 continue  # a model, a constant, or a name too common to follow
-            for word in set(re.findall(r"\b[A-Za-z_]\w*\b", bodies[0])):
+            # The names its code uses, not every word of its text: "made" in a docstring reported
+            # ProcessRoll, whose reverse accessor it is, and two docstrings were reworded to pass (O212).
+            tree = ast.parse(bodies[0])
+            words = ({node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+                     | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)})
+            for word in words:
                 found = {names[word]} if word in names else reached_by.get(word, set())
                 if len(found) == 1:
                     (model,) = found
