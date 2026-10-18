@@ -303,6 +303,22 @@ def live_work_orders(warehouse):
     )
 
 
+def on_its_creels(order, item):
+    """
+    What of `item` a backflushed run's creels hold and its output has not
+    drawn: on the shelf, counted unusable for anything else (free_lots_at,
+    the same loaded-less-drawn figure allocate() takes off), and already the
+    run's, so its demand is that much less (review F2). Subtracted from the
+    supply and left whole in the demand, the 100 kg on the warp creel was
+    counted twice and a purchase raised for tape standing on the loom.
+    """
+    from apps.manufacturing.tape_loads import on_the_creels
+
+    # A run that does not backflush took its loads off the shelf as it loaded them: issued, not promised.
+    held = on_the_creels(order, item) if order.backflush else []
+    return sum((kg for _lot, kg in held), Decimal("0"))
+
+
 def work_order_demand(item, warehouse, on_date):
     """
     What live runs still have to draw, over and above what they have
@@ -329,7 +345,7 @@ def work_order_demand(item, warehouse, on_date):
                 required = component.item.to_stock_quantity(
                     component.quantity_required, component.uom
                 )
-                remaining = required - component.quantity_issued()
+                remaining = required - component.quantity_issued() - on_its_creels(order, item)
                 if remaining > 0:
                     rows.append(_demand(
                         when, remaining, DemandSource.WORK_ORDER,
