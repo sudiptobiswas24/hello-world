@@ -304,6 +304,24 @@ def sources(lot):
         rebatch__in=rebatches, side=RebatchSide.IN).select_related("lot").order_by("id")]
 
 
+def pooled_into(movement):
+    """
+    [(arrival, share)]: where a rebatch's take-out went, for follow_value
+    (inventory.costing.register_pooled_move): each batch it made, by its
+    share of the value the rebatch put on them. [] for any other movement.
+    """
+    taken = _standing_lines(stock_movement=movement, side=RebatchSide.IN).first()
+    if taken is None:
+        return []
+    made = [line.stock_movement for line in _standing_lines(rebatch_id=taken.rebatch_id, side=RebatchSide.OUT)
+            .select_related("stock_movement").order_by("id") if line.stock_movement_id]
+    values = [arrival.quantity * arrival.unit_cost + (arrival.value_adjustment or ZERO) for arrival in made]
+    total = sum(values, ZERO)
+    if total <= 0:
+        return []
+    return [(arrival, value / total) for arrival, value in zip(made, values)]
+
+
 def _sources_for_page(lots):
     """`sources` for a page of batches in two queries (O231): {lot pk: [batch, ...]}."""
     made = {}
