@@ -741,6 +741,9 @@ class StockCount(AuditModel):
         for line in lines:
             _refuse_counting_twice(line, lines)
 
+        # The shelves held before they are read: asked first, a movement landing between the question and
+        # adjustment.post()'s lock passed the stale check and the count posted over it (O252).
+        lock_positions((line.item, self.warehouse) for line in lines)
         stale = [
             line for line in lines if line.current_system_quantity() != line.system_quantity
         ]
