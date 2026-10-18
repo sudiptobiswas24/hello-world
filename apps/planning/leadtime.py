@@ -70,6 +70,20 @@ def plant_calendar(settings=None):
     return WorkingCalendar(settings.working_days, settings.holiday_region)
 
 
+def plant_is_open(day):
+    """
+    Whether the plant works `day` by its own settings (working_days, holiday_region), for core's
+    working-day registry; None while it has kept none. A Saturday the plant works is worked, and a
+    holiday of its own region shuts it, whatever Monday to Friday and the company-wide list say.
+    """
+    from .models import PlanningSettings
+
+    settings = PlanningSettings.objects.first()
+    if settings is None:
+        return None
+    return plant_calendar(settings).is_working(day)
+
+
 def buy_lead_days(item, vendor, quantity=None, on_date=None, default=None):
     """
     Days this vendor has agreed to take, or the stated fallback.

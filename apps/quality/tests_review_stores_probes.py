@@ -27,7 +27,7 @@ class StoresReviewWorkingDayProbes(base.AwaitingTestCase):
         rows = self.clients["asha"].get("/api/quality/inspections/awaiting/").json()
         return [row["due_on"] for row in rows if row["number"] == waiting.number][0]
 
-    def test_w1_the_plants_own_week_counts_when_the_plant_works_a_saturday(self):
+    def test_a_saturday_the_plant_works_is_a_working_day_for_the_quality_manager(self):
         from apps.planning.models import PlanningSettings
 
         settings = PlanningSettings.get()
@@ -37,7 +37,7 @@ class StoresReviewWorkingDayProbes(base.AwaitingTestCase):
         self.assertEqual(self.due_after_posting_on(friday), "2026-06-06",
                          "Saturday 6 June is a working day of the plant's own calendar; due on Monday 8 June")
 
-    def test_w2_the_holiday_list_of_the_plants_own_region_counts(self):
+    def test_a_holiday_of_the_plants_own_region_shuts_it_and_another_regions_does_not(self):
         from apps.hr.calendars import PublicHoliday
         from apps.planning.models import PlanningSettings
 
@@ -45,10 +45,12 @@ class StoresReviewWorkingDayProbes(base.AwaitingTestCase):
         settings.holiday_region = "WB-KOL"
         settings.save()
         PublicHoliday.objects.create(name="Kolkata only", date=MONDAY + datetime.timedelta(days=1), region="WB-KOL")
+        # One in another region does not shut this plant.
+        PublicHoliday.objects.create(name="Mumbai only", date=MONDAY + datetime.timedelta(days=2), region="MH-MUM")
         self.assertEqual(self.due_after_posting_on(MONDAY), "2026-06-03",
                          "Tuesday 2 June shuts this plant's region; due Wednesday")
 
-    def test_w3_a_sunday_and_a_company_wide_holiday_are_skipped(self):
+    def test_a_sunday_and_a_company_wide_holiday_are_not_working_days(self):
         from apps.hr.calendars import PublicHoliday
 
         friday = MONDAY + datetime.timedelta(days=4)
