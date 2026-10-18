@@ -993,9 +993,6 @@ class Command(BaseCommand):
         "manufacturing/costing.py:against_actual": "a report of standard against actual: nothing is booked",
         "inventory/adjustments.py:StockAdjustmentLine.post": "a gain priced at the shelf's average: stock coming in, not a withdrawal",
         "purchasing/models.py:PurchaseOrderLine.component_cost": "called by nothing; reported (fix_core, g22)",
-        "purchasing/models.py:GoodsReceipt._restore_components": "the pre-consumption branch books a component back at the "
-                                                    "four-place average times the quantity; reported to the "
-                                                    "register (fix_core, g22), purchasing's to fix",
     }
     PER_UNIT_RATES = ("removal_unit_cost", "unit_cost_for", "average_cost_at")
 

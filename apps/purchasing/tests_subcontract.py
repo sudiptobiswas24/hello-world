@@ -1114,3 +1114,33 @@ class RestoredComponentsCarryTheirRemainderTests(SubcontractTestCase):
         receipt = self.receive(order, "130000")
         receipt.create_return(debit_bills=False)
         self.assertLess(abs(replay(self.frame, self.subcontractor)[1] - sent), Decimal("0.0001"))
+
+
+class AReturnFromBeforeConsumptionWasRecordedFootsTests(SubcontractTestCase):
+    """
+    O253: a receipt from before consumption was recorded puts its components back at the item's average there.
+    3,001 frames at 8.12345 at the subcontractor, 3,000 consumed by 3,000 assemblies: at the four-place 8.1234
+    multiplied back up, the frames came back at 24,370.20 of the 24,370.35 that went in, and the 0.15 was
+    booked as a price variance. The ledger moves by the vendor's charge only, -15,000.00, and so does the shelf.
+    Figures: scratchpad/calc_fix_core/o253.py.
+    """
+
+    def stock_value(self):
+        return sum(item.valuation_at(warehouse)[1] for item in (self.frame, self.motor, self.assembly)
+                   for warehouse in (self.warehouse, self.subcontractor))
+
+    def test_the_shelf_foots_to_the_ledger_after_the_return(self):
+        from apps.accounting.models import Account, AccountType
+
+        variance = Account.objects.create(code="5900", name="Price variance", account_type=AccountType.EXPENSE)
+        Company.objects.update(purchase_price_variance_account=variance)
+        self.stock(self.frame, "3001", "8.12345", warehouse=self.subcontractor)
+        self.stock(self.motor, "6000", "12", warehouse=self.subcontractor)
+        receipt = self.receive(self.subcontract_order("3000", service="5"), "3000")
+        # As a receipt from before consumption was recorded: its consumption reads as nobody's.
+        StockMovement.objects.filter(notes__startswith="Consumed by subcontractor").update(notes="Consumed")
+        stock_before, ledger_before = self.stock_value(), self.balance(self.inventory)
+        receipt.create_return(debit_bills=False)
+        # Rounded, the 0.15 the frames came back short of was booked as a price variance nobody paid.
+        self.assertEqual((self.stock_value() - stock_before, self.balance(self.inventory) - ledger_before,
+                          self.balance(variance)), (Decimal("-15000"), Decimal("-15000"), Decimal("0")))
