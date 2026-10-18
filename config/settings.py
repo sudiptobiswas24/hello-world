@@ -68,6 +68,11 @@ CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
 # Signing in from the address bar lands on the office application; the
 # station screens pass their own ?next=.
 LOGIN_REDIRECT_URL = "/app/"
+# Session time-outs (apps/core/session_limits.py): after this long with nothing done, and in any case
+# twelve hours after signing in. The cookie lasts no longer than the session can.
+SESSION_IDLE_SECONDS = int(os.environ.get("DJANGO_SESSION_IDLE_MINUTES", "30")) * 60
+SESSION_ABSOLUTE_SECONDS = 12 * 60 * 60
+SESSION_COOKIE_AGE = SESSION_ABSOLUTE_SECONDS
 
 
 # Application definition
@@ -98,9 +103,13 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    # A session idle too long, or open too long, ends before anyone reads who it was (apps/core/session_limits.py).
+    "apps.core.session_limits.SessionLimits",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    # A session that gave only the password is nobody where a second factor is needed (apps/core/second_factor.py).
+    "apps.core.second_factor.Gate",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.RequestMemo",
@@ -290,7 +299,10 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
-        "rest_framework.authentication.BasicAuthentication",
+        # An integration's key, every use recorded (apps/core/api_keys.py).
+        "apps.core.api_keys.ApiKeyAuthentication",
+        # A password alone: refused for a login that signs in with a second factor.
+        "apps.core.second_factor.PasswordOnlyBasicAuthentication",
     ],
     # Documents enforce their rules in save(), which raises Django's
     # ValidationError. Without this a caller who broke a rule got a 500

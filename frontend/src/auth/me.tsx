@@ -17,6 +17,10 @@ export interface Me {
   /** The employee this login is (hr), or null: what "my leave" means. */
   employee?: number | null;
   employee_name?: string;
+  /** Whether this login signs in with a code from a phone, and whether it must (apps/core/second_factor.py). */
+  second_factor?: { enrolled: boolean; required: boolean };
+  /** When the session ends (apps/core/session_limits.py). */
+  session?: { idle_seconds: number; ends_in_seconds: number };
 }
 
 interface Access {

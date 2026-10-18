@@ -121,11 +121,22 @@ function errorRef(body: unknown): string {
 
 let signingIn = false;
 
+/** Said just before the page goes to sign in: whatever is being typed is kept in the browser first (useDraft). */
+export const SIGNING_IN = "erp:signing-in";
+
 function sendToSignIn(): void {
   if (signingIn) return;
   signingIn = true;
+  window.dispatchEvent(new Event(SIGNING_IN));
   const here = window.location.pathname + window.location.search;
   window.location.assign(`/accounts/login/?next=${encodeURIComponent(here)}`);
+}
+
+// The last time this page asked the server anything on the person's behalf: the session's idle clock
+// (apps/core/session_limits.py) runs from the same moment, so the warning can say how long is left.
+let lastActivity = Date.now();
+export function lastActive(): number {
+  return lastActivity;
 }
 
 /**
@@ -156,6 +167,8 @@ export interface RequestOptions {
   body?: unknown;
   query?: Query;
   signal?: AbortSignal;
+  /** Only asking how long the session has: not a sign the person is there, so it keeps nothing open. */
+  check?: boolean;
 }
 
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<Reply<T>> {
@@ -164,6 +177,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const form = options.body instanceof FormData;
   if (options.body !== undefined && !form) headers["Content-Type"] = "application/json";
   if (UNSAFE.has(method)) headers["X-CSRFToken"] = csrfToken();
+  if (options.check) headers["X-Session-Check"] = "1";
+  else lastActivity = Date.now();
 
   let response: Response;
   try {

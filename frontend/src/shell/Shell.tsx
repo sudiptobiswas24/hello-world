@@ -6,6 +6,7 @@ import { MODULES, offered, screenUrl } from "../app/registry";
 import { useAccess } from "../auth/me";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { Icon } from "./Icon";
+import { DraftOffer, SessionClock } from "./SessionClock";
 
 function useOnline(): boolean {
   const [online, setOnline] = useState(navigator.onLine);
@@ -108,6 +109,10 @@ export function Shell() {
             <div className="user-menu" role="menu">
               <strong>{me.name}</strong>
               <small>{me.roles.join(", ") || (me.is_superuser ? "Administrator" : "No role yet")}</small>
+              {me.second_factor && !me.second_factor.enrolled && (
+                // Optional for this login; once set up, every sign-in asks the code (L12).
+                <a role="menuitem" href="/accounts/second-factor/?next=/app/">Set up two-factor sign-in</a>
+              )}
               <form method="post" action="/accounts/logout/">
                 <input type="hidden" name="csrfmiddlewaretoken" value={csrfToken()} />
                 <input type="hidden" name="next" value="/accounts/login/?next=/app/" />
@@ -142,6 +147,8 @@ export function Shell() {
           </div>
         )}
         <main className="content">
+          <SessionClock times={me.session} />
+          <DraftOffer />
           <Outlet />
         </main>
       </div>

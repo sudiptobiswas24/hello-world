@@ -1629,3 +1629,6 @@ from .chatter import FollowUp, Note  # noqa: E402,F401
 from .saved_filters import SavedFilter  # noqa: E402,F401
 from .licences import Licence  # noqa: E402,F401
 from .roles import KeptCredential, RoleProposal  # noqa: E402,F401
+from .second_factor import GuardedRight, RecoveryCode, SecondFactor  # noqa: E402,F401
+from .api_keys import ApiKey, ApiKeyUse, Integration  # noqa: E402,F401
+from . import session_limits  # noqa: E402,F401  (its sign-in receiver)

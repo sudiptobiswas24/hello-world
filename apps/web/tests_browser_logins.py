@@ -62,3 +62,50 @@ class LoginsInTheBrowserTests(BrowserTestCase):
         self.assertFalse(asha.is_active)
         self.assertFalse(Client().login(username="asha", password="ledger-desk-2026"))
         self.assertEqual(self.problems, [])
+
+
+class TwoFactorInTheBrowserTests(BrowserTestCase):
+    """L12: a Controller enrols at the first sign-in, signs out, signs in with a code, and a wrong one is refused."""
+
+    def test_a_controller_enrols_signs_out_and_signs_in_with_a_code(self):
+        import datetime
+
+        import pyotp
+        from django.utils import timezone
+
+        from .tests_browser import PASSWORD
+
+        controller = self.person("Controller")
+        page = self.page
+        page.goto(f"{self.live_server_url}/app/")
+        page.fill("#id_username", controller.username)
+        page.fill("#id_password", PASSWORD)
+        page.click("button[type=submit]")
+        expect(page.get_by_role("heading", name="Set up two-factor sign-in")).to_be_visible()
+        expect(page.locator(".qr svg")).to_be_visible()
+        totp = pyotp.TOTP(page.locator("#secret").inner_text())
+        page.fill("#id_code", totp.now())
+        page.get_by_role("button", name="Confirm").click()
+        expect(page.locator("#recovery-codes li")).to_have_count(10)
+        page.get_by_role("link", name="I have kept them; continue").click()
+        expect(page.get_by_role("navigation", name="Modules")).to_be_visible()
+
+        page.locator("button.avatar").click()
+        page.get_by_role("menuitem", name="Sign out").click()
+        expect(page.locator("#id_username")).to_be_visible()
+        page.fill("#id_username", controller.username)
+        page.fill("#id_password", PASSWORD)
+        page.click("button[type=submit]")
+        expect(page.get_by_role("heading", name="Sign-in code")).to_be_visible()
+        later = timezone.now() + datetime.timedelta(seconds=30)
+        shown = {totp.at(timezone.now() + datetime.timedelta(seconds=step)) for step in (-30, 0, 30, 60)}
+        wrong = next(code for code in ("246813", "135792", "975310") if code not in shown)
+        page.fill("#id_code", wrong)
+        page.get_by_role("button", name="Sign in").click()
+        expect(page.locator(".error")).to_have_text("That code did not match. Try the one your app shows now.")
+        # The code the enrolment used signs in once; the phone's next one does.
+        page.fill("#id_code", totp.at(later))
+        page.get_by_role("button", name="Sign in").click()
+        expect(page.get_by_role("navigation", name="Modules")).to_be_visible()
+        self.assertTrue(page.url.endswith("/app/"), page.url)
+        self.assertEqual(self.problems, [])

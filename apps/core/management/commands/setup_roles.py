@@ -541,6 +541,9 @@ ROLES = {
         # on or letting them go is the personnel office's; superusers stay
         # the admin's. A login is deactivated, never deleted.
         "auth.view_user", "auth.add_user", "auth.change_user", "auth.view_group",
+        # Integrations are logins too, and their API keys credentials (apps/core/api_keys.py).
+        *crud("core", "integration", actions=("add", "change", "view")),
+        *crud("core", "apikey", actions=("add", "change", "view")), "core.view_apikeyuse",
         # Keeps the logins, so is who people ask when something failed.
         "core.view_servererror", "core.change_servererror",
         # The columns the office asked for, on any kind of record.
@@ -659,6 +662,19 @@ for _role in ROLES:
     ROLES[_role] = [*ROLES[_role], "core.view_roleproposal", "core.confirm_roleproposal"]
 
 
+# Who signs in with a second factor (apps/core/second_factor.py): whoever
+# holds any of these, by any role or on their own, and every superuser. The
+# Controller posts payments, the Payroll Officer sees pay, the HR Admin
+# keeps logins; anyone else given one of these rights needs it too.
+SECOND_FACTOR = [
+    "accounting.post_payment",  # posts a payment
+    "hr.view_payslip",  # sees pay
+    "hr.view_employeepaydetails",  # sees pay and bank details
+    "auth.change_user",  # keeps logins
+    "auth.add_user",
+]
+
+
 class Command(BaseCommand):
     help = "Create or update the default role groups and their permissions."
 
@@ -683,6 +699,17 @@ class Command(BaseCommand):
             if verbosity:
                 verb = "created" if created else "updated"
                 self.stdout.write(f"{verb} {role_name} ({len(permissions)} permissions)")
+        from apps.core.second_factor import GuardedRight
+
+        guarded = []
+        for name in SECOND_FACTOR:
+            app_label, codename = name.split(".", 1)
+            permission = Permission.objects.filter(content_type__app_label=app_label, codename=codename).first()
+            if permission is None:
+                missing.append(f"second factor: {name}")
+            else:
+                guarded.append(GuardedRight.objects.get_or_create(permission=permission)[0].pk)
+        GuardedRight.objects.exclude(pk__in=guarded).delete()
         if missing:
             # A misspelt permission used to be printed and passed over, and
             # the role went out a right short. Nothing is saved instead.
