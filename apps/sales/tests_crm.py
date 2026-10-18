@@ -16,6 +16,8 @@ from decimal import Decimal
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
+from django.db import transaction
+from django.test import TransactionTestCase, tag
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -338,3 +340,45 @@ class RepScopeTests(CrmTestCase):
         self.assertEqual(made.status_code, 201, made.content)
         moved = self.ravi.patch(f"/api/sales/activities/{made.json()['id']}/", {"summary": "x"}, format="json")
         self.assertEqual(moved.status_code, 404)
+
+
+@tag("migration")
+class OneOpportunityAnOrderMigrationTests(TransactionTestCase):
+    """O136: two opportunities on one order are reported by the migration, not merged; once one is unlinked
+    the constraint stands."""
+
+    before = [("sales", "0076_debit_note")]
+    after = [("sales", "0077_one_opportunity_an_order")]
+
+    def test_two_on_one_order_are_named_and_the_constraint_waits_for_a_person(self):
+        import datetime
+
+        from django.db import IntegrityError, connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        from apps.core.models import Party
+
+        from .crm import Opportunity
+        from .models import SalesOrder
+
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.before)
+        customer = Party.objects.create(code="C-OPP", name="Bengal Cement")
+        PartyRoleAssignment.objects.create(party=customer, role=PartyRole.CUSTOMER)
+        order = SalesOrder.objects.create(customer=customer, order_date=datetime.date(2026, 9, 1))
+        first = Opportunity.objects.create(customer=customer, title="Cement sacks")
+        second = Opportunity.objects.create(customer=customer, title="Cement sacks again")
+        Opportunity.objects.filter(pk__in=[first.pk, second.pk]).update(sales_order=order)
+        try:
+            with self.assertRaisesMessage(RuntimeError, "Cement sacks), ") as caught:
+                MigrationExecutor(connection).migrate(self.after)
+            self.assertIn("Cement sacks again", str(caught.exception))
+            # Not merged: both still stand, both still on the order.
+            self.assertEqual(Opportunity.objects.filter(sales_order=order).count(), 2)
+            Opportunity.objects.filter(pk=second.pk).update(sales_order=None)
+            MigrationExecutor(connection).migrate(self.after)
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                Opportunity.objects.filter(pk=second.pk).update(sales_order=order)
+        finally:
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
