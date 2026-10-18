@@ -11,6 +11,7 @@ from django.utils import timezone
 UDYAM = re.compile(r"^UDYAM-[A-Z]{2}-[0-9]{2}-[0-9]{7}$")
 
 from apps.core.models import (
+    correction_date,
     AuditModel,
     answer_to_its_document,
     documents_it_answers_to,
@@ -1223,12 +1224,9 @@ class Payment(AuditModel):
         # On the day the bank returned it, not the day someone keyed it in: dated today, a cheque
         # returned on the 3rd and voided next month left that month's books holding the money, and
         # its statement could not be reconciled.
-        on_date = to_date(on_date) or timezone.localdate()
-        if on_date < to_date(self.payment_date):
-            raise ValidationError("A payment is not voided before the day it was made.")
-        # Ahead of the ledger, the documents would read it unpaid from now and the books paid until then.
-        if on_date > timezone.localdate():
-            raise ValidationError("A payment is voided on the day the bank returned it, and that day has not come.")
+        # Not before it was made, and not ahead of the ledger, where the documents would read it unpaid from
+        # now and the books paid until then (correction_date, O15).
+        on_date = correction_date(on_date, self.payment_date, "A payment is not voided on", "it was made")
         entry = self.journal_entry.create_reversal(
             entry_date=on_date, memo=memo or f"Void of payment {self.number}"
         )
@@ -1764,8 +1762,10 @@ class BankStatementLine(AuditModel):
         # On the posting's own date by default: dated later, the bank
         # account to the statement's end still holds the wrong posting, and
         # once the line is posted again it holds the movement twice.
+        posted_on = self.journal_entry.date
         reversal = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or self.journal_entry.date,
+            entry_date=correction_date(to_date(on_date) or posted_on, posted_on,
+                                       f"{self} is not reversed on", "it was posted"),
             memo=f"Reversed: {self.journal_entry.memo}",
         )
         self.journal_entry = None

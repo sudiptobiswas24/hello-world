@@ -15,7 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, TdsSection, round_money
-from apps.core.models import AuditModel, Company, lock_rows, serialised, to_date
+from apps.core.models import AuditModel, Company, correction_date, lock_rows, serialised, to_date
 
 
 class CustomerTds(AuditModel):
@@ -48,7 +48,8 @@ class CustomerTds(AuditModel):
         if self.confirmed_on:
             raise ValidationError("Form 26AS shows it; clear the confirmation first if 26AS was revised.")
         self.reversed_entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or timezone.localdate(), memo=f"Reversed: {self.journal_entry.memo}")
+            entry_date=correction_date(on_date, self.journal_entry.date, f"{self} is not reversed on", "it was booked"),
+            memo=f"Reversed: {self.journal_entry.memo}")
         self.save(update_fields=["reversed_entry", "updated_at"])
         return self.reversed_entry
 

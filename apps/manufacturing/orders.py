@@ -51,6 +51,7 @@ from django.utils import timezone
 
 from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import (
+    correction_date,
     AuditModel,
     DocumentSequence,
     UnitOfMeasure,
@@ -1545,7 +1546,7 @@ class WorkOrder(AuditModel):
         if self.status != WorkOrderStatus.CLOSED:
             raise ValidationError(f"{self} is not closed.")
         if self.close_entry_id is not None:
-            on_date = to_date(on_date) or timezone.localdate()
+            on_date = correction_date(on_date, self.close_entry.date, f"{self} is not reopened on", "it was closed")
             self.reopened_entry = self.close_entry.create_reversal(
                 entry_date=on_date,
                 memo=memo or f"Reopening {self.number}",
@@ -2546,7 +2547,8 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
                 "first, or the store would be crediting stock back against an "
                 "issue that no longer exists."
             )
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, getattr(self.journal_entry, "date", None),
+                                  f"{self} is not voided on", "it was posted")
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"
         lines = list(self.lines.select_related("item", "uom", "lot"))
@@ -3212,7 +3214,8 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         _check_order_is_open_for(self.work_order, "void this entry")
         from .bales import check_not_baled
 
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, getattr(self.journal_entry, "date", None),
+                                  f"{self} is not voided on", "it was posted")
         occurred_at = timezone.now()
         label = memo or f"Void of {self.number}"
         byproducts = list(self.byproducts.select_related("item", "uom"))
@@ -3665,7 +3668,8 @@ class TimeBooking(VoidedNotDeleted, AuditModel):
                     self.operation.quantity_completed() - self.quantity_completed, order.uom
                 ),
             )
-        on_date = to_date(on_date) or timezone.localdate()
+        on_date = correction_date(on_date, getattr(self.journal_entry, "date", None),
+                                  f"{self} is not voided on", "it was posted")
         if self.journal_entry_id:
             self.voided_entry = self.journal_entry.create_reversal(
                 entry_date=on_date, memo=memo or f"Void of {self.number}"

@@ -105,7 +105,9 @@ class TdsDeduction(AuditModel):
         if self.is_paid_over():
             raise ValidationError(f"Challan {self.challan} has paid this over; void the challan first.")
         self.reversed_entry = self.journal_entry.create_reversal(
-            entry_date=to_date(on_date) or self.date, memo=f"Reversed: {self.journal_entry.memo}")
+            entry_date=correction_date(to_date(on_date) or self.date, self.journal_entry.date,
+                                       f"{self} is not reversed on", "it was deducted"),
+            memo=f"Reversed: {self.journal_entry.memo}")
         self.save(update_fields=["reversed_entry", "updated_at"])
         return self.reversed_entry
 
