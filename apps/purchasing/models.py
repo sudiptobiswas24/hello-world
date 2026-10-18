@@ -6639,6 +6639,12 @@ def _consumed_note(receipt, line):
     return f"Consumed by subcontractor for {receipt.number}, line {line.pk}"
 
 
+def _average_with_its_places(item, warehouse):
+    """The item's average where it stands, total first, divided last, at the eight places StockMovement keeps."""
+    quantity, value = item._replay_valuation(warehouse)
+    return (value / quantity).quantize(Decimal("0.00000001")) if quantity > 0 else Decimal("0")
+
+
 class GoodsReceipt(AuditModel):
     """
     Closes the loop between Purchasing and Inventory: posting a receipt
@@ -7573,10 +7579,12 @@ class GoodsReceipt(AuditModel):
                          _remainder_owed(movement, put_back, quantity))
                         for movement, quantity in zip(taken, _apportion(remaining, total))]
             else:
-                # A receipt from before consumption was recorded this way.
+                # A receipt from before consumption was recorded this way: at the average with the places a
+                # movement keeps, eight, never the four-place rate multiplied back up (O253: 3,000 frames at
+                # 8.12345 came back at 8.1234, 0.15 short, booked as a price variance nobody paid).
                 rows = [(None, None, round_money(component.quantity_per * line.quantity_received),
-                         component.item.average_cost_at(warehouse) or (
-                             component.item.average_cost()
+                         _average_with_its_places(component.item, warehouse) or (
+                             _average_with_its_places(component.item, None)
                          ) or (component.item.standard_cost or Decimal("0")), None)]
             for lot, storage_bin, quantity, cost, residue in rows:
                 if quantity <= 0:
