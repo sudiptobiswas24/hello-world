@@ -823,7 +823,7 @@ class NoConfirmedRateRefusesThePostingTests(TdsTestCase):
 
     def test_a_taxed_bill_waits_for_the_accountant_and_an_untaxed_one_posts(self):
         with self.assertRaisesMessage(ValidationError, "no confirmed 194C rate stands on 10 Mar 2026: nothing would "
-                                                       "be deducted. The accountant confirms it under TDS rates"):
+                                                       "be deducted. The accountant confirms it under Settings > TDS rates"):
             self.bill("40000", day=datetime.date(2026, 3, 10), vendor=self.party)
         self.assertEqual(self.bill("20000", day=datetime.date(2026, 3, 10), vendor=self.party).posted, True)
 
