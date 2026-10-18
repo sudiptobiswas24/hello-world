@@ -206,7 +206,7 @@ class TwoPeopleGiveARoleTests(TestCase):
             user = User.objects.create_user(name)
             user.groups.add(Group.objects.get(name=role))
             self.people[name] = user
-        self.asha = User.objects.create_user("asha")
+        self.asha = User.objects.create_user("asha", password="Asha-Old-Pw-2026")
 
     def as_(self, name):
         client = APIClient()
@@ -849,3 +849,96 @@ class KeptCredentialsAtTheEventTests(TransactionTestCase):
                                 ("above", "login"): ("", keeper.pk, True)})
         executor = MigrationExecutor(connection)
         executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class WhatTheMakerOrTheMailboxKnowsTests(KeeperAndHolder):
+    """
+    O216: HR made puppet, signed in as it, set its "own" password and then
+    left or was demoted: the lapse ended what HR set as a keeper, not what
+    it set as the login, so HR still signed in. O217: a password reset
+    through a link mailed to an address HR set was kept as nobody's, so
+    once the login was given a role above HR, HR, which reads that
+    mailbox, still signed in with it. As the people in their roles.
+    """
+
+    LAUNDERED = "HR-Chosen-As-Puppet-26"
+    RESET = "Through-The-Mailbox-26"
+
+    def setUp(self):
+        super().setUp()
+        User.objects.create_superuser("root", password="x-root-pw-2026")
+        self.root = self.api(User.objects.get(username="root"))
+
+    def changed_as_the_login(self, username, old=PW):
+        web = Client()
+        self.assertTrue(web.login(username=username, password=old))
+        changed = web.post("/accounts/password_change/", {
+            "old_password": old, "new_password1": self.LAUNDERED, "new_password2": self.LAUNDERED})
+        self.assertEqual(changed.status_code, 302)
+
+    def test_a_password_the_maker_set_as_the_login_lapses_when_the_maker_leaves(self):
+        self.make("puppet", [])
+        self.changed_as_the_login("puppet")
+        self.assertEqual(self.root.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json").status_code, 200)
+        self.assertFalse(self.signs_in("puppet", self.LAUNDERED), "a leaver still signs in as the login it made")
+
+    def test_and_when_the_maker_is_demoted(self):
+        self.make("puppet", [])
+        self.changed_as_the_login("puppet")
+        self.assertEqual(self.root.post(f"{USERS}{self.hr.pk}/revoke/", {"role": "HR Admin"}, format="json")
+                         .status_code, 200)
+        self.assertFalse(self.signs_in("puppet", self.LAUNDERED), "a demoted keeper still signs in as its login")
+
+    def test_one_someone_else_issued_and_its_person_changed_is_theirs_when_the_maker_leaves(self):
+        puppet = self.make("puppet", [])
+        issued = self.root.post(f"{USERS}{puppet.pk}/set_password/", {"password": "Root-Issued-Pw-2026"},
+                                format="json")
+        self.assertEqual(issued.status_code, 200, issued.content)
+        self.changed_as_the_login("puppet", old="Root-Issued-Pw-2026")
+        self.root.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json")
+        self.assertTrue(self.signs_in("puppet", self.LAUNDERED))
+
+    def reset_link(self, address):
+        from django.core import mail
+
+        mail.outbox.clear()
+        self.assertEqual(Client().post("/accounts/password_reset/", {"email": address}).status_code, 302)
+        (sent,) = mail.outbox
+        import re
+        return re.search(r"/accounts/reset/[^/]+/[^/\s]+/", sent.body).group(0)
+
+    def reset(self, link):
+        web = Client()
+        landed = web.get(link)
+        self.assertEqual(landed.status_code, 302)
+        return web.post(landed["Location"], {"new_password1": self.RESET, "new_password2": self.RESET})
+
+    def test_a_password_reset_through_an_address_hr_set_is_hrs_and_lapses_with_it(self):
+        from .roles import who_knows
+
+        asha = User.objects.create_user("asha", password="Asha-Old-Pw-2026")
+        set_mail = self.hrc.patch(f"{USERS}{asha.pk}/", {"email": "asha@plant.example"}, format="json")
+        self.assertEqual(set_mail.status_code, 200, set_mail.content)
+        self.assertEqual(self.reset(self.reset_link("asha@plant.example")).status_code, 302)
+        self.assertTrue(self.signs_in("asha", self.RESET))
+        self.assertIn(self.hr.pk, who_knows(User.objects.get(pk=asha.pk)))
+        given = self.root.post(f"{USERS}{asha.pk}/grant/", {"role": "Controller"}, format="json")
+        self.assertEqual(given.status_code, 200, given.content)
+        self.assertFalse(self.signs_in("asha", self.RESET), "HR reads the mailbox the reset went to")
+
+    def test_one_reset_through_the_persons_own_address_is_theirs(self):
+        asha = User.objects.create_user("asha", email="asha@home.example", password="Asha-Old-Pw-2026")
+        self.make("other", [])
+        self.assertEqual(self.reset(self.reset_link("asha@home.example")).status_code, 302)
+        self.root.post(f"{USERS}{asha.pk}/grant/", {"role": "Controller"}, format="json")
+        self.assertTrue(self.signs_in("asha", self.RESET))
+
+    def test_a_link_mailed_before_the_address_lapsed_is_refused(self):
+        asha = User.objects.create_user("asha", password="Asha-Old-Pw-2026")
+        self.hrc.patch(f"{USERS}{asha.pk}/", {"email": "asha@plant.example"}, format="json")
+        link = self.reset_link("asha@plant.example")
+        self.root.post(f"{USERS}{asha.pk}/grant/", {"role": "Controller"}, format="json")
+        refused = self.reset(link)
+        self.assertEqual(refused.status_code, 200)
+        self.assertIn("no longer trusted for a reset", refused.content.decode())
+        self.assertFalse(self.signs_in("asha", self.RESET))

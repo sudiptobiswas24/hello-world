@@ -39,9 +39,10 @@ person by one rule (`refused_link`).
 """
 
 from django.contrib.auth import password_validation
-from django.contrib.auth.forms import PasswordResetForm
+from django.contrib.auth.forms import PasswordResetForm, SetPasswordForm
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -51,7 +52,7 @@ from rest_framework.response import Response
 from .api import required
 from .audit import AuditableViewSetMixin
 from .roles import (KeptCredential, ProposalStatus, give_or_propose, held_beyond, lapse_what_died, may_give,
-                    may_propose, record_credential, trusted_for_reset)
+                    may_propose, password_reset_through_email, record_credential, trusted_for_reset)
 
 
 def roles_beyond(actor, groups):
@@ -117,6 +118,31 @@ def issue_password(actor, user, password, as_confirmer=False):
     user.set_password(password)
     user.save(update_fields=["password"])
     record_credential(user, KeptCredential.PASSWORD, actor, as_confirmer=as_confirmer)
+
+
+class KeptResetForm(SetPasswordForm):
+    """
+    The new password a reset link sets (O217): whoever set the address the
+    link went to knows it (roles.password_reset_through_email). A link
+    mailed before that address stopped being trusted is refused, as the
+    mail would be now (O157).
+    """
+
+    def clean(self):
+        cleaned = super().clean()
+        if not trusted_for_reset(self.user):
+            # Beside the box: the reset page shows no form-wide error.
+            raise DjangoValidationError({"new_password2": [
+                "This link went to an address that is no longer trusted for a reset: someone set it who has since "
+                "been out-ranked by this login. Ask whoever keeps logins for a new password."]})
+        return cleaned
+
+    def save(self, commit=True):
+        with transaction.atomic():
+            user = super().save(commit=commit)
+            if commit:
+                password_reset_through_email(user)
+        return user
 
 
 class TrustedEmailResetForm(PasswordResetForm):
