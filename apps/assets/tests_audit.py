@@ -38,6 +38,10 @@ class TheRegisterAsItStoodTests(AssetTestCase):
         self.assertEqual(today["accumulated"], Decimal("6000"))
 
     def test_an_asset_bought_after_the_date_is_not_on_it(self):
+        # Both typed in, so both opening balances: the books opened on 30 June here.
+        from apps.accounting.models import BooksOpening
+
+        BooksOpening.objects.update(opened_on=datetime.date(2026, 6, 30))
         self.asset()
         later = FixedAsset.objects.create(
             name="Press", category=self.category,
@@ -251,7 +255,9 @@ class ADisposalInErrorIsReinstatedTests(AssetTestCase):
         self.assertEqual(
             (asset.status, asset.disposed_on, self.balance(self.plant), self.balance(self.accumulated),
              self.balance(self.disposal), self.balance(self.depreciation), asset.reinstatement_entry.date),
-            (AssetStatus.IN_SERVICE, None, Decimal("0"), Decimal("-5000.00"), Decimal("0"),
+            # Plant holds its 12,000: typed in, it came onto the books as an opening balance. The 0
+            # this read before was the register's machine on an account that never held it (O34).
+            (AssetStatus.IN_SERVICE, None, Decimal("12000"), Decimal("-5000.00"), Decimal("0"),
              Decimal("5000.00"), datetime.date(2026, 6, 15)))
         asset.depreciate(through=JUN_30)
         self.assertEqual(self.balance(self.depreciation), Decimal("6000.00"))

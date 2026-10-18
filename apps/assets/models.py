@@ -407,6 +407,7 @@ class FixedAsset(Extensible, AuditModel):
                 f"asset's month-end run. Put it into service in a month still open, or reopen {period}."
             )
         self.in_service_date = in_service
+        opened = self._bring_in_as_an_opening_balance() if not self.capitalisation_entry_id else None
         if not self.number:
             self.number = DocumentSequence.next_for(
                 "assets.fixed_asset", self.acquisition_date,
@@ -414,7 +415,68 @@ class FixedAsset(Extensible, AuditModel):
             )
         self.status = AssetStatus.IN_SERVICE
         self._status_by_method = True
-        self.save(update_fields=["number", "in_service_date", "status", "updated_at"])
+        if opened is not None:
+            self.capitalisation_entry = opened
+        self.save(update_fields=["number", "in_service_date", "status", "capitalisation_entry", "updated_at"])
+
+    def _bring_in_as_an_opening_balance(self):
+        """
+        An asset typed in by hand is an opening balance (the integrator's decision): on the day
+        the books opened, Dr its asset account at cost and Cr opening balances; and Dr opening
+        balances, Cr its accumulated depreciation, what the old system had taken. Typed in and
+        put into service, it stood on the register with nothing in the ledger (O34's footing).
+        One bought since comes in by capitalising its bill, and is refused here.
+        """
+        from apps.accounting.models import BooksOpening
+
+        books = BooksOpening.get()
+        if books is None:
+            raise ValidationError(
+                f"{self} is typed in, so it comes onto the books as an opening balance, and the day the "
+                "books opened is not set. Set it (accounting, books opening) first, or capitalise the "
+                "asset from its bill.")
+        if to_date(self.acquisition_date) > books.opened_on:
+            raise ValidationError(
+                f"{self} was acquired on {to_date(self.acquisition_date)}, after the books opened on "
+                f"{books.opened_on}: typed in, it would be an opening balance it never was. Capitalise it "
+                "from its bill (the bill's Capitalise, POST /api/purchasing/bills/<id>/capitalise/).")
+        asset_account = self.stands_on("asset_account")
+        accumulated = self.stands_on("accumulated_account")
+        entry = JournalEntry.objects.create(date=books.opened_on, reference=(self.number or "")[:64],
+                                            memo=f"Opening balance: {self.name}"[:255])
+        rows = [(asset_account, self.cost, Decimal("0")), (books.opening_account, Decimal("0"), self.cost)]
+        if self.opening_depreciation:
+            rows += [(books.opening_account, self.opening_depreciation, Decimal("0")),
+                     (accumulated, Decimal("0"), self.opening_depreciation)]
+        for account, debit, credit in rows:
+            JournalLine.objects.create(entry=entry, account=account, debit=debit, credit=credit,
+                                       description=f"Opening balance: {self.name}"[:255])
+        entry.post()
+        return entry
+
+    @serialised("status", "disposal_entry", "capitalisation_entry")
+    def remove_opening(self, on_date=None, memo=""):
+        """
+        The reverse of bringing it in by hand: an opening asset taken off the books, while nothing
+        else is posted against it (no depreciation, no disposal). Its opening entry is reversed on
+        the day the books opened, or on `on_date` where that month has closed; it is cancelled.
+        """
+        from apps.accounting.models import BooksOpening
+
+        if self.bill_line_id or self.capitalisation_entry_id is None or self.status != AssetStatus.IN_SERVICE:
+            raise ValidationError(f"{self} was not brought in as an opening balance and standing; there is "
+                                  "no opening to remove.")
+        if self.depreciation_entries.exists() or self.disposal_entry_id:
+            raise ValidationError(f"{self} has been depreciated or disposed of since it was brought in: "
+                                  "dispose of it instead.")
+        books = BooksOpening.get()
+        day = books.opened_on if books is not None else to_date(self.capitalisation_entry.date)
+        if AccountingPeriod.blocking(day) is not None:
+            day = correction_date(on_date, day, f"{self}'s opening is not removed on", "the books opened")
+        self.capitalisation_entry.create_reversal(entry_date=day, memo=memo or f"{self.number} opening removed")
+        self.status = AssetStatus.CANCELLED
+        self._status_by_method = True
+        self.save(update_fields=["status", "updated_at"])
 
     def periods_due(self, through):
         """
@@ -758,7 +820,8 @@ def asset_register(as_of=None, category=None):
         acquisition_date__lte=as_of,
     ).exclude(
         # Capitalised again after an undo, it is on the books from that day, not from its bill's.
-        capitalisation_entry__date__gt=as_of,
+        # One typed in stands from when it was acquired: its entry is the books' opening, not its own.
+        capitalisation_entry__date__gt=as_of, bill_line__isnull=False,
     )
     if category is not None:
         assets = assets.filter(category=category)

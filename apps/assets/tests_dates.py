@@ -16,6 +16,8 @@ import datetime
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
+
+from apps.accounting.models import BooksOpening
 from django.test import SimpleTestCase
 
 from apps.accounting.models import AccountingPeriod, JournalLine
@@ -143,6 +145,8 @@ class AClosedMonthTests(DatedTestCase):
         self.assertEqual(self.balance(self.disposal), Decimal("11000.00"))
 
     def test_one_not_depreciated_goes_into_service_from_a_closed_month(self):
+        # Typed in, it is an opening balance: the books opened in April here, after the closed quarter.
+        BooksOpening.objects.update(opened_on=datetime.date(2026, 4, 1))
         land = AssetCategory.objects.create(code="LAND", name="Land", asset_account=self.plant,
                                             accumulated_account=self.accumulated, expense_account=self.depreciation,
                                             method=DepreciationMethod.NONE)
@@ -152,6 +156,7 @@ class AClosedMonthTests(DatedTestCase):
         self.assertEqual(yard.status, AssetStatus.IN_SERVICE)
 
     def test_one_brought_in_at_go_live_whose_closed_months_were_the_old_systems(self):
+        BooksOpening.objects.update(opened_on=datetime.date(2026, 4, 1))
         loom = FixedAsset.objects.create(name="Loom 7", category=self.category, cost=Decimal("12000"), life_months=12,
                                          acquisition_date=datetime.date(2026, 1, 1),
                                          depreciated_before=datetime.date(2026, 3, 31),
