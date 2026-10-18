@@ -358,10 +358,31 @@ def _open_document(row, options, side):
     document.post(memo=memo) if side == "sales" else document.post(memo=memo, apply_prepayments=False)
 
 
+def opening_day(options):
+    """
+    The day the books opened, from accounting's books setting. A date given with the import is
+    only an override, and refused if it disagrees: the setting is the one place it is kept.
+    """
+    from apps.accounting.models import BooksOpening
+    from apps.core.models import to_date
+
+    books = BooksOpening.get()
+    given = to_date(options.get("date")) if options.get("date") else None
+    if books is None:
+        return None
+    if given is not None and given != books.opened_on:
+        raise RowError("--date", f"{given} is not the day the books opened ({books.opened_on}); the books "
+                       "setting says when, and the import follows it.")
+    return books.opened_on
+
+
 def _opening_balances(rows, report, options):
     """One posted journal entry; it must balance, and leave the documented accounts alone."""
     from apps.accounting.models import Account, JournalEntry, JournalLine
     from apps.core.models import Company
+
+    from apps.accounting.models import BooksOpening
+    from apps.assets.models import AssetCategory
 
     company = Company.get()
     documented = {
@@ -372,7 +393,19 @@ def _opening_balances(rows, report, options):
             (company.grni_account, "receipts and bills"),
         ) if account is not None
     }
-    entry = JournalEntry.objects.create(date=options["date"], memo=options.get("memo") or "Opening balances")
+    # The fixed assets come in as the register (each posts its own opening balance), not as a balance.
+    for pair in AssetCategory.objects.values_list("asset_account_id", "accumulated_account_id"):
+        documented.update({pk: "the fixed-asset register" for pk in pair if pk})
+    try:
+        on = opening_day(options)
+    except RowError as error:
+        report.refuse(0, error.column, error.message)
+        return
+    if on is None:
+        report.refuse(0, "--date", "Set the day the books opened (accounting, books opening) first: "
+                      "opening balances are dated it.")
+        return
+    entry = JournalEntry.objects.create(date=on, memo=options.get("memo") or "Opening balances")
     debits = credits = Decimal("0")
     for number, row in rows:
         try:

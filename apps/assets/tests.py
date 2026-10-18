@@ -57,6 +57,11 @@ class AssetTestCase(TestCase):
         self.accumulated = acc("1590", "Accumulated depreciation", AccountType.ASSET)
         self.depreciation = acc("6100", "Depreciation", AccountType.EXPENSE)
         self.disposal = acc("6200", "Disposal", AccountType.EXPENSE)
+        # The books opened on 1 January 2026: an asset typed in by hand is an opening balance then.
+        from apps.accounting.models import BooksOpening
+
+        self.opening = acc("3900", "Opening balances", AccountType.EQUITY)
+        self.books_opened = BooksOpening.objects.create(opened_on=datetime.date(2026, 1, 1), opening_account=self.opening)
         self.category = AssetCategory.objects.create(
             code="PLANT", name="Plant and machinery",
             asset_account=self.plant, accumulated_account=self.accumulated,
@@ -494,8 +499,8 @@ class TheRegisterFootsToTheLedgerTests(AssetTestCase):
         from apps.web.health import integrity
 
         capital = Account.objects.create(code="3000", name="Capital", account_type=AccountType.EQUITY)
+        # Typed in, the lathe brings its own opening balance onto plant (no journal by hand).
         lathe = self.asset()
-        self.journal(datetime.date(2026, 1, 1), self.plant, capital, "12000")
         lathe.depreciate(through=datetime.date(2026, 3, 31))
         day = datetime.date(2026, 3, 31)
         self.assertEqual([(row["account"].code, row["register"], row["ledger"], row["difference"])
@@ -586,3 +591,73 @@ class ItsStatusIsWhatHappenedToItTests(AssetTestCase):
         lathe.dispose(on_date=datetime.date(2026, 2, 15))
         lathe.reinstate()
         self.assertEqual(FixedAsset.objects.get(pk=lathe.pk).status, AssetStatus.IN_SERVICE)
+
+
+class TypedInIsAnOpeningBalanceTests(AssetTestCase):
+    """
+    The integrator's decision: an asset entered by hand is an opening balance. The books opened
+    on 1 January 2026 against 3900. Loom 7, 12,000, bought 1 April 2025, with 3,000 the old
+    system had depreciated to 31 December 2025: Dr plant 12,000 / Cr 3900 12,000, and Dr 3900
+    3,000 / Cr accumulated 3,000, dated 1 January 2026. The register and the ledger foot.
+    """
+
+    def loom(self, acquired=datetime.date(2025, 4, 1), **kwargs):
+        return FixedAsset.objects.create(name="Loom 7", category=self.category, acquisition_date=acquired,
+                                         cost=Decimal("12000"), life_months=48, **kwargs)
+
+    def test_it_posts_its_cost_and_what_was_depreciated_on_the_opening_day(self):
+        from apps.assets.models import register_against_ledger
+
+        loom = self.loom(depreciated_before=datetime.date(2025, 12, 31), opening_depreciation=Decimal("3000"))
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        entry = loom.capitalisation_entry
+        self.assertEqual(entry.date, datetime.date(2026, 1, 1))
+        self.assertEqual(sorted((line.account.code, line.debit, line.credit) for line in entry.lines.all()),
+                         [("1500", Decimal("12000.00"), Decimal("0.00")), ("1590", Decimal("0.00"), Decimal("3000.00")),
+                          ("3900", Decimal("0.00"), Decimal("12000.00")), ("3900", Decimal("3000.00"), Decimal("0.00"))])
+        self.assertEqual([row["difference"] for row in register_against_ledger(datetime.date(2026, 1, 31))],
+                         [Decimal("0.00"), Decimal("0.00")])
+
+    def test_one_bought_after_the_books_opened_is_capitalised_from_its_bill(self):
+        press = self.loom(acquired=datetime.date(2026, 2, 1))
+        with self.assertRaisesMessage(ValidationError, "after the books opened on 2026-01-01: typed in, it would be "
+                                                       "an opening balance it never was. Capitalise it from its bill"):
+            press.place_in_service()
+        self.assertEqual(FixedAsset.objects.get(pk=press.pk).status, AssetStatus.DRAFT)
+
+    def test_removed_before_anything_else_is_posted_against_it(self):
+        loom = self.loom()
+        loom.place_in_service(on_date=datetime.date(2025, 4, 1))
+        controller = self.as_role("Controller")
+        removed = controller.post(f"/api/assets/assets/{loom.pk}/remove-opening/", {}, format="json")
+        self.assertEqual(removed.status_code, 200, removed.content)
+        self.assertEqual((removed.json()["status"], self.balance(self.plant), self.balance(self.opening)),
+                         (AssetStatus.CANCELLED, Decimal("0"), Decimal("0")))
+        again = self.loom()
+        again.place_in_service(on_date=datetime.date(2025, 4, 1))
+        again.depreciate(through=datetime.date(2026, 1, 31))
+        refused = controller.post(f"/api/assets/assets/{again.pk}/remove-opening/", {}, format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("dispose of it instead", refused.content.decode())
+
+
+class TheBooksOpenOnceTests(AssetTestCase):
+    """Accounting's books setting: set once, changed only while nothing is posted on or before its day."""
+
+    def test_set_once_and_held_by_what_is_posted(self):
+        from apps.accounting.models import BooksOpening
+
+        with self.assertRaisesMessage(ValidationError, "The books opened once"):
+            BooksOpening.objects.create(opened_on=datetime.date(2026, 2, 1), opening_account=self.opening)
+        with self.assertRaisesMessage(ValidationError, "is not an equity account"):
+            self.books_opened.opening_account = self.plant
+            self.books_opened.save()
+        self.books_opened.refresh_from_db()
+        self.books_opened.opened_on = datetime.date(2025, 12, 31)
+        self.books_opened.save()
+        # Typed in: its opening balance posts on 31 December 2025.
+        FixedAsset.objects.create(name="Loom 7", category=self.category, acquisition_date=datetime.date(2025, 6, 1),
+                                  cost=Decimal("12000"), life_months=48).place_in_service()
+        self.books_opened.opened_on = datetime.date(2026, 1, 1)
+        with self.assertRaisesMessage(ValidationError, "on or before that day: opening balances were written against it"):
+            self.books_opened.save()

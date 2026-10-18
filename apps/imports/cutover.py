@@ -198,16 +198,21 @@ def _month_end(day):
 def _fixed_asset(row, options):
     """
     An asset already in service, with what the old system had depreciated
-    by the go-live date. That figure's journal side is in the opening
-    balances; here it is recorded on the asset as its opening
-    depreciation, and the months after the go-live date are this system's.
+    by the go-live date, the day the books opened. Put into service, it
+    posts its own opening balance (cost, and what was depreciated), so the
+    opening-balance import refuses its accounts; the months after are
+    this system's.
     """
     from apps.assets.models import AssetCategory, FixedAsset
     from apps.core.models import Party
 
-    on = options.get("date")
+    from .importer import opening_day
+
+    # The day the books opened, as accounting keeps it; a --date given is an override it must agree with.
+    on = opening_day(options)
     if on is None:
-        raise RowError("--date", "the go-live date the register stands at is needed.")
+        raise RowError("--date", "set the day the books opened (accounting, books opening) first: the "
+                       "register stands at it, and each asset posts its opening balance on it.")
     category = by_code(AssetCategory, row, "category")
     name = required(row, "name")
     if FixedAsset.objects.filter(name=name, category=category).exists():
