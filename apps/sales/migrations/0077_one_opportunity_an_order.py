@@ -31,7 +31,6 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(refuse_two_on_one_order, migrations.RunPython.noop),
         migrations.AddConstraint(
             model_name="opportunity",
             constraint=models.UniqueConstraint(condition=Q(sales_order__isnull=False), fields=("sales_order",),
