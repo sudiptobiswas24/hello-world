@@ -190,7 +190,8 @@ class Rebatch(AuditModel):
         lock_positions([(self.item, self.warehouse)])
         made = list(self.made())
         for line in made:
-            others = line.lot.movements.exclude(pk=line.stock_movement_id)
+            # Value put on the batch or taken off it (a landed cost, its release) moves no goods: not a use (review F10).
+            others = line.lot.movements.exclude(pk=line.stock_movement_id).exclude(quantity=0)
             if others.exists() or baled(line.lot):
                 raise ValidationError(f"{line.lot.code} has been used since it was made; "
                                       "the re-batch stands.")
@@ -306,20 +307,41 @@ def sources(lot):
 
 def pooled_into(movement):
     """
-    [(arrival, share)]: where a rebatch's take-out went, for follow_value
-    (inventory.costing.register_pooled_move): each batch it made, by its
-    share of the value the rebatch put on them. [] for any other movement.
+    [(arrival, share)]: where a re-batch's take-out went, for follow_value
+    (inventory.costing.register_pooled_move), each by its share of the
+    value put on them. Its own take-out goes into the batches it made,
+    whether or not it was voided since; the void's take-out of those
+    batches goes back into the batches it was made from (review F1: voided,
+    the take-out had no standing line, and the freight on it read as sold).
+    [] for any other movement.
     """
-    taken = _standing_lines(stock_movement=movement, side=RebatchSide.IN).first()
-    if taken is None:
-        return []
-    made = [line.stock_movement for line in _standing_lines(rebatch_id=taken.rebatch_id, side=RebatchSide.OUT)
-            .select_related("stock_movement").order_by("id") if line.stock_movement_id]
-    values = [arrival.quantity * arrival.unit_cost + (arrival.value_adjustment or ZERO) for arrival in made]
+    from apps.inventory.models import MovementType, StockMovement
+
+    taken = RebatchLine.objects.filter(stock_movement=movement, side=RebatchSide.IN,
+                                       rebatch__posted=True).first()
+    if taken is not None:
+        arrivals = [line.stock_movement for line in RebatchLine.objects.filter(
+            rebatch_id=taken.rebatch_id, side=RebatchSide.OUT, stock_movement__isnull=False,
+        ).select_related("stock_movement").order_by("id")]
+    else:
+        voided = Rebatch.objects.filter(number=movement.reference, posted=True, voided_at__isnull=False,
+                                        item_id=movement.item_id, warehouse_id=movement.warehouse_id).first()
+        if voided is None or not voided.lines.filter(side=RebatchSide.OUT, lot_id=movement.lot_id).exists():
+            return []
+        recorded = set(voided.lines.exclude(stock_movement__isnull=True).values_list("stock_movement_id", flat=True))
+        if movement.pk in recorded:
+            return []
+        # The void brought the sources back under the re-batch's number, after taking the batches out.
+        arrivals = list(StockMovement.objects.filter(
+            reference=voided.number, movement_type=MovementType.TRANSFER_IN, item_id=movement.item_id,
+            warehouse_id=movement.warehouse_id, pk__gt=movement.pk,
+            lot_id__in=voided.lines.filter(side=RebatchSide.IN).values("lot_id"),
+        ).exclude(pk__in=recorded).order_by("pk"))
+    values = [arrival.quantity * arrival.unit_cost + (arrival.value_adjustment or ZERO) for arrival in arrivals]
     total = sum(values, ZERO)
     if total <= 0:
         return []
-    return [(arrival, value / total) for arrival, value in zip(made, values)]
+    return [(arrival, value / total) for arrival, value in zip(arrivals, values)]
 
 
 def _sources_for_page(lots):
