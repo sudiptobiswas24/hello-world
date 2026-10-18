@@ -1836,6 +1836,15 @@ class BooksOpening(AuditModel):
             raise ValidationError(f"{account} is not an equity account; opening balances stand against equity.")
         if self.pk is None and BooksOpening.objects.exists():
             raise ValidationError("The books opened once: change the day they opened, not a second one.")
+        if self.pk is None:
+            # Opened on a day something is already posted on or before: those entries stood in books
+            # that had not opened (review F5), as the change below refuses.
+            posted = JournalEntry.objects.filter(posted=True, date__lte=self.opened_on).order_by("date", "pk").first()
+            if posted is not None:
+                raise ValidationError(
+                    f"{posted.reference or posted.memo or posted} is posted on {posted.date}, on or before "
+                    f"{self.opened_on}: the books cannot open on a day after what is already in them. "
+                    "Open them on an earlier day, or reverse what was posted.")
         if self.pk is not None:
             before = BooksOpening.objects.select_for_update().get(pk=self.pk)
             if (before.opened_on, before.opening_account_id) != (self.opened_on, self.opening_account_id):
