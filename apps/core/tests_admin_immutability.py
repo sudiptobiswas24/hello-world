@@ -11,13 +11,15 @@ from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 
 from apps.accounting.models import Account, AccountType, JournalEntry, JournalLine
+from apps.core.tests_second_factor import for_tests
 
 
 @override_settings(ALLOWED_HOSTS=["testserver"])
+
 class PostedDocumentAdminTests(TestCase):
     def setUp(self):
         self.admin_user = User.objects.create_superuser("root", "root@example.com", "pw")
-        self.client.force_login(self.admin_user)
+        for_tests(self.client, self.admin_user, sign_in=True)
 
         self.cash = Account.objects.create(code="1000", name="Cash", account_type=AccountType.ASSET, holds_money=True)
         self.revenue = Account.objects.create(
@@ -92,7 +94,7 @@ class TheAdminsBulkDeleteAsksEachRowTests(TestCase):
         self.pending = case.request(case.employee("A2"), datetime.date(2026, 7, 6), datetime.date(2026, 7, 7))
         self.hr = User.objects.create_user("hr-staff", password="pw", is_staff=True)
         self.hr.groups.add(Group.objects.get(name="HR Admin"))
-        self.client.force_login(self.hr)
+        for_tests(self.client, self.hr, sign_in=True)
 
     def delete_selected(self, *rows):
         with override_settings(ALLOWED_HOSTS=["testserver"]):

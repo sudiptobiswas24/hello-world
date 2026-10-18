@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import second_factor, session_limits
 from .api import refused_by_database
 from .audit import AuditableViewSetMixin, RowHeldViewSetMixin
 from .scoping import created, refuse_change, refuse_create, scoped, visible_parties
@@ -380,6 +381,11 @@ class MeView(APIView):
             "company": Company.get().name,
             # What "today" means: the screens count the plant's day as timezone.localdate() does.
             "time_zone": settings.TIME_ZONE,
+            # Whether this login signs in with a code from a phone, and must (apps/core/second_factor.py).
+            "second_factor": {"enrolled": second_factor.confirmed(user) is not None,
+                              "required": second_factor.required(user)},
+            # When the session ends: after idle_seconds with nothing done, and in any case in ends_in_seconds.
+            "session": session_limits.remaining(request.session),
         }
         for provider in ME_EXTRAS:
             answer.update(provider(user))

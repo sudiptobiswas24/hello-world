@@ -19,9 +19,15 @@ from django.contrib import admin
 from django.contrib.auth.views import PasswordResetConfirmView, PasswordResetView
 from django.urls import include, path
 
+from apps.core import second_factor
+from apps.core.second_factor import SignInView
 from apps.core.users_api import KeptResetForm, TrustedEmailResetForm
 
 urlpatterns = [
+    # The password, then the code where one is needed (L12); the admin signs in the same way.
+    path("accounts/login/", SignInView.as_view(), name="login"),
+    path("accounts/second-factor/", second_factor.step, name="second-factor"),
+    path("admin/login/", second_factor.AdminSignInView.as_view()),
     path("admin/", admin.site.urls),
     # Before auth.urls: no reset mail to an email whose setter was out-ranked since (O157).
     path("accounts/password_reset/", PasswordResetView.as_view(form_class=TrustedEmailResetForm),

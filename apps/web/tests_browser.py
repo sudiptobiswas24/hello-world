@@ -276,11 +276,21 @@ class BrowserMixin:
         return user
 
     def sign_in(self, user, path="/app/", page=None):
+        import pyotp
+
+        from apps.core import second_factor
+        from apps.core.tests_second_factor import factor_for_tests
+
         page = page or self.page
+        # A login that posts payments, sees pay or keeps logins gives a code after the password (L12).
+        factor = factor_for_tests(user) if second_factor.needs_code(User.objects.get(pk=user.pk)) else None
         page.goto(f"{self.live_server_url}{path}")
         page.fill("#id_username", user.username)
         page.fill("#id_password", PASSWORD)
         page.click("button[type=submit]")
+        if factor is not None:
+            page.fill("#id_code", pyotp.TOTP(factor.secret).now())
+            page.click("button[type=submit]")
         if path.startswith("/app"):
             # The application shows "Opening..." until it knows who this is,
             # with no navigation at all: a test that counts a link absent

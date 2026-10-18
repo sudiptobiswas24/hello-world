@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 
 from .history import RecordEvent
 from .roles import RoleProposal
+from .tests_second_factor import for_tests
 
 USERS = "/api/core/users/"
 
@@ -331,7 +332,7 @@ class TheAdminsUserFormTests(TestCase):
         # fail. Logins are kept on the office's screen; the admin's are superusers' (reviewed).
         from django.test import override_settings
 
-        self.client.force_login(self.hr)
+        for_tests(self.client, self.hr, sign_in=True)
         with override_settings(ALLOWED_HOSTS=["testserver"]):
             page = self.client.get(f"/admin/auth/user/{self.hr.pk}/change/")
             self.assertEqual(page.status_code, 403)
@@ -349,7 +350,7 @@ class TheAdminsUserFormTests(TestCase):
     def test_a_superuser_still_keeps_logins_there(self):
         from django.test import override_settings
 
-        self.client.force_login(User.objects.create_superuser("root", password="pw"))
+        for_tests(self.client, User.objects.create_superuser("root", password="pw"), sign_in=True)
         with override_settings(ALLOWED_HOSTS=["testserver"]):
             self.assertEqual(self.client.get(f"/admin/auth/user/{self.hr.pk}/change/").status_code, 200)
             self.assertEqual(self.client.get("/admin/auth/group/").status_code, 200)

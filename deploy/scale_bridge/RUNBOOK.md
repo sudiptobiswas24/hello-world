@@ -14,14 +14,21 @@ of a typed figure. One bridge per scale; a PC with two scales runs two.
   code, e.g. `SC-1`), and the indicator's port settings (baud rate; most are
   9600, 8 data bits, no parity, 1 stop bit).
 
-## 1. A user for the bridge
+## 1. An integration and its key
 
-In the ERP, as an administrator: add a user named after the scale
-(`bridge-sc1`) with a long random password and one permission only,
-*manufacturing | scale reading | Can add scale reading*. No group, no other
-right: it can post readings and do nothing else. Write the password into a
-file on the station PC readable only by the bridge's account
-(`/etc/scale-bridge/SC-1.password`, mode 600). Never put it in the config.
+The bridge signs in with an API key, never a password (L12, apps/core/api_keys.py).
+
+1. As an administrator, open the API's own page `https://<erp>/api/core/integrations/` (no screen yet) and post `{"name": "Scale SC-1"}`. The ERP makes its login,
+   `integration-scale-sc-1`, with no password: nobody signs in as it.
+2. In the admin, as an administrator, give that login one permission of its own and nothing else:
+   *manufacturing | scale reading | Can add scale reading*. It can post readings and do nothing else.
+   A login holding a right that needs a second factor (payments, pay, logins) is refused with a key.
+3. Post to `/api/core/integrations/<id>/issue_key/` `{"label": ...}` for a key, labelled with the station PC (`Station PC loom shed`). It is shown
+   once: write it into a file on the station PC readable only by the bridge's account
+   (`/etc/scale-bridge/SC-1.key`, mode 600). Never put it in the config. It expires in a year at most;
+   issue the next one before then, change the file, restart the bridge, and revoke the old one.
+4. The integration lists each key's uses: when, and from which address. A key on a PC that was lost or
+   replaced is revoked there, and stops at once.
 
 ## 2. Install
 
@@ -32,7 +39,7 @@ Linux:
     sudo cp scale_bridge.py /opt/scale-bridge/
     sudo cp example.json /etc/scale-bridge/SC-1.json      # then edit it
     sudo cp scale-bridge@.service /etc/systemd/system/
-    sudo chown scalebridge /etc/scale-bridge/SC-1.password && sudo chmod 600 /etc/scale-bridge/SC-1.password
+    sudo chown scalebridge /etc/scale-bridge/SC-1.key && sudo chmod 600 /etc/scale-bridge/SC-1.key
     sudo systemctl enable --now scale-bridge@SC-1
     journalctl -u scale-bridge@SC-1 -f                    # "Posted 106.8 kg from SC-1."
 
@@ -46,7 +53,7 @@ Manager, Ports), and run it at start-up as a service with NSSM:
 |---|---|
 | `server` | The ERP's address, `https://...` |
 | `scale` | The scale code the station names |
-| `username`, `password_file` | The bridge's user, and the file holding its password |
+| `api_key_file` | The file holding the integration's API key |
 | `port`, `baud` | `/dev/ttyUSB0` or `COM3`; the indicator's baud rate |
 | `pattern` | `status_gross` for frames like `ST,GS,+00123.4kg`; `plain_weight` for a bare `  123.45 kg` or `=0123.4`; or your own (below) |
 | `repeat` | How many frames running must read the same weight before it counts as settled (3 at 5 frames a second is 0.6 s) |
@@ -84,8 +91,8 @@ On the station screen the weight field shows the bridged reading and its
 age; a reading over a minute old is refused and the operator is told so.
 If the screen keeps saying there is no reading: the log says whether the
 port opened ("Scale port lost ...") and whether posts were refused
-("Posting ... failed (HTTP Error 403...)": the user lacks the permission;
-401: the password file is wrong).
+("Posting ... failed (HTTP Error 403...)": the key is wrong, revoked or expired, or the
+integration lacks the permission; the integration's uses say which reached the ERP).
 
 ## Gross, net, and a reading posted once
 
@@ -96,4 +103,4 @@ port opened ("Scale port lost ...") and whether posts were refused
   the weight. Posted again because the answer was lost, the server answers with the first reading and
   keeps no second one.
 - `server` must be `https://`. Only `http://localhost` (the station PC itself) is taken without TLS:
-  the password goes with every post.
+  the key goes with every post.
