@@ -218,6 +218,19 @@ def on_creels_undrawn(lot, warehouse=None):
     return sum((max(loaded(run, lot) - drawn_by_output(run, lot), ZERO) for run in runs), ZERO)
 
 
+def creel_promises(lot, warehouse):
+    """[(run, kg)] of `lot` on `warehouse` on the creels of backflushed runs still open, not yet drawn."""
+    from .orders import WorkOrder, WorkOrderStatus
+
+    if lot is None:
+        return []
+    runs = WorkOrder.objects.filter(
+        backflush=True, status=WorkOrderStatus.RELEASED, tape_loads__lot=lot,
+        tape_loads__voided_at__isnull=True, tape_loads__station__warehouse=warehouse,
+    ).distinct().order_by("pk")
+    return [(run, max(loaded(run, lot) - drawn_by_output(run, lot), ZERO)) for run in runs]
+
+
 def tape_for(roll):
     """
     The loads a fabric roll was woven from, oldest first: those made on

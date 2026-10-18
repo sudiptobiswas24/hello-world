@@ -2466,6 +2466,13 @@ class MaterialIssue(VoidedNotDeleted, AuditModel):
 
         total = Decimal("0")
         by_item = {}
+        if self.direction == IssueDirection.ISSUE:
+            from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+            # A named doff on another run's creels is that run's (review F3); this run's own are its own.
+            for line in lines:
+                refuse_drawing_what_is_promised(line.lot, self.warehouse, line.stock_quantity(),
+                                                holder=self.work_order, action=f"go to {self.work_order}")
         for line in lines:
             value = line.post(self, occurred_at, label)
             total += value
