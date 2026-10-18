@@ -103,7 +103,9 @@ export default function LeaveForm() {
         {leave?.status === "pending" && !mine && can("hr.decide_leaverequest") && (
           <ActionButton primary pending={act.pending} onClick={() => void decide("approve")}>Approve</ActionButton>
         )}
-        {(leave?.status === "pending" || leave?.status === "approved") && (mine || forOthers) && (
+        {/* Theirs to cancel, HR's, or whoever decides their leave: the server's check_canceller (O132). */}
+        {(leave?.status === "pending" || leave?.status === "approved")
+          && (mine || forOthers || can("hr.decide_leaverequest") || can("hr.decide_any_leaverequest")) && (
           <ActionButton pending={act.pending} onClick={() => void act.run("POST", `${ENDPOINT}${leave!.id}/cancel/`, {}, {
             // A leave under way is cut short to yesterday, not cancelled: the days already taken stay taken.
             done: (row) => row.status === "cancelled" ? "Cancelled: the days are back" : `Ended on ${date(row.end_date)}: the days after are back`,
