@@ -354,7 +354,7 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
     run = mount.operation.work_order
     spec = bag_specification_for(run.item, shift_date)
     gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,
-                                 typed_reason, typed_note)
+                                 typed_reason, typed_note, tare_kg=core_type.tare_kg)
     metres = _number(metres, "The metres")
     net = gross - core_type.tare_kg
     if net <= 0:

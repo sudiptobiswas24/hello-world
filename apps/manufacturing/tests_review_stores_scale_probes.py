@@ -32,6 +32,9 @@ class Feed:
 
     def send(self, payload):
         self.attempts += 1
+        # The server answers a key it has kept with the first answer, and keeps no second reading.
+        if payload.get("key") and any(kept.get("key") == payload["key"] for kept in self.sent):
+            return
         error = self.fail(payload, self.attempts)
         if error == "after":                     # the server took it, the answer was lost
             self.sent.append(payload)
@@ -44,7 +47,7 @@ class Feed:
         for line in lines:
             self.now += tick
             self.bridge.handle(line)
-        return [p["gross_kg"] for p in self.sent]
+        return [p["gross_kg"] for p in self.sent if "gross_kg" in p]
 
 
 ST = lambda w, kind="GS", sign="+": f"ST,{kind},{sign}{w:>08}kg"   # noqa: E731
@@ -87,14 +90,16 @@ class StoresReviewScaleBridgeProbes(SimpleTestCase):
         self.assertEqual(feed.frames(*["ST,GS,+00106800g"] * 3), ["106.8"])
         self.assertEqual(feed.frames(*["ST,GS,+00235.0lb"] * 5, *["ST,GS,+00235.0KG"] * 5), ["106.8"])
 
-    def test_s6_a_net_weight_is_not_posted_as_the_gross_one(self):
+    def test_a_net_frame_is_posted_as_net_never_as_gross(self):
         # The roll's gross is what the station subtracts the core from. An indicator tared on the core
         # sends NT frames; posted as gross_kg, the core comes off twice.
         feed = Feed()
         posted = feed.frames(*[ST("0100.0", kind="NT")] * 4)
         self.assertEqual(posted, [], "an NT (net) frame was posted as the gross weight")
+        # Review F7, the integrator's decision: posted as what it is, net, which the station does not tare again.
+        self.assertEqual([p.get("net_kg") for p in feed.sent], ["100"])
 
-    def test_s7_a_post_whose_answer_was_lost_is_not_posted_a_second_time(self):
+    def test_a_reading_whose_answer_was_lost_is_one_reading(self):
         # The server took the reading (201) and the answer never came back: the retry makes a second
         # reading of the same roll, fresh and unused, so the station can weigh one roll twice.
         feed = Feed(fail=lambda payload, attempt: "after" if attempt == 1 else None)
@@ -117,7 +122,7 @@ class StoresReviewScaleBridgeProbes(SimpleTestCase):
         feed2.frames(*[ST("0000.0")] * 3)
         self.assertNotIn("106.8", [p["gross_kg"] for p in feed2.sent])
 
-    def test_s9_the_password_is_never_in_a_log_line_and_is_not_sent_in_clear(self):
+    def test_the_password_is_in_no_log_line_and_never_crosses_the_network_in_clear(self):
         module = bridge_module()
         import tempfile, os
         with tempfile.NamedTemporaryFile("w", suffix=".password", delete=False) as kept:

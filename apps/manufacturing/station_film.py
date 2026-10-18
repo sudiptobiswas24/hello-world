@@ -104,7 +104,7 @@ def record_film(station, operator, machine, gross_kg, core_type, metres, micron_
     machine = Machine.objects.select_for_update().get(pk=machine.pk)
     shift, shift_date = _context(station, operator, machine, at)
     gross, reading = weigh_gross(station, operator, supervisor, gross_kg, source, at,
-                                 typed_reason, typed_note)
+                                 typed_reason, typed_note, tare_kg=core_type.tare_kg)
     metres = _number(metres, "The metres")
     net = gross - core_type.tare_kg
     if net <= 0:
