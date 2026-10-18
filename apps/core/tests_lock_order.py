@@ -151,3 +151,54 @@ class TheSentinelSeesEveryLockAStatementTakesTests(TestCase):
     def test_the_order_is_the_written_one(self):
         self.assertEqual(LOCK_ORDER[:5], ("purchasing.purchaseorder", "sales.salesorder",
                                           "purchasing.purchaseorderline", "sales.salesorderline", "core.party"))
+
+
+class TheSentinelForgetsASavepointRolledBackAndSeesForShareTests(TestCase):
+    """O228: rows taken inside a savepoint that rolled back are let go, as the database lets go of them;
+    raw SQL FOR SHARE (hold_money_account) is ranked."""
+
+    def test_a_row_taken_in_a_savepoint_rolled_back_is_not_held_after_it(self):
+        # Before: the invoice stayed held, and the sales order taken next was refused as after it.
+        with transaction.atomic():
+            try:
+                with transaction.atomic():
+                    taken(connection, "sales.invoice", [3])
+                    raise RuntimeError("refused; the savepoint rolls back")
+            except RuntimeError:
+                pass
+            taken(connection, "sales.salesorder", [7])
+
+    def test_a_savepoint_released_keeps_what_it_took(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                with transaction.atomic():
+                    taken(connection, "sales.invoice", [3])
+                taken(connection, "sales.salesorder", [7])
+
+    def test_a_block_without_a_savepoint_keeps_what_it_took(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                try:
+                    with transaction.atomic(savepoint=False):
+                        taken(connection, "sales.invoice", [3])
+                        raise RuntimeError("the whole transaction is lost, not a savepoint")
+                except RuntimeError:
+                    pass
+                taken(connection, "sales.salesorder", [7])
+
+    def test_raw_for_share_is_ranked_with_its_keys(self):
+        from .lock_order import raw_shared_lock
+
+        def run(sql, params):
+            return raw_shared_lock(lambda *args: None, sql, params, False, {"connection": connection})
+
+        self.assertIn(raw_shared_lock, connection.execute_wrappers)
+        # Two shares wait for no one: a transfer from bank 5 to bank 3 holds them in its own order.
+        with transaction.atomic():
+            run('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+            run('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [3])
+        # A shared row is ranked against the others: an invoice shared, then its order taken, is refused.
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                run('SELECT 1 FROM "sales_invoice" WHERE "id" IN (%s, %s) FOR KEY SHARE', [3, 2])
+                taken(connection, "sales.salesorder", [7])
