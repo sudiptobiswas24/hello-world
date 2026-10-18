@@ -100,14 +100,21 @@ def row_lock_query(model, pk, no_key=False):
 # invoice, and a credit note on that invoice holding it while it reached
 # for the order, did exactly that (O137).
 #
+# The order itself is apps.core.lock_order.LOCK_ORDER, and under tests a
+# sentinel holds every transaction to it; this is it in words (O229):
+#
 #   1. a purchase order, then a sales order (a drop-ship receipt ships the
 #      customer's order);
 #   2. an order's lines;
-#   3. the customer whose credit limit is weighed;
-#   4. the documents that move against an order: deliveries and receipts,
-#      then invoices and bills, each before the return or the note that
-#      corrects it;
-#   5. those documents' lines.
+#   3. the customer whose credit limit is weighed, then a payment it made or
+#      is paid, then what a payment pays in payroll (a bank file, its
+#      transfers, the slips);
+#   4. the documents that move against an order: receipts, then deliveries
+#      (a drop-ship receipt makes the delivery), then bills, then invoices,
+#      each before the return or the note that corrects it;
+#   5. those documents' lines;
+#   6. the stock they move;
+#   7. the accounting period an entry posts into.
 #
 # A document names its order(s) in locked_before_it(), and a note the
 # document it corrects after them; its posting and correcting methods are
