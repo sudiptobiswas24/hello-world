@@ -1820,10 +1820,7 @@ class Command(BaseCommand):
     # Steps that reverse an entry on a day they are given and do not yet ask
     # correction_date(), with why. Each is a step another fix owns; the list
     # only shrinks, as a step moved onto the rule makes its line stale.
-    NOT_YET_ON_THE_RULE = "another module's step, not yet on correction_date(): named in the fixed-asset fix's report"
     DATED_ELSEWHERE = {
-        "accounting.Payment.void": "refuses a day before the payment and a day to come in its own words, "
-                                   "written before the rule",
         "accounting.RecurringJournal.generate_one": "a schedule's run, posted forward on its own day; it "
                                                     "corrects nothing",
         "sales.RecurringInvoice.generate_one": "a schedule's run, posted forward on its own day; it corrects "
@@ -1831,12 +1828,6 @@ class Command(BaseCommand):
         "accounting.RealisedOnItsOwnDay.release_exchange_difference":
             "dated on the payment's void, which Payment.void asked of both refusals, or on the day the "
             "difference was realised when that came later: a void is never refused for it",
-        **dict.fromkeys((
-            "accounting.BankStatementLine.reverse_posting", "inventory.StockAdjustment.void",
-            "sales.CustomerTds.reverse",
-            "purchasing.TdsDeduction.reverse",
-            "manufacturing.WorkOrder.reopen", "manufacturing.MaterialIssue.void",
-            "manufacturing.ProductionEntry.void", "manufacturing.TimeBooking.void"), NOT_YET_ON_THE_RULE),
     }
 
     # An entry is taken back by create_reversal(), or written by hand
