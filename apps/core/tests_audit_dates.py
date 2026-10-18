@@ -88,3 +88,27 @@ class TheAuditFollowsTheShelfAndTheRateTests(SimpleTestCase):
         sources = app_sources()
         self.assertEqual(Command().per_unit_withdrawal_rates(list(OUR_APPS), sources)
                          + Command().shelf_read_before_lock(list(OUR_APPS), sources), [])
+
+
+class TheAuditSeesAReleasedRunAskedUnheldTests(SimpleTestCase):
+    """O46: unlocked_open_runs reports a run's status compared to RELEASED, not only is_open()."""
+
+    def findings(self, text):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        return [detail.split(" ")[0] for _shape, detail in Command().unlocked_open_runs(
+            ["manufacturing"], {"manufacturing": {Path("apps/manufacturing/example.py"): text}})]
+
+    def test_a_clock_that_reads_released_unheld_is_reported_and_one_holding_it_is_not(self):
+        unheld = ("class Clock:\n    def void(self):\n"
+                  "        if self.work_order.status != WorkOrderStatus.RELEASED:\n            raise ValueError\n")
+        self.assertEqual(self.findings(unheld), ["manufacturing/example.py:3"])
+        held = unheld.replace("        if self.work_order", "        lock_rows(self.work_order)\n        if self.work_order")
+        self.assertEqual(self.findings(held), [])
+
+    def test_the_tree_as_it_stands_names_every_run_it_asks_unheld(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
+
+        self.assertEqual(Command().unlocked_open_runs(list(OUR_APPS), app_sources()), [])

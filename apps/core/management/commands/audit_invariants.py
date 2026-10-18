@@ -347,6 +347,28 @@ class Command(BaseCommand):
                      if key.split(".")[0] in labels]
         return findings
 
+    # Asked unheld on purpose, or reported, with the reason ("label/file:Class.method").
+    OPEN_RUN_READ_ELSEWHERE = {
+        "planning/mrp.py:work_order_demand": "a plan's demand, read: nothing is posted against the run",
+        "manufacturing/orders.py:WorkOrderOperation._check_only_the_assignment_moved":
+            "not on purpose: an operation's save lets a machine change through on a released order it does not "
+            "hold, so a close at that moment is passed. Seen when the check asked RELEASED (O46); reported to the "
+            "register by fix_core (g22), manufacturing's to fix",
+    }
+    RUN_OR_ORDER = re.compile(r"(order|run)$")
+
+    def _asks_if_open(self, node):
+        """The run or order `node` asks open, as text, or None: is_open(), or its status against RELEASED."""
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "is_open"
+                and self.RUN_OR_ORDER.search(ast.unparse(node.func.value))):
+            return ast.unparse(node.func.value)
+        if isinstance(node, ast.Compare) and "RELEASED" in ast.unparse(node):
+            for side in (node.left, *node.comparators):
+                if (isinstance(side, ast.Attribute) and side.attr == "status"
+                        and self.RUN_OR_ORDER.search(ast.unparse(side.value))):
+                    return ast.unparse(side.value)
+        return None
+
     def unlocked_open_runs(self, labels, sources):
         """
         A run asked whether it is open by something not holding it. Every
@@ -354,30 +376,42 @@ class Command(BaseCommand):
         helper that did not, and a void that read "released" while the
         close summed the run, document and all, committed its reversal
         into work in progress after the close had cleared it. A function
-        that asks an order or a run is_open() holds it there: lock_rows(),
-        or a select_for_update of its own.
+        that asks an order or a run is_open(), or compares its status to
+        RELEASED (O46: the station clock and job work did, and were found
+        only by reading), holds it there: lock_rows(), or a
+        select_for_update of its own.
         """
-        findings = []
+        findings, used, read = [], set(), set()
         for label in labels:
             for path, text in sorted(sources[label].items()):
-                if "test" in path.name or "migrations" in path.parts or ".is_open()" not in text:
+                read.add(f"{label}/{path.name}")
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts or (
+                        ".is_open()" not in text and "RELEASED" not in text):
                     continue
-                for fn in ast.walk(ast.parse(text)):
+                tree = ast.parse(text)
+                qualified = self._qualified(tree)
+                for fn in ast.walk(tree):
                     if not isinstance(fn, ast.FunctionDef):
                         continue
                     body = ast.unparse(fn)
                     if "lock_rows(" in body or "_lock(" in body or "select_for_update" in body:
                         continue
+                    key = f"{label}/{path.name}:{qualified[fn]}"
                     for node in ast.walk(fn):
-                        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                                and node.func.attr == "is_open"
-                                and re.search(r"(order|run)$", ast.unparse(node.func.value))):
-                            findings.append((
-                                "open run read unheld",
-                                f"{label}/{path.name}:{node.lineno} {fn.name}() asks "
-                                f"{ast.unparse(node.func.value)} whether it is open without "
-                                "holding it: lock_rows() it first, as every posting does.",
-                            ))
+                        asked = self._asks_if_open(node)
+                        if asked is None:
+                            continue
+                        if key in self.OPEN_RUN_READ_ELSEWHERE:
+                            used.add(key)
+                            continue
+                        findings.append((
+                            "open run read unheld",
+                            f"{label}/{path.name}:{node.lineno} {fn.name}() asks "
+                            f"{asked} whether it is open without "
+                            "holding it: lock_rows() it first, as every posting does.",
+                        ))
+        findings += [("stale exemption", f"OPEN_RUN_READ_ELSEWHERE names {key}, which no longer asks unheld")
+                     for key in sorted(set(self.OPEN_RUN_READ_ELSEWHERE) - used) if key.split(":")[0] in read]
         return findings
 
     # Not state changes: the guards themselves, and what Python calls.
