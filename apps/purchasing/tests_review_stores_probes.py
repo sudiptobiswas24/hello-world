@@ -204,7 +204,7 @@ class StoresReviewLandedProbes(base.LandedWhereTheGoodsAreTests):
         self.assertEqual(self.balance(self.cogs), D("0"), "the freight left with goods issued to a run, not a sale")
         self.assertEqual(self.item.stock_value_at(self.warehouse), D("20.00"))
 
-    def test_p10_rebatch_voided_after_release_foots(self):
+    def test_a_rebatch_voids_after_the_freight_on_its_batches_was_released(self):
         from apps.manufacturing.rebatch import rebatch
 
         first, self.receipt = self.lot_receipt("L-1")
@@ -222,7 +222,7 @@ class StoresReviewLandedProbes(base.LandedWhereTheGoodsAreTests):
         self.foots()
         self.assertEqual(self.item.stock_value_at(self.warehouse), D("50.00"))
 
-    def test_p11_rebatch_voided_before_release_foots(self):
+    def test_freight_on_goods_rebatched_then_voided_comes_off_where_the_goods_are_on_release(self):
         from apps.manufacturing.rebatch import rebatch
 
         first, self.receipt = self.lot_receipt("L-1")
