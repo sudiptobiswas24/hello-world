@@ -21,7 +21,7 @@ class ManufacturingConfig(AppConfig):
         from .piecework import kilograms_woven, metres_woven
         from .rebatch import made_into, pooled_into, sources
         from .shifts import shift_starts
-        from .tape_loads import on_creels_undrawn
+        from .tape_loads import creel_promises
         from .trace import held_inputs, made_into_by_runs
         from .woven import sack_units
 
@@ -29,7 +29,7 @@ class ManufacturingConfig(AppConfig):
         # What a rebatch took went into the batches it made: followed there (seen #9).
         register_pooled_move(pooled_into)
         # Tape on a backflushed run's creels is on the shelf and not free (O133).
-        register_lot_commitment(lambda lot, warehouse: on_creels_undrawn(lot, warehouse) if lot else None)
+        register_lot_commitment(creel_promises)
         register_lot_sources(sources, made_into)
         # Production is a lineage too: a recall follows the runs, as the trace does (O207).
         register_lot_sources(held_inputs, made_into_by_runs)

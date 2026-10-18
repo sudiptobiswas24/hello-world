@@ -162,8 +162,9 @@ def one_question():
 
 # What of a batch on a shelf is already promised to something that has not
 # drawn it yet, asked of whoever knows (manufacturing: tape on a backflushed
-# run's creels). Each answers `ask(lot, warehouse)` with a quantity in the
-# stocking unit; inventory cannot import them.
+# run's creels). Each answers `ask(lot, warehouse)` with [(holder, quantity)]
+# in the stocking unit, the holder a record that can name itself; inventory
+# cannot import them.
 LOT_COMMITMENTS = []
 
 
@@ -172,9 +173,35 @@ def register_lot_commitment(ask):
         LOT_COMMITMENTS.append(ask)
 
 
-def committed_elsewhere(lot, warehouse):
-    """How much of `lot` on `warehouse` something has already taken without drawing it."""
-    return sum((ask(lot, warehouse) or Decimal("0") for ask in LOT_COMMITMENTS), Decimal("0"))
+def promised_to(lot, warehouse, excluding=None):
+    """[(holder, quantity)]: who has taken `lot` on `warehouse` without drawing it, but `excluding`."""
+    return [(holder, quantity) for ask in LOT_COMMITMENTS for holder, quantity in (ask(lot, warehouse) or [])
+            if quantity > 0 and holder != excluding]
+
+
+def committed_elsewhere(lot, warehouse, excluding=None):
+    """How much of `lot` on `warehouse` something (other than `excluding`) has taken without drawing it."""
+    return sum((quantity for _holder, quantity in promised_to(lot, warehouse, excluding)), Decimal("0"))
+
+
+def refuse_drawing_what_is_promised(lot, warehouse, quantity, holder=None, action="be issued"):
+    """
+    Refuse drawing `quantity` of a named batch beyond what no one else holds (review F3): a doff on
+    another run's creels was issued away by name, and that run's roll could not be booked. `holder`
+    draws on its own promise.
+    """
+    if lot is None:
+        return
+    promised = promised_to(lot, warehouse, excluding=holder)
+    if not promised:
+        return
+    free = lot.on_hand_at(warehouse) - sum((held for _holder, held in promised), Decimal("0"))
+    if Decimal(quantity) > free:
+        shown = lambda value: format(value.normalize(), "f")  # noqa: E731
+        whose = ", ".join(f"{shown(held)} on {holder}'s creels" for holder, held in promised)
+        raise ValidationError(
+            f"{lot} has {shown(max(free, Decimal('0')))} in {warehouse} that nothing holds; {whose}, not yet drawn. "
+            f"{shown(Decimal(quantity))} cannot {action}: take another batch, or withdraw the load first.")
 
 
 def free_lots_at(item, warehouse):

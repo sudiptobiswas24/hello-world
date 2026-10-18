@@ -43,7 +43,7 @@ class StoresReviewCreelProbes(base.TapeLoadTestCase):
         self.load("D-1", "100", CreelSide.WARP, 9)
         self.assertEqual(self.cover(), before, "MRP takes the creel's tape off the supply and leaves the run's demand whole")
 
-    def test_q2_a_named_doff_on_a_creel_cannot_be_issued_to_another_run(self):
+    def test_a_doff_on_one_runs_creels_is_not_issued_to_another_by_name(self):
         self.load("D-1", "100", CreelSide.WARP, 9)
         other = WorkOrder.objects.create(item=self.fabric, bom=self.spec.bom, quantity_ordered=D("100"),
                                          uom=self.kg, warehouse=self.plant)
@@ -51,8 +51,10 @@ class StoresReviewCreelProbes(base.TapeLoadTestCase):
         issue = MaterialIssue.objects.create(work_order=other, issue_date=TODAY, warehouse=self.plant)
         MaterialIssueLine.objects.create(issue=issue, item=self.tape, quantity=D("100"), uom=self.kg,
                                          lot=self.doffs["D-1"], line_number=1)
-        with self.assertRaises(ValidationError, msg="100 kg promised to L-17's creel was issued away by name"):
+        with self.assertRaises(ValidationError, msg="100 kg promised to L-17's creel was issued away by name") as refused:
             issue.post()
+        # In words, naming the run whose creels hold it (review F3, the integrator's decision).
+        self.assertIn(f"100 on {self.run}'s creels", str(refused.exception))
 
     def test_q3_half_drawn_leaves_only_the_undrawn_promised(self):
         from apps.inventory.picking import plan_issue
