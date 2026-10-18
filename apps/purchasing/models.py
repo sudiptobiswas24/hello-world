@@ -5393,9 +5393,12 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
                 return original.accrued_doc * share, original.accrued_base * share
             doc = self.quantity * self.accrued_unit_cost() * keep
             return doc, doc * rate
+        # A line naming no order line never clears an accrual, so nothing asks this of one: the bill
+        # refuses it while the vendor's goods wait unbilled (_refuse_paying_for_goods_on_order), and
+        # then clears_grni() is false and posting expenses it (O127). Its old pricing branch here was
+        # never reached; asked anyway, it is refused rather than priced.
         if not self.order_line_id:
-            doc = self.quantity * self.unit_price * keep
-            return doc, doc * rate
+            raise ValidationError(f"'{self.label()}' names no order line, so it clears no receipt's accrual.")
         candidates = [self.order_line]
         remaining = self.quantity
         doc = base = Decimal("0")
