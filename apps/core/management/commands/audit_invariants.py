@@ -353,10 +353,6 @@ class Command(BaseCommand):
     # Asked unheld on purpose, or reported, with the reason ("label/file:Class.method").
     OPEN_RUN_READ_ELSEWHERE = {
         "planning/mrp.py:work_order_demand": "a plan's demand, read: nothing is posted against the run",
-        "manufacturing/orders.py:WorkOrderOperation._check_only_the_assignment_moved":
-            "not on purpose: an operation's save lets a machine change through on a released order it does not "
-            "hold, so a close at that moment is passed. Seen when the check asked RELEASED (O46); reported to the "
-            "register by fix_core (g22), manufacturing's to fix",
     }
     RUN_OR_ORDER = re.compile(r"(order|run)$")
 

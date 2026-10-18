@@ -2015,8 +2015,12 @@ class WorkOrderOperation(AuditModel):
         "outside_lead_days", "planned_outside_cost",
     )
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
-        if self.work_order.status != WorkOrderStatus.DRAFT:
+        # Its run held, and its status read as stored, before it decides anything (O254): read from the object
+        # in hand, a run closed meanwhile still read released, and a loom change landed on a closed run. The
+        # object is not read again: a release saving its operations holds changes of its own not yet saved.
+        if self._stored_run_status() not in (None, WorkOrderStatus.DRAFT):
             self._check_only_the_assignment_moved()
         self._check_machine()
         super().save(*args, **kwargs)
@@ -2039,13 +2043,14 @@ class WorkOrderOperation(AuditModel):
         and the by-loom reports are read back over history.
         """
         order = self.work_order
+        status = self._stored_run_status()  # held already by save(); asked here, where the status decides
         previous = (
             WorkOrderOperation.objects.filter(pk=self.pk).first()
             if self.pk else None
         )
         moved_only_the_machine = (
             previous is not None
-            and order.status == WorkOrderStatus.RELEASED
+            and status == WorkOrderStatus.RELEASED
             and all(
                 getattr(previous, field) == getattr(self, field)
                 for field in self.FROZEN_AT_RELEASE
@@ -2054,15 +2059,24 @@ class WorkOrderOperation(AuditModel):
         if moved_only_the_machine:
             return
         raise ValidationError(
-            f"{order} is {order.get_status_display().lower()}; its routing "
+            f"{order} is {WorkOrderStatus(status).label.lower()}; its routing "
             "was frozen when it was released."
         )
 
+    def _stored_run_status(self):
+        """Its run held (lock_rows, not read again into the object in hand) and its status as stored."""
+        if self.work_order_id is None:
+            return None
+        lock_rows(self.work_order, refresh=False)
+        return WorkOrder.objects.filter(pk=self.work_order_id).values_list("status", flat=True).first()
+
+    @transaction.atomic
     def delete(self, *args, **kwargs):
-        if self.work_order.status != WorkOrderStatus.DRAFT:
+        status = self._stored_run_status()
+        if status not in (None, WorkOrderStatus.DRAFT):
             raise ValidationError(
                 f"{self.work_order} is "
-                f"{self.work_order.get_status_display().lower()}; its routing "
+                f"{WorkOrderStatus(status).label.lower()}; its routing "
                 "cannot be changed after release."
             )
         return super().delete(*args, **kwargs)
