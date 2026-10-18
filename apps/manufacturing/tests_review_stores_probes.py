@@ -37,7 +37,7 @@ class StoresReviewCreelProbes(base.TapeLoadTestCase):
         need = sum((row.quantity for row in work_order_demand(self.tape, self.plant, TODAY)), D("0"))
         return opening_balance(self.tape, self.plant, TODAY) - need
 
-    def test_q1_loading_a_doff_on_the_run_that_needs_it_does_not_change_the_cover(self):
+    def test_a_doff_loaded_on_the_run_that_needs_it_leaves_the_cover_as_it_was(self):
         # The doff is neither used nor gone: it is the run's own, which the run's demand already counts.
         before = self.cover()
         self.load("D-1", "100", CreelSide.WARP, 9)
