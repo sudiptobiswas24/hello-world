@@ -486,14 +486,25 @@ WORKING_WEEKDAYS = frozenset({1, 2, 3, 4, 5})  # ISO weekdays: hr's DEFAULT_WORK
 
 
 def register_working_day(ask):
-    """ask(day) -> False for a day the plant does not work (a holiday); anything else leaves it to the week."""
+    """
+    ask(day) -> False for a day the plant does not work (a holiday), True for one its own
+    calendar says it works (a Saturday shift), None to leave it to the week. A False wins.
+    """
     if ask not in _WORKING_DAY:
         _WORKING_DAY.append(ask)
 
 
 def is_working_day(day, weekdays=WORKING_WEEKDAYS):
-    """Whether `day` is worked: a weekday of the week, and no registered calendar says otherwise."""
-    return day.isoweekday() in weekdays and all(ask(day) is not False for ask in _WORKING_DAY)
+    """
+    Whether `day` is worked: as the registered calendars say (any False shuts it; a True opens it,
+    as the plant's own week does for a Saturday), else a weekday of `weekdays`.
+    """
+    answers = [ask(day) for ask in _WORKING_DAY]
+    if any(answer is False for answer in answers):
+        return False
+    if any(answer is True for answer in answers):
+        return True
+    return day.isoweekday() in weekdays
 
 
 def next_working_day(day, weekdays=WORKING_WEEKDAYS):

@@ -72,8 +72,8 @@ def holidays_between(start, end, region=""):
 
 
 def plant_works_on(day):
-    """False on a public holiday kept for everyone: what core's working-day registry asks (O203)."""
-    return not PublicHoliday.objects.filter(date=day, region="").exists()
+    """False on a public holiday kept for everyone, else no answer: core's working-day registry (O203)."""
+    return False if PublicHoliday.objects.filter(date=day, region="").exists() else None
 
 
 def parse_working_days(pattern):
