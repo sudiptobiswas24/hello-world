@@ -181,8 +181,9 @@ class UnderAPostedRunTests(TheDayTestCase):
         self.posted()
         with self.assertRaisesMessage(ValidationError, "void the run to send back this leave"):
             LeaveRequest.objects.get(pk=request.pk).withdraw_approval(by=self.boss)
-        # Back on its own day: dated before it, on the 1st, the cancel is refused before it reads the run (O32).
-        with self.assertRaisesMessage(ValidationError, "void the run to cancel this leave"):
+        # A day of October gone is taken: the cancel is refused on the day rule before it reads the run (O32, the
+        # integrator's rule after review F2), dated on the leave's own day or not at all.
+        with self.assertRaisesMessage(ValidationError, "the days before today are taken"):
             LeaveRequest.objects.get(pk=request.pk).cancel(by=request.employee, on_date=D(2026, 10, 6))
         request.refresh_from_db()
         self.assertEqual(request.status, "approved")

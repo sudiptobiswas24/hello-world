@@ -333,10 +333,9 @@ class Employee(Extensible, AuditModel):
                         f"{request} spans {on_date}. Shorten or cancel it before "
                         "setting a leaving date inside it."
                     )
-                # HR's decision, taken with the leaving date, not the person's. Cancelled whole, on its
-                # own first day: none of it falls before the leaving date, and dated on that date the
-                # cancel would be dated before the leave began, which the correction rule refuses (O32).
-                request.cancel(on_date=request.start_date, as_hr=True)
+                # HR's decision, taken with the leaving date, not the person's: the leaving day is the
+                # cancel's day, and none of the leave is taken on it, so it is cancelled whole (O32).
+                request.cancel(on_date=on_date, as_hr=True, leaving=True)
                 cancelled.append(request)
             for entry in hours:
                 entry.timesheet.send_back() if entry.timesheet.status != "draft" else None
@@ -984,7 +983,7 @@ class LeaveRequest(AuditModel):
         self.check_approver(by)
 
     @serialised("status", held_first=True)
-    def cancel(self, on_date=None, by=None, as_hr=False, may_decide=False):
+    def cancel(self, on_date=None, by=None, as_hr=False, may_decide=False, leaving=False):
         """
         Give the days back, as `by` (see check_canceller).
 
@@ -994,16 +993,26 @@ class LeaveRequest(AuditModel):
         balance stayed spent. Leave already taken is a different matter —
         those days are gone — so only the future can be given back.
 
-        `on_date` is the day they are back, and is a dated correction
-        (correction_date): never before the leave began, which would give
-        back days already taken (O32), and never a day still to come but
-        the first day of a leave not yet begun, which cancels it whole and
-        is its default.
+        It gives back only the days not yet taken on the cancel's day (O32,
+        the integrator's rule after review F2). That day is today, or the
+        first day of a leave not yet begun, which cancels it whole and is
+        its default: dated earlier, a cancel gave back days already gone
+        (a leave taken a month ago, dated on its first day, came back
+        whole), and a day still to come is refused (correction_date). A
+        leaving date (`leaving`, from Employee.terminate) is the cancel's
+        day as given: the person is gone from it.
         """
         self.check_canceller(by, as_hr, may_decide)
         if self.status in (LeaveStatus.CANCELLED, LeaveStatus.REJECTED):
             raise ValidationError("This leave request is already closed.")
-        on_date = correction_date(on_date, self.start_date, f"{self} is not cancelled on", "it began")
+        if leaving:
+            on_date = to_date(on_date)
+        else:
+            today = timezone.localdate()
+            original = max(self.start_date, today)
+            on_date = correction_date(
+                on_date, original, f"{self} is not cancelled on",
+                "it begins" if original > today else "the days before today are taken; it is cancelled")
         if self.status == LeaveStatus.APPROVED and self.end_date < on_date:
             raise ValidationError(
                 f"This leave ended on {self.end_date}; it has been taken and cannot be "

@@ -315,7 +315,7 @@ class ApprovalHasAReverseTests(LeaveTestCase):
         person = self.employee("W7")
         booking = self.request(person, datetime.date(2026, 2, 2), datetime.date(2026, 2, 6))
         booking.approve(by=self.boss)
-        with self.assertRaisesMessage(ValidationError, "is not cancelled on 2026-01-30: it began on 2026-02-02"):
+        with self.assertRaisesMessage(ValidationError, "is not cancelled on 2026-01-30: the days before today are taken"):
             booking.cancel(by=booking.employee, on_date=datetime.date(2026, 1, 30))
         ahead = self.request(person, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
         ahead.approve(by=self.boss)
