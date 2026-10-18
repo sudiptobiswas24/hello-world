@@ -836,6 +836,34 @@ class LandedWhereTheGoodsAreTests(ThirdPartyLandedCostTests):
                          (Decimal("20.00"), Decimal("30.00"), Decimal("0")))
         self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
 
+    def test_released_after_the_goods_were_rebatched_it_comes_off_the_batches_made(self):
+        # Seen #9, end to end: ten at 5 received as L-1, 80 of freight landed on them, then L-1
+        # split into L-2 (6) and L-3 (4). Released, the 80 comes off L-2 and L-3, not out of cost of
+        # sales while they keep it, and the shelf foots to the ledger: 50 on each.
+        from apps.inventory.models import Item, Lot
+        from apps.inventory.reports import reconcile_to_ledger
+        from apps.manufacturing.rebatch import rebatch
+
+        Item.objects.filter(pk=self.item.pk).update(tracking="lot")
+        self.item.refresh_from_db()
+        first = Lot.objects.create(item=self.item, code="L-1")
+        order = self.make_order("10", "5")
+        self.receipt = GoodsReceipt.objects.create(purchase_order=order, receipt_date=datetime.date(2026, 1, 5))
+        GoodsReceiptLine.objects.create(receipt=self.receipt, order_line=order.lines.first(), lot=first,
+                                        warehouse=self.warehouse, quantity_received=Decimal("10"))
+        self.receipt.post()
+        application = self.landed()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+        six, four = (Lot.objects.create(item=self.item, code=code) for code in ("L-2", "L-3"))
+        rebatch(self.item, self.warehouse, [(first, Decimal("10"))], [(six, Decimal("6")), (four, Decimal("4"))],
+                "Re-sorted by width", on_date=datetime.date(2026, 2, 5))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("130.00"))
+        application.release()
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("50.00"))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.cogs), self.balance(self.freight_expense)),
+                         (Decimal("50"), Decimal("0"), Decimal("80")))
+        self.assertEqual(reconcile_to_ledger()["difference"], Decimal("0.00"))
+
     def test_its_own_bills_freight_on_goods_issued_to_a_run_is_production_cost(self):
         self.received()
         self.issued_to_a_run("6")
