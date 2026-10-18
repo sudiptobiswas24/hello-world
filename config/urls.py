@@ -16,16 +16,19 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.contrib.auth.views import PasswordResetView
+from django.contrib.auth.views import PasswordResetConfirmView, PasswordResetView
 from django.urls import include, path
 
-from apps.core.users_api import TrustedEmailResetForm
+from apps.core.users_api import KeptResetForm, TrustedEmailResetForm
 
 urlpatterns = [
     path("admin/", admin.site.urls),
     # Before auth.urls: no reset mail to an email whose setter was out-ranked since (O157).
     path("accounts/password_reset/", PasswordResetView.as_view(form_class=TrustedEmailResetForm),
          name="password_reset"),
+    # And whoever set the address the link went to is kept as knowing the password it sets (O217).
+    path("accounts/reset/<uidb64>/<token>/", PasswordResetConfirmView.as_view(form_class=KeptResetForm),
+         name="password_reset_confirm"),
     path("accounts/", include("django.contrib.auth.urls")),
     path("station/", include("apps.manufacturing.pages_urls")),
     path("api/core/", include("apps.core.urls")),
