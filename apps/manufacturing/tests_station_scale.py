@@ -61,6 +61,14 @@ class WeighedFromTheScaleTests(BridgedTestCase):
                                       f"This reading already weighed {roll.lot.code}"):
             self.weigh_it(when=CONFIRM + datetime.timedelta(seconds=10))
 
+    def test_a_net_reading_is_not_tared_again(self):
+        # Review F7: the indicator tared on the 2.4 kg core sends 104.4 net. Taken as gross, the
+        # roll read 102.0; it is 104.4, and the reading says it was net.
+        reading = post_reading("SC-1", None, True, at=moment(42), net_kg="104.4")
+        roll = self.weigh_it()
+        self.assertEqual((roll.net_weight_kg, roll.scale_reading, reading.weighed_as()),
+                         (Decimal("104.400"), reading, "net"))
+
     def test_a_figure_sent_with_it_must_agree(self):
         self.read()
         with self.assertRaisesMessage(ValidationError, "Scale SC-1 reads 106.800 kg, not 107.0"):
@@ -208,6 +216,16 @@ class BridgeApiTests(StationApiTestCase):
         body = self.client.get(self.base + "scale/").json()
         self.assertFalse(body["usable"])
         self.assertIn("already weighed", body["refusal"])
+
+    def test_a_reading_posted_again_with_its_key_is_answered_as_the_first_time(self):
+        # Review F8: the answer to the first post was lost and the bridge posted the reading again.
+        first = self.post_reading(key="SC-1:1792350000:7:gross:106.8")
+        again = self.post_reading(key="SC-1:1792350000:7:gross:106.8")
+        self.assertEqual((first.status_code, again.status_code), (201, 200), again.content)
+        self.assertEqual(again.json()["id"], first.json()["id"])
+        self.assertEqual(ScaleReading.objects.filter(scale_code="SC-1").count(), 1)
+        both = self.post_reading(gross_kg="106.8", net_kg="104.4")
+        self.assertEqual(both.status_code, 400, both.content)
 
     def test_what_the_bridge_may_post(self):
         for data, message in (({"gross_kg": "NaN"}, "is a number of kilogrammes"),

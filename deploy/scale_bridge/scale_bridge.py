@@ -99,7 +99,8 @@ class FrameReader:
         if groups.get("unit") == "g":
             weight = weight / 1000
         settled = (groups.get("status") in self.stable_status) if self.has_status else True
-        return weight, settled
+        # What the frame says it is: NT is net (tared on the core), anything else gross (review F7).
+        return weight, settled, "net" if groups.get("kind") == "NT" else "gross"
 
 
 class Settling:
@@ -123,7 +124,7 @@ class Settling:
             # sent: someone leaning on the roll is not a second roll.
             self.last, self.count = None, 0
             return None
-        weight = reading[0]
+        weight = (reading[0], reading[2] if len(reading) > 2 else "gross")
         if weight == self.last:
             self.count += 1
         else:
@@ -141,7 +142,7 @@ class Settling:
 
 
 class Bridge:
-    def __init__(self, config, open_port, send, sleep=time.sleep, clock=time.monotonic):
+    def __init__(self, config, open_port, send, sleep=time.sleep, clock=time.monotonic, wall=time.time):
         self.config = {**DEFAULTS, **config}
         for name in ("scale", "server"):
             if not self.config.get(name):
@@ -152,11 +153,24 @@ class Bridge:
         self.send = send
         self.sleep = sleep
         self.clock = clock
+        self.wall = wall
+        self.key_for, self.key, self.sequence, self.started = None, None, 0, wall()
         self.pending = None
         self.next_try = 0.0
 
     def payload(self, weight):
-        return {"scale": self.config["scale"], "gross_kg": format(weight.normalize(), "f"), "stable": True}
+        """
+        A gross frame as gross_kg, a net one as net_kg (review F7), with the key the server knows
+        this settled weight by: posted again because its answer was lost, it is one reading (F8).
+        """
+        kg, kind = weight
+        if self.key_for != weight:
+            # The scale, this run of the bridge and the settled weight's number in it, and the weight:
+            # unique without a clock that ticks between two rolls (review F8).
+            self.key_for, self.sequence = weight, self.sequence + 1
+            self.key = f"{self.config['scale']}:{self.started:.0f}:{self.sequence}:{kind}:{format(kg.normalize(), 'f')}"
+        return {"scale": self.config["scale"], f"{kind}_kg": format(kg.normalize(), "f"), "stable": True,
+                "key": self.key}
 
     def handle(self, frame):
         """One frame: send what it settles, and retry a weight not yet delivered while it stands."""
@@ -164,20 +178,20 @@ class Bridge:
         if self.pending is not None and not self.settling.still(self.pending):
             # The scale reads something else now: posted late, the old
             # weight would be weighed as whatever is on it.
-            log.warning("Dropped %s kg: the scale moved before it was posted.", self.pending)
+            log.warning("Dropped %s kg: the scale moved before it was posted.", self.pending[0])
             self.pending = None
         if weight is None or (weight == self.pending and self.clock() < self.next_try):
             return None
         try:
             self.send(self.payload(weight))
         except Exception as error:  # noqa: BLE001 - logged and retried while it stands
-            log.warning("Posting %s kg failed (%s); trying again while it stands.", weight, error)
+            log.warning("Posting %s kg failed (%s); trying again while it stands.", weight[0], error)
             self.pending = weight
             self.next_try = self.clock() + float(self.config["retry_seconds"])
             return None
         self.settling.delivered(weight)
         self.pending = None
-        log.info("Posted %s kg from %s.", weight, self.config["scale"])
+        log.info("Posted %s kg %s from %s.", weight[0], weight[1], self.config["scale"])
         return weight
 
     def frames(self, port):
@@ -224,6 +238,14 @@ def open_serial(config):
 
 def poster(config):
     """POST a reading as the bridge's user (HTTP basic over HTTPS); raises on anything but 201."""
+    from urllib.parse import urlsplit
+
+    server = urlsplit(config["server"])
+    # The password goes with every post: in clear over http, anyone on the plant's network reads it
+    # (review F9). Only the station PC itself may be spoken to without TLS.
+    if server.scheme != "https" and not (server.scheme == "http" and server.hostname in ("localhost", "127.0.0.1", "::1")):
+        raise ValueError(f"{config['server']} is not https: the bridge's password would cross the network in "
+                         "clear. Use the ERP's https address (only localhost may be http).")
     url = config["server"].rstrip("/") + "/api/manufacturing/scale-readings/"
     with open(config["password_file"], encoding="utf-8") as kept:
         password = kept.read().strip()

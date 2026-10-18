@@ -748,7 +748,8 @@ class LoomStationViewSet(viewsets.GenericViewSet):
                 refusal = exc.messages[0]
         return Response({
             "bridged": True, "scale": station.scale_code,
-            "gross_kg": _exact(reading.gross_kg) if reading else None,
+            "gross_kg": _exact(reading.gross_kg) if reading and reading.gross_kg is not None else None,
+            "net_kg": _exact(reading.net_kg) if reading and reading.net_kg is not None else None,
             "stable": reading.stable if reading else None,
             "read_at": reading.read_at if reading else None,
             "usable": refusal is None, "refusal": refusal,
@@ -913,8 +914,12 @@ class ScaleReadingViewSet(viewsets.GenericViewSet):
         from .station_scale import post_reading
 
         data = request.data
-        reading = _run(post_reading, data.get("scale"), data.get("gross_kg"),
-                       data.get("stable"))
-        return Response({"id": reading.pk, "scale": reading.scale_code,
-                         "gross_kg": _exact(reading.gross_kg), "stable": reading.stable,
-                         "read_at": reading.read_at}, status=201)
+        reading = _run(post_reading, data.get("scale"), data.get("gross_kg"), data.get("stable"),
+                       net_kg=data.get("net_kg"), key=data.get("key"))
+        # A key posted before is answered as the first time, with the first reading (review F8).
+        again = getattr(reading, "kept_again", False)
+        return Response({"id": reading.pk, "scale": reading.scale_code, "weighed_as": reading.weighed_as(),
+                         "gross_kg": _exact(reading.gross_kg) if reading.gross_kg is not None else None,
+                         "net_kg": _exact(reading.net_kg) if reading.net_kg is not None else None,
+                         "stable": reading.stable, "key": reading.key,
+                         "read_at": reading.read_at}, status=200 if again else 201)
