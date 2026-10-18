@@ -46,3 +46,45 @@ class TheAuditSeesTheUtcDayOfAnyMomentTests(SimpleTestCase):
         from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
 
         self.assertEqual(Command().greenwich_dates(list(OUR_APPS), app_sources()), [])
+
+
+class TheAuditFollowsTheShelfAndTheRateTests(SimpleTestCase):
+    """O40: per_unit_withdrawal_rates asks average_cost_at and inventory/models.py; shelf_read_before_lock
+    follows calls within a module."""
+
+    @staticmethod
+    def sources(label, name, text):
+        from pathlib import Path
+
+        return {label: {Path(f"apps/{label}/{name}"): text}}
+
+    def test_a_withdrawal_at_the_average_is_reported_in_inventory_models_too(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        text = ("class Item:\n    def write_down(self, warehouse, quantity):\n"
+                "        return quantity * self.average_cost_at(warehouse)\n")
+        found = Command().per_unit_withdrawal_rates(["inventory"], self.sources("inventory", "models.py", text))
+        self.assertEqual([detail.split(" ")[0] for _shape, detail in found], ["inventory/models.py:3"])
+        handed_on = text.replace("write_down", "removal_unit_cost")
+        self.assertEqual(Command().per_unit_withdrawal_rates(
+            ["inventory"], self.sources("inventory", "models.py", handed_on)), [])
+
+    def test_a_read_then_a_helper_that_locks_is_reported(self):
+        from apps.core.management.commands.audit_invariants import Command
+
+        text = ("def hold(item):\n    lock_position(item)\n\n"
+                "class Delivery:\n    def post(self, item):\n        if item.on_hand_at(1) < 10:\n"
+                "            raise ValueError\n        hold(item)\n")
+        found = Command().shelf_read_before_lock(["sales"], self.sources("sales", "deliveries.py", text))
+        self.assertEqual([detail.split(" ")[0] for _shape, detail in found], ["sales/deliveries.py:Delivery.post"])
+        locked_first = text.replace("        if item.on_hand_at(1) < 10:\n            raise ValueError\n        hold(item)\n",
+                                    "        hold(item)\n        if item.on_hand_at(1) < 10:\n            raise ValueError\n")
+        self.assertEqual(Command().shelf_read_before_lock(["sales"], self.sources("sales", "deliveries.py", locked_first)),
+                         [])
+
+    def test_the_tree_as_it_stands_names_every_rate_and_read_it_keeps(self):
+        from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
+
+        sources = app_sources()
+        self.assertEqual(Command().per_unit_withdrawal_rates(list(OUR_APPS), sources)
+                         + Command().shelf_read_before_lock(list(OUR_APPS), sources), [])
