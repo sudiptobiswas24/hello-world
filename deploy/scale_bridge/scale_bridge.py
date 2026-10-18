@@ -237,23 +237,22 @@ def open_serial(config):
 
 
 def poster(config):
-    """POST a reading as the bridge's user (HTTP basic over HTTPS); raises on anything but 201."""
+    """POST a reading with the bridge's API key (an integration's, L12) over HTTPS; raises on anything but 201."""
     from urllib.parse import urlsplit
 
     server = urlsplit(config["server"])
-    # The password goes with every post: in clear over http, anyone on the plant's network reads it
+    # The key goes with every post: in clear over http, anyone on the plant's network reads it
     # (review F9). Only the station PC itself may be spoken to without TLS.
     if server.scheme != "https" and not (server.scheme == "http" and server.hostname in ("localhost", "127.0.0.1", "::1")):
-        raise ValueError(f"{config['server']} is not https: the bridge's password would cross the network in "
+        raise ValueError(f"{config['server']} is not https: the bridge's key would cross the network in "
                          "clear. Use the ERP's https address (only localhost may be http).")
     url = config["server"].rstrip("/") + "/api/manufacturing/scale-readings/"
-    with open(config["password_file"], encoding="utf-8") as kept:
-        password = kept.read().strip()
-    credentials = base64.b64encode(f"{config['username']}:{password}".encode()).decode()
+    with open(config["api_key_file"], encoding="utf-8") as kept:
+        key = kept.read().strip()
 
     def send(payload):
         request = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={
-            "Content-Type": "application/json", "Authorization": f"Basic {credentials}"})
+            "Content-Type": "application/json", "Authorization": f"Api-Key {key}"})
         with urllib.request.urlopen(request, timeout=float(config["post_timeout_seconds"])) as answer:
             if answer.status != 201:
                 raise urllib.error.HTTPError(url, answer.status, "not accepted", answer.headers, None)

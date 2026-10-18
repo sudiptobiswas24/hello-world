@@ -13,13 +13,14 @@ from unittest.mock import patch
 from django.contrib.auth.models import Group, User
 from django.core.exceptions import FieldDoesNotExist
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import Client, TestCase
 from django.urls import get_resolver
 from rest_framework.test import APIClient
 
 from apps.core.api import _field_at
 from apps.sales.models import Invoice, InvoiceLine
 from apps.sales.tests_base import SalesTestCase
+from apps.core.tests_second_factor import for_tests
 
 PAGE = b'<!doctype html><html><head><script type="module" src="/static/web/assets/app.js"></script></head></html>'
 
@@ -50,13 +51,13 @@ class ThePageTests(ShellTestCase):
         self.assertEqual(response["Location"], "/accounts/login/?next=/app/sales/invoices%3Fq%3Dbolt")
 
     def test_any_address_under_the_application_is_the_same_page(self):
-        self.client.force_login(self.person("AR Manager"))
+        for_tests(self.client, self.person("AR Manager"), sign_in=True)
         for path in ("/app/", "/app/sales/invoices", "/app/no/such/screen"):
             response = self.page(path)
             self.assertEqual((response.status_code, response.content), (200, PAGE), path)
 
     def test_it_may_load_and_talk_to_this_server_only(self):
-        self.client.force_login(self.person("AR Manager"))
+        for_tests(self.client, self.person("AR Manager"), sign_in=True)
         response = self.page()
         policy = response["Content-Security-Policy"]
         for rule in ("default-src 'self'", "script-src 'self'", "connect-src 'self'",
@@ -67,14 +68,14 @@ class ThePageTests(ShellTestCase):
         self.assertEqual(response["X-Content-Type-Options"], "nosniff")
 
     def test_it_is_never_cached_and_hands_over_the_csrf_cookie(self):
-        self.client.force_login(self.person("AR Manager"))
+        for_tests(self.client, self.person("AR Manager"), sign_in=True)
         response = self.page()
         self.assertIn("no-store", response["Cache-Control"])
         self.assertIn("csrftoken", response.cookies)
         self.assertFalse(response.cookies["csrftoken"]["httponly"])
 
     def test_not_built_says_so_rather_than_a_blank_page(self):
-        self.client.force_login(self.person("AR Manager"))
+        for_tests(self.client, self.person("AR Manager"), sign_in=True)
         response = self.page(found=False)
         self.assertEqual(response.status_code, 503)
         self.assertIn(b"npm run build", response.content)
@@ -86,8 +87,14 @@ class ThePageTests(ShellTestCase):
 
 class SignInTests(ShellTestCase):
     def test_signing_in_from_the_address_bar_lands_in_the_application(self):
-        self.person("AR Manager")
+        import pyotp
+
+        manager = self.person("AR Manager")
+        factor = for_tests(Client(), manager)
         response = self.client.post("/accounts/login/", {"username": "AR_Manager", "password": "right-horse-7"})
+        # An AR Manager posts payments, so gives a code next (L12), and lands where the address bar asked.
+        self.assertEqual((response.status_code, response["Location"]), (302, "/accounts/second-factor/?next=/app/"))
+        response = self.client.post(response["Location"], {"code": pyotp.TOTP(factor.secret).now()})
         self.assertEqual((response.status_code, response["Location"]), (302, "/app/"))
 
     def test_the_page_speaks_to_whoever_is_signing_in(self):
@@ -98,7 +105,7 @@ class SignInTests(ShellTestCase):
         self.assertIn("PIN", station)
 
     def test_signing_out_needs_the_form_and_ends_the_session(self):
-        self.client.force_login(self.person("AR Manager"))
+        for_tests(self.client, self.person("AR Manager"), sign_in=True)
         self.assertEqual(self.client.get("/api/core/me/").status_code, 200)
         response = self.client.post("/accounts/logout/", {"next": "/accounts/login/?next=/app/"})
         self.assertEqual(response.status_code, 302)
@@ -106,7 +113,9 @@ class SignInTests(ShellTestCase):
 
     def test_a_write_without_the_csrf_token_is_refused(self):
         client = APIClient(enforce_csrf_checks=True)
-        client.login(username=self.person("AR Manager").username, password="right-horse-7")
+        manager = self.person("AR Manager")
+        client.login(username=manager.username, password="right-horse-7")
+        for_tests(client, manager)
         response = client.post("/api/core/parties/", {"code": "X", "name": "X"}, format="json")
         self.assertEqual(response.status_code, 403)
         self.assertIn("CSRF", str(response.json()))
@@ -114,7 +123,7 @@ class SignInTests(ShellTestCase):
 
 class MeTests(ShellTestCase):
     def test_who_is_signed_in_and_what_they_may_do(self):
-        self.client.force_login(self.person("Sales Rep"))
+        for_tests(self.client, self.person("Sales Rep"), sign_in=True)
         me = self.client.get("/api/core/me/").json()
         self.assertEqual((me["name"], me["roles"], me["is_superuser"]), ("Asha Rao", ["Sales Rep"], False))
         self.assertIn("sales.view_invoice", me["permissions"])
@@ -125,19 +134,19 @@ class MeTests(ShellTestCase):
         # What "today" means on every screen: the server's, which production sets to the plant's.
         from django.test import override_settings
 
-        self.client.force_login(self.person("Sales Rep"))
+        for_tests(self.client, self.person("Sales Rep"), sign_in=True)
         with override_settings(TIME_ZONE="America/Chicago"):
             self.assertEqual(self.client.get("/api/core/me/").json()["time_zone"], "America/Chicago")
 
     def test_a_login_with_no_role_may_do_nothing(self):
-        self.client.force_login(self.person())
+        for_tests(self.client, self.person(), sign_in=True)
         self.assertEqual(self.client.get("/api/core/me/").json()["permissions"], [])
 
     def test_nobody_signed_in_is_nobody(self):
         self.assertEqual(self.client.get("/api/core/me/").status_code, 403)
 
     def test_it_cannot_be_written(self):
-        self.client.force_login(self.person("AR Manager"))
+        for_tests(self.client, self.person("AR Manager"), sign_in=True)
         self.assertEqual(self.client.post("/api/core/me/", {}).status_code, 405)
 
 
@@ -262,6 +271,10 @@ class EveryCollectionIsKeptOnAScreenTests(TestCase):
             "and given to people in the admin."
         ),
         "/api/manufacturing/scale-readings/": "Posted by a scale's bridge; nobody lists it.",
+        # L12: an administrator keeps them through the API's own pages for now (deploy/scale_bridge/RUNBOOK.md);
+        # a screen of their own is reported, not built (reports/fix_sec3.md).
+        "/api/core/integrations/": "Made by an administrator at the API's own page until its screen is built.",
+        "/api/core/api-keys/": "Issued and revoked by an administrator at the API's own page until its screen is built.",
         "/api/manufacturing/work-order-operations/": (
             "A run's steps, written by releasing it and shown on its page."
         ),

@@ -35,6 +35,9 @@ export default function LoginForm() {
           fields: [{ key: "password", label: "New password" }] },
         { label: "Deactivate", path: "deactivate", permission: "auth.change_user", danger: true, when: (row) => row.is_active !== false,
           done: "Deactivated: the login no longer signs in" },
+        // A lost phone: the code and recovery codes go; the login sets up a new phone at its next sign-in (L12).
+        { label: "Reset second factor", path: "reset_second_factor", permission: "auth.change_user", danger: true,
+          when: (row) => row.second_factor === true, done: "Second factor reset: the login sets it up again at its next sign-in" },
         { label: "Reactivate", path: "reactivate", permission: "auth.change_user", when: (row) => row.is_active === false, done: "Reactivated" },
       ]}
       panels={[

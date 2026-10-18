@@ -592,3 +592,10 @@ form.refuse input { min-width: 260px; }
 .scan-box label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.85rem; min-width: 16rem; }
 .scan-box input { font-size: 1.1rem; padding: 0.4rem 0.6rem; }
 .scan-video { width: 100%; max-width: 28rem; border-radius: 0.5rem; }
+
+/* The session's end, said before it comes; and what was typed, offered back (shell/SessionClock.tsx). */
+.session-warning { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 14px;
+  border-radius: 9px; background: #FFF4E5; border: 1px solid #E8B567; color: #5A3A06; font-weight: 600; }
+.session-warning button { font: inherit; font-weight: 700; padding: 6px 12px; border-radius: 8px; border: 1px solid #B8430F;
+  background: #B8430F; color: #fff; cursor: pointer; }
+.session-warning button.quiet { background: transparent; color: #5A3A06; border-color: #C9A46A; }

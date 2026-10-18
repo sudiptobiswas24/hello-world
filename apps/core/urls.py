@@ -11,6 +11,7 @@ from .licences_api import LicenceViewSet
 from .numbering_api import DocumentSequenceViewSet
 from .roles_api import RoleProposalViewSet
 from .saved_filters import SavedFilterViewSet
+from .api_keys_api import ApiKeyViewSet, IntegrationViewSet
 from .users_api import UserViewSet
 from .views import (
     AddressViewSet,
@@ -44,6 +45,8 @@ router.register("payment-terms", PaymentTermsViewSet)
 router.register("company", CompanyViewSet)
 router.register("roles", RoleViewSet)
 router.register("users", UserViewSet)
+router.register("integrations", IntegrationViewSet)
+router.register("api-keys", ApiKeyViewSet)
 router.register("role-proposals", RoleProposalViewSet)
 router.register("document-sequences", DocumentSequenceViewSet)
 router.register("licences", LicenceViewSet)

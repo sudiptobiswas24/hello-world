@@ -49,6 +49,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 
+from . import second_factor
 from .api import required
 from .audit import AuditableViewSetMixin
 from .roles import (KeptCredential, ProposalStatus, give_or_propose, held_beyond, lapse_what_died, may_give,
@@ -214,6 +215,9 @@ class UserSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["roles"] = sorted(instance.groups.values_list("name", flat=True))
+        # Whether it signs in with a code from a phone, and whether it must (apps/core/second_factor.py).
+        data["second_factor"] = second_factor.confirmed(instance) is not None
+        data["second_factor_required"] = second_factor.required(instance)
         # Proposed and not yet confirmed by someone who holds them (apps/core/roles.py).
         data["proposed_roles"] = sorted(instance.role_proposals.filter(status=ProposalStatus.PENDING)
                                         .values_list("group__name", flat=True))
@@ -335,6 +339,21 @@ class UserViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
         user = self.get_object()
         required(request.data, "password", message="Give the new password.")
         issue_password(request.user, user, str(request.data["password"]))
+        return Response(self.get_serializer(user).data)
+
+    @action(detail=True, methods=["post"])
+    def reset_second_factor(self, request, pk=None):
+        """
+        A lost phone (L12): the login's second factor and recovery codes go,
+        every session it passed ends, and it enrols again at its next sign-in.
+        Recorded in its history. Only by whoever may set its password: a
+        reset and the password together are the login.
+        """
+        user = self.get_object()
+        self._not_myself(request, user, "Resetting your own second factor")
+        check_may_know(request.user, user)
+        if not second_factor.reset(user, request.user):
+            raise DRFValidationError(f"{user.get_username()} has no second factor to reset.")
         return Response(self.get_serializer(user).data)
 
     @action(detail=True, methods=["post"])
