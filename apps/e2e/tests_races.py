@@ -696,6 +696,30 @@ class StockAndPlantRaceTests(RaceCase):
             lambda: StockAdjustment.objects.get(pk=draft.pk).post()] * 2))
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("90"))
 
+    def test_a_count_is_not_posted_over_a_movement_that_landed_after_its_check(self):
+        # O252: 100 on the shelf, a sheet counting 96, and an adjustment of -2 posted at once. The count asked
+        # whether the books still read 100 before it held the shelf: the -2 landed between, and the count
+        # posted its -4 over it. Held first, either the count goes first or it is refused as stale.
+        from apps.inventory.models import StockCount, StockMovement
+
+        stock_fixture.AdjustmentTestCase.setUp(self)
+        stock_fixture.AdjustmentTestCase.stock(self)
+        count = StockCount.objects.create(count_date=datetime.date(2026, 3, 1), warehouse=self.warehouse,
+                                          reason=self.recount)
+        count.add(self.item, "96")
+        other = stock_fixture.AdjustmentTestCase.adjust(self, "-2", post=False)
+        outcomes = race(StockAdjustment, lambda: StockCount.objects.get(pk=count.pk).post(),
+                        lambda: StockAdjustment.objects.get(pk=other.pk).post())
+        other.refresh_from_db()
+        counted = StockAdjustment.objects.filter(count=count).first()
+        if outcomes[0] == "done":
+            first = StockMovement.objects.filter(reference=counted.number).order_by("pk").first()
+            second = StockMovement.objects.filter(reference=other.number).order_by("pk").first()
+            self.assertTrue(second is None or first.pk < second.pk, (outcomes, first.pk, second and second.pk))
+        else:
+            self.assertIn("Stock moved after this sheet was written", outcomes[0])
+        self.assertEqual(outcomes[1], "done", outcomes)
+
     def test_an_asset_is_disposed_of_once(self):
         assets_fixture.AssetTestCase.setUp(self)
         asset = assets_fixture.AssetTestCase.asset(self)

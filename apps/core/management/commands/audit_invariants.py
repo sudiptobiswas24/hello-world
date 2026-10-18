@@ -831,12 +831,7 @@ class Command(BaseCommand):
     SHELF_READS = {"on_hand_at", "available_at", "reserved_at", "check_available", "cost_of_removing"}
     SHELF_LOCKS = {"lock_position", "lock_positions"}
     # Reads made before the lock on purpose, with the reason.
-    READ_BEFORE_LOCK_ON_PURPOSE = {
-        "inventory/adjustments.py:StockCount.post":
-            "not on purpose: it asks each line's system quantity, then adjustment.post() holds the shelves, so a "
-            "movement in between passes the stale check. Seen when the check followed calls (O40); reported to "
-            "the register by fix_core (g22), inventory's to fix",
-    }
+    READ_BEFORE_LOCK_ON_PURPOSE = {}
 
     def shelf_read_before_lock(self, labels, sources):
         """
