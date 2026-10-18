@@ -22,33 +22,48 @@ from django.utils.translation import gettext_lazy
 from .models import lock_for_change
 
 
+def _posted(admin, obj):
+    return bool(obj is not None and getattr(obj, getattr(admin, "posted_field", "posted"), False))
+
+
 class PostedImmutableAdminMixin:
+    """
+    The one admin rule for a posted document (O45): read-only, never
+    deleted; voided or reversed instead. Inventory and manufacturing each
+    kept a copy (PostedDocumentAdminMixin, PostedNotDeletedMixin), the
+    second refusing the delete alone. `posted_field` names the flag.
+    """
+
+    posted_field = "posted"
+
     def has_change_permission(self, request, obj=None):
-        if obj is not None and obj.posted:
+        if _posted(self, obj):
             return False
         return super().has_change_permission(request, obj)
 
     def has_delete_permission(self, request, obj=None):
-        if obj is not None and obj.posted:
+        if _posted(self, obj):
             return False
         return super().has_delete_permission(request, obj)
 
 
 class PostedImmutableInlineMixin:
-    """`obj` here is the parent document, not the inline row."""
+    """`obj` here is the parent document, not the inline row: its lines while it is posted."""
+
+    posted_field = "posted"
 
     def has_add_permission(self, request, obj=None):
-        if obj is not None and obj.posted:
+        if _posted(self, obj):
             return False
         return super().has_add_permission(request, obj)
 
     def has_change_permission(self, request, obj=None):
-        if obj is not None and obj.posted:
+        if _posted(self, obj):
             return False
         return super().has_change_permission(request, obj)
 
     def has_delete_permission(self, request, obj=None):
-        if obj is not None and obj.posted:
+        if _posted(self, obj):
             return False
         return super().has_delete_permission(request, obj)
 
