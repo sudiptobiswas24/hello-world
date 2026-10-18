@@ -202,3 +202,30 @@ class TheSentinelForgetsASavepointRolledBackAndSeesForShareTests(TestCase):
             with transaction.atomic():
                 run('SELECT 1 FROM "sales_invoice" WHERE "id" IN (%s, %s) FOR KEY SHARE', [3, 2])
                 taken(connection, "sales.salesorder", [7])
+
+
+class TheSentinelSeesAShareUpgradedAndASchemaNamedTableTests(TestCase):
+    """O228 review F5 (a) and (b): a share then an update of one row is an upgrade; "public"."t" is t."""
+
+    @staticmethod
+    def share(sql, params):
+        from .lock_order import raw_shared_lock
+
+        return raw_shared_lock(lambda *args: None, sql, params, False, {"connection": connection})
+
+    def test_a_share_then_an_update_of_the_same_row_is_refused_and_of_another_row_is_not(self):
+        with self.assertRaisesMessage(LockOrderViolation, "accounting.account 5 taken (select_for_update) after "
+                                                          "this transaction shared it"):
+            with transaction.atomic():
+                self.share('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+                taken(connection, "accounting.account", [5])
+        with transaction.atomic():
+            self.share('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+            self.share('SELECT 1 FROM "accounting_account" WHERE id = %s FOR SHARE', [5])
+            taken(connection, "accounting.account", [6])
+
+    def test_a_table_named_with_its_schema_is_ranked(self):
+        with self.assertRaisesMessage(LockOrderViolation, "sales.salesorder 7 locked after sales.invoice 3"):
+            with transaction.atomic():
+                self.share('SELECT 1 FROM "public"."sales_invoice" WHERE id = %s FOR SHARE', [3])
+                taken(connection, "sales.salesorder", [7])
