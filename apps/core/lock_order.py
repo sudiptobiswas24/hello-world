@@ -115,7 +115,8 @@ class LockedOutsideATransaction(AssertionError):
 def _state(connection):
     state = getattr(connection, "_lock_order_state", None)
     if state is None:
-        state = connection._lock_order_state = {"held": set(), "top": None, "taken": [], "keys": {}}
+        state = connection._lock_order_state = {"held": set(), "top": None, "taken": [], "keys": {},
+                                                "shared": set()}
     return state
 
 
@@ -178,7 +179,7 @@ SELECTED, JOINED, UPDATED, DELETED = "select_for_update", "joined", "update", "d
 # accounting.money.hold_money_account holds a bank account so).
 SHARED = "for_share"
 _RAW_SHARE = re.compile(r"\bFOR\s+(KEY\s+)?SHARE\b", re.I)
-_RAW_FROM = re.compile(r'\bFROM\s+"?(\w+)"?', re.I)
+_RAW_FROM = re.compile(r'\bFROM\s+(?:"?\w+"?\.)?"?(\w+)"?', re.I)  # "public"."sales_invoice" is sales_invoice
 _RAW_KEYS = re.compile(r'\bWHERE\s+(?:"?\w+"?\.)?"?id"?\s*(?:=\s*%s|IN\s*\(((?:\s*%s\s*,?)+)\))', re.I)
 
 
@@ -198,7 +199,18 @@ def taken(connection, label, pks, how=SELECTED):
     state = _state(connection)
     for pk in (pks if pks is not None else [None]):
         if (label, pk) in state["held"]:
+            # Shared, then taken for itself: an upgrade, and two transactions upgrading one shared row each
+            # wait for the other's share (O228 review F5). A row held for itself already is held.
+            if how != SHARED and pk is not None and (label, pk) in state.get("shared", ()):
+                message = (f"{label} {pk} taken ({how}) after this transaction shared it: an upgrade from a share, "
+                           "which two at once deadlock on. Take it for update from the first (apps.core.lock_order)")
+                if _SURVEY:
+                    _survey("violation", label, label, how)
+                    continue
+                raise LockOrderViolation(message)
             continue
+        if how == SHARED and pk is not None:
+            state.setdefault("shared", set()).add((label, pk))
         rank = RANK.get(label)
         if _SURVEY:
             for earlier in dict.fromkeys(state["taken"]):
@@ -268,7 +280,7 @@ def _tables():
 def _snapshot(connection):
     state = _state(connection)
     return {"held": set(state["held"]), "top": state["top"], "taken": list(state["taken"]),
-            "keys": dict(state["keys"])}
+            "keys": dict(state["keys"]), "shared": set(state.get("shared", ()))}
 
 
 def made(connection, label, pks):
