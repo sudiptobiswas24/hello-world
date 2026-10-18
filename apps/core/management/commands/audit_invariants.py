@@ -118,6 +118,7 @@ class Command(BaseCommand):
         findings += self.per_unit_withdrawal_rates(labels, sources)
         findings += self.movements_written_around_save(labels, sources)
         findings += self.arrivals_without_their_departure(labels, sources)
+        findings += self.posted_admin_rule_copied(labels, sources)
         findings += self.release_past_the_gate(labels, sources)
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
@@ -967,6 +968,28 @@ class Command(BaseCommand):
                         "movement written around save",
                         f"{label}/{path.name}:{line} writes stock movements with {match.group(1)}(), "
                         "past the checks StockMovement.save() makes. Create them one by one.",
+                    ))
+        return findings
+
+    def posted_admin_rule_copied(self, labels, sources):
+        """
+        An admin permission written against `posted` outside core's one rule
+        (apps/core/admin_mixins.py, PostedImmutableAdminMixin and its inline).
+        Three copies stood (O45), one refusing the delete alone and one
+        answering yes without asking the user's permission at all.
+        """
+        findings = []
+        shape = re.compile(r"def has_(add|change|delete)_permission\(self[^)]*\):\n(?:[^\n]*\n){0,3}?[^\n]*(?:\.posted\b|_posted\(|_is_posted\()")
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or path.name == "admin_mixins.py":
+                    continue
+                for match in shape.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    findings.append((
+                        "posted-document admin rule copied",
+                        f"{label}/{path.name}:{line} answers has_{match.group(1)}_permission from posted; "
+                        "use PostedImmutableAdminMixin (apps/core/admin_mixins.py).",
                     ))
         return findings
 

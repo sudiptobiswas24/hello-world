@@ -1,5 +1,6 @@
 from django.contrib import admin
 
+from apps.core.admin_mixins import PostedImmutableAdminMixin
 from apps.core.audit import AuditableAdminMixin, RowHeldAdminMixin
 
 from .models import (
@@ -98,31 +99,6 @@ class AdjustmentReasonAdmin(AuditableAdminMixin, admin.ModelAdmin):
     list_filter = ("direction", "is_active")
 
 
-class PostedDocumentAdminMixin:
-    """
-    A posted document is read-only here.
-
-    The models refuse the edit anyway, so without this the admin offers a
-    form that always fails to save — which teaches people the system is
-    broken rather than that the document is final.
-    """
-
-    posted_field = "posted"
-
-    def _is_posted(self, obj):
-        return bool(obj and getattr(obj, self.posted_field, False))
-
-    def has_change_permission(self, request, obj=None):
-        if self._is_posted(obj):
-            return False
-        return super().has_change_permission(request, obj)
-
-    def has_delete_permission(self, request, obj=None):
-        if self._is_posted(obj):
-            return False
-        return super().has_delete_permission(request, obj)
-
-
 class StockAdjustmentLineInline(admin.TabularInline):
     model = StockAdjustmentLine
     extra = 1
@@ -131,7 +107,7 @@ class StockAdjustmentLineInline(admin.TabularInline):
 
 
 @admin.register(StockAdjustment)
-class StockAdjustmentAdmin(PostedDocumentAdminMixin, AuditableAdminMixin,
+class StockAdjustmentAdmin(PostedImmutableAdminMixin, AuditableAdminMixin,
                            admin.ModelAdmin):
     list_display = ("__str__", "adjustment_date", "warehouse", "reason", "posted",
                     "voided_at", "total_value")
@@ -154,7 +130,7 @@ class StockCountLineInline(admin.TabularInline):
 
 
 @admin.register(StockCount)
-class StockCountAdmin(PostedDocumentAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
+class StockCountAdmin(PostedImmutableAdminMixin, AuditableAdminMixin, admin.ModelAdmin):
     list_display = ("__str__", "count_date", "warehouse", "reason", "counted_by",
                     "posted")
     list_filter = ("posted", "warehouse")
