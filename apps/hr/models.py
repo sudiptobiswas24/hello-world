@@ -333,8 +333,10 @@ class Employee(Extensible, AuditModel):
                         f"{request} spans {on_date}. Shorten or cancel it before "
                         "setting a leaving date inside it."
                     )
-                # HR's decision, taken with the leaving date, not the person's.
-                request.cancel(on_date=on_date, as_hr=True)
+                # HR's decision, taken with the leaving date, not the person's. Cancelled whole, on its
+                # own first day: none of it falls before the leaving date, and dated on that date the
+                # cancel would be dated before the leave began, which the correction rule refuses (O32).
+                request.cancel(on_date=request.start_date, as_hr=True)
                 cancelled.append(request)
             for entry in hours:
                 entry.timesheet.send_back() if entry.timesheet.status != "draft" else None
