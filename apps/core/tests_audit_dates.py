@@ -112,3 +112,22 @@ class TheAuditSeesAReleasedRunAskedUnheldTests(SimpleTestCase):
         from apps.core.management.commands.audit_invariants import OUR_APPS, Command, app_sources
 
         self.assertEqual(Command().unlocked_open_runs(list(OUR_APPS), app_sources()), [])
+
+
+class TheAuditReadsCodeNotWordsTests(SimpleTestCase):
+    """O212: reported_without_the_period follows the names a function's code uses, not its docstring's words."""
+
+    def findings(self, body):
+        from pathlib import Path
+
+        from apps.core.management.commands.audit_invariants import Command
+
+        sources = {"gst": {Path("apps/gst/example.py"): "from apps.manufacturing.example import tally\n"},
+                   "manufacturing": {Path("apps/manufacturing/example.py"): body}}
+        return [detail for _shape, detail in Command().reported_without_the_period(["gst", "manufacturing"], sources)]
+
+    def test_a_word_in_a_docstring_reaches_no_model_and_the_same_name_in_code_does(self):
+        said = 'def tally(roll):\n    """How much was made."""\n    return 1\n'
+        used = "def tally(roll):\n    return roll.made\n"
+        self.assertEqual(self.findings(said), [])
+        self.assertTrue(any("ProcessRoll" in detail for detail in self.findings(used)), self.findings(used))
