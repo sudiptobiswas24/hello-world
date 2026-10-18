@@ -79,6 +79,19 @@ class LeaveInTheBrowserTests(BrowserMixin, LeaveTestCase, StaticLiveServerTestCa
         self.assertEqual((leave.status, leave.end_date), (LeaveStatus.APPROVED, today - datetime.timedelta(days=1)))
         self.assertEqual(self.problems, [])
 
+    def test_the_manager_who_decides_it_is_offered_cancel(self):
+        # O132: the server lets whoever decides a person's leave cancel it; the screen offered Cancel only
+        # to the person and to HR, so their Line Manager had no button for what they may do.
+        weaver = self.employee("W-5")  # reports to self.boss
+        leave = self.request(weaver, datetime.date(2027, 7, 5), datetime.date(2027, 7, 9))
+        leave.approve(by=self.boss)
+        manager = self.sign_in(self.linked("Line Manager", self.boss), f"/app/payroll/leave/{leave.pk}")
+        manager.get_by_role("button", name="Cancel it").click()
+        expect(manager.locator(".toast", has_text="Cancelled: the days are back").first).to_be_visible()
+        leave.refresh_from_db()
+        self.assertEqual(leave.status, LeaveStatus.CANCELLED)
+        self.assertEqual(self.problems, [])
+
     def test_hr_decides_anyones_and_another_teams_manager_cannot_open_it(self):
         weaver = self.employee("W-3")  # reports to self.boss
         leave = self.request(weaver, datetime.date(2026, 11, 9), datetime.date(2026, 11, 9))
