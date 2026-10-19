@@ -854,9 +854,8 @@ class KeptCredentialsAtTheEventTests(TransactionTestCase):
 
 class WhatTheMakerOrTheMailboxKnowsTests(KeeperAndHolder):
     """
-    O216: HR made puppet, signed in as it, set its "own" password and then
-    left or was demoted: the lapse ended what HR set as a keeper, not what
-    it set as the login, so HR still signed in. O217: a password reset
+    O216 is APasswordSomeoneElseSetIsReplacedFirstTests below (review F1).
+    O217: a password reset
     through a link mailed to an address HR set was kept as nobody's, so
     once the login was given a role above HR, HR, which reads that
     mailbox, still signed in with it. As the people in their roles.
@@ -876,19 +875,6 @@ class WhatTheMakerOrTheMailboxKnowsTests(KeeperAndHolder):
         changed = web.post("/accounts/password_change/", {
             "old_password": old, "new_password1": self.LAUNDERED, "new_password2": self.LAUNDERED})
         self.assertEqual(changed.status_code, 302)
-
-    def test_a_password_the_maker_set_as_the_login_lapses_when_the_maker_leaves(self):
-        self.make("puppet", [])
-        self.changed_as_the_login("puppet")
-        self.assertEqual(self.root.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json").status_code, 200)
-        self.assertFalse(self.signs_in("puppet", self.LAUNDERED), "a leaver still signs in as the login it made")
-
-    def test_and_when_the_maker_is_demoted(self):
-        self.make("puppet", [])
-        self.changed_as_the_login("puppet")
-        self.assertEqual(self.root.post(f"{USERS}{self.hr.pk}/revoke/", {"role": "HR Admin"}, format="json")
-                         .status_code, 200)
-        self.assertFalse(self.signs_in("puppet", self.LAUNDERED), "a demoted keeper still signs in as its login")
 
     def test_one_someone_else_issued_and_its_person_changed_is_theirs_when_the_maker_leaves(self):
         puppet = self.make("puppet", [])
@@ -943,3 +929,108 @@ class WhatTheMakerOrTheMailboxKnowsTests(KeeperAndHolder):
         self.assertEqual(refused.status_code, 200)
         self.assertIn("no longer trusted for a reset", refused.content.decode())
         self.assertFalse(self.signs_in("asha", self.RESET))
+
+
+class APasswordSomeoneElseSetIsReplacedFirstTests(KeeperAndHolder):
+    """
+    O216, review F1 (the reviewer's p30 to p34): nothing tells HR typing as
+    a login it made from the person, so a password someone else set is
+    never the one the login keeps. Signed in with it, the login reaches
+    nothing until it sets its own; until then the given one lapses with its
+    setter; after, the login's own lapses with nobody. As the HR Admin, a
+    superuser and the made login, through the sign-in pages and the API.
+    """
+
+    OWN = "Worker-Own-Chosen-Pw-26"
+
+    def setUp(self):
+        super().setUp()
+        User.objects.create_superuser("root", password="x-root-pw-2026")
+        self.rootc = self.api(User.objects.get(username="root"))
+
+    def own_password_set(self, username, given=PW):
+        web = Client()
+        landed = web.post("/accounts/login/?next=/app/", {"username": username, "password": given})
+        self.assertEqual((landed.status_code, landed["Location"]), (302, "/accounts/password_change/?next=/app/"))
+        self.assertEqual(web.get("/api/core/me/").status_code, 403, "a given password reached the API")
+        changed = web.post(landed["Location"], {"old_password": given, "new_password1": self.OWN,
+                                                "new_password2": self.OWN})
+        self.assertEqual((changed.status_code, changed["Location"]), (302, "/app/"))
+        self.assertEqual(web.get("/api/core/me/").status_code, 200)
+        return web
+
+    def test_a_given_password_reaches_nothing_but_the_page_that_replaces_it(self):
+        import base64
+
+        self.make("worker", [])
+        web = Client()
+        self.assertTrue(web.login(username="worker", password=PW))
+        self.assertEqual(web.get("/api/core/me/").status_code, 403)
+        self.assertEqual(web.get("/accounts/password_change/").status_code, 200)
+        basic = APIClient()
+        basic.credentials(HTTP_AUTHORIZATION="Basic " + base64.b64encode(f"worker:{PW}".encode()).decode())
+        self.assertEqual(basic.get("/api/core/me/").status_code, 403)
+        refused = web.post("/accounts/password_change/", {"old_password": PW, "new_password1": PW,
+                                                          "new_password2": PW})
+        self.assertIn("Choose a password of your own", refused.content.decode())
+
+    def test_p30_the_workers_own_password_stands_when_hr_leaves(self):
+        self.make("worker", [])
+        self.own_password_set("worker")
+        self.assertEqual(self.rootc.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json").status_code, 200)
+        self.assertTrue(self.signs_in("worker", self.OWN), "the worker's own password lapsed because HR left")
+
+    def test_p31_and_when_hr_is_demoted(self):
+        self.make("worker", [])
+        self.own_password_set("worker")
+        self.rootc.post(f"{USERS}{self.hr.pk}/revoke/", {"role": "HR Admin"}, format="json")
+        self.assertTrue(self.signs_in("worker", self.OWN), "the worker's own password lapsed because HR was demoted")
+
+    def test_p32_and_when_the_worker_is_promoted_above_hr(self):
+        worker = self.make("worker", [])
+        self.own_password_set("worker")
+        self.assertEqual(self.rootc.post(f"{USERS}{worker.pk}/grant/", {"role": "Controller"}, format="json")
+                         .status_code, 200)
+        self.assertTrue(self.signs_in("worker", self.OWN), "the worker's own password lapsed when promoted")
+
+    def test_p33_an_address_hr_set_takes_no_reset_once_hr_left_but_the_own_password_stands(self):
+        from django.core import mail
+
+        self.make("worker", [], email="worker@plant.example")
+        self.own_password_set("worker")
+        self.rootc.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json")
+        self.assertTrue(self.signs_in("worker", self.OWN), "nothing to reset: the own password stands")
+        mail.outbox.clear()
+        Client().post("/accounts/password_reset/", {"email": "worker@plant.example"})
+        self.assertEqual(len(mail.outbox), 0, "HR set that address and may read it (O157)")
+
+    def test_p34_the_maker_typing_as_the_login_is_the_stated_residual(self):
+        """Both cases leave the same record, as the reviewer showed; the maker stays the login's maker (O195)."""
+        from .roles import KeptCredential, who_knows
+
+        for name in ("by_person", "by_maker"):
+            self.make(name, [])
+            self.own_password_set(name)
+        rows = {name: list(KeptCredential.objects.filter(user__username=name, kind=KeptCredential.PASSWORD))
+                for name in ("by_person", "by_maker")}
+        self.assertEqual(rows, {"by_person": [], "by_maker": []})
+        # What HR set is gone either way; who made the login is not, so nothing HR does through it is for itself.
+        self.assertIn(self.hr.pk, who_knows(User.objects.get(username="by_maker")))
+        # And the person whose first password was used before them cannot sign in with it: they find out.
+        self.assertFalse(self.signs_in("by_maker", PW))
+
+    def test_until_it_is_changed_the_given_password_lapses_with_its_setter(self):
+        self.make("worker", [])
+        self.rootc.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json")
+        self.assertFalse(self.signs_in("worker", PW))
+
+    def test_an_administrators_reset_is_replaced_first_too(self):
+        asha = User.objects.create_user("asha", password="Asha-Own-Pw-2026")
+        self.assertEqual(self.rootc.post(f"{USERS}{asha.pk}/set_password/", {"password": PW}, format="json")
+                         .status_code, 200)
+        self.own_password_set("asha")
+        User.objects.filter(username="root").update(is_active=False)
+        from .roles import lapse_with_the_setter
+
+        lapse_with_the_setter(User.objects.get(username="root"))
+        self.assertTrue(self.signs_in("asha", self.OWN))

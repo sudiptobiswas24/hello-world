@@ -379,16 +379,15 @@ def _reached(kept, user):
 def _lapse(kept, user):
     """
     What `kept.set_by` set or made stops working: a password is made
-    unusable; a login's maker loses its password too (unless someone else
-    issued the one it has: its "own" may be the maker's) and its email,
-    unless someone else set it, is no longer trusted for a reset.
+    unusable; a login's maker no longer has its email, unless someone else
+    set it, trusted for a reset.
     """
-    if kept.kind in (KeptCredential.PASSWORD, KeptCredential.LOGIN):
-        issued = KeptCredential.objects.filter(user=user, kind=KeptCredential.PASSWORD, lapsed=False,
-                                               set_by__isnull=False).exclude(set_by=kept.set_by_id).exists()
-        if (kept.kind == KeptCredential.PASSWORD or not issued) and user.has_usable_password():
-            user.set_unusable_password()
-            user.save(update_fields=["password"])
+    # A LOGIN row takes no password with it: the maker's first one, while it
+    # stands, is its own PASSWORD row and lapses as that; one the login set
+    # itself is the person's (must_set_own_password, O216 review F1).
+    if kept.kind == KeptCredential.PASSWORD and user.has_usable_password():
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
     if kept.kind == KeptCredential.LOGIN and user.email:
         email = KeptCredential.objects.filter(user=user, kind=KeptCredential.EMAIL).first()
         if email is None or not email.in_force(user) or email.set_by_id in (None, kept.set_by_id):
@@ -422,11 +421,9 @@ def lapse_on_giving(user):
 def lapse_with_the_setter(setter):
     """
     `setter` lost a right or was switched off (review F2): every password
-    or email it set that it no longer reaches (_reached) stops working,
-    the made login's password changed as the login included (O216: kept as
-    the maker's, carried_by_the_maker). The LOGIN row itself stays: who
-    made the login is a fact (acts_as), and the way back is someone else
-    confirming a role for it or issuing it a password.
+    or email it set that it no longer reaches (_reached) stops working.
+    What it made stays its (acts_as); a password the login set itself
+    (must_set_own_password) was never this setter's, so lapses with nobody.
     """
     setter = User.objects.get(pk=setter.pk)
     for kept in (KeptCredential.objects.filter(set_by=setter, lapsed=False).exclude(kind=KeptCredential.LOGIN)
@@ -436,24 +433,23 @@ def lapse_with_the_setter(setter):
             _lapse(kept, kept.user)
 
 
-def carried_by_the_maker(user):
+def must_set_own_password(user):
     """
-    The PASSWORD row a change of `user`'s password keeps, or None (O216).
-    A password changed through the login itself (its own set_password, the
-    password-change page) is known to whoever knew the one it was changed
-    from and could sign in to change it: a keeper's ends there, as it
-    always has, but the maker's does not. The maker chose the first one and
-    may be who changed it "as the login" (review F1), so the row stays the
-    maker's and lapses with the maker's reach (lapse_with_the_setter), as
-    every password the maker set does. Whoever issues the next one records
-    it after (record_credential), which ends this; so does a reset through
-    an address the maker did not set (password_reset_through_email).
+    Whether `user` signs in with a password someone else set (a keeper's
+    first password, an administrator's or a confirmer's, or one reset
+    through an address someone else set) and so must set its own before
+    it reaches anything (O216, review F1; second_factor.Gate). Nothing
+    tells the person from the keeper typing as the login, so the keeper's
+    password is never the one the login keeps: until it is changed it
+    lapses with the keeper (lapse_with_the_setter, _reached); once changed
+    it is the person's own (_a_saved_login ends the row) and lapses with
+    nobody. A keeper who signs in first and changes it knows the result,
+    and the person, whose first password no longer works, finds out.
     """
-    made = KeptCredential.objects.filter(user=user, kind=KeptCredential.LOGIN, lapsed=False,
-                                         set_by__isnull=False).values("set_by")
-    row = KeptCredential.objects.filter(user=user, kind=KeptCredential.PASSWORD, lapsed=False,
-                                        set_by__in=made).values_list("pk", flat=True).first()
-    return row
+    if not user.is_authenticated or not user.has_usable_password():
+        return False
+    return (KeptCredential.objects.filter(user=user, kind=KeptCredential.PASSWORD, lapsed=False,
+                                          set_by__isnull=False).exclude(set_by=user.pk).exists())
 
 
 def password_reset_through_email(user):
@@ -548,10 +544,7 @@ def _a_saved_login(sender, instance, created, update_fields=None, **kwargs):
     if created:
         return
     if getattr(instance, "_password", None) is not None:
-        # Whoever set the last one knows this one only if they could have
-        # typed it as the login: its maker (O216, carried_by_the_maker).
-        KeptCredential.objects.filter(user=instance, kind=KeptCredential.PASSWORD).exclude(
-            pk=carried_by_the_maker(instance)).delete()
+        KeptCredential.objects.filter(user=instance, kind=KeptCredential.PASSWORD).delete()
     fields = None if update_fields is None else set(update_fields)
     if fields is None or fields & {"is_staff", "is_superuser"}:
         lapse_on_giving(instance)
