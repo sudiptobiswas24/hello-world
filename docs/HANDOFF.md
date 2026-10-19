@@ -229,7 +229,13 @@ built.
      15(3)(b)) rather than be a financial discount with GST unchanged. The
      code takes it as a financial discount; the switch is "discount reduces
      GST" on each payment term, off by default, and with it on the discount
-     step refuses and asks for a credit note.
+     step refuses and asks for a credit note;
+   - (O95) whether a vendor may use an invoice number again in the same
+     financial year once its first bill has been debited in full (the code
+     keeps the number taken);
+   - (O213) whether an overpayment taken back outside a final run is held
+     within the deduction cap like an advance recovery (the code holds it
+     there, and what the cap leaves waits for the next run).
 4. The scratch worktrees `fix_{sec,trade,stat,qual}` and
    `audit_{acc,sales,pur,perm,qc}` are merged into g18 and can be removed;
    their snapshots stay on `claude/erp-wip-*`.
