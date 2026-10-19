@@ -245,14 +245,30 @@ def new_recovery_codes(factor):
     return codes
 
 
-def reset(user, by):
-    """A lost phone: the factor and its codes go, and the login enrols again at its next sign-in."""
+def end_sessions(user):
+    """Every session `user` has, ended: whoever holds one signs in again, password first (review F2)."""
+    from django.contrib.sessions.models import Session
+
+    ended = 0
+    for session in Session.objects.filter(expire_date__gt=timezone.now()).iterator():
+        if session.get_decoded().get("_auth_user_id") == str(user.pk):
+            session.delete()
+            ended += 1
+    return ended
+
+
+def reset(user, by, summary="Second factor reset: enrols again at the next sign-in"):
+    """
+    A lost phone: the factor and its codes go, every session the login has
+    ends (one left open would enrol a phone of its own), and the login
+    enrols again at its next sign-in, its password asked again.
+    """
     from .history import EventKind, record
 
     gone, _ = SecondFactor.objects.filter(user=user).delete()
     if gone:
-        record(user, by, EventKind.ACTION, action="reset_second_factor",
-               summary="Second factor reset: enrols again at the next sign-in")
+        end_sessions(user)
+        record(user, by, EventKind.ACTION, action="reset_second_factor", summary=summary)
     return bool(gone)
 
 
@@ -382,6 +398,13 @@ def step(request):
     if request.method == "POST":
         if locked(factor):
             context["error"] = "Five wrong codes: the code step is locked for a quarter of an hour."
+            return render(request, "second_factor.html", context)
+        # The password again, in this request (review F2): a session alone, lifted or left open, enrols no phone.
+        from django.contrib.auth import authenticate
+
+        if authenticate(request, username=user.get_username(), password=request.POST.get("password", "")) is None:
+            _failed(factor)
+            context["error"] = "That is not this login's password. Type the password you signed in with."
             return render(request, "second_factor.html", context)
         step_taken = _code_step(factor, request.POST.get("code", ""))
         if step_taken is not None and _took_step(factor, step_taken):

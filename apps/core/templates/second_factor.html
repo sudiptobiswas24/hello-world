@@ -43,8 +43,12 @@
   <p>Type the six digits your authenticator app shows for {{ user.get_username }}, or one of your recovery codes.</p>
   {% endif %}
   {% if error %}<div class="error" role="alert">{{ error }}</div>{% endif %}
+  {% if mode == "enrol" %}
+  <label for="id_password">Your password, again</label>
+  <input id="id_password" name="password" type="password" autocomplete="current-password" required>
+  {% endif %}
   <label for="id_code">Code</label>
-  <input id="id_code" name="code" autocomplete="one-time-code" inputmode="text" autofocus required>
+  <input id="id_code" name="code" autocomplete="one-time-code" inputmode="text" required>
   <input type="hidden" name="next" value="{{ next }}">
   <button type="submit">{% if mode == "enrol" %}Confirm{% else %}Sign in{% endif %}</button>
 </form>

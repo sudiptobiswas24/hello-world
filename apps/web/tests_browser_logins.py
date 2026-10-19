@@ -85,6 +85,7 @@ class TwoFactorInTheBrowserTests(BrowserTestCase):
         expect(page.locator(".qr svg")).to_be_visible()
         totp = pyotp.TOTP(page.locator("#secret").inner_text())
         page.fill("#id_code", totp.now())
+        page.fill("#id_password", PASSWORD)
         page.get_by_role("button", name="Confirm").click()
         expect(page.locator("#recovery-codes li")).to_have_count(10)
         page.get_by_role("link", name="I have kept them; continue").click()
