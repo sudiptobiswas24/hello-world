@@ -17,6 +17,7 @@ from django.urls import include, path
 from rest_framework.test import APIClient
 
 from .errors import ServerError
+from .tests_second_factor import staff_session
 
 REF = re.compile(r"^E-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{5}$")
 
@@ -44,7 +45,7 @@ class CaptureTests(TestCase):
         self.asha = User.objects.create_user("asha", password="pw-for-tests-77")
         self.asha.groups.add(Group.objects.get(name="Bookkeeper"))
         self.client = Client()
-        self.client.force_login(self.asha)
+        staff_session(self.client, self.asha)  # a Bookkeeper gives a code (review F3)
 
     @override_settings(ADMINS=[("Ops", "ops@example.com")])
     def test_a_failure_is_recorded_told_and_mailed(self):
