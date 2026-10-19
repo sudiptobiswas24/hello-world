@@ -150,6 +150,17 @@ def lock_rows(*instances, refresh=True):
             instance.refresh_from_db()
 
 
+def in_a_transaction_it_opened(using=None):
+    """
+    Inside an atomic block the code opened. In production that is any atomic block; under a
+    TestCase the test's own block is open around everything, and alone it counts as none, as the
+    lock-order sentinel counts it. A choice of whether to lock made on in_atomic_block took a lock
+    in every test that production would only have read (accounting.money, g22 gate).
+    """
+    return any(not getattr(block, "_from_testcase", False)
+               for block in transaction.get_connection(using).atomic_blocks)
+
+
 def lock_in_turn(rows):
     """Hold `rows` in the order given, each before the next: the lock order above, not the models' names."""
     for row in rows:

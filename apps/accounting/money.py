@@ -56,11 +56,11 @@ def refuse_as_money_account(account, field="bank_account"):
     (hold_money_account). Outside one, as a draft is saved, only read: that
     decides nothing, and the move asks again inside its own transaction.
     """
-    from django.db import transaction
+    from apps.core.models import in_a_transaction_it_opened
 
     if account is None:
         return
-    if account.pk is not None and transaction.get_connection().in_atomic_block:
+    if account.pk is not None and in_a_transaction_it_opened():
         hold_money_account(account)
     elif account.pk is not None:
         account.refresh_from_db(fields=["holds_money", "is_active"])
