@@ -278,6 +278,7 @@ missing), **minor**.
 | O265 | manufacturing | The tape-load check asks `on_creels_undrawn(lot)` with no warehouse (manufacturing/tape_loads.py near 110), taking creels anywhere off the station warehouse's on-hand. Unreachable while a lot is in one place (seen 2026-10-18, fix_stores) | minor | open |
 | O266 | assets | `FIXED_AT_GO_LIVE` refuses an edit of a hand draft's `depreciated_before` or `opening_depreciation` after it is created, though the draft has posted nothing; a typo is corrected only by registering the asset again (seen 2026-10-18, fix_stores) | rule | minor |
 | O267 | purchasing | `PurchaseOrder.confirm()` carries `@serialised("status")` twice: a nested lock and re-read, harmless (seen 2026-10-16, fix_purch) | minor | open |
+| O268 | inventory | A count sheet cannot carry a cost: something never stocked that a count finds (sweepings, a found pallet) raises a gain line with no cost to take, and posting the sheet is refused. It is counted in on an adjustment, whose line now takes a cost (g22 month), but the count's refusal does not say so (seen 2026-10-19, g22 month) | rule | minor |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
