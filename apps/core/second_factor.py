@@ -102,6 +102,11 @@ def required(user):
     if user.is_superuser:
         return True
     guarded = {str(row) for row in GuardedRight.objects.select_related("permission__content_type")}
+    if not guarded:
+        # Nothing on file is a database set up wrong, not a plant that guards nothing (review F10): the setup's list.
+        from .management.commands.setup_roles import SECOND_FACTOR
+
+        guarded = set(SECOND_FACTOR)
     return bool(guarded & user.get_all_permissions())
 
 
