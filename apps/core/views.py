@@ -385,7 +385,7 @@ class MeView(APIView):
             "second_factor": {"enrolled": second_factor.confirmed(user) is not None,
                               "required": second_factor.required(user)},
             # When the session ends: after idle_seconds with nothing done, and in any case in ends_in_seconds.
-            "session": session_limits.remaining(request.session),
+            "session": session_limits.remaining(request),
         }
         for provider in ME_EXTRAS:
             answer.update(provider(user))
