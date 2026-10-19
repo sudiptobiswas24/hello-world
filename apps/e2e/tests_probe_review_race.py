@@ -19,6 +19,7 @@ from apps.accounting.models import JournalEntry, JournalLine, Payment, PaymentDi
 from apps.e2e import tests_races as R
 from apps.e2e.tests_races import RaceCase, fixture, race
 from apps.purchasing import tests_tds as tds_fixture
+from apps.core.tests_second_factor import staff_session
 
 pg = unittest.skipUnless(connection.vendor == "postgresql", "races need PostgreSQL")
 
@@ -40,7 +41,7 @@ class AdminBulkActionProbe(RaceCase):
             amount=Decimal("1000"), currency=self.inr, bank_account=self.bank, counterpart_account=self.ar)
         user = User.objects.create_superuser("boss", "b@x.in", "pw")
         client = Client()
-        client.force_login(user)
+        staff_session(client, user)
         answers = []
 
         def bulk_delete():
@@ -228,7 +229,7 @@ class ChatterProbe(RaceCase):
         def delete(wait):
             def call():
                 client = Client(raise_request_exception=False)
-                client.force_login(user)
+                staff_session(client, user)
                 if wait:
                     first_in.wait(5)
                     time.sleep(0.2)
@@ -342,7 +343,7 @@ class CutProbe(RaceCase):
             CallOff.objects.create(line=line, due_on=tests_call_offs.day(n), quantity=Decimal(quantity))
         user = User.objects.create_superuser("boss2", "b@x.in", "pw")
         client = Client(raise_request_exception=False)
-        client.force_login(user)
+        staff_session(client, user)
         answers = []
 
         def patch():

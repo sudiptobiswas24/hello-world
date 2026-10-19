@@ -37,6 +37,18 @@ def factor_for_tests(user):
     return factor
 
 
+def staff_session(client, user):
+    """
+    The one way a test signs a login in through a session as the door
+    would leave it: the password given (force_login) and, for a login that
+    needs one, its second factor passed in that session. For tests that
+    reach the admin, or the API through a session, as a superuser, a staff
+    login or a holder of a guarded right. The product guard is untouched.
+    """
+    for_tests(client, user, sign_in=True)
+    return client
+
+
 def for_tests(client, user, sign_in=False):
     """For tests: a client's session as one that gave its code; `sign_in`, force_login first."""
     if sign_in:

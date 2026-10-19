@@ -63,6 +63,7 @@ from apps.sales.models import (
     SalesOrderLine,
 )
 from apps.sales import tests_base as sales_fixture
+from apps.core.tests_second_factor import staff_session
 
 
 def race(sender, *calls, atomic=True):
@@ -1941,7 +1942,7 @@ class AdminEditRaceTests(RaceCase):
         data = {name: ("" if form[name].value() is None else form[name].value()) for name in form.fields}
         data.update(changes, _save="Save")
         client = Client()
-        client.force_login(user)
+        staff_session(client, user)
         url = f"/admin/{obj._meta.app_label}/{obj._meta.model_name}/{obj.pk}/change/"
 
         def call():

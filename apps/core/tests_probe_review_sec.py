@@ -30,7 +30,7 @@ from . import api_keys, second_factor, session_limits
 from .api_keys import ApiKey, ApiKeyUse
 from .history import RecordEvent
 from .second_factor import SESSION_KEY, RecoveryCode, SecondFactor
-from .tests_second_factor import ME, PW, SecondFactorCase, for_tests
+from .tests_second_factor import ME, PW, SecondFactorCase, for_tests, staff_session
 from .tests_users_api import PW as KEEPER_PW
 from .tests_users_api import USERS, KeeperAndHolder
 
@@ -76,7 +76,7 @@ class Probe(SecondFactorCase):
 
     def passed_client(self, user):
         web = Client()
-        for_tests(web, user, sign_in=True)
+        staff_session(web, user)
         return web
 
     def password_only_client(self, user):

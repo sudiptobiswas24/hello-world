@@ -122,14 +122,17 @@ class StoresReviewScaleBridgeProbes(SimpleTestCase):
         feed2.frames(*[ST("0000.0")] * 3)
         self.assertNotIn("106.8", [p["gross_kg"] for p in feed2.sent])
 
-    def test_the_password_is_in_no_log_line_and_never_crosses_the_network_in_clear(self):
+    def test_the_key_is_in_no_log_line_and_never_crosses_the_network_in_clear(self):
+        """The bridge signs in with an API key now (L12): the same two facts, for the key."""
         module = bridge_module()
-        import tempfile, os
-        with tempfile.NamedTemporaryFile("w", suffix=".password", delete=False) as kept:
-            kept.write("s3cret-Passw0rd\n")
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".key", delete=False) as kept:
+            kept.write("erp_deadbeef_s3cretKeyMaterial\n")
+        os.chmod(kept.name, 0o600)
         try:
-            config = {"server": "https://erp.example", "username": "bridge-sc1", "password_file": kept.name,
-                      "post_timeout_seconds": 1, "scale": "SC-1"}
+            config = {"server": "https://erp.example", "api_key_file": kept.name, "post_timeout_seconds": 1,
+                      "scale": "SC-1"}
             send = module.poster(config)
             logs = io.StringIO()
             handler = logging.StreamHandler(logs)
@@ -138,13 +141,11 @@ class StoresReviewScaleBridgeProbes(SimpleTestCase):
             bridge = module.Bridge({**config, "pattern": "status_gross", "repeat": 1, "retry_seconds": 0},
                                    open_port=None, send=send, sleep=lambda s: None)
             with mock.patch("urllib.request.urlopen",
-                            side_effect=urllib.error.URLError("Authorization: Basic failed")):
+                            side_effect=urllib.error.URLError("Authorization: Api-Key failed")):
                 bridge.handle("ST,GS,+0106.8kg")
             logging.getLogger("scale_bridge").removeHandler(handler)
-            self.assertNotIn("s3cret", logs.getvalue())
-            import base64
-            self.assertNotIn(base64.b64encode(b"bridge-sc1:s3cret-Passw0rd").decode(), logs.getvalue())
-            with self.assertRaises(Exception, msg="credentials built for an http:// server (sent in clear)"):
+            self.assertNotIn("s3cretKeyMaterial", logs.getvalue())
+            with self.assertRaises(Exception, msg="a key sent to an http:// server (in clear)"):
                 module.poster({**config, "server": "http://erp.example"})
         finally:
             os.unlink(kept.name)

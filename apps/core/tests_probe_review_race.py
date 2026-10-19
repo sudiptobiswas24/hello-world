@@ -7,14 +7,14 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.core.audit import AuditableViewSetMixin, RowHeldViewSetMixin
-from apps.core.tests_second_factor import for_tests
+from apps.core.tests_second_factor import staff_session
 
 
 class RowHeldViewSetProbe(TestCase):
     def setUp(self):
         self.user = User.objects.create_superuser("boss", "b@x.in", "pw")
         self.client = APIClient(raise_request_exception=False)
-        for_tests(self.client, self.user, sign_in=True)
+        staff_session(self.client, self.user)
         self.seen = {}
 
     def go(self, label, method, url, data=None):
