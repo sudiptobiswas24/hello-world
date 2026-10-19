@@ -164,6 +164,12 @@ Go through it before running anything.
   says. The return to vendor credited the price it paid instead, and the
   shelf and the ledger parted for good. Where the two differ, the
   difference is a price variance, posted.
+- Until O269 is fixed, the shelf keeps exact values and the ledger the
+  paisa, so a footing test can agree by luck and a change elsewhere can
+  move a paisa between them: one kilo written off at an average of
+  10.005 moves the shelf 10.005 and the books 10.00. Work a paisa by hand
+  before calling it a defect, and never fix one path alone: g22 fixed
+  production output and the demo plant went a paisa out instead.
 - Every `Decimal` leaves the API as exact text (`apps/core/renderers.py`),
   raw `Response` and `SerializerMethodField` included: no `str()` needed.
   What still needs care is the places: a ratio from a division goes out
@@ -250,6 +256,10 @@ Go through it before running anything.
   with nothing printed. Playwright's greenlet also gives the test body a
   different connection from `setUpClass`'s; patch the class, not the
   instance.
+- A failed subtest travels to the parallel runner pickled. Anything a
+  browser test keeps that refers back to it (a bound method) is left
+  behind by `BrowserMixin.__getstate__`; before g22 it re-entered and
+  hung the lane for good, printing nothing.
 
 **Mutation testing**
 - Never edit sources while a harness runs; it restores from its own
@@ -297,6 +307,11 @@ Go through it before running anything.
 - Drive each flow in the browser as the people who do it. The model and
   API tests were green while a line added from the screen had no name and
   Ship could never be answered which warehouse.
+- A field the model fills in `save()` is not required by its serializer,
+  or no screen can leave it out. The adjustment, transfer and customer
+  return screens could add no line at all until g22: each sent no unit or
+  item, which the model would have filled. `apps/web/tests.py`
+  (EveryAdderSendsWhatItsListRequiresTests) asks every adder now.
 
 **Committing**
 - Suite, `audit_invariants`, `makemigrations --check`, then commit.
