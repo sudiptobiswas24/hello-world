@@ -43,7 +43,8 @@ class SessionLimitTests(TestCase):
 
     def test_asking_how_long_is_left_keeps_nothing_open(self):
         answer = self.me(1000, HTTP_X_SESSION_CHECK="1")
-        self.assertEqual(answer.json()["session"], {"idle_seconds": 1800, "ends_in_seconds": 43200 - 1000})
+        self.assertEqual(answer.json()["session"], {"idle_seconds": 1800, "ends_in_seconds": 43200 - 1000,
+                                                    "idle_left_seconds": 800})
         self.assertEqual(self.me(1800, HTTP_X_SESSION_CHECK="1").status_code, 403)
 
     def test_twelve_hours_after_signing_in_it_ends_whatever_was_done(self):
@@ -56,3 +57,22 @@ class SessionLimitTests(TestCase):
     def test_the_idle_time_is_a_setting(self):
         self.assertEqual(self.me(59).status_code, 200)
         self.assertEqual(self.me(59 + 60).status_code, 403)
+
+
+class WhatAPollSendsTests(TestCase):
+    """Review F6: the polls that run with nobody at the screen say so, or a station PC stays signed in for 12 hours."""
+
+    def test_the_station_pages_scale_poll_sends_the_check_header(self):
+        import pathlib
+        import re
+
+        page = (pathlib.Path(__file__).resolve().parents[1] / "manufacturing" / "templates" / "manufacturing"
+                / "station.html").read_text()
+        self.assertIn('api("scale/", { check: true })', page)
+        self.assertRegex(page, re.compile(r'if \(options\.check\) init\.headers\["X-Session-Check"\] = "1";'))
+
+    def test_the_office_applications_clock_asks_with_it(self):
+        import pathlib
+
+        clock = (pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "shell" / "SessionClock.tsx")
+        self.assertIn('request<{ session?: SessionTimes }>("/api/core/me/", { check: true })', clock.read_text())

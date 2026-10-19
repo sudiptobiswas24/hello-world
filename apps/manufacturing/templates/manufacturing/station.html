@@ -334,6 +334,8 @@ function cookie(name) {
 }
 async function api(path, options = {}) {
   const init = { credentials: "same-origin", headers: { Accept: "application/json" }, ...options };
+  // A poll is not a person at the PC: it keeps the session open no longer (apps/core/session_limits.py, review F6).
+  if (options.check) init.headers["X-Session-Check"] = "1";
   if (options.body !== undefined) {
     init.method = options.method || "POST";
     init.headers["Content-Type"] = "application/json";
@@ -371,7 +373,7 @@ const scale = {
   bridged: false, raw: null, refusal: null, _timer: null,
   async poll() {
     try {
-      const body = await api("scale/");
+      const body = await api("scale/", { check: true });
       this.connected = true;
       this.raw = body.gross_kg;
       this.kg = body.gross_kg == null ? null : parseFloat(body.gross_kg);

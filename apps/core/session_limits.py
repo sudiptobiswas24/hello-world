@@ -54,8 +54,10 @@ def ended(session, now=None):
 def remaining(session, now=None):
     """What /api/core/me/ tells the application: the idle limit, and when the session ends regardless."""
     now = time.time() if now is None else now
-    began = session.get(SIGNED_IN_AT, now)
-    return {"idle_seconds": idle_seconds(), "ends_in_seconds": max(0, int(began + absolute_seconds() - now))}
+    began, seen = session.get(SIGNED_IN_AT, now), session.get(LAST_SEEN, now)
+    return {"idle_seconds": idle_seconds(), "ends_in_seconds": max(0, int(began + absolute_seconds() - now)),
+            # What is left of the idle time as the server counts it: another tab may have kept it open.
+            "idle_left_seconds": max(0, int(seen + idle_seconds() - now))}
 
 
 class SessionLimits:
