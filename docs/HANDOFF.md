@@ -276,9 +276,13 @@ built.
 - **Token spend (owner, 10 October).** The session limit is the constraint.
   - Reasoning effort stays high for every agent; never lowered to save
     tokens (owner, 10 October).
-  - Model per job: Sonnet for audits, reviews and probes; Opus only for
-    fixes to money, stock, locks or permissions; Sonnet for small
-    mechanical fixes.
+  - Model per job (owner, 19 October: use lesser models where they do;
+    Opus 5.5 for thinking and planning): Opus 5.5 for the integrator's
+    thinking, planning, briefs, decisions and diagnosis, and for fixes to
+    money, stock, locks, permissions or the costing engine; Sonnet for
+    audits, reviews, probes and small mechanical fixes; Haiku for
+    mechanical runs, sweeps and summaries. A design question an agent
+    raises comes back to the integrator, not settled by the agent.
   - At most two agents at once.
   - Briefs name the exact files and lines (the register has them).
   - About 60 tool calls per agent; at that point it commits and reports.
