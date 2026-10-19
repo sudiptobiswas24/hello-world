@@ -38,6 +38,7 @@ does the same.
 import datetime
 from contextlib import contextmanager
 from decimal import Decimal
+from unittest import expectedFailure
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -45,12 +46,24 @@ from django.contrib.auth.models import Group, User
 from django.core.management import call_command
 from django.db.models import Sum
 from django.test import TestCase
-from unittest import expectedFailure
 from rest_framework.test import APIClient
 
-from apps.accounting.models import Account, AccountType, JournalLine, PartyTaxProfile, TdsSection
+from apps.accounting.models import (
+    Account,
+    AccountType,
+    JournalLine,
+    PartyTaxProfile,
+    TdsSection,
+)
 from apps.core.models import (
-    Company, Currency, ExchangeRate, Party, PartyRole, PartyRoleAssignment, PaymentTerms, UnitOfMeasure,
+    Company,
+    Currency,
+    ExchangeRate,
+    Party,
+    PartyRole,
+    PartyRoleAssignment,
+    PaymentTerms,
+    UnitOfMeasure,
     UnitOfMeasureCategory,
 )
 from apps.inventory.models import Item, Warehouse
@@ -546,6 +559,8 @@ class Month:
                                    {"from": "2026-10-01", "to": "2026-12-31"})
         self.tcs_return = self.get(controller, "/api/sales/tcs-collections/quarter/",
                                    {"from": "2026-10-01", "to": "2026-12-31"})
+        self.ar_aging = self.get("AR Manager", "/api/sales/invoices/aging/", {"as_of": "2026-10-31"})
+        self.ap_aging = self.get("AP Manager", "/api/purchasing/purchasing-reports/aging/", {"as_of": "2026-10-31"})
         period = self.post(controller, "/api/accounting/periods/", {
             "name": "October 2026", "start_date": "2026-10-01", "end_date": "2026-10-31"})
         self.refuse("R8 the month closed by the Bookkeeper", "Bookkeeper",
@@ -774,6 +789,20 @@ class PlantMonthTests(TestCase):
                                                                      "V-LM": D("708000.00")})
         self.assertEqual(self.bal("2000"), -sum(due.values()))
 
+    def test_aging_foots_to_the_control_accounts(self):
+        # As of 31 Oct, everything net 30 and current: Hooghly due 14 Nov (15 Oct + 30); the freight and the
+        # polymer 8 Nov (9 Oct + 30); the loom 31 Oct (1 Oct + 30), due that day and not yet over.
+        ar, ap = self.m.ar_aging, self.m.ap_aging
+        self.assertEqual({bucket: rows["total"] for bucket, rows in ar.items() if rows["count"]},
+                         {"current": "572600.00"})
+        self.assertEqual(D(ar["current"]["total"]), self.bal("1100"))
+        self.assertEqual(sorted((row["vendor"][:5].strip(), row["due_date"], row["days_overdue"])
+                                for row in ap["current"]["bills"]),
+                         [("V-LM", "2026-10-31", 0), ("V-PP", "2026-11-08", 0), ("V-TRN", "2026-11-08", 0)])
+        self.assertEqual({bucket: rows["total"] for bucket, rows in ap.items() if rows["count"]},
+                         {"current": "1902816.00"})
+        self.assertEqual(-D(ap["current"]["total"]), self.bal("2000"))
+
     def test_the_bank_and_its_statement_agree(self):
         self.assertEqual(self.bal("1200"), D("133300.00"))
         report = self.m.get("Bookkeeper", f"/api/accounting/bank-statements/{self.m.statement['id']}/reconciliation/")
@@ -788,6 +817,7 @@ class PlantMonthTests(TestCase):
         self.assertEqual(profit, D("226576.00"))
         # No capital came in: what the month made is what the balance sheet gained.
         self.assertEqual(kinds(AccountType.ASSET) + kinds(AccountType.LIABILITY, AccountType.EQUITY), profit)
+
 
 
 
