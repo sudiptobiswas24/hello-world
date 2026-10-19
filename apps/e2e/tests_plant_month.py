@@ -25,11 +25,16 @@ agent's scratchpad script), never read off the output. The story:
 
     7  A loom billed 1 Oct, 6,00,000.00 + GST, capitalised and depreciated
        5,000.00 for October; GSTR-1, GSTR-3B and the TDS and TCS returns
-       read; the month closed. Profit 2,26,576.00.
+       read; the month closed. Profit 1,53,363.00.
 
-Not in this month (the g22 month report says why): stations and the scale
-bridge, piece work, the Quality Manager's hold, the tape recall, job work,
-the re-batch, and every part of payroll.
+    6  People: two monthly staff (one past 58: no EPS), a leaver on 21 Oct
+       with an advance part recovered on the final slip, and a day-rated
+       shift worker with three days absent and eight hours' overtime, his
+       advance recovered; PF, ESI, West Bengal PT (LWF is June's and
+       December's); the bank file paid and one transfer returned.
+
+The floor (stations, the scale bridge, piece work, the quality hold, the
+recall, job work, the re-batch) is PlantFloorTests, below, on its own books.
 
 Model calls, where no screen exists:
   - the master data the month opens with (accounts, items, parties, tax
@@ -165,7 +170,10 @@ class Month:
                                  ("5020", "Material variance", X), ("5030", "Scrap", X),
                                  ("5040", "Conversion absorbed", X), ("5050", "Conversion variance", X),
                                  ("1900", "Suspense", A), ("5200", "Bad debts", X),
-                                 ("5300", "Settlement discounts", X)):
+                                 ("5300", "Settlement discounts", X),
+                                 ("2400", "Net pay payable", L), ("2410", "PF payable", L), ("2420", "ESI payable", L),
+                                 ("2430", "PT payable", L), ("2440", "LWF payable", L), ("1400", "Salary advances", A),
+                                 ("6000", "Wages", X), ("6100", "Employer contributions", X)):
             acct[code] = Account.objects.create(code=code, name=name, account_type=kind)
         self.acct = acct
         self.inr = Currency.objects.create(code="INR", name="Rupee", is_base=True)
@@ -178,7 +186,7 @@ class Month:
             grni_account=acct["2150"], customer_deposit_account=acct["2300"],
             purchase_price_variance_account=acct["5150"], fx_gain_account=acct["4900"],
             fx_loss_account=acct["5910"], settlement_discount_account=acct["5300"],
-            bad_debt_account=acct["5200"])
+            bad_debt_account=acct["5200"], net_pay_account=acct["2400"])
         self.terms = PaymentTerms.objects.create(code="N30", name="Net 30", net_days=30)
         self.kg = UnitOfMeasure.objects.create(code="kg", name="Kilogram", category=UnitOfMeasureCategory.WEIGHT)
         self.qc = Warehouse.objects.create(code="QC", name="Held for inspection", is_quarantine=True)
@@ -543,6 +551,149 @@ class Month:
                       {"line": line["id"], "entry": self.tcs_challan["journal_entry"]})
         self.scrap_invoice = self.get("AR Manager", f"/api/sales/invoices/{self.scrap_invoice['id']}/")
 
+    # -- 6. people -------------------------------------------------------------------
+
+    def pay_component(self, code, kind, basis, sequence, **more):
+        made = self.post("Payroll Officer", "/api/hr/pay-components/", {
+            "code": code, "name": code, "kind": kind, "basis": basis, "sequence": sequence, **more})
+        self.components[code] = made["id"]
+        return made["id"]
+
+    def slab(self, code, amount, above="0", up_to=None, month=None):
+        self.post("Payroll Officer", "/api/hr/pay-component-slabs/", {
+            "component": self.components[code], "above": above, "up_to": up_to, "amount": amount, "month": month,
+            "state": "WB"})
+
+    def set_up_pay(self):
+        a = self.acct
+        self.components = {}
+        earn = {"expense_account": a["6000"].pk, "reduces_for_unpaid_leave": True, "is_ordinary_wages": True}
+        self.pay_component("BASIC", "earning", "fixed", 10, **earn)
+        self.pay_component("HRA", "earning", "fixed", 20, **earn)
+        self.pay_component("OT", "earning", "overtime", 30, expense_account=a["6000"].pk)
+        pf = {"basis": "percent", "base_components": [self.components["BASIC"]], "base_ceiling": "15000",
+              "rounding": "rupee", "liability_account": a["2410"].pk, "remit_by_day": 15}
+        self.pay_component("PF", "deduction", sequence=50, statutory="pf", **pf)
+        self.pay_component("PF-ER", "employer_cost", sequence=60, statutory="pf_employer",
+                           expense_account=a["6100"].pk, **pf)
+        esi = {"basis": "percent", "rounding": "rupee_up", "liability_account": a["2420"].pk, "remit_by_day": 15,
+               "base_components": [self.components[c] for c in ("BASIC", "HRA", "OT")],
+               "coverage_components": [self.components[c] for c in ("BASIC", "HRA")], "coverage_ceiling": "21000",
+               "coverage_period_months": 6}
+        self.pay_component("ESI", "deduction", sequence=70, statutory="esi", **esi)
+        self.pay_component("ESI-ER", "employer_cost", sequence=80, statutory="esi_employer",
+                           expense_account=a["6100"].pk, **esi)
+        self.pay_component("PT", "deduction", "slab", 90, statutory="pt", liability_account=a["2430"].pk)
+        for above, up_to, tax in (("10000", "15000", "110"), ("15000", "25000", "130"), ("25000", "40000", "150"),
+                                  ("40000", None, "200")):
+            self.slab("PT", tax, above, up_to)
+        self.pay_component("LWF", "deduction", "slab", 92, statutory="lwf", liability_account=a["2440"].pk)
+        self.pay_component("LWF-ER", "employer_cost", "slab", 93, statutory="lwf_employer",
+                           liability_account=a["2440"].pk, expense_account=a["6100"].pk)
+        for code, share in (("LWF", "3"), ("LWF-ER", "15")):
+            self.slab(code, "0")
+            self.slab(code, share, month=6)
+            self.slab(code, share, month=12)
+        self.pay_component("ADV", "deduction", "fixed", 99, liability_account=a["1400"].pk)
+
+    def hire(self, number, name, hired, born, pay, uan, esi=None, **more):
+        person = self.post("HR Admin", "/api/hr/employees/", {
+            "employee_number": number, "new_name": name, "hire_date": hired, "working_days": "123456",
+            "holiday_region": "", "work_state": "WB", "uan": uan, "esi_number": esi or "", **more})
+        for code, amount in {**pay, "PF": "12", "PF-ER": "12", "ESI": "0.75", "ESI-ER": "3.25", "PT": "1",
+                             "LWF": "1", "LWF-ER": "1"}.items():
+            self.post("Payroll Officer", "/api/hr/compensation/", {
+                "employee": person["id"], "component": self.components[code], "amount": amount,
+                "effective_from": "2026-04-01" if code not in pay else hired})
+        self.post("Payroll Officer", "/api/hr/pay-details/", {
+            "employee": person["id"], "account_holder": name, "account_number": f"3001{uan[-8:]}",
+            "ifsc": "SBIN0001234", "pan": f"ABCPD{uan[-4:]}K", "date_of_birth": born})
+        self.staff[number] = person
+        return person
+
+    def give_advance(self, number, day, amount, instalment):
+        from apps.hr.models import Employee
+
+        party = Employee.objects.get(pk=self.staff[number]["id"]).party_id
+        payment = self.post("Controller", "/api/accounting/payments/", {
+            "party": party, "direction": "disbursement", "payment_date": str(day), "amount": amount,
+            "currency": self.inr.pk, "bank_account": self.acct["1200"].pk,
+            "counterpart_account": self.acct["1400"].pk, "method": "neft"})
+        self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
+        self.statement_line(day, f"NEFT SALARY ADVANCE {number}", f"-{amount}", payment)
+        return self.post("Controller", "/api/hr/salary-advances/", {
+            "employee": self.staff[number]["id"], "kind": "advance", "payment": payment["id"],
+            "component": self.components["ADV"], "amount": amount, "instalment": instalment,
+            "recover_from": "2026-10-01"})
+
+    def pay_people(self):
+        self.staff = {}
+        with on(OCT(1)):
+            self.set_up_pay()
+            self.hire("M1", "Subrata Ghosh", "2018-04-01", "1990-03-15", {"BASIC": "18000", "HRA": "7000"},
+                      "100200300401")
+            self.hire("M2", "Anil Banerjee", "2010-06-01", "1967-05-10", {"BASIC": "14000", "HRA": "4000"},
+                      "100200300402", esi="3100200302")
+            self.hire("L1", "Rina Mondal", "2023-07-01", "1995-08-20", {"BASIC": "12000", "HRA": "3000"},
+                      "100200300403", esi="3100200303")
+            self.hire("D1", "Bapi Sardar", "2025-01-06", "1998-11-02", {"BASIC": "13500", "OT": "125"},
+                      "100200300404", esi="3100200304", paid_by_attendance=True)
+            self.advances = {"L1": self.give_advance("L1", OCT(1), "6000.00", "3000.00")}
+        with on(OCT(5)):
+            self.advances["D1"] = self.give_advance("D1", OCT(5), "4000.00", "2000.00")
+        with on(OCT(21), hour=18):
+            self.ok(self.as_("HR Admin").patch(f"/api/hr/employees/{self.staff['L1']['id']}/",
+                                               {"termination_date": "2026-10-21", "employment_status": "terminated"}, format="json"))
+        with on(OCT(31), hour=12):
+            day = OCT(1)
+            while day <= OCT(31):
+                if day.isoweekday() != 7:
+                    absent = day in (OCT(7), OCT(8), OCT(9))
+                    self.post("Production Supervisor", "/api/hr/attendance/", {
+                        "employee": self.staff["D1"]["id"], "on": str(day), "status": "absent" if absent else "present",
+                        "overtime_hours": "4" if day in (OCT(12), OCT(13)) else "0"})
+                day += datetime.timedelta(days=1)
+            officer = "Payroll Officer"
+            made = self.post(officer, "/api/hr/pay-runs/", {
+                "period_start": "2026-10-01", "period_end": "2026-10-31", "pay_date": "2026-10-31",
+                "name": "October 2026"})
+            base = f"/api/hr/pay-runs/{made['id']}/"
+            self.post(officer, base + "calculate/")
+            self.refuse("R9 a pay run posted by the Payroll Officer", officer, base + "post/")
+            self.pay_run = self.post("Controller", base + "post/")
+            self.ecr = self.as_(officer).get(base + "ecr/").content.decode()
+            self.esi = self.as_(officer).get(base + "esi/").content.decode()
+            self.pt_register = self.get(officer, "/api/hr/statutory-registers/", {"kind": "pt", "month": "2026-10"})
+            self.lwf_register = self.get(officer, "/api/hr/statutory-registers/", {"kind": "lwf", "month": "2026-10"})
+            transfer = self.post(officer, "/api/hr/salary-files/", {"run": made["id"]})
+            from apps.hr.models import Employee
+
+            payment = self.post("Controller", "/api/accounting/payments/", {
+                "party": Employee.objects.get(pk=self.staff["M1"]["id"]).party_id, "direction": "disbursement",
+                "payment_date": "2026-10-31", "amount": transfer["total"], "currency": self.inr.pk,
+                "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
+                "method": "neft", "reference": transfer["number"]})
+            self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
+            self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/mark_paid/", {"payment": payment["id"]})
+            self.statement_line(OCT(31), f"BULK NEFT SALARY {transfer['number']}", f"-{transfer['total']}", payment)
+            self.salary_file = self.get("Controller", f"/api/hr/salary-files/{transfer['id']}/")
+            row = next(row for row in self.salary_file["rows"] if row["employee"] == "D1") \
+                if "rows" in self.salary_file else None
+            back = self.post("Controller", "/api/accounting/payments/", {
+                "party": Employee.objects.get(pk=self.staff["D1"]["id"]).party_id, "direction": "receipt",
+                "payment_date": "2026-10-31", "amount": "9352.00", "currency": self.inr.pk,
+                "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
+                "method": "neft", "reference": "RTN A/C CLOSED"})
+            self.post("Controller", f"/api/accounting/payments/{back['id']}/post_payment/")
+            self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/return_transfer/",
+                      {"row": row["id"], "receipt": back["id"]})
+            self.statement_line(OCT(31), "NEFT RETURN A/C CLOSED BAPI SARDAR", "9352.00", back)
+            self.salary_file = self.get("Controller", f"/api/hr/salary-files/{transfer['id']}/")
+            self.payslips = {slip["employee_number"] if "employee_number" in slip else slip["employee"]: slip
+                             for slip in self.get("Controller", "/api/hr/payslips/", {"run": made["id"]})}
+            self.advance_rows = self.get("Controller", "/api/hr/salary-advances/")
+            self.pay_run = self.get("Controller", base)
+
     # -- 7. close -------------------------------------------------------------------
 
     def buy_a_loom(self):
@@ -593,7 +744,7 @@ class Month:
         with on(OCT(1)):
             self.statement = self.post("Bookkeeper", "/api/accounting/bank-statements/", {
                 "bank_account": self.acct["1200"].pk, "reference": "SBI OCT 2026", "start_date": "2026-10-01",
-                "end_date": "2026-10-31", "opening_balance": "0", "closing_balance": "133300.00"})
+                "end_date": "2026-10-31", "opening_balance": "0", "closing_balance": "79175.00"})
         with on(OCT(20)):
             self.pay_masterbatch()
         with on(OCT(1)):
@@ -603,6 +754,7 @@ class Month:
         self.sell_to_hooghly()
         self.export()
         self.sell_scrap()
+        self.pay_people()
         with on(OCT(31), hour=18):
             self.close()
         return self
@@ -641,6 +793,7 @@ class PlantMonthTests(TestCase):
             "R6 a payment voided by the Sales Rep": 403,
             "R7 scrap invoiced before the TCS rate is confirmed": 400,
             "R8 the month closed by the Bookkeeper": 403,
+            "R9 a pay run posted by the Payroll Officer": 403,
         })
 
     # -- 1. polymer bought ------------------------------------------------------
@@ -719,6 +872,213 @@ class PlantMonthTests(TestCase):
         self.assertIsNotNone(given)
         self.assertEqual(D(given), D("30.00"))
 
+    # -- 6. people -------------------------------------------------------------------
+
+    def pay_component(self, code, kind, basis, sequence, **more):
+        made = self.post("Payroll Officer", "/api/hr/pay-components/", {
+            "code": code, "name": code, "kind": kind, "basis": basis, "sequence": sequence, **more})
+        self.components[code] = made["id"]
+        return made["id"]
+
+    def slab(self, code, amount, above="0", up_to=None, month=None):
+        self.post("Payroll Officer", "/api/hr/pay-component-slabs/", {
+            "component": self.components[code], "above": above, "up_to": up_to, "amount": amount, "month": month,
+            "state": "WB"})
+
+    def set_up_pay(self):
+        a = self.acct
+        self.components = {}
+        earn = {"expense_account": a["6000"].pk, "reduces_for_unpaid_leave": True, "is_ordinary_wages": True}
+        self.pay_component("BASIC", "earning", "fixed", 10, **earn)
+        self.pay_component("HRA", "earning", "fixed", 20, **earn)
+        self.pay_component("OT", "earning", "overtime", 30, expense_account=a["6000"].pk)
+        pf = {"basis": "percent", "base_components": [self.components["BASIC"]], "base_ceiling": "15000",
+              "rounding": "rupee", "liability_account": a["2410"].pk, "remit_by_day": 15}
+        self.pay_component("PF", "deduction", sequence=50, statutory="pf", **pf)
+        self.pay_component("PF-ER", "employer_cost", sequence=60, statutory="pf_employer",
+                           expense_account=a["6100"].pk, **pf)
+        esi = {"basis": "percent", "rounding": "rupee_up", "liability_account": a["2420"].pk, "remit_by_day": 15,
+               "base_components": [self.components[c] for c in ("BASIC", "HRA", "OT")],
+               "coverage_components": [self.components[c] for c in ("BASIC", "HRA")], "coverage_ceiling": "21000",
+               "coverage_period_months": 6}
+        self.pay_component("ESI", "deduction", sequence=70, statutory="esi", **esi)
+        self.pay_component("ESI-ER", "employer_cost", sequence=80, statutory="esi_employer",
+                           expense_account=a["6100"].pk, **esi)
+        self.pay_component("PT", "deduction", "slab", 90, statutory="pt", liability_account=a["2430"].pk)
+        for above, up_to, tax in (("10000", "15000", "110"), ("15000", "25000", "130"), ("25000", "40000", "150"),
+                                  ("40000", None, "200")):
+            self.slab("PT", tax, above, up_to)
+        self.pay_component("LWF", "deduction", "slab", 92, statutory="lwf", liability_account=a["2440"].pk)
+        self.pay_component("LWF-ER", "employer_cost", "slab", 93, statutory="lwf_employer",
+                           liability_account=a["2440"].pk, expense_account=a["6100"].pk)
+        for code, share in (("LWF", "3"), ("LWF-ER", "15")):
+            self.slab(code, "0")
+            self.slab(code, share, month=6)
+            self.slab(code, share, month=12)
+        self.pay_component("ADV", "deduction", "fixed", 99, liability_account=a["1400"].pk)
+
+    def hire(self, number, name, hired, born, pay, uan, esi=None, **more):
+        person = self.post("HR Admin", "/api/hr/employees/", {
+            "employee_number": number, "new_name": name, "hire_date": hired, "working_days": "123456",
+            "holiday_region": "", "work_state": "WB", "uan": uan, "esi_number": esi or "", **more})
+        for code, amount in {**pay, "PF": "12", "PF-ER": "12", "ESI": "0.75", "ESI-ER": "3.25", "PT": "1",
+                             "LWF": "1", "LWF-ER": "1"}.items():
+            self.post("Payroll Officer", "/api/hr/compensation/", {
+                "employee": person["id"], "component": self.components[code], "amount": amount,
+                "effective_from": "2026-04-01" if code not in pay else hired})
+        self.post("Payroll Officer", "/api/hr/pay-details/", {
+            "employee": person["id"], "account_holder": name, "account_number": f"3001{uan[-8:]}",
+            "ifsc": "SBIN0001234", "pan": f"ABCPD{uan[-4:]}K", "date_of_birth": born})
+        self.staff[number] = person
+        return person
+
+    def give_advance(self, number, day, amount, instalment):
+        from apps.hr.models import Employee
+
+        party = Employee.objects.get(pk=self.staff[number]["id"]).party_id
+        payment = self.post("Controller", "/api/accounting/payments/", {
+            "party": party, "direction": "disbursement", "payment_date": str(day), "amount": amount,
+            "currency": self.inr.pk, "bank_account": self.acct["1200"].pk,
+            "counterpart_account": self.acct["1400"].pk, "method": "neft"})
+        self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
+        self.statement_line(day, f"NEFT SALARY ADVANCE {number}", f"-{amount}", payment)
+        return self.post("Controller", "/api/hr/salary-advances/", {
+            "employee": self.staff[number]["id"], "kind": "advance", "payment": payment["id"],
+            "component": self.components["ADV"], "amount": amount, "instalment": instalment,
+            "recover_from": "2026-10-01"})
+
+    def pay_people(self):
+        self.staff = {}
+        with on(OCT(1)):
+            self.set_up_pay()
+            self.hire("M1", "Subrata Ghosh", "2018-04-01", "1990-03-15", {"BASIC": "18000", "HRA": "7000"},
+                      "100200300401")
+            self.hire("M2", "Anil Banerjee", "2010-06-01", "1967-05-10", {"BASIC": "14000", "HRA": "4000"},
+                      "100200300402", esi="3100200302")
+            self.hire("L1", "Rina Mondal", "2023-07-01", "1995-08-20", {"BASIC": "12000", "HRA": "3000"},
+                      "100200300403", esi="3100200303")
+            self.hire("D1", "Bapi Sardar", "2025-01-06", "1998-11-02", {"BASIC": "13500", "OT": "125"},
+                      "100200300404", esi="3100200304", paid_by_attendance=True)
+            self.advances = {"L1": self.give_advance("L1", OCT(1), "6000.00", "3000.00")}
+        with on(OCT(5)):
+            self.advances["D1"] = self.give_advance("D1", OCT(5), "4000.00", "2000.00")
+        with on(OCT(21), hour=18):
+            self.ok(self.as_("HR Admin").patch(f"/api/hr/employees/{self.staff['L1']['id']}/",
+                                               {"termination_date": "2026-10-21", "employment_status": "terminated"}, format="json"))
+        with on(OCT(31), hour=12):
+            day = OCT(1)
+            while day <= OCT(31):
+                if day.isoweekday() != 7:
+                    absent = day in (OCT(7), OCT(8), OCT(9))
+                    self.post("Production Supervisor", "/api/hr/attendance/", {
+                        "employee": self.staff["D1"]["id"], "on": str(day), "status": "absent" if absent else "present",
+                        "overtime_hours": "4" if day in (OCT(12), OCT(13)) else "0"})
+                day += datetime.timedelta(days=1)
+            officer = "Payroll Officer"
+            made = self.post(officer, "/api/hr/pay-runs/", {
+                "period_start": "2026-10-01", "period_end": "2026-10-31", "pay_date": "2026-10-31",
+                "name": "October 2026"})
+            base = f"/api/hr/pay-runs/{made['id']}/"
+            self.post(officer, base + "calculate/")
+            self.refuse("R9 a pay run posted by the Payroll Officer", officer, base + "post/")
+            self.pay_run = self.post("Controller", base + "post/")
+            self.ecr = self.as_(officer).get(base + "ecr/").content.decode()
+            self.esi = self.as_(officer).get(base + "esi/").content.decode()
+            self.pt_register = self.get(officer, "/api/hr/statutory-registers/", {"kind": "pt", "month": "2026-10"})
+            self.lwf_register = self.get(officer, "/api/hr/statutory-registers/", {"kind": "lwf", "month": "2026-10"})
+            transfer = self.post(officer, "/api/hr/salary-files/", {"run": made["id"]})
+            from apps.hr.models import Employee
+
+            payment = self.post("Controller", "/api/accounting/payments/", {
+                "party": Employee.objects.get(pk=self.staff["M1"]["id"]).party_id, "direction": "disbursement",
+                "payment_date": "2026-10-31", "amount": transfer["total"], "currency": self.inr.pk,
+                "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
+                "method": "neft", "reference": transfer["number"]})
+            self.post("Controller", f"/api/accounting/payments/{payment['id']}/post_payment/")
+            self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/mark_paid/", {"payment": payment["id"]})
+            self.statement_line(OCT(31), f"BULK NEFT SALARY {transfer['number']}", f"-{transfer['total']}", payment)
+            self.salary_file = self.get("Controller", f"/api/hr/salary-files/{transfer['id']}/")
+            row = next(row for row in self.salary_file["rows"] if row["employee"] == "D1") \
+                if "rows" in self.salary_file else None
+            back = self.post("Controller", "/api/accounting/payments/", {
+                "party": Employee.objects.get(pk=self.staff["D1"]["id"]).party_id, "direction": "receipt",
+                "payment_date": "2026-10-31", "amount": "9352.00", "currency": self.inr.pk,
+                "bank_account": self.acct["1200"].pk, "counterpart_account": self.acct["2400"].pk,
+                "method": "neft", "reference": "RTN A/C CLOSED"})
+            self.post("Controller", f"/api/accounting/payments/{back['id']}/post_payment/")
+            self.post("Controller", f"/api/hr/salary-files/{transfer['id']}/return_transfer/",
+                      {"row": row["id"], "receipt": back["id"]})
+            self.statement_line(OCT(31), "NEFT RETURN A/C CLOSED BAPI SARDAR", "9352.00", back)
+            self.salary_file = self.get("Controller", f"/api/hr/salary-files/{transfer['id']}/")
+            self.payslips = {slip["employee_number"] if "employee_number" in slip else slip["employee"]: slip
+                             for slip in self.get("Controller", "/api/hr/payslips/", {"run": made["id"]})}
+            self.advance_rows = self.get("Controller", "/api/hr/salary-advances/")
+            self.pay_run = self.get("Controller", base)
+
+    # -- 6. people -------------------------------------------------------------------
+
+    def test_each_slip_is_what_the_month_owed(self):
+        # gross, deductions, net, employer: calc_month/month.py section 6.
+        self.assertEqual({number: (slip["gross"], slip["deductions"], slip["net"], slip["employer_cost"])
+                          for number, slip in self.m.payslips.items()}, {
+            "M1": ("25000.00", "1930.00", "23070.00", "1800.00"),
+            "M2": ("18000.00", "1945.00", "16055.00", "2265.00"),
+            "L1": ("10000.00", "5000.00", "5000.00", "1285.00"),
+            "D1": ("13000.00", "3648.00", "9352.00", "1863.00"),
+        })
+        lines = {number: {line["component"]: line["amount"] for line in slip["lines"]}
+                 for number, slip in self.m.payslips.items()}
+        # 24 of 27 days at 13,500 and 8 overtime hours at 125; 18 of 27 to the leaver's last day.
+        self.assertEqual((lines["D1"]["BASIC"], lines["D1"]["OT"], lines["L1"]["BASIC"], lines["L1"]["HRA"]),
+                         ("12000.00", "1000.00", "8000.00", "2000.00"))
+        # The leaver's final slip takes what the cap leaves of the advance: 5,000 less 960 PF and 75 ESI.
+        self.assertEqual((lines["L1"]["ADV"], lines["D1"]["ADV"]), ("3965.00", "2000.00"))
+
+    def test_net_pay_payable_foots_to_the_slips_not_yet_paid(self):
+        unpaid = {number for number, slip in self.m.payslips.items() if not slip["paid"]}
+        self.assertEqual((unpaid, self.m.pay_run["unpaid_net"]), ({"D1"}, "9352.00"))
+        self.assertEqual(-self.bal("2400"), D(self.m.pay_run["unpaid_net"]))
+        self.assertEqual([(row["employee"], row["returned_by"] is not None) for row in self.m.salary_file["rows"]
+                          if row["returned_by"]], [("D1", True)])
+
+    def test_the_advance_ledger_foots_to_the_employee_receivable(self):
+        from apps.hr.models import Employee
+
+        balances = {Employee.objects.get(pk=row["employee"]).employee_number: D(row["balance"])
+                    for row in self.m.advance_rows}
+        self.assertEqual(balances, {"L1": D("2035.00"), "D1": D("2000.00")})
+        self.assertEqual(self.bal("1400"), sum(balances.values()))
+        by_party = {number: sum((line.debit - line.credit for line in JournalLine.objects.filter(
+            account=self.m.acct["1400"], entry__posted=True, party=Employee.objects.get(employee_number=number).party)),
+            D("0")) for number in balances}
+        self.assertEqual(by_party, balances)
+
+    def test_the_ecr_reads_what_was_posted(self):
+        # UAN, name, gross, EPF, EPS, EDLI wages, EPF, EPS, difference, NCP days, refund. M2 is past 58: no EPS.
+        self.assertEqual(self.m.ecr.splitlines(), [
+            "100200300404#~#Bapi Sardar#~#13000#~#12000#~#12000#~#12000#~#1440#~#1000#~#440#~#3#~#0",
+            "100200300403#~#Rina Mondal#~#10000#~#8000#~#8000#~#8000#~#960#~#666#~#294#~#0#~#0",
+            "100200300401#~#Subrata Ghosh#~#25000#~#15000#~#15000#~#15000#~#1800#~#1250#~#550#~#0#~#0",
+            "100200300402#~#Anil Banerjee#~#18000#~#14000#~#0#~#14000#~#1680#~#0#~#1680#~#0#~#0",
+        ])
+
+    def test_the_esi_file_reads_what_was_posted(self):
+        # M1's 25,000 is past the 21,000 coverage: not insured.
+        self.assertEqual(self.m.esi.splitlines()[1:], [
+            "3100200304,Bapi Sardar,24,13000,0,", "3100200303,Rina Mondal,18,10000,0,21/10/2026",
+            "3100200302,Anil Banerjee,27,18000,0,"])
+
+    def test_the_pt_and_lwf_registers_read_what_was_posted(self):
+        self.assertEqual([(row["employee"], row["wages"], row["tax"], row["state"])
+                          for row in self.m.pt_register["rows"]],
+                         [("D1", "13000.00", "110.00", "WB"), ("M1", "25000.00", "130.00", "WB"),
+                          ("M2", "18000.00", "130.00", "WB")])
+        # The leaver's 10,000 is in West Bengal's nil band; October asks no welfare fund.
+        self.assertEqual(self.m.lwf_register["rows"], [])
+
+    def test_payroll_booked_its_cost(self):
+        self.assertEqual((self.bal("6000"), self.bal("6100")), (D("66000.00"), D("7213.00")))
+
     # -- 7. close -------------------------------------------------------------------
 
     def test_the_loom_is_depreciated_for_october_and_the_register_foots(self):
@@ -773,6 +1133,10 @@ class PlantMonthTests(TestCase):
             "4900": D("-1000.00"), "5910": D("0"),  # exchange
             "1900": D("0"),  # suspense
             "1350": D("0"),  # work in progress
+            "2400": D("-9352.00"),  # net pay payable: D1's transfer came back
+            "2410": D("-11760.00"), "2420": D("-1641.00"), "2430": D("-370.00"),  # PF, ESI, PT, due in November
+            "2440": D("0"),  # LWF: West Bengal's is June's and December's
+            "1400": D("4035.00"),  # salary advances still owed
         }
         self.assertEqual({code: self.bal(code) for code in expected}, expected)
 
@@ -817,7 +1181,7 @@ class PlantMonthTests(TestCase):
         self.assertEqual(-D(ap["current"]["total"]), self.bal("2000"))
 
     def test_the_bank_and_its_statement_agree(self):
-        self.assertEqual(self.bal("1200"), D("133300.00"))
+        self.assertEqual(self.bal("1200"), D("79175.00"))
         report = self.m.get("Bookkeeper", f"/api/accounting/bank-statements/{self.m.statement['id']}/reconciliation/")
         self.m.reconciliation = report
         self.assertEqual(D(str(report.get("difference", report.get("unexplained", "0")))), D("0"), report)
@@ -827,9 +1191,10 @@ class PlantMonthTests(TestCase):
         self.assertEqual(totals["d"], totals["c"])
         kinds = lambda *types: sum((balance(a) for a in Account.objects.filter(account_type__in=types)), D("0"))
         profit = -kinds(AccountType.INCOME, AccountType.EXPENSE)
-        self.assertEqual(profit, D("226576.00"))
+        self.assertEqual(profit, D("153363.00"))
         # No capital came in: what the month made is what the balance sheet gained.
         self.assertEqual(kinds(AccountType.ASSET) + kinds(AccountType.LIABILITY, AccountType.EQUITY), profit)
+
 
 
 
