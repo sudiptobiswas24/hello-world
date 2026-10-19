@@ -28,8 +28,12 @@ class RatesAndTcsInTheBrowserTests(BrowserMixin, TdsTestCase, StaticLiveServerTe
         expect(ap.locator("main")).to_contain_text("To confirm")
         expect(ap.get_by_role("button", name="Confirm")).to_have_count(0)
         controller = self.sign_in(self.login_for("Controller"), path, page=self.new_page())
+        # The confirm carries the figures the accountant saw (O233, review F9): pressed before the rate is on the
+        # screen, it was refused. Wait for the rate, press, then for the button to go, which it does only once
+        # the rate reads confirmed; "Confirmed" alone could be met before the answer came back.
+        expect(controller.locator("main")).to_contain_text("To confirm")
         controller.get_by_role("button", name="Confirm").click()
-        expect(controller.locator("main")).to_contain_text("Confirmed")
+        expect(controller.get_by_role("button", name="Confirm")).to_have_count(0)
         pending.refresh_from_db()
         self.assertIsNotNone(pending.confirmed_on)
         self.assertEqual(self.problems, [])
