@@ -187,6 +187,33 @@ logged in once with a user in the Station role, and each operator then
 identifies themselves at the station screen (`/station/<station code>/`)
 with their employee PIN.
 
+### Two-factor sign-in, and a lost phone
+
+Logins that pay money, change where it goes, see pay or keep logins
+(setup_roles `SECOND_FACTOR`: the Controller, AR and AP Managers,
+Bookkeeper, Purchasing Clerk, Payroll Officer, HR Admin, and every
+superuser) sign in with the password and then a code from an
+authenticator app. Any other login may choose it from the user menu.
+
+- First sign-in: the login sets up its phone, typing its password again,
+  and is shown ten recovery codes once. Whoever holds the password first
+  sets the phone up, so hand a new login's first password to its person
+  only, who must change it at that first sign-in.
+- A lost phone: on the Logins screen, Reset second factor, by whoever may
+  set that login's password (a superuser for the Controller). Every
+  session the login has ends, and it sets up a new phone at its next
+  sign-in.
+- The only administrator lost the phone and the recovery codes: on the
+  server, `docker compose exec web python manage.py reset_second_factor
+  <login>`. It is recorded in the login's history.
+- Five wrong codes lock the code step for 15 minutes, and each lock after
+  another, with no right code in between, lasts twice as long (a day at
+  most).
+
+API keys are what the scale bridge and other programs sign in with (see
+deploy/scale_bridge/RUNBOOK.md). Run `python manage.py prune_api_key_uses`
+from the nightly job: it keeps 18 months of what each key did.
+
 ## Email
 
 Invoices, quotations, customer statements, payment reminders, delivery

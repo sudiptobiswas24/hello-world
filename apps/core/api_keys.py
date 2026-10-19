@@ -88,9 +88,17 @@ class ApiKey(AuditModel):
 
 
 class ApiKeyUse(models.Model):
-    """One request a key signed in: kept, so whoever keeps logins sees what an integration did and when."""
+    """
+    One request a key signed in, or one it was refused (`refused` says why;
+    `key` empty for a key that is no key): kept, so whoever keeps logins
+    sees what an integration did and what tried to pass as one. Kept 18
+    months (manage.py prune_api_key_uses).
+    """
 
-    key = models.ForeignKey(ApiKey, on_delete=models.CASCADE, related_name="uses", editable=False)
+    key = models.ForeignKey(ApiKey, null=True, blank=True, on_delete=models.CASCADE, related_name="uses",
+                            editable=False)
+    refused = models.CharField(max_length=120, blank=True, editable=False)
+    prefix = models.CharField(max_length=16, blank=True, editable=False)
     at = models.DateTimeField(default=timezone.now, editable=False)
     method = models.CharField(max_length=8, editable=False)
     path = models.CharField(max_length=255, editable=False)
@@ -198,22 +206,29 @@ class ApiKeyAuthentication(BaseAuthentication):
         parts = get_authorization_header(request).split()
         if not parts or parts[0].lower() != KEYWORD.lower().encode():
             return None
+        token = parts[1].decode(errors="replace") if len(parts) == 2 else ""
+        prefix = token.split("_")[1][:16] if token.count("_") >= 2 else ""
+
+        def refuse(said, key=None):
+            # Every refused attempt is kept too, with what it claimed to be (review).
+            ApiKeyUse.objects.create(key=key, refused=said[:120], prefix=prefix, method=request.method[:8],
+                                     path=request.path[:255], address=client_address(request))
+            raise AuthenticationFailed(said)
+
         if len(parts) != 2:
-            raise AuthenticationFailed("Send the key as: Authorization: Api-Key <key>.")
-        key = (ApiKey.objects.select_related("integration__user")
-               .filter(digest=digest(parts[1].decode(errors="replace"))).first())
+            refuse("Send the key as: Authorization: Api-Key <key>.")
+        key = ApiKey.objects.select_related("integration__user").filter(digest=digest(token)).first()
         if key is None:
-            raise AuthenticationFailed("No such API key.")
+            refuse("No such API key.")
         said = key.refused()
         if said:
-            raise AuthenticationFailed(said)
+            refuse(said, key)
         user = key.integration.user
         if not user.is_active:
-            raise AuthenticationFailed(f"{key.integration} is switched off.")
+            refuse(f"{key.integration} is switched off.", key)
         if required(user):
-            raise AuthenticationFailed(
-                f"{key.integration} holds a right that needs a second factor, which a key alone does not give. "
-                "An integration holds only what it needs.")
+            refuse(f"{key.integration} holds a right that needs a second factor, which a key alone does not give. "
+                   "An integration holds only what it needs.", key)
         now = timezone.now()
         ApiKeyUse.objects.create(key=key, at=now, method=request.method[:8], path=request.path[:255],
                                  address=client_address(request))
