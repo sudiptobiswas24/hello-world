@@ -98,6 +98,8 @@ class OneCallAtATime(SQLiteCursorWrapper):
 
 
 _PLAIN_CURSOR = SQLiteDatabase.create_cursor
+# The browser tests being pickled at this moment (BrowserMixin.__getstate__).
+_PICKLING = set()
 
 
 class InFlight:
@@ -153,14 +155,26 @@ class BrowserMixin:
         # A failed subtest is sent back to the parallel runner with its test
         # attached, and the page and browser context cannot be pickled: the
         # runner died reporting nothing for the whole lane. What can travel does.
-        state = {}
-        for key, value in self.__dict__.items():
-            try:
-                pickle.dumps(value)
-            except Exception:  # noqa: BLE001 - whatever cannot be pickled stays behind
-                continue
-            state[key] = value
-        return state
+        #
+        # What refers back to the test (a bound method kept as an attribute)
+        # would pickle the test again, here, which tried every attribute again:
+        # each level gave up only at the recursion limit, so a failed sweep
+        # subtest hung its worker for good and the lane printed nothing (g22).
+        # Asked again while it is answering, it refuses, and that stays behind.
+        if id(self) in _PICKLING:
+            raise TypeError("a browser test is already being pickled")
+        _PICKLING.add(id(self))
+        try:
+            state = {}
+            for key, value in self.__dict__.items():
+                try:
+                    pickle.dumps(value)
+                except Exception:  # noqa: BLE001 - whatever cannot be pickled stays behind
+                    continue
+                state[key] = value
+            return state
+        finally:
+            _PICKLING.discard(id(self))
 
     @classmethod
     def _databases_support_transactions(cls):

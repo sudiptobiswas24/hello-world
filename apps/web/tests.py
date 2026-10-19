@@ -21,6 +21,7 @@ from apps.core.api import _field_at
 from apps.sales.models import Invoice, InvoiceLine
 from apps.sales.tests_base import SalesTestCase
 from apps.core.tests_second_factor import for_tests, staff_session
+from apps.web.tests_browser import BrowserMixin
 
 PAGE = b'<!doctype html><html><head><script type="module" src="/static/web/assets/app.js"></script></head></html>'
 
@@ -216,6 +217,34 @@ class EveryAddressAScreenAsksForExistsTests(TestCase):
         self.assertEqual(missing, [])
 
 
+class _ABrowserTestThatKeepsItsOwnMethod:
+    """Made a BrowserMixin below, where it is importable for pickling by name."""
+
+    def note(self):
+        pass
+
+
+class AFailedBrowserSubtestTravelsTests(TestCase):
+    """
+    A failed subtest goes back to the parallel runner pickled, its test with it. An attribute that
+    refers back to the test pickled the test again inside its own __getstate__, which tried every
+    attribute again: two such attributes and the worker never answered, and the lane printed nothing.
+    """
+
+    def test_what_refers_back_to_the_test_stays_behind_and_the_rest_travels(self):
+        import pickle
+        import threading
+
+        test = _HeldBrowserTest()
+        test.__dict__.update({"kept": 1, "note_failure": test.note, "also": test.note})
+        travelled = {}
+        thread = threading.Thread(target=lambda: travelled.update(
+            state=sorted(pickle.loads(pickle.dumps(test)).__dict__)), daemon=True)
+        thread.start()
+        thread.join(10)
+        self.assertEqual(travelled.get("state"), ["kept"])
+
+
 class EverySmartButtonNarrowsItsListTests(TestCase):
     """
     A count on a record's header is its list asked with a narrowing; a
@@ -323,3 +352,7 @@ class HasOneFilterTests(SalesTestCase):
             "/api/sales/invoices/", {"credits__isnull": value}).json()]
         self.assertEqual((ids("false"), ids("true")), ([note.pk], [invoice.pk]))
         self.assertEqual(client.get("/api/sales/invoices/", {"credits__isnull": "perhaps"}).status_code, 400)
+
+
+class _HeldBrowserTest(BrowserMixin, _ABrowserTestThatKeepsItsOwnMethod):
+    pass
