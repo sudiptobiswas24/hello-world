@@ -20,6 +20,7 @@ from .rebatch import rebatch
 from .tests_bag_counts import IN, OUT
 from .tests_orders import TODAY
 from .tests_review_qrecall import Base
+from apps.core.tests_second_factor import staff_session
 
 
 class WhoLiftsAHold(Base):
@@ -100,7 +101,7 @@ class WhoLiftsAHold(Base):
         staff = User.objects.create_user("adm", password="x", is_staff=True)
         staff.groups.add(Group.objects.get(name="Quality Inspector"))
         client = Client()
-        client.force_login(staff)
+        staff_session(client, staff)
         with self.captureOnCommitCallbacks(execute=True):
             response = client.post("/admin/quality/inspection/",
                                    {"action": "action_void", "_selected_action": [rejection.pk]}, follow=True)

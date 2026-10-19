@@ -26,6 +26,7 @@ from .tests_backflush import ReworkTestCase
 from .tests_conversion import ConversionTestCase
 from .tests_orders import TODAY, RunTestCase
 from .tests_woven import WovenTestCase
+from apps.core.tests_second_factor import staff_session
 
 
 class ManufacturingApiTests(RunTestCase):
@@ -331,7 +332,7 @@ class APostedDocumentIsVoidedNotDeletedTests(ConversionTestCase):
         document = self.issue(self.job, [(self.virgin, "100")])
         document.post()
         root = get_user_model().objects.create_superuser("root", "root@example.com", "x")
-        self.client.force_login(root)
+        staff_session(self.client, root)
         response = self.client.post("/admin/manufacturing/materialissue/", {
             "action": "delete_selected", "_selected_action": [document.pk], "post": "yes",
         })

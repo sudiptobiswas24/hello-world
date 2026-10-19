@@ -15,6 +15,7 @@ from apps.purchasing.models import Bill, BillLine, PurchaseApprovalPolicy, Purch
 from apps.purchasing.tests_returns_and_landed import ProbeCase
 from apps.purchasing.tests_tds import confirmed_rate
 from apps.sales import tests_guards
+from apps.core.tests_second_factor import staff_session
 
 D = datetime.date
 Z = Decimal
@@ -183,7 +184,7 @@ class ConfirmedPurchaseOrderPathsTests(Who, RolesTestCase, ProbeCase):
         draft = PurchaseOrderLine.objects.create(order=self.order("5", "5", confirm=False), item=self.item,
                                                  uom=self.uom, quantity=Z("1"), unit_price=Z("5"))
         admin = User.objects.create_superuser("root", "r@x.y", "x")
-        self.client.force_login(admin)
+        staff_session(self.client, admin)
         url = "/admin/purchasing/purchaseorderline/"
         self.client.post(url, {"action": "delete_selected", "_selected_action": [draft.pk], "post": "yes"})
         self.assertFalse(PurchaseOrderLine.objects.filter(pk=draft.pk).exists(), "the probe cannot reach the admin")
