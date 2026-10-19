@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "react-router";
 
 import { lastActive, request } from "../api/client";
-import { forgetKeptDraft, keptDraft, RESTORE } from "../forms/useDraft";
+import { forgetKeptDraft, keptDraft, RESTORE, setDraftOwner } from "../forms/useDraft";
 
 export interface SessionTimes {
   /** Signed out after this long with nothing done (apps/core/session_limits.py). */
@@ -59,18 +59,20 @@ export function SessionClock({ times }: { times?: SessionTimes }) {
 }
 
 /** What was typed here when the session ended, offered back after signing in again. */
-export function DraftOffer() {
+export function DraftOffer({ login }: { login: number }) {
+  // Kept and offered for this login only (review F4).
+  setDraftOwner(login);
   // The router's path is under its basename (/app); what was kept is under the browser's own address.
   const location = useLocation();
-  const [kept, setKept] = useState(() => keptDraft(window.location.pathname));
-  useEffect(() => { setKept(keptDraft(window.location.pathname)); }, [location.pathname]);
+  const [kept, setKept] = useState(() => keptDraft(window.location.pathname, login));
+  useEffect(() => { setKept(keptDraft(window.location.pathname, login)); }, [location.pathname, login]);
   if (!kept) return null;
   const at = new Date(kept.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return (
     <div className="session-warning" role="status">
       You were typing here when your session ended, at {at}.
       <button type="button" onClick={() => { window.dispatchEvent(new Event(RESTORE)); setKept(null); }}>Put it back</button>
-      <button type="button" className="quiet" onClick={() => { forgetKeptDraft(window.location.pathname); setKept(null); }}>Discard</button>
+      <button type="button" className="quiet" onClick={() => { forgetKeptDraft(window.location.pathname, login); setKept(null); }}>Discard</button>
     </div>
   );
 }

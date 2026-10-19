@@ -12,26 +12,58 @@ const open = new Set<{ current: boolean }>();
  * What was typed, kept in this browser when the session ended (L12): the
  * page goes to sign in, comes back to the same address, and offers it back
  * (DraftOffer). One entry per draft on the page, in the order they opened.
+ * Kept under the login that typed it, so the next person at the computer is
+ * never offered it; for a day at most; and cleared at sign-out (review F4).
  */
 const KEPT = "erp.kept-draft:";
+const KEPT_FOR_MS = 24 * 60 * 60 * 1000;
 export const RESTORE = "erp:restore-draft";
 interface Typed { unsaved: { current: boolean }; changes: { current: Record<string, unknown> }; apply: (kept: Record<string, unknown>) => void }
 const typed: Typed[] = [];
+let owner: number | null = null;
 
-export function keptDraft(path: string = window.location.pathname): { at: number; drafts: Record<string, unknown>[] } | null {
+/** Who is signed in (the shell says so once it knows): a draft is kept and offered for them only. */
+export function setDraftOwner(login: number | null): void {
+  owner = login;
+}
+
+function keyFor(path: string, login: number | null): string | null {
+  return login === null ? null : `${KEPT}${login}:${path}`;
+}
+
+export function keptDraft(path: string = window.location.pathname, login: number | null = owner,
+  now: number = Date.now()): { at: number; drafts: Record<string, unknown>[] } | null {
+  const key = keyFor(path, login);
+  if (key === null) return null;
   try {
-    const text = window.localStorage.getItem(KEPT + path);
-    return text ? (JSON.parse(text) as { at: number; drafts: Record<string, unknown>[] }) : null;
+    const text = window.localStorage.getItem(key);
+    if (!text) return null;
+    const kept = JSON.parse(text) as { at: number; drafts: Record<string, unknown>[] };
+    if (!(now - kept.at < KEPT_FOR_MS)) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    return kept;
   } catch {
     return null;
   }
 }
 
-export function forgetKeptDraft(path: string = window.location.pathname): void {
+export function forgetKeptDraft(path: string = window.location.pathname, login: number | null = owner): void {
+  const key = keyFor(path, login);
   try {
-    window.localStorage.removeItem(KEPT + path);
+    if (key !== null) window.localStorage.removeItem(key);
   } catch {
     // Storage refused (a private window): nothing was kept to forget.
+  }
+}
+
+/** Every kept draft in this browser, whoever typed it: at sign-out. */
+export function forgetEveryKeptDraft(): void {
+  try {
+    for (const key of Object.keys(window.localStorage)) if (key.startsWith(KEPT)) window.localStorage.removeItem(key);
+  } catch {
+    // Storage refused: nothing was kept.
   }
 }
 
@@ -39,8 +71,10 @@ if (typeof window !== "undefined") {
   window.addEventListener(SIGNING_IN, () => {
     const drafts = typed.map((draft) => (draft.unsaved.current ? draft.changes.current : {}));
     if (!drafts.some((changes) => Object.keys(changes).length > 0)) return;
+    const key = keyFor(window.location.pathname, owner);
+    if (key === null) return; // nobody known to keep it for: the leave guard still asks
     try {
-      window.localStorage.setItem(KEPT + window.location.pathname, JSON.stringify({ at: Date.now(), drafts }));
+      window.localStorage.setItem(key, JSON.stringify({ at: Date.now(), drafts }));
     } catch {
       return; // not kept: the leave guard still asks
     }
