@@ -30,12 +30,19 @@ class IntegrationSerializer(serializers.ModelSerializer):
 class ApiKeySerializer(serializers.ModelSerializer):
     integration_name = serializers.CharField(source="integration.name", read_only=True)
     state = serializers.SerializerMethodField()
+    issuer = serializers.CharField(source="created_by.username", read_only=True, default="")
+    issuer_left = serializers.SerializerMethodField()
 
     class Meta:
         model = ApiKey
         fields = ["id", "integration", "integration_name", "label", "prefix", "created_by", "created_at",
-                  "updated_by", "updated_at", "expires_at", "revoked_at", "revoked_by", "last_used_at", "state"]
+                  "updated_by", "updated_at", "expires_at", "revoked_at", "revoked_by", "last_used_at", "state",
+                  "issuer", "issuer_left", "issuer_left_at", "issuer_could_give"]
         read_only_fields = ["integration", "expires_at"]
+
+    def get_issuer_left(self, key):
+        """Its issuer left or may no longer issue keys: it still works, and is theirs to replace (review F5)."""
+        return key.issuer_left_at is not None
 
     def get_state(self, key):
         return "revoked" if key.revoked_at else "expired" if key.expires_at <= timezone.now() else "active"

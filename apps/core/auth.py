@@ -89,5 +89,10 @@ class LockoutModelBackend(ModelBackend):
             # table grew by every typo and every scan, for ever.
             LoginFailure.objects.filter(at__lt=now - WINDOW).delete()
         else:
+            from .api_keys import Integration
+
+            if Integration.objects.filter(user=user).exists():
+                # An integration signs in with its API key only, never a password (review F5).
+                return None
             LoginFailure.objects.filter(username=name).delete()
         return user

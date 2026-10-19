@@ -162,3 +162,84 @@ class TheScaleBridgePostsWithItsKeyTests(LiveServerTestCase):
         self.assertEqual((reading.scale_code, str(reading.gross_kg), reading.key), ("SC-1", "106.800", "SC-1:1:1:gross:106.8"))
         self.assertEqual(list(ApiKeyUse.objects.values_list("method", "path")),
                          [("POST", "/api/manufacturing/scale-readings/")])
+
+
+class AKeyOutlivesItsIssuerAndTheAdministratorsAreToldTests(KeyCase):
+    """
+    Review F5 (the reviewer's p24, p25, p27, p39), as the integrator decided:
+    a key does not lapse with its issuer, since the plant's weighing must
+    not stop because an administrator left. The remaining administrators
+    get one to-do naming every key that issuer issued, and the list says
+    "issuer left". The integration's login is never given more than the
+    issuer could give when issuing, and takes its key only, never a password.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.root = User.objects.create_superuser("root", password="x-root-pw-2026")
+        self.rootc = self.api(self.root)
+        self.channel = self.integration()
+        self.key = self.issue(self.hrc, self.channel, label="Meta business account").json()["key"]
+
+    def told(self):
+        from .chatter import FollowUp
+
+        return [(row.assigned_to.username, row.object_id, "WhatsApp channel" in row.note)
+                for row in FollowUp.objects.order_by("pk")]
+
+    def test_p24_its_issuer_leaves_the_key_works_and_the_administrators_are_told_once(self):
+        self.assertEqual(self.rootc.post(f"/api/core/users/{self.hr.pk}/deactivate/", {}, format="json").status_code, 200)
+        self.assertEqual(self.keyed(self.key).get(ME).status_code, 200, "the weighing stopped because HR left")
+        self.assertEqual(self.told(), [("root", self.hr.pk, True)])
+        listed = self.rootc.get(KEYS).json()
+        self.assertEqual([(row["issuer"], row["issuer_left"], row["state"]) for row in listed], [("hr", True, "active")])
+        # Told once, not at every door the leaver passes again.
+        self.rootc.post(f"/api/core/users/{self.hr.pk}/reactivate/", {}, format="json")
+        self.rootc.post(f"/api/core/users/{self.hr.pk}/deactivate/", {}, format="json")
+        self.assertEqual(len(self.told()), 1)
+
+    def test_p25_and_when_the_issuer_loses_the_right_to_issue(self):
+        self.assertEqual(self.rootc.post(f"/api/core/users/{self.hr.pk}/revoke/", {"role": "HR Admin"},
+                                         format="json").status_code, 200)
+        self.assertEqual(self.keyed(self.key).get(ME).status_code, 200)
+        self.assertEqual(self.told(), [("root", self.hr.pk, True)])
+
+    def test_p27_its_login_is_given_nothing_the_issuer_could_not_give(self):
+        from django.core.exceptions import ValidationError
+
+        from django.db import transaction
+
+        with self.assertRaisesMessage(ValidationError, "who could not give manufacturing.add_scalereading"):
+            with transaction.atomic():
+                self.channel.user.user_permissions.add(scale_permission())
+        stores = Group.objects.get(name="Stores Manager")
+        refused = self.rootc.post(f"/api/core/users/{self.channel.user.pk}/grant/", {"role": "Stores Manager"},
+                                  format="json")
+        self.assertEqual(refused.status_code, 400, refused.content)
+        self.assertIn("Revoke that key", refused.content.decode())
+        self.assertFalse(self.channel.user.groups.filter(pk=stores.pk).exists())
+        login = User.objects.get(pk=self.channel.user.pk)
+        login.is_superuser = True
+        with self.assertRaisesMessage(ValidationError, "every right"):
+            with transaction.atomic():
+                login.save()
+        # Revoked, the key no longer stands in the way.
+        self.rootc.post(f"{KEYS}{ApiKey.objects.get().pk}/revoke/", {}, format="json")
+        self.channel.user.user_permissions.add(scale_permission())
+
+    def test_p39_an_integration_takes_its_key_only_never_a_password(self):
+        import base64
+
+        given = self.rootc.post(f"/api/core/users/{self.channel.user.pk}/set_password/",
+                                {"password": "Integration-Pw-2026-xq"}, format="json")
+        self.assertEqual(given.status_code, 400)
+        login = self.channel.user
+        login.set_password("Integration-Pw-2026-xq")
+        login.save()
+        basic = APIClient()
+        basic.credentials(HTTP_AUTHORIZATION="Basic " + base64.b64encode(
+            f"{login.username}:Integration-Pw-2026-xq".encode()).decode())
+        self.assertEqual(basic.get(ME).status_code, 403)
+        from django.test import Client
+
+        self.assertFalse(Client().login(username=login.username, password="Integration-Pw-2026-xq"))

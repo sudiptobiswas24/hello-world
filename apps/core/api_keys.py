@@ -64,6 +64,12 @@ class ApiKey(AuditModel):
     revoked_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                                    related_name="+", editable=False)
     last_used_at = models.DateTimeField(null=True, blank=True, editable=False)
+    # What its issuer could give when they issued it ("*": everything, a superuser): the integration's login is
+    # never given more while the key is live (refused_beyond_the_issuers, review F5). None: before it was kept.
+    issuer_could_give = models.JSONField(null=True, blank=True, editable=False)
+    # When its issuer left or lost the right to issue: the key stands (the plant's weighing must not stop), and
+    # the remaining administrators were given a to-do naming it (issuer_out_of_reach).
+    issuer_left_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ["-created_at", "-pk"]
@@ -108,10 +114,75 @@ def issue(integration, by, label="", expires_at=None):
         raise DRFValidationError({"expires_on": ["A key lasts a year at most: issue the next one before it ends."]})
     prefix = secrets.token_hex(4)
     key = f"erp_{prefix}_{secrets.token_urlsafe(32)}"
+    could = None
+    if getattr(by, "pk", None):
+        could = ["*"] if by.is_superuser else sorted(by.get_all_permissions())
     row = ApiKey.objects.create(integration=integration, label=label, prefix=prefix, digest=digest(key),
                                 created_by=by if getattr(by, "pk", None) else None,
-                                updated_by=by if getattr(by, "pk", None) else None, expires_at=expires_at)
+                                updated_by=by if getattr(by, "pk", None) else None, expires_at=expires_at,
+                                issuer_could_give=could)
     return key, row
+
+
+def live_keys(**where):
+    return ApiKey.objects.filter(revoked_at__isnull=True, expires_at__gt=timezone.now(), **where)
+
+
+def refused_beyond_the_issuers(user, rights):
+    """
+    Why `user`, an integration's login, may not be given `rights` (a set of
+    "app.codename"), or None (review F5): whoever issued one of its live
+    keys saw that key, so the login holds nothing they could not give when
+    they issued it. A key does not lapse with its issuer; this is what
+    keeps a credential they saw from reaching past them.
+    """
+    integration = Integration.objects.filter(user_id=user.pk).first()
+    if integration is None:
+        return None
+    for key in live_keys(integration=integration).select_related("created_by"):
+        could = key.issuer_could_give
+        if could is None or "*" in could:
+            continue
+        beyond = ["every right (a superuser's standing)"] if "*" in rights else sorted(set(rights) - set(could))
+        if beyond:
+            return (f"{integration} has a live key {key.created_by or 'someone'} issued ({key.prefix}…), who could not "
+                    f"give {', '.join(beyond)} when they issued it, and saw the key. Revoke that key and have someone "
+                    "who may give it issue the next one first.")
+    return None
+
+
+def issuer_out_of_reach(setter):
+    """
+    `setter` left or lost a right: if it may no longer issue keys, the keys
+    it issued stand (the scale bridge keeps weighing), are marked
+    "issuer left", and every remaining administrator gets one to-do naming
+    them, to replace them or keep them (review F5).
+    """
+    from django.contrib.auth.models import Permission, User
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Q
+
+    from .chatter import FollowUp
+
+    setter = User.objects.get(pk=setter.pk)
+    if setter.is_active and setter.has_perm("core.add_apikey"):
+        return
+    keys = list(live_keys(created_by=setter, issuer_left_at__isnull=True).select_related("integration"))
+    if not keys:
+        return
+    ApiKey.objects.filter(pk__in=[key.pk for key in keys]).update(issuer_left_at=timezone.now())
+    right = Permission.objects.filter(content_type__app_label="core", codename="add_apikey")
+    remaining = (User.objects.filter(is_active=True).exclude(pk=setter.pk)
+                 .filter(Q(is_superuser=True) | Q(groups__permissions__in=right) | Q(user_permissions__in=right))
+                 .distinct().order_by("pk"))
+    named = "; ".join(f"{key.integration} {key.prefix}… ({key.label or 'no label'})" for key in keys)
+    for admin in remaining:
+        FollowUp.objects.create(
+            content_type=ContentType.objects.get_for_model(User), object_id=setter.pk,
+            summary=f"API keys {setter} issued: replace or keep them"[:255],
+            note=(f"{setter} can no longer issue API keys, and saw these when issuing them: {named}. They still "
+                  "work. Issue each integration a new key, put it where the old one is kept, and revoke the old one."),
+            due_on=timezone.localdate(), assigned_to=admin, created_by=None, updated_by=None)
 
 
 class ApiKeyAuthentication(BaseAuthentication):
