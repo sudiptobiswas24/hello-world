@@ -99,3 +99,18 @@ class SetupIndianBooksTests(TestCase):
         self.assertEqual((settings.gstin, settings.state, settings.interstate_position.code), (number, "19", "INTER"))
         self.assertIn("kept as it was: GST settings", run(gstin=gstin("19AABCB9999C1Z")))
         self.assertEqual(GstSettings.objects.get().gstin, number)
+
+
+class TheExampleInItsOwnWordsRunsTests(TestCase):
+    """The command's docstring shows a GSTIN to run it with; that one failed its check character (g22 month)."""
+
+    def test_the_gstin_its_docstring_shows_is_taken(self):
+        import re
+
+        from .management.commands import setup_indian_books
+
+        Company.objects.create(name="Bengal Woven Sacks", base_currency=Currency.objects.create(
+            code="INR", name="Rupee", is_base=True))
+        [shown] = re.findall(r"--gstin (\w{15})", setup_indian_books.__doc__)
+        run(gstin=shown)
+        self.assertEqual(GstSettings.objects.get().gstin, shown)

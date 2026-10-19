@@ -13,7 +13,7 @@ account, a tax, a group, a position or a section whose code is taken is
 left exactly as it is and reported as kept. Run again, it adds only what
 is missing.
 
-    python manage.py setup_indian_books [--gstin 19AAACB1234C1Z5]
+    python manage.py setup_indian_books [--gstin 19AAACB1234C1ZC]
 
 The slabs are those from 22 September 2025 (0, 5, 18 and 40 per cent);
 cess, which varies by good, is not seeded.
