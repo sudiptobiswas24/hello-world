@@ -693,14 +693,15 @@ class PlantMonthTests(TestCase):
         self.assertEqual((self.m.exp_invoice["total"], self.m.exp_invoice["amount_due"]), ("2000.00", "0.00"))
         self.assertEqual((self.bal("4900"), self.bal("5910"), self.bal("2203")), (D("-1000.00"), D("0"), D("0")))
 
-    @expectedFailure
     def test_a_return_credits_an_invoice_that_drew_an_advance(self):
         """
         Register row (this report): 200 kg returned on the delivery whose invoice drew down a 1,00,000.00
         advance. create_return holds the invoices it credits, not the deposits each draws down, which
         Invoice.locked_before_it names; the credit note takes the deposit after the returned stock.
         """
-        self.assertEqual(self.m.findings["a return credits an invoice that drew an advance"], 201)
+        # customer_return answers 200 with the return and its notes (sales/views.py); the note's figures
+        # are test_the_return_is_credited's.
+        self.assertEqual(self.m.findings["a return credits an invoice that drew an advance"], 200)
 
     # -- 5. scrap --------------------------------------------------------------------
 

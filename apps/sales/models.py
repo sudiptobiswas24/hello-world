@@ -41,6 +41,7 @@ from apps.core.models import (
     correction_date,
     answer_to_its_document,
     documents_it_answers_to,
+    hold_with_what_they_draw,
     lock_in_turn,
     lock_rows,
     only_one,
@@ -4902,10 +4903,11 @@ class Delivery(AuditModel):
                 unit_cost=line.unit_cost,
             )
         if credit_invoices:
-            # The invoices it credits before the goods come back: the stock is taken last (O182).
-            lock_rows(*Invoice.objects.filter(posted=True, credits__isnull=True,
-                                              lines__order_line__in=self.lines.values("order_line"))
-                      .distinct().order_by("pk"), refresh=False)
+            # The invoices it credits, and the deposits they drew, before the goods come back: the
+            # stock is taken last (O182).
+            hold_with_what_they_draw(Invoice.objects.filter(posted=True, credits__isnull=True,
+                                                            lines__order_line__in=self.lines.values("order_line"))
+                                     .distinct().order_by("pk"))
         customer_return.post()
         # Credited for what came back on this return, not for everything
         # the delivery carried.

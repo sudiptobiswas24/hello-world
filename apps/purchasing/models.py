@@ -46,6 +46,7 @@ from apps.core.models import (
     answer_to_its_document,
     correction_date,
     documents_it_answers_to,
+    hold_with_what_they_draw,
     refuse_changing_what_moved,
     AuditModel,
     Company,
@@ -8027,11 +8028,11 @@ class GoodsReceipt(AuditModel):
                     quantity_received=part,
                 )
         if debit_bills:
-            # The bills it debits, then their lines the notes give back, before the goods go back:
-            # the stock is taken last (O182).
+            # The bills it debits and the prepayments they drew, then their lines the notes give
+            # back, before the goods go back: the stock is taken last (O182).
             billed = Bill.objects.filter(posted=True, debits__isnull=True,
                                          lines__order_line__in=self.lines.values("order_line")).distinct()
-            lock_rows(*billed.order_by("pk"), refresh=False)
+            hold_with_what_they_draw(billed.order_by("pk"))
             lock_rows(*BillLine.objects.filter(bill__in=billed, order_line__in=self.lines.values("order_line"))
                       .order_by("pk"), refresh=False)
         return_receipt.post()

@@ -156,6 +156,22 @@ def lock_in_turn(rows):
         lock_rows(row, refresh=False)
 
 
+def hold_with_what_they_draw(documents):
+    """
+    Hold `documents`, and the rows of their own model each names in locked_before_it() (the
+    deposits an invoice draws down, the prepayments a bill does), together in key order.
+
+    For a return, which holds the invoices or bills it corrects before the goods come back: each
+    one's note then holds what it draws before it, so that must be held here too. Holding only
+    the documents, a return against an invoice that drew an advance took the advance after the
+    stock (the g22 month). What they draw was made before them, so key order puts it first. Their
+    orders are the caller's, held before this.
+    """
+    documents = list(documents)
+    drawn = [row for document in documents for row in document.locked_before_it() if type(row) is type(document)]
+    lock_rows(*documents, *drawn, refresh=False)
+
+
 def as_it_would_be(instance, incoming):
     """
     A copy of `instance` naming the documents an edit's `incoming` fields

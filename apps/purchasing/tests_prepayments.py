@@ -650,3 +650,21 @@ class AnOrderComesToNoLessThanItsPrepaymentsTests(PrepaymentTestCase):
             order.lines.get().delete()
         order.refresh_from_db()
         self.assertIsNotNone(order.approved_at)
+
+
+class AReturnOnABillThatDrewAPrepaymentTests(PrepaymentTestCase):
+    """
+    A return holds the bills it debits before the goods go back, and each bill's debit note holds
+    the prepayments the bill drew before the bill. Holding only the bills, the return took the
+    prepayment after the stock (the sales mirror found by the g22 month).
+    """
+
+    def test_goods_sent_back_debit_the_bill_and_take_the_prepayment_before_the_stock(self):
+        order = self.make_order("10", "5")
+        self.prepay(order, percent=30)
+        receipt = self.receive(order, "10")
+        order.create_bill(self.payable).post()
+
+        returned = receipt.create_return(quantities={receipt.lines.get(): Decimal("2")})
+
+        self.assertEqual([note.total() for note in returned.debit_notes_created], [Decimal("10")])
