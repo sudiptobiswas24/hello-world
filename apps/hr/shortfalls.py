@@ -135,6 +135,16 @@ class ShortfallSettlement(AuditModel):
 
         if not self.reason.strip():
             raise ValidationError({"reason": "A write-off says why it is given up on."})
+        # Not past what the books still show the person owing on the account: money paid back and posted,
+        # not yet matched as a receipt, is not given up on as well. Asked of the settlements alone, a
+        # write-off of 300.00 stood beside a 300.00 payment, and the receivable read -200.00 (g22 gate).
+        on_the_books = sum((row.debit - row.credit for row in JournalLine.objects.filter(
+            account=line.account, party=self.payslip.employee.party, entry__posted=True)), Decimal("0.00"))
+        if self.amount > on_the_books:
+            raise ValidationError({"amount": (
+                f"{self.payslip.employee} has paid back what is not yet matched to this slip: the books show "
+                f"{max(on_the_books, Decimal('0.00'))} still owed, not {self.amount}. Match the payment as a "
+                "receipt first.")})
         loss = Company.get().bad_debt_account
         if loss is None:
             raise ValidationError("The company has no bad-debt account to write it off to. Set it, then write off.")

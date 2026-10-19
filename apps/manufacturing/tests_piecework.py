@@ -557,6 +557,24 @@ class AFormerEmployeesShortfallIsSettledTests(PieceworkTestCase):
                                                amount=Decimal("100.00"), reason=" ")
         self.assertEqual(self.owed(), Decimal("400.00"))
 
+    def test_money_paid_back_and_not_yet_matched_is_not_written_off_as_well(self):
+        """
+        The g22 gate (pg-b): 300.00 paid back and posted against the receivable, and a write-off of 300.00
+        recorded before the payment was matched as the receipt. The write-off asked only the settlements, so
+        it stood, the receipt was refused, and the weaver's receivable read -200.00 with 100.00 owed back.
+        """
+        from apps.hr.shortfalls import SettlementKind, ShortfallSettlement
+
+        payment = self.paid_back("300.00")
+        with self.assertRaisesMessage(ValidationError, "the books show 100.00 still owed"):
+            ShortfallSettlement.objects.create(payslip=self.slip, kind=SettlementKind.WRITE_OFF,
+                                               amount=Decimal("300.00"), reason="Cannot be traced")
+        ShortfallSettlement.objects.create(payslip=self.slip, kind=SettlementKind.WRITE_OFF,
+                                           amount=Decimal("100.00"), reason="Cannot be traced")
+        ShortfallSettlement.objects.create(payslip=self.slip, kind=SettlementKind.RECEIPT,
+                                           amount=Decimal("300.00"), payment=payment)
+        self.assertEqual((self.owed(), self.balance(self.receivable)), (Decimal("0.00"), Decimal("0.00")))
+
     def test_a_bounced_receipt_is_owed_again_and_the_run_stands_while_a_settlement_does(self):
         from apps.hr.shortfalls import SettlementKind, ShortfallSettlement
 
