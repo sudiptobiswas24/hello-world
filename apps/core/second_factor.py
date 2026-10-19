@@ -56,6 +56,7 @@ from rest_framework.exceptions import AuthenticationFailed
 SESSION_KEY = "_second_factor"
 LOCK_AFTER = 5
 LOCKED_FOR = datetime.timedelta(minutes=15)
+LONGEST_LOCK = datetime.timedelta(hours=24)
 RECOVERY_CODES = 10
 STEP_URL = "/accounts/second-factor/"
 ISSUER = "Deccan Polysacks ERP"
@@ -80,6 +81,8 @@ class SecondFactor(models.Model):
     last_step = models.BigIntegerField(null=True, blank=True)
     failures = models.PositiveSmallIntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
+    # Locks in a row with no right code between them: each is twice the last (lock_for).
+    lockouts = models.PositiveSmallIntegerField(default=0)
 
     def __str__(self):
         return f"{self.user}'s second factor"
@@ -185,6 +188,8 @@ def _code_step(factor, code):
     totp = pyotp.TOTP(factor.secret)
     now = totp.timecode(timezone.now())
     code = "".join(code.split())
+    if not (code.isascii() and code.isdigit()):
+        return None  # digits of another script are no code, and no server error (review F7)
     for step in (now - 1, now, now + 1):
         if hmac.compare_digest(totp.generate_otp(step), code):
             return step
@@ -197,13 +202,25 @@ def _took_step(factor, step):
         Q(last_step__isnull=True) | Q(last_step__lt=step)).update(last_step=step) == 1
 
 
+def lock_for(lockouts):
+    """The n-th lock running: a quarter of an hour, doubled each time, a day at most (review: back off)."""
+    return min(LOCKED_FOR * (2 ** max(0, lockouts - 1)), LONGEST_LOCK)
+
+
 def _failed(factor):
-    """One wrong code; the fifth locks the code step for a while and starts the count again."""
+    """
+    One wrong code; the fifth locks the code step and starts the count
+    again. Each lock that follows another with no code given between them
+    is twice as long, a day at most: five guesses a quarter of an hour was
+    480 a day to whoever held the password.
+    """
     with transaction.atomic():
         SecondFactor.objects.filter(pk=factor.pk).update(failures=F("failures") + 1)
-        factor.refresh_from_db(fields=["failures"])
+        factor.refresh_from_db(fields=["failures", "lockouts"])
         if factor.failures >= LOCK_AFTER:
-            SecondFactor.objects.filter(pk=factor.pk).update(failures=0, locked_until=timezone.now() + LOCKED_FOR)
+            lockouts = factor.lockouts + 1
+            SecondFactor.objects.filter(pk=factor.pk).update(
+                failures=0, lockouts=lockouts, locked_until=timezone.now() + lock_for(lockouts))
 
 
 def locked(factor):
@@ -221,9 +238,10 @@ def check(factor, code):
     if locked(factor):
         return False
     code = (code or "").strip()
-    step = _code_step(factor, code) if code.isdigit() else None
+    digits = code.isascii() and code.isdigit()
+    step = _code_step(factor, code) if digits else None
     ok = step is not None and _took_step(factor, step)
-    if not ok and code and not code.isdigit():
+    if not ok and code and not digits:
         spent = RecoveryCode.objects.filter(factor=factor, digest=digest(code.replace("-", "").upper()),
                                             used_at__isnull=True).update(used_at=timezone.now())
         ok = spent == 1
@@ -232,7 +250,7 @@ def check(factor, code):
             record(factor.user, factor.user, EventKind.ACTION, action="recovery_code",
                    summary=f"Signed in with a recovery code; {left} left")
     if ok:
-        SecondFactor.objects.filter(pk=factor.pk).update(failures=0)
+        SecondFactor.objects.filter(pk=factor.pk).update(failures=0, lockouts=0)
     else:
         _failed(factor)
     return ok
@@ -388,21 +406,21 @@ def step(request):
         context["mode"] = "code"
         if request.method == "POST":
             if locked(factor):
-                context["error"] = "Five wrong codes: the code step is locked for a quarter of an hour."
+                context["error"] = "Five wrong codes: the code step is locked for a while. Try again later."
             elif check(factor, request.POST.get("code", "")):
                 request.session.cycle_key()
                 request.session[SESSION_KEY] = factor.pk
                 return redirect(wanted)
             else:
                 factor.refresh_from_db()
-                context["error"] = ("Five wrong codes: the code step is locked for a quarter of an hour."
+                context["error"] = ("Five wrong codes: the code step is locked for a while. Try again later."
                                     if locked(factor) else "That code did not match. Try the one your app shows now.")
         return render(request, "second_factor.html", context)
     factor, _ = SecondFactor.objects.get_or_create(user=user, defaults={"secret": pyotp.random_base32()})
     context.update(mode="enrol", qr=_qr(factor), secret=factor.secret)
     if request.method == "POST":
         if locked(factor):
-            context["error"] = "Five wrong codes: the code step is locked for a quarter of an hour."
+            context["error"] = "Five wrong codes: the code step is locked for a while. Try again later."
             return render(request, "second_factor.html", context)
         # The password again, in this request (review F2): a session alone, lifted or left open, enrols no phone.
         from django.contrib.auth import authenticate

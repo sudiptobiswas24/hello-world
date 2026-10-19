@@ -51,7 +51,7 @@ class ApiKeySerializer(serializers.ModelSerializer):
 class ApiKeyUseSerializer(serializers.ModelSerializer):
     class Meta:
         model = ApiKeyUse
-        fields = ["id", "key", "at", "method", "path", "address"]
+        fields = ["id", "key", "at", "method", "path", "address", "refused", "prefix"]
 
 
 class IntegrationViewSet(AuditableViewSetMixin, mixins.CreateModelMixin, mixins.UpdateModelMixin,

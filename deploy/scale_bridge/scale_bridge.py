@@ -247,6 +247,13 @@ def poster(config):
         raise ValueError(f"{config['server']} is not https: the bridge's key would cross the network in "
                          "clear. Use the ERP's https address (only localhost may be http).")
     url = config["server"].rstrip("/") + "/api/manufacturing/scale-readings/"
+    # A key file others on the PC can read is a key others hold (review F9): refused, as ssh refuses one.
+    import os
+    import stat
+
+    if os.name == "posix" and stat.S_IMODE(os.stat(config["api_key_file"]).st_mode) & 0o077:
+        raise ValueError(f"{config['api_key_file']} can be read by others on this PC: chmod 600 it, owned by the "
+                         "bridge's account, and start the bridge again.")
     with open(config["api_key_file"], encoding="utf-8") as kept:
         key = kept.read().strip()
 

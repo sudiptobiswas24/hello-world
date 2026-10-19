@@ -96,7 +96,10 @@ class AKeyIsShownOnceAndSignsInItsIntegrationTests(KeyCase):
         refused = self.keyed(later.json()["key"]).get(ME)
         self.assertEqual((refused.status_code, "expired" in refused.json()["detail"]), (403, True))
         self.assertEqual(self.keyed("erp_00000000_not-a-key").get(ME).status_code, 403)
-        self.assertEqual(ApiKeyUse.objects.count(), 0)
+        # Each refused attempt is kept, with what it claimed to be (review).
+        refused = [(use.key_id, use.prefix, use.refused[:12]) for use in ApiKeyUse.objects.order_by("pk")]
+        self.assertEqual(refused, [(row.pk, row.prefix, "This API key"), (later.json()["id"], later.json()["prefix"],
+                                   "This API key"), (None, "00000000", "No such API ")])
 
     def test_every_key_expires_within_a_year(self):
         channel = self.integration()
@@ -151,6 +154,7 @@ class TheScaleBridgePostsWithItsKeyTests(LiveServerTestCase):
         spec.loader.exec_module(program)
         kept = pathlib.Path(self.id().replace(".", "_") + ".key")
         kept.write_text(key + "\n")
+        kept.chmod(0o600)  # the bridge refuses a key file others can read (review F9)
         try:
             send = program.poster({**program.DEFAULTS, "server": self.live_server_url, "api_key_file": str(kept)})
             send({"scale": "SC-1", "gross_kg": "106.8", "stable": True, "key": "SC-1:1:1:gross:106.8"})
@@ -243,3 +247,20 @@ class AKeyOutlivesItsIssuerAndTheAdministratorsAreToldTests(KeyCase):
         from django.test import Client
 
         self.assertFalse(Client().login(username=login.username, password="Integration-Pw-2026-xq"))
+
+
+class WhatAKeyDidIsKeptEighteenMonthsTests(KeyCase):
+    def test_older_uses_are_pruned(self):
+        from io import StringIO
+
+        channel = self.integration()
+        key = self.issue(self.hrc, channel).json()["key"]
+        self.keyed(key).get(ME)
+        self.keyed(key).get(ME)
+        old, new = ApiKeyUse.objects.order_by("pk")
+        ApiKeyUse.objects.filter(pk=old.pk).update(at=timezone.now() - datetime.timedelta(days=549))
+        ApiKeyUse.objects.filter(pk=new.pk).update(at=timezone.now() - datetime.timedelta(days=546))
+        said = StringIO()
+        call_command("prune_api_key_uses", stdout=said)
+        self.assertEqual(list(ApiKeyUse.objects.values_list("pk", flat=True)), [new.pk])
+        self.assertIn("1 API key uses", said.getvalue())

@@ -235,11 +235,33 @@ class ACodeTests(SecondFactorCase):
             web.post(step, {"code": "123456"})
         refused = web.post(step, {"code": self.code(self.factor)})
         self.assertEqual(refused.status_code, 200)
-        self.assertIn("locked for a quarter of an hour", refused.content.decode())
+        self.assertIn("locked for a while", refused.content.decode())
         self.assertEqual(web.get(ME).status_code, 403)
         SecondFactor.objects.filter(pk=self.factor.pk).update(locked_until=timezone.now() - datetime.timedelta(seconds=1))
         self.assertEqual(web.post(step, {"code": self.code(self.factor)}).status_code, 302)
         self.assertEqual(web.get(ME).status_code, 200)
+
+    def test_each_lock_in_a_row_is_twice_the_last_a_day_at_most(self):
+        """The review's unproven back-off: five guesses a quarter of an hour was 480 a day."""
+        web, step = self.password("ctl")
+        lengths = []
+        for _ in range(3):
+            for _ in range(5):
+                web.post(step, {"code": "123456"})
+            factor = SecondFactor.objects.get(pk=self.factor.pk)
+            lengths.append(round((factor.locked_until - timezone.now()).total_seconds() / 60))
+            SecondFactor.objects.filter(pk=self.factor.pk).update(locked_until=timezone.now())
+        self.assertEqual(lengths, [15, 30, 60])
+        self.assertEqual(second_factor.lock_for(12), datetime.timedelta(hours=24))
+        self.assertEqual(web.post(step, {"code": self.code(self.factor)}).status_code, 302)
+        self.assertEqual(SecondFactor.objects.get(pk=self.factor.pk).lockouts, 0, "a right code starts it again")
+
+    def test_digits_of_another_script_are_a_wrong_code_not_a_server_error(self):
+        web, step = self.password("ctl")
+        answer = Client(raise_request_exception=True)
+        answer.post("/accounts/login/", {"username": "ctl", "password": PW})
+        page = answer.post(step, {"code": "\u0663" * 6})
+        self.assertIn("did not match", page.content.decode())
 
     def test_a_code_signs_in_once(self):
         code = self.code(self.factor)
@@ -314,3 +336,27 @@ class ALostPhoneTests(SecondFactorCase):
         self.assertEqual(self.api(hr).post(f"{self.USERS}{stores.pk}/deactivate/", {}, format="json").status_code, 200)
         self.assertFalse(SecondFactor.objects.filter(user=stores).exists())
         self.assertEqual(RecoveryCode.objects.count(), 0)
+
+
+class ASoleAdministratorsWayBackTests(SecondFactorCase):
+    """Review F8: one superuser, phone and recovery codes lost: a command on the server, recorded."""
+
+    def test_the_server_command_resets_it_ends_the_sessions_and_says_so_in_the_history(self):
+        from io import StringIO
+
+        root = User.objects.create_superuser("root", password=PW)
+        factor = SecondFactor.objects.create(user=root, secret=pyotp.random_base32(), confirmed_at=timezone.now())
+        web = Client()
+        for_tests(web, root, sign_in=True)
+        self.assertEqual(web.get(ME).status_code, 200)
+        said = StringIO()
+        call_command("reset_second_factor", "root", stdout=said)
+        self.assertIn("enrols again at its next sign-in", said.getvalue())
+        self.assertFalse(SecondFactor.objects.filter(pk=factor.pk).exists())
+        self.assertEqual(web.get(ME).status_code, 403)
+        event = RecordEvent.objects.get(object_id=root.pk, action="reset_second_factor")
+        self.assertEqual((event.who, "manage.py reset_second_factor" in event.summary), (None, True))
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("reset_second_factor", "root")
