@@ -666,8 +666,19 @@ for _role in ROLES:
 # holds any of these, by any role or on their own, and every superuser. The
 # Controller posts payments, the Payroll Officer sees pay, the HR Admin
 # keeps logins; anyone else given one of these rights needs it too.
+# Every right that pays money or changes where it goes (review F3), with
+# the ones that see pay and keep logins. Migration core 0038 put this list
+# on file first; keep the two in step.
 SECOND_FACTOR = [
     "accounting.post_payment",  # posts a payment
+    "hr.pay_expenseclaim",  # pays an approved expense claim
+    "core.add_partybankaccount",  # where a party's money goes
+    "core.change_partybankaccount",
+    "hr.add_employeepaydetails",  # where a person's pay goes
+    "hr.change_employeepaydetails",
+    "hr.add_salarytransferfile",  # the bank file that pays the run
+    "hr.add_salaryadvance",  # pays an advance out
+    "purchasing.hold_vendor_payments",  # holds or releases a vendor's payments
     "hr.view_payslip",  # sees pay
     "hr.view_employeepaydetails",  # sees pay and bank details
     "auth.change_user",  # keeps logins

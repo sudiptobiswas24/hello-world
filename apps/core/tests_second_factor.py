@@ -18,7 +18,7 @@ import re
 import pyotp
 from django.contrib.auth.models import Group, User
 from django.core.management import call_command
-from django.test import Client, TestCase
+from django.test import Client, TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -85,14 +85,43 @@ class SecondFactorCase(TestCase):
         return pyotp.TOTP(factor.secret).at(timezone.now() + datetime.timedelta(seconds=later))
 
 
+class TheGuardedRightsAreOnFileFromTheFirstMigrateTests(TransactionTestCase):
+    """Review F3, F10: core 0038 puts every guarded right on file, permissions made if missing; reversed, it goes."""
+
+    tags = {"migration"}
+
+    def test_seeded_forward_and_taken_back(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        before, after = [("core", "0037_apikey_apikeyuse_integration_apikey_integration")], [("core", "0038_guarded_rights_seeded")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        state = executor.loader.project_state(before[0]).apps
+        self.assertEqual(state.get_model("core", "GuardedRight").objects.count(), 0)
+        executor = MigrationExecutor(connection)
+        executor.migrate(after)
+        state = executor.loader.project_state(after[0]).apps
+        kept = sorted(f"{row.permission.content_type.app_label}.{row.permission.codename}"
+                      for row in state.get_model("core", "GuardedRight").objects.select_related("permission__content_type"))
+        from .management.commands.setup_roles import SECOND_FACTOR
+
+        self.assertEqual(kept, sorted(SECOND_FACTOR))
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        self.assertEqual(executor.loader.project_state(before[0]).apps.get_model("core", "GuardedRight").objects.count(), 0)
+        MigrationExecutor(connection).migrate(MigrationExecutor(connection).loader.graph.leaf_nodes())
+
+
 class WhoNeedsItTests(SecondFactorCase):
     def test_the_roles_holding_money_pay_or_logins_need_it_and_the_rest_may_choose(self):
+        # Review F3: the Bookkeeper pays expense claims and the Purchasing Clerk keeps vendors' bank accounts.
         needs = {role: second_factor.required(self.person(role.replace(" ", "").lower(), role))
                  for role in ("Controller", "AR Manager", "AP Manager", "Payroll Officer", "HR Admin",
-                              "Stores Manager", "Bookkeeper", "Employee Self Service")}
+                              "Bookkeeper", "Purchasing Clerk", "Stores Manager", "Employee Self Service")}
         self.assertEqual(needs, {"Controller": True, "AR Manager": True, "AP Manager": True, "Payroll Officer": True,
-                                 "HR Admin": True, "Stores Manager": False, "Bookkeeper": False,
-                                 "Employee Self Service": False})
+                                 "HR Admin": True, "Bookkeeper": True, "Purchasing Clerk": True,
+                                 "Stores Manager": False, "Employee Self Service": False})
 
     def test_a_guarded_right_given_on_its_own_needs_it_too(self):
         from django.contrib.auth.models import Permission
