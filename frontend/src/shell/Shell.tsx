@@ -6,6 +6,7 @@ import { MODULES, offered, screenUrl } from "../app/registry";
 import { useAccess } from "../auth/me";
 import { CommandPalette, type Command } from "./CommandPalette";
 import { Icon } from "./Icon";
+import { forgetEveryKeptDraft } from "../forms/useDraft";
 import { DraftOffer, SessionClock } from "./SessionClock";
 
 function useOnline(): boolean {
@@ -113,7 +114,8 @@ export function Shell() {
                 // Optional for this login; once set up, every sign-in asks the code (L12).
                 <a role="menuitem" href="/accounts/second-factor/?next=/app/">Set up two-factor sign-in</a>
               )}
-              <form method="post" action="/accounts/logout/">
+              {/* Signing out leaves nothing typed in this browser for the next person (review F4). */}
+              <form method="post" action="/accounts/logout/" onSubmit={() => forgetEveryKeptDraft()}>
                 <input type="hidden" name="csrfmiddlewaretoken" value={csrfToken()} />
                 <input type="hidden" name="next" value="/accounts/login/?next=/app/" />
                 <button type="submit" role="menuitem">Sign out</button>
@@ -148,7 +150,7 @@ export function Shell() {
         )}
         <main className="content">
           <SessionClock times={me.session} />
-          <DraftOffer />
+          <DraftOffer login={me.id} />
           <Outlet />
         </main>
       </div>
