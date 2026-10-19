@@ -60,7 +60,7 @@ from unittest import expectedFailure
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from django.contrib.auth.models import Group, User
+from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
 from django.db.models import Sum
 from django.test import TestCase
@@ -1199,3 +1199,231 @@ class PlantMonthTests(TestCase):
 
 
 
+
+
+# -- the floor, on its own books ---------------------------------------------------------------------------------
+#
+# The stations' fixtures (apps/manufacturing/tests_station*.py) keep their own company, accounts and stock, on
+# their own day (1 June 2026), so the floor is replayed here on those books rather than the month's. What the
+# fixture puts on the shelf it puts there without a document; the floor's footing is therefore of movements:
+# everything the floor did moved the shelf and the inventory account by the same amount.
+
+from apps.manufacturing.tests_orders import TODAY
+from apps.manufacturing.tests_station import at
+from apps.manufacturing.tests_station_api import StationApiTestCase
+from apps.manufacturing.tests_station_tape import OFF, ON, build_tape_line
+
+
+class PlantFloorTests(StationApiTestCase):
+    """
+    The floor's day, every step through the stations and the screens:
+
+      - the scale bridge posts 106.8 kg with its key, and again: answered once;
+      - the weaver signs in at the loom station with a PIN, puts tape batch T-1, all 100 kg of it, on L-30's warp,
+        and weighs a roll off L-30 from the scale, naming himself as its weaver by his PIN: 104.4 kg net on a 2.4 kg core, 1,006 m declared;
+      - the tape line's operator doffs two batches at TX-1: one in denier, one at 1,085 against 950 to
+        1,050, booked on the supervisor's PIN and held for the Quality Manager, who concedes it;
+      - 5 kg of the line's waste is booked back as regrind;
+      - T-1 is then found at 1,085 denier and rejected: the roll woven from it is held;
+      - the weaver's piece work, 1,006 m at 0.50, is paid in June's run: 503.00;
+      - both runs are closed.
+
+    Model calls (no screen): the fixture's books and stock; loom L-30 of the plant's own; the loom station bridged to scale SC-1; the
+    tape batch T-1 made lot-tracked and stocked; the company's net pay account; the bridge's login; the
+    specification-made inspection plans set advisory, and T-1's mandatory for its rejection.
+    """
+
+    def setUp(self):
+        # The fixture's opening stock on the floor's day, before anything the floor does: stamped by the
+        # wall clock, it would replay after the day's issues and value them from an empty shelf.
+        opening = patch("django.utils.timezone.now", return_value=at(TODAY, 6))
+        opening.start()
+        self.addCleanup(opening.stop)
+        super().setUp()
+        build_tape_line(self, regrind_item=self.regrind, waste_recovered_percent=Decimal(80))
+        call_command("setup_roles", verbosity=0)
+        clock = patch("django.utils.timezone.now", return_value=at(TODAY, 10, 42))
+        clock.start()
+        self.addCleanup(clock.stop)
+        self.people = {}
+        self.items = [self.virgin, self.regrind, self.filler, self.colour, self.fabric, self.tape_item,
+                      self.spec.warp_tape.tape_item]
+        self.shelf_before = sum((item.stock_value_at(self.plant) for item in self.items), D("0"))
+        self.floor()
+
+    def as_(self, role, employee=None):
+        if role not in self.people:
+            user = User.objects.create_user(f"floor-{role.replace(' ', '_').lower()}")
+            user.groups.add(Group.objects.get(name=role))
+            if employee is not None:
+                employee.user = user
+                employee.save()
+            client = APIClient()
+            client.force_authenticate(user)
+            self.people[role] = client
+        return self.people[role]
+
+    def ok(self, response, status=(200, 201)):
+        return Month.ok(self, response, status)
+
+    def at_station(self, station, path, data):
+        return self.ok(self.client.post(f"/api/manufacturing/stations/{station}/{path}", data, format="json"))
+
+    def floor(self):
+        from apps.inventory.models import Item, Lot
+        from apps.manufacturing.station import LoomStation
+        from apps.quality.models import InspectionPlan
+
+        manager = self.as_("Quality Manager", self.employee("EMP-0300", "Asha Sen"))
+        # Advisory plans, as a plant that does not inspect each roll keeps them. A plan computed from a
+        # specification is rebuilt from it and takes no edit over the API: a model call, as the suite's own.
+        InspectionPlan.objects.filter(item__in=(self.fabric, self.tape_item, self.spec.warp_tape.tape_item)).update(
+            is_mandatory=False)
+
+        # The scale bridge (its own login, as deploy/scale_bridge has it).
+        LoomStation.objects.filter(pk=self.station.pk).update(scale_code="SC-1", scale_bridged=True)
+        bridge = APIClient()
+        bridge_user = User.objects.create_user("bridge-sc1")
+        bridge_user.user_permissions.add(Permission.objects.get(codename="add_scalereading"))
+        bridge.force_authenticate(bridge_user)
+        reading = {"scale": "SC-1", "gross_kg": "106.8", "stable": True, "key": "SC-1:1780292520:7:gross:106.8"}
+        self.first_post = bridge.post("/api/manufacturing/scale-readings/", reading, format="json")
+        self.second_post = bridge.post("/api/manufacturing/scale-readings/", reading, format="json")
+
+        # The weaver at the loom station.
+        warp = self.spec.warp_tape.tape_item
+        Item.objects.filter(pk=warp.pk).update(tracking="lot")
+        warp.refresh_from_db()
+        self.t1 = Lot.objects.create(item=warp, code="T-1")
+        self.stock(warp, "100", "120", lot=self.t1)
+        self.shelf_before = sum((item.stock_value_at(self.plant) for item in self.items), D("0"))
+        # A loom of the plant's own (L-17 and L-20 are a contractor's, whose weavers it pays itself).
+        from apps.manufacturing.machines import Machine
+
+        self.station.machines.add(Machine.objects.create(work_centre=self.centre, code="L-30"))
+        self.ok(self.sign_in())
+        self.loaded = self.at_station("LX-1", "load-tape/", {"machine": "L-30", "doff": "T-1", "kg": "100",
+                                                              "side": "warp"})
+        self.weighed = self.ok(self.roll(loom="L-30", gross_kg="", weaver_pin=self.pin))
+
+        # The tape line, given its granules by the supervisor.
+        supervisor = self.as_("Production Supervisor")
+        issue = self.ok(supervisor.post("/api/manufacturing/material-issues/", {
+            "work_order": self.tape_run.pk, "issue_date": str(TODAY), "warehouse": self.plant.pk}, format="json"))
+        for number, (item, quantity) in enumerate(((self.virgin, "110"), (self.filler, "10")), start=1):
+            self.ok(supervisor.post("/api/manufacturing/material-issue-lines/", {
+                "issue": issue["id"], "item": item.pk, "quantity": quantity, "uom": self.kg.pk,
+                "line_number": number}, format="json"))
+        self.ok(supervisor.post(f"/api/manufacturing/material-issues/{issue['id']}/post/"))
+        self.at_station("TX-1", "sign-in/", {"pin": self.pin})
+        self.good_doff = self.at_station("TX-1", "tape/", {"machine": "E-1", "gross_kg": "60.0", "bobbins": 8,
+                                                           "core": "BOB", "denier": ON})
+        self.held_doff = self.at_station("TX-1", "tape/", {
+            "machine": "E-1", "gross_kg": "60.0", "bobbins": 8, "core": "BOB", "denier": OFF,
+            "supervisor_pin": self.supervisor_pin, "reason": "Customer accepts heavy"})
+        self.waste = self.at_station("TX-1", "run-waste/", {"machine": "E-1", "kg": "5"})
+        awaiting = self.ok(manager.get("/api/quality/inspections/awaiting/"))
+        self.awaiting = awaiting
+        held = next(row for row in (awaiting if isinstance(awaiting, list) else awaiting["results"])
+                    if row["number"] == self.held_doff["inspection"])
+        self.decided = self.ok(manager.post(f"/api/quality/inspections/{held['id']}/decide/", {
+            "disposition": "concession", "note": "Heavy tape for the cement order, agreed with the buyer"},
+            format="json"))
+
+        # The recall: T-1 measured after it was woven, and rejected.
+        plan = self.spec.warp_tape.inspection_plan
+        InspectionPlan.objects.filter(pk=plan.pk).update(is_mandatory=True)
+        line = plan.lines.get(derived_from="denier")
+        rejection = self.ok(manager.post("/api/quality/inspections/", {
+            "lot": self.t1.pk, "plan": plan.pk, "inspected_on": str(TODAY)}, format="json"))
+        for number in range(line.sample_size):
+            self.ok(manager.post("/api/quality/readings/", {
+                "inspection": rejection["id"], "plan_line": line.pk, "value": "1085",
+                "sample_reference": f"S{number}"}, format="json"))
+        self.rejection = self.ok(manager.post(f"/api/quality/inspections/{rejection['id']}/post/"))
+        stores = self.as_("Stores Manager")
+        self.fabric_lots = {row["code"]: row for row in self.ok(stores.get("/api/inventory/lots/",
+                                                                             {"item": self.fabric.pk}))}
+
+        # Piece work, paid in June's run.
+        from apps.accounting.models import Account, AccountType
+
+        wages = Account.objects.create(code="6000", name="Wages", account_type=AccountType.EXPENSE)
+        self.net_pay = Account.objects.create(code="2400", name="Net pay payable", account_type=AccountType.LIABILITY)
+        Company.objects.update(net_pay_account=self.net_pay)
+        officer = self.as_("Payroll Officer")
+        piece = self.ok(officer.post("/api/hr/pay-components/", {
+            "code": "PIECE", "name": "Metres woven", "kind": "earning", "basis": "per_unit",
+            "measure": "metres_woven", "expense_account": wages.pk, "sequence": 10}, format="json"))
+        self.ok(officer.post("/api/hr/compensation/", {"employee": self.operator.pk, "component": piece["id"],
+                                                       "amount": "0.50", "effective_from": "2026-04-01"},
+                             format="json"))
+        run = self.ok(officer.post("/api/hr/pay-runs/", {"period_start": "2026-06-01", "period_end": "2026-06-30",
+                                                         "pay_date": "2026-06-30", "name": "June"}, format="json"))
+        self.ok(officer.post(f"/api/hr/pay-runs/{run['id']}/calculate/", {"employees": [self.operator.pk]},
+                             format="json"))
+        self.ok(self.as_("Controller").post(f"/api/hr/pay-runs/{run['id']}/post/"))
+        [self.piece_slip] = self.ok(officer.get("/api/hr/payslips/", {"run": run["id"]}))
+
+        # The runs closed.
+        self.closed = [self.ok(supervisor.post(f"/api/manufacturing/work-orders/{order.pk}/close/",
+                                               {"date": str(TODAY)}, format="json"))
+                       for order in (self.run, self.tape_run)]
+
+
+    def bal(self, account):
+        return balance(account)
+
+    def test_the_bridge_posts_a_reading_once_whatever_it_resends(self):
+        first, second = self.first_post.json(), self.second_post.json()
+        self.assertEqual((self.first_post.status_code, self.second_post.status_code, first["id"]),
+                         (201, 200, second["id"]))
+        self.assertEqual(D(second["gross_kg"]), D("106.8"))
+
+    def test_the_roll_is_weighed_from_the_scale_and_credited_to_its_weaver(self):
+        roll = self.weighed
+        self.assertEqual((roll["source"], roll["net_kg"], roll["metres_from_weight"], roll["variance_percent"],
+                          roll["is_exception"], roll["woven_by"]["number"]),
+                         ("scale", "104.400", "1000.00", "0.60", False, "EMP-0142"))
+
+    def test_the_off_denier_batch_was_held_for_the_quality_manager_and_decided(self):
+        self.assertIsNone(self.good_doff["held"])
+        self.assertEqual((self.good_doff["net_kg"], self.good_doff["mean_denier"]), ("56.000", "1001.67"))
+        self.assertIn("The batch is HELD", self.held_doff["held"])
+        self.assertEqual((self.held_doff["mean_denier"], self.decided["disposition"]), ("1085.00", "concession"))
+        from apps.hr.models import Employee
+
+        # The decider is the person the Quality Manager's login is (a party), not the login.
+        self.assertEqual(self.decided["decided_by"], Employee.objects.get(employee_number="EMP-0300").party_id)
+
+    def test_the_recall_holds_the_cloth_woven_from_the_rejected_tape(self):
+        self.assertEqual((self.rejection["result"], self.rejection["disposition"]), ("fail", "reject"))
+        [(code, lot)] = self.fabric_lots.items()
+        self.assertEqual(code, self.weighed["code"])
+        self.assertIn("made from TAPE-FOR-F-60 / T-1, rejected", lot["held_because"])
+
+    def test_the_weavers_piece_work_is_paid_in_the_run(self):
+        [line] = self.piece_slip["lines"]
+        self.assertEqual((line["component"], line["quantity"], line["rate"], line["amount"]),
+                         ("PIECE", "1006.0000", "0.5000", "503.00"))
+        self.assertEqual((self.piece_slip["net"], self.bal(self.net_pay)), ("503.00", D("-503.00")))
+
+    def test_the_runs_close_with_nothing_in_work_in_progress(self):
+        self.assertEqual([row["status"] for row in self.closed], ["closed", "closed"])
+        self.assertEqual(self.bal(self.wip), D("0"))
+
+    def test_regrind_and_cloth_go_on_the_shelf_at_their_cost(self):
+        self.assertEqual((self.regrind.on_hand_at(self.plant), self.regrind.stock_value_at(self.plant)),
+                         (D("505"), D("30300.00")))  # 500 at 60.00 opening, 5 back at 60.00
+        self.assertEqual(self.fabric.stock_value_at(self.plant), D("12783.67"))
+        self.assertEqual(self.bal(self.scrap), D("0"))
+
+    @expectedFailure
+    def test_the_shelf_moves_with_the_inventory_account(self):
+        """
+        Register row (this report): two doffs of 56 kg at the run's planned 95.83505100 a kilo are each
+        5,366.762856. ProductionEntry.post books each rounded, 5,366.76; the movements keep the unrounded
+        value, which the shelf sums to 10,733.53. The ledger holds 10,733.52.
+        """
+        moved = sum((item.stock_value_at(self.plant) for item in self.items), D("0")) - self.shelf_before
+        self.assertEqual(self.bal(self.inventory), moved)
