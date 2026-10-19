@@ -710,7 +710,6 @@ class PlantMonthTests(TestCase):
         self.assertEqual((self.m.scrap_invoice["total"], self.m.scrap_invoice["amount_due"]), ("24072.00", "0.00"))
         self.assertEqual((self.m.tcs_challan["amount"], self.bal("2260")), ("472.00", D("0")))
 
-    @expectedFailure
     def test_sweepings_counted_in_keep_the_cost_they_were_given(self):
         """
         Register row (this report): 500 kg of sweepings, never stocked, counted in at 30.00. The line's

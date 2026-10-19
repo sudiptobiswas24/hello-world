@@ -15,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover - the base class skips, saying why
     expect = None
 
-from apps.inventory.models import StockCount
+from apps.inventory.models import StockAdjustment, StockCount
 from apps.inventory.tests_adjustments import AdjustmentTestCase
 
 from .tests_browser import BrowserMixin
@@ -55,6 +55,34 @@ class StoresInTheBrowserTests(BrowserMixin, AdjustmentTestCase, StaticLiveServer
         self.assertTrue(count.posted)
         self.assertEqual(self.item.on_hand_at(self.warehouse), Decimal("96"))
         self.assertEqual(self.balance(self.shrinkage), Decimal("20.00"))
+        self.assertEqual(self.problems, [])
+
+    def test_the_manager_counts_in_something_never_stocked_at_the_cost_given(self):
+        # The g22 month: 500 found with no cost on the books, at 30.00 each, 15,000.00 on the shelf.
+        page = self.sign_in(self.person("Stores Manager"), "/app/stores/adjustments/new")
+        page.get_by_label("Date").fill("2026-03-01")
+        page.get_by_label("Warehouse").select_option(label="Main")
+        page.get_by_label("Reason").select_option(label="Found on shelf")
+        page.get_by_role("button", name="Create").click()
+        page.wait_for_url(re.compile(r"/stores/adjustments/\d+$"))
+        adjustment = StockAdjustment.objects.get()
+
+        page.get_by_role("button", name="Add a line").click()
+        form = page.get_by_role("form", name="Add a line")
+        form.get_by_role("combobox", name="Item").fill("Widget")
+        page.get_by_role("option", name=re.compile("Widget")).click()
+        form.get_by_label("Quantity").fill("500")
+        form.get_by_label("Cost each").fill("30.00")
+        form.get_by_role("button", name="Add a line").click()
+        expect(form).to_have_count(0)
+        self.assertEqual(adjustment.lines.get().unit_cost, Decimal("30.0000"))
+
+        page.get_by_role("button", name="Post", exact=True).click()
+        expect(page.get_by_role("button", name="Post", exact=True)).to_have_count(0)
+        adjustment.refresh_from_db()
+        self.assertTrue(adjustment.posted)
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("15000.00"))
+        self.assertEqual(self.balance(self.gain), Decimal("-15000.00"))
         self.assertEqual(self.problems, [])
 
 

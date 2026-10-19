@@ -49,11 +49,13 @@ export default function AdjustmentForm() {
           fields: [
             { key: "item", label: "Item", kind: "pick", pick: ITEM },
             { key: "quantity", label: "Quantity", kind: "decimal", negative: true, hint: "Less than nothing to write off" },
+            { key: "unit_cost", label: "Cost each", kind: "money",
+              hint: "Blank takes the average; give it for something with no cost on the books yet" },
             { key: "lot", label: "Batch", kind: "pick", pick: LOT },
             { key: "notes", label: "Notes", kind: "text" },
           ],
           body: (values, record) => ({ adjustment: record.id, item: values.item, quantity: values.quantity,
-            lot: values.lot, notes: values.notes }) },
+            unit_cost: values.unit_cost || null, lot: values.lot, notes: values.notes }) },
         remover: { permission: "inventory.delete_stockadjustmentline", when: draft,
           url: (row) => `/api/inventory/stock-adjustment-lines/${row.id}/` },
       }]}

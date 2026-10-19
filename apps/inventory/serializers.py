@@ -205,7 +205,9 @@ class StockAdjustmentLineSerializer(serializers.ModelSerializer):
             "id", "adjustment", "item", "uom", "lot", "bin", "quantity",
             "revaluation", "unit_cost", "notes", "item_label", "lot_code",
         ]
-        read_only_fields = ["unit_cost"]
+        # unit_cost is given, not only read: a gain of something with no cost to take from (sweepings
+        # never stocked, a found pallet) posts at the cost the line gives (the g22 month). Blank, the
+        # line takes the average when it posts; a write-down given another cost is refused there.
 
 
 class StockAdjustmentSerializer(serializers.ModelSerializer):

@@ -500,7 +500,7 @@ class StockAdjustmentLine(AuditModel):
                 if quantity > 0 and not self.unit_cost:
                     raise ValidationError(
                         f"There is no {item} at {adjustment.warehouse} to take a cost from. "
-                        "Give the line an explicit unit cost."
+                        "Give the line an explicit unit cost (Cost each, on the adjustment's line)."
                     )
             self.posted_value = quantity * self.unit_cost
         on_hand = item.on_hand_at(adjustment.warehouse)

@@ -643,3 +643,47 @@ class ALineAnswersToBothAdjustmentsTests(AdjustmentTestCase):
         own = draft.lines.get()
         self.assertEqual(self.api.patch(f"/api/inventory/stock-adjustment-lines/{own.pk}/", {"quantity": "-2"},
                                         format="json").status_code, 200)
+
+
+class SomethingNeverStockedIsCountedInAtTheCostGivenTests(AdjustmentTestCase):
+    """
+    500 of something never stocked (the g22 month's floor sweepings), found and counted in at 30.00
+    by the Stores Manager over the API. The line's cost was read-only there, so the line came back
+    with none, and posting asked for the cost nothing could give it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        manager = User.objects.create_user("stores")
+        manager.groups.add(Group.objects.get(name="Stores Manager"))
+        self.api = APIClient()
+        self.api.force_authenticate(manager)
+        self.found_in = StockAdjustment.objects.create(
+            adjustment_date=datetime.date(2026, 3, 1), warehouse=self.warehouse, reason=self.found)
+
+    def counted_in(self, **cost):
+        made = self.api.post("/api/inventory/stock-adjustment-lines/", {
+            "adjustment": self.found_in.pk, "item": self.item.pk, "uom": self.each.pk, "quantity": "500",
+            **cost}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        return made.json(), self.api.post(f"/api/inventory/stock-adjustments/{self.found_in.pk}/post/", {},
+                                          format="json")
+
+    def test_it_comes_on_the_books_at_the_cost_it_was_given(self):
+        line, posted = self.counted_in(unit_cost="30.00")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        self.assertEqual((line["unit_cost"], posted.json()["total_value"]), ("30.0000", "15000.00"))
+        self.assertEqual((self.balance(self.inventory), self.balance(self.gain)),
+                         (Decimal("15000.00"), Decimal("-15000.00")))
+        self.assertEqual(self.item.stock_value_at(self.warehouse), Decimal("15000.00"))
+
+    def test_with_no_cost_given_posting_asks_for_the_one_the_line_takes(self):
+        _line, posted = self.counted_in()
+        self.assertEqual(posted.status_code, 400, posted.content)
+        self.assertIn("Give the line an explicit unit cost", str(posted.content))
+        self.assertEqual(self.balance(self.inventory), Decimal("0"))
