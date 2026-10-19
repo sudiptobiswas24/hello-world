@@ -9,6 +9,8 @@ export interface SessionTimes {
   idle_seconds: number;
   /** And in any case this long after /api/core/me/ was read. */
   ends_in_seconds: number;
+  /** What is left of the idle time as the server counts it. */
+  idle_left_seconds?: number;
 }
 
 function warnBefore(idle: number): number {
@@ -28,13 +30,29 @@ function inWords(seconds: number): string {
 export function SessionClock({ times }: { times?: SessionTimes }) {
   const [now, setNow] = useState(Date.now());
   const [read] = useState(Date.now());
+  // When the server last saw the person, from any tab: asked with check, so asking keeps nothing open (review F6).
+  const [serverSeen, setServerSeen] = useState(0);
   useEffect(() => {
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(tick);
   }, []);
+  const idle = times?.idle_seconds ?? 0;
+  const seen = Math.max(lastActive(), serverSeen);
+  const nearing = !!times && idle - (now - seen) / 1000 <= warnBefore(idle) + 1;
+  useEffect(() => {
+    if (!nearing) return;
+    let gone = false;
+    request<{ session?: SessionTimes }>("/api/core/me/", { check: true })
+      .then(({ data }) => {
+        const left = data.session?.idle_left_seconds;
+        if (!gone && left !== undefined) setServerSeen(Date.now() - (idle - left) * 1000);
+      })
+      .catch(() => undefined);
+    return () => { gone = true; };
+  }, [nearing, idle]);
   if (!times) return null;
   const warn = warnBefore(times.idle_seconds);
-  const idleLeft = times.idle_seconds - (now - lastActive()) / 1000;
+  const idleLeft = times.idle_seconds - (now - seen) / 1000;
   const endLeft = times.ends_in_seconds - (now - read) / 1000;
   if (endLeft <= warn && endLeft < idleLeft) {
     return (

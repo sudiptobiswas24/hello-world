@@ -344,7 +344,8 @@ class SessionProbes(Probe):
         with self.stub(clock):
             for second in range(1, 400):
                 clock.now += 1
-                answer = web.get("/api/manufacturing/stations/SC-1/scale/")
+                # As the page now asks (review F6): with the header that says it is a poll.
+                answer = web.get("/api/manufacturing/stations/SC-1/scale/", HTTP_X_SESSION_CHECK="1")
                 if answer.status_code in (401, 403) and answer.headers.get("X-Session-Ended"):
                     ended = second
                     break
