@@ -272,7 +272,8 @@ class TwoFactorProbes(Probe):
         self.assertEqual(page.status_code, 200)
         code = pyotp.TOTP(page.context["secret"]).now()
         stranger.post(second_factor.STEP_URL, {"code": code})
-        self.assertTrue(second_factor.confirmed(User.objects.get(pk=sm.pk)))
+        # Review F2 fixed: the code alone, with no password, enrols nothing (this line asserted the takeover).
+        self.assertFalse(second_factor.confirmed(User.objects.get(pk=sm.pk)))
         owner, step = self.password("sm")
         # The owner now meets a code step for a phone they never enrolled. This documents the takeover: the
         # claim "enrolling an optional factor asks for the password again" fails when the owner is locked out.

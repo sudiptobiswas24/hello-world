@@ -100,11 +100,13 @@ class ScreenProbes(BrowserTestCase):
         shot(page, "01_enrol")
         # A wrong code at enrolment is refused and counted
         page.fill("#id_code", "000000")
+        page.fill("#id_password", PASSWORD)
         page.get_by_role("button", name="Confirm").click()
         expect(page.locator(".error")).to_be_visible()
         shot(page, "01b_enrol_wrong")
         totp = pyotp.TOTP(page.locator("#secret").inner_text())
         page.fill("#id_code", totp.now())
+        page.fill("#id_password", PASSWORD)
         page.get_by_role("button", name="Confirm").click()
         expect(page.locator("#recovery-codes li")).to_have_count(10)
         shot(page, "02_recovery_codes")

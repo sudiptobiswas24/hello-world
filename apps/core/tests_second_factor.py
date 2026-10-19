@@ -150,7 +150,7 @@ class EnrolmentTests(SecondFactorCase):
         page = web.get(step).content.decode()
         secret = re.search(r'<code id="secret">([A-Z2-7]+)</code>', page).group(1)
         self.assertIn("<svg", page)
-        done = web.post(step, {"code": pyotp.TOTP(secret).now()})
+        done = web.post(step, {"code": pyotp.TOTP(secret).now(), "password": PW})
         self.assertEqual(done.status_code, 200)
         return secret, re.findall(r"<li>([A-Z2-9]{5}-[A-Z2-9]{5})</li>", done.content.decode())
 
@@ -158,7 +158,7 @@ class EnrolmentTests(SecondFactorCase):
         officer = self.person("pay", "Payroll Officer")
         web, step = self.password("pay")
         self.assertEqual(web.get(ME).status_code, 403)
-        wrong = web.post(step, {"code": "000000"})
+        wrong = web.post(step, {"code": "000000", "password": PW})
         self.assertIn("did not match", wrong.content.decode())
         secret, codes = self.enrol(web, step)
         self.assertEqual(len(set(codes)), 10)
@@ -170,6 +170,20 @@ class EnrolmentTests(SecondFactorCase):
         # A second sign-in asks the code, not the enrolment.
         second, step = self.password("pay")
         self.assertNotIn('id="secret"', second.get(step).content.decode())
+
+    def test_a_session_alone_enrols_no_phone_the_password_is_asked_again(self):
+        """Review F2 (p13): a password-only session of an optional login, a cookie lifted at a shared PC."""
+        stores = self.person("stores", "Stores Manager")
+        lifted = Client()
+        lifted.force_login(stores)
+        page = lifted.get("/accounts/second-factor/")
+        secret = re.search(r'<code id="secret">([A-Z2-7]+)</code>', page.content.decode()).group(1)
+        for password in ("", "not-the-password"):
+            refused = lifted.post("/accounts/second-factor/", {"code": pyotp.TOTP(secret).now(), "password": password})
+            self.assertIn("Type the password you signed in with", refused.content.decode())
+        self.assertIsNone(second_factor.confirmed(stores))
+        _, landed = self.password("stores")
+        self.assertEqual(landed, "/app/", "the owner was asked for a code from a phone that is not theirs")
 
     def test_a_stores_manager_may_choose_it_and_then_needs_it(self):
         self.person("stores", "Stores Manager")
@@ -238,8 +252,9 @@ class ALostPhoneTests(SecondFactorCase):
         self.assertEqual(reset.status_code, 200, reset.content)
         self.assertEqual(reset.json()["second_factor"], False)
         self.assertTrue(RecordEvent.objects.filter(object_id=other.pk, action="reset_second_factor", who=hr).exists())
-        # The session the old factor passed is nobody's now, and the next sign-in enrols again.
+        # Every session the login had is ended (review F2), and the next sign-in enrols again.
         self.assertEqual(web.get(ME).status_code, 403)
+        self.assertTrue(web.get("/accounts/second-factor/")["Location"].startswith("/accounts/login/"))
         self.assertEqual(self.api(hr).post(f"{self.USERS}{other.pk}/reset_second_factor/", {}, format="json")
                          .status_code, 400)
         again, step = self.password("hr2")
