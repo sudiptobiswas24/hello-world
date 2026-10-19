@@ -162,10 +162,15 @@ built.
        ledger, every derived balance foots to its account, and the
        statutory files read what was posted. Run it on PostgreSQL and in
        Asia/Kolkata. Each failure is a register row.
-     - A second read-only audit per module (Sonnet, probes, the audit
-       skill) runs against the fixed tree. The first round found 40
-       defects with a green suite.
-   - **g23, stores and purchasing for a polymer buyer:**
+   - **g23: the second read-only audit per module, then its fixes.**
+     Brief docs/handoff/g23_audit.md, on the pushed g22 tip, six lanes two
+     at a time (floor and stores; money and trade; people and core),
+     Sonnet, probes only. The first round found over forty defects with a
+     green suite, and nobody has read a whole module since. Every finding
+     is a register row the day it is seen; the fixes follow by module, each
+     reviewed, as g22's were. Depth waits for it: building on a module the
+     audit has not read builds on its defects.
+   - **g24, stores and purchasing for a polymer buyer:**
      - L16 polymer against price circulars;
      - L17 weighbridge, gross, tare and net on receipts and dispatches;
      - L18 gate register and returnable gate passes;
@@ -174,13 +179,13 @@ built.
        incoming plan;
      - L21 import purchases;
      - L9 scanning in stores.
-   - **g24, the floor and quality:**
-     - L25 machine counters read automatically, and O225 the scale
-       program;
+   - **g25, the floor and quality:**
+     - L25 machine counters read automatically, beside the scale
+       bridge g22 built (deploy/scale_bridge);
      - L27 a BOM from what a run used, and runs split and merged;
      - L11 step instructions and photo checks;
      - L29 BIS test plans and ISI marking records.
-   - **g25, sales and the books:**
+   - **g26, sales and the books:**
      - L19 post-dated cheques;
      - L20 export papers;
      - L22 billing policy per item;
