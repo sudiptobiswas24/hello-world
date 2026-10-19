@@ -112,6 +112,11 @@ def issue_password(actor, user, password, as_confirmer=False):
     with a role's confirm.
     """
     check_may_know(actor, user)
+    from .api_keys import Integration
+
+    if Integration.objects.filter(user=user).exists():
+        raise DRFValidationError({"password": [f"{user.get_username()} is an integration's login: it signs in with "
+                                               "its API key only, never a password."]})
     try:
         password_validation.validate_password(password, user)
     except DjangoValidationError as refused:

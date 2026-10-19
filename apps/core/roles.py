@@ -40,7 +40,7 @@ from django.contrib.auth.models import Group, Permission, User
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import Q
-from django.db.models.signals import m2m_changed, post_save
+from django.db.models.signals import m2m_changed, post_save, pre_save
 from django.dispatch import receiver
 from django.utils import timezone
 
@@ -238,6 +238,12 @@ def give_or_propose(actor, user, group):
     """
     if actor.pk == user.pk:
         raise ValidationError("Roles on your own login are someone else's to give.")
+    from .api_keys import refused_beyond_the_issuers
+
+    # Said before anything is written; the m2m receiver below is the floor for every other door (review F5).
+    beyond = refused_beyond_the_issuers(user, _rights_of(groups=[group]))
+    if beyond:
+        raise ValidationError(beyond)
     if acts_as(user, actor):
         raise ValidationError(f"{user} made your login or set your password or email, and so signs in as you: what "
                               f"you give or propose for {user} would be {user}'s own doing. Someone else does it.")
@@ -431,6 +437,10 @@ def lapse_with_the_setter(setter):
         kept.set_by = setter
         if kept.in_force(kept.user) and not _reached(kept, kept.user):
             _lapse(kept, kept.user)
+    # The API keys it issued do not lapse: the administrators are told (api_keys.issuer_out_of_reach, review F5).
+    from .api_keys import issuer_out_of_reach
+
+    issuer_out_of_reach(setter)
 
 
 def must_set_own_password(user):
@@ -504,6 +514,48 @@ def credentials_in_words(proposal):
     return said
 
 
+def _rights_of(groups=(), permissions=()):
+    rows = Permission.objects.filter(Q(group__in=groups) | Q(pk__in=permissions)).select_related("content_type")
+    return {f"{row.content_type.app_label}.{row.codename}" for row in rows}
+
+
+@receiver(m2m_changed, sender=User.groups.through)
+@receiver(m2m_changed, sender=User.user_permissions.through)
+@receiver(m2m_changed, sender=Group.permissions.through)
+def _no_integration_given_past_its_keys_issuers(sender, instance, action, reverse, pk_set, **kwargs):
+    """An integration's login is given nothing its live keys' issuers could not give (api_keys, review F5)."""
+    from .api_keys import Integration, refused_beyond_the_issuers
+
+    if action != "pre_add" or not pk_set:
+        return
+    if sender is Group.permissions.through:
+        groups = list(Group.objects.filter(pk__in=pk_set)) if reverse else [instance]
+        perms = set(pk_set) if not reverse else {instance.pk}
+        logins = User.objects.filter(groups__in=groups, pk__in=Integration.objects.values("user")).distinct()
+        rights = _rights_of(permissions=perms)
+    elif reverse:
+        logins = User.objects.filter(pk__in=pk_set).filter(pk__in=Integration.objects.values("user"))
+        rights = (_rights_of(groups=[instance]) if sender is User.groups.through else _rights_of(permissions=[instance.pk]))
+    else:
+        logins = [instance]
+        rights = (_rights_of(groups=pk_set) if sender is User.groups.through else _rights_of(permissions=pk_set))
+    for login in logins:
+        said = refused_beyond_the_issuers(login, rights)
+        if said:
+            raise ValidationError(said)
+
+
+@receiver(pre_save, sender=User)
+def _no_integration_made_a_superuser_past_its_keys_issuers(sender, instance, **kwargs):
+    """A superuser's standing is every right: refused for an integration whose live key an issuer saw (review F5)."""
+    from .api_keys import refused_beyond_the_issuers
+
+    if instance.pk and instance.is_superuser and User.objects.filter(pk=instance.pk, is_superuser=False).exists():
+        said = refused_beyond_the_issuers(instance, {"*"})
+        if said:
+            raise ValidationError(said)
+
+
 @receiver(m2m_changed, sender=User.groups.through)
 @receiver(m2m_changed, sender=User.user_permissions.through)
 def _a_login_gaining_or_losing_a_right(sender, instance, action, reverse, pk_set, **kwargs):
@@ -528,7 +580,10 @@ def _a_role_widened_or_narrowed(sender, instance, action, reverse, pk_set, **kwa
         for user in holders.filter(kept_credentials__lapsed=False).distinct():
             lapse_on_giving(user)
     else:
-        for user in holders.filter(pk__in=KeptCredential.objects.filter(lapsed=False).values("set_by")):
+        from .api_keys import live_keys
+
+        for user in holders.filter(Q(pk__in=KeptCredential.objects.filter(lapsed=False).values("set_by"))
+                                   | Q(pk__in=live_keys().values("created_by"))).distinct():
             lapse_with_the_setter(user)
 
 

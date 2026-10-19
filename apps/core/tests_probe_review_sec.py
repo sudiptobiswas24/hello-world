@@ -445,37 +445,9 @@ class KeyProbes(Probe):
         refused = self.rootc.post(f"/api/core/integrations/{iid}/issue_key/", {}, format="json")
         self.assertEqual(refused.status_code, 400)
 
-    def test_p24_a_key_does_not_outlive_the_person_who_saw_it(self):
-        # Passwords a keeper sets lapse when the keeper leaves or is demoted (roles.lapse_with_the_setter).
-        # An issuer saw the key, so the key is the same kind of fact.
-        hr = self.person("hr", "HR Admin")
-        iid, login = self.integration(perm=None)
-        # HR Admin holds nothing the integration holds, so it can issue a key for a login that has no rights
-        key, _ = self.key_for(self.api(hr), iid)
-        self.assertEqual(self.with_key(key).get(ME).status_code, 200)
-        self.assertEqual(self.rootc.post(f"{USERS}{hr.pk}/deactivate/", {}, format="json").status_code, 200)
-        self.assertIn(self.with_key(key).get(ME).status_code, (401, 403),
-                      "a key issued by a leaver still signs in")
-
-    def test_p25_a_key_does_not_outlive_the_demotion_of_the_issuer(self):
-        hr = self.person("hr", "HR Admin")
-        iid, login = self.integration(perm=None)
-        key, _ = self.key_for(self.api(hr), iid)
-        self.assertEqual(self.rootc.post(f"{USERS}{hr.pk}/revoke/", {"role": "HR Admin"}, format="json").status_code, 200)
-        self.assertIn(self.with_key(key).get(ME).status_code, (401, 403),
-                      "a key issued by a demoted keeper still signs in")
-
-    def test_p27_a_key_does_not_outlive_the_rights_its_issuer_could_give(self):
-        # O157's shape for a key: a keeper who learned a credential must not keep one to a login that has since been
-        # given what the keeper could not give (roles.lapse_on_giving does this for passwords and emails).
-        hr = self.person("hr", "HR Admin")
-        iid, login = self.integration(perm=None)
-        key, _ = self.key_for(self.api(hr), iid)
-        self.assertEqual(self.with_key(key).get(ME).status_code, 200, "control: the key works")
-        login.user_permissions.add(Permission.objects.get(content_type__app_label="manufacturing",
-                                                          codename="add_scalereading"))
-        self.assertIn(self.with_key(key).get(ME).status_code, (401, 403),
-                      "HR, which saw this key, now holds a credential to a login with a right HR cannot give")
+    # p24, p25 and p27 asked a key to lapse with its issuer. The integrator decided otherwise (review F5): the
+    # plant's weighing must not stop because an administrator left. Their cases, with the decided expectations,
+    # are tests_api_keys.AKeyOutlivesItsIssuerAndTheAdministratorsAreToldTests.
 
     def test_p28_hr_cannot_issue_the_scale_integrations_key_so_only_a_superuser_holds_it(self):
         hr = self.person("hr", "HR Admin")
