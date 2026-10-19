@@ -1438,9 +1438,10 @@ class PlantFloorTests(StationApiTestCase):
     @expectedFailure
     def test_the_shelf_moves_with_the_inventory_account(self):
         """
-        Register row (this report): two doffs of 56 kg at the run's planned 95.83505100 a kilo are each
-        5,366.762856. ProductionEntry.post books each rounded, 5,366.76; the movements keep the unrounded
-        value, which the shelf sums to 10,733.53. The ledger holds 10,733.52.
+        O269: two doffs of 56 kg at the run's planned 95.83505100 a kilo are each 5,366.762856.
+        ProductionEntry.post books each rounded, 5,366.76; the movements keep the unrounded value, which
+        the shelf sums to 10,733.53. The ledger holds 10,733.52. One instance of the shelf and the ledger
+        keeping money to different places; fixed once for every path, not here alone.
         """
         moved = sum((item.stock_value_at(self.plant) for item in self.items), D("0")) - self.shelf_before
         self.assertEqual(self.bal(self.inventory), moved)
