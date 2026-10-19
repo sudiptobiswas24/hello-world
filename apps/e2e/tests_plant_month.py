@@ -23,11 +23,24 @@ agent's scratchpad script), never read off the output. The story:
     5  500 kg of sweepings counted in at 30.00, sold at 40.00 + GST, 23,600.00,
        TCS 472.00 collected and paid by challan.
 
-Model calls, where no screen exists (each listed in the report):
-  - the master data the month opens with (accounts, items, parties, the
-    company), as an import before go-live would leave it;
+    7  A loom billed 1 Oct, 6,00,000.00 + GST, capitalised and depreciated
+       5,000.00 for October; GSTR-1, GSTR-3B and the TDS and TCS returns
+       read; the month closed. Profit 2,26,576.00.
+
+Not in this month (the g22 month report says why): stations and the scale
+bridge, piece work, the Quality Manager's hold, the tape recall, job work,
+the re-batch, and every part of payroll.
+
+Model calls, where no screen exists:
+  - the master data the month opens with (accounts, items, parties, tax
+    profiles, the company, the BOM, manufacturing settings, an adjustment
+    reason, an asset category), as an import before go-live would leave it;
+  - the books' opening (BooksOpening): no screen keeps it (O251);
+  - GST settings' e-invoicing start day;
   - spreading the transporter's freight over the receipts
-    (BillLine.allocate_landed_cost: the admin's alone).
+    (BillLine.allocate_landed_cost: the admin's alone);
+  - the sweepings' unit cost on the count-in line, while the API cannot
+    give it (test_sweepings_counted_in_keep_the_cost_they_were_given).
 
 Two-factor sign-in (L12): the roles that post payments or keep pay hold a
 guarded right. The suite's API tests authenticate with force_authenticate,
