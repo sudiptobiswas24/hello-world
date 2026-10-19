@@ -170,6 +170,11 @@ built.
      is a register row the day it is seen; the fixes follow by module, each
      reviewed, as g22's were. Depth waits for it: building on a module the
      audit has not read builds on its defects.
+     First fix, alongside the audit and owned by one agent: O269, the shelf
+     and the ledger keeping money to different places (each movement's
+     money becomes the paisa its document booked). It touches the costing
+     engine and every outbound path, so nothing else in inventory/costing.py
+     moves while it is in flight.
    - **g24, stores and purchasing for a polymer buyer:**
      - L16 polymer against price circulars;
      - L17 weighbridge, gross, tare and net on receipts and dispatches;

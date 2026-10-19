@@ -58,7 +58,11 @@ reads whole modules, the old code and the new together.
    history, attachments, backups, document numbering, the working-day
    registry, the lock-order sentinel, audit_invariants itself, MRP, every
    screen in frontend/src/app/registry.ts against the permission its API
-   checks.
+   checks. Every "Add a line" is now checked for the fields its list
+   requires (apps/web/tests.py, EveryAdderSendsWhatItsListRequiresTests:
+   three stores screens could add no line at all until g22); drive them in
+   the browser anyway, as their people, since a body can name a field and
+   still send the wrong value.
 
 ## What to look for, in this order
 1. The eight shapes in the audit skill, mirror gap first. For every guard
