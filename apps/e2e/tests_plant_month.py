@@ -189,8 +189,20 @@ class Month:
             line1="Plot 7, Bamunara Industrial Estate", city="Durgapur", state="West Bengal", postal_code="713212"))
         self.hooghly = self.party("C-HC", "Hooghly Cement Works", PartyRole.CUSTOMER, gstin=gstin("19AAACH4444D1Z"),
                                   pan="AAACH4444D")
-        from apps.accounting.models import TcsSection
+        from apps.accounting.models import BooksOpening, TcsSection
+        from apps.assets.models import AssetCategory
         from apps.inventory.models import AdjustmentReason
+
+        # No screen keeps the books' opening (O251): a model call.
+        BooksOpening.objects.create(opened_on=datetime.date(2026, 9, 30), opening_account=acct["3000"])
+        for code, name, kind in (("1500", "Plant and machinery", A), ("1590", "Accumulated depreciation", A),
+                                 ("5600", "Depreciation", X), ("5700", "Machinery bought", X)):
+            acct[code] = Account.objects.create(code=code, name=name, account_type=kind)
+        self.looms = AssetCategory.objects.create(code="LOOM", name="Circular looms", asset_account=acct["1500"],
+                                                  accumulated_account=acct["1590"], expense_account=acct["5600"],
+                                                  default_life_months=120)
+        self.loom_maker = self.party("V-LM", "Kolkata Loom Works", PartyRole.VENDOR, gstin=gstin("19AAACK6666F1Z"),
+                                     pan="AAACK6666F")
 
         self.scrap_section = TcsSection.objects.get(code="SCRAP")
         Item.objects.filter(pk=self.sweep.pk).update(tcs_section=self.scrap_section)
@@ -505,6 +517,41 @@ class Month:
                       {"line": line["id"], "entry": self.tcs_challan["journal_entry"]})
         self.scrap_invoice = self.get("AR Manager", f"/api/sales/invoices/{self.scrap_invoice['id']}/")
 
+    # -- 7. close -------------------------------------------------------------------
+
+    def buy_a_loom(self):
+        bill = self.post("Purchasing Clerk", "/api/purchasing/bills/", {
+            "vendor": self.loom_maker.pk, "bill_date": str(OCT(1)), "reference": "KLW/26-27/088",
+            "payable_account": self.acct["2000"].pk, "currency": self.inr.pk})
+        self.post("Purchasing Clerk", "/api/purchasing/bill-lines/", {
+            "bill": bill["id"], "description": "Six-shuttle circular loom, 750 mm", "quantity": "1",
+            "unit_price": "600000.00", "expense_account": self.acct["5700"].pk,
+            "taxes": [self.tax("CGST9"), self.tax("SGST9")]})
+        bill = self.post("AP Manager", f"/api/purchasing/bills/{bill['id']}/post_bill/")
+        [self.loom] = self.post("Controller", f"/api/purchasing/bills/{bill['id']}/capitalise/", {
+            "line": bill["lines"][0]["id"], "category": self.looms.pk, "name": "Loom CL-07",
+            "in_service_date": str(OCT(1)), "life_months": 120})
+        self.post("Controller", f"/api/assets/assets/{self.loom['id']}/place-in-service/",
+                  {"on_date": str(OCT(1))})
+        self.loom_bill = bill
+
+    def close(self):
+        controller = "Controller"
+        self.loom_charged = self.post(controller, "/api/assets/assets/depreciate-all/", {"through": "2026-10-31"})
+        self.loom = self.get(controller, f"/api/assets/assets/{self.loom['id']}/")
+        self.asset_register = self.get(controller, "/api/assets/assets/register/", {"as_of": "2026-10-31"})
+        self.gstr1 = self.get("GST Officer", "/api/gst/gstr1/", {"period": "2026-10"})
+        self.gstr3b = self.get("GST Officer", "/api/gst/gstr3b/", {"period": "2026-10"})
+        self.tds_return = self.get(controller, "/api/purchasing/tds-deductions/quarter/",
+                                   {"from": "2026-10-01", "to": "2026-12-31"})
+        self.tcs_return = self.get(controller, "/api/sales/tcs-collections/quarter/",
+                                   {"from": "2026-10-01", "to": "2026-12-31"})
+        period = self.post(controller, "/api/accounting/periods/", {
+            "name": "October 2026", "start_date": "2026-10-01", "end_date": "2026-10-31"})
+        self.refuse("R8 the month closed by the Bookkeeper", "Bookkeeper",
+                    f"/api/accounting/periods/{period['id']}/close/")
+        self.period = self.post(controller, f"/api/accounting/periods/{period['id']}/close/")
+
     def run(self):
         with on(OCT(1)):
             self.open_books()
@@ -521,11 +568,15 @@ class Month:
                 "end_date": "2026-10-31", "opening_balance": "0", "closing_balance": "133300.00"})
         with on(OCT(20)):
             self.pay_masterbatch()
+        with on(OCT(1)):
+            self.buy_a_loom()
         with on(OCT(11)):
             self.make_tape()
         self.sell_to_hooghly()
         self.export()
         self.sell_scrap()
+        with on(OCT(31), hour=18):
+            self.close()
         return self
 
 
@@ -561,6 +612,7 @@ class PlantMonthTests(TestCase):
             "R5 an invoice posted by the Sales Rep": 403,
             "R6 a payment voided by the Sales Rep": 403,
             "R7 scrap invoiced before the TCS rate is confirmed": 400,
+            "R8 the month closed by the Bookkeeper": 403,
         })
 
     # -- 1. polymer bought ------------------------------------------------------
@@ -639,6 +691,47 @@ class PlantMonthTests(TestCase):
         self.assertIsNotNone(given)
         self.assertEqual(D(given), D("30.00"))
 
+    # -- 7. close -------------------------------------------------------------------
+
+    def test_the_loom_is_depreciated_for_october_and_the_register_foots(self):
+        # 6,00,000.00 over 120 months: 5,000.00 for a whole October.
+        self.assertEqual((self.bal("1500"), self.bal("1590"), self.bal("5600")),
+                         (D("600000.00"), D("-5000.00"), D("5000.00")))
+        self.m.register_rows = self.m.asset_register
+        rows = self.m.asset_register if isinstance(self.m.asset_register, list) else \
+            self.m.asset_register.get("rows", self.m.asset_register.get("assets", []))
+        [row] = rows
+        self.assertEqual(D(str(row.get("book_value", row.get("net_book_value")))),
+                         self.bal("1500") + self.bal("1590"))
+
+    def test_gstr1_reads_what_was_posted(self):
+        g = self.m.gstr1
+        self.assertEqual([(row["number"], row["value"], row["items"][0]["taxable"], row["items"][0]["cgst"])
+                          for row in g["b2b"]],
+                         [(self.m.dom_invoice["number"], "708000.00", "600000.00", "54000.00"),
+                          (self.m.scrap_invoice["number"], "24072.00", "20000.00", "1800.00")])
+        self.assertEqual([(row["value"], row["type"], row["items"][0]["igst"]) for row in g["exp"]],
+                         [("168000.00", "without_payment", "0.00")])
+        self.assertEqual([(row["value"], row["original"], row["items"][0]["cgst"]) for row in g["cdnr"]],
+                         [("35400.00", self.m.dom_invoice["number"], "2700.00")])
+
+    def test_gstr3b_reads_what_was_posted(self):
+        g = self.m.gstr3b
+        self.assertEqual((g["3.1a"]["taxable"], g["3.1a"]["cgst"], g["3.1a"]["sgst"]),
+                         ("590000.00", "53100.00", "53100.00"))
+        self.assertEqual(g["3.1b"]["taxable"], "168000.00")
+        self.assertEqual((g["4A5"]["igst"], g["4A5"]["cgst"], g["4A5"]["sgst"]), ("176400.00", "66150.00", "66150.00"))
+        self.assertEqual(g["5"], {"inter": "0", "intra": "39200.00"})
+
+    def test_the_tds_and_tcs_returns_read_what_was_posted(self):
+        self.assertEqual([(row["section"], row["base"], row["amount"], row["challan"]) for row in self.m.tds_return],
+                         [("194C", "39200.00", "784.00", "")])
+        self.assertEqual([(row["section"], row["base"], row["amount"], row["paid_on"])
+                          for row in self.m.tcs_return], [("394(1)", "23600.00", "472.00", "2026-10-31")])
+
+    def test_the_month_is_closed(self):
+        self.assertTrue(self.m.period["closed"])
+
     # -- what must be true at the end ------------------------------------------------
 
     def test_the_control_accounts_stand_where_the_month_leaves_them(self):
@@ -648,7 +741,7 @@ class PlantMonthTests(TestCase):
             "2250": D("-784.00"),  # TDS on the freight, due 7 November
             "2260": D("0"),  # TCS on the scrap, paid
             "2201": D("-53100.00"), "2202": D("-53100.00"), "2203": D("0"),  # GST output
-            "1311": D("12150.00"), "1312": D("12150.00"), "1313": D("176400.00"),  # GST input
+            "1311": D("66150.00"), "1312": D("66150.00"), "1313": D("176400.00"),  # GST input
             "4900": D("-1000.00"), "5910": D("0"),  # exchange
             "1900": D("0"),  # suspense
             "1350": D("0"),  # work in progress
@@ -677,7 +770,8 @@ class PlantMonthTests(TestCase):
         due = {}
         for bill in Bill.objects.filter(posted=True):
             due[bill.vendor.code] = due.get(bill.vendor.code, D("0")) + bill.amount_due()
-        self.assertEqual({k: v for k, v in due.items() if v}, {"V-PP": D("1156400.00"), "V-TRN": D("38416.00")})
+        self.assertEqual({k: v for k, v in due.items() if v}, {"V-PP": D("1156400.00"), "V-TRN": D("38416.00"),
+                                                                     "V-LM": D("708000.00")})
         self.assertEqual(self.bal("2000"), -sum(due.values()))
 
     def test_the_bank_and_its_statement_agree(self):
@@ -691,8 +785,9 @@ class PlantMonthTests(TestCase):
         self.assertEqual(totals["d"], totals["c"])
         kinds = lambda *types: sum((balance(a) for a in Account.objects.filter(account_type__in=types)), D("0"))
         profit = -kinds(AccountType.INCOME, AccountType.EXPENSE)
-        self.assertEqual(profit, D("231576.00"))
+        self.assertEqual(profit, D("226576.00"))
         # No capital came in: what the month made is what the balance sheet gained.
         self.assertEqual(kinds(AccountType.ASSET) + kinds(AccountType.LIABILITY, AccountType.EQUITY), profit)
+
 
 
