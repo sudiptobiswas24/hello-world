@@ -687,3 +687,32 @@ class SomethingNeverStockedIsCountedInAtTheCostGivenTests(AdjustmentTestCase):
         self.assertEqual(posted.status_code, 400, posted.content)
         self.assertIn("Give the line an explicit unit cost", str(posted.content))
         self.assertEqual(self.balance(self.inventory), Decimal("0"))
+
+
+class ALineFromTheTransferScreenTests(AdjustmentTestCase):
+    """
+    The transfer screen's "Add a line" sends the item, quantity and batch, never a unit; the unit
+    was required apart, so no line could be added from the screen (the g22 month's check of every
+    adder). The Stores Manager, with exactly the screen's body.
+    """
+
+    def test_it_is_written_in_the_items_own_unit(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        from .models import StockTransfer
+
+        call_command("setup_roles", verbosity=0)
+        manager = User.objects.create_user("stores")
+        manager.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient()
+        client.force_authenticate(manager)
+        self.stock("100", "5")
+        transfer = StockTransfer.objects.create(
+            transfer_date=datetime.date(2026, 3, 1), from_warehouse=self.warehouse,
+            to_warehouse=Warehouse.objects.create(code="S", name="Spares"))
+        made = client.post("/api/inventory/stock-transfer-lines/", {
+            "transfer": transfer.pk, "item": self.item.pk, "quantity": "40", "lot": None}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertEqual(made.json()["uom"], self.each.pk)

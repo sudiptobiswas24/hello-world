@@ -328,6 +328,8 @@ class CustomerMaterialReturnLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomerMaterialReturnLine
         fields = ["id", "material_return", "receipt_line", "item", "lot", "quantity", "item_label", "lot_code"]
+        # Taken from the receipt line when not given (the model's save).
+        extra_kwargs = {"item": {"required": False}}
 
 
 class CustomerMaterialReturnSerializer(serializers.ModelSerializer):

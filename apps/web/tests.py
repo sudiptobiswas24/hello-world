@@ -216,6 +216,42 @@ class EveryAddressAScreenAsksForExistsTests(TestCase):
         self.assertEqual(missing, [])
 
 
+class EveryAdderSendsWhatItsListRequiresTests(TestCase):
+    """
+    A screen's "Add a line" posts what its body names, and the list refuses a field it requires
+    and was not sent. The adjustment and transfer screens never sent a line's unit, which the
+    model fills from the item but the serializer required: no line could be added from either,
+    with every model and API test green (the g22 month). Each adder that creates is asked here.
+    """
+
+    def test_every_adder_sends_each_field_its_list_requires(self):
+        import pathlib
+        import re
+
+        from django.urls import resolve
+
+        source = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src" / "modules"
+        asked, wrong = 0, []
+        for path in sorted(source.rglob("*.tsx")):
+            text = path.read_text()
+            for match in re.finditer(r'url: \(\) => "(/api/[a-z-]+/[a-z-]+/)",\s*fields: (?:\([^)]*\) => )?\[(.*?)\],'
+                                     r'\s*body: \([^)]*\) => (\(\{.*?\}\)|values)', text, re.S):
+                url, fields, body = match.groups()
+                func = resolve(url).func
+                if getattr(func, "actions", {}).get("post") != "create":
+                    continue
+                given = set(re.findall(r'key: "(\w+)"', fields))
+                sent = given if body == "values" else set(re.findall(r"(\w+):", body))
+                if "...values" in body:
+                    sent |= given
+                required = {name for name, field in func.cls.serializer_class().fields.items()
+                            if field.required and not field.read_only}
+                asked += 1
+                wrong += [f"{path.name}: {url} never sends {name}" for name in sorted(required - sent)]
+        self.assertGreater(asked, 25)
+        self.assertEqual(wrong, [])
+
+
 class EverySmartButtonNarrowsItsListTests(TestCase):
     """
     A count on a record's header is its list asked with a narrowing; a

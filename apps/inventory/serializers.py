@@ -208,6 +208,9 @@ class StockAdjustmentLineSerializer(serializers.ModelSerializer):
         # unit_cost is given, not only read: a gain of something with no cost to take from (sweepings
         # never stocked, a found pallet) posts at the cost the line gives (the g22 month). Blank, the
         # line takes the average when it posts; a write-down given another cost is refused there.
+        # The unit is the item's when not given (the model's save); required, no line could be
+        # added from the screen, which never sends one.
+        extra_kwargs = {"uom": {"required": False}}
 
 
 class StockAdjustmentSerializer(serializers.ModelSerializer):
@@ -291,6 +294,8 @@ class StockTransferLineSerializer(serializers.ModelSerializer):
             "id", "transfer", "item", "uom", "lot", "from_bin", "to_bin",
             "quantity", "notes", "outstanding", "item_label", "lot_code",
         ]
+        # The item's unit when not given, as the adjustment line's.
+        extra_kwargs = {"uom": {"required": False}}
 
     def get_outstanding(self, line):
         return line.quantity_outstanding()

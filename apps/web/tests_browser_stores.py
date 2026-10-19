@@ -74,7 +74,8 @@ class StoresInTheBrowserTests(BrowserMixin, AdjustmentTestCase, StaticLiveServer
         form.get_by_label("Quantity").fill("500")
         form.get_by_label("Cost each").fill("30.00")
         form.get_by_role("button", name="Add a line").click()
-        expect(form).to_have_count(0)
+        expect(page.locator("section.related", has_text="Lines").get_by_role(
+            "row", name=re.compile("Widget"))).to_contain_text("30.00")
         self.assertEqual(adjustment.lines.get().unit_cost, Decimal("30.0000"))
 
         page.get_by_role("button", name="Post", exact=True).click()

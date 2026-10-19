@@ -358,6 +358,15 @@ class CustomerMaterialReturnLine(_Line):
     def document(self):
         return self.material_return
 
+    def save(self, *args, **kwargs):
+        # What it sends back is what its receipt line brought in. The screen names only the receipt
+        # line, so its item and batch come from there; required apart, no line could be added from
+        # the screen (the g22 month's check of every adder). Posting refuses any other item or batch.
+        if self.receipt_line_id and not self.item_id:
+            self.item_id = self.receipt_line.item_id
+            self.lot_id = self.lot_id or self.receipt_line.lot_id
+        super().save(*args, **kwargs)
+
 
 def register(customer, as_of=None):
     """Per item: received, consumed, returned, on hand, and whether they foot."""

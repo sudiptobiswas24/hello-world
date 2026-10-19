@@ -327,3 +327,31 @@ class InwardApiTests(InwardTestCase):
         rows = client.get(base + "customer-material-receipts/register/",
                           {"customer": self.sunrise.pk}).json()
         self.assertEqual((rows[0]["received"], rows[0]["on_hand"]), ("500", "500"))
+
+
+class AReturnLineFromTheScreenTests(InwardTestCase):
+    """
+    The return screen's "Add a line" sends the receipt line and a quantity, nothing else; the
+    item was required apart, so no line could be added from the screen (the g22 month's check of
+    every adder). The Stores Manager, with exactly the screen's body.
+    """
+
+    def test_it_sends_back_what_its_receipt_line_brought_in(self):
+        from django.contrib.auth.models import Group, User
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+
+        call_command("setup_roles", verbosity=0)
+        manager = User.objects.create_user("stores")
+        manager.groups.add(Group.objects.get(name="Stores Manager"))
+        client = APIClient()
+        client.force_authenticate(manager)
+        receipt = self.receive("500")
+        back = CustomerMaterialReturn.objects.create(customer=self.sunrise, warehouse=self.held, returned_on=TODAY)
+        made = client.post("/api/manufacturing/customer-material-return-lines/", {
+            "material_return": back.pk, "receipt_line": receipt.lines.get().pk, "quantity": "200"}, format="json")
+        self.assertEqual(made.status_code, 201, made.content)
+        self.assertEqual((made.json()["item"], made.json()["lot"]), (self.virgin.pk, self.their_lot.pk))
+        posted = client.post(f"/api/manufacturing/customer-material-returns/{back.pk}/post/")
+        self.assertEqual(posted.status_code, 200, posted.content)
+        self.assertEqual(self.their_lot.on_hand_at(self.held), Decimal("300"))
