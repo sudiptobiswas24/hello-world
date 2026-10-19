@@ -38,7 +38,9 @@ import pyotp
 from django.conf import settings
 from django.contrib.auth import get_user, login
 from django.contrib.auth.models import AnonymousUser, Permission
-from django.contrib.auth.views import LoginView
+from django.contrib.auth.forms import PasswordChangeForm
+from django.contrib.auth.views import LoginView, PasswordChangeView
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models import F, Q
 from django.db.models.signals import post_save
@@ -137,11 +139,21 @@ class Gate:
         return self.get_response(request)
 
 
+OWN_PASSWORD_URL = "/accounts/password_change/"
+
+
 def _through_the_gate(request):
     from django.contrib.auth.middleware import get_user as session_user
 
+    from .roles import must_set_own_password
+
     user = session_user(request)
-    if user.is_authenticated and needs_code(user) and not passed(request, user):
+    if not user.is_authenticated:
+        return user
+    # A password someone else set reaches only the page that replaces it (O216, review F1).
+    if must_set_own_password(user):
+        return user if request.path == OWN_PASSWORD_URL else AnonymousUser()
+    if needs_code(user) and not passed(request, user):
         return AnonymousUser()
     return user
 
@@ -150,7 +162,12 @@ class PasswordOnlyBasicAuthentication(BasicAuthentication):
     """HTTP basic is a password alone: refused for a login that signs in with a second factor."""
 
     def authenticate_credentials(self, userid, password, request=None):
+        from .roles import must_set_own_password
+
         user, auth = super().authenticate_credentials(userid, password, request)
+        if must_set_own_password(user):
+            raise AuthenticationFailed(f"{user.get_username()} signs in with a password someone else set: sign in to "
+                                       "the office application and choose your own first.")
         if needs_code(user):
             raise AuthenticationFailed(
                 f"{user.get_username()} signs in with a second factor, which a password alone does not give. Sign "
@@ -261,19 +278,68 @@ def _to_step(request, wanted):
     return redirect(f"{STEP_URL}?next={quote(wanted)}")
 
 
+def _own_password_first(request, user, wanted):
+    from .roles import must_set_own_password
+
+    if must_set_own_password(user):
+        return redirect(f"{OWN_PASSWORD_URL}?next={quote(wanted)}")
+    return None
+
+
 class SignInView(LoginView):
-    """The password; then, for a login that needs one, the code (step)."""
+    """The password; then one's own password where someone else set it; then the code where one is needed."""
 
     def get(self, request, *args, **kwargs):
+        user = get_user(request)
+        if user.is_authenticated:
+            first = _own_password_first(request, user, _next(request))
+            if first:
+                return first
         if half_signed_in(request):
             return _to_step(request, _next(request))
         return super().get(request, *args, **kwargs)
 
     def form_valid(self, form):
         response = super().form_valid(form)
+        first = _own_password_first(self.request, form.get_user(), self.get_success_url())
+        if first:
+            return first
         if needs_code(form.get_user()):
             return _to_step(self.request, self.get_success_url())
         return response
+
+
+class OwnPasswordForm(PasswordChangeForm):
+    def clean_new_password1(self):
+        new = self.cleaned_data.get("new_password1")
+        if new and self.user.check_password(new):
+            raise ValidationError("Choose a password of your own: this is the one you were given.")
+        return new
+
+
+class SetOwnPasswordView(PasswordChangeView):
+    """
+    The password-change page, and the step a login whose password someone
+    else set must pass first (roles.must_set_own_password): then on to the
+    code, where one is needed, and to where the person was going.
+    """
+
+    form_class = OwnPasswordForm
+
+    def get_success_url(self):
+        wanted = _next(self.request)
+        user = get_user(self.request)
+        if needs_code(user) and not passed(self.request, user):
+            return f"{STEP_URL}?next={quote(wanted)}"
+        return wanted
+
+    def get_context_data(self, **kwargs):
+        from .roles import must_set_own_password
+
+        context = super().get_context_data(**kwargs)
+        if must_set_own_password(self.request.user):
+            context["title"] = "Choose your own password"
+        return context
 
 
 def _qr(factor):
@@ -292,6 +358,9 @@ def step(request):
     wanted = _next(request)
     if user is None:
         return redirect(f"{settings.LOGIN_URL}?next={quote(wanted)}")
+    first = _own_password_first(request, user, wanted)
+    if first:
+        return first
     factor = confirmed(user)
     context = {"next": wanted, "user": user}
     if factor is not None:

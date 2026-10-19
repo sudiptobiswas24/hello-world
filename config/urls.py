@@ -27,6 +27,8 @@ urlpatterns = [
     # The password, then the code where one is needed (L12); the admin signs in the same way.
     path("accounts/login/", SignInView.as_view(), name="login"),
     path("accounts/second-factor/", second_factor.step, name="second-factor"),
+    # One's own password, and the step a login whose password someone else set passes first (O216).
+    path("accounts/password_change/", second_factor.SetOwnPasswordView.as_view(), name="password_change"),
     path("admin/login/", second_factor.AdminSignInView.as_view()),
     path("admin/", admin.site.urls),
     # Before auth.urls: no reset mail to an email whose setter was out-ranked since (O157).

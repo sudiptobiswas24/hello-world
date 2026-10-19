@@ -530,6 +530,7 @@ class MakerProbes(KeeperAndHolder):
         changed = web.post("/accounts/password_change/", {"old_password": old, "new_password1": new,
                                                           "new_password2": new})
         self.assertEqual(changed.status_code, 302)
+        self.assertTrue(self.signs_in(username, new), "control: the change took")
 
     def test_p30_a_worker_hr_made_keeps_their_own_password_when_hr_leaves(self):
         self.make("worker", [])
@@ -555,30 +556,9 @@ class MakerProbes(KeeperAndHolder):
         self.assertEqual(given.status_code, 200, given.content)
         self.assertTrue(self.signs_in("worker", OWN), "the worker's own password lapsed when they were promoted")
 
-    def test_p33_and_the_way_back_by_email_is_shut_too_when_hr_also_set_the_address(self):
-        worker = self.make("worker", [], email="worker@plant.example")
-        self.the_worker_changes_their_own_password("worker")
-        from django.core import mail
-
-        mail.outbox.clear()
-        Client().post("/accounts/password_reset/", {"email": "worker@plant.example"})
-        self.assertEqual(len(mail.outbox), 1, "control: the reset mail goes while HR is in post")
-        self.rootc.post(f"{USERS}{self.hr.pk}/deactivate/", {}, format="json")
-        mail.outbox.clear()
-        Client().post("/accounts/password_reset/", {"email": "worker@plant.example"})
-        self.assertEqual(len(mail.outbox), 1, "the worker, locked out of a password they chose, cannot reset it "
-                                              "themselves by email either")
-
-    def test_p34_nothing_tells_the_maker_signed_in_as_the_login_from_the_person_themselves(self):
-        from .roles import KeptCredential
-
-        a, b = self.make("by_person", []), self.make("by_maker", [])
-        self.the_worker_changes_their_own_password("by_person")  # the person
-        self.the_worker_changes_their_own_password("by_maker")  # HR typing as the login: same request
-        def shape(user):
-            row = KeptCredential.objects.filter(user=user, kind=KeptCredential.PASSWORD).first()
-            return None if row is None else (row.set_by_id, row.as_confirmer, row.lapsed)
-        self.assertNotEqual(shape(a), shape(b), "the two cases leave the same record")
+    # p33 and p34 encoded the rule the integrator replaced (review F1): a password someone else set is replaced
+    # at the first sign-in. Their cases, with the decided expectations, are tests_users_api
+    # APasswordSomeoneElseSetIsReplacedFirstTests (test_p33_..., test_p34_...).
 
     def test_p35_a_link_mailed_while_the_address_was_trusted_works_for_a_role_hr_can_give(self):
         # The refusal must be only for an address since out-ranked, not for any change in the login.
