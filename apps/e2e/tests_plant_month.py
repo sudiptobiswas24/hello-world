@@ -1224,6 +1224,7 @@ class PlantFloorTests(StationApiTestCase):
       - the tape line's operator doffs two batches at TX-1: one in denier, one at 1,085 against 950 to
         1,050, booked on the supervisor's PIN and held for the Quality Manager, who concedes it;
       - 5 kg of the line's waste is booked back as regrind;
+      - the good batch is re-batched into TP-A (30 kg) and TP-B (26 kg) for two creels;
       - T-1 is then found at 1,085 denier and rejected: the roll woven from it is held;
       - the weaver's piece work, 1,006 m at 0.50, is paid in June's run: 503.00;
       - both runs are closed.
@@ -1322,6 +1323,17 @@ class PlantFloorTests(StationApiTestCase):
             "machine": "E-1", "gross_kg": "60.0", "bobbins": 8, "core": "BOB", "denier": OFF,
             "supervisor_pin": self.supervisor_pin, "reason": "Customer accepts heavy"})
         self.waste = self.at_station("TX-1", "run-waste/", {"machine": "E-1", "kg": "5"})
+        # The good batch split for two creels: a re-batch, value for value.
+        good = Lot.objects.get(code=self.good_doff["batch"])
+        self.tape_value_before_rebatch = self.tape_item.stock_value_at(self.plant)
+        self.inventory_before_rebatch = balance(self.inventory)
+        self.rebatch = self.ok(supervisor.post("/api/manufacturing/rebatches/record/", {
+            "item": self.tape_item.pk, "warehouse": self.plant.pk, "reason": "Split for two creels",
+            "rebatched_on": str(TODAY), "taken": [{"lot": good.pk, "quantity": "56"}],
+            "made": [{"code": "TP-A", "quantity": "30"}, {"code": "TP-B", "quantity": "26"}]}, format="json"))
+        self.rebatched = {code: Lot.objects.get(code=code).on_hand_at(self.plant) for code in ("TP-A", "TP-B")}
+        self.tape_value_after_rebatch = self.tape_item.stock_value_at(self.plant)
+        self.inventory_after_rebatch = balance(self.inventory)
         awaiting = self.ok(manager.get("/api/quality/inspections/awaiting/"))
         self.awaiting = awaiting
         held = next(row for row in (awaiting if isinstance(awaiting, list) else awaiting["results"])
@@ -1418,6 +1430,11 @@ class PlantFloorTests(StationApiTestCase):
         self.assertEqual(self.fabric.stock_value_at(self.plant), D("12783.67"))
         self.assertEqual(self.bal(self.scrap), D("0"))
 
+    def test_a_rebatch_moves_stock_between_batches_and_no_value(self):
+        self.assertEqual(self.rebatched, {"TP-A": D("30"), "TP-B": D("26")})
+        self.assertEqual(self.tape_value_after_rebatch, self.tape_value_before_rebatch)
+        self.assertEqual(self.inventory_after_rebatch, self.inventory_before_rebatch)
+
     @expectedFailure
     def test_the_shelf_moves_with_the_inventory_account(self):
         """
@@ -1427,3 +1444,112 @@ class PlantFloorTests(StationApiTestCase):
         """
         moved = sum((item.stock_value_at(self.plant) for item in self.items), D("0")) - self.shelf_before
         self.assertEqual(self.bal(self.inventory), moved)
+
+
+from apps.manufacturing.tests_jobwork import JobWorkTestCase
+
+
+class JobWorkOutAndBackTests(JobWorkTestCase):
+    """
+    One challan out and back, on the outside-operation fixture's books (1 June 2026): the run of 1,000 kg of
+    tape is coated by a laminator at an agreed 2.00 a kilo. The Purchasing Clerk orders the coating against
+    the run's outside step; the Stores Manager sends the run's fabric on a challan (1,000 kg valued 95,000.00,
+    5%); the coated 1,000 kg comes back on a receipt against the order, into the run: 2,000.00 into work in
+    progress against GRNI; the bill clears GRNI. The run takes its material, books its output and closes.
+
+    Model calls: the fixture's books and stock (as PlantFloorTests); the laminator made a vendor; the coating
+    service item; GRNI and price variance named on the company.
+    """
+
+    def setUp(self):
+        opening = patch("django.utils.timezone.now", return_value=at(TODAY, 6))
+        opening.start()
+        self.addCleanup(opening.stop)
+        super().setUp()
+        call_command("setup_roles", verbosity=0)
+        clock = patch("django.utils.timezone.now", return_value=at(TODAY, 10))
+        clock.start()
+        self.addCleanup(clock.stop)
+        from apps.accounting.models import Account, AccountType
+        from apps.core.models import PartyRole, PartyRoleAssignment
+
+        PartyRoleAssignment.objects.create(party=self.laminator, role=PartyRole.VENDOR)
+        Company.objects.update(grni_account=self.grni, purchase_price_variance_account=self.variance)
+        self.payable = Account.objects.create(code="2000", name="Payables", account_type=AccountType.LIABILITY)
+        self.service = Item.objects.create(sku="SVC-COAT", name="Coating, by the kilo", uom=self.kg,
+                                           track_inventory=False)
+        self.people = {}
+        self.items = [self.virgin, self.regrind, self.filler, self.colour, self.tape]
+        self.shelf_before = sum((item.stock_value_at(self.plant) for item in self.items), D("0"))
+        self.out_and_back()
+
+    def as_(self, role):
+        return PlantFloorTests.as_(self, role)
+
+    def ok(self, response, status=(200, 201)):
+        return Month.ok(self, response, status)
+
+    def out_and_back(self):
+        clerk, stores, store, supervisor = (self.as_(role) for role in (
+            "Purchasing Clerk", "Stores Manager", "Warehouse Staff", "Production Supervisor"))
+        po = self.ok(clerk.post("/api/purchasing/purchase-orders/", {
+            "vendor": self.laminator.pk, "order_date": str(TODAY), "currency": self.usd.pk}, format="json"))
+        self.ok(clerk.post("/api/purchasing/purchase-order-lines/", {
+            "order": po["id"], "item": self.service.pk, "work_order_operation": self.coat.pk,
+            "description": "Coating, 1,000 kg",
+            "uom": self.kg.pk, "quantity": "1000", "unit_price": "2.00"}, format="json"))
+        po = self.ok(clerk.post(f"/api/purchasing/purchase-orders/{po['id']}/confirm/"))
+        challan = self.ok(stores.post("/api/manufacturing/job-work-challans/", {
+            "job_worker": self.laminator.pk, "challan_date": str(TODAY)}, format="json"))
+        self.ok(stores.post("/api/manufacturing/job-work-lines/", {
+            "challan": challan["id"], "operation": self.coat.pk, "description": "Woven fabric for coating",
+            "hsn_code": "63053300", "quantity": "1000", "value": "95000.00", "tax_rate": "5"}, format="json"))
+        self.challan = self.ok(stores.post(f"/api/manufacturing/job-work-challans/{challan['id']}/post/"))
+        receipt = self.ok(store.post("/api/purchasing/goods-receipts/", {
+            "purchase_order": po["id"], "receipt_date": str(TODAY), "reference": "LAM/DC/55"}, format="json"))
+        self.ok(store.post("/api/purchasing/goods-receipt-lines/", {
+            "receipt": receipt["id"], "order_line": po["lines"][0]["id"], "warehouse": self.plant.pk,
+            "quantity_received": "1000"},
+            format="json"))
+        self.ok(store.post(f"/api/purchasing/goods-receipts/{receipt['id']}/post_receipt/"))
+        self.grni_after_receipt = balance(self.grni)
+        from apps.manufacturing.jobwork import allocation
+
+        self.back = allocation(self.lamination.operations.get(is_outside=True))
+        bill = self.ok(clerk.post(f"/api/purchasing/purchase-orders/{po['id']}/create_bill/", {
+            "payable_account": self.payable.pk, "bill_date": str(TODAY), "reference": "LAM/26/310"}, format="json"))
+        self.bill = self.ok(self.as_("AP Manager").post(f"/api/purchasing/bills/{bill['id']}/post_bill/"))
+        run = f"/api/manufacturing/work-orders/{self.lamination.pk}/"
+        issue = self.ok(supervisor.post("/api/manufacturing/material-issues/", {
+            "work_order": self.lamination.pk, "issue_date": str(TODAY), "warehouse": self.plant.pk}, format="json"))
+        for number, (item, quantity) in enumerate(((self.virgin, "750"), (self.regrind, "150"), (self.filler, "80"),
+                                                   (self.colour, "20")), start=1):
+            self.ok(supervisor.post("/api/manufacturing/material-issue-lines/", {
+                "issue": issue["id"], "item": item.pk, "quantity": quantity, "uom": self.kg.pk,
+                "line_number": number}, format="json"))
+        self.ok(supervisor.post(f"/api/manufacturing/material-issues/{issue['id']}/post/"))
+        entry = self.ok(supervisor.post("/api/manufacturing/production-entries/", {
+            "work_order": self.lamination.pk, "entry_date": str(TODAY), "warehouse": self.plant.pk,
+            "quantity_produced": "1000", "uom": self.kg.pk}, format="json"))
+        self.ok(supervisor.post(f"/api/manufacturing/production-entries/{entry['id']}/post/"))
+        self.closed = self.ok(supervisor.post(run + "close/", {"date": str(TODAY)}, format="json"))
+
+
+    def test_the_challan_goes_out_numbered_with_the_job_workers_registration(self):
+        [line] = self.challan["lines"]
+        self.assertEqual((self.challan["posted"], self.challan["number"][:4], self.challan["job_worker_gstin"]),
+                         (True, "JWC-", "29AABCE5678F1ZD"))
+        self.assertEqual((line["quantity"], line["value"], line["tax_rate"]), ("1000.0000", "95000.00", "5.00"))
+
+    def test_what_went_out_came_back(self):
+        [row] = self.back.values()
+        self.assertEqual((D(row["sent"]), D(row["back"]), D(row["outstanding"])), (D("1000"), D("1000"), D("0")))
+
+    def test_the_coating_accrues_into_the_run_and_the_bill_clears_it(self):
+        self.assertEqual((self.grni_after_receipt, self.bill["total"], balance(self.grni)),
+                         (D("-2000.00"), "2000.00", D("0")))
+
+    def test_the_run_closes_with_nothing_in_work_in_progress_and_the_shelf_foots(self):
+        self.assertEqual((self.closed["status"], balance(self.wip)), ("closed", D("0")))
+        moved = sum((item.stock_value_at(self.plant) for item in self.items), D("0")) - self.shelf_before
+        self.assertEqual(balance(self.inventory), moved)
