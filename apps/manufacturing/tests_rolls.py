@@ -493,3 +493,16 @@ class WhichLoomAteThePolymerTests(RollTestCase):
                 width_mm=Decimal("600"), length_m=Decimal("1000"),
                 net_weight_kg=Decimal("104.400"), machine=stranger,
             )
+
+
+class ARollsBatchIsNotDeletedFromUnderItTests(RollTestCase):
+    """O341: FabricRoll.lot was CASCADE, so deleting the batch took its weighed roll with it, past the roll's
+    own refusal."""
+
+    def test_the_batch_of_a_roll_is_not_deleted(self):
+        from django.db.models import ProtectedError
+
+        roll = self.roll()
+        with self.assertRaises(ProtectedError):
+            roll.lot.delete()
+        self.assertTrue(FabricRoll.objects.filter(pk=roll.pk).exists())
