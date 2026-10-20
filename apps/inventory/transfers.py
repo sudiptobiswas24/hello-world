@@ -46,6 +46,10 @@ def move_stock(item, source, destination, quantity, reference, occurred_at, note
     cases cleared at three eaches' rate turned 960 into 840; the rate is
     for reading. The caller holds both positions.
     """
+    from .tracking import refuse_drawing_what_is_promised
+
+    # A batch promised to a backflushed run's creels stays where the run draws it (O276).
+    refuse_drawing_what_is_promised(lot, source, quantity, action="be moved")
     leaving = item.cost_of_removing(source, quantity, lot=lot)
     rate = (leaving / quantity).quantize(Decimal("0.00000001"))
     out = StockMovement.objects.create(
@@ -566,6 +570,10 @@ class StockTransferStep(AuditModel):
                 f"Only {on_hand} {item.uom} of {item} remains at {self.destination}; "
                 f"cannot send back {self.quantity}."
             )
+        from .tracking import refuse_drawing_what_is_promised
+
+        # Sent back from a shelf where a backflushed run's creels may hold it now (O276).
+        refuse_drawing_what_is_promised(line.lot, self.destination, self.quantity, action="be sent back")
         # Each leg moves exactly what the hop carried, whatever the
         # destination's average is now: the two hops cancel to nothing
         # rather than revaluing stock every time a lorry turns round.

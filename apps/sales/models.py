@@ -4634,6 +4634,12 @@ class Delivery(AuditModel):
             if is_return:
                 plan = line.return_plan(shipped)
             else:
+                if line.lot_id is not None:
+                    from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+                    # Named by hand, past what allocate leaves out: a batch on a backflushed
+                    # run's creels is that run's (O276).
+                    refuse_drawing_what_is_promised(line.lot, line.warehouse, shipped, action="be shipped")
                 plan = [
                     (chosen_lot, chosen_bin, chosen_quantity, None)
                     for chosen_lot, chosen_bin, chosen_quantity in plan_issue(
