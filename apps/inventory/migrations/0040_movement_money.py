@@ -151,7 +151,7 @@ def give_each_movement_its_money(apps, schema_editor):
     }
     positions = Movement.objects.order_by("item_id", "warehouse_id").values_list(
         "item_id", "warehouse_id").distinct()
-    unread = defaultdict(lambda: [0, ZERO])
+    unread = defaultdict(lambda: [0, ZERO, ZERO])
     for item_id, warehouse_id in positions:
         item = items[item_id]
         standard = item.standard_cost or ZERO
@@ -174,6 +174,8 @@ def give_each_movement_its_money(apps, schema_editor):
                 tally = unread[(item.sku, warehouse_id)]
                 tally[0] += 1
                 tally[1] += exact - row.value
+                # Each row's drop, not their net: + and - cancelled, and "0 dropped" hid rounded rows.
+                tally[2] += abs(exact - row.value)
             if row.quantity == 0 and row.value_adjustment is not None:
                 row.value_adjustment = row.value
             changed.append(row)
@@ -184,8 +186,10 @@ def give_each_movement_its_money(apps, schema_editor):
             Movement.objects.bulk_update(changed, ["value", "notes", "value_adjustment"])
     if unread:
         print("\n  inventory 0040: movements whose replayed money was not a whole paisa, rounded:")
-        for (sku, warehouse_id), (count, dropped) in sorted(unread.items(), key=lambda pair: (pair[0][0], pair[0][1])):
-            print(f"    {sku} in warehouse {warehouse_id}: {count} rows, {dropped.normalize():f} dropped")
+        for (sku, warehouse_id), (count, net, moved) in sorted(unread.items(),
+                                                                key=lambda pair: (pair[0][0], pair[0][1])):
+            print(f"    {sku} in warehouse {warehouse_id}: {count} rows, {moved.normalize():f} rounded away "
+                  f"in all, {net.normalize():f} net")
 
 
 class Migration(migrations.Migration):
