@@ -78,3 +78,20 @@ class AWeighedRecordIsNotEditedOverTheApiTests(SimpleTestCase):
         guard = ("        if self.is_weighed():\n"
                  "            raise ValidationError('weighed')\n")
         self.assertEqual(self.audit("    def save(self):\n" + guard + "    def delete(self):\n" + guard), [])
+
+
+class ANamedDrawAsksThePromiseTests(SimpleTestCase):
+    """O276: a door that prices a named batch's removal asks what is promised, or is reported."""
+
+    def audit(self, body):
+        text = "class Rebatch:\n    def _take_out(self, lines):\n" + body
+        return [shape for shape, _ in Command().named_draws_past_the_promise(
+            ["manufacturing"], {"manufacturing": {Path("apps/manufacturing/example.py"): text}})]
+
+    def test_a_door_that_never_asks_is_reported(self):
+        self.assertEqual(self.audit("        return self.item.cost_of_removing(w, q, lot=lot)\n"),
+                         ["named draw past the promise"])
+
+    def test_one_that_asks_is_not(self):
+        self.assertEqual(self.audit("        refuse_drawing_what_is_promised(lot, w, q)\n"
+                                    "        return self.item.cost_of_removing(w, q, lot=lot)\n"), [])

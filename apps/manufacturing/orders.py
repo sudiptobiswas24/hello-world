@@ -2149,7 +2149,11 @@ def _take_back_off(item, warehouse, moved, occurred_at, reference, notes):
     onto a shelf averaging 70.86 took 91,711.34 out of the ledger and
     70,855.67 off the shelf, and the two never met again.
     """
+    from apps.inventory.tracking import refuse_drawing_what_is_promised
+
     quantity = moved.quantity
+    # Output voided after another run's creels took it (O276): that run's roll would draw nothing.
+    refuse_drawing_what_is_promised(moved.lot, warehouse, quantity, action="be taken back off")
     going = cost_of_removing(item, warehouse, quantity, lot=moved.lot)
     StockMovement.objects.create(
         item=item, warehouse=warehouse, movement_type=MovementType.ISSUE,

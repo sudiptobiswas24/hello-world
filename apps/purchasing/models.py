@@ -5381,6 +5381,9 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         item, uom = self.order_line.item, self.order_line.uom
         quantity = item.to_stock_quantity(Decimal("1"), uom)
         lock_positions([(item, place)])
+        from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+        refuse_drawing_what_is_promised(receipt_line.lot, place, quantity, action="be capitalised")  # O276
         value = round_money(cost_of_removing(item, place, quantity, lot=receipt_line.lot))
         movement = StockMovement.objects.create(
             item=item, warehouse=place, movement_type=MovementType.ISSUE, uom=item.uom,
@@ -7095,6 +7098,11 @@ class GoodsReceipt(AuditModel):
                 line.landed_warehouse = landed
             item = line.order_line.item
             stock_quantity = item.to_stock_quantity(line.quantity_received, line.order_line.uom)
+            if is_return and item.track_inventory:
+                from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+                # Not sent back while a backflushed run's creels hold it (O276).
+                refuse_drawing_what_is_promised(line.lot, landed, stock_quantity, action="go back to the vendor")
             # What the vendor's goods put into the accrual, to the paisa, as
             # the entry books it (O269): rounded once per line, so the shelf
             # takes the same figure the inventory account does.
@@ -7786,6 +7794,9 @@ class GoodsReceipt(AuditModel):
                 # What the replay will take off, exactly: the rule every
                 # outbound path follows (inventory/costing.py), asked of each
                 # batch as the one before it is written.
+                from apps.inventory.tracking import refuse_drawing_what_is_promised
+
+                refuse_drawing_what_is_promised(lot, warehouse, part, action="be consumed")  # O276
                 taking = component.item.cost_of_removing(warehouse, part, lot=lot)
                 cost = (taking / part).quantize(Decimal("0.00000001"))
                 StockMovement.objects.create(

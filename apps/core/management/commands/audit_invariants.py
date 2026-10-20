@@ -95,6 +95,7 @@ class Command(BaseCommand):
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
         findings += self.weighed_records_written_over_the_api(labels, sources)
+        findings += self.named_draws_past_the_promise(labels, sources)
         # The same, widened to lines a route of their own writes (shared rule B).
         findings += self.lines_not_answering_to_their_document(labels, sources)
         findings += self.pay_inputs_not_holding_their_employee(labels, sources)
@@ -1024,6 +1025,54 @@ class Command(BaseCommand):
         "purchasing/models.py:PurchaseOrderLine.component_cost": "called by nothing; reported (fix_core, g22)",
     }
     PER_UNIT_RATES = ("removal_unit_cost", "unit_cost_for", "average_cost_at")
+
+    # Doors that take a named batch off and are asked the promise elsewhere, with why.
+    PROMISE_ASKED_ELSEWHERE = {
+        "inventory/costing.py:unit_cost_for": "the costing helper itself; its callers ask",
+        "inventory/models.py:Item.cost_of_removing": "the costing helper itself; its callers ask",
+        "manufacturing/orders.py:MaterialIssueLine.post": "MaterialIssue.post asks it, its run the holder",
+    }
+
+    def named_draws_past_the_promise(self, labels, sources):
+        """
+        A door that takes a named batch off the shelf and never asks what is
+        promised (O276). Only the material issue asked, so tape on a
+        backflushed run's creels was re-batched away and the run's roll had
+        nothing to draw. Every function that prices a named batch's removal
+        (cost_of_removing(..., lot=...)) asks refuse_drawing_what_is_promised
+        too, or says above where it is asked instead.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts or "management" in path.parts:
+                    continue
+                key = f"{label}/{path.name}"
+                tree = ast.parse(text)
+                qualified = self._qualified(tree)
+                functions = [fn for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                seen = set()
+                for node in ast.walk(tree):
+                    if not (isinstance(node, ast.Call)
+                            and getattr(node.func, "attr", getattr(node.func, "id", "")) == "cost_of_removing"
+                            and any(word.arg == "lot" for word in node.keywords)):
+                        continue
+                    inner = max((fn for fn in functions if fn.lineno <= node.lineno <= fn.end_lineno),
+                                key=lambda fn: fn.lineno, default=None)
+                    if inner is None or inner in seen:
+                        continue
+                    seen.add(inner)
+                    where = f"{key}:{qualified[inner]}"
+                    if where in self.PROMISE_ASKED_ELSEWHERE:
+                        continue
+                    if "refuse_drawing_what_is_promised" in (ast.get_source_segment(text, inner) or ""):
+                        continue
+                    findings.append((
+                        "named draw past the promise",
+                        f"{where} takes a named batch off without asking refuse_drawing_what_is_promised(): "
+                        "a batch on a backflushed run's creels goes from under it.",
+                    ))
+        return findings
 
     def per_unit_withdrawal_rates(self, labels, sources):
         """
