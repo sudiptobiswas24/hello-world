@@ -307,6 +307,13 @@ def _vendor_price(row, options):
     lead = whole_number(row, "lead_time_days")
     if lead is not None:
         price.lead_time_days = lead
+    # Run twice, the file made a second price for every row: the same vendor, item, currency, break
+    # and start, two agreements where there is one (review of O280, item 7).
+    once_only(f"{vendor.code}'s price for {item.sku} in {price.currency_id and price.currency.code} from "
+              f"{format(price.min_quantity.normalize(), 'f')}" + (f", valid from {price.valid_from}" if price.valid_from else ""),
+              VendorPrice.objects.filter(vendor=vendor, item=item, currency=price.currency,
+                                         min_quantity=price.min_quantity, valid_from=price.valid_from).order_by("pk"),
+              "Change that price on the vendor prices screen instead.", column="sku")
     clean(price)
     price.save()
 
