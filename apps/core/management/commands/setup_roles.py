@@ -103,6 +103,8 @@ ROLES = {
         *crud("core", "documentsequence"),
         *crud("core", "licence"),
         *crud("core", "company", actions=("change", "view")),
+        # Where a stock adjustment reason books is the accountant's to say (O324).
+        *crud("inventory", "adjustmentreason", actions=("add", "change", "view")),
         # Go-live: the old system's records, through the screen or the
         # command. Posts invoices and confirms orders, so the controller's.
         "core.import_records",
