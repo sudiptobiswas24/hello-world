@@ -279,3 +279,28 @@ class AHandRollIsWeighedTooTests(StationApiTestCase):
         self.assertEqual(client.patch(url, {"length_m": "9999"}, format="json").status_code, 400)
         self.assertEqual(client.delete(url).status_code, 400)
         self.assertEqual(FabricRoll.objects.get(lot=lot).length_m, Decimal("500"))
+
+
+class TheAdminOffersNothingAWeighedRollRefusesTests(StationApiTestCase):
+    """Review item 3 (P2 admin): a superuser's edited POST and delete of a weighed roll answered 500."""
+
+    def test_its_page_is_read_only_and_it_is_not_deleted(self):
+        from django.test import Client
+
+        from apps.core.tests_second_factor import staff_session
+
+        from .rolls import FabricRoll
+
+        roll = self.weigh(declared="1006")
+        browser = Client()
+        staff_session(browser, User.objects.create_superuser("root", "r@x.y", "p"))
+        page = f"/admin/manufacturing/fabricroll/{roll.pk}/"
+        self.assertEqual(browser.get(page + "change/").status_code, 200)
+        answer = browser.post(page + "change/", {"length_m": "2000", "notes": "edge fray"})
+        self.assertIn(answer.status_code, (200, 302))
+        roll.refresh_from_db()
+        self.assertEqual((roll.length_m, roll.notes), (Decimal("1006"), "edge fray"))
+        self.assertEqual(browser.post(page + "delete/", {"post": "yes"}).status_code, 403)
+        browser.post("/admin/manufacturing/fabricroll/", {"action": "delete_selected", "_selected_action": [roll.pk],
+                                                          "post": "yes"})
+        self.assertTrue(FabricRoll.objects.filter(pk=roll.pk).exists())
