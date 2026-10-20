@@ -90,8 +90,9 @@ class TapeDoff(AuditModel):
 def doff_code(machine, shift, shift_date):
     """TP-261007-D-EXT1-03: day, shift, line, and the doff's number on it."""
     count = TapeDoff.objects.filter(machine=machine, shift=shift, shift_date=shift_date).count()
-    line = machine.code.replace("-", "").upper()
-    return f"TP-{shift_date:%y%m%d}-{shift.code[:1].upper()}-{line}-{count + 1:02d}"
+    from .shifts import batch_code
+
+    return batch_code("TP", machine, shift, shift_date, count)
 
 
 @transaction.atomic
