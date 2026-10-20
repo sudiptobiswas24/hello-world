@@ -206,3 +206,55 @@ class ReturnedAtWhatTheShipmentTookTests(SalesTestCase):
                                {"credit_invoices": False}, format="json")
         self.assertEqual(response.status_code, 200, response.content[:300])
         self.assertEqual(self.balance(self.cogs), Decimal("0.00"))
+
+
+from apps.core.tests_roles import RolesTestCase  # noqa: E402
+
+from .models import Invoice, InvoicePolicy  # noqa: E402
+
+
+class WhoMayCreditByReturningTests(RolesTestCase, SalesTestCase):
+    """O292: a return's credit notes post only for someone who may post invoices, as purchasing's debit notes."""
+
+    def setUp(self):
+        SalesTestCase.setUp(self)
+        RolesTestCase.setUp(self)
+
+    def take_back(self, client, delivery):
+        reply = client.post(f"/api/sales/deliveries/{delivery.pk}/customer_return/", {}, format="json")
+        self.assertEqual(reply.status_code, 200, reply.content)
+        return reply.json()["credit_notes"]
+
+    def test_a_warehouse_hand_taking_goods_back_posts_no_credit_note(self):
+        # 10 sacks at 100 shipped and invoiced; a store hand takes them back: the note waits for the AR side.
+        order = self.make_order(quantity="10", price="100")
+        delivery = self.ship(order, 10)
+        invoice = self.bill(order)
+        due = invoice.amount_due()
+        (note,) = self.take_back(self.as_("Warehouse Staff"), delivery)
+        self.assertEqual(Invoice.objects.filter(credits__isnull=False, posted=True).count(), 0)
+        self.assertEqual(invoice.amount_due(), due)
+        # The AR side posts it, and only then is the receivable cut.
+        draft = Invoice.objects.get(pk=note["id"])
+        draft.post()
+        self.assertEqual(invoice.amount_due(), due - draft.total())
+
+    def test_one_who_may_post_invoices_posts_the_return_notes(self):
+        order = self.make_order(quantity="10", price="100")
+        delivery = self.ship(order, 10)
+        self.bill(order)
+        (note,) = self.take_back(self.as_("Warehouse Staff", "AR Manager"), delivery)
+        self.assertTrue(Invoice.objects.get(pk=note["id"]).posted)
+
+    def test_a_second_return_credits_the_next_invoice_while_the_first_note_waits(self):
+        # Two shipments of 5, each invoiced: the first return's draft takes invoice A; the second takes B, not A again.
+        order = self.make_order(quantity="10", price="100", policy=InvoicePolicy.DELIVERED)
+        first = self.ship(order, 5)
+        a = self.bill(order)
+        second = self.ship(order, 5)
+        b = self.bill(order)
+        hand = self.as_("Warehouse Staff")
+        (one,) = self.take_back(hand, first)
+        (two,) = self.take_back(hand, second)
+        credited = sorted(Invoice.objects.get(pk=note["id"]).credits_id for note in (one, two))
+        self.assertEqual(credited, sorted([a.pk, b.pk]))

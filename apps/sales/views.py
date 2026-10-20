@@ -15,7 +15,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.permissions import ActionPermission, RequiredPermission
 from rest_framework.response import Response
 
-from apps.core.api import flag, money_amount, quantities_by_line, record_or_404
+from apps.core.api import flag, money_amount, posts_its_notes, quantities_by_line, record_or_404
 from apps.accounting.models import PartyTaxProfile
 from apps.accounting.serializers import PartyTaxProfileSerializer
 from apps.core.models import Party, PartyRole, to_date
@@ -718,7 +718,9 @@ class DeliveryViewSet(CustomerScopedMixin, AuditableViewSetMixin, viewsets.Model
         credit = flag(request.data, "credit_invoices", True)
         quantities = quantities_by_line(request.data.get("quantities"), delivery.lines.all(), "delivery")
         try:
-            returned = delivery.create_return(credit_invoices=credit, quantities=quantities)
+            # Its credit notes post only for whoever may post invoices; anyone else's wait as drafts (O292).
+            returned = delivery.create_return(credit_invoices=credit, quantities=quantities,
+                                              post_notes=posts_its_notes(request.user, Invoice))
         except DjangoValidationError as exc:
             raise DRFValidationError(exc.messages)
         payload = self.get_serializer(returned).data
