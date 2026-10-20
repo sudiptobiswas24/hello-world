@@ -13,7 +13,7 @@ from django.db.models.signals import pre_save
 
 from apps.core.csvrows import RowError, date, decimal, read, required, yes_no
 
-__all__ = ["Report", "RowError", "by_code", "clean", "codes", "date", "decimal", "read", "required",
+__all__ = ["Report", "RowError", "by_code", "clean", "codes", "date", "decimal", "once_only", "read", "required",
            "stamped_by", "whole_number", "yes_no"]
 
 
@@ -96,3 +96,18 @@ def whole_number(row, column, required_=False):
 def codes(row, column):
     """Several codes in one cell, split on semicolons: taxes, roles."""
     return [part.strip() for part in row.get(column, "").split(";") if part.strip()]
+
+
+def once_only(what, standing, undo, column=""):
+    """
+    The opening position comes in once: refuse a second run of what an earlier one brought in.
+
+    Every opening kind asks this before it writes anything, with `standing` the records an earlier
+    run made of the same thing that still stand (posted and not reversed). A double click on Import,
+    or a re-run after a failed cutover step, otherwise counts the position twice. A record that has
+    since been reversed no longer stands, so the way to bring a corrected figure in is to undo the
+    first, as `undo` says, and run again.
+    """
+    earlier = standing.first()
+    if earlier is not None:
+        raise RowError(column, f"{what} already came in as {earlier}; a second run would count it twice. {undo}")

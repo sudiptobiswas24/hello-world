@@ -26,9 +26,9 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
-from .base import Report, by_code, clean, date, decimal, read, required, stamped_by, yes_no  # noqa: F401
+from .base import Report, by_code, clean, date, decimal, once_only, read, required, stamped_by, yes_no  # noqa: F401
 from .base import RowError
-from .cutover import CUTOVER, CUTOVER_PER_ROW, CUTOVER_WHOLE_FILE, cutover_columns
+from .cutover import CUTOVER, CUTOVER_OPENING, CUTOVER_PER_ROW, CUTOVER_WHOLE_FILE, cutover_columns
 
 KINDS = ("parties", "employees", "customer_reps", "items", "opening_stock", "open_invoices",
          "open_bills", "opening_balances", "shipment_history", *CUTOVER)
@@ -260,6 +260,10 @@ def _employees(rows, report, options):
             report.refuse(number, "manager", " ".join(error.messages))
 
 
+# The reference the opening-balances entry carries, by which a second run finds the first.
+OPENING_BALANCES = "Opening balances"
+
+
 def _opening_stock(rows, report, options):
     """One posted adjustment a warehouse: Dr inventory / Cr the opening-balance account."""
     from apps.inventory.adjustments import AdjustmentReason, StockAdjustment, StockAdjustmentLine
@@ -287,6 +291,14 @@ def _opening_stock(rows, report, options):
                 lot = None
                 if row.get("lot"):
                     lot, _ = Lot.objects.get_or_create(item=item, code=row["lot"])
+                # Opening stock is what credited the opening-balance account, whichever reason said so.
+                once_only(
+                    f"Opening stock of {item.sku} in {warehouse.code}" + (f", lot {lot.code}" if lot else ""),
+                    StockAdjustment.objects.filter(
+                        lines__item=item, lines__lot=lot, warehouse=warehouse,
+                        reason__account_id=reason.account_id, posted=True,
+                        voided_at__isnull=True).order_by("pk"),
+                    "Void that adjustment to bring a corrected figure in.", column="sku")
                 if warehouse.pk not in by_warehouse:
                     by_warehouse[warehouse.pk] = StockAdjustment.objects.create(
                         adjustment_date=on, warehouse=warehouse, reason=reason,
@@ -335,8 +347,10 @@ def _open_document(row, options, side):
         account = company.default_receivable_account
         if account is None:
             raise RowError("", "the company has no default receivable account.")
-        if Invoice.objects.filter(customer=party, reference=reference).exists():
-            raise RowError("reference", f"{party.code} already has an invoice {reference!r}.")
+        once_only(f"{party.code}'s invoice {reference!r}",
+                  Invoice.objects.filter(customer=party, reference=reference).order_by("pk"),
+                  "Credit it in full to bring a corrected figure in under another reference.",
+                  column="reference")
         document = Invoice.objects.create(
             customer=party, invoice_date=on, reference=reference, receivable_account=account,
             currency=currency, payment_terms=terms, is_opening_balance=True)
@@ -348,8 +362,10 @@ def _open_document(row, options, side):
         account = company.default_payable_account
         if account is None:
             raise RowError("", "the company has no default payable account.")
-        if Bill.objects.filter(vendor=party, reference=reference).exists():
-            raise RowError("reference", f"{party.code} already has a bill {reference!r}.")
+        once_only(f"{party.code}'s bill {reference!r}",
+                  Bill.objects.filter(vendor=party, reference=reference).order_by("pk"),
+                  "Debit it in full to bring a corrected figure in under another reference.",
+                  column="reference")
         document = Bill.objects.create(
             vendor=party, bill_date=on, reference=reference, payable_account=account,
             currency=currency, payment_terms=terms, is_opening_balance=True)
@@ -405,7 +421,16 @@ def _opening_balances(rows, report, options):
         report.refuse(0, "--date", "Set the day the books opened (accounting, books opening) first: "
                       "opening balances are dated it.")
         return
-    entry = JournalEntry.objects.create(date=on, memo=options.get("memo") or "Opening balances")
+    try:
+        once_only("The opening balances",
+                  JournalEntry.objects.filter(reference=OPENING_BALANCES, posted=True, reverses__isnull=True,
+                                              reversed_by__isnull=True).order_by("pk"),
+                  "Reverse that entry from the journal to bring a corrected file in.")
+    except RowError as error:
+        report.refuse(0, error.column, error.message)
+        return
+    entry = JournalEntry.objects.create(date=on, reference=OPENING_BALANCES,
+                                        memo=options.get("memo") or "Opening balances")
     debits = credits = Decimal("0")
     for number, row in rows:
         try:
@@ -479,6 +504,10 @@ PER_ROW = {
     "open_bills": lambda row, options: _open_document(row, options, "purchasing"),
     **CUTOVER_PER_ROW,
 }
+# The kinds that bring the opening position in; each asks once_only() before it writes
+# (audit_invariants, "opening kind brought in twice").
+OPENING = {"opening_stock": _opening_stock, "open_invoices": _open_document, "open_bills": _open_document,
+           "opening_balances": _opening_balances, **CUTOVER_OPENING}
 WHOLE_FILE = {"employees": _employees, "opening_stock": _opening_stock,
               "opening_balances": _opening_balances, **CUTOVER_WHOLE_FILE}
 
