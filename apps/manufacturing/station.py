@@ -211,6 +211,16 @@ class VoidedMeasurement(models.Model):
         self.save(update_fields=["voided_at", "voided_by", "updated_at"])
 
 
+def check_core_in_use(core_type):
+    """
+    A core or bobbin taken out of use is not weighed on (O278): its tare is out
+    of date. Asked by every function that nets a weight against one, not only
+    by the station's views, so code that calls them directly is held too.
+    """
+    if core_type is not None and not core_type.is_active:
+        raise ValidationError(f"Core type {core_type.code} is no longer in use; weigh on one that is.")
+
+
 def check_supervisor(station, supervisor, operator):
     """Somebody else, who approves at this station: the rule for a typed weight."""
     if supervisor is None:
@@ -344,6 +354,7 @@ def record_roll(station, operator, machine, gross_kg, core_type, declared_m,
     Not on a contractor's loom: the contractor pays its own weavers, and
     crediting one of ours with that cloth pays for it twice.
     """
+    check_core_in_use(core_type)
     from apps.inventory.models import Lot
 
     from .machines import Machine

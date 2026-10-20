@@ -111,6 +111,9 @@ def doff_code(machine, shift, shift_date):
 def record_tape(station, operator, machine, gross_kg, bobbins, core_type, denier_readings,
                 supervisor=None, reason="", at=None, instrument=None, source="scale",
                 typed_reason="", typed_note=""):
+    from .station import check_core_in_use
+
+    check_core_in_use(core_type)
     from .machines import Machine
     from .station import LineKind, run_on
     from .station_floor import _context
