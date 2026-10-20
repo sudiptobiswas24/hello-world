@@ -457,3 +457,38 @@ class SelfApprovalThroughARevisionTests(ApprovalTestCase):
         quotation = self.sent_quote(self.rep)
         accepted = self.accept(self.revised(quotation, self.rep), self.manager)
         self.assertEqual((accepted.status_code, accepted.json()["status"]), (200, "confirmed"), accepted.content)
+
+
+class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
+    """O293: the policy's limit and the item's cost are base figures; a euro order is weighed at its own rate, 90."""
+
+    def eur_order(self, quantity, price):
+        from apps.core.models import Currency, ExchangeRate
+        from .models import SalesOrder
+
+        eur = Currency.objects.create(code="EUR", name="Euro")
+        ExchangeRate.objects.create(currency=eur, rate=Decimal("90"), valid_from=datetime.date(2026, 1, 1))
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1), currency=eur)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal(quantity),
+                                      unit_price=Decimal(price), revenue_account=self.revenue)
+        return order
+
+    def test_a_euro_order_worth_4_5_million_base_asks_the_1_million_limit(self):
+        # 10 x 5,000 EUR at 90 = 45,00,000 base against a 10,00,000 limit.
+        from .models import ApprovalPolicy
+
+        ApprovalPolicy.objects.create(code="P", name="Limit", max_order_value=Decimal("1000000"))
+        order = self.eur_order("10", "5000")
+        self.assertIn("The order is 4500000.00 in the base currency", " ".join(order.approval_reasons()))
+        with self.assertRaises(ValidationError):
+            order.confirm()
+
+    def test_a_euro_sale_at_a_95_percent_margin_is_not_held_by_a_20_percent_floor(self):
+        # Cost 4 base a unit; 1 EUR a unit at 90 is 90 base: (900 - 40) / 900 = 95.56%, not 1 - 4 = -300%.
+        from .models import ApprovalPolicy
+
+        ApprovalPolicy.objects.create(code="P", name="Floor", min_margin_percent=Decimal("20"))
+        order = self.eur_order("10", "1")
+        self.assertEqual(order.margin_percent(), Decimal("95.56"))
+        order.confirm()
+        self.assertEqual(order.status, OrderStatus.CONFIRMED)

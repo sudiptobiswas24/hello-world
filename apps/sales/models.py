@@ -83,6 +83,8 @@ from apps.accounting.mixins import (
 
 from apps.accounting.settlement import (
     allocated_on,
+    in_base,
+    in_the_base,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
@@ -764,7 +766,11 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
     def policy_figures(self):
         """What the policy weighs, as the order stands: each line's discount, the total, the margin."""
         return {"discounts": {line.pk: line.discount_percent for line in self.lines.all()},
-                "total": self.total(), "margin": self.margin_percent()}
+                "total": self.total_in_base(), "margin": self.margin_percent()}
+
+    def total_in_base(self):
+        """The order's total in the base currency, at its own date's rate, as the policy's limits are (O293)."""
+        return in_base(self.total(), self.currency, self.order_date)
 
     def cost_total(self):
         """
@@ -798,7 +804,9 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
 
     def margin_percent(self):
         """Gross margin over the costed lines, or None if nothing is costed."""
-        revenue = self.costed_revenue()
+        # Revenue in the base currency, as the cost is: a euro's revenue against a rupee cost read
+        # a 95.6% margin as -300% (O293).
+        revenue = in_base(self.costed_revenue(), self.currency, self.order_date)
         if revenue <= 0:
             return None
         return round_money((revenue - self.cost_total()) / revenue * Decimal("100"))
@@ -841,10 +849,10 @@ class SalesOrder(PlacedWhereTheGoodsGo, Extensible, TaxedDocumentMixin, ChangesW
                     breaches.append((("discounts", line.pk), line.discount_percent, False,
                                      f"'{line.label()}' is discounted {line.discount_percent}%, above the "
                                      f"{policy.max_discount_percent}% limit."))
-        total = self.total()
+        total = self.total_in_base()
         if policy.max_order_value is not None and total > policy.max_order_value:
             breaches.append((("total",), total, False,
-                             f"The order is {total}, above the {policy.max_order_value} limit."))
+                             f"The order is {total}{in_the_base(self)}, above the {policy.max_order_value} limit."))
         if policy.min_margin_percent is not None:
             margin = self.margin_percent()
             if margin is not None and margin < policy.min_margin_percent:
