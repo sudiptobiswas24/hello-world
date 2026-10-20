@@ -481,14 +481,18 @@ def leaver_login(user, day):
 
 def check_still_working(by, on_date=None):
     """
-    Every decision a person takes for the plant (leave, hours, claims) is taken by someone working
-    here on its day: employed and active, as the floor's sign-offs already ask (O300). A manager who
-    left on 1 June does not approve a report's leave in October.
+    Every decision a person takes for the plant (leave, hours, claims) is taken by someone employed
+    here on its day (O300). A manager who left on 1 June does not approve a report's leave in
+    October. Employed is enough: a manager On Leave, still on the roll, may decide (O332).
     """
     day = to_date(on_date) if on_date is not None else timezone.localdate()
-    if by is not None and not by.is_working_on(day):
-        raise ValidationError(f"{by} is not working here on {day:%d-%m-%Y} "
-                              f"({by.get_employment_status_display().lower()}); somebody who is decides.")
+    if by is None:
+        return
+    if by.has_left_by(day):
+        raise ValidationError(f"{by} has left (leaving date {to_date(by.termination_date):%d-%m-%Y}); "
+                              "somebody still here decides.")
+    if by.employment_status == EmploymentStatus.TERMINATED or not by.is_employed_on(day):
+        raise ValidationError(f"{by} is not employed here on {day:%d-%m-%Y}; somebody who is decides.")
 
 
 class LeavePolicy(AuditModel):
