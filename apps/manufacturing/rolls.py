@@ -320,18 +320,16 @@ class FabricRoll(AuditModel):
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        """A weighed roll is not deleted while its booking or its stock stands (O272)."""
+        """
+        A weighed roll is never deleted (O272; O338, decided): voided or not,
+        it is the record of what was weighed, the scale reading it took and
+        the code it was given. Deleted after its booking was voided, it freed
+        both: the reading could weigh another roll and the code was built again.
+        """
         if self.is_weighed():
-            entry = self.entry
-            if entry is not None and entry.posted and not entry.is_voided():
-                raise ValidationError(
-                    f"{self.lot} was weighed and booked by {entry}, which is posted. Void the booking; "
-                    "the roll stays as the record of what was weighed.")
-            standing = self.lot.on_hand_at()
-            if standing != 0:
-                raise ValidationError(
-                    f"{self.lot} was weighed and {format(standing.normalize(), 'f')} kg of it stand on the "
-                    "shelf. A roll deleted leaves its stock with no roll, no weaver and no trace.")
+            raise ValidationError(
+                f"{self.lot} was weighed; the roll stands as the record of what was weighed, voided or not. "
+                "Void its booking to correct it.")
         return super().delete(*args, **kwargs)
 
     def _check_against_entry(self):

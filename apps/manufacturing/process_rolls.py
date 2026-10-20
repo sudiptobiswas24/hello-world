@@ -390,11 +390,10 @@ def weigh_roll(station, operator, machine, gross_kg, core_type, metres, supervis
             raise ValidationError(f"Say why a roll off {off} is taken.")
         # Nobody concedes it at the station (decision 23, O204): the floor's note, kept.
         values["reason"] = reason[:255]
-    count = ProcessRoll.objects.filter(machine=machine, shift=shift,
-                                       shift_date=shift_date).count()
     from .shifts import batch_code
 
-    code = batch_code(PREFIX[kind], machine, shift, shift_date, count)
+    code = batch_code(PREFIX[kind], machine, shift, shift_date,
+                      lambda stem: ProcessRoll.objects.filter(code__startswith=stem).values_list("code", flat=True))
     roll = ProcessRoll.objects.create(
         code=code, kind=kind, mount=mount, station=station, machine=machine,
         core_type=core_type, gross_kg=gross, scale_reading=reading,

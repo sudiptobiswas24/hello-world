@@ -323,14 +323,9 @@ def specification_for(item, on_date):
 
 def roll_code(machine, shift, shift_date):
     """FR-261007-D-L17-07: day, shift, loom, and the roll's number on it."""
-    from .rolls import FabricRoll
-
-    count = FabricRoll.objects.filter(
-        machine=machine, shift=shift, shift_date=shift_date
-    ).count()
     from .shifts import batch_code
 
-    return batch_code("FR", machine, shift, shift_date, count)
+    return batch_code("FR", machine, shift, shift_date)
 
 
 # -- weighing a roll ----------------------------------------------------
