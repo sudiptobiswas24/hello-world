@@ -492,3 +492,16 @@ class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
         self.assertEqual(order.margin_percent(), Decimal("95.56"))
         order.confirm()
         self.assertEqual(order.status, OrderStatus.CONFIRMED)
+
+    def test_an_order_with_no_rate_on_its_date_is_refused_at_confirmation_in_words(self):
+        from apps.core.models import Currency, ExchangeRate
+        from .models import SalesOrder
+
+        gbp = Currency.objects.create(code="GBP", name="Pound")
+        ExchangeRate.objects.create(currency=gbp, rate=Decimal("105"), valid_from=datetime.date(2026, 4, 1))
+        order = SalesOrder.objects.create(customer=self.customer, order_date=datetime.date(2026, 3, 1), currency=gbp)
+        SalesOrderLine.objects.create(order=order, item=self.item, uom=self.uom, quantity=Decimal("10"),
+                                      unit_price=Decimal("10"), revenue_account=self.revenue)
+        self.assertIn("No exchange rate for GBP on 01-03-2026", " ".join(order.approval_reasons()))
+        with self.assertRaisesMessage(ValidationError, "No exchange rate for GBP on 01-03-2026"):
+            order.confirm()
