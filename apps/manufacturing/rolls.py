@@ -57,9 +57,10 @@ class FabricRoll(AuditModel):
     """
 
     lot = models.OneToOneField(
-        "inventory.Lot", on_delete=models.CASCADE, related_name="fabric_roll",
+        "inventory.Lot", on_delete=models.PROTECT, related_name="fabric_roll",
         help_text="The batch this roll is. One roll, one batch — a roll is "
-                  "the unit the plant moves, cuts and traces.",
+                  "the unit the plant moves, cuts and traces. Protected (O341): "
+                  "a batch deleted took its weighed roll with it, past the roll's own refusal.",
     )
     specification = models.ForeignKey(
         "FabricSpecification", null=True, blank=True, on_delete=models.PROTECT,
