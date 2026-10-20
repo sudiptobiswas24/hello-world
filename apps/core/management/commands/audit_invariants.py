@@ -305,6 +305,11 @@ class Command(BaseCommand):
         one kilo written off at an average of 10.005 moved the shelf 10.005
         and the books 10.00. Every writer says what it booked, in the same
         call, so a new path cannot leave it out.
+
+        This sees two spellings and is the early word only: the rule is
+        StockMovement.save (refuse_a_guess_from_application_code), which
+        refuses a goods movement application code wrote without its money
+        however the call was spelt (O326).
         """
         findings = []
         for label in labels:
