@@ -7,6 +7,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 
 from apps.accounting.models import Account, AccountType
+from .payroll import EmployeeCompensation
 
 from .attendance import AttendanceDay, AttendanceStatus, import_punches
 from .expenses import ExpenseClaim
@@ -202,3 +203,123 @@ class WhoIsStillOnTheRoll(OutputsTestCase):
         run = self.pay_run()
         with self.assertRaises(ValidationError):
             run.calculate()
+
+
+class WhoReadsWhat(OutputsTestCase):
+    def test_the_floor_and_a_line_manager_do_not_read_provident_fund_and_insurance_numbers(self):
+        """M13: UAN and ESI numbers are the personnel and payroll offices'; a storekeeper's list of names needs neither."""
+        person = self.employee("E1")
+        person.uan, person.esi_number = "100000000001", "2200012345"
+        person.save()
+        for role in ("Quality Inspector", "Maintenance", "Production Supervisor", "Process Engineer", "Line Manager"):
+            body = self.as_role(role).get("/api/hr/employees/").content.decode()
+            self.assertNotIn("100000000001", body, role)
+            self.assertNotIn("2200012345", body, role)
+
+
+class APayDateIsNearItsPeriod(OutputsTestCase):
+    def test_a_run_is_not_posted_for_a_pay_date_years_from_its_period(self):
+        """M12: June 2026 posted with a pay date of 30 June 2062 (a typed year) books wages 36 years ahead."""
+        person = self.employee("E1")
+        self.pay(person, self.salary, "5000")
+        run = self.pay_run(pay_date=D(2062, 6, 30))
+        run.calculate()
+        with self.assertRaises(ValidationError):
+            run.post()
+
+
+class TheContractLabourRegister(OutputsTestCase):
+    def test_a_contractor_who_has_stopped_brings_no_new_worker(self):
+        """M14: an inactive contractor (licence surrendered) is not entered a new worker on the register."""
+        from apps.core.models import Party
+
+        from .contract_labour import ContractWorker, LabourContractor
+
+        party = Party.objects.create(code="CON1", name="Sai Labour")
+        contractor = LabourContractor.objects.create(party=party, licence_number="L1", licence_valid_to=D(2027, 3, 31),
+                                                     work_nature="Loading", max_workers=5, is_active=False)
+        with self.assertRaises(ValidationError):
+            ContractWorker.objects.create(contractor=contractor, name="Ravi", gender="male", daily_wage=Decimal("600"),
+                                          joined_on=D(2026, 10, 1))
+
+    def test_the_licence_headcount_is_not_lowered_below_those_working(self):
+        """M15: 3 workers on a licence for 5; the licence is edited down to 2 over the API."""
+        from apps.core.models import Party
+
+        from .contract_labour import ContractWorker, LabourContractor
+
+        party = Party.objects.create(code="CON1", name="Sai Labour")
+        contractor = LabourContractor.objects.create(party=party, licence_number="L1", licence_valid_to=D(2027, 3, 31),
+                                                     work_nature="Loading", max_workers=5)
+        for number in range(3):
+            ContractWorker.objects.create(contractor=contractor, name=f"W{number}", gender="male",
+                                          daily_wage=Decimal("600"), joined_on=D(2026, 10, 1))
+        said = self.as_role("HR Admin").patch(f"/api/hr/labour-contractors/{contractor.pk}/", {"max_workers": 2},
+                                              format="json")
+        self.assertEqual(said.status_code, 400, said.content)
+
+
+class ARateChangeIsPaidForItsDays(OutputsTestCase):
+    """M16: calc_audit2_people: last day 20,181.82; first day 24,000.00; mid-month 22,000.00; joiner 11,090.91."""
+
+    def salary_for(self, rows, hire=D(2020, 1, 1)):
+        person = self.employee("E1", hire=hire)
+        self.salary.reduces_for_unpaid_leave = True
+        self.salary.save()
+        for amount, start, end in rows:
+            EmployeeCompensation.objects.create(employee=person, component=self.salary, amount=Decimal(amount),
+                                                effective_from=start, effective_to=end)
+        run = self.pay_run()
+        run.calculate()
+        return run.payslips.get().gross()
+
+    def test_a_rise_on_the_last_day_of_the_month(self):
+        self.assertEqual(self.salary_for([("20000", D(2020, 1, 1), D(2026, 6, 29)), ("24000", D(2026, 6, 30), None)]),
+                         Decimal("20181.82"))
+
+    def test_a_rise_on_the_first_day_of_the_month(self):
+        self.assertEqual(self.salary_for([("20000", D(2020, 1, 1), D(2026, 5, 31)), ("24000", D(2026, 6, 1), None)]),
+                         Decimal("24000.00"))
+
+    def test_a_rise_in_the_middle_of_the_month(self):
+        self.assertEqual(self.salary_for([("20000", D(2020, 1, 1), D(2026, 6, 15)), ("24000", D(2026, 6, 16), None)]),
+                         Decimal("22000.00"))
+
+    def test_a_joiner_on_the_16th_with_a_rise_on_the_23rd(self):
+        self.assertEqual(self.salary_for([("20000", D(2020, 1, 1), D(2026, 6, 22)), ("24000", D(2026, 6, 23), None)],
+                                         hire=D(2026, 6, 16)), Decimal("11090.91"))
+
+
+class APolicyChangedForNextYearLeavesThisYearAlone(OutputsTestCase):
+    def test_raising_the_allowance_from_2027_does_not_restate_2026(self):
+        """M17: the policy's own docstring: 'changing next year's entitlement is a policy change rather than an edit to
+        everybody's history'. 12 days a year in 2026; 15 from 2027 (edited on 2 January 2027): 2026 still 12."""
+        person = self.employee("E1")
+        policy = LeavePolicy.objects.create(code="PL", name="Privilege", leave_type="vacation",
+                                            annual_days=Decimal("12"))
+        before = policy.entitlement_for(person, 2026)
+        policy.annual_days = Decimal("15")
+        policy.save()
+        self.assertEqual(policy.entitlement_for(person, 2026), before)
+
+
+class WhenSomebodyLeaves(OutputsTestCase):
+    def test_a_leavers_login_stops_signing_in_on_the_day_they_go(self):
+        """M18: E1, a Stores Manager's login, left on 30 September 2026; on 20 October the login is off."""
+        from django.contrib.auth.models import User
+
+        person = self.employee("E1")
+        self.as_role("Stores Manager", person)
+        person.terminate(D(2026, 9, 30))
+        self.assertFalse(User.objects.get(pk=person.user_id).is_active)
+
+
+class NobodyIsLeftOffARunInSilence(OutputsTestCase):
+    def test_an_employee_with_no_pay_set_up_is_named_when_the_run_is_worked_out(self):
+        """M19: E1 paid 5,000; ZED9, employed all June, has no compensation row: the run says ZED9 was left out."""
+        paid, forgotten = self.employee("E1"), self.employee("ZED9")
+        self.pay(paid, self.salary, "5000")
+        run = self.pay_run()
+        said = self.as_role("Payroll Officer").post(f"/api/hr/pay-runs/{run.pk}/calculate/", {}, format="json")
+        self.assertEqual(said.status_code, 200, said.content)
+        self.assertIn(forgotten.employee_number, said.content.decode())
