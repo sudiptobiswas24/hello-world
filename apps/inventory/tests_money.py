@@ -12,10 +12,12 @@ books 10.01, and so does the shelf.
 """
 
 from decimal import Decimal
+from pathlib import Path
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+from . import models as inventory_models
 from .costing import CostingMethod, cost_of_removing, replay
 from .models import Item, MovementType, StockMovement, Warehouse
 from .snapshots import fold_position
@@ -171,3 +173,70 @@ class AMovementsMoneyHasTheSignOfItsQuantity(AdjustmentTestCase):
         self.movement("issue", "-1", "-10.00")
         self.movement("receipt", "1", "0.00")
         self.assertEqual(self.item.valuation_at(self.warehouse), (D("2"), D("10.00")))
+
+
+# O326 (audit2_stores R2): a movement written by application code without its money is refused however the call
+# is spelt, at what StockMovement.save is given; each spelling runs here as if from an application module.
+APP_SOURCE = str(Path(inventory_models.__file__).with_name("example.py"))
+
+
+class EverySpellingIsSeenWhereItIsWritten(AdjustmentTestCase):
+    def setUp(self):
+        super().setUp()
+        self.stock("5", "10.005")
+
+    def written_by_the_application(self, call):
+        """Run `call` with an application module, not a test, as its writer."""
+        names = {"StockMovement": StockMovement, "Movement": StockMovement, "inventory_models": inventory_models,
+                 "item": self.item, "fields": {"warehouse": self.warehouse, "movement_type": "issue",
+                                               "uom": self.item.uom, "quantity": D("-1"),
+                                               "occurred_at": timezone.now()},
+                 "kw": {"item": self.item, "warehouse": self.warehouse, "movement_type": "issue",
+                        "uom": self.item.uom, "occurred_at": timezone.now()}, "D": D}
+        exec(compile(call, APP_SOURCE, "exec"), names)
+
+    def assertRefused(self, call):
+        before = StockMovement.objects.count()
+        with self.assertRaises(ValidationError) as caught:
+            self.written_by_the_application(call)
+        self.assertIn("without its money", str(caught.exception))
+        self.assertEqual(StockMovement.objects.count(), before)
+
+    def test_a_qualified_class(self):
+        self.assertRefused("inventory_models.StockMovement.objects.create(quantity=D('-1'), **kw)")
+
+    def test_the_related_manager(self):
+        self.assertRefused("item.movements.create(quantity=D('-1'), **{k: v for k, v in kw.items() if k != 'item'})")
+
+    def test_get_or_create(self):
+        self.assertRefused("StockMovement.objects.get_or_create(quantity=D('-1'), **kw)")
+
+    def test_an_alias(self):
+        self.assertRefused("Movement.objects.create(quantity=D('-1'), **kw)")
+
+    def test_value_none_is_not_saying_it(self):
+        self.assertRefused("StockMovement.objects.create(quantity=D('-1'), value=None, **kw)")
+
+    def test_a_movement_saved_by_hand(self):
+        self.assertRefused("m = StockMovement(quantity=D('-1'), **kw)\nm.save()")
+
+    def test_a_dict_of_fields_is_not_waved_through_without_value(self):
+        self.assertRefused("StockMovement.objects.create(item=item, **fields)")
+
+    def test_an_inbound_movement_too(self):
+        self.assertRefused("StockMovement.objects.create(quantity=D('1'), unit_cost=D('10.005'), "
+                           "**{**kw, 'movement_type': 'receipt'})")
+
+    def test_one_that_says_its_money_passes(self):
+        self.written_by_the_application("StockMovement.objects.create(quantity=D('-1'), value=D('-10.01'), **kw)")
+        self.assertEqual(self.item.valuation_at(self.warehouse)[1], D("40.02"))
+
+    def test_a_value_only_movement_says_it_in_its_adjustment(self):
+        self.written_by_the_application(
+            "StockMovement.objects.create(quantity=D('0'), value_adjustment=D('3'), **{**kw, 'movement_type': "
+            "'adjustment'})")
+
+    def test_a_test_fixture_may_still_leave_it_out(self):
+        StockMovement.objects.create(quantity=D("-1"), **{"item": self.item, "warehouse": self.warehouse,
+                                                          "movement_type": "issue", "uom": self.item.uom,
+                                                          "occurred_at": timezone.now()})
