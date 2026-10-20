@@ -51,6 +51,7 @@ from .models import (
     stock_valuation,
 )
 from .serializers import (
+    sees_stock_value,
     AdjustmentReasonSerializer,
     ItemUnitSerializer,
     ItemAttributeSerializer,
@@ -131,12 +132,12 @@ class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"])
     def stock(self, request, pk=None):
-        """Where this item is, and what it is worth."""
+        """Where this item is, and what it is worth (the worth to whoever may read it)."""
         item = self.get_object()
         report = stock_valuation(
             as_of=request.query_params.get("as_of"), item=item
         )
-        return Response({
+        return Response(_without_money(request, {
             "total_value": report["total_value"],
             "rows": [
                 {
@@ -147,7 +148,7 @@ class ItemViewSet(AuditableViewSetMixin, viewsets.ModelViewSet):
                 }
                 for row in report["rows"]
             ],
-        })
+        }))
 
     @action(detail=True, methods=["get"])
     def ledger(self, request, pk=None):
@@ -438,6 +439,19 @@ class StockReservationViewSet(viewsets.ReadOnlyModelViewSet):
     search_fields = ["item__sku", "item__name"]
 
 
+REPORT_MONEY = ("total_value", "value", "unit_cost")
+
+
+def _without_money(request, report):
+    """The report as the person may read it: Warehouse Staff and Quality Inspectors see quantities (O331)."""
+    if sees_stock_value(request):
+        return report
+    report = {key: value for key, value in report.items() if key not in REPORT_MONEY}
+    report["rows"] = [{key: value for key, value in row.items() if key not in REPORT_MONEY}
+                      for row in report["rows"]]
+    return report
+
+
 class StockReportViewSet(viewsets.ViewSet):
     """Reading the stock ledger back. Every one of these is read-only."""
 
@@ -447,6 +461,11 @@ class StockReportViewSet(viewsets.ViewSet):
     # is nothing here that can.
     permission_classes = [IsAuthenticated, RequiredPermission, ActionPermission]
     required_permission = "inventory.view_stockmovement"
+    # Reports that are nothing but money; the others answer their quantities to anyone who reads the ledger (O331).
+    action_permission_map = {
+        "reconciliation": "inventory.view_stock_value",
+        "movements": "inventory.view_stock_value",
+    }
 
     def list(self, request):
         return Response({
@@ -467,7 +486,7 @@ class StockReportViewSet(viewsets.ViewSet):
             warehouse=get_object_or_404(Warehouse, pk=params["warehouse"]) if params.get("warehouse") else None,
             item=get_object_or_404(Item, pk=params["item"]) if params.get("item") else None,
         )
-        return Response({
+        return Response(_without_money(request, {
             "as_of": report["as_of"],
             "total_value": report["total_value"],
             "rows": [
@@ -486,7 +505,7 @@ class StockReportViewSet(viewsets.ViewSet):
                 }
                 for row in report["rows"]
             ],
-        })
+        }))
 
     @action(detail=False, methods=["get"], url_path="reconciliation")
     def reconciliation(self, request):
@@ -535,7 +554,7 @@ class StockReportViewSet(viewsets.ViewSet):
         if not since:
             raise DRFValidationError("since is required, as a date.")
         report = _run(slow_moving, since)
-        return Response({
+        return Response(_without_money(request, {
             "since": report["since"],
             "total_value": report["total_value"],
             "rows": [
@@ -548,12 +567,12 @@ class StockReportViewSet(viewsets.ViewSet):
                 }
                 for row in report["rows"]
             ],
-        })
+        }))
 
     @action(detail=False, methods=["get"])
     def negative(self, request):
         report = negative_stock(as_of=request.query_params.get("as_of"))
-        return Response({
+        return Response(_without_money(request, {
             "rows": [
                 {
                     "item": row["item"].sku,
@@ -565,7 +584,7 @@ class StockReportViewSet(viewsets.ViewSet):
                 for row in report["rows"]
             ],
             "unexpected": len(report["unexpected"]),
-        })
+        }))
 
     @action(detail=False, methods=["get"])
     def movements(self, request):

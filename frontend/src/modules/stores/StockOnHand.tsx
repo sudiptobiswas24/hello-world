@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useSearchParams } from "react-router";
 
 import { useGet, useReference } from "../../api/hooks";
+import { useAccess } from "../../auth/me";
 import { count, money, quantity } from "../../lib/format";
 import { ErrorPanel } from "../../shell/ErrorPanel";
 
@@ -14,13 +15,14 @@ interface Row {
   warehouse_id: number;
   warehouse_name: string;
   quantity: string;
-  unit_cost: string;
+  unit_cost?: string;
   value: string;
 }
 
 interface Valuation {
   as_of: string | null;
-  total_value: string;
+  // Absent for the floor, who read quantities and not what stock is worth (O331).
+  total_value?: string;
   rows: Row[];
 }
 
@@ -42,6 +44,7 @@ export default function StockOnHand() {
   const search = (params.get("q") ?? "").trim().toLowerCase();
   const warehouses = useReference<Warehouse>("/api/inventory/warehouses/");
   const report = useGet<Valuation>("/api/inventory/stock-reports/valuation/", warehouse ? { warehouse } : undefined);
+  const worth = useAccess().can("inventory.view_stock_value");
 
   const set = (key: string, value: string) => setParams((current) => {
     const next = new URLSearchParams(current);
@@ -73,7 +76,7 @@ export default function StockOnHand() {
       {report.isError ? <ErrorPanel error={report.error} retry={() => void report.refetch()} /> : (
         <>
           <div className="tiles">
-            <div className="tile"><span>Worth</span><strong>{report.data ? money(report.data.total_value) : "…"}</strong></div>
+            {worth && <div className="tile"><span>Worth</span><strong>{report.data ? money(report.data.total_value) : "…"}</strong></div>}
             <div className="tile"><span>Lines held</span><strong>{report.data ? count(report.data.rows.length) : "…"}</strong></div>
           </div>
           <div className="table-wrap">
@@ -81,18 +84,17 @@ export default function StockOnHand() {
               <thead>
                 <tr>
                   <th scope="col">Item</th><th scope="col">Where</th>
-                  <th scope="col" className="k-quantity">On hand</th><th scope="col" className="k-money">Unit cost</th>
-                  <th scope="col" className="k-money">Worth</th>
+                  <th scope="col" className="k-quantity">On hand</th>
+                  {worth && <><th scope="col" className="k-money">Unit cost</th><th scope="col" className="k-money">Worth</th></>}
                 </tr>
               </thead>
               <tbody>
-                {report.isPending ? <tr className="skeleton"><td colSpan={5}><span /></td></tr> : rows.map((row) => (
+                {report.isPending ? <tr className="skeleton"><td colSpan={worth ? 5 : 3}><span /></td></tr> : rows.map((row) => (
                   <tr key={`${row.item_id}-${row.warehouse_id}`}>
                     <td><strong>{row.item}</strong> {row.item_name}</td>
                     <td>{row.warehouse}</td>
                     <td className="k-quantity">{quantity(row.quantity)} <small className="muted">{row.uom}</small></td>
-                    <td className="k-money">{money(row.unit_cost, 4)}</td>
-                    <td className="k-money">{money(row.value)}</td>
+                    {worth && <><td className="k-money">{money(row.unit_cost, 4)}</td><td className="k-money">{money(row.value)}</td></>}
                   </tr>
                 ))}
               </tbody>

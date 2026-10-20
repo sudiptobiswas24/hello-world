@@ -85,6 +85,16 @@ class ItemSerializer(ExtensibleSerializerMixin, serializers.ModelSerializer):
         read_only_fields = ["standard_cost"]
 
 
+# What a movement says about money. Warehouse Staff and Quality Inspectors read the stock ledger for its quantities
+# and see none of these (O331).
+MOVEMENT_MONEY = ("unit_cost", "value", "value_adjustment")
+
+
+def sees_stock_value(request):
+    """Whether the person asking may read what stock is worth; no request (code, the shell) reads everything."""
+    return request is None or request.user.has_perm("inventory.view_stock_value")
+
+
 class StockMovementSerializer(serializers.ModelSerializer):
     # Named, so the stock ledger reads without a call per row.
     item_sku = serializers.CharField(source="item.sku", read_only=True)
@@ -104,6 +114,13 @@ class StockMovementSerializer(serializers.ModelSerializer):
         # when it is written; document_quantity is what the paperwork
         # said, and is not something a caller sets.
         read_only_fields = ["document_quantity"]
+
+    def to_representation(self, movement):
+        row = super().to_representation(movement)
+        if not sees_stock_value(self.context.get("request")):
+            for field in MOVEMENT_MONEY:
+                row.pop(field, None)
+        return row
 
 
 # -- the documents -----------------------------------------------------
