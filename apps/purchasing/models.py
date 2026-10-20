@@ -76,6 +76,8 @@ from apps.inventory.models import (
 )
 from apps.accounting.settlement import (
     allocated_on,
+    in_base,
+    in_the_base,
     amount_overdue,
     installment_schedule,
     oldest_overdue,
@@ -1492,7 +1494,9 @@ class Budget(AuditModel):
                 continue
             # A debit note gives the money back to the budget it came from.
             sign = Decimal("-1") if line.bill.is_debit_note() else Decimal("1")
-            total += sign * line.net_amount()
+            # In the base currency, at the rate the bill posted at, as the budget is (O293).
+            total += sign * in_base(line.net_amount(), line.bill.currency, line.bill.bill_date,
+                                    rate=line.bill.exchange_rate)
         return total
 
     def committed(self):
@@ -1516,7 +1520,7 @@ class Budget(AuditModel):
             if unbilled <= 0:
                 continue
             share = unbilled / line.quantity if line.quantity else Decimal("0")
-            total += round_money(line.net_amount() * share)
+            total += line.order.in_base(line.net_amount() * share)
         return total
 
     def requested(self):
@@ -1919,9 +1923,10 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
             budget = Budget.for_account(account, self.order_date)
             if budget is None:
                 continue
-            if line.net_amount() > budget.available():
+            value = self.in_base(line.net_amount())  # a budget is a base figure (O293)
+            if value > budget.available():
                 reasons.append(
-                    f"'{line.label()}' is {line.net_amount()} against {budget.available()} "
+                    f"'{line.label()}' is {value}{in_the_base(self)} against {budget.available()} "
                     f"left on budget {budget.code}."
                 )
         return reasons
@@ -1929,8 +1934,15 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
     def policy_figures(self):
         """What the policy weighs, as the order stands: the total, each line's value and its price a unit."""
         lines = list(self.lines.all())
-        return {"total": self.total(), "lines": {line.pk: line.total() for line in lines},
+        return {"total": self.total_in_base(), "lines": {line.pk: self.in_base(line.total()) for line in lines},
                 "prices": {line.pk: net_unit_price(line) for line in lines}}
+
+    def in_base(self, amount):
+        """A figure of this order in the base currency, at its own date's rate, as limits and budgets are (O293)."""
+        return in_base(amount, self.currency, self.order_date)
+
+    def total_in_base(self):
+        return self.in_base(self.total())
 
     def policy_breaches(self):
         """
@@ -1942,16 +1954,17 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
         if policy is None:
             return []
         breaches = []
-        total = self.total()
+        total = self.total_in_base()
         if policy.max_order_value is not None and total > policy.max_order_value:
             breaches.append((("total",), total, False,
-                             f"The order is {total}, above the {policy.max_order_value} limit."))
+                             f"The order is {total}{in_the_base(self)}, above the {policy.max_order_value} limit."))
         lines = list(self.lines.all())
         if policy.max_line_value is not None:
             for line in lines:
-                if line.total() > policy.max_line_value:
-                    breaches.append((("lines", line.pk), line.total(), False,
-                                     f"'{line.label()}' is {line.total()}, above the "
+                value = self.in_base(line.total())
+                if value > policy.max_line_value:
+                    breaches.append((("lines", line.pk), value, False,
+                                     f"'{line.label()}' is {value}{in_the_base(self)}, above the "
                                      f"{policy.max_line_value} line limit."))
         if policy.require_approval_without_vendor_price:
             for line in lines:
@@ -1986,17 +1999,18 @@ class PurchaseOrder(Extensible, TaxedDocumentMixin, ChangesWithinItsApproval, Ap
         policy = PurchaseApprovalPolicy.active()
         if policy is None or not policy.tiers.exists():
             return
-        groups = policy.authorised_groups(self.total())
+        total = self.total_in_base()  # the tiers' limits are base figures (O293)
+        groups = policy.authorised_groups(total)
         if by is None:
             raise ValidationError(
-                f"An order of {self.total()} needs a named approver from "
+                f"An order of {total}{in_the_base(self)} needs a named approver from "
                 + ", ".join(str(group) for group in groups) + "."
             )
         if by.is_superuser:
             return
         if not by.groups.filter(pk__in=[group.pk for group in groups]).exists():
             raise ValidationError(
-                f"{by} cannot approve {self.total()}. That needs "
+                f"{by} cannot approve {total}{in_the_base(self)}. That needs "
                 + (", ".join(str(group) for group in groups) or "a higher limit than any "
                    "tier grants") + "."
             )
