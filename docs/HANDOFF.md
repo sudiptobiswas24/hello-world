@@ -279,6 +279,10 @@ built.
    - (O95) whether a vendor may use an invoice number again in the same
      financial year once its first bill has been debited in full (the code
      keeps the number taken);
+   - (g23, audit2_people P6) TDS on salary (section 192 of the 1961 Act,
+     392 of the 2025 Act), Forms 24Q and 16, is not built: required once
+     any employee's salary passes the exemption; to be built before the
+     first such month, with the accountant's slabs and regime;
    - whether GSTR-1's invoice value for a scrap invoice carries the
      income-tax TCS (the code includes it: 24,072.00 on 20,000.00 taxable;
      the taxable value rightly leaves it out);
