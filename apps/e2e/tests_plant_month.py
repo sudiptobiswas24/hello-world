@@ -56,7 +56,6 @@ does the same.
 import datetime
 from contextlib import contextmanager
 from decimal import Decimal
-from unittest import expectedFailure
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -1435,13 +1434,12 @@ class PlantFloorTests(StationApiTestCase):
         self.assertEqual(self.tape_value_after_rebatch, self.tape_value_before_rebatch)
         self.assertEqual(self.inventory_after_rebatch, self.inventory_before_rebatch)
 
-    @expectedFailure
     def test_the_shelf_moves_with_the_inventory_account(self):
         """
         O269: two doffs of 56 kg at the run's planned 95.83505100 a kilo are each 5,366.762856.
-        ProductionEntry.post books each rounded, 5,366.76; the movements keep the unrounded value, which
-        the shelf sums to 10,733.53. The ledger holds 10,733.52. One instance of the shelf and the ledger
-        keeping money to different places; fixed once for every path, not here alone.
+        ProductionEntry.post books each rounded, 5,366.76, and each movement keeps that money, so the
+        shelf moves 10,733.52 with the ledger rather than summing the unrounded 10,733.53. One
+        instance of the shelf and the ledger keeping money to different places, fixed for every path.
         """
         moved = sum((item.stock_value_at(self.plant) for item in self.items), D("0")) - self.shelf_before
         self.assertEqual(self.bal(self.inventory), moved)

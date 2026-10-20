@@ -281,8 +281,8 @@ class Command(BaseCommand):
                      (fert, "45000", "10.60", godown, "A-02"), (rice, "20000", "8.30", godown, "B-01")]
             for it, qty, cost, where, bin_code in shelf:
                 Movement.objects.create(item=it, warehouse=where, bin=bins.get(bin_code), movement_type="receipt",
-                                        uom=it.uom, quantity=D(qty), unit_cost=D(cost), occurred_at=stamp(opened, 8),
-                                        notes="Opening stock")
+                                        uom=it.uom, quantity=D(qty), unit_cost=D(cost), value=D(qty) * D(cost),
+                                        occurred_at=stamp(opened, 8), notes="Opening stock")
             # The shelves' value into the books, as a cutover does it.
             value = sum((D(qty) * D(cost) for _, qty, cost, _, _ in shelf), D("0"))
             entry = M("accounting.JournalEntry").objects.create(date=opened, memo="Opening stock at cutover")

@@ -61,6 +61,7 @@ from apps.inventory.models import (
     plan_issue,
     release_for,
 )
+from apps.inventory.costing import to_paisa
 from apps.inventory.valuation import post_inventory_entry
 from apps.quality.release import check_released
 
@@ -4617,23 +4618,19 @@ class Delivery(AuditModel):
             frozen = line.unit_cost
             cost = Decimal("0")
             for chosen_lot, chosen_bin, chosen_quantity, took in plan:
-                residue = None
                 if took is not None:
                     # Back at what this batch's own share of the shipment
                     # took off the shelf, a total. The line's one rate
                     # blends every batch it came off: three of a batch
                     # costing 100 went home at 420, and a four-place rate
                     # multiplied back up left 0.10 of a whole return in
-                    # cost of sales. The rate carries eight places and the
-                    # remainder rides along as value, as a transfer's does.
-                    entry_cost = took
+                    # cost of sales. The movement carries the money (O269).
+                    entry_cost = to_paisa(took)
                     rate = (entry_cost / chosen_quantity).quantize(Decimal("0.00000001"))
-                    residue = (entry_cost - chosen_quantity * rate).quantize(
-                        Decimal("0.0001")) or None
                 elif frozen is not None:
                     # A return with nothing behind it to say what each
                     # batch took: the rate the line was given.
-                    entry_cost = chosen_quantity * frozen
+                    entry_cost = to_paisa(chosen_quantity * frozen)
                     rate = frozen
                 else:
                     # Priced against the ledger as it stands and then
@@ -4658,7 +4655,8 @@ class Delivery(AuditModel):
                     uom=item.uom,
                     quantity=chosen_quantity if is_return else -chosen_quantity,
                     unit_cost=rate,
-                    value_adjustment=residue,
+                    # What the entry books for it, to the paisa (O269).
+                    value=entry_cost if is_return else -entry_cost,
                     reference=self.number,
                     occurred_at=occurred_at,
                     notes=notes,

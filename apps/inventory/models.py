@@ -681,6 +681,16 @@ class StockMovement(AuditModel):
         help_text="Cost per unit for this movement; set from the purchase price inbound, "
                   "from the weighted average outbound.",
     )
+    # The money, not a rate: O269. The shelf summed eight-place rates and an
+    # unrounded average while the ledger booked each document to the paisa,
+    # and the two parted by paisas with nothing wrong in any one document.
+    value = models.DecimalField(
+        max_digits=18, decimal_places=2, editable=False,
+        help_text="What this movement put on its shelf (positive) or took off it "
+                  "(negative), to the paisa: exactly what its document booked to the "
+                  "inventory account. Every valuation sums these; the rate beside it "
+                  "is for reading and pricing only.",
+    )
     adjusts = models.ForeignKey(
         "self", null=True, blank=True, on_delete=models.PROTECT, related_name="adjustments",
         help_text="On a value-only movement, the inbound movement whose goods the "
@@ -771,34 +781,22 @@ class StockMovement(AuditModel):
                 )
             if self.document_quantity is None:
                 self.document_quantity = self.quantity
+            gross = self.quantity * (self.unit_cost or Decimal("0"))
             if self.uom_id != self.item.uom_id:
-                gross = self.quantity * (self.unit_cost or Decimal("0"))
                 self.quantity = self.item.to_stock_quantity(
                     self.quantity, self.uom
                 ).quantize(Decimal("0.0001"))
                 if self.unit_cost is not None:
+                    # A hundred cases at 7 is 700, and 700 over 1200 eaches
+                    # is 0.58333...: the rate is for reading. The money is
+                    # `value`, which no rate has to multiply back to, so
+                    # nothing is left over to carry as a residue (O269).
                     self.unit_cost = (
-                        (gross / self.quantity).quantize(Decimal("0.0001"))
+                        (gross / self.quantity).quantize(Decimal("0.00000001"))
                         if self.quantity
                         else Decimal("0")
                     )
-                    # A hundred cases at 7 is 700, and 700 over 1200 eaches
-                    # is 0.58333... A unit cost has four decimal places, so
-                    # quantity times cost comes back four cents short and
-                    # the stock ledger drifts from the bill the GL posted.
-                    # The residue is value with no quantity attached, which
-                    # is what value_adjustment already means — and it is
-                    # only inbound that unit_cost sets the value at all:
-                    # going out, the replay uses the running average and
-                    # ignores the cost entirely.
-                    if self.quantity > 0:
-                        residue = (gross - self.quantity * self.unit_cost).quantize(
-                            Decimal("0.0001")
-                        )
-                        if residue:
-                            self.value_adjustment = (
-                                self.value_adjustment or Decimal("0")
-                            ) + residue
+            self._settle_money(gross)
         else:
             raise ValidationError(
                 f"{self} has already been written. A stock ledger is appended "
@@ -806,6 +804,47 @@ class StockMovement(AuditModel):
             )
         super().save(*args, **kwargs)
         self._keep_valuation_foldable()
+
+    def _settle_money(self, gross):
+        """
+        The movement's money, to the paisa (O269).
+
+        Every path in the application says it: `value=`, the figure its
+        document booked to the inventory account, and audit_invariants
+        names a writer that does not. Left out (a test's fixture), it is
+        what the document would have booked: inbound its quantity at its
+        rate (at the standard, under that method), outbound what
+        cost_of_removing() says, value-only its adjustment.
+        """
+        from .costing import CostingMethod, cost_of_removing, to_paisa
+
+        if self.quantity == 0 and self.value is None and self.value_adjustment is not None:
+            self.value = to_paisa(self.value_adjustment)
+        if self.value is None:
+            if self.quantity > 0:
+                if self.item.costing_method == CostingMethod.STANDARD:
+                    gross = (Decimal("0") if self.warehouse.holds_others_goods()
+                             else self.quantity * (self.item.standard_cost or Decimal("0")))
+                self.value = to_paisa(gross)
+            elif self.quantity < 0:
+                self.value = -cost_of_removing(self.item, self.warehouse, -self.quantity, lot=self.lot)
+            else:
+                self.value = Decimal("0")
+            if self.quantity and self.value_adjustment:
+                self.value += to_paisa(self.value_adjustment)
+        if Decimal(self.value) != to_paisa(self.value):
+            raise ValidationError(
+                f"A stock movement's money is to the paisa, as its document booked it; "
+                f"{self.value} is not."
+            )
+        self.value = to_paisa(self.value)
+        if self.quantity == 0:
+            if self.value_adjustment is not None and to_paisa(self.value_adjustment) != self.value:
+                raise ValidationError(
+                    f"A value-only movement moves one figure; {self.value_adjustment} and "
+                    f"{self.value} disagree."
+                )
+            self.value_adjustment = self.value
 
     def delete(self, *args, **kwargs):
         raise ValidationError(

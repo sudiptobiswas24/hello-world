@@ -63,7 +63,7 @@ from apps.core.models import (
 )
 from apps.hr.calendars import WorkingCalendar, parse_working_days
 from apps.inventory.availability import check_available
-from apps.inventory.costing import cost_of_removing
+from apps.inventory.costing import cost_of_removing, to_paisa
 from apps.inventory.locking import lock_positions
 from apps.inventory.models import Item, MovementType, StockMovement, TrackingMode, Warehouse
 from apps.inventory.valuation import inventory_account_for
@@ -2151,23 +2151,17 @@ def _take_back_off(item, warehouse, moved, occurred_at, reference, notes):
         item=item, warehouse=warehouse, movement_type=MovementType.ISSUE,
         uom=item.uom, quantity=-quantity,
         unit_cost=(going / quantity).quantize(RATE_PLACES) if quantity else Decimal("0"),
-        lot=moved.lot, bin=moved.bin, occurred_at=occurred_at,
+        value=-going, lot=moved.lot, bin=moved.bin, occurred_at=occurred_at,
         reference=reference, notes=notes[:255],
     )
     return going
 
 
-def _carrying(value, quantity):
-    """
-    (rate, residue) for goods coming onto the shelf carrying exactly
-    `value`: the rate at the movement's eight places, and what no rate can
-    say as value with no quantity attached, or None.
-    """
+def _rate_of(value, quantity):
+    """A movement's rate, at its eight places, for reading: its money is its value (O269)."""
     if not quantity:
-        return Decimal("0"), None
-    rate = (value / quantity).quantize(RATE_PLACES)
-    residue = (value - rate * quantity).quantize(Decimal("0.0001"))
-    return rate, residue or None
+        return Decimal("0")
+    return (value / quantity).quantize(RATE_PLACES)
 
 
 def _post_void_variance(on_date, reference, memo, taken_back):
@@ -2281,7 +2275,7 @@ def _give_back_added_cost(issue, lines, on_date, occurred_at, label):
         StockMovement.objects.create(
             item=line.item, warehouse=issue.warehouse, movement_type=MovementType.ADJUSTMENT,
             uom=line.item.uom, lot=line.lot, bin=line.bin, quantity=Decimal("0"),
-            value_adjustment=owed, reference=issue.number, occurred_at=occurred_at,
+            value=owed, reference=issue.number, occurred_at=occurred_at,
             notes=f"{label}: landed cost back with the goods",
         )
         rows += [(inventory_account_for(line.item), owed), (account, -owed)]
@@ -2781,22 +2775,19 @@ class MaterialIssueLine(AuditModel):
             value = self._value_coming_back(issue, quantity)
             movement_quantity = quantity
             movement_type = MovementType.RECEIPT
-        # The total is the fact, kept to the movement's places; the journal,
-        # a return and a void all work from this figure.
-        value = value.quantize(RATE_PLACES)
+        # The total is the fact, to the paisa the journal books (O269); a
+        # return and a void work from this figure, and the shelf moves by it.
+        value = to_paisa(value)
         self.posted_value = value
         self.unit_cost = (
             (value / quantity).quantize(Decimal("0.000001"))
             if quantity else Decimal("0")
         )
-        rate, residue = _carrying(value, quantity)
         self.stock_movement = StockMovement.objects.create(
             item=self.item, warehouse=issue.warehouse,
             movement_type=movement_type, uom=self.item.uom,
-            quantity=movement_quantity, unit_cost=rate,
-            # Going out, the shelf takes off what it says; coming back, the
-            # goods carry exactly the total.
-            value_adjustment=residue if movement_quantity > 0 else None,
+            quantity=movement_quantity, unit_cost=_rate_of(value, quantity),
+            value=value if movement_quantity > 0 else -value,
             lot=self.lot, bin=self.bin, occurred_at=occurred_at,
             reference=issue.number, notes=label[:255],
         )
@@ -2833,7 +2824,7 @@ class MaterialIssueLine(AuditModel):
         value_left = line.value_moved() - back_value
         if quantity == left:
             return value_left
-        return value_left * quantity / left
+        return to_paisa(value_left * quantity / left)
 
     def reverse(self, issue, occurred_at, label):
         """
@@ -2851,12 +2842,12 @@ class MaterialIssueLine(AuditModel):
         # Back on carrying exactly what went out, as the entry's reversal
         # does: at the six-place rate multiplied back up, 30,000 kg came
         # back 0.01 above what left, and the shelf parted from the ledger.
-        rate, residue = _carrying(self.value_moved(), -movement.quantity)
         StockMovement.objects.create(
             item=self.item, warehouse=issue.warehouse,
             movement_type=MovementType.RECEIPT,
             uom=self.item.uom, quantity=-movement.quantity,
-            unit_cost=rate, value_adjustment=residue, lot=self.lot, bin=self.bin,
+            unit_cost=_rate_of(-movement.value, -movement.quantity), value=-movement.value,
+            lot=self.lot, bin=self.bin,
             occurred_at=occurred_at, reference=issue.number, notes=label[:255],
         )
         return None
@@ -3165,11 +3156,14 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         # half a tonne written as 0.5 at 91.71 went on the shelf at 45.86.
         made = self.stock_quantity().quantize(STOCK_PLACES)
         if made:
-            value = self.unit_cost * made
+            # The paisa the entry books, and the shelf takes the same (O269):
+            # two doffs at 95.83505100 a kilo put 10,733.525712 on the shelf
+            # and 10,733.52 in the books.
+            value = to_paisa(self.unit_cost * made)
             self.stock_movement = StockMovement.objects.create(
                 item=order.item, warehouse=self.warehouse,
                 movement_type=MovementType.RECEIPT, uom=order.item.uom,
-                quantity=made, unit_cost=self.unit_cost,
+                quantity=made, unit_cost=self.unit_cost, value=value,
                 lot=self.lot, bin=self.bin, occurred_at=occurred_at,
                 reference=self.number, notes=label[:255],
             )
@@ -3183,7 +3177,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
 
         scrapped = self.scrapped_stock_quantity()
         if scrapped:
-            value = self.unit_cost * scrapped
+            value = to_paisa(self.unit_cost * scrapped)
             rows.append((
                 ManufacturingSettings.account(
                     "scrap", "a run has booked output that failed"
@@ -3251,7 +3245,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
         if self.stock_movement_id is not None:
             item = self.work_order.item
             taken_back.append((
-                item, self.unit_cost * self.stock_movement.quantity,
+                item, self.stock_movement.value,
                 _take_back_off(item, self.warehouse, self.stock_movement, occurred_at,
                                self.number, label),
             ))
@@ -3259,7 +3253,7 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
             going = row.reverse(self, occurred_at, label)
             if going is not None:
                 taken_back.append(
-                    (row.item, row.unit_value * row.stock_movement.quantity, going)
+                    (row.item, row.stock_movement.value, going)
                 )
         # The reverse of the backflush, written in the same sitting as
         # the backflush itself. Voiding output that drew its own
@@ -3398,19 +3392,22 @@ class ProductionByproduct(AuditModel):
 
     def post(self, entry, occurred_at, label):
         value, quantity = self._valuation()
+        # The rate the bill of materials says; its money to the paisa,
+        # booked and shelved alike (O269).
         self.unit_value = (
             (value / quantity).quantize(Decimal("0.000001"))
             if quantity else Decimal("0")
         )
+        value = to_paisa(value)
         self.stock_movement = StockMovement.objects.create(
             item=self.item, warehouse=entry.warehouse,
             movement_type=MovementType.RECEIPT, uom=self.item.uom,
-            quantity=quantity, unit_cost=self.unit_value,
+            quantity=quantity, unit_cost=_rate_of(value, quantity), value=value,
             lot=self.lot, bin=self.bin, occurred_at=occurred_at,
             reference=entry.number, notes=label[:255],
         )
         super().save(update_fields=["unit_value", "stock_movement", "updated_at"])
-        return self.unit_value * quantity
+        return value
 
     def reverse(self, entry, occurred_at, label):
         """Off the shelf again at what removing it takes off now; returns that."""
