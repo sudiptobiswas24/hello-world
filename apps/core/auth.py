@@ -75,7 +75,7 @@ class LockoutModelBackend(ModelBackend):
         """
         from .models import login_ended
 
-        return super().user_can_authenticate(user) and login_ended(user) is None
+        return super().user_can_authenticate(user) and login_ended(user, cached=True) is None
 
     def authenticate(self, request, username=None, password=None, **kwargs):
         from .models import LoginFailure

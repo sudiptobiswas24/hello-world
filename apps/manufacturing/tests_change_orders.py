@@ -82,6 +82,22 @@ class RaisingTests(ChangeTestCase):
 
 
 class ApplyingTests(ChangeTestCase):
+    def test_somebody_who_has_left_applies_no_change(self):
+        """O300: a recipe change applied or rejected by a login whose person has left is refused."""
+        from django.contrib.auth import get_user_model
+
+        from apps.core.tests_roles import a_login_that_has_left
+
+        gone = get_user_model().objects.create_user("gone-engineer")
+        a_login_that_has_left(self, gone)
+        change = raise_change(self.one, NOV_1, "Thinner tape")
+        with self.assertRaisesMessage(ValidationError, "has left"):
+            change.apply(by=gone)
+        with self.assertRaisesMessage(ValidationError, "has left"):
+            change.reject(by=gone, note="No")
+        change.refresh_from_db()
+        self.assertEqual(change.status, ChangeStatus.DRAFT)
+
     def test_applied_the_new_version_takes_over_from_its_day_and_draft_runs_move(self):
         soon, later = self.make_run(self.one, OCT_20), self.make_run(self.one, NOV_5)
         released = self.make_run(self.one, NOV_5, status=WorkOrderStatus.RELEASED)

@@ -48,6 +48,7 @@ from django.utils import timezone
 from apps.core import windows
 from apps.core.approvals import authors, check_not_raised_by
 from apps.core.models import (
+    check_login_acts,
     AuditModel,
     DocumentSequence,
     answer_to_its_document,
@@ -1012,6 +1013,7 @@ class Inspection(AuditModel):
         by the decider. Not dated by hand: stamped as it is taken, so there
         is no day to argue with the verdict it follows.
         """
+        check_login_acts(by)  # nobody who has left decides (O300)
         if not self.posted or self.is_voided():
             raise ValidationError(f"{self} is {'voided' if self.posted else 'not posted'}: there is "
                                   "nothing to decide.")

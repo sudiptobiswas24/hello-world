@@ -34,6 +34,17 @@ GSTR1 = "/api/gst/gstr1/?period=2026-09"
 E_INVOICES = "/api/gst/e-invoices/"
 
 
+
+def a_login_that_has_left(test, user):
+    """For this test, core.models.login_ended says `user` has left, as hr's leaver_login would (O300)."""
+    from apps.core import models as core
+
+    def ask(asked, day):
+        return f"{asked} has left (leaving date 01-06-2026); their login no longer signs in or decides for the plant." \
+            if asked.pk == user.pk else None
+    core._LOGIN_ENDED.append(ask)
+    test.addCleanup(core._LOGIN_ENDED.remove, ask)
+
 class RolesTestCase(TestCase):
     def setUp(self):
         call_command("setup_roles", verbosity=0)

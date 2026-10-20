@@ -459,6 +459,16 @@ class TheReversePathsTests(AwaitingTestCase):
 class LeftUndecidedTests(AwaitingTestCase):
     """Posted Monday 1 June: due Tuesday 2 June; escalated by the run on Wednesday 3 June, once."""
 
+    def test_somebody_who_has_left_decides_no_failure(self):
+        """O300: the Quality Manager's decision by a login whose person has left is refused, in words."""
+        from apps.core.tests_roles import a_login_that_has_left
+
+        a_login_that_has_left(self, self.users["asha"])
+        said = self.decide(self.inspection, "asha", Disposition.REJECT, "Too heavy for the order.")
+        self.assertEqual(said.status_code, 400, said.content)
+        self.assertIn("has left", said.content.decode())
+        self.assertIsNone(self.inspection.decided_at)
+
     def setUp(self):
         super().setUp()
         self.admin = User.objects.create_superuser("root", email="root@plant.example")

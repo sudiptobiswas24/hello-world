@@ -17,7 +17,7 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.core.models import AuditModel, DocumentSequence, serialised, to_date
+from apps.core.models import AuditModel, DocumentSequence, check_login_acts, serialised, to_date
 
 from .bom import BillOfMaterials, BomByproduct, BomComponent, BomSubstitute
 
@@ -85,6 +85,7 @@ class BomChangeOrder(AuditModel):
 
         if self.status != ChangeStatus.DRAFT:
             raise ValidationError(f"This change is already {self.get_status_display().lower()}.")
+        check_login_acts(by)  # nobody who has left decides (O300)
         old, new = self.supersedes, self.draft
         if not new.components.exists():
             raise ValidationError(f"{new} has no inputs; a recipe with nothing in it is not applied.")
@@ -113,6 +114,7 @@ class BomChangeOrder(AuditModel):
         """Not done: the draft version is put out of use, and the old one stands as it was."""
         if self.status != ChangeStatus.DRAFT:
             raise ValidationError(f"This change is already {self.get_status_display().lower()}.")
+        check_login_acts(by)  # nobody who has left decides (O300)
         if not note.strip():
             raise ValidationError({"note": ["Say why, or the same change comes back unchanged."]})
         with transaction.atomic():

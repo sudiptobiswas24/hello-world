@@ -474,8 +474,8 @@ def leaver_login(user, day):
     """core.models.login_ended's question for hr: the login of somebody who has left by `day`."""
     person = Employee.objects.filter(user=user).select_related("party").first()
     if person is not None and person.has_left_by(day):
-        return (f"{person} left on {person.termination_date:%d-%m-%Y}; their login no longer signs in "
-                "or decides for the plant.")
+        return (f"{person} has left (leaving date {to_date(person.termination_date):%d-%m-%Y}); their login "
+                "no longer signs in or decides for the plant.")
     return None
 
 
