@@ -118,3 +118,44 @@ class EachArrivalNamesItsDepartureTests(MigrationCase):
         self.assertEqual(
             dict(after.objects.filter(movement_type="transfer_in").values_list("pk", "moved_from_id")),
             {hop_in.pk: hop_out.pk, cleared_in.pk: cleared_out.pk, pooled_in.pk: None, unmatched.pk: None})
+
+
+@tag("migration")
+class EachMovementGivenItsMoneyTests(MigrationCase):
+    """
+    O269: 0040 gives every movement written before it the money it moved, as the replay valued it then,
+    to the paisa; where that was not a whole paisa the row's notes say what it was. Two kilos at 10.005
+    and one written off: 20.01, then -10.005 read as -10.01. Under the standard (now 12) a kilo came in
+    at 10 and was revalued by 2: 10.00 and 2.00. Snapshots, a cache of the old replay, go.
+    """
+
+    before = [("inventory", "0039_moved_from")]
+    after = [("inventory", "0040_movement_money")]
+
+    def move(self, item, warehouse, quantity, cost=None, adjustment=None, minute=0):
+        uom = self.apps.get_model("core", "UnitOfMeasure").objects.get(code="kg")
+        return self.apps.get_model("inventory", "StockMovement").objects.create(
+            item_id=item.pk, warehouse_id=warehouse.pk, movement_type="adjustment", uom_id=uom.pk,
+            quantity=Decimal(quantity), unit_cost=Decimal(cost) if cost is not None else None,
+            value_adjustment=Decimal(adjustment) if adjustment is not None else None,
+            occurred_at=timezone.now() + datetime.timedelta(minutes=minute))
+
+    def test_each_row_gets_the_paisa_it_moved_and_says_where_it_rounded(self):
+        store = self.shelf("STORE")
+        tape = self.goods("TAPE")
+        received = self.move(tape, store, "2", "10.005", minute=1)
+        written_off = self.move(tape, store, "-1", minute=2)
+        frame = self.goods("FRAME")
+        frame.costing_method, frame.standard_cost = "standard", Decimal("12")
+        frame.save()
+        came = self.move(frame, store, "1", "11", minute=1)
+        revalued = self.move(frame, store, "0", adjustment="2", minute=2)
+        self.snapshot(tape, store, "average")
+
+        apps = self.migrated()
+        rows = apps.get_model("inventory", "StockMovement").objects
+        self.assertEqual([rows.get(pk=row.pk).value for row in (received, written_off, came, revalued)],
+                         [Decimal("20.01"), Decimal("-10.01"), Decimal("10.00"), Decimal("2.00")])
+        self.assertIn("from -10.005 as replayed then", rows.get(pk=written_off.pk).notes)
+        self.assertEqual(rows.get(pk=received.pk).notes, "")
+        self.assertFalse(apps.get_model("inventory", "StockValuationSnapshot").objects.exists())

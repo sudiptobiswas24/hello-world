@@ -510,7 +510,24 @@ class LandedCostUnderFifoTests(CostingTestCase):
     def test_cost_that_arrives_after_its_goods_have_shipped_stays_off_the_shelf(self):
         # The layer's cost went out with the goods. There is nothing left
         # here to adjust, and raising a different layer would overstate
-        # stock the freight had nothing to do with.
+        # stock the freight had nothing to do with: goods_held finds none of
+        # the receipt's goods, so a landing writes nothing to the shelf and
+        # posts the freight elsewhere.
+        from apps.inventory.costing import goods_held
+
+        widget = self.item(CostingMethod.FIFO)
+        old = self.receive(widget, "100", "4")
+        self.issue(widget, "100")
+        self.receive(widget, "100", "6")
+        self.assertEqual(goods_held(widget, self.warehouse, Decimal("100"), [old]), [])
+        self.assertEqual(widget.stock_value_at(self.warehouse), Decimal("600.00"))
+
+    def test_a_value_movement_whose_layer_has_shipped_still_moves_the_shelf_by_its_money(self):
+        # O269: a movement's money is what its document booked to the
+        # inventory account, and the shelf is the sum of those. A value
+        # movement written anyway, its layer gone, is spread over what is
+        # left rather than dropped, so the shelf still agrees with a ledger
+        # that took the 200.
         widget = self.item(CostingMethod.FIFO)
         old = self.receive(widget, "100", "4")
         self.issue(widget, "100")
@@ -518,10 +535,10 @@ class LandedCostUnderFifoTests(CostingTestCase):
         StockMovement.objects.create(
             item=widget, warehouse=self.warehouse,
             movement_type=MovementType.ADJUSTMENT, uom=self.each,
-            quantity=Decimal("0"), value_adjustment=Decimal("200"),
+            quantity=Decimal("0"), value=Decimal("200"),
             adjusts=old, occurred_at=timezone.now(),
         )
-        self.assertEqual(widget.stock_value_at(self.warehouse), Decimal("600.00"))
+        self.assertEqual(widget.stock_value_at(self.warehouse), Decimal("800.00"))
 
     def test_a_real_landed_cost_names_the_receipt_it_came_from(self):
         from apps.purchasing.models import (

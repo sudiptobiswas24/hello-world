@@ -41,24 +41,22 @@ def move_stock(item, source, destination, quantity, reference, occurred_at, note
     a clearance out of inspection, components sent to a subcontractor.
     What leaving takes off is what cost_of_removing says, a total, because
     under FIFO the units span layers and under specific identification
-    the batch decides; the arriving leg puts back that total, at an
-    eight-place rate with what the rate cannot say carried as value.
-    Priced per unit and multiplied back up, three cases cleared at three
-    eaches' rate turned 960 into 840, and a rate with no remainder loses a
-    little on every move. The caller holds both positions.
+    the batch decides; the arriving leg puts back that total, the money
+    each leg moves (O269). Priced per unit and multiplied back up, three
+    cases cleared at three eaches' rate turned 960 into 840; the rate is
+    for reading. The caller holds both positions.
     """
     leaving = item.cost_of_removing(source, quantity, lot=lot)
     rate = (leaving / quantity).quantize(Decimal("0.00000001"))
-    residue = (leaving - quantity * rate).quantize(Decimal("0.0001")) or None
     out = StockMovement.objects.create(
         item=item, warehouse=source, movement_type=MovementType.TRANSFER_OUT,
         uom=item.uom, lot=lot, bin=from_bin, quantity=-quantity, unit_cost=rate,
-        reference=reference, occurred_at=occurred_at, notes=notes,
+        value=-leaving, reference=reference, occurred_at=occurred_at, notes=notes,
     )
     into = StockMovement.objects.create(
         item=item, warehouse=destination, movement_type=MovementType.TRANSFER_IN,
         uom=item.uom, lot=lot, bin=to_bin, quantity=quantity, unit_cost=rate,
-        value_adjustment=residue, moved_from=out,
+        value=leaving, moved_from=out,
         reference=reference, occurred_at=occurred_at, notes=notes,
     )
     return out, into
@@ -425,11 +423,8 @@ class StockTransferLine(AuditModel):
         One hop: out of `source` and into `destination`, same value both
         ends.
 
-        The despatching movement is priced by the replay at the source's
-        running average, so the receiving one has to add back exactly
-        that. A quantised unit cost multiplied back does not: the residue
-        rides along as a value_adjustment, which is already what value
-        with no quantity attached means here.
+        The despatching movement takes what cost_of_removing says, and the
+        receiving one puts back exactly that money (move_stock).
         """
         item = self.item
         if not item.track_inventory:
@@ -555,16 +550,13 @@ class StockTransferStep(AuditModel):
         """
         Send this hop back the way it came, at the value it carried.
 
-        Not at today's average: the replay prices the return journey's
-        outbound leg at whatever the destination now holds, which after
-        other receipts is a different number. The residue makes the two
-        hops cancel to zero instead of revaluing stock every time a lorry
-        turns round.
+        Not at today's average: the destination's average after other
+        receipts is a different number. Both legs move the money the hop
+        carried, so the two hops cancel to nothing.
         """
         item = line.item
-        moved_value = (self.quantity * (self.out_movement.unit_cost or Decimal("0"))) + (
-            self.in_movement.value_adjustment or Decimal("0")
-        )
+        # What the hop carried: its arrival's money (O269).
+        moved_value = self.in_movement.value
         on_hand = (
             line.lot.on_hand_at(self.destination) if line.lot_id is not None
             else item.on_hand_at(self.destination)
@@ -574,34 +566,23 @@ class StockTransferStep(AuditModel):
                 f"Only {on_hand} {item.uom} of {item} remains at {self.destination}; "
                 f"cannot send back {self.quantity}."
             )
-        back_out_value = item.cost_of_removing(
-            self.destination, self.quantity, lot=line.lot
-        )
-        unit_cost = (back_out_value / self.quantity).quantize(Decimal("0.0001"))
-        # Going back out, the replay removes quantity x average. Going back
-        # in, it adds quantity x unit_cost. The pair has to net to exactly
-        # what the original hop carried.
-        # Leaving the destination, the replay takes off quantity x its
-        # current average; it should take off what arrived. Arriving back
-        # at the origin, it adds quantity x unit_cost; it should add the
-        # same figure. Each leg carries the difference.
-        out_residue = (back_out_value - moved_value).quantize(Decimal("0.0001")) or None
-        residue = (moved_value - self.quantity * unit_cost).quantize(Decimal("0.0001")) or None
+        # Each leg moves exactly what the hop carried, whatever the
+        # destination's average is now: the two hops cancel to nothing
+        # rather than revaluing stock every time a lorry turns round.
+        unit_cost = (moved_value / self.quantity).quantize(Decimal("0.00000001"))
         # Back the way it came, shelf included: the out movement's bin is
         # where this hop put the stock, and the in movement's is where it
         # took it from.
         out = StockMovement.objects.create(
             item=item, warehouse=self.destination, movement_type=MovementType.TRANSFER_OUT,
             uom=item.uom, lot=line.lot, bin=self.in_movement.bin,
-            quantity=-self.quantity, unit_cost=unit_cost,
-            value_adjustment=out_residue,
+            quantity=-self.quantity, unit_cost=unit_cost, value=-moved_value,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )
         into = StockMovement.objects.create(
             item=item, warehouse=self.source, movement_type=MovementType.TRANSFER_IN,
             uom=item.uom, lot=line.lot, bin=self.out_movement.bin,
-            quantity=self.quantity, unit_cost=unit_cost,
-            value_adjustment=residue, moved_from=out,
+            quantity=self.quantity, unit_cost=unit_cost, value=moved_value, moved_from=out,
             reference=line.transfer.number, occurred_at=occurred_at, notes=label,
         )
         return StockTransferStep.objects.create(

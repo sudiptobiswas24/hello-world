@@ -77,7 +77,7 @@ def grni_account():
 
 
 def post_inventory_entry(entries, date, reference, memo, direction, reverse=False,
-                         quantities=None):
+                         quantities=None, shelf=None):
     """
     Post the ledger side of a stock movement.
 
@@ -95,13 +95,24 @@ def post_inventory_entry(entries, date, reference, memo, direction, reverse=Fals
     amount, so an item costed at standard with no quantity supplied is
     refused rather than posted at actual.
 
+    `shelf` is {item: money}, what the item's movements moved, positive:
+    under the standard it is what the inventory account takes, so the
+    account moves by exactly what the shelf did (O269). Without it the
+    standard is worked out from the quantity, once for the item.
+
     Returns the posted JournalEntry, or None when there is nothing to post
     (non-stocked items, or a zero-valued movement).
     """
     quantities = quantities or {}
+    shelf = shelf or {}
     totals = defaultdict(Decimal)
     variances = defaultdict(Decimal)
+    # One figure an item: two lines of one standard item each booked the
+    # standard on both lines' quantity.
+    by_item = {}
     for item, amount in entries:
+        by_item[item] = by_item.get(item, Decimal("0")) + amount
+    for item, amount in by_item.items():
         if not item.track_inventory or not amount:
             continue
         if direction == "in":
@@ -117,7 +128,8 @@ def post_inventory_entry(entries, date, reference, memo, direction, reverse=Fals
                     f"{item} is costed at standard, so what the shelf takes depends "
                     "on how much arrived, and no quantity was supplied."
                 )
-            booked = round_money(Decimal(quantity) * (item.standard_cost or Decimal("0")))
+            booked = (shelf[item] if item in shelf
+                      else round_money(Decimal(quantity) * (item.standard_cost or Decimal("0"))))
             difference = round_money(amount) - booked
             if difference:
                 variances[_variance_account()] += -difference if reverse else difference
