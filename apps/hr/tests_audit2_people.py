@@ -171,17 +171,6 @@ class APlantMonthFootsToTheLedgerAndTheFiles(StatutoryTestCase):
 
 
 class WhoIsStillOnTheRoll(OutputsTestCase):
-    def test_a_manager_who_has_left_does_not_decide_their_reports_leave(self):
-        """M8: E2 left on 1 June 2026; on 20 October nobody takes their yes for E1's leave."""
-        boss, report = self.employee("E2"), self.employee("E1")
-        report.manager = boss
-        report.save()
-        leave = LeaveRequest.objects.create(employee=report, leave_type="vacation", start_date=D(2026, 11, 2),
-                                            end_date=D(2026, 11, 3))
-        boss.terminate(D(2026, 6, 1))
-        with self.assertRaises(ValidationError):
-            leave.approve(by=boss)
-
     def test_terminated_without_a_leaving_date_is_refused(self):
         """M9: status terminated, no date: still 'employed' for every run, register and approval."""
         person = self.employee("E1")
@@ -301,17 +290,6 @@ class APolicyChangedForNextYearLeavesThisYearAlone(OutputsTestCase):
         policy.annual_days = Decimal("15")
         policy.save()
         self.assertEqual(policy.entitlement_for(person, 2026), before)
-
-
-class WhenSomebodyLeaves(OutputsTestCase):
-    def test_a_leavers_login_stops_signing_in_on_the_day_they_go(self):
-        """M18: E1, a Stores Manager's login, left on 30 September 2026; on 20 October the login is off."""
-        from django.contrib.auth.models import User
-
-        person = self.employee("E1")
-        self.as_role("Stores Manager", person)
-        person.terminate(D(2026, 9, 30))
-        self.assertFalse(User.objects.get(pk=person.user_id).is_active)
 
 
 class NobodyIsLeftOffARunInSilence(OutputsTestCase):

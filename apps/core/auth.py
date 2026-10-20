@@ -67,6 +67,16 @@ def is_locked(username, address=None, now=None):
 
 
 class LockoutModelBackend(ModelBackend):
+    def user_can_authenticate(self, user):
+        """
+        Also refused: a login whose person has left (core.models.login_ended, O300). ModelBackend asks
+        this at sign-in and again for every request of a session, so a session open on the leaving day
+        ends with it, whether or not anybody has switched the login off by then.
+        """
+        from .models import login_ended
+
+        return super().user_can_authenticate(user) and login_ended(user) is None
+
     def authenticate(self, request, username=None, password=None, **kwargs):
         from .models import LoginFailure
 
