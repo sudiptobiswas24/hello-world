@@ -338,7 +338,6 @@ missing), **minor**.
 | O328 | inventory | average_cost_at answers at 4 places, not 8: a write-up with no cost multiplies it back up, 3,000 found at 3.33333333 books 9,999.90 not 10,000.00 (shelf and ledger agree since O269) (seen 2026-10-20, audit2_stores R4; docs/handoff/reports/g23_audit2_stores.md) | books | minor |
 | O329 | inventory | Migration inventory 0040 gives old rows the money replayed then, not their documents' booked figures, and its summary nets its drops so it can read 0 dropped; the health check nets by inventory account (seen 2026-10-20, audit2_stores review part 1, item 6; docs/handoff/reports/g23_audit2_stores.md) | books | minor |
 | O330 | inventory | Item.costing_method is not frozen while the item has stock. Decided: frozen once it has movements, as its inventory account is (seen 2026-10-20, audit2_stores review part 1, item 6; docs/handoff/reports/g23_audit2_stores.md) | rule | open |
-| O331 | inventory, core | Warehouse Staff and Quality Inspectors read unit cost and stock valuation (view_stockmovement). Decided: they see quantities, not money (seen 2026-10-20, audit2_stores S2; docs/handoff/reports/g23_audit2_stores.md) | security | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.

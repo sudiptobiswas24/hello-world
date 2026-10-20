@@ -733,6 +733,9 @@ class StockMovement(AuditModel):
 
     class Meta:
         ordering = ["-occurred_at", "-id"]
+        # Reading the stock ledger is reading quantities; what the stock is worth is for whoever keeps or costs it,
+        # not the floor (O331).
+        permissions = [("view_stock_value", "Can see what stock is worth")]
         indexes = [
             # The newest first, for the list.
             models.Index(fields=["occurred_at", "id"], name="movement_by_time"),

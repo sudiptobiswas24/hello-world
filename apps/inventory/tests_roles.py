@@ -88,8 +88,34 @@ class StoresRoles(RolesTestCase):
         self.assertGreaterEqual(response.status_code, 400, f"changed costing under 10 kg: {response.status_code}")
 
     def test_warehouse_staff_do_not_read_what_stock_is_worth(self):
-        client = self.as_("Warehouse Staff")
-        rows = client.get("/api/inventory/stock-movements/")
-        self.assertEqual(rows.status_code, 200)
-        self.assertNotIn("unit_cost", rows.json()[0] if isinstance(rows.json(), list) else rows.json()["results"][0])
+        for role in ("Warehouse Staff", "Quality Inspector"):
+            client = self.as_(role)
+            rows = client.get("/api/inventory/stock-movements/")
+            self.assertEqual(rows.status_code, 200)
+            row = rows.json()[0] if isinstance(rows.json(), list) else rows.json()["results"][0]
+            self.assertEqual(row["quantity"], "10.0000")
+            for field in ("unit_cost", "value", "value_adjustment"):
+                self.assertNotIn(field, row, role)
+            # The shelf's quantities, not its worth.
+            on_hand = client.get("/api/inventory/stock-reports/valuation/").json()
+            self.assertNotIn("total_value", on_hand, role)
+            self.assertEqual([(r["item"], r["quantity"]) for r in on_hand["rows"]], [("T", "10.0000")])
+            self.assertNotIn("value", on_hand["rows"][0], role)
+            self.assertNotIn("unit_cost", on_hand["rows"][0], role)
+            stock = client.get(f"/api/inventory/items/{self.item.pk}/stock/").json()
+            self.assertNotIn("total_value", stock, role)
+            self.assertNotIn("value", stock["rows"][0], role)
+            self.assertNotIn("value", client.get("/api/inventory/stock-reports/negative/").json(), role)
+            self.assertEqual(client.get("/api/inventory/stock-reports/reconciliation/").status_code, 403, role)
+            self.assertEqual(client.get("/api/inventory/stock-reports/movements/",
+                                        {"start": "2026-01-01", "end": "2026-12-31"}).status_code, 403, role)
+
+    def test_the_stores_manager_reads_what_stock_is_worth(self):
+        client = self.as_("Stores Manager")
+        row = client.get("/api/inventory/stock-movements/").json()
+        row = row[0] if isinstance(row, list) else row["results"][0]
+        self.assertEqual(row["unit_cost"], "5.00000000")
+        on_hand = client.get("/api/inventory/stock-reports/valuation/").json()
+        self.assertEqual((on_hand["total_value"], on_hand["rows"][0]["value"]), ("50.00", "50.00"))
+        self.assertEqual(client.get("/api/inventory/stock-reports/reconciliation/").status_code, 200)
 
