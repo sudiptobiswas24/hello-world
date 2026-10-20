@@ -11,7 +11,7 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
 ## Before writing code
 - Read CLAUDE.md "Mistakes this project keeps making" (all of 1-11) and the pre-flight checklist. They are about 300 lines; read them once.
 - For each id, read its row in docs/RISKS.md and the auditor's probe. The probe file path is in your brief. The probe shows the scenario and the numbers. Copy it into your worktree as a regression test, named after the fact it protects, in the module's normal test file. Keep the probe's numbers.
-- Work out every expected number in a separate plain-Python script, kept in YOUR OWN folder: a folder of your own in the scratchpad, calc_<your-agent-name>/. Never use scratchpad/calc/ itself; another agent uses it.
+- Work out every expected number in a separate plain-Python script, kept in YOUR OWN folder, /home/user/work/calc_<your-agent-name>/ (not /tmp: a restart can wipe it). Never share a calc folder with another agent.
 - Fix the root cause once, shared, so the next instance cannot be written. If the shape can be seen in code, add or widen an `audit_invariants` check, with a test that it reports a planted instance.
 - Shared rules have ONE owner each; your brief says which ones are yours. If you need a rule another agent owns, do not build your own: write your fix against the smallest local check, and say so in the report.
 
@@ -46,7 +46,7 @@ You fix defects listed in docs/RISKS.md "Open defects", by their ids. You do not
 - Never mention a model name anywhere else, a reviewer's probe commit included. Do not push.
 
 ## Report
-- Write the full report to a file of your own in the scratchpad, reports/<your-agent-name>.md:
+- Write the full report to /home/user/work/reports/<your-agent-name>.md:
   - commits with the ids each closes;
   - for each fix, the test that failed without it, with its failure line;
   - what you could not do;

@@ -4,7 +4,7 @@ Read CLAUDE.md and .claude/skills/audit/SKILL.md first, all of both. Then
 docs/RISKS.md, "Open defects": what is listed there is known. Do not find
 it again; a new instance of a listed shape is a finding.
 
-SP=/tmp/claude-0/-home-user-hello-world/2ec41226-46f2-5ea2-a139-e69651007cc2/scratchpad
+SP=/home/user/work   # not /tmp: a restart can wipe it (g22)
 
 ## Why a second audit
 The 8 October audit found over forty defects with a green suite, in three
