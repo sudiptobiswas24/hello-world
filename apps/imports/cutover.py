@@ -21,7 +21,7 @@ from django.db import models, transaction
 
 from apps.core.models import lock_rows
 
-from .base import RowError, by_code, clean, codes, date, decimal, required, whole_number, yes_no
+from .base import RowError, by_code, clean, codes, date, decimal, once_only, required, whole_number, yes_no
 
 SPEC_MODELS = {
     "tape_specs": ("manufacturing", "TapeSpecification"),
@@ -132,8 +132,10 @@ def _open_orders(side):
                     reference = required(row, "reference")
                     key = (party.pk, reference)
                     if key not in orders:
-                        if Order.objects.filter(**{who: party, "reference": reference}).exists():
-                            raise RowError("reference", f"{party.code} already has an order {reference!r}.")
+                        once_only(f"{party.code}'s order {reference!r}",
+                                  Order.objects.filter(**{who: party, "reference": reference}).order_by("pk"),
+                                  "Cancel it to bring a corrected order in under another reference.",
+                                  column="reference")
                         order = Order(**{who: party}, order_date=date(row, "date"), reference=reference,
                                       currency=by_code(Currency, row, "currency", required_=False)
                                       or party.default_currency)
@@ -333,5 +335,7 @@ CUTOVER_WHOLE_FILE = {
     "open_sales_orders": _open_orders("sales"),
     "open_purchase_orders": _open_orders("purchasing"),
 }
+# The order book is part of the opening position: each asks once_only() (importer.OPENING).
+CUTOVER_OPENING = {kind: CUTOVER_WHOLE_FILE[kind] for kind in ("open_sales_orders", "open_purchase_orders")}
 CUTOVER = (*SPEC_MODELS, "open_sales_orders", "open_purchase_orders", "fixed_assets", "compensation",
            "price_lists", "vendor_prices")

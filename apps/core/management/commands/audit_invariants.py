@@ -122,6 +122,7 @@ class Command(BaseCommand):
         findings += self.release_past_the_gate(labels, sources)
         findings += self.allocations_counted_past_a_void(labels, sources)
         findings += self.drawdowns_from_todays_setting(labels, sources)
+        findings += self.opening_kinds_brought_in_twice()
 
         if not findings:
             self.stdout.write(self.style.SUCCESS("No invariant findings."))
@@ -1852,6 +1853,35 @@ class Command(BaseCommand):
                         + (f" (through {', '.join(sorted(called & reading))})" if called & reading else "")
                         + "; take the account the deposit or prepayment was booked to.",
                     ))
+        return findings
+
+    def opening_kinds_brought_in_twice(self, handlers=None):
+        """
+        An opening import kind that does not ask whether its position is already in.
+
+        The opening-balances file run twice posted the bank's 2,50,000 twice (O280); the
+        opening-stock file run twice doubled the shelf and credited the opening-balance
+        account twice (O313), while the open invoices and bills refused a repeat. Every kind
+        that brings the opening position in names its handler in `importer.OPENING`, and
+        each handler asks `once_only()` before it writes; a kind named open... that is not
+        in the map is reported as well.
+        """
+        from apps.imports import importer
+
+        findings = []
+        if handlers is None:
+            handlers = importer.OPENING
+            findings += [
+                ("opening kind brought in twice", f"imports.{kind} brings the opening position in and is "
+                 "not in importer.OPENING, so nothing asks whether it is already in.")
+                for kind in importer.KINDS if kind.startswith("open") and kind not in handlers]
+        for kind, handler in handlers.items():
+            if "once_only(" not in inspect.getsource(handler):
+                findings.append((
+                    "opening kind brought in twice",
+                    f"imports.{kind} ({handler.__name__}) writes without once_only(): the same file "
+                    "run twice counts the opening position twice.",
+                ))
         return findings
 
     def kept_settings_read_live(self, labels, sources):
