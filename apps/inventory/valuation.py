@@ -138,7 +138,15 @@ def post_inventory_entry(entries, date, reference, memo, direction, reverse=Fals
             debit_account, credit_account = credit_account, debit_account
         totals[(debit_account, credit_account)] += booked
 
-    rows = {pair: round_money(amount) for pair, amount in totals.items() if round_money(amount)}
+    # A standard subcontract assembly whose components were worth more than its standard moves the account
+    # down while the accrual still takes the vendor's charge (O322): its row is the other way round.
+    rows = {}
+    for (debit_account, credit_account), amount in totals.items():
+        if amount < 0:
+            debit_account, credit_account, amount = credit_account, debit_account, -amount
+        if round_money(amount):
+            key = (debit_account, credit_account)
+            rows[key] = rows.get(key, Decimal("0")) + round_money(amount)
     variance_rows = {
         account: round_money(amount) for account, amount in variances.items()
         if round_money(amount)
