@@ -1141,15 +1141,15 @@ export const MODULES: Module[] = [
         keywords: "reservation allocated held promised", load: () => import("../modules/stores/Reservations"),
       },
       {
-        path: "value", label: "Stock value", permission: "inventory.view_stockmovement",
+        path: "value", label: "Stock value", permission: "inventory.view_stock_value",
         keywords: "valuation inventory value report", load: () => import("../modules/stores/Valuation"),
       },
       {
-        path: "against-books", label: "Stock against the books", permission: "inventory.view_stockmovement",
+        path: "against-books", label: "Stock against the books", permission: "inventory.view_stock_value",
         keywords: "reconciliation ledger inventory account", load: () => import("../modules/stores/Reconciliation"),
       },
       {
-        path: "slow-moving", label: "Slow-moving stock", permission: "inventory.view_stockmovement",
+        path: "slow-moving", label: "Slow-moving stock", permission: "inventory.view_stock_value",
         keywords: "dead stock non moving aging", load: () => import("../modules/stores/SlowMoving"),
       },
       {
