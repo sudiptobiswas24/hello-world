@@ -61,7 +61,8 @@ def _movement(line, warehouse, quantity, reference, notes):
     return StockMovement.objects.create(
         item=line.item, warehouse=warehouse,
         movement_type=MovementType.RECEIPT if quantity > 0 else MovementType.ISSUE,
-        uom=line.item.uom, quantity=quantity, unit_cost=ZERO, lot=line.lot,
+        # A customer's material is off the company's books: no money moves.
+        uom=line.item.uom, quantity=quantity, unit_cost=ZERO, value=ZERO, lot=line.lot,
         occurred_at=timezone.now(), reference=reference, notes=notes[:255],
     )
 

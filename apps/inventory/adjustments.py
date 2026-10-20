@@ -30,6 +30,7 @@ from apps.accounting.models import JournalEntry, JournalLine, round_money
 from apps.core.models import AuditModel, DocumentSequence, correction_date, serialised, to_date
 
 from .locking import lock_position, lock_positions
+from .costing import to_paisa
 from .models import Item, MovementType, StockMovement, Warehouse
 from .valuation import inventory_account_for
 
@@ -461,10 +462,10 @@ class StockAdjustmentLine(AuditModel):
                 item=item, warehouse=adjustment.warehouse,
                 movement_type=MovementType.ADJUSTMENT,
                 uom=item.uom, lot=self.lot, bin=self.bin,
-                quantity=Decimal("0"), value_adjustment=self.revaluation,
+                quantity=Decimal("0"), value=to_paisa(self.revaluation),
                 reference=adjustment.number, occurred_at=occurred_at, notes=label,
             )
-            self.posted_value = self.revaluation
+            self.posted_value = self.movement.value
             super().save(update_fields=["movement", "posted_value", "updated_at"])
             return self.movement
 
@@ -502,7 +503,7 @@ class StockAdjustmentLine(AuditModel):
                         f"There is no {item} at {adjustment.warehouse} to take a cost from. "
                         "Give the line an explicit unit cost (Cost each, on the adjustment's line)."
                     )
-            self.posted_value = quantity * self.unit_cost
+            self.posted_value = to_paisa(quantity * self.unit_cost)
         on_hand = item.on_hand_at(adjustment.warehouse)
         if quantity < 0 and -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:
             raise ValidationError(
@@ -521,6 +522,8 @@ class StockAdjustmentLine(AuditModel):
             # Both numbers are per stocking unit: the cost above came from
             # this ledger's own average, so the quantity has to match it.
             unit_cost=self.unit_cost,
+            # The money the entry books for this line, to the paisa (O269).
+            value=self.posted_value,
             reference=adjustment.number,
             occurred_at=occurred_at,
             notes=label,
@@ -538,11 +541,9 @@ class StockAdjustmentLine(AuditModel):
         moved to 5.27 would take 52.73 off the shelf while the ledger
         reversal credits 80. The difference never clears.
 
-        So the reversal carries the residue as a value_adjustment, which
-        is already what "value with no quantity attached" means here. It
-        is computed against the average as it stands now, which is the
-        average the replay will use, because this movement is the latest
-        one.
+        So the reversal moves the money the line moved, to the paisa: a
+        movement's value is what the shelf sums, whatever the average says
+        today, and it is what the reversed entry took (O269).
         """
         if self.movement_id is None:
             return None
@@ -559,7 +560,7 @@ class StockAdjustmentLine(AuditModel):
                 movement_type=MovementType.ADJUSTMENT,
                 uom=self.item.uom, lot=self.lot, bin=self.bin,
                 quantity=Decimal("0"),
-                value_adjustment=-(original.value_adjustment or Decimal("0")),
+                value=-original.value,
                 adjusts=original.adjusts,
                 reference=adjustment.number,
                 occurred_at=occurred_at,
@@ -568,22 +569,14 @@ class StockAdjustmentLine(AuditModel):
             super().save(update_fields=["reversal_movement", "updated_at"])
             return self.reversal_movement
 
-        # What the line moved, as it was booked: the frozen total where one
-        # was kept, the rate multiplied up on a line posted before.
-        moved_value = self.posted_value if self.posted_value is not None else (
-            (original.quantity * (original.unit_cost or Decimal("0")))
-            + (original.value_adjustment or Decimal("0"))
-        )
+        # What the line moved, as it was booked: its movement's money, which
+        # is what the entry this void reverses took (O269). The reversal
+        # moves exactly that back, so the shelf and the ledger come back
+        # together whatever the average has done since; there is no residue
+        # left to carry.
+        moved_value = original.value
         quantity = -original.quantity
-        unit_cost, residue = original.unit_cost, None
-        if quantity > 0:
-            # A write-down coming back: on at exactly what went off. At
-            # its four-place rate, 3,333.33 written off came back as
-            # 3,333.30 and the shelf ended 0.03 short of a ledger the
-            # reversal had put straight. The rate carries eight places
-            # and what it cannot say rides along as value.
-            unit_cost = (-moved_value / quantity).quantize(Decimal("0.00000001"))
-            residue = (-moved_value - quantity * unit_cost).quantize(Decimal("0.0001")) or None
+        unit_cost = (-moved_value / quantity).quantize(Decimal("0.00000001"))
         if quantity < 0:
             on_hand = self.item.on_hand_at(adjustment.warehouse)
             if -quantity > on_hand and not adjustment.warehouse.allow_negative_stock:
@@ -592,13 +585,6 @@ class StockAdjustmentLine(AuditModel):
                     f"{adjustment.warehouse}; voiding this adjustment would take "
                     f"back {-quantity}."
                 )
-            # Not the average: what the replay is actually going to take
-            # off when this reversing movement is written. It should take
-            # off what this line put on, so the residue is the difference.
-            going = self.item.cost_of_removing(
-                adjustment.warehouse, -quantity, lot=self.lot
-            )
-            residue = (going - moved_value).quantize(Decimal("0.0001")) or None
 
         self.reversal_movement = StockMovement.objects.create(
             item=self.item,
@@ -609,7 +595,7 @@ class StockAdjustmentLine(AuditModel):
             bin=self.bin,
             quantity=quantity,
             unit_cost=unit_cost,
-            value_adjustment=residue,
+            value=-moved_value,
             reference=adjustment.number,
             occurred_at=occurred_at,
             notes=label,

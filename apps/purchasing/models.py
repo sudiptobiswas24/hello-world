@@ -4379,7 +4379,7 @@ class Bill(Extensible, PostedTaxDocumentMixin, TaxedDocumentMixin, AuditModel):
                 movement_type=MovementType.ADJUSTMENT,
                 uom=item.uom,
                 quantity=Decimal("0"),
-                value_adjustment=sign * base,
+                value=sign * base,
                 reference=self.number,
                 occurred_at=timezone.now(),
                 notes=f"Landed cost from {self.number}: {charge_line.label()}",
@@ -5330,7 +5330,7 @@ class BillLine(PostedLineMixin, TaxedLineMixin, AuditModel):
         movement = StockMovement.objects.create(
             item=item, warehouse=place, movement_type=MovementType.ISSUE, uom=item.uom,
             lot=receipt_line.lot, bin=receipt_line.bin_at(place), quantity=-quantity,
-            unit_cost=value / quantity, reference=self.bill.number,
+            unit_cost=value / quantity, value=-value, reference=self.bill.number,
             occurred_at=timezone.now(), notes=f"Capitalised as {asset}",
         )
         CapitalisedFromStock.objects.create(asset=asset, movement=movement, value=value)
@@ -5867,6 +5867,8 @@ def draw_consignment(item, from_warehouse, to_warehouse, quantity, payable_accou
     StockMovement.objects.create(
         item=item, warehouse=from_warehouse, movement_type=MovementType.ISSUE,
         uom=order_line.uom, quantity=-quantity, unit_cost=Decimal("0"),
+        # Off the books while it stood here, so nothing is booked for it.
+        value=Decimal("0"),
         reference=order.number,
         occurred_at=timezone.now(),
         notes=f"Drawn into ownership on {order.number}",
@@ -6603,25 +6605,20 @@ def _returned_note(receipt, line):
     return f"Components returned with {receipt.number} for line {line.reverses_line_id}, {line.pk}"
 
 
-def _remainder_owed(movement, put_back, quantity):
+def _share_put_back(movement, put_back, quantity):
     """
-    On the return that puts back the last of a consumed batch (O38): what
-    the consumption took off the shelf, as the replay valued it, less what
-    the returns put back at its eight-place rate, carried as a value-only
-    remainder at the places a movement keeps. Otherwise None.
+    What putting back `quantity` of a consumed batch restores: its share of
+    the money the consumption took, total first, so the return that puts
+    back the last of it restores exactly what is left (O38, O269).
     """
-    from apps.inventory.costing import replay
-
     same = put_back.filter(lot=movement.lot, bin=movement.bin)
     had = same.aggregate(total=models.Sum("quantity"))["total"] or Decimal("0")
-    if had + quantity != -movement.quantity:
-        return None
-    _held, before = replay(movement.item, movement.warehouse, before_id=movement.pk)
-    _held, after = replay(movement.item, movement.warehouse, before_id=movement.pk + 1)
-    back = sum((row.quantity * (row.unit_cost or Decimal("0")) + (row.value_adjustment or Decimal("0"))
-                for row in same), Decimal("0"))
-    residue = ((before - after) - back - quantity * (movement.unit_cost or Decimal("0"))).quantize(Decimal("0.0001"))
-    return residue or None
+    took, whole = -movement.value, -movement.quantity
+
+    def through(part):
+        return took if part >= whole else round_money(took * part / whole)
+
+    return through(had + quantity) - through(had)
 
 
 def _apportion(remaining, total):
@@ -6652,6 +6649,14 @@ def _consumed_note(receipt, line):
     consumes it in several movements.
     """
     return f"Consumed by subcontractor for {receipt.number}, line {line.pk}"
+
+
+def _last_arrival_rate(item, warehouse):
+    """What `item` last came onto `warehouse` at: its arrival's money over its quantity, eight places."""
+    arrival = item.movements.filter(warehouse=warehouse, quantity__gt=0).order_by("-occurred_at", "-id").first()
+    if arrival is None:
+        return Decimal("0")
+    return (arrival.value / arrival.quantity).quantize(Decimal("0.00000001"))
 
 
 def _average_with_its_places(item, warehouse):
@@ -6947,6 +6952,7 @@ class GoodsReceipt(AuditModel):
 
         valued = []
         received = {}
+        shelf = {}
         price_differences = {}
         for line in lines:
             if line.order_line.work_order_operation_id:
@@ -7006,15 +7012,20 @@ class GoodsReceipt(AuditModel):
             # what the vendor charged to assemble them. Valuing it at the
             # vendor's charge alone would report a part built from 100 of
             # components as worth the 5 of labour.
-            component_cost = Decimal("0")
+            component_cost = component_money = Decimal("0")
+            accrued = unit_cost
             if line.order_line.is_subcontract():
                 if is_return:
                     # Sending the assemblies back sends their inputs back
                     # too. Reversing only the finished item would destroy
                     # the components, which the vendor still has.
-                    component_cost = self._restore_components(line)
+                    component_money = self._restore_components(line)
                 else:
-                    component_cost = self._consume_components(line)
+                    component_money = self._consume_components(line)
+                # The money the components' movements moved, a total; the
+                # rate is for reading (O269). Each component's share rounded
+                # and multiplied back up, 1,000 sacks came in 2.90 short.
+                component_cost = component_money / line.quantity_received
                 unit_cost = unit_cost + component_cost
             # Where the goods actually land: the first step of the
             # destination's receipt route, which for most warehouses is
@@ -7028,24 +7039,37 @@ class GoodsReceipt(AuditModel):
             if not is_return and line.landed_warehouse_id != landed.pk:
                 line.landed_warehouse = landed
             item = line.order_line.item
+            stock_quantity = item.to_stock_quantity(line.quantity_received, line.order_line.uom)
+            # What the vendor's goods put into the accrual, to the paisa, as
+            # the entry books it (O269): rounded once per line, so the shelf
+            # takes the same figure the inventory account does.
+            charged = (self._accrual_given_back(line, accrued) if is_return
+                       else round_money(line.quantity_received * accrued))
+            if item.costing_method == "standard":
+                # The standard and nothing else; the rest is price variance.
+                money = (-item.cost_of_removing(landed, stock_quantity, lot=line.lot) if is_return
+                         else round_money(stock_quantity * (item.standard_cost or Decimal("0"))))
+            elif is_return:
+                money = None  # what leaving takes, asked below
+            else:
+                money = charged + component_money
             if is_return and item.track_inventory and item.costing_method != "standard":
                 # What leaving takes off the shelf, asked before the
                 # movement is written, as every outbound path asks. The
                 # ledger is credited at what the goods cost; when the shelf
                 # averages something else the difference is a gain or a
                 # loss on the price, and booking it keeps the two equal.
-                removing = item.cost_of_removing(
-                    landed, item.to_stock_quantity(line.quantity_received, line.order_line.uom),
-                    lot=line.lot)
+                removing = item.cost_of_removing(landed, stock_quantity, lot=line.lot)
+                money = -removing
                 # Total first (O206): the inventory account moves by what the
                 # shelf has moved over this receipt line's returns so far,
                 # rounded once, less what the returns before this one booked.
                 # Each rounded on its own, six fractional returns of
                 # assemblies left the account 0.01 off a shelf back at 0.00.
-                line.shelf_change = component_cost * line.quantity_received - removing
+                line.shelf_change = component_money - removing
                 line.shelf_booked = self._booked_so_far(line)
                 price_differences[item] = (price_differences.get(item, Decimal("0")) + line.shelf_booked
-                                           + self._accrual_given_back(line, unit_cost - component_cost))
+                                           + charged)
             movement = StockMovement.objects.create(
                 item=line.order_line.item,
                 warehouse=landed,
@@ -7058,6 +7082,7 @@ class GoodsReceipt(AuditModel):
                 bin=landed_in,
                 quantity=quantity,
                 unit_cost=unit_cost,
+                value=money,
                 reference=self.reference or self.number,
                 occurred_at=timezone.now(),
                 notes=(
@@ -7075,11 +7100,8 @@ class GoodsReceipt(AuditModel):
             # Only the vendor's charge hits the ledger: the component
             # value has merely moved from one item to another inside the
             # same inventory account, so posting it again would double it.
-            valued.append((
-                line.order_line.item,
-                self._accrual_given_back(line, unit_cost - component_cost) if is_return
-                else line.quantity_received * (unit_cost - component_cost),
-            ))
+            valued.append((line.order_line.item, charged))
+            shelf[line.order_line.item] = shelf.get(line.order_line.item, Decimal("0")) + abs(money)
             # An item costed at standard books the standard and throws the
             # difference to variance, which needs the quantity in stocking
             # units — the value alone cannot say how many arrived.
@@ -7097,6 +7119,7 @@ class GoodsReceipt(AuditModel):
             direction="in",
             reverse=is_return,
             quantities=received,
+            shelf=shelf,
         )
         if price_differences:
             self.price_difference_entry = self._post_return_price_difference(price_differences)
@@ -7522,7 +7545,7 @@ class GoodsReceipt(AuditModel):
             item=line.order_line.item, warehouse=line.warehouse,
             movement_type=MovementType.ISSUE if is_return else MovementType.RECEIPT,
             uom=line.order_line.uom, lot=line.lot, bin=line.bin, quantity=quantity,
-            unit_cost=Decimal("0"),
+            unit_cost=Decimal("0"), value=Decimal("0"),
             reference=self.reference or self.number,
             occurred_at=timezone.now(),
             notes=(
@@ -7534,7 +7557,7 @@ class GoodsReceipt(AuditModel):
     def _restore_components(self, line):
         """
         Put the components back where they were when a return reverses
-        a subcontract receipt, and return their cost per finished unit.
+        a subcontract receipt, and return what they put back, a total.
 
         At what they were consumed at, which the receipt recorded: putting
         them back at whatever they average today restored a different
@@ -7591,30 +7614,33 @@ class GoodsReceipt(AuditModel):
                 total = owed if line.quantity_received >= left else round_money(
                     owed * line.quantity_received / left)
                 rows = [(movement.lot, movement.bin, quantity, movement.unit_cost or Decimal("0"),
-                         _remainder_owed(movement, put_back, quantity))
+                         _share_put_back(movement, put_back, quantity))
                         for movement, quantity in zip(taken, _apportion(remaining, total))]
             else:
-                # A receipt from before consumption was recorded this way: at the average with the places a
-                # movement keeps, eight, never the four-place rate multiplied back up (O253: 3,000 frames at
-                # 8.12345 came back at 8.1234, 0.15 short, booked as a price variance nobody paid).
-                rows = [(None, None, round_money(component.quantity_per * line.quantity_received),
-                         _average_with_its_places(component.item, warehouse) or (
-                             _average_with_its_places(component.item, None)
-                         ) or (component.item.standard_cost or Decimal("0")), None)]
-            for lot, storage_bin, quantity, cost, residue in rows:
+                # A receipt from before consumption was recorded this way: at what the components
+                # last came in at there, its money rounded once (O253, O269). Not the average where
+                # it stands: with the shelf kept to the paisa, the one frame left of 3,001 averages
+                # 8.12, and 3,000 put back at that came home 10.35 short of the 24,370.35 that went.
+                quantity = round_money(component.quantity_per * line.quantity_received)
+                cost = _last_arrival_rate(component.item, warehouse) or _average_with_its_places(
+                    component.item, warehouse) or (
+                    _average_with_its_places(component.item, None)
+                ) or (component.item.standard_cost or Decimal("0"))
+                rows = [(None, None, quantity, cost, round_money(quantity * cost))]
+            for lot, storage_bin, quantity, cost, money in rows:
                 if quantity <= 0:
                     continue
                 StockMovement.objects.create(
                     item=component.item, warehouse=warehouse,
                     movement_type=MovementType.RECEIPT, uom=component.item.uom,
                     lot=lot, bin=storage_bin, quantity=quantity, unit_cost=cost,
-                    value_adjustment=residue,
+                    value=money,
                     reference=self.number,
                     occurred_at=timezone.now(),
                     notes=_returned_note(self, line),
                 )
-                restored += quantity * cost + (residue or Decimal("0"))
-        return restored / line.quantity_received
+                restored += money
+        return restored
 
     def _sent_on_the_order(self, item, warehouse):
         """
@@ -7639,7 +7665,7 @@ class GoodsReceipt(AuditModel):
     def _consume_components(self, line):
         """
         Take the components the subcontractor used out of their warehouse,
-        and return what one finished unit's worth of them cost.
+        and return what they cost, a total: the money their movements took.
         """
         order = self.purchase_order
         if order.subcontract_warehouse_id is None:
@@ -7706,23 +7732,17 @@ class GoodsReceipt(AuditModel):
                 # outbound path follows (inventory/costing.py), asked of each
                 # batch as the one before it is written.
                 taking = component.item.cost_of_removing(warehouse, part, lot=lot)
-                # Eight places: a return puts the components back at this rate,
-                # and four lost 0.001 on thirty frames worth 100.
                 cost = (taking / part).quantize(Decimal("0.00000001"))
                 StockMovement.objects.create(
                     item=component.item, warehouse=warehouse,
                     movement_type=MovementType.ISSUE, uom=component.item.uom,
                     lot=lot, bin=storage_bin, quantity=-part, unit_cost=cost,
-                    reference=self.number,
+                    value=-taking, reference=self.number,
                     occurred_at=timezone.now(),
                     notes=_consumed_note(self, line),
                 )
                 consumed += taking
-        # Per finished unit at full precision. Each component's share was
-        # rounded to the paisa and multiplied back up: 1,000 sacks came in
-        # 2.90 short of what went into them, and the shelf never agreed
-        # with the ledger again.
-        return consumed / line.quantity_received
+        return consumed
 
     def _accrual_given_back(self, line, per_unit):
         """
@@ -8467,7 +8487,7 @@ def land_on_goods(receipt_line, amount, reference, memo, entry, on_date):
             # everything that was already standing there.
             adjusts=source,
             quantity=Decimal("0"),
-            value_adjustment=share, reference=reference,
+            value=share, reference=reference,
             occurred_at=timezone.now(), notes=memo,
         ))
     found = []
@@ -8571,7 +8591,7 @@ def take_back_landed(item, landed, added, landed_amount, back, entry, on_date, m
             item=item, warehouse=row.warehouse,
             movement_type=MovementType.ADJUSTMENT, uom=item.uom,
             lot=row.lot, bin=row.bin, adjusts=row.adjusts if on_landing else row,
-            quantity=Decimal("0"), value_adjustment=-still,
+            quantity=Decimal("0"), value=-still,
             reference=reference, occurred_at=timezone.now(), notes=memo,
         )
         off_shelf += still
@@ -8677,7 +8697,7 @@ def _put_back_on_the_shelf(asset, on_date):
     taken.put_back = StockMovement.objects.create(
         item=out.item, warehouse=out.warehouse, movement_type=MovementType.RECEIPT, uom=out.item.uom,
         lot=out.lot, bin=out.bin, quantity=-out.quantity, unit_cost=taken.value / -out.quantity,
-        reference=out.reference, occurred_at=timezone.now(), notes=f"Un-capitalised {asset}",
+        value=taken.value, reference=out.reference, occurred_at=timezone.now(), notes=f"Un-capitalised {asset}",
     )
     taken.save(update_fields=["put_back", "updated_at"])
 

@@ -41,7 +41,7 @@ module asks this module rather than doing its own arithmetic.
 import contextvars
 from collections import defaultdict
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -55,6 +55,27 @@ class CostingMethod(models.TextChoices):
 
 
 _PRELOADED = contextvars.ContextVar("preloaded_positions", default=None)
+
+CENT = Decimal("0.01")
+
+
+def to_paisa(amount):
+    """Money as a ledger keeps it: to the paisa, half up, as round_money does."""
+    return (Decimal(amount) + 0).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def money_of(movement):
+    """
+    What a movement moved on its shelf: the paisa its document booked
+    (StockMovement.value). Every replay sums this and nothing else, so the
+    shelf moves by exactly what the inventory account moved (O269).
+    """
+    return movement.value if movement.value is not None else Decimal("0")
+
+
+def _rate(quantity, money):
+    """Money per unit, unrounded: what pricing reads, never what is booked."""
+    return money / quantity if quantity else Decimal("0")
 
 
 @contextmanager
@@ -230,10 +251,16 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
     that is a property of weighted average and FIFO rather than of this
     function.
     """
+    return _removing(item, warehouse, quantity, lot, to_paisa)
+
+
+def _removing(item, warehouse, quantity, lot, money):
+    """cost_of_removing, each figure passed through `money`: to_paisa to book, unrounded to price."""
     quantity = Decimal(quantity)
     if quantity <= 0:
         return Decimal("0")
     method = item.costing_method
+    fold = _fold_to_start_from(item, warehouse, None, None)
 
     if method == CostingMethod.SPECIFIC:
         if lot is None:
@@ -245,43 +272,45 @@ def cost_of_removing(item, warehouse, quantity, lot=None):
                 f"{item} is costed by specific identification, so what a withdrawal "
                 "costs depends on which batch it comes from. Say which."
             )
-        _held, pools, _value = _replay_specific(
-            item, warehouse, fold=_fold_to_start_from(item, warehouse, None, None)
-        )
+        _held, pools, _value = _replay_specific(item, warehouse, fold=fold)
         pool_quantity, pool_value = pools.get(lot.pk, (Decimal("0"), Decimal("0")))
         if pool_quantity <= 0:
-            return quantity * _last_cost_for_lot(item, warehouse, lot)
-        return quantity * (pool_value / pool_quantity)
+            return money(quantity * _last_cost_for_lot(item, warehouse, lot))
+        return _share(quantity, pool_quantity, pool_value, money)
 
     if method == CostingMethod.STANDARD:
         if warehouse is not None and warehouse.holds_others_goods():
             return Decimal("0")
-        return quantity * (item.standard_cost or Decimal("0"))
+        held, value = _replay_standard(item, warehouse, fold=fold)
+        if held > 0 and quantity == held:
+            # The last of it takes what is left, so an emptied shelf reads
+            # nothing rather than the paisas its receipts rounded to.
+            return money(value)
+        return money(quantity * (item.standard_cost or Decimal("0")))
 
     if method == CostingMethod.FIFO:
-        _held, layers, _value = _replay_fifo(
-            item, warehouse, fold=_fold_to_start_from(item, warehouse, None, None)
-        )
-        taken, remaining = Decimal("0"), quantity
-        for layer_quantity, layer_cost, _source in layers:
-            if remaining <= 0:
-                break
-            drawn = min(layer_quantity, remaining)
-            taken += drawn * layer_cost
-            remaining -= drawn
-        if remaining > 0:
-            # Shipping into negative stock. There is no layer to price it
-            # from, so the last known cost is the only honest guess, and
-            # the receipt that eventually covers it will correct the total.
-            taken += remaining * _last_cost(layers, item)
-        return taken
+        _held, layers, _value = _replay_fifo(item, warehouse, fold=fold)
+        return _fifo_draw([list(layer) for layer in layers], quantity, item, None, money)
 
-    held, value = _replay_average(
-        item, warehouse, fold=_fold_to_start_from(item, warehouse, None, None)
-    )
+    held, value = _replay_average(item, warehouse, fold=fold)
     if held <= 0:
         return Decimal("0")
-    return quantity * (value / held)
+    return _share(quantity, held, value, money)
+
+
+def _exact(amount):
+    return amount
+
+
+def _share(quantity, held, value, money=to_paisa):
+    """
+    What `quantity` of `held` worth `value` takes, to the paisa: all of it
+    when it is all of it, so a shelf emptied reads nothing; otherwise its
+    share rounded once, total first and divided last.
+    """
+    if quantity == held:
+        return money(value)
+    return money(quantity * value / held)
 
 
 def goods_held(item, warehouse, quantity, sources=(), lot=None):
@@ -470,18 +499,21 @@ def unit_cost_for(item, warehouse, quantity, lot=None):
     `cost_of_removing` expressed per unit, for the places that must put
     a rate on a movement rather than a total.
 
-    The remainder the rate cannot express is the caller's to carry; this
-    only divides.
+    Unrounded: a rate is for pricing and planning, read to every place it
+    has, and only money is kept to the paisa (O269). What a path books is
+    cost_of_removing's total, never this times the quantity.
     """
     quantity = Decimal(quantity)
     if quantity <= 0:
         return Decimal("0")
-    return cost_of_removing(item, warehouse, quantity, lot=lot) / quantity
+    return _removing(item, warehouse, quantity, lot, _exact) / quantity
 
 
 def _last_cost(layers, item):
-    if layers:
-        return layers[-1][1]
+    """The newest layer's rate, for a shortfall: money over quantity, unrounded."""
+    for layer in reversed(layers):
+        if layer[0]:
+            return _rate(layer[0], layer[1])
     return item.standard_cost or Decimal("0")
 
 
@@ -502,6 +534,8 @@ def _last_cost_for_lot(item, warehouse, lot, before=None):
         latest = latest.filter(models.Q(occurred_at__lt=before.occurred_at)
                                | models.Q(occurred_at=before.occurred_at, id__lt=before.pk))
     latest = latest.order_by("-occurred_at", "-id").first()
+    if latest is not None and latest.value is not None and latest.quantity:
+        return latest.value / latest.quantity
     if latest is not None and latest.unit_cost is not None:
         return latest.unit_cost
     return item.standard_cost or Decimal("0")
@@ -528,33 +562,14 @@ def _replay_specific(item, warehouse=None, before_id=None, as_of=None, fold=None
             (None if key == "None" else int(key)): [Decimal(pair[0]), Decimal(pair[1])]
             for key, pair in fold.state.get("pools", {}).items()
         }
-    arrived_at = {}
+    # A batch is the sum of what its movements moved: each its document's
+    # paisa, landed cost on the batch it was incurred for included. What a
+    # withdrawal takes is cost_of_removing's question, answered before it
+    # was written; the replay only adds up the answers (O269).
     for movement in _movements(item, warehouse, before_id, as_of, fold):
         pool = pools.setdefault(movement.lot_id, [Decimal("0"), Decimal("0")])
-        if movement.quantity > 0:
-            pool[0] += movement.quantity
-            pool[1] += movement.quantity * (movement.unit_cost or Decimal("0"))
-            arrived_at[movement.lot_id] = movement.unit_cost
-        elif movement.quantity < 0:
-            leaving = -movement.quantity
-            if pool[0] > 0:
-                average = pool[1] / pool[0]
-            elif movement.lot_id in arrived_at:
-                # An empty batch prices what still leaves it at what it last
-                # came in at, as cost_of_removing does: priced at nothing
-                # here, a write-off of a batch at minus three credited the
-                # ledger 700 and took nothing off the shelf.
-                average = arrived_at[movement.lot_id]
-                if average is None:
-                    average = item.standard_cost or Decimal("0")
-            else:
-                average = _last_cost_for_lot(item, warehouse, movement.lot_id, before=movement)
-            pool[1] -= leaving * average
-            pool[0] -= leaving
-        if movement.value_adjustment:
-            # Landed cost belongs to the goods it was incurred on, and a
-            # value-only movement carries the batch it was incurred for.
-            pool[1] += movement.value_adjustment
+        pool[0] += movement.quantity
+        pool[1] += money_of(movement)
 
     quantity = sum((pool[0] for pool in pools.values()), Decimal("0"))
     value = sum((pool[1] for pool in pools.values()), Decimal("0"))
@@ -562,23 +577,19 @@ def _replay_specific(item, warehouse=None, before_id=None, as_of=None, fold=None
 
 
 def _replay_average(item, warehouse=None, before_id=None, as_of=None, fold=None):
+    """
+    The shelf is the sum of what its movements moved, each the paisa its
+    document booked, and the average is that over the quantity, unrounded,
+    for pricing. A withdrawal's share was cost_of_removing's question,
+    answered before it was written; re-asked here at the running average it
+    kept a paisa's fraction the ledger never booked (O269). Landed cost and
+    revaluations are movements like any other: their money is their value.
+    """
     quantity = fold.quantity if fold is not None else Decimal("0")
     value = fold.value if fold is not None else Decimal("0")
     for movement in _movements(item, warehouse, before_id, as_of, fold):
-        if movement.quantity > 0:
-            value += movement.quantity * (movement.unit_cost or Decimal("0"))
-            quantity += movement.quantity
-        elif movement.quantity < 0:
-            leaving = -movement.quantity
-            average = (value / quantity) if quantity > 0 else Decimal("0")
-            value -= leaving * average
-            quantity -= leaving
-        # A value-only movement changes what the stock is worth without
-        # changing how much there is, which is exactly what landed cost
-        # does. Replaying it here rather than storing a corrected average
-        # keeps valuation derived, like everything else.
-        if movement.value_adjustment:
-            value += movement.value_adjustment
+        quantity += movement.quantity
+        value += money_of(movement)
     return quantity, value
 
 
@@ -600,93 +611,137 @@ def _replay_fifo(item, warehouse=None, before_id=None, as_of=None, fold=None):
         # silently discarded, and the shelf would disagree with the
         # ledger by the freight.
         layers = [
-            [Decimal(quantity), Decimal(cost), pk]
-            for quantity, cost, pk in fold.state.get("layers", [])
+            [Decimal(quantity), Decimal(money), pk]
+            for quantity, money, pk in fold.state.get("layers", [])
         ]
     for movement in _movements(item, warehouse, before_id, as_of, fold):
         _fifo_step(layers, movement, item)
 
     quantity = sum((layer[0] for layer in layers), Decimal("0"))
-    value = sum((layer[0] * layer[1] for layer in layers), Decimal("0"))
+    value = sum((layer[1] for layer in layers), Decimal("0"))
     return quantity, [(layer[0], layer[1], layer[2]) for layer in layers], value
 
 
 def _fifo_step(layers, movement, item):
-    """One movement through the FIFO layers: the walk _replay_fifo and value_still_held share."""
+    """
+    One movement through the FIFO layers: the walk _replay_fifo and
+    follow_value share. A layer is [quantity, money, source]: the money its
+    receipt booked, not a rate, so what a layer is worth is what was booked
+    for it and a rate never multiplies back to a total (O269).
+    """
+    money = money_of(movement)
     if movement.quantity > 0:
-        layers.append([movement.quantity, movement.unit_cost or Decimal("0"), movement.pk])
+        layers.append([movement.quantity, money, movement.pk])
     elif movement.quantity < 0:
-        remaining = -movement.quantity
-        # A shortfall is priced at the newest layer as it stood before
-        # any of it was drawn, which is what cost_of_removing asks.
-        # Asked after the layers were emptied, the five beyond a shelf
-        # of three went below zero at nothing while the ledger was
-        # credited 50 for them.
-        shortfall_cost = _last_cost(layers, item)
-        while remaining > 0 and layers:
-            drawn = min(layers[0][0], remaining)
-            layers[0][0] -= drawn
-            remaining -= drawn
-            if layers[0][0] <= 0:
-                layers.pop(0)
-        if remaining > 0:
-            # Below zero. A negative layer priced at the last known
-            # cost keeps quantity honest, and the next receipt fills
-            # it in the order everything else is filled.
-            layers.append([-remaining, shortfall_cost, movement.pk])
-    if movement.value_adjustment:
-        _apply_adjustment(layers, movement)
+        natural = _fifo_draw(layers, -movement.quantity, item, movement.pk)
+        # The movement took what its document booked. Where that is not the
+        # split cost_of_removing would give today (a row written before the
+        # shelf kept money), the difference stays on what is left, so the
+        # shelf still moves by exactly the booked figure.
+        _apply_amount(layers, -money - natural, movement, take=True)
+    elif money:
+        _apply_adjustment(layers, movement, money)
 
 
-def _apply_adjustment(layers, movement):
+def _fifo_draw(layers, quantity, item, source, money_of_share=to_paisa):
+    """
+    Take `quantity` off the layers, oldest first, and say what it took, to
+    the paisa: a layer emptied gives up all its money, a layer drawn in part
+    its share rounded once, and anything beyond the layers is a shortfall
+    priced at the newest layer's rate as it stood before any of it was drawn
+    (a negative layer the next receipt fills). cost_of_removing asks it of a
+    copy and the replay of the ledger, so the two cannot answer differently.
+    """
+    remaining = Decimal(quantity)
+    shortfall_rate = _last_cost(layers, item)
+    taken = Decimal("0")
+    while remaining > 0 and layers:
+        layer = layers[0]
+        drawn = min(layer[0], remaining)
+        money = layer[1] if drawn == layer[0] else money_of_share(drawn * layer[1] / layer[0])
+        layer[0] -= drawn
+        layer[1] -= money
+        taken += money
+        remaining -= drawn
+        if layer[0] <= 0:
+            layers.pop(0)
+            if layer[1] and layers:
+                layers[0][1] += layer[1]
+            elif layer[1]:
+                layers.append([Decimal("0"), layer[1], layer[2]])
+                break
+    if remaining > 0:
+        money = money_of_share(remaining * shortfall_rate)
+        layers.append([-remaining, -money, source])
+        taken += money
+    return taken
+
+
+def _apply_amount(layers, amount, movement, take=False):
+    """Money with no quantity of its own: on the first layer, or held loose."""
+    if not amount:
+        return
+    if take:
+        amount = -amount
+    if layers:
+        layers[0][1] += amount
+    else:
+        layers.append([Decimal("0"), amount, movement.pk])
+
+
+def _apply_adjustment(layers, movement, amount=None):
     """
     Put a value-only movement on the layer it belongs to.
 
     Landed cost belongs to the goods it was incurred on, and says which
     receipt those were, so it lands on that receipt's layer. Anything
     else — a revaluation, a correction — belongs to the shelf as a whole
-    and is spread across what is left in proportion to value. Spreading
-    is a judgement, said out loud rather than dressed up as precision.
+    and is spread across what is left in proportion to value, each share
+    to the paisa and the last taking what is left, so the shelf moves by
+    exactly the amount. Spreading is a judgement, said out loud rather
+    than dressed up as precision. A landed cost whose layer has shipped is
+    spread too: its movement says what the ledger put on the shelf
+    (goods_held decided that), and the shelf takes exactly that.
     """
-    amount = movement.value_adjustment
+    if amount is None:
+        amount = money_of(movement)
     target = movement.adjusts_id
     if target is not None:
         for layer in layers:
             if layer[2] == target and layer[0] > 0:
-                layer[1] += amount / layer[0]
+                layer[1] += amount
                 return
-        # The layer it belonged to has already shipped. Its cost went out
-        # with it, so there is nothing left here to adjust; the ledger
-        # keeps the amount and the shelf correctly does not.
+    held = [layer for layer in layers if layer[0] > 0]
+    if not held:
+        _apply_amount(layers, amount, movement)
         return
-
-    total = sum((layer[0] * layer[1] for layer in layers), Decimal("0"))
-    if total <= 0:
-        held = sum((layer[0] for layer in layers), Decimal("0"))
-        if held > 0:
-            per_unit = amount / held
-            for layer in layers:
-                layer[1] += per_unit
-        return
-    for layer in layers:
-        if layer[0] <= 0:
-            continue
-        share = (layer[0] * layer[1]) / total * amount
-        layer[1] += share / layer[0]
+    total = sum((layer[1] for layer in held), Decimal("0"))
+    weights = [layer[1] for layer in held] if total > 0 else [layer[0] for layer in held]
+    whole = sum(weights, Decimal("0"))
+    given = Decimal("0")
+    for layer, weight in zip(held[:-1], weights[:-1]):
+        share = to_paisa(amount * weight / whole)
+        layer[1] += share
+        given += share
+    held[-1][1] += amount - given
 
 
 def _replay_standard(item, warehouse=None, before_id=None, as_of=None, fold=None):
     """
-    Quantity times the standard, and nothing else.
+    What the standard put on the shelf, and nothing else.
 
     What was actually paid does not touch stock value under this method
     — that is the whole point of it. The difference is a variance
     somebody analyses, and a landed cost that quietly raised the shelf's
-    value would be that variance hiding in an asset account.
+    value would be that variance hiding in an asset account: nothing
+    lands on a standard item (goods_held), so every movement here moved
+    the standard, to the paisa its document booked.
     """
     quantity = fold.quantity if fold is not None else Decimal("0")
+    value = fold.value if fold is not None else Decimal("0")
     for movement in _movements(item, warehouse, before_id, as_of, fold):
         quantity += movement.quantity
+        value += money_of(movement)
     if warehouse is not None and warehouse.holds_others_goods():
         # A vendor's consignment or a customer's material is on the
         # premises and off the books; under every other method it comes
@@ -694,7 +749,8 @@ def _replay_standard(item, warehouse=None, before_id=None, as_of=None, fold=None
         # is deemed to be worth. Valued here, ten of a vendor's at 5 read
         # 50 against a ledger of nothing.
         return quantity, Decimal("0")
-    # Value from the standard in force now, never from the fold: the
-    # standard changes, and a folded value would be what the shelf was
-    # deemed to be worth under the old one.
-    return quantity, quantity * (item.standard_cost or Decimal("0"))
+    # The sum of what was booked: each receipt at the standard to the
+    # paisa, each change of standard as the revaluation it posted. Quantity
+    # times today's standard read 10.005 for a kilo the books took at 10.01
+    # (O269); set_standard_cost() is what moves the shelf to a new standard.
+    return quantity, value

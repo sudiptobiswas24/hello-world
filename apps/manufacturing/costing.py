@@ -309,13 +309,13 @@ class CostVersion(AuditModel):
             # `warehouse=None` and answers nought for an item held
             # everywhere, which had the first version of this revalue
             # precisely nothing.
-            on_hand, _value = item.valuation_at(None)
-            if not on_hand:
-                continue
-            postings.append((
-                inventory_account_for(item),
-                round_money((row.total - was) * on_hand),
-            ))
+            # Shelf by shelf, each its own paisa, written as a value-only
+            # movement: the shelf is the sum of what its movements booked
+            # (O269), and a change of standard posted to the ledger alone
+            # left every standard shelf at the old one.
+            moved = _revalue_shelves(item, row.total - was, on_date, self.code)
+            if moved:
+                postings.append((inventory_account_for(item), moved))
 
         entry = None
         if postings:
@@ -505,3 +505,30 @@ def against_actual(version, warehouse=None):
         rows,
         key=lambda row: abs(row["difference_percent"] or ZERO), reverse=True,
     )
+
+
+def _revalue_shelves(item, change, on_date, reference):
+    """
+    Each of the company's shelves holding `item` takes `change` a unit, its
+    money to the paisa, as a value-only movement; returns the total booked.
+    A vendor's consignment or a customer's material is not the company's
+    to revalue.
+    """
+    from apps.inventory.locking import lock_positions
+    from apps.inventory.models import MovementType, StockMovement, Warehouse
+
+    shelves = [shelf for shelf in Warehouse.objects.filter(movements__item=item).distinct().order_by("pk")
+               if not shelf.holds_others_goods()]
+    lock_positions([(item, shelf) for shelf in shelves])
+    total = ZERO
+    for shelf in shelves:
+        held = item.on_hand_at(shelf)
+        money = round_money(change * held)
+        if not money:
+            continue
+        StockMovement.objects.create(
+            item=item, warehouse=shelf, movement_type=MovementType.ADJUSTMENT, uom=item.uom,
+            quantity=ZERO, value=money, reference=reference, occurred_at=timezone.now(),
+            notes=f"{held} on hand revalued by {change} each ({reference}, {on_date})"[:255])
+        total += money
+    return total

@@ -710,13 +710,13 @@ class ATotalComesBackWholeTests(RunTestCase):
         self.back("30000")
         self.assertEqual(self.balance(self.wip), Decimal("0.00"))
         self.assertEqual(self.shelf(), self.before)
-        self.assertEqual(self.drawn.posted_value, Decimal("2125670.32987500"))
+        self.assertEqual(self.drawn.posted_value, Decimal("2125670.33"))  # 2,125,670.329875 to the paisa (O269)
 
     def test_returned_in_two_parts_they_come_to_what_went_out(self):
         first, second = self.back("10000"), self.back("20000")
         self.assertEqual(self.balance(self.wip), Decimal("0.00"))
         self.assertEqual((first.posted_value, second.posted_value),
-                         (Decimal("708556.77662500"), Decimal("1417113.55325000")))
+                         (Decimal("708556.78"), Decimal("1417113.55")))  # a third of 2,125,670.33, and the rest (O269)
 
     def test_the_issue_voided_puts_back_what_went_out(self):
         self.drawn.issue.void(TODAY)

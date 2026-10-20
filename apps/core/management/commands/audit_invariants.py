@@ -90,6 +90,7 @@ class Command(BaseCommand):
         findings += self.movements_in_another_unit(labels, sources)
         findings += self.unlocked_open_runs(labels, sources)
         findings += self.outbound_at_a_posted_figure(labels, sources)
+        findings += self.movements_without_their_money(labels, sources)
         findings += self.unserialised_state_changes(labels, sources)
         findings += self.untested_corrections(all_code, all_tests)
         findings += self.mutable_posted_documents(labels, sources)
@@ -292,9 +293,44 @@ class Command(BaseCommand):
                      if key.split(".")[0] in labels]
         return findings
 
+    def movements_without_their_money(self, labels, sources):
+        """
+        A stock movement written without `value=`, the money its document
+        booked (O269). The shelf is the sum of its movements' money and the
+        ledger the sum of its documents' paisas; a writer that leaves it out
+        has the movement guess, and a guess is a rate multiplied back up:
+        one kilo written off at an average of 10.005 moved the shelf 10.005
+        and the books 10.00. Every writer says what it booked, in the same
+        call, so a new path cannot leave it out.
+        """
+        findings = []
+        for label in labels:
+            for path, text in sorted(sources[label].items()):
+                if "test" in path.name or "migrations" in path.parts:
+                    continue
+                if "StockMovement" not in text:
+                    continue
+                for node in ast.walk(ast.parse(text)):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    if ast.unparse(node.func) not in ("StockMovement.objects.create", "StockMovement"):
+                        continue
+                    if any(keyword.arg == "value" for keyword in node.keywords):
+                        continue
+                    if any(keyword.arg is None for keyword in node.keywords):
+                        continue  # **fields: what it passes cannot be read here
+                    findings.append((
+                        "movement without its money",
+                        f"{label}/{path.name}:{node.lineno} writes a stock movement without value=: "
+                        "say what its document booked to the inventory account, to the paisa.",
+                    ))
+        return findings
+
     # Outbound movements that never ask what leaving costs, with why that
     # is right for them.
     OUTBOUND_UNPRICED = {
+        "inventory.StockTransferStep.reverse": "a hop back moves exactly the money the hop carried, "
+                                               "both legs, and books nothing",
         "manufacturing._movement": "a customer's own material, held and handed back at no cost",
         "purchasing.draw_consignment": "a vendor's consignment, held at no cost until bought",
         "purchasing.GoodsReceipt._move_consignment": "a vendor's consignment, at no cost",

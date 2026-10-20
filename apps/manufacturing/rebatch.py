@@ -223,7 +223,7 @@ class Rebatch(AuditModel):
                 item=self.item, warehouse=self.warehouse, lot=line.lot,
                 movement_type=MovementType.TRANSFER_OUT, uom=self.item.uom,
                 quantity=-line.quantity, unit_cost=(cost / line.quantity).quantize(RATE_PLACES),
-                reference=self.number, occurred_at=occurred_at, notes=notes)
+                value=-cost, reference=self.number, occurred_at=occurred_at, notes=notes)
             if line.stock_movement_id is None:
                 line.stock_movement = movement
                 line._write(["stock_movement"])
@@ -232,22 +232,30 @@ class Rebatch(AuditModel):
     def _bring_in(self, rows, value, occurred_at, notes):
         """
         [(line, rate)] onto the shelf carrying exactly `value` between them:
-        each at its rate, and the last carrying what the rates cannot say as
-        value with no quantity attached. A rate rounded to six places took
-        sacks worth 10,000.00 down to 9,999.99 with no journal to absorb it.
+        each its share by quantity at its rate, to the paisa, and the last
+        what is left (O269). A rate rounded to six places took sacks worth
+        10,000.00 down to 9,999.99 with no journal to absorb it.
         """
+        from apps.accounting.models import round_money
         from apps.inventory.models import MovementType, StockMovement
 
-        written = ZERO
-        for index, (line, rate) in enumerate(rows):
-            written += line.quantity * rate
+        weights = [line.quantity * (rate or ZERO) for line, rate in rows]
+        whole = sum(weights, ZERO)
+        given = ZERO
+        for index, ((line, rate), weight) in enumerate(zip(rows, weights)):
             last = index == len(rows) - 1
-            residue = (value - written).quantize(Decimal("0.0001")) if last else ZERO
+            if last:
+                money = value - given
+            elif whole:
+                money = round_money(value * weight / whole)
+            else:
+                money = round_money(value * line.quantity / sum((row.quantity for row, _rate in rows), ZERO))
+            given += money
             yield StockMovement.objects.create(
                 item=self.item, warehouse=self.warehouse, lot=line.lot,
                 movement_type=MovementType.TRANSFER_IN, uom=self.item.uom,
-                quantity=line.quantity, unit_cost=rate, value_adjustment=residue or None,
-                reference=self.number, occurred_at=occurred_at, notes=notes)
+                quantity=line.quantity, unit_cost=(money / line.quantity).quantize(RATE_PLACES),
+                value=money, reference=self.number, occurred_at=occurred_at, notes=notes)
 
 
 class RebatchSide(models.TextChoices):
@@ -337,7 +345,7 @@ def pooled_into(movement):
             warehouse_id=movement.warehouse_id, pk__gt=movement.pk,
             lot_id__in=voided.lines.filter(side=RebatchSide.IN).values("lot_id"),
         ).exclude(pk__in=recorded).order_by("pk"))
-    values = [arrival.quantity * arrival.unit_cost + (arrival.value_adjustment or ZERO) for arrival in arrivals]
+    values = [arrival.value for arrival in arrivals]
     total = sum(values, ZERO)
     if total <= 0:
         return []
