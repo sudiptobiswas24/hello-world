@@ -257,6 +257,18 @@ TRUE = {"true", "1", "yes", "on"}
 FALSE = {"false", "0", "no", "off"}
 
 
+def posts_its_notes(user, corrected):
+    """
+    Whether the notes a goods movement raises post, or wait as drafts: a customer return's credit
+    notes, a return to vendor's debit notes. They post only for someone who may post the kind of
+    document they correct (sales.post_invoice for an invoice, purchasing.post_bill for a bill);
+    anyone else's wait, as drafts, for the AR or AP side to post. A store hand taking goods back
+    moves stock, not a receivable (O292; purchasing's since review F8).
+    """
+    meta = corrected._meta
+    return user.has_perm(f"{meta.app_label}.post_{meta.model_name}")
+
+
 def flag(data, name, default):
     """
     A yes-or-no from a request, however it was said.

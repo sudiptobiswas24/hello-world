@@ -2906,7 +2906,7 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
             credits=self, **extra)
 
     @serialised("posted", held_first=True)
-    def create_credit_note(self, memo="", quantities=None, amount=None, on_date=None):
+    def create_credit_note(self, memo="", quantities=None, amount=None, on_date=None, post=True):
         """
         Credit this invoice, on `on_date` or today. By default the whole thing; pass
         `quantities` as {invoice_line: quantity} to credit part of it, which
@@ -2962,7 +2962,10 @@ class Invoice(PlacedWhereTheGoodsGo, Extensible, PostedTaxDocumentMixin, TaxedDo
                     revenue_account=line.revenue_account,
                 )
                 credit_line.taxes.set(line.taxes.all())
-        credit_note.post(memo=memo)
+        # `post=False`: raised by someone who may not post invoices (a goods return), it waits as a
+        # draft for the AR side to post (O292, purchasing's debit note since review F8).
+        if post:
+            credit_note.post(memo=memo)
         return credit_note
 
     def credit_claim(self, net, reason, memo="", on_date=None):
@@ -4740,7 +4743,7 @@ class Delivery(AuditModel):
                 if line.order_line.quantity_open() <= 0:
                     release_for(line.order_line, "Met within tolerance")
 
-    def _credit_returned_goods(self):
+    def _credit_returned_goods(self, post=True):
         """
         Credit the invoices that billed the returned goods. A delivery's
         quantities may have been spread over several invoices, so the
@@ -4758,7 +4761,11 @@ class Delivery(AuditModel):
             for invoice_line in invoice_lines:
                 if remaining <= 0:
                     break
-                available = invoice_line.quantity_creditable()
+                # Less what a return's notes still waiting as drafts already take (O292): counted
+                # only once posted, the next return would credit the same line again.
+                available = invoice_line.quantity_creditable() - (invoice_line.credit_lines.filter(
+                    invoice__posted=False, invoice__claim_reason="").aggregate(t=models.Sum("quantity"))["t"]
+                    or Decimal("0"))
                 if available <= 0:
                     continue
                 taken = min(available, remaining)
@@ -4771,7 +4778,7 @@ class Delivery(AuditModel):
         lock_rows(*allocations, refresh=False)
         return [
             invoice.create_credit_note(
-                memo=f"Goods returned on {self.number}", quantities=quantities
+                memo=f"Goods returned on {self.number}", quantities=quantities, post=post
             )
             for invoice, quantities in sorted(allocations.items(), key=lambda pair: pair[0].pk)
         ]
@@ -4840,7 +4847,7 @@ class Delivery(AuditModel):
         ).order_by("pk"))
 
     @serialised("posted", held_first="locked_before_returning")
-    def create_return(self, credit_invoices=True, quantities=None):
+    def create_return(self, credit_invoices=True, quantities=None, post_notes=True):
         """
         Take goods back: reverse the stock movement and, unless this is a
         replacement rather than a refund, credit whatever was invoiced for
@@ -4910,7 +4917,7 @@ class Delivery(AuditModel):
         # Credited for what came back on this return, not for everything
         # the delivery carried.
         customer_return.credit_notes_created = (
-            customer_return._credit_returned_goods() if credit_invoices else []
+            customer_return._credit_returned_goods(post=post_notes) if credit_invoices else []
         )
         return customer_return
 
