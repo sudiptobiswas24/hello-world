@@ -1,3 +1,5 @@
+import os
+import sys
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -640,6 +642,43 @@ class MovementType(models.TextChoices):
     ADJUSTMENT = "adjustment", "Adjustment"
 
 
+def _writer_of(frame):
+    """
+    The first frame outside Django and this module: who asked for the movement, however it was spelt
+    (StockMovement(...).save(), objects.create, get_or_create, item.movements.create, an alias, **fields).
+    """
+    import django
+
+    django_root = os.path.dirname(django.__file__)
+    while frame is not None:
+        path = frame.f_code.co_filename
+        if path != __file__ and not path.startswith(django_root):
+            return path
+        frame = frame.f_back
+    return ""
+
+
+def is_test_source(path):
+    name = os.path.basename(path)
+    return name.startswith("tests") or name.startswith("test_") or f"{os.sep}tests{os.sep}" in path
+
+
+def refuse_a_guess_from_application_code(movement):
+    """
+    A goods movement whose writer did not say its money (O326). A test's fixture may leave it out and have it
+    worked out; application code may not, whatever the spelling, because the worked-out figure is a rate
+    multiplied back up, the paisa O269 closed. Checked here, at what save() is given, not at how a call is spelt:
+    the static check (audit_invariants, movements_without_their_money) saw two spellings of the six.
+    """
+    writer = _writer_of(sys._getframe(1))
+    if not is_test_source(writer):
+        raise ValidationError(
+            f"A stock movement of {movement.quantity} {movement.item} was written without its money "
+            f"({writer or 'unknown writer'}). Pass value=: what its document booked to the inventory "
+            "account, to the paisa."
+        )
+
+
 class StockMovement(AuditModel):
     """
     Append-only ledger of stock changes. On-hand quantity is always a
@@ -824,6 +863,8 @@ class StockMovement(AuditModel):
 
         if self.quantity == 0 and self.value is None and self.value_adjustment is not None:
             self.value = to_paisa(self.value_adjustment)
+        if self.value is None and self.quantity != 0:
+            refuse_a_guess_from_application_code(self)
         if self.value is None:
             if self.quantity > 0:
                 if self.item.costing_method == CostingMethod.STANDARD:
