@@ -505,3 +505,14 @@ class AForeignOrderIsWeighedInTheBaseTests(ApprovalTestCase):
         self.assertIn("No exchange rate for GBP on 01-03-2026", " ".join(order.approval_reasons()))
         with self.assertRaisesMessage(ValidationError, "No exchange rate for GBP on 01-03-2026"):
             order.confirm()
+
+    def test_the_credit_limit_weighs_the_order_at_its_own_date(self):
+        # O334: 10 x 10 EUR on 1 March at 90 is 9,000 against a 10,000 limit; at April's 120 it would read 12,000.
+        from apps.core.models import ExchangeRate
+        from .models import CustomerProfile
+
+        CustomerProfile.objects.update_or_create(party=self.customer, defaults={"credit_limit": Decimal("10000")})
+        order = self.eur_order("10", "10")
+        ExchangeRate.objects.create(currency=order.currency, rate=Decimal("120"), valid_from=datetime.date(2026, 4, 1))
+        self.assertIsNone(order.credit_limit_breach())
+        self.assertEqual(order.total_in_base(), Decimal("9000.00"))
