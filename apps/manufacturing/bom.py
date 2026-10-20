@@ -356,9 +356,11 @@ class BillOfMaterials(AuditModel):
             # Turned into or out of rework once its lines stand (O275): asked
             # here, where the answer is known; a new bill has no lines yet, so
             # its release asks instead.
-            was = type(self).objects.filter(pk=self.pk).values_list("is_rework", flat=True).first()
+            # And when what it makes changes (O275 review): a rework bill moved
+            # onto another item eats nothing of the new one.
+            was = type(self).objects.filter(pk=self.pk).values_list("is_rework", "item_id").first()
             # A phantom is never rework: the bill's constraint answers that one.
-            if was is not None and was != self.is_rework and not self.is_phantom:
+            if was is not None and was != (self.is_rework, self.item_id) and not self.is_phantom:
                 self.check_rework()
         if self.is_phantom and self.pk and self.byproducts.exists():
             raise ValidationError(
@@ -450,23 +452,33 @@ class BomComponent(AuditModel):
                 "a loop the explosion cuts without saying so — mark the bill "
                 "of materials as rework if that is what this is."
             )
-        if self.pk is not None and self.item_id != self.bom.item_id:
-            was = type(self).objects.filter(pk=self.pk).values_list("item_id", flat=True).first()
-            if was == self.bom.item_id:
-                self._check_rework_keeps_its_batch()
+        self._check_rework_keeps_its_batch()
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
-        if self.item_id == self.bom.item_id:
-            self._check_rework_keeps_its_batch()
+        self._check_rework_keeps_its_batch(deleting=True)
         return super().delete(*args, **kwargs)
 
-    def _check_rework_keeps_its_batch(self):
-        """The last line that eats the failed batch does not leave a rework bill (O275, check_rework)."""
-        if self.bom.is_rework and not self.bom.components.filter(
-                item_id=self.bom.item_id).exclude(pk=self.pk).exists():
+    def _check_rework_keeps_its_batch(self, deleting=False):
+        """
+        Every rework bill this change touches still eats its failed batch
+        (O275, check_rework). Asked of the bill the line leaves and the one it
+        joins, as stored (shared rule B's shape): asked of the line's old item
+        against its new bill, a PATCH moving the only eating line to another
+        bill passed and left this one eating nothing.
+        """
+        bills = {self.bom_id}
+        if self.pk is not None:
+            bills |= set(type(self).objects.filter(pk=self.pk).values_list("bom_id", flat=True))
+        for bill in BillOfMaterials.objects.filter(pk__in=bills, is_rework=True).order_by("pk"):
+            eating = bill.components.filter(item_id=bill.item_id)
+            if not eating.exists():
+                continue  # still being built: its release and its output ask (mistake 3)
+            this = not deleting and self.bom_id == bill.pk and self.item_id == bill.item_id
+            if this or eating.exclude(pk=self.pk).exists():
+                continue
             raise ValidationError(
-                f"{self.bom} is a rework recipe and this is its line for {self.bom.item}. Without it the "
+                f"{bill} is a rework recipe and this is its line for {bill.item}. Without it the "
                 "recipe makes good stock out of nothing and leaves the failed batch on the shelf.")
 
 

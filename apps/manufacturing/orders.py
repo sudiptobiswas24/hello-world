@@ -3120,6 +3120,11 @@ class ProductionEntry(VoidedNotDeleted, AuditModel):
                 f"{order} is {order.get_status_display().lower()}; output can "
                 "only be booked against a released order."
             )
+        if order.bom.is_rework:
+            # Asked again here, not only at release (O275 review): the bill is
+            # live, and a line moved off it after release left the run booking
+            # good output with nothing of the failed batch drawn.
+            order.bom.check_rework()
         if order.planned_unit_cost is None:
             raise ValidationError(
                 f"{order} has no planned cost, so there is nothing to value this "
