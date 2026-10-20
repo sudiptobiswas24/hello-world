@@ -157,8 +157,10 @@ class InCases(LandedCostTestCase):
                                             if hasattr(UnitOfMeasureCategory, "COUNT") else None,
                                             base_unit=self.uom, conversion_factor=D("12"))
         for method in (CostingMethod.AVERAGE, CostingMethod.FIFO):
-            self.item.costing_method = method
-            self.item.save()
+            # Written, not saved: a costing method no longer changes over stock (O330), and the probe runs both
+            # methods over one shelf.
+            type(self.item).objects.filter(pk=self.item.pk).update(costing_method=method)
+            self.item.refresh_from_db()
             order = PurchaseOrder.objects.create(vendor=self.vendor, order_date=datetime.date(2026, 1, 1))
             line = PurchaseOrderLine.objects.create(order=order, item=self.item, uom=case, quantity=D("30"),
                                                     unit_price=D("7.01"))

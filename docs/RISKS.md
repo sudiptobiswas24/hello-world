@@ -337,7 +337,6 @@ missing), **minor**.
 | O327 | inventory | A movement's money is not checked against its quantity's sign: outbound +10 and inbound -10 are taken (seen 2026-10-20, audit2_stores R3; docs/handoff/reports/g23_audit2_stores.md) | rule | open |
 | O328 | inventory | average_cost_at answers at 4 places, not 8: a write-up with no cost multiplies it back up, 3,000 found at 3.33333333 books 9,999.90 not 10,000.00 (shelf and ledger agree since O269) (seen 2026-10-20, audit2_stores R4; docs/handoff/reports/g23_audit2_stores.md) | books | minor |
 | O329 | inventory | Migration inventory 0040 gives old rows the money replayed then, not their documents' booked figures, and its summary nets its drops so it can read 0 dropped; the health check nets by inventory account (seen 2026-10-20, audit2_stores review part 1, item 6; docs/handoff/reports/g23_audit2_stores.md) | books | minor |
-| O330 | inventory | Item.costing_method is not frozen while the item has stock. Decided: frozen once it has movements, as its inventory account is (seen 2026-10-20, audit2_stores review part 1, item 6; docs/handoff/reports/g23_audit2_stores.md) | rule | open |
 
 Upgrade notes, true of data made before the 8 October fixes:
 - Landed cost allocated before the stores fix releases to cost of sales, and old inventory differences stay where they were.
@@ -452,8 +451,8 @@ not cover, or is deleted with the commit that finishes it.
 - ~~L3 Link a login to an employee~~ — done, for leave; see items 6 and 17.
 - ~~L4 Import from files (CSV)~~ — done; see item 2 for what it has
   not been tried on.
-- L5 An item's costing method and tracking are not yet fixed once its
-  stock has moved, as its unit is. A costing method changed over stock
+- L5 An item's tracking is not yet fixed once its stock has moved, as
+  its unit and (since O330) its costing method are. A costing method changed over stock
   already held replays every past movement under a method it never
   happened by, and the stock's value parts from the ledger with no
   entry to say why. Lot tracking switched on over stock already held

@@ -22,9 +22,11 @@ class RunShelfAgainstLedger(RunTestCase):
 
     def setUp(self):
         super().setUp()
+        # Stocked at one price each, so the shelf is the same under either method; the method is written, as a
+        # costing method no longer changes over stock (O330).
         for item in (self.virgin, self.regrind, self.filler, self.colour, self.tape):
-            item.costing_method = self.method
-            item.save()
+            Item.objects.filter(pk=item.pk).update(costing_method=self.method)
+            item.refresh_from_db()
         for item, (q, c) in zip((self.virgin, self.regrind, self.filler, self.colour), self.costs):
             # second arrival at another price, so the average and the layers do not come out even
             self.stock(item, "37.7777", "97.123456")
