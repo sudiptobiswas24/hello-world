@@ -35,8 +35,9 @@ dump() {
     stamp=$(date +%Y-%m-%d_%H%M)
     target="${BACKUP_DIR}/erp_${stamp}.dump"
     media="${BACKUP_DIR}/erp_${stamp}.media.tar.gz"
-    [ -d "$MEDIA_DIR" ] || { failed "no attachments directory at $MEDIA_DIR: mount the media volume"; return 1; }
     manifest="${BACKUP_DIR}/erp_${stamp}.media.sha256"
+    check="${BACKUP_DIR}/erp_${stamp}.check.partial"
+    [ -d "$MEDIA_DIR" ] || { failed "no attachments directory at $MEDIA_DIR: mount the media volume"; return 1; }
     # The database first, then the files (O244): an attachment's file is written before its record is
     # committed, so every record the dump holds has its file by then, and the archive taken after it holds
     # them all. Each part stays .partial until all three are written, so a dump with no archive beside it is
@@ -45,19 +46,30 @@ dump() {
         || { failed "pg_dump exited $?"; return 1; }
     [ -s "${target}.partial" ] || { failed "pg_dump wrote nothing"; return 1; }
     tar -C "$MEDIA_DIR" -czf "${media}.partial" . || { failed "archiving the attachments exited $?"; return 1; }
-    # Read whole before the manifest: the pipe below reports only sort's status, not tar's.
     tar -tzf "${media}.partial" > /dev/null || { failed "the attachments archive does not read back"; return 1; }
     # What each archived file is, byte for byte, read from the archive itself: read from the live
     # directory, a scan uploaded between the two was listed and not archived, and the night's backup
     # could not be restored at all. The restore checks every file it puts back against it.
-    tar -xzf "${media}.partial" --to-command='printf "%s  %s\n" "$(sha256sum | cut -d" " -f1)" "$TAR_FILENAME"' \
-        | sort -k2 > "${manifest}.partial" || { failed "writing the manifest exited $?"; return 1; }
+    # No pipe anywhere here: a pipe reports only its last stage, and a sha256sum that failed inside
+    # one wrote a manifest of empty hashes that said "backup written" (review of O314). Each file's
+    # hash is taken with its status asked, tar fails when one is not, and sort is a step of its own.
+    tar -xzf "${media}.partial" --to-command='h=$(sha256sum) || exit 1; printf "%s  %s\n" "${h%% *}" "$TAR_FILENAME"' \
+        > "${manifest}.unsorted.partial" || { failed "hashing the archived attachments exited $?"; return 1; }
+    sort -k2 -o "${manifest}.partial" "${manifest}.unsorted.partial" || { failed "sorting the manifest exited $?"; return 1; }
+    rm -f -- "${manifest}.unsorted.partial"
+    # The night's set counts only once it verifies as the restore will check it: every archived file
+    # put back and matched against the manifest, strictly.
+    mkdir -p "$check" && tar -C "$check" -xzf "${media}.partial" \
+        || { failed "the attachments archive does not unpack for checking"; return 1; }
+    (cd "$check" && sha256sum --check --quiet --strict "${manifest}.partial") > /dev/null \
+        || { failed "the manifest does not verify against the archive"; return 1; }
+    rm -rf -- "$check"
     # Renamed only once complete, so a half-written file is never taken
     # for a backup.
     mv "${manifest}.partial" "$manifest" && mv "${media}.partial" "$media" && mv "${target}.partial" "$target" \
         || { failed "renaming tonight's files into place"; return 1; }
     echo "$(date '+%F %T') backup written: $target ($(du -h "$target" | cut -f1)), $media ($(du -h "$media" | cut -f1), $(tar -tzf "$media" | grep -vc '/$') files)"
-    # Only now, with tonight's three files in place, does anything older go.
+    # Only now, with tonight's three files in place and verified, does anything older go.
     find "$BACKUP_DIR" -name 'erp_*.dump' -mtime +"$BACKUP_KEEP_DAYS" -delete
     find "$BACKUP_DIR" -name 'erp_*.media.tar.gz' -mtime +"$BACKUP_KEEP_DAYS" -delete
     find "$BACKUP_DIR" -name 'erp_*.media.sha256' -mtime +"$BACKUP_KEEP_DAYS" -delete

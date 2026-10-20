@@ -189,6 +189,29 @@ class AFailedBackupKeepsTheOlderOnesTests(SimpleTestCase):
         self.assertIn("BACKUP FAILED", said)
         self.assertTrue(self.old.exists())
 
+    def stub_hashing(self, body):
+        """sha256sum as the manifest's per-file hash calls it (no arguments) is `body`; any other call is the real one."""
+        real = shutil.which("sha256sum")
+        self.stub("sha256sum", f'if [ $# -eq 0 ]; then\n{body}\nfi\nexec {real} "$@"\n')
+
+    def test_a_hash_that_fails_inside_the_manifest_fails_the_night(self):
+        # Review of O314: the manifest's pipe reported sort's status; sha256sum exiting 3 wrote empty hashes,
+        # said "backup written" and retention deleted the older set.
+        self.stub_hashing("cat > /dev/null; exit 3")
+        status, said = self.backup("now")
+        self.assertEqual(status, 1, said)
+        self.assertIn("BACKUP FAILED: hashing the archived attachments", said)
+        self.assertNotIn("backup written", said)
+        self.assertTrue(self.old.exists())
+
+    def test_a_manifest_that_does_not_verify_fails_the_night(self):
+        self.stub_hashing("cat > /dev/null; echo '0000000000000000000000000000000000000000000000000000000000000000  -'; exit 0")
+        status, said = self.backup("now")
+        self.assertEqual(status, 1, said)
+        self.assertIn("BACKUP FAILED: the manifest does not verify against the archive", said)
+        self.assertTrue(self.old.exists())
+        self.assertEqual(list(self.backups.glob("erp_*.media.sha256")), [])
+
     def test_a_backup_that_succeeds_still_retires_the_older_ones(self):
         _, said = self.backup()
         self.assertIn("backup written", said)
