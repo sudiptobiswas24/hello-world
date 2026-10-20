@@ -456,6 +456,31 @@ class ALeaverNoLongerSignsInOrDecides(OutputsTestCase):
         person.save()
         self.assertFalse(User.objects.get(pk=person.user_id).is_active)
 
+    def test_a_login_an_administrator_switched_off_stays_off_when_a_past_leaving_date_is_withdrawn(self):
+        # Review of O300: admin switches the login off; HR sets 30 September (nothing to switch), then withdraws it.
+        person, _ = self.leaver_with_a_login()
+        person.user.is_active = False
+        person.user.save()
+        person.terminate(datetime.date(2026, 9, 30))
+        person.termination_date, person.employment_status = None, EmploymentStatus.ACTIVE
+        person.save()
+        self.assertFalse(User.objects.get(pk=person.user_id).is_active)
+
+    def test_the_switch_off_and_on_are_kept_with_who_and_when(self):
+        from .models import LeaverLoginSwitch
+
+        person, _ = self.leaver_with_a_login()
+        hr = User.objects.create_user("hr-officer")
+        person.updated_by = hr
+        person.terminate(datetime.date(2026, 9, 30))
+        switch = LeaverLoginSwitch.objects.get(user=person.user)
+        self.assertEqual((switch.switched_off_by, switch.switched_on_at), (hr, None))
+        person.termination_date, person.employment_status = None, EmploymentStatus.ACTIVE
+        person.save()
+        switch.refresh_from_db()
+        self.assertEqual(switch.switched_on_by, hr)
+        self.assertIsNotNone(switch.switched_on_at)
+
     def test_a_leaving_date_to_come_keeps_the_login_until_it_and_ends_it_the_day_after(self):
         from apps.core.models import login_ended
 
